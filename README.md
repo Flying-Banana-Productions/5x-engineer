@@ -73,53 +73,36 @@ Agents amplify your velocity but also your mistakes. These guardrails are not op
 
 The core loop is a two-phase cycle with human-gated review checkpoints. The author agent writes; a separate, stronger reviewer agent critiques. The human decides when to proceed.
 
-```
-                  PRD / Technical Design Docs
-                              |
-                              v
-                 +----------------------------+
-                 |  Write Implementation Plan |
-                 |      (Author Agent)        |
-                 +------------+---------------+
-                              |
-            +-----------------+----------------------+
-            |        PLAN REVIEW LOOP                |
-            |                                        |
-            |         v                              |
-            |   Review Plan (Reviewer Agent)         |
-            |      |                |                |
-            |   Not Ready         Ready -----> Exit  |
-            |      |                                 |
-            |   Revise Plan (Author Agent)           |
-            |      |                                 |
-            |      +--- loop ----^                   |
-            +----------------------------------------+
-                              |
-                              v
-            +-----------------+--------------------+
-            |     BUILD PHASE  (repeat per phase)  |
-            |                                      |
-            |   Implement Phase (Author Agent)     |
-            |         |                            |
-            |   +-----+------------------------+   |
-            |   |     PHASE REVIEW LOOP        |   |
-            |   |                              |   |
-            |   |   Review Commit (Reviewer)   |   |
-            |   |      |              |        |   |
-            |   |   Has Issues      Ready --> Exit |
-            |   |      |                       |   |
-            |   |   Fix Code (Author Agent)    |   |
-            |   |      |                       |   |
-            |   |      +--- loop -----^        |   |
-            |   +------------------------------+   |
-            |                                      |
-            |         More phases? --Yes--> Loop   |
-            |              |                       |
-            |              No                      |
-            +--------------------------------------+
-                              |
-                              v
-                  Archive Plan + PR / Merge
+```mermaid
+sequenceDiagram
+    participant H as Human
+    participant A as Author Agent
+    participant R as Reviewer Agent
+
+    H->>A: PRD / Technical Design Docs
+
+    A->>R: Implementation Plan
+
+    loop Plan Review
+        R->>A: Not Ready — review findings
+        A->>R: Revised plan
+    end
+
+    R->>H: Plan Ready
+
+    loop Per Phase
+        H->>A: Execute next phase
+        A->>R: Phase commit
+
+        loop Code Review
+            R->>A: Has Issues — review findings
+            A->>R: Revised code
+        end
+
+        R->>H: Phase Ready
+    end
+
+    H->>H: Archive Plan + PR / Merge
 ```
 
 **Key points:**
