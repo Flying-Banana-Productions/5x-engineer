@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.8
+**Version:** 1.9
 **Created:** February 15, 2026
-**Status:** Draft — v1.8: enforce canonical path on DB write boundaries (createRun/upsertPlan), optimized last-event query for status; v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
+**Status:** Draft — v1.9: Phase 2 review corrections — timeout upper bound (SIGTERM→SIGKILL + bounded drain), is_error→failure semantics, prompt length guard, spawn injection for test fidelity, schema probe relaxation, factory comment alignment; v1.8: enforce canonical path on DB write boundaries (createRun/upsertPlan), optimized last-event query for status; v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -49,7 +49,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 | **CLI owns artifact paths — no directory scanning** | The CLI computes deterministic output paths for plans, reviews, and logs before invoking agents, passes them to the agent prompt, and requires the `5x:status` block to echo the path back. The CLI never infers artifacts by "newest file" or directory-scanning heuristics. This prevents mis-association in repos with parallel workstreams, unrelated doc edits, or editor autosaves. |
 | **Git safety is fail-closed by default** | Before any agent invocation in `plan-review` or `run`, the CLI checks repo root, current branch, dirty working tree, and untracked files. A dirty working tree aborts the run unless the user explicitly opts in with `--allow-dirty`. `--auto` never bypasses git safety checks. |
 | **JS-only config** | Config is `5x.config.js` / `.mjs` (not TypeScript). Runs natively in Bun runtime and `bun build --compile` binaries without extra loaders. `defineConfig()` provides autocomplete via JSDoc `@type` annotations. |
-| **Minimal adapter output contract** | The orchestrator depends only on `exitCode`, `output` (full text), and `duration` from adapters. Optional fields like `filesModified` and `tokens` are used for display only, never for correctness decisions. All routing logic uses parsed `5x:*` signals and git observations (e.g., commit hash after author run). |
+| **Minimal adapter output contract** | The orchestrator depends only on `exitCode`, `output` (full text), and `duration` from adapters. Optional fields like `tokens` and `cost` are used for display only, never for correctness decisions. All routing logic uses parsed `5x:*` signals and git observations (e.g., commit hash after author run). Failure semantics: non-zero exit code OR agent-reported `is_error` in JSON output → `exitCode != 0` in `AgentResult`. |
 
 ### References
 
@@ -721,18 +721,21 @@ export interface InvokeOptions {
   model?: string;
   workdir: string;
   timeout?: number;           // ms, default 300_000
+  maxTurns?: number;          // default 50
+  allowedTools?: string[];    // adapter-specific tool filter
 }
 
 export interface AgentResult {
   // --- Required (orchestration depends on these) ---
   output: string;             // full text output — signals are parsed from this
-  exitCode: number;           // non-zero → assume failed
+  exitCode: number;           // non-zero → assume failed (includes is_error mapping)
   duration: number;           // ms
 
   // --- Optional (display/logging only, never used for routing) ---
   tokens?: { input: number; output: number };
   cost?: number;              // USD if adapter reports it
   error?: string;             // stderr or error message on failure
+  sessionId?: string;         // agent session ID for debugging
 }
 ```
 
@@ -744,6 +747,14 @@ export interface AgentResult {
 
 Drives Claude Code via `claude -p "<prompt>" --output-format json`.
 
+**Timeout guarantee:** `invoke(timeout=X)` returns within O(X + KILL_GRACE_MS + DRAIN_TIMEOUT_MS) regardless of subprocess behavior. After the deadline the adapter sends SIGTERM, waits a 2 s grace, then SIGKILL, and bounds stream draining with an AbortController.
+
+**Failure semantics:** `exitCode != 0` OR `is_error === true` in the parsed JSON maps to a non-zero `AgentResult.exitCode`. When `is_error` is true and the process exited 0, the adapter overrides to exitCode 1 and populates `error` with the `subtype` and stderr context. This prevents orchestration from treating agent-reported errors (e.g., `error_max_turns`) as successes.
+
+**Prompt delivery:** Prompts are passed via `-p` on the command line. The Claude Code CLI uses stdin as supplementary context, not as a replacement for `-p`, so argv is the only delivery mechanism. Prompts exceeding `MAX_PROMPT_LENGTH` (~128 KiB) are rejected before spawning to avoid OS `ARG_MAX` failures. Templates must not embed secrets, since argv is visible via `ps` on multi-user systems.
+
+**Subprocess injection:** `spawnProcess()` is a protected method that returns a `SpawnHandle` abstraction. Tests override this single method to inject controlled subprocess behavior, ensuring the real `invoke()` logic (JSON parsing, `is_error` mapping, timeout/kill, stream draining) is exercised by tests.
+
 ```typescript
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly name = 'claude-code';
@@ -752,51 +763,66 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Check `claude --version` succeeds
   }
 
+  protected spawnProcess(args: string[], opts: { cwd: string }): SpawnHandle {
+    // Bun.spawn wrapper returning { exited, stdout, stderr, kill() }
+  }
+
   async invoke(opts: InvokeOptions): Promise<AgentResult> {
+    // Guard: reject prompts > MAX_PROMPT_LENGTH
     const args = [
       '-p', opts.prompt,
       '--output-format', 'json',
-      '--max-turns', '50',
+      '--max-turns', String(maxTurns),
     ];
     if (opts.model) args.push('--model', opts.model);
 
-    const proc = Bun.spawn(['claude', ...args], {
-      cwd: opts.workdir,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const proc = this.spawnProcess(args, { cwd: opts.workdir });
+    // Race proc.exited vs timeout
+    // On timeout: SIGTERM → grace → SIGKILL, bounded drain
     // Parse structured JSON output
+    // Map is_error → failure exitCode
     // Extract cost/token info if available
-    // Map exit codes
   }
 }
 ```
 
 - [x] Implement subprocess spawning with timeout
+- [x] Enforce timeout upper bound: SIGTERM → grace → SIGKILL + AbortController-bounded drain
 - [x] Parse Claude Code JSON output format (research `--output-format json` schema)
+- [x] Map `is_error`/`subtype` into failure semantics (exitCode override + error context)
 - [x] Map JSON output to `AgentResult` — extract only `output`, `exitCode`, `duration`; optionally extract `tokens`/`cost` if present in JSON
 - [x] Lock parsing to specific known JSON fields with graceful handling of schema changes (log warning, don't crash)
 - [x] Handle stderr capture for error diagnostics
 - [x] Map exit codes to result states
+- [x] Prompt length guard (MAX_PROMPT_LENGTH) — rejects before spawn, documents argv limitation
+- [x] Stream draining via `new Response(stream).text()` (correct multi-byte handling + EOF flush)
+- [x] Protected `spawnProcess()` method for test injection (tests exercise real invoke logic)
 - [x] `isAvailable()` check via `claude --version`
-- [x] Unit tests with mocked subprocess
-- [x] Schema probe test: validate expected JSON output fields exist, fail loudly if schema has changed
+- [x] Unit tests with spawn-injected mock (no invoke override)
+- [x] Schema probe test: require only `result`/`type`; validate optional fields by type when present
 - [x] Integration test (env-gated): invoke Claude Code with a trivial prompt, verify round-trip
 
 ### 2.3 `src/agents/factory.ts` — Adapter factory
 
+`createAdapter()` is synchronous and does not check availability. `createAndVerifyAdapter()` additionally calls `isAvailable()` and throws with an actionable error message if the binary is not found.
+
 ```typescript
 export function createAdapter(config: AdapterConfig): AgentAdapter {
+  // Synchronous — no availability check
   switch (config.adapter) {
     case 'claude-code': return new ClaudeCodeAdapter();
-    case 'opencode': return new OpenCodeAdapter();
+    case 'opencode': throw new Error('Not yet implemented');
     default: throw new Error(`Unknown adapter: ${config.adapter}`);
   }
 }
+
+export async function createAndVerifyAdapter(config: AdapterConfig): Promise<AgentAdapter> {
+  // Creates adapter + verifies isAvailable(); throws if not reachable
+}
 ```
 
-- [x] Config-driven adapter instantiation
-- [x] Availability check on creation (warn if adapter binary not found)
+- [x] Config-driven adapter instantiation (synchronous, no availability check)
+- [x] Separate `createAndVerifyAdapter()` for startup verification (async, throws if unavailable)
 - [x] Unit test: factory returns correct adapter type
 
 ---

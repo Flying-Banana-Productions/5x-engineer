@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { SpawnHandle } from "../../src/agents/claude-code.js";
 import {
-	ClaudeCodeAdapter,
 	buildArgs,
+	ClaudeCodeAdapter,
+	MAX_PROMPT_LENGTH,
 	parseJsonOutput,
 } from "../../src/agents/claude-code.js";
 import type { InvokeOptions } from "../../src/agents/types.js";
@@ -182,8 +184,7 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke returns structured result from valid JSON output", async () => {
-		// This test uses a mock by spawning `echo` with JSON output
-		const adapter = new MockableClaudeCodeAdapter(
+		const adapter = createMock(
 			JSON.stringify({
 				type: "result",
 				subtype: "success",
@@ -214,7 +215,7 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke handles non-JSON output gracefully", async () => {
-		const adapter = new MockableClaudeCodeAdapter("plain text output", 0);
+		const adapter = createMock("plain text output", 0);
 
 		const result = await adapter.invoke({
 			prompt: "test",
@@ -225,8 +226,8 @@ describe("ClaudeCodeAdapter", () => {
 		expect(result.exitCode).toBe(0);
 	});
 
-	test("invoke captures non-zero exit code", async () => {
-		const adapter = new MockableClaudeCodeAdapter(
+	test("invoke captures non-zero exit code with is_error", async () => {
+		const adapter = createMock(
 			JSON.stringify({
 				type: "result",
 				subtype: "error",
@@ -245,14 +246,34 @@ describe("ClaudeCodeAdapter", () => {
 
 		expect(result.exitCode).toBe(1);
 		expect(result.output).toBe("Something went wrong");
-		expect(result.error).toBe("error on stderr");
+		expect(result.error).toContain("error on stderr");
+	});
+
+	test("invoke maps is_error=true to non-zero exitCode even when process exits 0", async () => {
+		const adapter = createMock(
+			JSON.stringify({
+				type: "result",
+				subtype: "error_max_turns",
+				is_error: true,
+				result: "Ran out of turns",
+				duration_ms: 60000,
+			}),
+			0, // process exits 0
+		);
+
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+		});
+
+		// is_error=true should override the 0 exit code
+		expect(result.exitCode).toBe(1);
+		expect(result.output).toBe("Ran out of turns");
+		expect(result.error).toContain("error_max_turns");
 	});
 
 	test("invoke handles timeout", async () => {
-		// Use a command that sleeps forever, with a very short timeout
-		const adapter = new MockableClaudeCodeAdapter("", 0, "", {
-			hang: true,
-		});
+		const adapter = createMock("", 0, "", { hang: true });
 
 		const result = await adapter.invoke({
 			prompt: "test",
@@ -265,9 +286,7 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke handles spawn failure gracefully", async () => {
-		const adapter = new MockableClaudeCodeAdapter("", 0, "", {
-			spawnError: true,
-		});
+		const adapter = createMock("", 0, "", { spawnError: true });
 
 		const result = await adapter.invoke({
 			prompt: "test",
@@ -279,7 +298,7 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke with empty result field", async () => {
-		const adapter = new MockableClaudeCodeAdapter(
+		const adapter = createMock(
 			JSON.stringify({
 				type: "result",
 				result: "",
@@ -299,7 +318,7 @@ describe("ClaudeCodeAdapter", () => {
 
 	test("invoke passes model and maxTurns to args", async () => {
 		let capturedArgs: string[] = [];
-		const adapter = new MockableClaudeCodeAdapter(
+		const adapter = createMock(
 			JSON.stringify({ type: "result", result: "ok", duration_ms: 100 }),
 			0,
 			"",
@@ -322,10 +341,25 @@ describe("ClaudeCodeAdapter", () => {
 		expect(capturedArgs).toContain("--max-turns");
 		expect(capturedArgs).toContain("25");
 	});
+
+	test("invoke rejects prompts exceeding MAX_PROMPT_LENGTH", async () => {
+		const adapter = createMock(
+			JSON.stringify({ type: "result", result: "ok" }),
+			0,
+		);
+
+		const result = await adapter.invoke({
+			prompt: "x".repeat(MAX_PROMPT_LENGTH + 1),
+			workdir: "/tmp",
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.error).toContain("MAX_PROMPT_LENGTH");
+	});
 });
 
 // ---------------------------------------------------------------------------
-// Mockable adapter for testing (avoids actually spawning claude)
+// Mockable adapter for testing — injects at the spawn boundary
 // ---------------------------------------------------------------------------
 
 interface MockOpts {
@@ -335,103 +369,56 @@ interface MockOpts {
 }
 
 /**
- * A testable subclass that overrides invoke to use controlled subprocess behavior.
- * This avoids requiring the real `claude` binary during unit tests.
+ * Helper to create a ReadableStream from a string.
  */
-class MockableClaudeCodeAdapter extends ClaudeCodeAdapter {
-	constructor(
-		private mockStdout: string,
-		private mockExitCode: number,
-		private mockStderr: string = "",
-		private mockOpts: MockOpts = {},
-	) {
-		super();
-	}
+function stringStream(s: string): ReadableStream<Uint8Array> {
+	const encoded = new TextEncoder().encode(s);
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(encoded);
+			controller.close();
+		},
+	});
+}
 
-	override async invoke(opts: InvokeOptions): Promise<import("../../src/agents/types.js").AgentResult> {
-		const startTime = performance.now();
-		const timeout = opts.timeout ?? 300_000;
-		const maxTurns = opts.maxTurns ?? 50;
+/**
+ * Create a test adapter that overrides only `spawnProcess` so that the real
+ * `invoke()` logic (JSON parsing, is_error handling, timeout, etc.) is
+ * exercised. This avoids duplicating parsing/arg-building in the mock.
+ */
+function createMock(
+	mockStdout: string,
+	mockExitCode: number,
+	mockStderr = "",
+	mockOpts: MockOpts = {},
+): ClaudeCodeAdapter {
+	return new (class extends ClaudeCodeAdapter {
+		protected override spawnProcess(
+			args: string[],
+			_opts: { cwd: string },
+		): SpawnHandle {
+			mockOpts.captureArgs?.(args);
 
-		// Build args for capture
-		const args: string[] = [
-			"-p",
-			opts.prompt,
-			"--output-format",
-			"json",
-			"--max-turns",
-			String(maxTurns),
-		];
-		if (opts.model) args.push("--model", opts.model);
-		if (opts.allowedTools?.length) args.push("--allowedTools", ...opts.allowedTools);
-
-		this.mockOpts.captureArgs?.(args);
-
-		if (this.mockOpts.spawnError) {
-			const duration = Math.round(performance.now() - startTime);
-			return {
-				output: "",
-				exitCode: 1,
-				duration,
-				error: "Failed to spawn claude process: spawn error",
-			};
-		}
-
-		if (this.mockOpts.hang) {
-			// Simulate a hang that times out
-			await new Promise<void>((resolve) => {
-				setTimeout(resolve, timeout + 100);
-			}).catch(() => {});
-			// Unreachable in practice — the timeout race below resolves first
-		}
-
-		// Simulate the timeout race
-		if (this.mockOpts.hang) {
-			const duration = Math.round(performance.now() - startTime);
-			return {
-				output: "",
-				exitCode: 124,
-				duration,
-				error: `Agent timed out after ${timeout}ms. stderr: `,
-			};
-		}
-
-		const duration = Math.round(performance.now() - startTime);
-
-		// Parse JSON just like the real adapter
-		const trimmed = this.mockStdout.trim();
-		if (trimmed.startsWith("{")) {
-			try {
-				const parsed = JSON.parse(trimmed);
-				return {
-					output: parsed.result ?? "",
-					exitCode: this.mockExitCode,
-					duration: parsed.duration_ms ?? duration,
-					tokens:
-						parsed.usage?.input_tokens !== undefined &&
-						parsed.usage?.output_tokens !== undefined
-							? {
-									input: parsed.usage.input_tokens,
-									output: parsed.usage.output_tokens,
-								}
-							: undefined,
-					cost: parsed.total_cost_usd ?? undefined,
-					error:
-						this.mockExitCode !== 0
-							? this.mockStderr || undefined
-							: undefined,
-					sessionId: parsed.session_id ?? undefined,
-				};
-			} catch {
-				// Fall through to raw output
+			if (mockOpts.spawnError) {
+				throw new Error("spawn error");
 			}
-		}
 
-		return {
-			output: this.mockStdout,
-			exitCode: this.mockExitCode,
-			duration,
-			error: this.mockStderr || undefined,
-		};
-	}
+			if (mockOpts.hang) {
+				// Never-resolving exited promise simulates a hung process
+				return {
+					exited: new Promise<number>(() => {}),
+					stdout: stringStream(""),
+					stderr: stringStream(""),
+					kill: () => {},
+				};
+			}
+
+			return {
+				exited: Promise.resolve(mockExitCode),
+				stdout: stringStream(mockStdout),
+				stderr: stringStream(mockStderr),
+				kill: () => {},
+			};
+		}
+	})();
 }

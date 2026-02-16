@@ -16,9 +16,9 @@ describe("createAdapter", () => {
 	});
 
 	test("throws for unknown adapter", () => {
-		expect(() =>
-			createAdapter({ adapter: "gpt-4" as "claude-code" }),
-		).toThrow("Unknown adapter");
+		expect(() => createAdapter({ adapter: "gpt-4" as "claude-code" })).toThrow(
+			"Unknown adapter",
+		);
 	});
 
 	test("adapter has isAvailable method", () => {

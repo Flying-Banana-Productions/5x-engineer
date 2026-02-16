@@ -8,6 +8,22 @@
  * Unknown/extra fields are ignored. If the JSON schema changes in a breaking
  * way (missing required fields), the adapter returns a degraded result with
  * what it can extract and logs a warning.
+ *
+ * Timeout guarantee: `invoke(timeout=X)` returns within O(X + KILL_GRACE_MS +
+ * DRAIN_TIMEOUT_MS) regardless of subprocess behavior. After the deadline the
+ * adapter sends SIGTERM, waits a short grace, then SIGKILL, and bounds stream
+ * draining with an AbortController.
+ *
+ * Failure semantics: a non-zero exit code OR `is_error === true` in the parsed
+ * JSON output maps to a non-zero `AgentResult.exitCode` with `error` populated
+ * from `subtype`/stderr context. This prevents orchestration from treating
+ * agent-reported errors as successes.
+ *
+ * Prompt delivery: prompts are passed via `-p` on the command line. This means
+ * very large prompts may hit OS ARG_MAX limits (~128–256 KiB depending on
+ * platform). The Claude Code CLI uses stdin as supplementary context, not as a
+ * replacement for `-p`. Templates should be kept within MAX_PROMPT_LENGTH and
+ * must not embed secrets, since argv is visible via `ps` on multi-user systems.
  */
 
 import type { AgentAdapter, AgentResult, InvokeOptions } from "./types.js";
@@ -45,9 +61,33 @@ const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 const DEFAULT_MAX_TURNS = 50;
 const CLAUDE_BINARY = "claude";
 
+/** Grace period after SIGTERM before escalating to SIGKILL. */
+const KILL_GRACE_MS = 2_000;
+/** Max time to wait for stream draining after process termination. */
+const DRAIN_TIMEOUT_MS = 1_000;
+/**
+ * Maximum prompt length in bytes passed via `-p` argv. Prompts exceeding this
+ * risk hitting OS ARG_MAX limits. Templates should stay well below this bound.
+ * The Claude Code CLI does not support reading the primary prompt from stdin
+ * (stdin provides supplementary context for `-p`), so argv is the only option.
+ */
+const MAX_PROMPT_LENGTH = 128_000; // ~128 KiB, conservative for Linux
+
 // ---------------------------------------------------------------------------
 // Adapter implementation
 // ---------------------------------------------------------------------------
+
+/** Spawn result returned by the protected spawn method. */
+interface SpawnHandle {
+	/** Promise that resolves with exit code when the process exits. */
+	exited: Promise<number>;
+	/** stdout stream. */
+	stdout: ReadableStream<Uint8Array> | null;
+	/** stderr stream. */
+	stderr: ReadableStream<Uint8Array> | null;
+	/** Send a signal to the process (default SIGTERM; pass 9 for SIGKILL). */
+	kill(signal?: number): void;
+}
 
 export class ClaudeCodeAdapter implements AgentAdapter {
 	readonly name = "claude-code" as const;
@@ -66,21 +106,49 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		}
 	}
 
+	/**
+	 * Spawn the agent subprocess. Override in tests to inject controlled
+	 * behavior without re-implementing invoke() logic.
+	 */
+	protected spawnProcess(args: string[], opts: { cwd: string }): SpawnHandle {
+		const proc = Bun.spawn([CLAUDE_BINARY, ...args], {
+			cwd: opts.cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+			env: { ...process.env },
+		});
+		return {
+			exited: proc.exited,
+			stdout: proc.stdout as ReadableStream<Uint8Array> | null,
+			stderr: proc.stderr as ReadableStream<Uint8Array> | null,
+			kill: (signal?: number) => proc.kill(signal),
+		};
+	}
+
 	async invoke(opts: InvokeOptions): Promise<AgentResult> {
 		const startTime = performance.now();
 		const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
 		const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
 
+		// Guard against prompts that may exceed OS ARG_MAX
+		if (opts.prompt.length > MAX_PROMPT_LENGTH) {
+			const duration = Math.round(performance.now() - startTime);
+			return {
+				output: "",
+				exitCode: 1,
+				duration,
+				error:
+					`Prompt length (${opts.prompt.length} chars) exceeds MAX_PROMPT_LENGTH ` +
+					`(${MAX_PROMPT_LENGTH}). Prompts are passed via argv and are subject to ` +
+					`OS command-line length limits.`,
+			};
+		}
+
 		const args = buildArgs(opts, maxTurns);
 
-		let proc: ReturnType<typeof Bun.spawn>;
+		let proc: SpawnHandle;
 		try {
-			proc = Bun.spawn([CLAUDE_BINARY, ...args], {
-				cwd: opts.workdir,
-				stdout: "pipe",
-				stderr: "pipe",
-				env: { ...process.env },
-			});
+			proc = this.spawnProcess(args, { cwd: opts.workdir });
 		} catch (err) {
 			const duration = Math.round(performance.now() - startTime);
 			return {
@@ -92,17 +160,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		}
 
 		// Race the process against a timeout
-		const result = await raceWithTimeout(proc, timeout);
+		const result = await raceWithTimeout(proc.exited, timeout);
 		const duration = Math.round(performance.now() - startTime);
 
-		const stdoutStream = proc.stdout as ReadableStream<Uint8Array> | null;
-		const stderrStream = proc.stderr as ReadableStream<Uint8Array> | null;
-
 		if (result.timedOut) {
-			proc.kill();
-			// Drain what we can
-			const partialStdout = await drainStream(stdoutStream);
-			const partialStderr = await drainStream(stderrStream);
+			// Bounded kill: SIGTERM → grace → SIGKILL
+			await killWithEscalation(proc);
+			// Bounded drain: abort if streams don't close promptly
+			const [partialStdout, partialStderr] = await boundedDrain(
+				proc.stdout,
+				proc.stderr,
+			);
 			return {
 				output: partialStdout,
 				exitCode: 124, // conventional timeout exit code
@@ -112,8 +180,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		}
 
 		const [stdout, stderr] = await Promise.all([
-			drainStream(stdoutStream),
-			drainStream(stderrStream),
+			drainStream(proc.stdout),
+			drainStream(proc.stderr),
 		]);
 		const exitCode = result.exitCode ?? 1;
 
@@ -121,13 +189,20 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		const parsed = parseJsonOutput(stdout);
 
 		if (parsed) {
+			// Map is_error into failure semantics: if the agent itself reported
+			// an error (is_error=true), treat as failure even if exitCode was 0.
+			const effectiveExitCode =
+				parsed.is_error && exitCode === 0 ? 1 : exitCode;
+
+			const errorContext = buildErrorContext(effectiveExitCode, parsed, stderr);
+
 			return {
 				output: parsed.result ?? "",
-				exitCode,
+				exitCode: effectiveExitCode,
 				duration: parsed.duration_ms ?? duration,
 				tokens: extractTokens(parsed),
 				cost: parsed.total_cost_usd ?? undefined,
-				error: exitCode !== 0 ? stderr || undefined : undefined,
+				error: errorContext,
 				sessionId: parsed.session_id ?? undefined,
 			};
 		}
@@ -204,24 +279,80 @@ function extractTokens(
 	return undefined;
 }
 
+/**
+ * Build an error context string from parsed JSON and stderr.
+ * Returns undefined when there is no error to report.
+ */
+function buildErrorContext(
+	exitCode: number,
+	parsed: ClaudeCodeJsonOutput,
+	stderr: string,
+): string | undefined {
+	if (exitCode === 0) return undefined;
+
+	const parts: string[] = [];
+	if (parsed.is_error && parsed.subtype) {
+		parts.push(`agent error (${parsed.subtype})`);
+	}
+	if (stderr) {
+		parts.push(stderr);
+	}
+	return parts.length > 0 ? parts.join(": ") : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Stream helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Drain a ReadableStream into a string.
+ *
+ * Uses `new Response(stream).text()` which correctly handles multi-byte
+ * character boundaries and flushes the decoder on EOF.
+ */
 async function drainStream(
 	stream: ReadableStream<Uint8Array> | null,
 ): Promise<string> {
 	if (!stream) return "";
 	try {
-		const chunks: Uint8Array[] = [];
-		const reader = stream.getReader();
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value);
-		}
-		const decoder = new TextDecoder();
-		return chunks.map((c) => decoder.decode(c, { stream: true })).join("");
+		return await new Response(stream).text();
 	} catch {
 		return "";
 	}
 }
+
+/**
+ * Drain stdout/stderr with a bounded timeout via AbortController.
+ * Returns best-effort partial output if draining takes too long.
+ */
+async function boundedDrain(
+	stdoutStream: ReadableStream<Uint8Array> | null,
+	stderrStream: ReadableStream<Uint8Array> | null,
+): Promise<[string, string]> {
+	const controller = new AbortController();
+	const drainTimer = setTimeout(() => controller.abort(), DRAIN_TIMEOUT_MS);
+	try {
+		const drain = (
+			stream: ReadableStream<Uint8Array> | null,
+		): Promise<string> => {
+			if (!stream) return Promise.resolve("");
+			return new Response(stream, { signal: controller.signal } as ResponseInit)
+				.text()
+				.catch(() => "");
+		};
+		const result = await Promise.all([
+			drain(stdoutStream),
+			drain(stderrStream),
+		]);
+		return result as [string, string];
+	} finally {
+		clearTimeout(drainTimer);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Process lifecycle helpers
+// ---------------------------------------------------------------------------
 
 interface RaceResult {
 	timedOut: boolean;
@@ -229,7 +360,7 @@ interface RaceResult {
 }
 
 async function raceWithTimeout(
-	proc: ReturnType<typeof Bun.spawn>,
+	exited: Promise<number>,
 	timeoutMs: number,
 ): Promise<RaceResult> {
 	return new Promise<RaceResult>((resolve) => {
@@ -237,12 +368,38 @@ async function raceWithTimeout(
 			resolve({ timedOut: true });
 		}, timeoutMs);
 
-		proc.exited.then((exitCode) => {
+		exited.then((exitCode) => {
 			clearTimeout(timer);
 			resolve({ timedOut: false, exitCode });
 		});
 	});
 }
 
+/**
+ * Escalating kill: SIGTERM → wait grace period → SIGKILL.
+ * Ensures the process is dead within KILL_GRACE_MS of calling.
+ */
+async function killWithEscalation(proc: SpawnHandle): Promise<void> {
+	proc.kill(); // SIGTERM
+
+	// Race: either the process exits within grace, or we escalate
+	const exited = await Promise.race([
+		proc.exited.then(() => true as const),
+		new Promise<false>((resolve) =>
+			setTimeout(() => resolve(false), KILL_GRACE_MS),
+		),
+	]);
+
+	if (!exited) {
+		proc.kill(9); // SIGKILL
+	}
+}
+
 // Re-export for testing
-export { buildArgs, parseJsonOutput, type ClaudeCodeJsonOutput };
+export {
+	buildArgs,
+	parseJsonOutput,
+	type ClaudeCodeJsonOutput,
+	type SpawnHandle,
+	MAX_PROMPT_LENGTH,
+};

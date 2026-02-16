@@ -1,5 +1,11 @@
 // Public API exports
 
+export type { SpawnHandle } from "./agents/claude-code.js";
+export {
+	ClaudeCodeAdapter,
+	MAX_PROMPT_LENGTH,
+} from "./agents/claude-code.js";
+export { createAdapter, createAndVerifyAdapter } from "./agents/factory.js";
 // Agents
 export type {
 	AdapterConfig,
@@ -7,8 +13,6 @@ export type {
 	AgentResult,
 	InvokeOptions,
 } from "./agents/types.js";
-export { ClaudeCodeAdapter } from "./agents/claude-code.js";
-export { createAdapter, createAndVerifyAdapter } from "./agents/factory.js";
 
 export type { FiveXConfig } from "./config.js";
 export { defineConfig, loadConfig } from "./config.js";

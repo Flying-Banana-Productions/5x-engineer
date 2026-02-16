@@ -1,17 +1,20 @@
 /**
  * Config-driven adapter factory.
  *
- * Creates adapter instances from config. Validates adapter availability
- * on creation (logs a warning if the binary/SDK is not found).
+ * `createAdapter()` instantiates an adapter from config without checking
+ * availability (fast, synchronous).
+ *
+ * `createAndVerifyAdapter()` additionally verifies the adapter binary is
+ * reachable and throws if not (async, for use at startup).
  */
 
 import { ClaudeCodeAdapter } from "./claude-code.js";
 import type { AdapterConfig, AgentAdapter } from "./types.js";
 
 /**
- * Create an agent adapter from config.
+ * Create an agent adapter from config (synchronous, no availability check).
  *
- * @throws if the adapter type is unknown.
+ * @throws if the adapter type is unknown or not yet implemented.
  */
 export function createAdapter(config: AdapterConfig): AgentAdapter {
 	switch (config.adapter) {
@@ -32,8 +35,8 @@ export function createAdapter(config: AdapterConfig): AgentAdapter {
 }
 
 /**
- * Create an adapter and verify it is available.
- * Returns the adapter if available; throws if not.
+ * Create an adapter and verify it is available (async).
+ * Returns the adapter if available; throws with an actionable message if not.
  */
 export async function createAndVerifyAdapter(
 	config: AdapterConfig,
