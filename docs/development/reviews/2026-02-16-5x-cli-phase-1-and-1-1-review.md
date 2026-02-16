@@ -91,4 +91,38 @@ Biome currently fails (unused import in `5x-cli/src/db/connection.ts`, unused va
 - [ ] Fix Biome lint failures; decide if lint is a hard gate.
 - [ ] Clarify/clean DB write types around `created_at`.
 
+---
 
+## Addendum (2026-02-16) — Validation of remediation commit
+
+**Reviewed:** `1d4f8f23f196b41dec478a4e7e1af8b698deb64f` (no follow-on commits on this branch)
+
+**Local verification:** `bun test` PASS (109 tests); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **P0.1 canonical plan identity:** Added canonical path utility (`5x-cli/src/paths.ts`) and applied it in locking + status DB lookup (`5x-cli/src/lock.ts`, `5x-cli/src/commands/status.ts`). Status now checks canonical path first, with fallback to legacy raw-path rows for backward compatibility.
+- **P1.1 EPERM lock safety:** PID liveness now treats `EPERM` as alive, preventing cross-user lock stealing (`5x-cli/src/lock.ts`).
+- **P1.2 status DB behavior:** `status` now resolves config (`db.path`), determines root deterministically, opens DB read-only, and no longer runs migrations (`5x-cli/src/commands/status.ts`, `5x-cli/src/db/connection.ts`).
+- **P1.3 lint gate:** Biome issues were cleaned up; lint now passes.
+- **P1.4 DB write contracts:** Write input types now exclude DB-managed `created_at`; upserts set `created_at = datetime('now')` explicitly on overwrite (`5x-cli/src/db/operations.ts`).
+- **P2 parser/test cleanup:** Phase numbers are now preserved as strings (no float coercion) and protocol-version warning tests are quieted via warn stubs (`5x-cli/src/parsers/plan.ts`, `5x-cli/test/parsers/signals.test.ts`).
+
+### Staff assessment (by dimension)
+
+- **Correctness:** Major prior risks are closed. Canonical path usage in status/lock materially reduces duplicate-plan identity drift; lock behavior for live cross-user PIDs is now correct.
+- **Architecture:** Direction remains sound (thin CLI orchestration primitives, explicit read-only DB access for inspection paths). Export surface updates are coherent (`5x-cli/src/index.ts`).
+- **Tenancy/security:** Multi-user lock stealing via `EPERM` is fixed. Remaining model is still local-file cooperative locking (acceptable for local CLI scope).
+- **Performance:** No regressions for current scale. Minor inefficiency remains: status loads full run event history to get the last event (`getRunEvents` then tail) rather than a targeted query.
+- **Operability:** Better UX and safer runtime behavior: explicit stderr notes on config/DB read failures, and status no longer mutates DB state.
+- **Test strategy:** Coverage improved where it mattered (config DB path behavior, read-only status behavior, EPERM liveness, path canonicalization). Test suite/lint/typecheck all green.
+
+### Remaining concerns / follow-ups
+
+- **P1 — Enforce canonical path on all future DB write boundaries:** `createRun`/`upsertPlan` still accept arbitrary path strings by API contract. Before Phase 4/5 orchestration writes are introduced, enforce canonicalization at command boundaries and add regression tests proving no duplicate rows for relative/absolute/symlink variants.
+- **P2 — Optimize status last-event lookup:** Replace full event fetch with a `LIMIT 1` query for active run tail event once run/event volume grows.
+
+### Updated readiness
+
+- **Phase 1 + 1.1 completion:** ✅ — previously raised P0/P1 remediation items are addressed in code and tests.
+- **Ready for next phase (Phase 2: Agent Adapters):** ✅ — proceed. Carry the canonical-write-boundary guardrail into later orchestration phases (Phase 4/5) where DB writes expand.

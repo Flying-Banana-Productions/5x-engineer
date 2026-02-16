@@ -20,6 +20,7 @@ export {
 	createRun,
 	getActiveRun,
 	getAgentResults,
+	getLastRunEvent,
 	getLatestRun,
 	getLatestStatus,
 	getLatestVerdict,

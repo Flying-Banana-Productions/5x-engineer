@@ -4,7 +4,11 @@ import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { openDbReadOnly } from "../db/connection.js";
 import type { RunRow } from "../db/operations.js";
-import { getActiveRun, getLatestRun, getRunEvents } from "../db/operations.js";
+import {
+	getActiveRun,
+	getLastRunEvent,
+	getLatestRun,
+} from "../db/operations.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 
@@ -100,10 +104,8 @@ function tryLoadRunState(opts: {
 
 		let lastEventType: string | null = null;
 		if (active) {
-			const events = getRunEvents(db, active.id);
-			if (events.length > 0) {
-				lastEventType = events[events.length - 1]?.event_type ?? null;
-			}
+			const lastEvent = getLastRunEvent(db, active.id);
+			lastEventType = lastEvent?.event_type ?? null;
 		}
 
 		return { active, latest, lastEventType };

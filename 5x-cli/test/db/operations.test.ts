@@ -1,14 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { _resetForTest, closeDb, getDb } from "../../src/db/connection.js";
 import {
 	appendRunEvent,
 	createRun,
 	getActiveRun,
 	getAgentResults,
+	getLastRunEvent,
 	getLatestRun,
 	getLatestStatus,
 	getLatestVerdict,
@@ -514,6 +515,135 @@ describe("reporting", () => {
 		expect(metrics.total_cost_usd).toBeCloseTo(0.08);
 		expect(metrics.quality_passed).toBe(1);
 		expect(metrics.quality_failed).toBe(1);
+	});
+});
+
+// --- Canonical path deduplication (P1 regression) ---
+
+describe("canonical path enforcement", () => {
+	test("upsertPlan deduplicates relative and absolute paths to same file", () => {
+		// Create a real file so canonicalization resolves it
+		const planFile = join(tmp, "plan.md");
+		writeFileSync(planFile, "# Test Plan\n");
+		const absolutePath = resolve(planFile);
+
+		// Insert with relative-style path (resolve will make it absolute from cwd,
+		// but we use the absolute tmp path to simulate)
+		upsertPlan(db, { planPath: planFile });
+
+		// Upsert again with the fully resolved absolute path
+		upsertPlan(db, {
+			planPath: absolutePath,
+			worktreePath: "/tmp/wt",
+			branch: "5x/test",
+		});
+
+		// Should be one row, not two
+		const rows = db.query("SELECT * FROM plans").all() as Array<{
+			plan_path: string;
+		}>;
+		expect(rows).toHaveLength(1);
+
+		const plan = unwrap(getPlan(db, absolutePath));
+		expect(plan.worktree_path).toBe("/tmp/wt");
+	});
+
+	test("upsertPlan deduplicates symlink paths to same canonical file", () => {
+		const planFile = join(tmp, "real-plan.md");
+		writeFileSync(planFile, "# Test Plan\n");
+		const symlinkPath = join(tmp, "link-plan.md");
+		symlinkSync(planFile, symlinkPath);
+
+		upsertPlan(db, { planPath: planFile });
+		upsertPlan(db, { planPath: symlinkPath, branch: "5x/symlink" });
+
+		const rows = db.query("SELECT * FROM plans").all() as Array<{
+			plan_path: string;
+		}>;
+		expect(rows).toHaveLength(1);
+
+		// The stored path should be the canonical (real) path
+		expect(rows[0]?.plan_path).toBe(resolve(planFile));
+	});
+
+	test("createRun deduplicates relative and absolute paths", () => {
+		const planFile = join(tmp, "plan.md");
+		writeFileSync(planFile, "# Test Plan\n");
+		const absolutePath = resolve(planFile);
+
+		createRun(db, { id: "run1", planPath: planFile, command: "run" });
+		createRun(db, { id: "run2", planPath: absolutePath, command: "run" });
+
+		// Both runs should store the same canonical plan_path
+		const run1 = unwrap(getLatestRun(db, absolutePath));
+		expect(run1.plan_path).toBe(absolutePath);
+
+		const runs = db.query("SELECT * FROM runs ORDER BY rowid").all() as Array<{
+			plan_path: string;
+		}>;
+		expect(runs[0]?.plan_path).toBe(runs[1]?.plan_path);
+	});
+
+	test("createRun deduplicates symlink paths", () => {
+		const planFile = join(tmp, "real-plan.md");
+		writeFileSync(planFile, "# Test Plan\n");
+		const symlinkPath = join(tmp, "link-plan.md");
+		symlinkSync(planFile, symlinkPath);
+
+		createRun(db, { id: "run1", planPath: symlinkPath, command: "run" });
+
+		const run = unwrap(getLatestRun(db, resolve(planFile)));
+		expect(run.plan_path).toBe(resolve(planFile));
+	});
+
+	test("getActiveRun finds run created with non-canonical path when queried with canonical", () => {
+		const planFile = join(tmp, "plan.md");
+		writeFileSync(planFile, "# Test Plan\n");
+		const absolutePath = resolve(planFile);
+
+		// Create run with a path that will be canonicalized internally
+		createRun(db, { id: "run1", planPath: planFile, command: "run" });
+
+		// Query with canonical path should find it
+		const active = getActiveRun(db, absolutePath);
+		expect(active).not.toBeNull();
+		expect(active?.id).toBe("run1");
+	});
+});
+
+// --- getLastRunEvent ---
+
+describe("getLastRunEvent", () => {
+	test("returns the most recent event", () => {
+		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		appendRunEvent(db, { runId: "run1", eventType: "phase_start", phase: 1 });
+		appendRunEvent(db, {
+			runId: "run1",
+			eventType: "agent_invoke",
+			phase: 1,
+			iteration: 0,
+		});
+		appendRunEvent(db, {
+			runId: "run1",
+			eventType: "verdict",
+			phase: 1,
+			iteration: 1,
+		});
+
+		const last = getLastRunEvent(db, "run1");
+		expect(last).not.toBeNull();
+		expect(last?.event_type).toBe("verdict");
+	});
+
+	test("returns null when no events exist", () => {
+		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		const last = getLastRunEvent(db, "run1");
+		expect(last).toBeNull();
+	});
+
+	test("returns null for non-existent run", () => {
+		const last = getLastRunEvent(db, "nonexistent");
+		expect(last).toBeNull();
 	});
 });
 

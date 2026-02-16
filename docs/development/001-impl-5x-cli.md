@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.7
+**Version:** 1.8
 **Created:** February 15, 2026
-**Status:** Draft — v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
+**Status:** Draft — v1.8: enforce canonical path on DB write boundaries (createRun/upsertPlan), optimized last-event query for status; v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -606,7 +606,10 @@ export function getRunMetrics(db: Database, runId: string): RunMetrics;
 - [x] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
 - [x] Type-safe row interfaces matching the schema
 - [x] Separate write input types (`AgentResultInput`, `QualityResultInput`) from read row types; `created_at` is DB-managed and updated on upsert overwrite
+- [x] `createRun()` and `upsertPlan()` enforce canonical plan path internally via `canonicalizePlanPath()` — prevents duplicate rows for relative/absolute/symlink path variants regardless of caller discipline
+- [x] `getLastRunEvent()` — optimized single-row fetch for the most recent event of a run (replaces full `getRunEvents()` + tail pattern in status display)
 - [x] Unit tests: CRUD round-trips for each table, upsert idempotency (re-insert same step key updates row), `hasCompletedStep` returns true after insert, concurrent read during write (WAL)
+- [x] Regression tests: canonical path deduplication for `createRun`/`upsertPlan` with relative, absolute, and symlink path variants
 
 ### 1.1.4 `src/lock.ts` — Plan-level file locking
 
@@ -687,7 +690,7 @@ $ 5x status docs/development/001-impl-5x-cli.md
 - [x] Check for DB existence at resolved `config.db.path`; if present, query for active/latest run
 - [x] Resolve project root deterministically (config root if present, else git root) and resolve DB path from `config.db.path`
 - [x] `status` is read-only: never creates a DB file and never runs migrations; if DB exists but schema is stale, omit DB info with a clear warning
-- [x] Display active run info: run ID, command, current phase, state, duration, iteration count, last event
+- [x] Display active run info: run ID, command, current phase, state, duration, iteration count, last event (uses optimized `getLastRunEvent` — single-row fetch, not full event history)
 - [x] Display latest completed run summary if no active run
 - [x] Graceful when no DB exists (fresh project, pre-first-run) — show only plan progress
 - [x] Unit tests: status with DB (active run), status with DB (no active run), status without DB

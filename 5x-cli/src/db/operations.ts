@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StatusBlock, VerdictBlock } from "../parsers/signals.js";
+import { canonicalizePlanPath } from "../paths.js";
 
 // --- Row types ---
 
@@ -96,6 +97,7 @@ export function upsertPlan(
 	db: Database,
 	plan: { planPath: string; worktreePath?: string; branch?: string },
 ): void {
+	const canonical = canonicalizePlanPath(plan.planPath);
 	db.query(
 		`INSERT INTO plans (plan_path, worktree_path, branch, updated_at)
      VALUES (?1, ?2, ?3, datetime('now'))
@@ -103,7 +105,7 @@ export function upsertPlan(
        worktree_path = COALESCE(?2, worktree_path),
        branch = COALESCE(?3, branch),
        updated_at = datetime('now')`,
-	).run(plan.planPath, plan.worktreePath ?? null, plan.branch ?? null);
+	).run(canonical, plan.worktreePath ?? null, plan.branch ?? null);
 }
 
 export function getPlan(db: Database, planPath: string): PlanRow | null {
@@ -118,10 +120,11 @@ export function createRun(
 	db: Database,
 	run: { id: string; planPath: string; command: string; reviewPath?: string },
 ): void {
+	const canonical = canonicalizePlanPath(run.planPath);
 	db.query(
 		`INSERT INTO runs (id, plan_path, command, review_path)
      VALUES (?1, ?2, ?3, ?4)`,
-	).run(run.id, run.planPath, run.command, run.reviewPath ?? null);
+	).run(run.id, canonical, run.command, run.reviewPath ?? null);
 }
 
 export function updateRunStatus(
@@ -185,6 +188,18 @@ export function getRunEvents(db: Database, runId: string): RunEventRow[] {
 	return db
 		.query("SELECT * FROM run_events WHERE run_id = ?1 ORDER BY id ASC")
 		.all(runId) as RunEventRow[];
+}
+
+/** Return only the most recent event for a run (optimized single-row fetch). */
+export function getLastRunEvent(
+	db: Database,
+	runId: string,
+): RunEventRow | null {
+	return db
+		.query(
+			"SELECT * FROM run_events WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+		)
+		.get(runId) as RunEventRow | null;
 }
 
 // --- Agent Results ---
