@@ -100,3 +100,33 @@ Recommendation: probe only the required subset (at least `result`; optionally `t
 
 - **Phase 2 completion:** ⚠️ — core adapter seam + Claude adapter exist and are tested, but P0.1/P0.2 should be fixed to make invocation semantics reliable enough to depend on in Phase 3/4 loops.
 - **Ready for next phase (Phase 3: Prompt Templates + Init):** ⚠️ — proceed after P0s + lint cleanup.
+
+---
+
+## Addendum (2026-02-16) — Validation of remediation commit
+
+**Reviewed:** `088083aac8`
+
+**Local verification:** `cd 5x-cli && bun test` PASS (143 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **P0.1 timeout upper bound:** Timeout path now does bounded SIGTERM→grace→SIGKILL and uses bounded draining so `invoke()` has an explicit wall-time cap (`5x-cli/src/agents/claude-code.ts`).
+- **P0.2 JSON-level error semantics:** `is_error=true` now forces a non-zero `exitCode` (even if process exit is 0) and surfaces `subtype`/stderr context; unit coverage added (`5x-cli/src/agents/claude-code.ts`, `5x-cli/test/agents/claude-code.test.ts`).
+- **P1.1 lint hygiene:** Biome issues fixed; lint now green.
+- **P1.2 argv prompt limitations:** Limitation is documented and a `MAX_PROMPT_LENGTH` guard prevents pathological failures (`5x-cli/src/agents/claude-code.ts`).
+- **P1.3 schema probe correctness:** Live probe asserts only required fields (`type`, `result`) and validates optional fields only when present (`5x-cli/test/agents/claude-code-schema-probe.test.ts`).
+- **P2 stream decoding correctness:** Stream draining uses `new Response(stream).text()` (correct EOF flush) (`5x-cli/src/agents/claude-code.ts`).
+- **P2 test fidelity:** Tests inject at `spawnProcess()` boundary so real `invoke()` logic is exercised (no duplicate parser implementation) (`5x-cli/test/agents/claude-code.test.ts`).
+- **P2 factory docs:** Comments now match actual `createAdapter()` vs `createAndVerifyAdapter()` behavior (`5x-cli/src/agents/factory.ts`).
+
+### Remaining concerns / follow-ups
+
+- **P2 prompt length check should be byte-based:** `MAX_PROMPT_LENGTH` is described as bytes but enforced via JS string length (chars). Prefer `new TextEncoder().encode(prompt).length` (or `Buffer.byteLength`) so the limit matches OS argv reality for non-ASCII prompts (`5x-cli/src/agents/claude-code.ts`).
+- **P2 bounded drain abort semantics are non-standard:** `boundedDrain()` relies on passing `signal` into `ResponseInit` via cast; confirm Bun actually aborts body reads on signal. If not, implement bounded draining via `stream.getReader()` + explicit cancellation, and add a unit test with a non-terminating stream to prove timeout boundedness without risking a hung test (`5x-cli/src/agents/claude-code.ts`).
+- **P2 error context on non-zero failures:** If `exitCode != 0` and there is no stderr and no `(is_error && subtype)`, `error` can be undefined; consider always including at least `exit code N` and/or `subtype` when present.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — review P0/P1 items are addressed with code + tests; local suite green.
+- **Ready for next phase (Phase 3: Prompt Templates + Init):** ✅ — proceed; keep the remaining P2s as hardening.

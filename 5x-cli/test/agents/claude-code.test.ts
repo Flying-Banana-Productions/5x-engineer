@@ -342,19 +342,102 @@ describe("ClaudeCodeAdapter", () => {
 		expect(capturedArgs).toContain("25");
 	});
 
-	test("invoke rejects prompts exceeding MAX_PROMPT_LENGTH", async () => {
+	test("invoke rejects prompts exceeding MAX_PROMPT_LENGTH (byte-based)", async () => {
 		const adapter = createMock(
 			JSON.stringify({ type: "result", result: "ok" }),
 			0,
 		);
 
+		// ASCII: 1 byte per char
 		const result = await adapter.invoke({
 			prompt: "x".repeat(MAX_PROMPT_LENGTH + 1),
 			workdir: "/tmp",
 		});
-
 		expect(result.exitCode).toBe(1);
 		expect(result.error).toContain("MAX_PROMPT_LENGTH");
+		expect(result.error).toContain("bytes");
+
+		// Multi-byte: emoji is 4 bytes, so fewer chars needed to exceed limit
+		const emoji = "\u{1F600}"; // 4 bytes in UTF-8
+		const count = Math.ceil(MAX_PROMPT_LENGTH / 4) + 1;
+		const result2 = await adapter.invoke({
+			prompt: emoji.repeat(count),
+			workdir: "/tmp",
+		});
+		expect(result2.exitCode).toBe(1);
+		expect(result2.error).toContain("MAX_PROMPT_LENGTH");
+	});
+
+	test("invoke always populates error on non-zero exitCode (JSON path)", async () => {
+		// exitCode=2, no stderr, no is_error/subtype — should still get error
+		const adapter = createMock(
+			JSON.stringify({
+				type: "result",
+				result: "partial output",
+				duration_ms: 100,
+			}),
+			2,
+		);
+
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+		});
+
+		expect(result.exitCode).toBe(2);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("exit code 2");
+	});
+
+	test("invoke always populates error on non-zero exitCode (non-JSON path)", async () => {
+		const adapter = createMock("raw output", 3);
+
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+		});
+
+		expect(result.exitCode).toBe(3);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("exit code 3");
+	});
+
+	test("invoke includes subtype in error even without is_error flag", async () => {
+		const adapter = createMock(
+			JSON.stringify({
+				type: "result",
+				subtype: "error_tool_use",
+				result: "tool failed",
+				duration_ms: 100,
+			}),
+			1,
+		);
+
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.error).toContain("error_tool_use");
+	});
+
+	test("bounded drain completes within timeout on non-terminating stream", async () => {
+		// Stream that never closes — simulates a hung process whose streams
+		// remain open after SIGTERM/SIGKILL. The drain must not hang.
+		const adapter = createMock("", 0, "", { hangingStreams: true });
+
+		const start = performance.now();
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			timeout: 50,
+		});
+		const elapsed = performance.now() - start;
+
+		expect(result.exitCode).toBe(124);
+		// Should complete well within 10s (KILL_GRACE_MS=2s + DRAIN_TIMEOUT_MS=1s + overhead)
+		expect(elapsed).toBeLessThan(10_000);
 	});
 });
 
@@ -364,6 +447,7 @@ describe("ClaudeCodeAdapter", () => {
 
 interface MockOpts {
 	hang?: boolean;
+	hangingStreams?: boolean;
 	spawnError?: boolean;
 	captureArgs?: (args: string[]) => void;
 }
@@ -377,6 +461,20 @@ function stringStream(s: string): ReadableStream<Uint8Array> {
 		start(controller) {
 			controller.enqueue(encoded);
 			controller.close();
+		},
+	});
+}
+
+/**
+ * Create a ReadableStream that never closes (simulates a hung process
+ * whose streams remain open after kill). The stream emits nothing and
+ * only resolves the pull when cancelled.
+ */
+function hangingStream(): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		pull() {
+			// Never enqueue, never close — blocks the reader forever
+			return new Promise(() => {});
 		},
 	});
 }
@@ -404,11 +502,23 @@ function createMock(
 			}
 
 			if (mockOpts.hang) {
-				// Never-resolving exited promise simulates a hung process
+				// Never-resolving exited promise simulates a hung process.
+				// Streams close normally so boundedDrain completes quickly.
 				return {
 					exited: new Promise<number>(() => {}),
 					stdout: stringStream(""),
 					stderr: stringStream(""),
+					kill: () => {},
+				};
+			}
+
+			if (mockOpts.hangingStreams) {
+				// Exited never resolves AND streams never close — tests that
+				// boundedDrain's reader cancellation actually works.
+				return {
+					exited: new Promise<number>(() => {}),
+					stdout: hangingStream(),
+					stderr: hangingStream(),
 					kill: () => {},
 				};
 			}

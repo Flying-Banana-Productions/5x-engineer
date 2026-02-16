@@ -130,17 +130,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
 		const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
 
-		// Guard against prompts that may exceed OS ARG_MAX
-		if (opts.prompt.length > MAX_PROMPT_LENGTH) {
+		// Guard against prompts that may exceed OS ARG_MAX (byte-based,
+		// since ARG_MAX is measured in bytes, not characters).
+		const promptBytes = Buffer.byteLength(opts.prompt, "utf8");
+		if (promptBytes > MAX_PROMPT_LENGTH) {
 			const duration = Math.round(performance.now() - startTime);
 			return {
 				output: "",
 				exitCode: 1,
 				duration,
 				error:
-					`Prompt length (${opts.prompt.length} chars) exceeds MAX_PROMPT_LENGTH ` +
-					`(${MAX_PROMPT_LENGTH}). Prompts are passed via argv and are subject to ` +
-					`OS command-line length limits.`,
+					`Prompt size (${promptBytes} bytes) exceeds MAX_PROMPT_LENGTH ` +
+					`(${MAX_PROMPT_LENGTH} bytes). Prompts are passed via argv and are ` +
+					`subject to OS command-line length limits.`,
 			};
 		}
 
@@ -212,7 +214,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 			output: stdout,
 			exitCode,
 			duration,
-			error: stderr || undefined,
+			error:
+				exitCode !== 0
+					? stderr || `exit code ${exitCode}`
+					: stderr || undefined,
 		};
 	}
 }
@@ -282,6 +287,9 @@ function extractTokens(
 /**
  * Build an error context string from parsed JSON and stderr.
  * Returns undefined when there is no error to report.
+ *
+ * When exitCode is non-zero, always returns at least `"exit code N"` so
+ * callers never see `error: undefined` on a failed invocation.
  */
 function buildErrorContext(
 	exitCode: number,
@@ -293,11 +301,18 @@ function buildErrorContext(
 	const parts: string[] = [];
 	if (parsed.is_error && parsed.subtype) {
 		parts.push(`agent error (${parsed.subtype})`);
+	} else if (parsed.subtype) {
+		parts.push(`subtype: ${parsed.subtype}`);
 	}
 	if (stderr) {
 		parts.push(stderr);
 	}
-	return parts.length > 0 ? parts.join(": ") : undefined;
+	// Always include at least the exit code so error is never undefined
+	// for a failed invocation.
+	if (parts.length === 0) {
+		parts.push(`exit code ${exitCode}`);
+	}
+	return parts.join(": ");
 }
 
 // ---------------------------------------------------------------------------
@@ -322,32 +337,67 @@ async function drainStream(
 }
 
 /**
- * Drain stdout/stderr with a bounded timeout via AbortController.
- * Returns best-effort partial output if draining takes too long.
+ * Drain stdout/stderr with a bounded timeout.
+ *
+ * Uses `stream.getReader()` + explicit `reader.cancel()` rather than
+ * relying on `Response` abort signal semantics (which may not abort
+ * in-progress body reads in all runtimes). Returns best-effort partial
+ * output if draining takes longer than DRAIN_TIMEOUT_MS.
  */
 async function boundedDrain(
 	stdoutStream: ReadableStream<Uint8Array> | null,
 	stderrStream: ReadableStream<Uint8Array> | null,
 ): Promise<[string, string]> {
-	const controller = new AbortController();
-	const drainTimer = setTimeout(() => controller.abort(), DRAIN_TIMEOUT_MS);
+	const result = await Promise.all([
+		drainWithTimeout(stdoutStream),
+		drainWithTimeout(stderrStream),
+	]);
+	return result as [string, string];
+}
+
+/**
+ * Drain a single stream with a timeout. If the stream doesn't close
+ * within DRAIN_TIMEOUT_MS, cancel the reader and decode whatever
+ * chunks were collected so far.
+ */
+async function drainWithTimeout(
+	stream: ReadableStream<Uint8Array> | null,
+): Promise<string> {
+	if (!stream) return "";
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let timedOut = false;
+
+	const timer = setTimeout(() => {
+		timedOut = true;
+		reader.cancel().catch(() => {});
+	}, DRAIN_TIMEOUT_MS);
+
 	try {
-		const drain = (
-			stream: ReadableStream<Uint8Array> | null,
-		): Promise<string> => {
-			if (!stream) return Promise.resolve("");
-			return new Response(stream, { signal: controller.signal } as ResponseInit)
-				.text()
-				.catch(() => "");
-		};
-		const result = await Promise.all([
-			drain(stdoutStream),
-			drain(stderrStream),
-		]);
-		return result as [string, string];
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+		}
+	} catch {
+		// Reader was cancelled or stream errored — decode what we have
 	} finally {
-		clearTimeout(drainTimer);
+		clearTimeout(timer);
+		if (!timedOut) {
+			reader.releaseLock();
+		}
 	}
+
+	// Decode collected chunks (handles multi-byte boundaries correctly)
+	if (chunks.length === 0) return "";
+	const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+	const merged = new Uint8Array(totalLen);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.length;
+	}
+	return new TextDecoder().decode(merged);
 }
 
 // ---------------------------------------------------------------------------
