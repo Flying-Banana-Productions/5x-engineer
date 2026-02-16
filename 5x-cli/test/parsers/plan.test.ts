@@ -1,71 +1,42 @@
 import { describe, test, expect } from "bun:test";
 import { parsePlan } from "../../src/parsers/plan.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-const REAL_PLAN = readFileSync(
-  resolve(import.meta.dir, "../../../docs/development/001-impl-5x-cli.md"),
-  "utf-8"
-);
+// --- Fixture-based tests (deterministic) ---
 
 describe("parsePlan", () => {
-  test("extracts title from real plan", () => {
-    const plan = parsePlan(REAL_PLAN);
-    expect(plan.title).toBe("5x CLI — Automated Author-Review Loop Runner");
+  test("extracts title", () => {
+    const md = `# My Great Plan
+
+**Version:** 2.1
+**Status:** In Progress
+
+## Phase 1: Setup
+
+- [ ] Do something
+`;
+    const plan = parsePlan(md);
+    expect(plan.title).toBe("My Great Plan");
   });
 
   test("extracts metadata", () => {
-    const plan = parsePlan(REAL_PLAN);
-    expect(plan.version).toBe("1.3");
-    expect(plan.status).toContain("Draft");
+    const md = `# Plan
+
+**Version:** 3.0
+**Status:** Draft — some notes here
+
+## Phase 1: X
+
+- [ ] A
+`;
+    const plan = parsePlan(md);
+    expect(plan.version).toBe("3.0");
+    expect(plan.status).toBe("Draft — some notes here");
   });
 
-  test("parses all phases from real plan", () => {
-    const plan = parsePlan(REAL_PLAN);
-    // 8 phases: 1, 1.1, 2, 3, 4, 5, 6, 7
-    expect(plan.phases.length).toBe(8);
-    expect(plan.phases[0]!.number).toBe(1);
-    expect(plan.phases[0]!.title).toContain("Foundation");
-    expect(plan.phases[1]!.number).toBe(1.1);
-    expect(plan.phases[1]!.title).toContain("Architecture Foundation");
-    expect(plan.phases[7]!.number).toBe(7);
-    expect(plan.phases[7]!.title).toContain("Reporting");
-  });
-
-  test("extracts checklist items", () => {
-    const plan = parsePlan(REAL_PLAN);
-    const phase1 = plan.phases[0]!;
-    // Phase 1 has many checklist items across sub-sections
-    expect(phase1.items.length).toBeGreaterThan(10);
-    // Phase 1 is complete (all items checked)
-    expect(phase1.items.filter((i) => i.checked).length).toBeGreaterThan(0);
-  });
-
-  test("extracts completion gates", () => {
-    const plan = parsePlan(REAL_PLAN);
-    expect(plan.phases[0]!.completionGate).toContain("5x status");
-    // Phase 1.1 has a completion gate too
-    expect(plan.phases[1]!.completionGate).toContain("SQLite database");
-    // Phase 2 is now at index 2
-    expect(plan.phases[2]!.completionGate).toContain("Claude Code adapter");
-  });
-
-  test("identifies current phase as first incomplete", () => {
-    const plan = parsePlan(REAL_PLAN);
-    // Phase 1 has one unchecked item (cross-runtime config verification)
-    // so currentPhase is still Phase 1
-    expect(plan.currentPhase?.number).toBe(1);
-  });
-
-  test("calculates completion percentage", () => {
-    const plan = parsePlan(REAL_PLAN);
-    // Phase 1 items are checked, rest are unchecked — should be > 0
-    expect(plan.completionPercentage).toBeGreaterThan(0);
-    expect(plan.completionPercentage).toBeLessThan(100);
-  });
-
-  test("handles checked items", () => {
-    const md = `# Test Plan
+  test("parses phases with checklist items", () => {
+    const md = `# Plan
 
 **Version:** 1.0
 **Status:** In Progress
@@ -80,15 +51,23 @@ describe("parsePlan", () => {
 
 ## Phase 2: Build
 
+**Completion gate:** Build succeeds.
+
 - [ ] Fourth item
 - [ ] Fifth item
 `;
     const plan = parsePlan(md);
     expect(plan.phases.length).toBe(2);
+    expect(plan.phases[0]!.number).toBe(1);
+    expect(plan.phases[0]!.title).toBe("Setup");
+    expect(plan.phases[0]!.completionGate).toBe("Tests pass.");
     expect(plan.phases[0]!.items.length).toBe(3);
     expect(plan.phases[0]!.items[0]!.checked).toBe(true);
+    expect(plan.phases[0]!.items[0]!.text).toBe("First item");
     expect(plan.phases[0]!.items[2]!.checked).toBe(false);
     expect(plan.phases[0]!.isComplete).toBe(false);
+    expect(plan.phases[1]!.number).toBe(2);
+    expect(plan.phases[1]!.completionGate).toBe("Build succeeds.");
     expect(plan.currentPhase?.number).toBe(1);
     expect(plan.completionPercentage).toBe(40); // 2/5
   });
@@ -239,5 +218,54 @@ Just some text, no phases.
     expect(plan.phases[0]!.items[1]!.line).toBeGreaterThan(
       plan.phases[0]!.items[0]!.line
     );
+  });
+
+  test("missing metadata returns empty strings", () => {
+    const md = `# Bare Plan
+
+## Phase 1: Only Phase
+
+- [ ] Item
+`;
+    const plan = parsePlan(md);
+    expect(plan.title).toBe("Bare Plan");
+    expect(plan.version).toBe("");
+    expect(plan.status).toBe("");
+    expect(plan.phases.length).toBe(1);
+  });
+});
+
+// --- Smoke test against real plan (loose assertions only) ---
+
+const REAL_PLAN_PATH = resolve(
+  import.meta.dir,
+  "../../../docs/development/001-impl-5x-cli.md"
+);
+
+describe("parsePlan — real plan smoke test", () => {
+  const skip = !existsSync(REAL_PLAN_PATH);
+
+  test.skipIf(skip)("parses without errors and returns plausible structure", () => {
+    const content = readFileSync(REAL_PLAN_PATH, "utf-8");
+    const plan = parsePlan(content);
+
+    // Loose structural assertions — don't pin exact values
+    expect(plan.title.length).toBeGreaterThan(0);
+    expect(plan.version.length).toBeGreaterThan(0);
+    expect(plan.status.length).toBeGreaterThan(0);
+    expect(plan.phases.length).toBeGreaterThanOrEqual(7);
+    expect(plan.completionPercentage).toBeGreaterThanOrEqual(0);
+    expect(plan.completionPercentage).toBeLessThanOrEqual(100);
+
+    // Every phase should have a number, title, and a line reference
+    for (const phase of plan.phases) {
+      expect(phase.number).toBeGreaterThan(0);
+      expect(phase.title.length).toBeGreaterThan(0);
+      expect(phase.line).toBeGreaterThan(0);
+    }
+
+    // Most phases should have checklist items
+    const phasesWithItems = plan.phases.filter((p) => p.items.length > 0);
+    expect(phasesWithItems.length).toBeGreaterThan(plan.phases.length / 2);
   });
 });

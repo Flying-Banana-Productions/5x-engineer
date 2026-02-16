@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.3
+**Version:** 1.5
 **Created:** February 15, 2026
-**Status:** Draft — v1.3: SSOT prompt templates, SQLite DB for orchestration/journal/history, plan locking, git worktree support (v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers)
+**Status:** Draft — v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -48,7 +48,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 | **Human gate between phases, auto-resolve within** | Within a phase, mechanical review fixes are handled automatically (reviewer says `auto_fix`, author fixes, reviewer re-reviews). Between phases, always pause for human unless `--auto`. Agents escalate judgment calls at any point via `human_required` / `needs_human` signals. |
 | **CLI owns artifact paths — no directory scanning** | The CLI computes deterministic output paths for plans, reviews, and logs before invoking agents, passes them to the agent prompt, and requires the `5x:status` block to echo the path back. The CLI never infers artifacts by "newest file" or directory-scanning heuristics. This prevents mis-association in repos with parallel workstreams, unrelated doc edits, or editor autosaves. |
 | **Git safety is fail-closed by default** | Before any agent invocation in `plan-review` or `run`, the CLI checks repo root, current branch, dirty working tree, and untracked files. A dirty working tree aborts the run unless the user explicitly opts in with `--allow-dirty`. `--auto` never bypasses git safety checks. |
-| **JS-only config for cross-runtime compatibility** | Config is `5x.config.js` / `.mjs` (not TypeScript). Runs natively in Bun, Node, and `bun build --compile` binaries without extra loaders. `defineConfig()` provides autocomplete via JSDoc `@type` annotations. Eliminates the TS-config-loading footgun across ESM/CJS/compiled runtimes. |
+| **JS-only config** | Config is `5x.config.js` / `.mjs` (not TypeScript). Runs natively in Bun runtime and `bun build --compile` binaries without extra loaders. `defineConfig()` provides autocomplete via JSDoc `@type` annotations. |
 | **Minimal adapter output contract** | The orchestrator depends only on `exitCode`, `output` (full text), and `duration` from adapters. Optional fields like `filesModified` and `tokens` are used for display only, never for correctness decisions. All routing logic uses parsed `5x:*` signals and git observations (e.g., commit hash after author run). |
 
 ### References
@@ -106,13 +106,13 @@ The 5x workflow currently requires manual orchestration: invoking commands, rout
 
 **Plan-level file locking.** `.5x/locks/<sha256(planPath)>.lock` files contain `{ pid, startedAt, planPath }`. Acquired at `5x run` startup, released on exit. Stale detection via `process.kill(pid, 0)`. File-based rather than DB-based so locking works even if the DB is corrupted. Prevents concurrent `5x run` on the same plan while allowing parallel execution on different plans.
 
-**Git worktree support for isolated execution.** `--worktree` on `5x run` creates a git worktree + branch, persists the association in the DB `plans` table. All subsequent `5x` commands for that plan auto-resolve `workdir` from the DB without requiring `--worktree` again. Enables parallel plan execution without branch conflicts. Worktree creation is limited to `5x run` (not `plan` or `plan-review`) since plan/review operations only modify markdown files.
+**Git worktree support for isolated execution.** `--worktree` on `5x run` creates a git worktree + branch, persists the association in the DB `plans` table. All subsequent `5x` commands for that plan auto-resolve `workdir` from the DB without requiring `--worktree` again. Enables parallel plan execution without branch conflicts. Worktree creation is limited to `5x run` (not `plan` or `plan-review`) since plan/review operations only modify markdown files. Cleanup is non-destructive by default: `5x worktree cleanup` removes the worktree directory but retains the branch. Branch deletion requires `--delete-branch` and is only allowed if the branch is fully merged.
 
 **Fresh subprocess per agent invocation.** Each call to an agent starts a new process with a clean context window. This matches the workflow principle of keeping context tight. Within a review-fix cycle (author fixes → reviewer re-reviews), each invocation is independent — the agent reads the updated files from disk. This is simpler to implement across both adapters and avoids context pollution.
 
 **Graceful fallback when signals are missing.** Agents may not always produce the structured block (model variability, prompt drift, tool errors). Fallback rules: missing `5x:verdict` → escalate to human; missing `5x:status` → escalate to human (never assume completed, even with exit 0); any non-zero exit → assume failed. The CLI never crashes due to missing signals; worst case is an unnecessary human escalation. The CLI MUST NOT substitute unsafe guesses (e.g., "assume completed") when signals are absent.
 
-**Bun-primary distribution.** Built with Bun (`bun build --compile` for native binary). Bun is the primary target — fast startup, native TypeScript, built-in SQLite (`bun:sqlite`). Config is JS-only (`5x.config.js` / `.mjs`) to avoid requiring TS loaders. The `loadConfig()` function uses dynamic `import()` which works in Bun runtime and compiled binaries. If config fails to load, the error message tells the user which file was attempted and what format is expected.
+**Bun-only distribution.** Built with Bun (`bun build --compile` for native binary). Bun is the sole supported runtime — fast startup, native TypeScript, built-in SQLite (`bun:sqlite`), and `Bun.spawn` for subprocess management. The compiled binary bundles the Bun runtime and works on any machine without Bun installed. Node runtime is explicitly not supported (no `better-sqlite3` fallback, no Node-compatible entrypoint). Config is JS-only (`5x.config.js` / `.mjs`). The `loadConfig()` function uses dynamic `import()` which works in Bun runtime and compiled binaries. If config fails to load, the error message tells the user which file was attempted and what format is expected.
 
 ---
 
@@ -211,7 +211,7 @@ Initialize the `5x-cli` package:
 
 ### 1.2 `src/config.ts` — Configuration loader
 
-Load and validate `5x.config.js` (or `.mjs`) from project root with sensible defaults. Config is JS-only to ensure cross-runtime compatibility (Bun, Node, `bun build --compile` binary) without requiring TS loaders like `jiti` or `tsx`.
+Load and validate `5x.config.js` (or `.mjs`) from project root with sensible defaults. Config is JS-only for simplicity — no TS loaders needed.
 
 ```typescript
 export interface FiveXConfig {
@@ -245,7 +245,7 @@ export function defineConfig(config: Partial<FiveXConfig>): Partial<FiveXConfig>
 
 Config loading strategy:
 - Discovery: walk up from cwd to find `5x.config.js` or `5x.config.mjs` (in that precedence order).
-- Loading: use dynamic `import()` which works natively in Bun, Node ESM, and compiled binaries.
+- Loading: use dynamic `import()` which works natively in Bun runtime and compiled binaries.
 - The `defineConfig()` helper is exported from the `5x-cli` package; users get autocomplete via JSDoc `@type {import('5x-cli').FiveXConfig}` in their config file.
 - If no config file is found, use defaults. If a file is found but fails to load (syntax error, wrong format), emit an actionable error: `"Failed to load 5x.config.js at <path>: <error>. Config must be a JS/MJS module exporting a default config object."`.
 
@@ -255,7 +255,7 @@ Config loading strategy:
 - [x] Default values for all optional fields
 - [x] `defineConfig()` helper exported for autocomplete via JSDoc
 - [x] Unit tests: valid config, missing config (uses defaults), partial config with defaults, invalid values, `.mjs` variant
-- [ ] Verify config loading works under Bun runtime, Node runtime, and `bun build --compile` output
+- [ ] Verify config loading works under Bun runtime and `bun build --compile` output
 
 ### 1.3 `src/parsers/plan.ts` — Implementation plan parser
 
@@ -483,14 +483,37 @@ CREATE TABLE run_events (
 );
 CREATE INDEX idx_run_events_run_id ON run_events(run_id);
 
--- Agent invocation results with parsed signal data
+-- Agent invocation results with parsed signal data.
+-- Each row represents one adapter.invoke() call.
+--
+-- Resume/idempotency: the composite key (run_id, role, phase, iteration,
+-- template_name) uniquely identifies a logical step in the orchestration.
+-- On resume after a crash, the orchestrator re-derives the step identity
+-- from run state and re-invokes with the same key. INSERT ... ON CONFLICT
+-- DO UPDATE replaces the old result with the new one (the re-run is
+-- authoritative). The ULID `id` is generated fresh per invocation and
+-- serves as the PK for log file references (.5x/logs/<run-id>/agent-<id>.log).
+--
+-- Output retention: full agent output is written to
+-- .5x/logs/<run-id>/agent-<id>.log on disk. The DB stores parsed signal
+-- data (signal_type + signal_data) and metrics only — not the full output
+-- blob. Log file path is derivable from run_id + id.
+--
+-- Iteration semantics:
+--   plan-review loop: iteration = review-fix cycle count (0-indexed) within the run.
+--   phase-execution loop: iteration = review-fix cycle count within the current phase.
+--   quality retries: tracked separately in quality_results.attempt.
+--   plan generation: iteration = 0 (single invocation).
+--
+-- Phase sentinel: -1 means "no phase context" (plan generation, plan-review).
+-- Phase 0+ maps to real plan phases.
 CREATE TABLE agent_results (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT PRIMARY KEY,                           -- ULID, generated fresh per invocation (log file key)
   run_id TEXT NOT NULL REFERENCES runs(id),
   role TEXT NOT NULL,                            -- 'author' | 'reviewer'
   template_name TEXT NOT NULL,                   -- which prompt template was used
-  phase INTEGER,
-  iteration INTEGER NOT NULL,
+  phase INTEGER NOT NULL DEFAULT -1,             -- -1 for no phase context; 0+ for real phases
+  iteration INTEGER NOT NULL DEFAULT 0,          -- cycle count within phase or run
   exit_code INTEGER NOT NULL,
   duration_ms INTEGER NOT NULL,
   tokens_in INTEGER,
@@ -499,21 +522,24 @@ CREATE TABLE agent_results (
   signal_type TEXT,                              -- 'status' | 'verdict' | null (if missing)
   signal_data TEXT,                              -- JSON of parsed StatusBlock or VerdictBlock
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(run_id, role, phase, iteration)         -- idempotency constraint
+  UNIQUE(run_id, role, phase, iteration, template_name)  -- step identity for resume idempotency
 );
-CREATE INDEX idx_agent_results_run ON agent_results(run_id, phase);
+CREATE INDEX idx_agent_results_run ON agent_results(run_id);
+CREATE INDEX idx_agent_results_run_phase ON agent_results(run_id, phase);
 
--- Quality gate results
+-- Quality gate results.
+-- Each row represents one quality gate run (all configured commands).
+-- Composite key (run_id, phase, attempt) is the step identity for resume.
 CREATE TABLE quality_results (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT PRIMARY KEY,                           -- ULID, generated fresh per gate run
   run_id TEXT NOT NULL REFERENCES runs(id),
   phase INTEGER NOT NULL,
-  attempt INTEGER NOT NULL,
+  attempt INTEGER NOT NULL,                      -- 0-indexed retry count within phase
   passed INTEGER NOT NULL,                       -- 0 or 1
   results TEXT NOT NULL,                          -- JSON array of per-command results
   duration_ms INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(run_id, phase, attempt)                 -- idempotency constraint
+  UNIQUE(run_id, phase, attempt)                 -- step identity for resume idempotency
 );
 CREATE INDEX idx_quality_results_run ON quality_results(run_id, phase);
 ```
@@ -541,14 +567,15 @@ export function getLatestRun(db: Database, planPath: string): Run | null;
 export function appendRunEvent(db: Database, event: { runId: string; eventType: string; phase?: number; iteration?: number; data?: unknown }): void;
 export function getRunEvents(db: Database, runId: string): RunEvent[];
 
-// --- Agent Results ---
-export function upsertAgentResult(db: Database, result: AgentResultRow): void;
+// --- Agent Results (composite unique on step identity; ULID PK for log refs) ---
+export function upsertAgentResult(db: Database, result: AgentResultRow): void;  // INSERT ... ON CONFLICT(run_id,role,phase,iteration,template_name) DO UPDATE
 export function getAgentResults(db: Database, runId: string, phase?: number): AgentResultRow[];
 export function getLatestVerdict(db: Database, runId: string, phase: number): VerdictBlock | null;
 export function getLatestStatus(db: Database, runId: string, phase: number): StatusBlock | null;
+export function hasCompletedStep(db: Database, runId: string, role: string, phase: number, iteration: number, templateName: string): boolean;
 
-// --- Quality Results ---
-export function upsertQualityResult(db: Database, result: QualityResultRow): void;
+// --- Quality Results (composite unique on run_id + phase + attempt) ---
+export function upsertQualityResult(db: Database, result: QualityResultRow): void;  // INSERT ... ON CONFLICT(run_id,phase,attempt) DO UPDATE
 export function getQualityResults(db: Database, runId: string, phase: number): QualityResultRow[];
 
 // --- Reporting ---
@@ -557,10 +584,13 @@ export function getRunMetrics(db: Database, runId: string): RunMetrics;
 ```
 
 - [ ] All write operations use prepared statements for safety and performance
-- [ ] Upsert operations use `INSERT ... ON CONFLICT ... DO UPDATE` for idempotency
+- [ ] Agent result upserts use `INSERT ... ON CONFLICT(run_id, role, phase, iteration, template_name) DO UPDATE` — on resume, re-running a step replaces the old result with the new one
+- [ ] Quality result upserts use `INSERT ... ON CONFLICT(run_id, phase, attempt) DO UPDATE`
+- [ ] `hasCompletedStep()` checks if a step already has a result — orchestrator uses this on resume to skip completed steps
+- [ ] Plan upserts use `INSERT ... ON CONFLICT(plan_path) DO UPDATE` for worktree/branch updates
 - [ ] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
 - [ ] Type-safe row interfaces matching the schema
-- [ ] Unit tests: CRUD round-trips for each table, upsert idempotency, concurrent read during write (WAL)
+- [ ] Unit tests: CRUD round-trips for each table, upsert idempotency (re-insert same step key updates row), `hasCompletedStep` returns true after insert, concurrent read during write (WAL)
 
 ### 1.1.4 `src/lock.ts` — Plan-level file locking
 
@@ -819,10 +849,18 @@ export function listTemplates(): TemplateMetadata[];
 
 Templates are loaded from the bundled source (compiled into the binary). `renderTemplate()` validates all required variables are present (from frontmatter `variables` list), performs `{{variable}}` substitution, and returns the prompt string ready for `adapter.invoke()`.
 
+**Rendering rules:**
+- Substitution: all `{{variable_name}}` occurrences are replaced with the variable value. Variable names are `[a-z_]+` only.
+- Escaping: literal `{{` in templates that should NOT be substituted must be written as `\{{`. The renderer replaces `\{{` with `{{` after substitution. This is only needed in the rare case a template must show `{{example}}` syntax to the agent.
+- Variable values are inserted verbatim (no quoting, no escaping). Since variables are file paths and simple strings controlled by the CLI (not user input), injection risk is negligible. The 5x signal protocol constrains YAML values to safe scalars; the template instructions remind agents of this.
+- Unresolved `{{...}}` after substitution (indicating a typo or missing variable) is a hard error — never pass a partially-rendered template to an agent.
+
 - [ ] Implement template loader (reads from bundled files)
 - [ ] Implement `{{variable}}` substitution with validation against frontmatter `variables` list
+- [ ] Implement `\{{` escape sequence (literal `{{` passthrough)
 - [ ] Error on missing variables (list which are missing)
-- [ ] Error on unknown variables in template (typo detection)
+- [ ] Error on unresolved `{{...}}` after substitution (typo detection)
+- [ ] Unit tests: rendering, escaping, missing variables, unresolved variables
 
 ### 3.2 Prompt templates — Author templates
 
@@ -907,7 +945,7 @@ $ 5x plan docs/workflows/370-court-time-allocation-reporting.md
 
 Target path computation: `<config.paths.plans>/<next-sequence-number>-impl-<slug-from-prd>.md`. User can override with `--out <path>`. If the computed path already exists (e.g., parallel runs), auto-increment the sequence number until a free path is found.
 
-Review path computation (used in `plan-review` and `run`): `<config.paths.reviews>/<date>-<plan-basename>-review.md`, where `<plan-basename>` is the full plan filename without extension (e.g., plan `001-impl-5x-cli.md` → review `2026-02-15-001-impl-5x-cli-review.md`). The sequence number is preserved to guarantee uniqueness across plans with the same subject slug. If the review file already exists, append to it (addendum model). Review paths are derived deterministically from the plan filename, not from a directory scan, so they are stable across runs for the same plan.
+Review path computation (used in `plan-review` and `run`): on the first review for a plan, the CLI computes `<config.paths.reviews>/<date>-<plan-basename>-review.md` (e.g., plan `001-impl-5x-cli.md` → review `2026-02-15-001-impl-5x-cli-review.md`) and persists it in the `runs` table (`review_path` column). On subsequent runs for the same plan, the CLI checks the DB for an existing `review_path` and reuses it — this keeps a single addendum trail even across multi-day runs, without directory scanning. If no DB entry exists (first run, or DB reset), the path is computed fresh. If the review file already exists on disk, append to it (addendum model).
 
 - [ ] Compute target plan path deterministically (sequence number from existing plans + slug from PRD title), or accept `--out <path>` override
 - [ ] Read PRD/TDD file(s) from provided path(s)
@@ -954,10 +992,10 @@ any → ESCALATE                             (max iterations reached)
 
 **DB integration:** Each state transition is recorded as a `run_event`. Parsed `5x:verdict` and `5x:status` blocks are stored in `agent_results` as the SOT for routing decisions. The commented YAML in the review markdown file is a human-inspectable artifact but is not re-read by the orchestrator after initial parse.
 
-**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists for command `plan-review`, prompt: `"Found interrupted run <id> at iteration <N>. Resume? [yes/no/start-fresh]"`. Resume re-enters the state machine at the recorded `currentState`, skipping already-completed iterations (idempotent via unique constraint on `agent_results`).
+**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists for command `plan-review`, prompt: `"Found interrupted run <id> at iteration <N>. Resume? [yes/no/start-fresh]"`. Resume re-enters the state machine at the recorded `currentState`. Before each agent invocation, the orchestrator calls `hasCompletedStep(runId, role, phase, iteration, templateName)` — if the step already has a result in the DB, it skips invocation and uses the stored result. If a step is re-run (e.g., interrupted mid-invocation), the new result replaces the old via `ON CONFLICT DO UPDATE`.
 
 - [ ] Create `run` record in DB at loop start (`createRun()`)
-- [ ] Compute deterministic review path before first iteration: `<config.paths.reviews>/<date>-<plan-basename>-review.md` (preserves plan sequence number for uniqueness)
+- [ ] Resolve review path: check DB for existing `review_path` from prior runs on this plan (reuse for addendum continuity); if none, compute `<config.paths.reviews>/<date>-<plan-basename>-review.md`
 - [ ] Implement state machine with clear transition logging
 - [ ] Append `run_event` on each state transition (`appendRunEvent()`)
 - [ ] Render reviewer prompt from `reviewer-plan` template with variables `{ plan_path, review_path }`
@@ -1000,7 +1038,8 @@ export interface QualityResult {
   results: Array<{
     command: string;
     passed: boolean;
-    output: string;
+    output: string;       // truncated for DB/display (first 4KB)
+    outputPath?: string;  // full output written to .5x/logs/<run-id>/...
     duration: number;
   }>;
 }
@@ -1008,14 +1047,24 @@ export interface QualityResult {
 export async function runQualityGates(
   commands: string[],
   workdir: string,
+  opts: { runId: string; logDir: string },
 ): Promise<QualityResult> { ... }
 ```
 
+**Output retention strategy:** Quality gate command output and agent output can be large (multi-MB test output, verbose build logs). The DB stores structured summaries only; full output goes to the filesystem.
+
+- DB `quality_results.results` JSON: per-command `{ command, passed, duration, outputPath }` + first 4KB of output (truncated, for terminal display and quick diagnostics).
+- Full output: `.5x/logs/<run-id>/quality-phase<N>-attempt<M>-<command-slug>.log`
+- Agent output: `.5x/logs/<run-id>/agent-<invocation-id>.log` (full adapter output, referenced by `agent_results.id`)
+- Terminal display: show truncated output inline; on failure, display path to full log file.
+- Cleanup: log files are retained until `5x worktree cleanup` or manual deletion. No automatic retention policy for v1.
+
 - [ ] Run each configured command sequentially
-- [ ] Capture stdout/stderr for each
+- [ ] Capture stdout/stderr for each; write full output to `.5x/logs/<run-id>/`
+- [ ] Store truncated output (first 4KB) + file path in DB results JSON
 - [ ] Report pass/fail per command and overall
 - [ ] Timeout handling per command
-- [ ] Store results in DB via `upsertQualityResult()` (run_id, phase, attempt, passed, results JSON)
+- [ ] Store structured results in DB via `insertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
 - [ ] Unit tests with mocked commands
 
 ### 5.2 `src/git.ts` — Git operations, safety invariants, and worktree support
@@ -1056,7 +1105,7 @@ Git safety invariants:
 
 Worktree operations:
 - `createWorktree()` runs `git worktree add <path> -b <branch>`. Path defaults to `.5x/worktrees/<branch-name>`.
-- `removeWorktree()` runs `git worktree remove <path>` (with `--force` if needed) and deletes the branch.
+- `removeWorktree()` runs `git worktree remove <path>`. Does NOT delete the branch by default (branch may have unmerged commits). With `--force`: removes even if worktree has changes, and optionally deletes the branch if it has been fully merged.
 - `listWorktrees()` runs `git worktree list --porcelain` and parses output.
 - If branch already exists, reuse it: `git worktree add <path> <branch>` (no `-b`).
 
@@ -1120,7 +1169,7 @@ Per-phase inner loop:
 - `quality_results` table: gate outcomes stored per phase/attempt
 - `plans` table: worktree/branch association persisted for future command resolution
 
-**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists, prompt: `"Found interrupted run <id> at phase <N>, state <S>. Resume? [yes/no/start-fresh]"`. Resume re-enters at the recorded state. Already-completed iterations are skipped (idempotent via unique constraints). Starting fresh marks the old run as `aborted`.
+**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists, prompt: `"Found interrupted run <id> at phase <N>, state <S>. Resume? [yes/no/start-fresh]"`. Resume re-enters at the recorded state. Before each agent invocation, the orchestrator calls `hasCompletedStep()` — if the step already has a result, skip and use stored result. If re-running (interrupted mid-invocation), `ON CONFLICT DO UPDATE` replaces the old result. Starting fresh marks the old run as `aborted`.
 
 **Lock integration:** `acquireLock()` at startup, `releaseLock()` on exit. If locked by another live process, abort with message: `"Plan is locked by PID <N> (started <time>). Another 5x process is running on this plan."` If stale, prompt to steal.
 
@@ -1181,14 +1230,33 @@ $ 5x worktree status docs/development/001-impl-5x-cli.md
   Branch: 5x/001-impl-5x-cli
 
 $ 5x worktree cleanup docs/development/001-impl-5x-cli.md
-  Removing worktree .5x/worktrees/5x/001-impl-5x-cli...
+  Checking worktree .5x/worktrees/5x/001-impl-5x-cli...
+  Worktree is clean.
+  Removing worktree...
+  Branch 5x/001-impl-5x-cli retained (use --delete-branch to remove).
+  Cleared plan worktree association from DB.
+
+$ 5x worktree cleanup docs/development/001-impl-5x-cli.md --delete-branch
+  Checking worktree .5x/worktrees/5x/001-impl-5x-cli...
+  Worktree is clean.
+  Branch 5x/001-impl-5x-cli is fully merged.
+  Removing worktree...
   Deleting branch 5x/001-impl-5x-cli...
-  Cleared plan association from DB.
+  Cleared plan worktree association from DB.
 ```
 
+Cleanup safety:
+- Default: removes worktree directory only; retains the branch (may have unmerged work).
+- `--delete-branch`: also deletes the branch, but ONLY if it is fully merged into HEAD or its upstream. Aborts with an error if branch has unmerged commits.
+- Refuses to remove worktree if it has uncommitted changes — user must commit/stash first, or pass `--force`.
+- `--force`: removes worktree even with uncommitted changes (data loss warning displayed). Does NOT force-delete unmerged branches — that requires explicit `--force --delete-branch`.
+
 - [ ] `5x worktree status <plan-path>` — show worktree info from DB
-- [ ] `5x worktree cleanup <plan-path>` — remove worktree, delete branch, clear DB association
-- [ ] Handle cleanup when worktree has uncommitted changes (prompt or `--force`)
+- [ ] `5x worktree cleanup <plan-path>` — remove worktree only, retain branch, clear DB association
+- [ ] `--delete-branch` flag: also delete branch if fully merged; abort if unmerged
+- [ ] Refuse cleanup if worktree has uncommitted changes (unless `--force`)
+- [ ] `--force`: remove worktree with uncommitted changes (display data loss warning)
+- [ ] `--force --delete-branch`: NOT allowed for unmerged branches (always aborts)
 
 ---
 
@@ -1324,10 +1392,10 @@ $ 5x history --run abc123
 
 ### 7.6 Build and distribution
 
-- [ ] `build.ts` script: `bun build --compile` for native binary
-- [ ] Node-compatible entrypoint via esbuild/tsup bundle
-- [ ] `package.json` bin field for `npx 5x` / `bunx 5x`
+- [ ] `build.ts` script: `bun build --compile` for native binary (Linux, macOS, Windows targets)
+- [ ] `package.json` bin field for `bunx 5x`
 - [ ] README with installation, quickstart, and configuration docs
+- [ ] Document supported runtimes: Bun runtime or compiled binary only (no Node)
 
 ---
 
@@ -1407,7 +1475,7 @@ $ 5x history --run abc123
 - **Reviewer model selection heuristics** — user configures models; CLI doesn't choose
 - **`5x archive` command** — plan/review archival lifecycle deferred to post-v1; the core generate → review → execute loop ships first
 - **User-customizable prompt templates** — v1 uses bundled-only templates; local override mechanism deferred
-- **Node runtime compatibility for DB** — `bun:sqlite` is Bun-only; Node users must use the compiled binary or Bun runtime
+- **Node runtime support** — Bun runtime or compiled binary only; no Node-compatible entrypoint, no `better-sqlite3` fallback
 - **Multi-machine lock coordination** — file locks are local-only; shared filesystem locking deferred
 - **DB migration rollback** — forward-only migrations; delete `.5x/5x.db` to reset
 
