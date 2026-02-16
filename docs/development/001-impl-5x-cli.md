@@ -185,10 +185,10 @@ Initialize the `5x-cli` package:
 └── bunfig.toml
 ```
 
-- [ ] Initialize Bun project with TypeScript
-- [ ] Add CLI framework dependency (citty or commander)
-- [ ] Configure test runner, linting
-- [ ] Set up `bin` entry in `package.json`
+- [x] Initialize Bun project with TypeScript
+- [x] Add CLI framework dependency (citty or commander)
+- [x] Configure test runner, linting
+- [x] Set up `bin` entry in `package.json`
 
 ### 1.2 `src/config.ts` — Configuration loader
 
@@ -230,12 +230,12 @@ Config loading strategy:
 - The `defineConfig()` helper is exported from the `5x-cli` package; users get autocomplete via JSDoc `@type {import('5x-cli').FiveXConfig}` in their config file.
 - If no config file is found, use defaults. If a file is found but fails to load (syntax error, wrong format), emit an actionable error: `"Failed to load 5x.config.js at <path>: <error>. Config must be a JS/MJS module exporting a default config object."`.
 
-- [ ] Config file discovery (walk up from cwd to find `5x.config.js` / `.mjs`)
-- [ ] Dynamic `import()` loader with actionable error messages on failure
-- [ ] Zod schema validation with clear error messages
-- [ ] Default values for all optional fields
-- [ ] `defineConfig()` helper exported for autocomplete via JSDoc
-- [ ] Unit tests: valid config, missing config (uses defaults), partial config with defaults, invalid values, `.mjs` variant
+- [x] Config file discovery (walk up from cwd to find `5x.config.js` / `.mjs`)
+- [x] Dynamic `import()` loader with actionable error messages on failure
+- [x] Zod schema validation with clear error messages
+- [x] Default values for all optional fields
+- [x] `defineConfig()` helper exported for autocomplete via JSDoc
+- [x] Unit tests: valid config, missing config (uses defaults), partial config with defaults, invalid values, `.mjs` variant
 - [ ] Verify config loading works under Bun runtime, Node runtime, and `bun build --compile` output
 
 ### 1.3 `src/parsers/plan.ts` — Implementation plan parser
@@ -271,14 +271,14 @@ export interface ChecklistItem {
 export function parsePlan(markdown: string): ParsedPlan { ... }
 ```
 
-- [ ] Extract `**Version:**`, `**Status:**` from metadata block
-- [ ] Parse `## Phase N:` or `### Phase N:` headings (handle both depths)
-- [ ] Parse `- [x]` / `- [ ]` checklist items within each phase
-- [ ] Handle `COMPLETE` suffix in phase headings (e.g., `## Phase 1: Title - COMPLETE`)
-- [ ] Calculate per-phase and overall completion percentage
-- [ ] Identify `currentPhase` (first phase with unchecked items)
-- [ ] Extract `**Completion gate:**` text per phase
-- [ ] Unit tests against real plan files (use sample plan from this repo + player_desk examples)
+- [x] Extract `**Version:**`, `**Status:**` from metadata block
+- [x] Parse `## Phase N:` or `### Phase N:` headings (handle both depths)
+- [x] Parse `- [x]` / `- [ ]` checklist items within each phase
+- [x] Handle `COMPLETE` suffix in phase headings (e.g., `## Phase 1: Title - COMPLETE`)
+- [x] Calculate per-phase and overall completion percentage
+- [x] Identify `currentPhase` (first phase with unchecked items)
+- [x] Extract `**Completion gate:**` text per phase
+- [x] Unit tests against real plan files (use sample plan from this repo + player_desk examples)
 
 ### 1.4 `src/parsers/signals.ts` — Structured signal parsers
 
@@ -332,12 +332,12 @@ Required fields per command context:
 | `5x run` (author phase) | `5x:status` | `protocolVersion`, `result`, `commit`, `phase` |
 | `5x run` (reviewer) | `5x:verdict` | `protocolVersion`, `readiness`, `reviewPath`, `items` |
 
-- [ ] Extract `<!-- 5x:verdict ... -->` block from markdown text (last occurrence wins)
-- [ ] Extract `<!-- 5x:status ... -->` block from text (last occurrence wins)
-- [ ] Parse YAML content within blocks
-- [ ] Validate `protocolVersion` field; warn on unknown versions but still attempt parse
-- [ ] Return `null` for missing or malformed blocks (never throw, never guess)
-- [ ] Unit tests: valid blocks, missing blocks, malformed YAML, partial fields, multiple blocks (last wins), unknown protocolVersion
+- [x] Extract `<!-- 5x:verdict ... -->` block from markdown text (last occurrence wins)
+- [x] Extract `<!-- 5x:status ... -->` block from text (last occurrence wins)
+- [x] Parse YAML content within blocks
+- [x] Validate `protocolVersion` field; warn on unknown versions but still attempt parse
+- [x] Return `null` for missing or malformed blocks (never throw, never guess)
+- [x] Unit tests: valid blocks, missing blocks, malformed YAML, partial fields, multiple blocks (last wins), unknown protocolVersion
 
 ### 1.5 `src/parsers/review.ts` — Review summary parser
 
@@ -357,10 +357,10 @@ export interface ReviewSummary {
 export function parseReviewSummary(markdown: string): ReviewSummary { ... }
 ```
 
-- [ ] Extract `**Readiness:**` line from prose
-- [ ] Count `### P0.`, `### P1.`, `### P2.` sections
-- [ ] Detect addendum sections (`## Addendum`)
-- [ ] Unit tests against real review files
+- [x] Extract `**Readiness:**` line from prose
+- [x] Count `### P0.`, `### P1.`, `### P2.` sections
+- [x] Detect addendum sections (`## Addendum`)
+- [x] Unit tests against real review files
 
 ### 1.6 `src/commands/status.ts` — Plan status display
 
@@ -379,10 +379,10 @@ $ 5x status docs/development/525-impl-onboarding-progress-tracker.md
   Overall: 80% (4/5 phases complete)
 ```
 
-- [ ] Load and parse plan file
-- [ ] Format phase progress with visual indicators
-- [ ] Show current phase and next steps
-- [ ] Handle edge cases: no phases found, all complete, plan not found
+- [x] Load and parse plan file
+- [x] Format phase progress with visual indicators
+- [x] Show current phase and next steps
+- [x] Handle edge cases: no phases found, all complete, plan not found
 
 ---
 
