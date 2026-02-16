@@ -130,3 +130,49 @@ Recommendation: probe only the required subset (at least `result`; optionally `t
 
 - **Phase 2 completion:** ✅ — review P0/P1 items are addressed with code + tests; local suite green.
 - **Ready for next phase (Phase 3: Prompt Templates + Init):** ✅ — proceed; keep the remaining P2s as hardening.
+
+---
+
+## Addendum (2026-02-16) — Validation of P2 hardening
+
+**Reviewed:** `ecd77bd`
+
+**Local verification:** `cd 5x-cli && bun test` PASS (147 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **Prompt length guard is byte-based:** `MAX_PROMPT_LENGTH` enforcement now uses `Buffer.byteLength(..., 'utf8')`; tests cover multi-byte prompts (`5x-cli/src/agents/claude-code.ts`, `5x-cli/test/agents/claude-code.test.ts`).
+- **Bounded drain semantics are explicit and tested:** `boundedDrain()` now uses `stream.getReader()` + `reader.cancel()` on timeout (no `Response` signal cast); added a non-terminating stream test proving timeout path completes (`5x-cli/src/agents/claude-code.ts`, `5x-cli/test/agents/claude-code.test.ts`).
+- **Error context on failures:** non-zero exit now always yields an `error` string (at least `exit code N`), and `subtype` is surfaced even when `is_error` is absent; tests added for JSON and non-JSON paths (`5x-cli/src/agents/claude-code.ts`, `5x-cli/test/agents/claude-code.test.ts`).
+
+### Remaining concerns / follow-ups
+
+- **P2 comment drift:** file header still claims bounded draining uses an AbortController; implementation now uses reader cancellation. Update the comment to match behavior to avoid future confusion (`5x-cli/src/agents/claude-code.ts`).
+- **P2 reader lock cleanup on timeout:** `drainWithTimeout()` skips `reader.releaseLock()` when `timedOut=true`. Likely fine after cancellation, but consider always releasing in `finally` (guarded) to reduce leak risk.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — all items from the review + addendums are addressed with tests and green local checks.
+- **Ready for next phase (Phase 3: Prompt Templates + Init):** ✅ — proceed.
+
+---
+
+## Addendum (2026-02-16) — Validation of final P2 cleanups
+
+**Reviewed:** `bac4bdd`
+
+**Local verification:** `cd 5x-cli && bun test` PASS (147 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` WARN (Biome: 1 warning)
+
+### What's addressed (✅)
+
+- **Comment drift fixed:** Adapter header now correctly describes reader-cancellation bounded draining (no AbortController claim) (`5x-cli/src/agents/claude-code.ts`).
+- **Reader lock cleanup:** `drainWithTimeout()` now always attempts `reader.releaseLock()` in `finally` (safe-ignored on cancellation), reducing leak risk (`5x-cli/src/agents/claude-code.ts`).
+
+### Remaining concerns / follow-ups
+
+- **P2 lint warning regression:** `timedOut` is now unused in `drainWithTimeout()` and triggers Biome `noUnusedVariables`. Remove the variable (preferred) or rename to `_timedOut` if you want to keep it for debugging (`5x-cli/src/agents/claude-code.ts`).
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅
+- **Ready for next phase (Phase 3: Prompt Templates + Init):** ✅
