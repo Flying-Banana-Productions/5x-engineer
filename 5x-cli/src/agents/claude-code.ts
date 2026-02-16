@@ -366,10 +366,8 @@ async function drainWithTimeout(
 	if (!stream) return "";
 	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
-	let timedOut = false;
 
 	const timer = setTimeout(() => {
-		timedOut = true;
 		reader.cancel().catch(() => {});
 	}, DRAIN_TIMEOUT_MS);
 
