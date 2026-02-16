@@ -23,7 +23,7 @@ export interface ChecklistItem {
   line: number;
 }
 
-const PHASE_HEADING_RE = /^(#{2,3})\s+Phase\s+(\d+)[:\s]+(.+)$/;
+const PHASE_HEADING_RE = /^(#{2,3})\s+Phase\s+(\d+(?:\.\d+)?)[:\s]+(.+)$/;
 const CHECKLIST_RE = /^-\s+\[([ xX])\]\s+(.+)$/;
 const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;
 const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
@@ -72,7 +72,7 @@ export function parsePlan(markdown: string): ParsedPlan {
       const cleanTitle = rawTitle.replace(COMPLETE_SUFFIX_RE, "").trim();
 
       const phase: Phase = {
-        number: parseInt(phaseMatch[2]!, 10),
+        number: parseFloat(phaseMatch[2]!),
         title: cleanTitle,
         heading: line,
         items: [],

@@ -16,17 +16,20 @@ describe("parsePlan", () => {
 
   test("extracts metadata", () => {
     const plan = parsePlan(REAL_PLAN);
-    expect(plan.version).toBe("1.2");
+    expect(plan.version).toBe("1.3");
     expect(plan.status).toContain("Draft");
   });
 
   test("parses all phases from real plan", () => {
     const plan = parsePlan(REAL_PLAN);
-    expect(plan.phases.length).toBe(7);
+    // 8 phases: 1, 1.1, 2, 3, 4, 5, 6, 7
+    expect(plan.phases.length).toBe(8);
     expect(plan.phases[0]!.number).toBe(1);
     expect(plan.phases[0]!.title).toContain("Foundation");
-    expect(plan.phases[6]!.number).toBe(7);
-    expect(plan.phases[6]!.title).toContain("Upgrade");
+    expect(plan.phases[1]!.number).toBe(1.1);
+    expect(plan.phases[1]!.title).toContain("Architecture Foundation");
+    expect(plan.phases[7]!.number).toBe(7);
+    expect(plan.phases[7]!.title).toContain("Reporting");
   });
 
   test("extracts checklist items", () => {
@@ -34,26 +37,31 @@ describe("parsePlan", () => {
     const phase1 = plan.phases[0]!;
     // Phase 1 has many checklist items across sub-sections
     expect(phase1.items.length).toBeGreaterThan(10);
-    // All should be unchecked in the current plan
-    expect(phase1.items.every((i) => !i.checked)).toBe(true);
+    // Phase 1 is complete (all items checked)
+    expect(phase1.items.filter((i) => i.checked).length).toBeGreaterThan(0);
   });
 
   test("extracts completion gates", () => {
     const plan = parsePlan(REAL_PLAN);
     expect(plan.phases[0]!.completionGate).toContain("5x status");
-    expect(plan.phases[1]!.completionGate).toContain("Claude Code adapter");
+    // Phase 1.1 has a completion gate too
+    expect(plan.phases[1]!.completionGate).toContain("SQLite database");
+    // Phase 2 is now at index 2
+    expect(plan.phases[2]!.completionGate).toContain("Claude Code adapter");
   });
 
   test("identifies current phase as first incomplete", () => {
     const plan = parsePlan(REAL_PLAN);
-    // All unchecked, so currentPhase is Phase 1
+    // Phase 1 has one unchecked item (cross-runtime config verification)
+    // so currentPhase is still Phase 1
     expect(plan.currentPhase?.number).toBe(1);
   });
 
   test("calculates completion percentage", () => {
     const plan = parsePlan(REAL_PLAN);
-    // All unchecked
-    expect(plan.completionPercentage).toBe(0);
+    // Phase 1 items are checked, rest are unchecked — should be > 0
+    expect(plan.completionPercentage).toBeGreaterThan(0);
+    expect(plan.completionPercentage).toBeLessThan(100);
   });
 
   test("handles checked items", () => {
@@ -126,6 +134,39 @@ describe("parsePlan", () => {
     expect(plan.phases[0]!.isComplete).toBe(true);
     expect(plan.phases[0]!.title).toBe("Setup");
     expect(plan.currentPhase?.number).toBe(2);
+  });
+
+  test("handles dotted phase numbers (e.g., 1.1)", () => {
+    const md = `# Plan
+
+**Version:** 1.0
+**Status:** In Progress
+
+## Phase 1: Setup
+
+- [x] First item
+
+## Phase 1.1: Retrofit
+
+**Completion gate:** DB works.
+
+- [ ] Add database
+- [ ] Add migrations
+
+## Phase 2: Build
+
+- [ ] Build it
+`;
+    const plan = parsePlan(md);
+    expect(plan.phases.length).toBe(3);
+    expect(plan.phases[0]!.number).toBe(1);
+    expect(plan.phases[1]!.number).toBe(1.1);
+    expect(plan.phases[1]!.title).toBe("Retrofit");
+    expect(plan.phases[1]!.completionGate).toBe("DB works.");
+    expect(plan.phases[1]!.items.length).toBe(2);
+    expect(plan.phases[2]!.number).toBe(2);
+    expect(plan.currentPhase?.number).toBe(1.1);
+    expect(plan.completionPercentage).toBe(25); // 1/4 items checked
   });
 
   test("handles ### phase headings", () => {

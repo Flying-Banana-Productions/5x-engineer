@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** February 15, 2026
-**Status:** Draft — revised per staff engineer review feedback (v1.1: P0/P1 blockers; v1.2: template contracts, .5x hygiene, scope, collision handling)
+**Status:** Draft — v1.3: SSOT prompt templates, SQLite DB for orchestration/journal/history, plan locking, git worktree support (v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers)
 
 ---
 
@@ -18,7 +18,10 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 - CLI commands for the core plan lifecycle: generate → review → execute
 - Agent adapter abstraction supporting Claude Code CLI and OpenCode SDK
 - Structured signal protocol (`5x:verdict`, `5x:status`) embedded in agent output
-- Versioned command template scaffolding with upgrade path
+- SSOT prompt templates bundled with CLI (no harness-specific scaffolding)
+- Local SQLite database for orchestration state, journal, history, and reporting
+- Plan-level file locking to prevent concurrent execution on the same plan
+- Git worktree support (`--worktree` flag) for isolated branch execution
 - Quality gate runner (configurable test/lint/build commands)
 - Human gates between phases, with auto-resolution of mechanical review fixes within phases
 - `--auto` flag for full autonomy with agent-driven escalation for consequential decisions
@@ -38,7 +41,10 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 | **HTML comment signal blocks in markdown files** | `5x:verdict` and `5x:status` blocks are invisible when rendered, inspectable in source, persisted as part of the review artifact. No separate sideband channel needed. |
 | **Fresh agent session per invocation** | Each agent call is a new subprocess with clean context. Matches the "size tasks to context window" principle. Agents read plan/review files from disk. Simpler than managing persistent sessions across adapters. |
 | **Adapter pattern for agent harnesses** | Abstract interface enables Claude Code and OpenCode without coupling orchestration logic to either. New harnesses can be added without changing the state machine. |
-| **Scaffolded commands with `5x-` namespace** | Avoids collision with user's existing workflow commands. Version tracking enables `5x upgrade` to update templates while respecting user modifications. |
+| **SSOT prompt templates, not harness-specific commands** | Templates are bundled with the CLI and rendered into prompt strings at invocation time. No scaffolding into `.claude/commands/` or `.opencode/commands/`. No version tracking, checksums, or `5x upgrade` for templates. Adding a new harness requires only an adapter implementation — no template variants. Templates update when the CLI updates. |
+| **SQLite DB as orchestration SOT** | Local `.5x/5x.db` (via `bun:sqlite`) stores run state, parsed agent signals, quality gate results, and metrics. Replaces JSON journal files. Provides ACID transactions, WAL-mode concurrent reads (e.g., `5x status` during active `5x run`), indexed recovery lookups, and aggregation queries for reporting. Commented YAML in markdown files remains as a human-inspectable artifact but is not the source of truth for orchestration decisions. |
+| **Plan-level file locking** | `.5x/locks/<hash>.lock` with PID prevents concurrent `5x run` on the same plan. Stale lock detection via PID liveness check. File-based (not DB-based) so it works even if DB is corrupted. |
+| **Git worktree support** | `--worktree` flag on `5x run` creates an isolated worktree + branch for phase execution. Association persisted in DB so subsequent commands auto-resolve `workdir`. Enables parallel execution of different plans without branch conflicts. |
 | **Human gate between phases, auto-resolve within** | Within a phase, mechanical review fixes are handled automatically (reviewer says `auto_fix`, author fixes, reviewer re-reviews). Between phases, always pause for human unless `--auto`. Agents escalate judgment calls at any point via `human_required` / `needs_human` signals. |
 | **CLI owns artifact paths — no directory scanning** | The CLI computes deterministic output paths for plans, reviews, and logs before invoking agents, passes them to the agent prompt, and requires the `5x:status` block to echo the path back. The CLI never infers artifacts by "newest file" or directory-scanning heuristics. This prevents mis-association in repos with parallel workstreams, unrelated doc edits, or editor autosaves. |
 | **Git safety is fail-closed by default** | Before any agent invocation in `plan-review` or `run`, the CLI checks repo root, current branch, dirty working tree, and untracked files. A dirty working tree aborts the run unless the user explicitly opts in with `--allow-dirty`. `--auto` never bypasses git safety checks. |
@@ -56,13 +62,14 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Phase 1: Foundation — Config, Parsers, Status](#phase-1-foundation--config-parsers-status)
-3. [Phase 2: Agent Adapters](#phase-2-agent-adapters)
-4. [Phase 3: Command Templates v1](#phase-3-command-templates-v1)
-5. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
-6. [Phase 5: Phase Execution Loop](#phase-5-phase-execution-loop)
-7. [Phase 6: OpenCode Adapter](#phase-6-opencode-adapter)
-8. [Phase 7: Upgrade, Auto Mode, Polish](#phase-7-upgrade-auto-mode-polish)
+2. [Phase 1: Foundation — Config, Parsers, Status](#phase-1-foundation--config-parsers-status) — COMPLETE
+3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates)
+4. [Phase 2: Agent Adapters](#phase-2-agent-adapters)
+5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init)
+6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
+7. [Phase 5: Phase Execution Loop](#phase-5-phase-execution-loop)
+8. [Phase 6: OpenCode Adapter](#phase-6-opencode-adapter)
+9. [Phase 7: Reporting, Auto Mode, Polish](#phase-7-reporting-auto-mode-polish)
 
 ---
 
@@ -93,52 +100,64 @@ The 5x workflow currently requires manual orchestration: invoking commands, rout
 
 **Structured signals as HTML comments in review files.** The `5x:verdict` block is appended to the review markdown file as `<!-- 5x:verdict ... -->`. This is invisible when rendered (GitHub, Obsidian, etc.), inspectable in source, and persisted as part of the review artifact. It avoids requiring agents to produce two separate outputs (file + stdout) which is error-prone. The `5x:status` block from the author is captured from agent stdout since author output doesn't always map to a specific file. Both blocks include a `protocolVersion` field to allow future schema upgrades. All YAML field values are constrained to safe scalars (no multi-line strings, no `-->` sequences); templates strongly instruct agents to respect these constraints. Parsing rules: if multiple blocks are found, last one wins; if a block is malformed, treat as missing (escalate to human).
 
+**SSOT prompt templates bundled with CLI.** Templates are markdown files with `{{variable}}` substitution, bundled directly with the CLI binary. The CLI reads a template, substitutes variables (plan paths, review paths, etc.), and passes the rendered prompt string to `adapter.invoke()`. This replaces the prior design of scaffolding harness-specific command variants into `.claude/commands/` and `.opencode/commands/`. Benefits: one template per operation (not per-harness variants), no version tracking or checksums for scaffolded files, no `5x upgrade` command for templates, new harnesses only need an adapter implementation. Templates update when the CLI updates.
+
+**SQLite as orchestration SOT.** Parsed `5x:status` and `5x:verdict` blocks are stored in SQLite (`.5x/5x.db` via `bun:sqlite`) immediately after parsing. The DB is the source of truth for all orchestration decisions — resume detection, iteration tracking, retry decisions, reporting. The commented YAML blocks in markdown files remain as human-inspectable artifacts but are not re-read for decision making. Benefits: ACID transactions for reliable state updates, WAL mode for concurrent reads (`5x status` during active `5x run`), indexed lookups for fast recovery, aggregation queries for reporting, natural idempotency via unique constraints.
+
+**Plan-level file locking.** `.5x/locks/<sha256(planPath)>.lock` files contain `{ pid, startedAt, planPath }`. Acquired at `5x run` startup, released on exit. Stale detection via `process.kill(pid, 0)`. File-based rather than DB-based so locking works even if the DB is corrupted. Prevents concurrent `5x run` on the same plan while allowing parallel execution on different plans.
+
+**Git worktree support for isolated execution.** `--worktree` on `5x run` creates a git worktree + branch, persists the association in the DB `plans` table. All subsequent `5x` commands for that plan auto-resolve `workdir` from the DB without requiring `--worktree` again. Enables parallel plan execution without branch conflicts. Worktree creation is limited to `5x run` (not `plan` or `plan-review`) since plan/review operations only modify markdown files.
+
 **Fresh subprocess per agent invocation.** Each call to an agent starts a new process with a clean context window. This matches the workflow principle of keeping context tight. Within a review-fix cycle (author fixes → reviewer re-reviews), each invocation is independent — the agent reads the updated files from disk. This is simpler to implement across both adapters and avoids context pollution.
 
 **Graceful fallback when signals are missing.** Agents may not always produce the structured block (model variability, prompt drift, tool errors). Fallback rules: missing `5x:verdict` → escalate to human; missing `5x:status` → escalate to human (never assume completed, even with exit 0); any non-zero exit → assume failed. The CLI never crashes due to missing signals; worst case is an unnecessary human escalation. The CLI MUST NOT substitute unsafe guesses (e.g., "assume completed") when signals are absent.
 
-**Bun-primary, node-compatible distribution.** Built with Bun (`bun build --compile` for native binary), published to npm with node-compatible entrypoint. Bun is the primary target because it's the author's stack and gives fast startup + native TypeScript. Node fallback ensures broader adoption. Config is JS-only (`5x.config.js` / `.mjs`) to avoid requiring TS loaders in Node or compiled binaries. The `loadConfig()` function uses dynamic `import()` which works in all three targets (Bun runtime, Node runtime, compiled binary). If config fails to load, the error message tells the user which file was attempted and what format is expected.
+**Bun-primary distribution.** Built with Bun (`bun build --compile` for native binary). Bun is the primary target — fast startup, native TypeScript, built-in SQLite (`bun:sqlite`). Config is JS-only (`5x.config.js` / `.mjs`) to avoid requiring TS loaders. The `loadConfig()` function uses dynamic `import()` which works in Bun runtime and compiled binaries. If config fails to load, the error message tells the user which file was attempted and what format is expected.
 
 ---
 
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                        5x CLI                            │
-│                                                          │
-│  ┌─────────┐   ┌──────────────┐   ┌──────────────────┐  │
-│  │ Commands │──▶│ Orchestrator │──▶│  Agent Adapters   │  │
-│  │          │   │              │   │                   │  │
-│  │ plan     │   │ plan-review  │   │ ┌───────────────┐ │  │
-│  │ plan-rev │   │   loop       │   │ │ Claude Code   │ │  │
-│  │ run      │   │              │   │ │ (subprocess)  │ │  │
-│  │ status   │   │ phase-exec   │   │ └───────────────┘ │  │
-│  │ init     │   │   loop       │   │ ┌───────────────┐ │  │
-│  │ upgrade  │   │              │   │ │ OpenCode      │ │  │
-│  └─────────┘   └──────┬───────┘   │ │ (SDK)         │ │  │
-│                        │           │ └───────────────┘ │  │
-│                        ▼           └──────────────────┘  │
-│              ┌──────────────────┐                        │
-│              │  Signal Parsers  │                        │
-│              │                  │                        │
-│              │ parseVerdictBlock│                        │
-│              │ parseStatusBlock │                        │
-│              │ parsePlan        │                        │
-│              └──────────────────┘                        │
-│                        │                                 │
-│              ┌─────────┴─────────┐                       │
-│              │                   │                        │
-│         ┌────▼─────┐     ┌──────▼───────┐                │
-│         │ Quality  │     │ Human Gates  │                │
-│         │ Gates    │     │ (terminal)   │                │
-│         └──────────┘     └──────────────┘                │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                              5x CLI                                  │
+│                                                                      │
+│  ┌──────────┐   ┌──────────────┐   ┌───────────────────┐             │
+│  │ Commands │──▶│ Orchestrator │──▶│  Agent Adapters   │             │
+│  │          │   │              │   │                   │             │
+│  │ plan     │   │ plan-review  │   │ ┌───────────────┐ │             │
+│  │ plan-rev │   │   loop       │   │ │ Claude Code   │ │             │
+│  │ run      │   │              │   │ │ (subprocess)  │ │             │
+│  │ status   │   │ phase-exec   │   │ └───────────────┘ │             │
+│  │ init     │   │   loop       │   │ ┌───────────────┐ │             │
+│  │ history  │   │              │   │ │ OpenCode      │ │             │
+│  └─────────┘    └──────┬───────┘   │ │ (SDK)         │ │             │
+│                        │           │ └───────────────┘ │             │
+│              ┌─────────┼───────────┴───────────────────┘             │
+│              │         │                                             │
+│              ▼         ▼                                             │
+│  ┌──────────────┐ ┌──────────────────┐  ┌───────────────────────┐    │
+│  │ Prompt       │ │  Signal Parsers  │  │  SQLite DB (.5x/)     │    │
+│  │ Templates    │ │                  │  │                       │    │
+│  │ (bundled)    │ │ parseVerdictBlock│  │ runs, events,         │    │
+│  │              │ │ parseStatusBlock │─▶│ agent_results,        │    │
+│  │ render()     │ │ parsePlan        │  │ quality_results,      │    │
+│  │   ↓ prompt   │ └──────────────────┘  │ plan associations     │    │
+│  │   → adapter  │          │            └───────────┬───────────┘    │
+│  └──────────────┘ ┌────────┴────────┐               │                │
+│                   │                 │               │                │
+│              ┌────▼─────┐    ┌──────▼───────┐  ┌────▼────────┐       │
+│              │ Quality  │    │ Human Gates  │  │ Plan Lock   │       │
+│              │ Gates    │    │ (terminal)   │  │ (.5x/locks/)│       │
+│              └──────────┘    └──────────────┘  └─────────────┘       │
+└──────────────────────────────────────────────────────────────────────┘
 
-Signal flow:
-  Reviewer agent ──writes──▶ review.md (includes <!-- 5x:verdict -->)
-  Author agent   ──stdout──▶ captured by CLI (includes <!-- 5x:status -->)
-  CLI            ──parses──▶ structured decisions (proceed / auto-fix / escalate / fail)
+Data flow:
+  Prompt Templates ──render──▶ prompt string ──▶ adapter.invoke()
+  Reviewer agent   ──writes──▶ review.md (includes <!-- 5x:verdict -->)
+  Author agent     ──stdout──▶ captured by CLI (includes <!-- 5x:status -->)
+  CLI              ──parses──▶ structured signals ──▶ SQLite DB (SOT)
+  CLI              ──decides──▶ proceed / auto-fix / escalate / fail (from DB)
 ```
 
 **State machine transitions (per phase):**
@@ -151,11 +170,11 @@ EXECUTE ──▶ QUALITY_CHECK ──▶ REVIEW ──▶ PARSE_VERDICT
           QUALITY_RETRY ◀──┘        auto_fix   human_required
                                       │              │
                                  AUTO_FIX ──▶   ESCALATE ──▶ HUMAN
-                                      │              │          │
+                                      │              │         │
                                  QUALITY_CHECK   (human        │
                                       │          decides)      │
-                                 REVIEW ──▶ ...    │          │
-                                              ┌────┘     ┌────┘
+                                 REVIEW ──▶ ...    │           │
+                                              ┌────┘     ┌─────┘
                                               ▼          ▼
                                          PHASE_GATE (between phases)
                                               │
@@ -386,6 +405,250 @@ $ 5x status docs/development/525-impl-onboarding-progress-tracker.md
 
 ---
 
+## Phase 1.1: Architecture Foundation — DB, Lock, Templates
+
+**Completion gate:** SQLite database creates, migrates, and performs CRUD operations for all tables. Plan lock acquire/release works with stale PID detection. Status command shows DB run state when available. All existing tests pass (stale assertions fixed).
+
+> **Context:** This phase retrofits the architecture decisions made after Phase 1 completion: SQLite as orchestration SOT (replacing the planned JSON journal), plan-level file locking, and removal of harness-specific template scaffolding. These are prerequisites for all subsequent phases.
+
+### 1.1.1 `src/db/connection.ts` — Database connection management
+
+Singleton connection to `.5x/5x.db` with WAL mode for concurrent reads.
+
+```typescript
+import { Database } from 'bun:sqlite';
+
+export function getDb(projectRoot: string): Database { ... }
+export function closeDb(): void { ... }
+```
+
+- [ ] Singleton `Database` instance, created on first access
+- [ ] DB path: `<projectRoot>/.5x/5x.db` (auto-create `.5x/` directory if missing)
+- [ ] Pragmas on open: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`
+- [ ] Register cleanup on `process.on('exit')`, `SIGINT`, `SIGTERM` — close DB gracefully
+- [ ] Export `getDb()` and `closeDb()` — no direct `Database` construction elsewhere
+- [ ] Unit tests: connection creates DB file, WAL mode is active, singleton returns same instance
+
+### 1.1.2 `src/db/schema.ts` — Schema definition and migrations
+
+Sequential migration runner with version tracking. Simple and forward-only — no down migrations for a local CLI tool.
+
+```typescript
+export function runMigrations(db: Database): void { ... }
+export function getSchemaVersion(db: Database): number { ... }
+```
+
+**Migration 001 — Initial schema:**
+
+```sql
+-- Schema version tracking
+CREATE TABLE schema_version (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Plan associations (worktree, branch, lock state)
+CREATE TABLE plans (
+  plan_path TEXT PRIMARY KEY,
+  worktree_path TEXT,
+  branch TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Runs (replaces JSON journal)
+CREATE TABLE runs (
+  id TEXT PRIMARY KEY,                          -- ULID
+  plan_path TEXT NOT NULL,
+  review_path TEXT,
+  command TEXT NOT NULL,                         -- 'plan' | 'plan-review' | 'run'
+  status TEXT NOT NULL DEFAULT 'active',         -- 'active' | 'completed' | 'aborted' | 'failed'
+  current_phase INTEGER,
+  current_state TEXT,                            -- state machine state name
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+CREATE INDEX idx_runs_plan_path ON runs(plan_path);
+CREATE INDEX idx_runs_status ON runs(status);
+
+-- Run events (append-only journal log)
+CREATE TABLE run_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  event_type TEXT NOT NULL,                     -- 'phase_start' | 'agent_invoke' | 'quality_gate' | 'verdict' | 'escalation' | 'phase_complete' | 'error'
+  phase INTEGER,
+  iteration INTEGER,
+  data TEXT,                                     -- JSON blob
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_run_events_run_id ON run_events(run_id);
+
+-- Agent invocation results with parsed signal data
+CREATE TABLE agent_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  role TEXT NOT NULL,                            -- 'author' | 'reviewer'
+  template_name TEXT NOT NULL,                   -- which prompt template was used
+  phase INTEGER,
+  iteration INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  cost_usd REAL,
+  signal_type TEXT,                              -- 'status' | 'verdict' | null (if missing)
+  signal_data TEXT,                              -- JSON of parsed StatusBlock or VerdictBlock
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_id, role, phase, iteration)         -- idempotency constraint
+);
+CREATE INDEX idx_agent_results_run ON agent_results(run_id, phase);
+
+-- Quality gate results
+CREATE TABLE quality_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  phase INTEGER NOT NULL,
+  attempt INTEGER NOT NULL,
+  passed INTEGER NOT NULL,                       -- 0 or 1
+  results TEXT NOT NULL,                          -- JSON array of per-command results
+  duration_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_id, phase, attempt)                 -- idempotency constraint
+);
+CREATE INDEX idx_quality_results_run ON quality_results(run_id, phase);
+```
+
+- [ ] Migration runner: read `schema_version` table (create if missing), apply migrations with version > current
+- [ ] Each migration is a function: `(db: Database) => void`, runs in a transaction
+- [ ] Migrations stored as an ordered array in `schema.ts` (not separate SQL files — bundled with binary)
+- [ ] On schema mismatch: clear error message with DB path, suggest delete `.5x/5x.db` to reset
+- [ ] Unit tests: fresh DB gets all migrations, already-migrated DB is no-op, partial migration resumes
+
+### 1.1.3 `src/db/operations.ts` — Typed CRUD helpers
+
+```typescript
+// --- Plans ---
+export function upsertPlan(db: Database, plan: { planPath: string; worktreePath?: string; branch?: string }): void;
+export function getPlan(db: Database, planPath: string): Plan | null;
+
+// --- Runs ---
+export function createRun(db: Database, run: { id: string; planPath: string; command: string; reviewPath?: string }): void;
+export function updateRunStatus(db: Database, runId: string, status: string, state?: string, phase?: number): void;
+export function getActiveRun(db: Database, planPath: string): Run | null;
+export function getLatestRun(db: Database, planPath: string): Run | null;
+
+// --- Events ---
+export function appendRunEvent(db: Database, event: { runId: string; eventType: string; phase?: number; iteration?: number; data?: unknown }): void;
+export function getRunEvents(db: Database, runId: string): RunEvent[];
+
+// --- Agent Results ---
+export function upsertAgentResult(db: Database, result: AgentResultRow): void;
+export function getAgentResults(db: Database, runId: string, phase?: number): AgentResultRow[];
+export function getLatestVerdict(db: Database, runId: string, phase: number): VerdictBlock | null;
+export function getLatestStatus(db: Database, runId: string, phase: number): StatusBlock | null;
+
+// --- Quality Results ---
+export function upsertQualityResult(db: Database, result: QualityResultRow): void;
+export function getQualityResults(db: Database, runId: string, phase: number): QualityResultRow[];
+
+// --- Reporting ---
+export function getRunHistory(db: Database, planPath?: string, limit?: number): RunSummary[];
+export function getRunMetrics(db: Database, runId: string): RunMetrics;
+```
+
+- [ ] All write operations use prepared statements for safety and performance
+- [ ] Upsert operations use `INSERT ... ON CONFLICT ... DO UPDATE` for idempotency
+- [ ] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
+- [ ] Type-safe row interfaces matching the schema
+- [ ] Unit tests: CRUD round-trips for each table, upsert idempotency, concurrent read during write (WAL)
+
+### 1.1.4 `src/lock.ts` — Plan-level file locking
+
+```typescript
+export interface LockInfo {
+  pid: number;
+  startedAt: string;    // ISO 8601
+  planPath: string;
+}
+
+export interface LockResult {
+  acquired: boolean;
+  existingLock?: LockInfo;
+  stale?: boolean;
+}
+
+export function acquireLock(projectRoot: string, planPath: string): LockResult;
+export function releaseLock(projectRoot: string, planPath: string): void;
+export function isLocked(projectRoot: string, planPath: string): { locked: boolean; info?: LockInfo; stale?: boolean };
+export function registerLockCleanup(projectRoot: string, planPath: string): void;
+```
+
+Lock mechanics:
+- Lock path: `<projectRoot>/.5x/locks/<sha256(planPath).slice(0,16)>.lock`
+- Content: JSON `LockInfo` — `{ pid, startedAt, planPath }`
+- Acquire: check if lock file exists → if yes, check PID liveness via `process.kill(pid, 0)` → if dead, log stale lock warning and steal → if alive, return `{ acquired: false, existingLock, stale: false }`
+- Release: delete lock file (no-op if already gone)
+- `registerLockCleanup()`: register `process.on('exit')`, `SIGINT`, `SIGTERM` handlers that call `releaseLock()`
+- Race condition note: there's a small TOCTOU window between checking and creating the lock file. Acceptable for a single-developer CLI tool — not a distributed system.
+
+- [ ] Implement `acquireLock` with PID liveness check
+- [ ] Implement `releaseLock` (idempotent delete)
+- [ ] Implement `registerLockCleanup` for graceful shutdown
+- [ ] Create `.5x/locks/` directory on first lock acquisition
+- [ ] Unit tests: acquire/release round-trip, stale lock detection (write lock with dead PID), double-acquire same PID (re-entrant), concurrent lock attempt
+
+### 1.1.5 Config updates
+
+Minimal changes to the existing `FiveXConfig` interface.
+
+```typescript
+// Add to FiveXConfig:
+export interface FiveXConfig {
+  // ... existing fields ...
+  db?: {
+    path?: string;  // default: '.5x/5x.db' (relative to project root)
+  };
+}
+```
+
+- [ ] Add optional `db.path` field to Zod schema with default `.5x/5x.db`
+- [ ] Update `configSchema` in `src/config.ts`
+- [ ] Unit test: config with db override, config without db (uses default)
+
+### 1.1.6 Status command enhancement
+
+Update `5x status <plan-path>` to show active run information from the database when available.
+
+```
+$ 5x status docs/development/001-impl-5x-cli.md
+
+  5x CLI — Automated Author-Review Loop Runner (v1.3)
+  Status: Phase 1 complete; Phase 1.1 ready
+
+  Phase 1: Foundation                              ████████████ 100%
+  Phase 1.1: Architecture Foundation               ░░░░░░░░░░░░   0%
+  Phase 2: Agent Adapters                          ░░░░░░░░░░░░   0%
+  ...
+
+  Overall: 12% (1/8 phases complete)
+
+  Active run: abc123 (5x run, phase 3, state: REVIEW)
+  Started: 2 hours ago | Iterations: 4
+  Last event: verdict received (ready_with_corrections)
+```
+
+- [ ] Check for DB existence at `.5x/5x.db`; if present, query for active/latest run
+- [ ] Display active run info: run ID, command, current phase, state, duration, iteration count, last event
+- [ ] Display latest completed run summary if no active run
+- [ ] Graceful when no DB exists (fresh project, pre-first-run) — show only plan progress
+- [ ] Unit tests: status with DB (active run), status with DB (no active run), status without DB
+
+### 1.1.7 Fix failing tests
+
+- [ ] Update stale assertions in `test/parsers/plan.test.ts` — tests hardcode expectations against `docs/development/001-impl-5x-cli.md` which has progressed since initial implementation. Either update expected values or use a dedicated test fixture file instead of the live plan.
+
+---
+
 ## Phase 2: Agent Adapters
 
 **Completion gate:** Claude Code adapter can invoke an agent with a prompt, capture structured output, and return a typed `AgentResult`. Adapter interface is clean and OpenCode-ready. Integration test proves a real Claude Code invocation round-trips.
@@ -486,30 +749,96 @@ export function createAdapter(config: AdapterConfig): AgentAdapter {
 
 ---
 
-## Phase 3: Command Templates v1
+## Phase 3: Prompt Templates + Init
 
-**Completion gate:** `5x init` scaffolds versioned command templates and config file into a project. Templates include the 5x signal protocol sections. `manifest.json` tracks versions and checksums.
+**Completion gate:** Template loader renders all 5 prompt templates with variable substitution. `5x init` creates config file and `.5x/` directory. Templates are bundled with the CLI binary — no scaffolding into harness directories.
 
-### 3.1 Command templates — Author commands
+> **Architecture change (v1.3):** Templates are SSOT prompt files bundled with the CLI, not harness-specific command files scaffolded into `.claude/commands/` or `.opencode/commands/`. The CLI reads a template, substitutes `{{variables}}`, and passes the rendered prompt string directly to `adapter.invoke()`. This eliminates per-harness variants, version tracking, checksums, `manifest.json`, `.5x-version`, and the `5x upgrade` command for templates. New harnesses only need an adapter implementation.
 
-Create command templates that include task instructions + 5x protocol output requirements.
+### 3.1 `src/templates/` — Prompt template system
 
-**`commands/v1/claude-code/author-generate-plan.md`:**
-- `$1`: PRD/TDD path(s)
-- `$2`: CLI-computed target plan path (agent MUST write the plan to this path)
+Template format: markdown files with `{{variable}}` substitution and optional YAML frontmatter for metadata.
+
+```
+src/templates/
+├── loader.ts                       # Template loading + rendering
+├── author-generate-plan.md
+├── author-next-phase.md
+├── author-process-review.md
+├── reviewer-plan.md
+└── reviewer-commit.md
+```
+
+**Template structure:**
+
+```markdown
+---
+name: author-generate-plan
+version: 1
+variables: [prd_path, plan_path, plan_template_path]
+---
+
+You are implementing the 5x workflow. Generate an implementation plan from the provided requirements document.
+
+## Input
+- Requirements document: {{prd_path}}
+- Target plan output path: {{plan_path}}
+- Plan template to follow: {{plan_template_path}}
+
+## Instructions
+...
+
+## 5x Protocol Output
+You MUST emit a status block as the last thing in your output:
+<!-- 5x:status
+protocolVersion: 1
+result: completed | needs_human | failed
+planPath: {{plan_path}}
+summary: <brief description of what was done>
+-->
+```
+
+**Template loader:**
+
+```typescript
+export interface TemplateMetadata {
+  name: string;
+  version: number;
+  variables: string[];
+}
+
+export interface RenderedTemplate {
+  name: string;
+  prompt: string;                // fully substituted prompt string
+}
+
+export function loadTemplate(name: string): { metadata: TemplateMetadata; body: string };
+export function renderTemplate(name: string, variables: Record<string, string>): RenderedTemplate;
+export function listTemplates(): TemplateMetadata[];
+```
+
+Templates are loaded from the bundled source (compiled into the binary). `renderTemplate()` validates all required variables are present (from frontmatter `variables` list), performs `{{variable}}` substitution, and returns the prompt string ready for `adapter.invoke()`.
+
+- [ ] Implement template loader (reads from bundled files)
+- [ ] Implement `{{variable}}` substitution with validation against frontmatter `variables` list
+- [ ] Error on missing variables (list which are missing)
+- [ ] Error on unknown variables in template (typo detection)
+
+### 3.2 Prompt templates — Author templates
+
+**`author-generate-plan.md`:**
+- Variables: `prd_path`, `plan_path`, `plan_template_path`
 - Instructs agent to generate implementation plan using the project's plan template
-- 5x protocol: emit `<!-- 5x:status -->` with `result` + `planPath` echoing `$2`
+- 5x protocol: emit `<!-- 5x:status -->` with `result` + `planPath` echoing `{{plan_path}}`
 
-**`commands/v1/claude-code/author-next-phase.md`:**
-- `$1`: plan path
-- `$2`: optional user notes
+**`author-next-phase.md`:**
+- Variables: `plan_path`, `phase_number`, `user_notes` (optional)
 - Instructs agent to read plan, determine current phase, implement, test, commit
 - Branch management: validate or create branch
 - 5x protocol: emit `<!-- 5x:status -->` with `result`, `commit`, `phase`
 
-**`commands/v1/claude-code/author-process-review.md`:**
-- `$1`: review document path (CLI-computed)
-- `$2`: plan path
+**`author-process-review.md`:**
+- Variables: `review_path`, `plan_path`
 - Instructs agent to address review feedback (latest addendum if present)
 - If task is plan revision only, skip test execution
 - 5x protocol: emit `<!-- 5x:status -->` with `result`
@@ -517,73 +846,47 @@ Create command templates that include task instructions + 5x protocol output req
 - [ ] Write `author-generate-plan.md` template
 - [ ] Write `author-next-phase.md` template
 - [ ] Write `author-process-review.md` template
-- [ ] Create OpenCode variants (different frontmatter: `agent`, `model` fields)
 - [ ] Ensure all templates include 5x protocol section with format spec + classification guidance
+- [ ] Unit tests: each template renders with valid variables, missing variable errors
 
-### 3.2 Command templates — Reviewer commands
+### 3.3 Prompt templates — Reviewer templates
 
-**`commands/v1/claude-code/reviewer-plan.md`:**
-- `$1`: plan path
-- `$2`: CLI-computed review file path (agent MUST write/append to this path)
+**`reviewer-plan.md`:**
+- Variables: `plan_path`, `review_path`
 - Staff Engineer review perspective
-- Creates or appends to the review document at `$2`
-- 5x protocol: append `<!-- 5x:verdict -->` to `$2` with `readiness`, `reviewPath` echoing `$2`, per-item `action` classification
+- Creates or appends to the review document at `{{review_path}}`
+- 5x protocol: append `<!-- 5x:verdict -->` with `readiness`, `reviewPath` echoing `{{review_path}}`, per-item `action` classification
 
-**`commands/v1/claude-code/reviewer-commit.md`:**
-- `$1`: commit hash
-- `$2`: CLI-computed review file path (agent MUST write/append to this path)
-- `$3`: plan path (for context)
+**`reviewer-commit.md`:**
+- Variables: `commit_hash`, `review_path`, `plan_path`
 - Staff Engineer review of implementation
-- 5x protocol: append `<!-- 5x:verdict -->` to `$2` with `readiness`, `reviewPath` echoing `$2`, per-item `action` classification
+- 5x protocol: append `<!-- 5x:verdict -->` with `readiness`, `reviewPath` echoing `{{review_path}}`, per-item `action` classification
 
 - [ ] Write `reviewer-plan.md` template
 - [ ] Write `reviewer-commit.md` template
-- [ ] Create OpenCode variants
 - [ ] Ensure verdict block format spec includes classification guidance (auto_fix vs human_required with examples)
+- [ ] Unit tests: each template renders with valid variables
 
-### 3.3 `commands/v1/manifest.json` — Version tracking
-
-```json
-{
-  "version": "v1",
-  "files": {
-    "author-generate-plan.md": { "checksum": "sha256:..." },
-    "author-next-phase.md": { "checksum": "sha256:..." },
-    "author-process-review.md": { "checksum": "sha256:..." },
-    "reviewer-plan.md": { "checksum": "sha256:..." },
-    "reviewer-commit.md": { "checksum": "sha256:..." }
-  }
-}
-```
-
-- [ ] Generate checksums for all template files
-- [ ] Write manifest.json
-
-### 3.4 `src/commands/init.ts` — Project initialization
+### 3.4 `src/commands/init.ts` — Project initialization (simplified)
 
 ```
 $ 5x init
-  ✓ Created 5x.config.js
-  ✓ Added .5x/ to .gitignore
-  ✓ Scaffolded 5 commands to .claude/commands/5x/
-  ✓ Scaffolded 5 commands to .opencode/commands/
-  ✓ Created .claude/commands/5x/.5x-version
-  ✓ Created .opencode/commands/.5x-version
+  Created 5x.config.js
+  Created .5x/ directory
+  Added .5x/ to .gitignore
 ```
 
-- [ ] Detect which harnesses are present (`.claude/` dir, `.opencode/` dir) and scaffold accordingly
-- [ ] Copy command templates to appropriate locations
-- [ ] Generate `.5x-version` file with version + per-file checksums
-- [ ] Generate `5x.config.js` with detected defaults (adapter based on which harness exists), including JSDoc `@type` annotation for autocomplete
-- [ ] Append `.5x/` to `.gitignore` if not already present (run journals + auto-confirmation state live here; must not be committed)
-- [ ] Skip files that already exist (with `--force` flag to overwrite)
-- [ ] Unit tests: scaffold to empty project, scaffold to project with existing commands, .gitignore append idempotency
+- [ ] Generate `5x.config.js` with detected defaults (detect which agent harnesses are available via `claude --version`, `opencode --version`), including JSDoc `@type` annotation for autocomplete
+- [ ] Create `.5x/` directory
+- [ ] Append `.5x/` to `.gitignore` if not already present
+- [ ] Skip config file if already exists (with `--force` flag to overwrite)
+- [ ] Unit tests: init to empty project, init with existing config, .gitignore append idempotency
 
 ---
 
 ## Phase 4: Plan Generation + Review Loop
 
-**Completion gate:** `5x plan <prd-path>` generates an implementation plan via the author agent. `5x plan-review <plan-path>` runs the full review loop: reviewer → verdict → auto-fix → re-review, with human escalation on `human_required` items or max iterations. End-to-end integration test proves the loop with mocked agent responses.
+**Completion gate:** `5x plan <prd-path>` generates an implementation plan via the author agent. `5x plan-review <plan-path>` runs the full review loop: reviewer → verdict → auto-fix → re-review, with human escalation on `human_required` items or max iterations. All orchestration state persisted to SQLite — resume works after interruption. End-to-end integration test proves the loop with mocked agent responses.
 
 ### 4.1 `src/commands/plan.ts` — Plan generation
 
@@ -608,10 +911,12 @@ Review path computation (used in `plan-review` and `run`): `<config.paths.review
 
 - [ ] Compute target plan path deterministically (sequence number from existing plans + slug from PRD title), or accept `--out <path>` override
 - [ ] Read PRD/TDD file(s) from provided path(s)
-- [ ] Compose prompt from `author-generate-plan` template + paths + target plan path
-- [ ] Invoke author adapter
+- [ ] Render prompt from `author-generate-plan` template with variables `{ prd_path, plan_path, plan_template_path }`
+- [ ] Invoke author adapter with rendered prompt
 - [ ] Parse `5x:status` from output; verify `planPath` matches expected target path
+- [ ] Store parsed status in DB via `upsertAgentResult()` (run_id, role='author', template_name, signal_data)
 - [ ] If no `5x:status` block → escalate to human (never scan for new files)
+- [ ] Upsert plan record in DB (`plans` table) for future association
 - [ ] Display result with suggested next command
 - [ ] Handle author `needs_human` / `failed` signals
 
@@ -647,34 +952,45 @@ ESCALATE → ABORTED                         (human aborts)
 any → ESCALATE                             (max iterations reached)
 ```
 
+**DB integration:** Each state transition is recorded as a `run_event`. Parsed `5x:verdict` and `5x:status` blocks are stored in `agent_results` as the SOT for routing decisions. The commented YAML in the review markdown file is a human-inspectable artifact but is not re-read by the orchestrator after initial parse.
+
+**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists for command `plan-review`, prompt: `"Found interrupted run <id> at iteration <N>. Resume? [yes/no/start-fresh]"`. Resume re-enters the state machine at the recorded `currentState`, skipping already-completed iterations (idempotent via unique constraint on `agent_results`).
+
+- [ ] Create `run` record in DB at loop start (`createRun()`)
 - [ ] Compute deterministic review path before first iteration: `<config.paths.reviews>/<date>-<plan-basename>-review.md` (preserves plan sequence number for uniqueness)
 - [ ] Implement state machine with clear transition logging
-- [ ] Invoke reviewer adapter with `reviewer-plan` template + CLI-computed review path passed in prompt
+- [ ] Append `run_event` on each state transition (`appendRunEvent()`)
+- [ ] Render reviewer prompt from `reviewer-plan` template with variables `{ plan_path, review_path }`
+- [ ] Invoke reviewer adapter; store result in `agent_results` table
 - [ ] Parse `5x:verdict` from the CLI-computed review file path (never scan for review files)
+- [ ] Store parsed verdict in DB as SOT; use DB for routing decisions
 - [ ] Verify `5x:verdict.reviewPath` matches expected path; warn if mismatched
 - [ ] Route based on verdict: ready → done, auto_fix items → author, human_required → escalate
-- [ ] Invoke author adapter with `author-process-review` template for auto-fix cycles (pass review path)
-- [ ] Parse `5x:status` from author output
+- [ ] Render author prompt from `author-process-review` template for auto-fix cycles
+- [ ] Invoke author adapter; store result in `agent_results` table
+- [ ] Parse `5x:status` from author output; store in DB
 - [ ] Track iteration count, enforce `maxReviewIterations`
+- [ ] Update run status on completion/abort (`updateRunStatus()`)
 - [ ] Implement human escalation prompt (display items, options: continue/abort/override)
 - [ ] Implement `--auto` behavior: proceed on auto_fix, still escalate on human_required
-- [ ] Log cumulative iteration count, agent invocations, and duration
-- [ ] Unit tests with mocked adapters: happy path (ready on first review), two-iteration fix, escalation, max iterations
+- [ ] Detect interrupted runs on startup; prompt for resume
+- [ ] Unit tests with mocked adapters: happy path, two-iteration fix, escalation, max iterations, resume after interruption
 
 ### 4.3 `src/commands/plan-review.ts` — CLI command wiring
 
 - [ ] Parse command arguments (plan path, `--auto`, `--allow-dirty`, flags)
 - [ ] Run git safety check; abort on dirty tree unless `--allow-dirty`
 - [ ] Validate plan file exists and is parseable
+- [ ] Initialize DB connection and run migrations
 - [ ] Initialize adapters from config
 - [ ] Call `runPlanReviewLoop`
-- [ ] Display final result
+- [ ] Display final result (with run ID for future reference)
 
 ---
 
 ## Phase 5: Phase Execution Loop
 
-**Completion gate:** `5x run <plan-path>` executes phases sequentially. Per phase: author implements → quality gates → reviewer → auto-fix cycles → human gate → next phase. Git branch management works. Quality gate failures trigger author retry. End-to-end integration test with mocked agents proves the full loop.
+**Completion gate:** `5x run <plan-path>` executes phases sequentially. Per phase: author implements → quality gates → reviewer → auto-fix cycles → human gate → next phase. Plan-level locking prevents concurrent execution. `--worktree` creates isolated git worktrees. All state persisted to SQLite — resume works after interruption. Quality gate results stored in DB. End-to-end integration test with mocked agents proves the full loop.
 
 ### 5.1 `src/gates/quality.ts` — Quality gate runner
 
@@ -699,9 +1015,10 @@ export async function runQualityGates(
 - [ ] Capture stdout/stderr for each
 - [ ] Report pass/fail per command and overall
 - [ ] Timeout handling per command
+- [ ] Store results in DB via `upsertQualityResult()` (run_id, phase, attempt, passed, results JSON)
 - [ ] Unit tests with mocked commands
 
-### 5.2 `src/git.ts` — Git operations and safety invariants
+### 5.2 `src/git.ts` — Git operations, safety invariants, and worktree support
 
 ```typescript
 // --- Safety checks (run before any agent invocation) ---
@@ -714,12 +1031,21 @@ export interface GitSafetyReport {
 }
 export async function checkGitSafety(workdir: string): Promise<GitSafetyReport> { ... }
 
-// --- Operations ---
+// --- Branch operations ---
 export async function getCurrentBranch(workdir: string): Promise<string> { ... }
 export async function createBranch(name: string, workdir: string): Promise<void> { ... }
 export async function getLatestCommit(workdir: string): Promise<string> { ... }
 export async function hasUncommittedChanges(workdir: string): Promise<boolean> { ... }
 export async function getBranchCommits(base: string, workdir: string): Promise<string[]> { ... }
+
+// --- Worktree operations ---
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+}
+export async function createWorktree(repoRoot: string, branch: string, path: string): Promise<WorktreeInfo> { ... }
+export async function removeWorktree(repoRoot: string, path: string): Promise<void> { ... }
+export async function listWorktrees(repoRoot: string): Promise<WorktreeInfo[]> { ... }
 ```
 
 Git safety invariants:
@@ -728,11 +1054,19 @@ Git safety invariants:
 - `--allow-dirty` allows proceeding with a dirty tree; this is recorded in run output and requires explicit confirmation in interactive mode.
 - `--auto` mode NEVER bypasses git safety checks. `--auto --allow-dirty` is the only way to auto-run with a dirty tree.
 
+Worktree operations:
+- `createWorktree()` runs `git worktree add <path> -b <branch>`. Path defaults to `.5x/worktrees/<branch-name>`.
+- `removeWorktree()` runs `git worktree remove <path>` (with `--force` if needed) and deletes the branch.
+- `listWorktrees()` runs `git worktree list --porcelain` and parses output.
+- If branch already exists, reuse it: `git worktree add <path> <branch>` (no `-b`).
+
 - [ ] Implement `checkGitSafety()` via `git status --porcelain` + `git rev-parse`
 - [ ] Implement remaining git helpers via subprocess
-- [ ] Branch name generation from plan title/number
+- [ ] Branch name generation from plan title/number (e.g., `5x/001-impl-5x-cli`)
 - [ ] Validate branch relevance (does branch name relate to plan?)
-- [ ] Unit tests with a temp git repo: clean state, dirty state, untracked files
+- [ ] Implement `createWorktree()`, `removeWorktree()`, `listWorktrees()`
+- [ ] Handle worktree reuse (branch/path already exists)
+- [ ] Unit tests with a temp git repo: clean state, dirty state, untracked files, worktree create/remove
 
 ### 5.3 `src/orchestrator/phase-execution-loop.ts` — Loop 2 state machine
 
@@ -743,88 +1077,79 @@ export interface PhaseExecutionResult {
   complete: boolean;
   aborted: boolean;
   escalations: EscalationEvent[];
+  runId: string;
 }
 
 export async function runPhaseExecutionLoop(
   planPath: string,
   config: FiveXConfig,
-  options: { auto?: boolean; startPhase?: number },
+  options: { auto?: boolean; startPhase?: number; worktree?: boolean },
 ): Promise<PhaseExecutionResult> { ... }
 ```
 
 Per-phase inner loop:
 
 ```
-0. Run git safety check (fail-closed unless --allow-dirty)
-1. Parse plan → identify current phase
-2. Validate/create git branch
-3. Invoke author (author-next-phase template)
-4. Parse 5x:status → handle needs_human / failed
-5. Run quality gates
+0. Acquire plan lock (abort if locked by another process)
+1. Resolve workdir: check DB for worktree association, or create if --worktree
+2. Run git safety check in workdir (fail-closed unless --allow-dirty)
+3. Parse plan → identify current phase
+4. Validate/create git branch in workdir
+5. Render author prompt from author-next-phase template
+6. Invoke author → store result in agent_results table
+7. Parse 5x:status → handle needs_human / failed
+8. Run quality gates in workdir → store result in quality_results table
    - If fail: re-invoke author with failure output (up to maxQualityRetries)
    - If still fail: escalate
-6. Invoke reviewer (reviewer-commit template)
-7. Parse 5x:verdict from review file
+9. Render reviewer prompt from reviewer-commit template
+10. Invoke reviewer → store result in agent_results table
+11. Parse 5x:verdict from review file → store in DB as SOT
    - ready → proceed to phase gate
-   - auto_fix items → invoke author (process-review), loop to step 5
+   - auto_fix items → invoke author (process-review), loop to step 8
    - human_required → escalate
    - missing verdict → escalate
-8. Phase gate (human confirmation unless --auto)
-9. Next phase (fresh agent sessions)
+12. Phase gate (human confirmation unless --auto)
+13. Next phase (fresh agent sessions)
+14. Release plan lock on exit (including SIGINT/SIGTERM)
 ```
 
+**DB integration:** All orchestration state flows through the database:
+- `runs` table: create on start, update `current_phase`/`current_state` on each transition
+- `run_events` table: append-only journal of every state transition
+- `agent_results` table: parsed signals stored immediately after agent invocation, used as SOT for routing
+- `quality_results` table: gate outcomes stored per phase/attempt
+- `plans` table: worktree/branch association persisted for future command resolution
+
+**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists, prompt: `"Found interrupted run <id> at phase <N>, state <S>. Resume? [yes/no/start-fresh]"`. Resume re-enters at the recorded state. Already-completed iterations are skipped (idempotent via unique constraints). Starting fresh marks the old run as `aborted`.
+
+**Lock integration:** `acquireLock()` at startup, `releaseLock()` on exit. If locked by another live process, abort with message: `"Plan is locked by PID <N> (started <time>). Another 5x process is running on this plan."` If stale, prompt to steal.
+
+**Worktree integration:** If `--worktree` flag is set (and no worktree exists for this plan), create worktree + branch. Persist in DB. On subsequent runs for the same plan, auto-resolve `workdir` from DB even without `--worktree` flag. All agent invocations and quality gates run in the worktree.
+
+- [ ] Acquire plan lock at loop start; release on exit (including signal handlers)
+- [ ] Resolve workdir: check `getPlan(planPath)` for worktree association
+- [ ] If `--worktree` and no existing worktree: create via `createWorktree()`, persist in DB via `upsertPlan()`
+- [ ] Create `run` record in DB at loop start
 - [ ] Implement outer loop (iterate phases)
 - [ ] Implement inner review-fix loop (within a phase)
-- [ ] Compose author prompt from template + plan path
-- [ ] Compose reviewer prompt from template + commit hash
-- [ ] Quality gate integration with retry logic
-- [ ] Git branch validation/creation at phase start
+- [ ] Render author prompt from `author-next-phase` template with variables `{ plan_path, phase_number, user_notes }`
+- [ ] Invoke author adapter; store result in `agent_results` table
+- [ ] Render reviewer prompt from `reviewer-commit` template with variables `{ commit_hash, review_path, plan_path }`
+- [ ] Invoke reviewer adapter; store result in `agent_results` table
+- [ ] Quality gate integration with retry logic; store results in `quality_results` table
+- [ ] Append `run_event` on each state transition
+- [ ] Update `runs.current_phase`, `runs.current_state` on each transition
+- [ ] Git branch validation/creation at phase start (in correct workdir)
 - [ ] Detect new commits after author invocation (for reviewer input)
 - [ ] Human gate between phases: display summary, prompt for continue/review/abort
 - [ ] `--auto` mode: skip inter-phase gate, still escalate on `human_required`
 - [ ] `--phase N` flag: skip to specific phase
+- [ ] Detect interrupted runs on startup; prompt for resume
+- [ ] Mark run as `completed`/`aborted`/`failed` on exit
 - [ ] Track and display cumulative progress
-- [ ] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression
+- [ ] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression, lock contention, worktree creation, resume after interruption
 
-### 5.4 `src/run-journal.ts` — Run journaling and resumability
-
-Long-running `5x run` invocations will be interrupted (user ctrl-c, machine sleep, agent crash). The CLI writes an append-only journal so that `5x status` can show run state and `5x run` can resume safely.
-
-```typescript
-export interface RunJournal {
-  id: string;                    // unique run ID (ulid or uuid)
-  planPath: string;
-  reviewPath: string;
-  startedAt: string;             // ISO 8601
-  currentPhase: number;
-  currentState: string;          // state machine state name
-  iterations: number;
-  events: RunEvent[];            // append-only log of state transitions
-}
-
-export interface RunEvent {
-  timestamp: string;
-  type: 'phase_start' | 'agent_invoke' | 'quality_gate' | 'verdict' | 'escalation' | 'phase_complete' | 'error';
-  data: Record<string, unknown>;
-}
-
-export function createJournal(planPath: string, reviewPath: string): RunJournal { ... }
-export function appendEvent(journal: RunJournal, event: RunEvent): void { ... }
-export function loadJournal(runId: string): RunJournal | null { ... }
-export function findLatestJournal(planPath: string): RunJournal | null { ... }
-```
-
-Journal storage: `.5x/runs/<run-id>/run.json` in the project root. Each state transition appends to the `events` array and flushes to disk.
-
-Resume behavior: when `5x run <plan-path>` detects an existing incomplete journal for the same plan, it prompts: `"Found interrupted run <id> at phase <N>. Resume? [yes/no/start-fresh]"`. Resume re-enters the state machine at the recorded `currentState`.
-
-- [ ] Implement journal creation, append, and load
-- [ ] Write journal to `.5x/runs/<id>/run.json` on each state transition
-- [ ] Detect interrupted runs on `5x run` startup; prompt for resume
-- [ ] `5x status <plan-path>` reads journal to show run state (if in progress)
-- [ ] Unit tests: journal creation, append, load, resume detection
-
-### 5.5 `src/gates/human.ts` — Interactive prompts
+### 5.4 `src/gates/human.ts` — Interactive prompts
 
 ```typescript
 export async function phaseGate(summary: PhaseSummary): Promise<'continue' | 'review' | 'abort'>;
@@ -836,15 +1161,34 @@ export async function escalationGate(event: EscalationEvent): Promise<Escalation
 - [ ] Handle non-interactive mode (pipe detection) — default to abort with message
 - [ ] Unit tests with simulated stdin
 
-### 5.6 `src/commands/run.ts` — CLI command wiring
+### 5.5 `src/commands/run.ts` — CLI command wiring
 
-- [ ] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`)
-- [ ] Run git safety check; abort on dirty tree unless `--allow-dirty`
+- [ ] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`, `--worktree`)
+- [ ] Initialize DB connection and run migrations
+- [ ] Resolve workdir from DB plan association (worktree auto-detection)
+- [ ] Run git safety check in resolved workdir; abort on dirty tree unless `--allow-dirty`
 - [ ] Validate plan file, check for incomplete phases
 - [ ] Initialize adapters from config
-- [ ] Detect interrupted run journal; prompt for resume if found
-- [ ] Call `runPhaseExecutionLoop` (with journal integration)
-- [ ] Display final result (phases completed, total time, review links)
+- [ ] Call `runPhaseExecutionLoop` (with DB, lock, and worktree integration)
+- [ ] Display final result (phases completed, total time, review links, run ID)
+
+### 5.6 `src/commands/worktree.ts` — Worktree management
+
+```
+$ 5x worktree status docs/development/001-impl-5x-cli.md
+  Plan: 001-impl-5x-cli
+  Worktree: .5x/worktrees/5x/001-impl-5x-cli
+  Branch: 5x/001-impl-5x-cli
+
+$ 5x worktree cleanup docs/development/001-impl-5x-cli.md
+  Removing worktree .5x/worktrees/5x/001-impl-5x-cli...
+  Deleting branch 5x/001-impl-5x-cli...
+  Cleared plan association from DB.
+```
+
+- [ ] `5x worktree status <plan-path>` — show worktree info from DB
+- [ ] `5x worktree cleanup <plan-path>` — remove worktree, delete branch, clear DB association
+- [ ] Handle cleanup when worktree has uncommitted changes (prompt or `--force`)
 
 ---
 
@@ -885,37 +1229,47 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 ---
 
-## Phase 7: Upgrade, Auto Mode, Polish
+## Phase 7: Reporting, Auto Mode, Polish
 
-**Completion gate:** `5x upgrade` updates command templates with user-modification awareness. `--auto` mode works end-to-end. `--dry-run` shows planned actions without executing. Terminal output is polished. Token/cost tracking is displayed.
+**Completion gate:** `5x history` shows run history and metrics from DB. `--auto` mode works end-to-end. `--dry-run` shows planned actions without executing. Terminal output is polished. Token/cost tracking is displayed.
 
-### 7.1 `src/commands/upgrade.ts` — Template upgrade
+> **Architecture change (v1.3):** `5x upgrade` for templates has been removed — templates are bundled with the CLI and update when the CLI updates. This phase now focuses on DB-powered reporting instead.
+
+### 7.1 `src/commands/history.ts` — Run history and reporting
 
 ```
-$ 5x upgrade
-  Checking command templates...
+$ 5x history
+  Recent runs (all plans):
+  
+  ID       Plan                     Command      Status     Duration  Phases  Iterations
+  abc123   001-impl-5x-cli          run          completed  2h 15m    3/7     12
+  def456   001-impl-5x-cli          plan-review  completed  8m        —       3
+  ghi789   002-impl-metrics         run          aborted    45m       1/4     5
 
-  .claude/commands/5x/author-next-phase.md
-    Current: v1 (modified locally)
-    Available: v2
-    → Showing diff...
-    [apply] [skip] [show full diff]
+$ 5x history docs/development/001-impl-5x-cli.md
+  Runs for 001-impl-5x-cli:
 
-  .claude/commands/5x/reviewer-commit.md
-    Current: v1 (unmodified)
-    Available: v2
-    → Updated automatically ✓
+  Run abc123 (5x run, completed 2h ago):
+    Phases completed: 3/7
+    Total iterations: 12
+    Agent invocations: 18 (author: 12, reviewer: 6)
+    Total tokens: 450K in / 120K out
+    Estimated cost: $3.20
+    Quality gates: 8 passed, 2 failed (retried)
 
-  3/5 templates updated, 1 skipped (user-modified), 1 unchanged
+$ 5x history --run abc123
+  Detailed event log for run abc123:
+  ...
 ```
 
-- [ ] Compare installed checksums (`.5x-version`) against bundled manifest
-- [ ] Detect user modifications (checksum mismatch from installed version)
-- [ ] Auto-update unmodified files
-- [ ] Show diff and prompt for modified files
-- [ ] Update `.5x-version` after upgrade
-- [ ] `--force` flag to overwrite all
-- [ ] Unit tests: unmodified upgrade, modified file detection, force mode
+- [ ] `5x history` — list recent runs from DB (`getRunHistory()`)
+- [ ] `5x history <plan-path>` — list runs for a specific plan with metrics
+- [ ] `5x history --run <id>` — detailed event log for a specific run
+- [ ] Aggregate metrics from `agent_results` table: invocation counts, token totals, cost totals, duration
+- [ ] Aggregate quality gate stats from `quality_results` table
+- [ ] Formatted terminal output with tables
+- [ ] `--json` flag for machine-readable output
+- [ ] Unit tests with seeded DB data
 
 ### 7.2 `--auto` mode guardrails
 
@@ -981,33 +1335,40 @@ $ 5x upgrade
 
 | File | Change |
 |------|--------|
-| `src/bin.ts` | NEW — CLI entry point, command routing |
-| `src/config.ts` | NEW — Config loader with Zod validation |
-| `src/version.ts` | NEW — CLI + template version tracking |
-| `src/commands/init.ts` | NEW — Project scaffolding |
-| `src/commands/upgrade.ts` | NEW — Template upgrade with diff detection |
+| `src/bin.ts` | DONE — CLI entry point, command routing |
+| `src/config.ts` | MOD — Config loader with Zod validation (add `db.path` field) |
+| `src/version.ts` | DONE — CLI version tracking |
+| `src/db/connection.ts` | NEW — SQLite singleton, WAL mode, cleanup handlers |
+| `src/db/schema.ts` | NEW — Schema DDL, migration runner |
+| `src/db/operations.ts` | NEW — Typed CRUD helpers for all tables |
+| `src/lock.ts` | NEW — Plan-level file locking with stale PID detection |
+| `src/templates/loader.ts` | NEW — Template loading + `{{variable}}` rendering |
+| `src/templates/author-generate-plan.md` | NEW — Bundled prompt template |
+| `src/templates/author-next-phase.md` | NEW — Bundled prompt template |
+| `src/templates/author-process-review.md` | NEW — Bundled prompt template |
+| `src/templates/reviewer-plan.md` | NEW — Bundled prompt template |
+| `src/templates/reviewer-commit.md` | NEW — Bundled prompt template |
+| `src/commands/init.ts` | NEW — Project initialization (config + .5x/ + .gitignore) |
 | `src/commands/plan.ts` | NEW — Plan generation command |
 | `src/commands/plan-review.ts` | NEW — Plan review loop command |
 | `src/commands/run.ts` | NEW — Phase execution loop command |
-| `src/commands/status.ts` | NEW — Plan status display |
+| `src/commands/status.ts` | MOD — Plan status display (add DB run state) |
+| `src/commands/history.ts` | NEW — Run history and reporting from DB |
+| `src/commands/worktree.ts` | NEW — Worktree status and cleanup |
 | `src/agents/types.ts` | NEW — Agent adapter interface |
 | `src/agents/claude-code.ts` | NEW — Claude Code subprocess adapter |
 | `src/agents/opencode.ts` | NEW — OpenCode SDK adapter |
 | `src/agents/factory.ts` | NEW — Config-driven adapter instantiation |
-| `src/orchestrator/plan-review-loop.ts` | NEW — Loop 1 state machine |
-| `src/orchestrator/phase-execution-loop.ts` | NEW — Loop 2 state machine |
-| `src/orchestrator/signals.ts` | NEW — Parse 5x:verdict / 5x:status blocks |
-| `src/parsers/plan.ts` | NEW — Implementation plan markdown parser |
-| `src/parsers/review.ts` | NEW — Review summary parser |
+| `src/orchestrator/plan-review-loop.ts` | NEW — Loop 1 state machine (DB-backed) |
+| `src/orchestrator/phase-execution-loop.ts` | NEW — Loop 2 state machine (DB + lock + worktree) |
+| `src/parsers/plan.ts` | DONE — Implementation plan markdown parser |
+| `src/parsers/signals.ts` | DONE — 5x:verdict / 5x:status block parsers |
+| `src/parsers/review.ts` | DONE — Review summary parser |
 | `src/parsers/markdown.ts` | NEW — Shared markdown utilities |
-| `src/gates/quality.ts` | NEW — Quality gate command runner |
+| `src/gates/quality.ts` | NEW — Quality gate command runner (results → DB) |
 | `src/gates/human.ts` | NEW — Interactive terminal prompts |
-| `src/git.ts` | NEW — Git operations + safety invariants (`checkGitSafety`) |
-| `src/run-journal.ts` | NEW — Run journaling for resumability |
+| `src/git.ts` | NEW — Git operations, safety invariants, worktree support |
 | `src/logger.ts` | NEW — Structured terminal output |
-| `commands/v1/*.md` | NEW — 10 command templates (5 per harness) |
-| `commands/v1/manifest.json` | NEW — Template version + checksums |
-| `templates/5x.config.js` | NEW — Default config template (JS, with JSDoc types) |
 | `build.ts` | NEW — Build script for compile + bundle |
 
 ## Tests
@@ -1018,18 +1379,22 @@ $ 5x upgrade
 | Unit | `parsers/signals.test.ts` | Verdict/status block extraction, YAML parsing, malformed input handling |
 | Unit | `parsers/review.test.ts` | Review summary extraction, P0/P1/P2 counting, addendum detection |
 | Unit | `config.test.ts` | Config loading, validation, defaults, missing file handling |
+| Unit | `db/connection.test.ts` | Singleton creation, WAL mode, cleanup on exit |
+| Unit | `db/schema.test.ts` | Fresh migration, already-migrated no-op, partial resume |
+| Unit | `db/operations.test.ts` | CRUD round-trips, upsert idempotency, concurrent read (WAL) |
+| Unit | `lock.test.ts` | Acquire/release, stale PID detection, re-entrant same PID, contention |
+| Unit | `templates/loader.test.ts` | Template rendering, missing variable errors, unknown variable errors |
 | Unit | `agents/claude-code.test.ts` | Subprocess argument construction, output parsing, exit code mapping |
 | Unit | `agents/factory.test.ts` | Config-driven adapter instantiation |
-| Unit | `orchestrator/plan-review-loop.test.ts` | State transitions with mocked adapters: happy path, multi-iteration, escalation |
-| Unit | `orchestrator/phase-execution-loop.test.ts` | Phase progression, quality retry, review fix cycles, human gates |
-| Unit | `gates/quality.test.ts` | Command execution, pass/fail aggregation, timeout handling |
-| Unit | `git.test.ts` | Branch operations, safety checks against temp repos (clean, dirty, untracked) |
-| Unit | `run-journal.test.ts` | Journal creation, append, load, resume detection |
+| Unit | `orchestrator/plan-review-loop.test.ts` | State transitions with mocked adapters + DB: happy path, multi-iteration, escalation, resume |
+| Unit | `orchestrator/phase-execution-loop.test.ts` | Phase progression, quality retry, review fix cycles, human gates, lock contention, worktree creation, resume |
+| Unit | `gates/quality.test.ts` | Command execution, pass/fail aggregation, timeout handling, results stored in DB |
+| Unit | `git.test.ts` | Branch operations, safety checks, worktree create/remove against temp repos |
 | Integration | `claude-code-adapter.test.ts` | Real Claude Code CLI invocation round-trip. **Env-gated:** only runs when `FIVE_X_TEST_LIVE_AGENTS=1` is set. Not in default CI. |
 | Integration | `opencode-adapter.test.ts` | Real OpenCode SDK invocation round-trip. **Env-gated:** only runs when `FIVE_X_TEST_LIVE_AGENTS=1` is set. Not in default CI. |
 | Integration | `claude-code-schema-probe.test.ts` | Validates Claude Code `--output-format json` schema has expected fields. **Env-gated.** |
-| Integration | `plan-review-e2e.test.ts` | Full plan-review loop with mocked agent responses (golden test, runs in CI by default) |
-| Integration | `phase-execution-e2e.test.ts` | Full phase execution loop with mocked agents + git repo (golden test, runs in CI by default) |
+| Integration | `plan-review-e2e.test.ts` | Full plan-review loop with mocked agent responses + DB (golden test, runs in CI) |
+| Integration | `phase-execution-e2e.test.ts` | Full phase execution loop with mocked agents + git repo + DB + lock (golden test, runs in CI) |
 
 ---
 
@@ -1038,10 +1403,13 @@ $ 5x upgrade
 - **Web dashboard or monitoring UI** — terminal output only; CI integration is sufficient
 - **Token cost optimization** — agents manage their own context; CLI only reports what adapters provide
 - **Multi-project orchestration** — single project root per invocation
-- **Git worktree management** — mentioned in the README as a scaling technique; deferred to a future plan
 - **Custom agent adapters** — only Claude Code and OpenCode; plugin system deferred
 - **Reviewer model selection heuristics** — user configures models; CLI doesn't choose
 - **`5x archive` command** — plan/review archival lifecycle deferred to post-v1; the core generate → review → execute loop ships first
+- **User-customizable prompt templates** — v1 uses bundled-only templates; local override mechanism deferred
+- **Node runtime compatibility for DB** — `bun:sqlite` is Bun-only; Node users must use the compiled binary or Bun runtime
+- **Multi-machine lock coordination** — file locks are local-only; shared filesystem locking deferred
+- **DB migration rollback** — forward-only migrations; delete `.5x/5x.db` to reset
 
 ---
 
@@ -1049,11 +1417,12 @@ $ 5x upgrade
 
 | Phase | Description | Time |
 |-------|-------------|------|
-| 1 | Foundation — config (JS), parsers, signal protocol v1, status | 2 days |
+| 1 | Foundation — config (JS), parsers, signal protocol v1, status | 2 days (**COMPLETE**) |
+| 1.1 | Architecture foundation — SQLite DB, plan lock, config updates, test fixes | 1.5 days |
 | 2 | Agent adapters (Claude Code) + schema probe | 1 day |
-| 3 | Command templates v1 + init | 1 day |
-| 4 | Plan generation + review loop (deterministic paths) | 1.5 days |
-| 5 | Phase execution loop + git safety + run journaling | 2.5 days |
+| 3 | Prompt templates (bundled SSOT) + simplified init | 0.5 days |
+| 4 | Plan generation + review loop (DB-backed) | 1.5 days |
+| 5 | Phase execution loop + git safety + worktree + lock integration | 3 days |
 | 6 | OpenCode adapter | 1 day |
-| 7 | Upgrade, auto mode guardrails, polish | 2 days |
-| **Total** | | **11 days** |
+| 7 | Reporting (DB), auto mode guardrails, polish | 2 days |
+| **Total** | | **13 days** |
