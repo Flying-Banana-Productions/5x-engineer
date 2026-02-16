@@ -333,3 +333,59 @@ Review path uses `<date>-<plan-basename>-review.md`; that creates a new review f
 
 - **Plan correctness:** ⚠️ — v1.4 is much tighter; only the resume/idempotency contract remains a real correctness risk.
 - **Ready to implement:** ❌ **Not ready** — address P0.1 first (it’s foundational and will otherwise force painful DB migrations later).
+
+---
+
+## Addendum (2026-02-16) — Re-review after v1.5 resume/idempotency fixes (ignore completed Phase 1)
+
+**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.5)
+
+**Scope:** Plan-only review of the revised architecture/phasing. Still intentionally not reviewing the already-implemented Phase 1 code.
+
+### What's addressed (✅)
+
+- **Resume/idempotency contract:** `agent_results` now has an explicit composite step-identity (`UNIQUE(run_id, role, phase, iteration, template_name)`) and uses `INSERT ... ON CONFLICT DO UPDATE` semantics; resume text + `hasCompletedStep()` align with this.
+- **Phase sentinel:** `phase` uses `-1` for “no phase context,” preserving Phase 0 for real plans.
+- **Review path continuity:** review path is persisted to DB and reused across subsequent runs for the same plan, avoiding “new review per day” churn while still avoiding directory scanning.
+
+### Remaining concerns / follow-ups
+
+### P1 — Clarify how `agent_results.id` interacts with step upserts + log files
+
+You now have two identities: `id` (PK, log filename key) and the composite step key (conflict target). Specify whether an upsert updates `id` to the new invocation’s ULID (so log path tracks the latest attempt) or preserves the first `id` (and overwrites the log file / stores an explicit `output_path`). Without this, the “log path derivable from run_id + id” guarantee can silently point at stale logs after a re-run.
+
+### P1 — Tighten step identity vs retry loops (quality retries)
+
+Quality retries re-invoke the author in the same phase. If that uses the same `(role, phase, iteration, template_name)` identity, a resumed run may incorrectly treat the retry as “already completed.” Either:
+- define `iteration` as the monotonic per-phase attempt counter that advances on each author re-invocation, or
+- introduce an explicit `attempt`/`step_index` for agent invocations (distinct from `quality_results.attempt`).
+
+### P2 — Minor spec hygiene
+
+- The quality gate section still references `insertQualityResult()` in places while the DB ops section describes `upsertQualityResult()`; pick one name and use it consistently throughout the plan.
+
+### Updated readiness
+
+- **Plan correctness:** ✅ — the v1.4 P0 is resolved; v1.5 is coherent.
+- **Ready to implement:** ✅ **Ready with corrections** — proceed, but close the P1 clarifications early (Phase 1.1) so the DB/log semantics don’t drift.
+
+---
+
+## Addendum (2026-02-16) — Re-review after v1.6 clarifications (ignore completed Phase 1)
+
+**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.6)
+
+### What's addressed (✅)
+
+- **agent_results.id + log lifecycle:** Plan now explicitly states `id` is updated on step upsert; derivable log path always points to the latest attempt; older logs may be orphaned.
+- **Quality-retry semantics:** `agent_results.iteration` is now defined as a monotonic per-phase/per-run counter that advances on *every* agent invocation (including quality-retry author re-invocations), preventing resume from misclassifying retries as already-completed.
+- **Naming consistency:** quality DB writes consistently use `upsertQualityResult()`.
+
+### Remaining concerns / follow-ups
+
+- **P2 — Optional: add `updated_at` timestamps for upserted rows.** If `agent_results`/`quality_results` can be updated on resume, an `updated_at` column makes debugging/reporting clearer (distinguish first-run vs re-run overwrite). Not required for correctness.
+
+### Updated readiness
+
+- **Plan correctness:** ✅
+- **Ready to implement:** ✅ **Ready**

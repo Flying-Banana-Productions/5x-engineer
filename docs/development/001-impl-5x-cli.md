@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.5
+**Version:** 1.6
 **Created:** February 15, 2026
-**Status:** Draft — v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
+**Status:** Draft — v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -491,18 +491,33 @@ CREATE INDEX idx_run_events_run_id ON run_events(run_id);
 -- On resume after a crash, the orchestrator re-derives the step identity
 -- from run state and re-invokes with the same key. INSERT ... ON CONFLICT
 -- DO UPDATE replaces the old result with the new one (the re-run is
--- authoritative). The ULID `id` is generated fresh per invocation and
--- serves as the PK for log file references (.5x/logs/<run-id>/agent-<id>.log).
+-- authoritative).
+--
+-- ULID `id` and log file lifecycle: `id` is generated fresh per invocation
+-- and serves as the PK + log file key (.5x/logs/<run-id>/agent-<id>.log).
+-- On upsert (ON CONFLICT DO UPDATE), the `id` column IS updated to the new
+-- invocation's ULID — the new log file replaces the logical slot. The old
+-- log file from the interrupted/crashed attempt remains on disk as an
+-- orphan (acceptable for a local tool; cleaned up with the log directory).
+-- The derivable log path (run_id + id) always points to the latest attempt.
 --
 -- Output retention: full agent output is written to
 -- .5x/logs/<run-id>/agent-<id>.log on disk. The DB stores parsed signal
 -- data (signal_type + signal_data) and metrics only — not the full output
--- blob. Log file path is derivable from run_id + id.
+-- blob. Log file path is derivable from run_id + id (always the latest).
 --
--- Iteration semantics:
---   plan-review loop: iteration = review-fix cycle count (0-indexed) within the run.
---   phase-execution loop: iteration = review-fix cycle count within the current phase.
---   quality retries: tracked separately in quality_results.attempt.
+-- Iteration semantics: `iteration` is a monotonic counter that advances on
+-- every agent invocation within a phase (or within a run for plan-review).
+-- This includes review-fix cycles AND quality-retry re-invocations of the
+-- author. The counter ensures each invocation gets a unique step identity.
+--   plan-review loop: iteration increments on each agent call (reviewer=0,
+--     author-fix=1, reviewer=2, author-fix=3, ...).
+--   phase-execution loop: iteration increments on each agent call within
+--     the phase (author=0, quality-retry-author=1, reviewer=2,
+--     review-fix-author=3, reviewer=4, ...).
+--   quality gate results: tracked separately in quality_results.attempt
+--     (not agent_results.iteration), since quality gates are command
+--     executions, not agent invocations.
 --   plan generation: iteration = 0 (single invocation).
 --
 -- Phase sentinel: -1 means "no phase context" (plan generation, plan-review).
@@ -513,7 +528,7 @@ CREATE TABLE agent_results (
   role TEXT NOT NULL,                            -- 'author' | 'reviewer'
   template_name TEXT NOT NULL,                   -- which prompt template was used
   phase INTEGER NOT NULL DEFAULT -1,             -- -1 for no phase context; 0+ for real phases
-  iteration INTEGER NOT NULL DEFAULT 0,          -- cycle count within phase or run
+  iteration INTEGER NOT NULL DEFAULT 0,          -- monotonic per-phase/run agent invocation counter
   exit_code INTEGER NOT NULL,
   duration_ms INTEGER NOT NULL,
   tokens_in INTEGER,
@@ -1064,7 +1079,7 @@ export async function runQualityGates(
 - [ ] Store truncated output (first 4KB) + file path in DB results JSON
 - [ ] Report pass/fail per command and overall
 - [ ] Timeout handling per command
-- [ ] Store structured results in DB via `insertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
+- [ ] Store structured results in DB via `upsertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
 - [ ] Unit tests with mocked commands
 
 ### 5.2 `src/git.ts` — Git operations, safety invariants, and worktree support
