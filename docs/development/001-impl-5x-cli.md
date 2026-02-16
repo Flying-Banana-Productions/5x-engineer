@@ -64,7 +64,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 1. [Architecture Overview](#architecture-overview)
 2. [Phase 1: Foundation — Config, Parsers, Status](#phase-1-foundation--config-parsers-status) — COMPLETE
 3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates) — COMPLETE
-4. [Phase 2: Agent Adapters](#phase-2-agent-adapters)
+4. [Phase 2: Agent Adapters](#phase-2-agent-adapters) — COMPLETE
 5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init)
 6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
 7. [Phase 5: Phase Execution Loop](#phase-5-phase-execution-loop)
@@ -736,9 +736,9 @@ export interface AgentResult {
 }
 ```
 
-- [ ] Define interface and types
-- [ ] Export adapter factory type
-- [ ] Add a "schema probe" test that validates Claude Code `--output-format json` output maps cleanly to the required fields, with clear error messages on schema changes
+- [x] Define interface and types
+- [x] Export adapter factory type
+- [x] Add a "schema probe" test that validates Claude Code `--output-format json` output maps cleanly to the required fields, with clear error messages on schema changes
 
 ### 2.2 `src/agents/claude-code.ts` — Claude Code CLI adapter
 
@@ -772,16 +772,16 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 }
 ```
 
-- [ ] Implement subprocess spawning with timeout
-- [ ] Parse Claude Code JSON output format (research `--output-format json` schema)
-- [ ] Map JSON output to `AgentResult` — extract only `output`, `exitCode`, `duration`; optionally extract `tokens`/`cost` if present in JSON
-- [ ] Lock parsing to specific known JSON fields with graceful handling of schema changes (log warning, don't crash)
-- [ ] Handle stderr capture for error diagnostics
-- [ ] Map exit codes to result states
-- [ ] `isAvailable()` check via `claude --version`
-- [ ] Unit tests with mocked subprocess
-- [ ] Schema probe test: validate expected JSON output fields exist, fail loudly if schema has changed
-- [ ] Integration test (env-gated): invoke Claude Code with a trivial prompt, verify round-trip
+- [x] Implement subprocess spawning with timeout
+- [x] Parse Claude Code JSON output format (research `--output-format json` schema)
+- [x] Map JSON output to `AgentResult` — extract only `output`, `exitCode`, `duration`; optionally extract `tokens`/`cost` if present in JSON
+- [x] Lock parsing to specific known JSON fields with graceful handling of schema changes (log warning, don't crash)
+- [x] Handle stderr capture for error diagnostics
+- [x] Map exit codes to result states
+- [x] `isAvailable()` check via `claude --version`
+- [x] Unit tests with mocked subprocess
+- [x] Schema probe test: validate expected JSON output fields exist, fail loudly if schema has changed
+- [x] Integration test (env-gated): invoke Claude Code with a trivial prompt, verify round-trip
 
 ### 2.3 `src/agents/factory.ts` — Adapter factory
 
@@ -795,9 +795,9 @@ export function createAdapter(config: AdapterConfig): AgentAdapter {
 }
 ```
 
-- [ ] Config-driven adapter instantiation
-- [ ] Availability check on creation (warn if adapter binary not found)
-- [ ] Unit test: factory returns correct adapter type
+- [x] Config-driven adapter instantiation
+- [x] Availability check on creation (warn if adapter binary not found)
+- [x] Unit test: factory returns correct adapter type
 
 ---
 
@@ -1445,10 +1445,10 @@ $ 5x history --run abc123
 | `src/commands/status.ts` | MOD — Plan status display (add DB run state) |
 | `src/commands/history.ts` | NEW — Run history and reporting from DB |
 | `src/commands/worktree.ts` | NEW — Worktree status and cleanup |
-| `src/agents/types.ts` | NEW — Agent adapter interface |
-| `src/agents/claude-code.ts` | NEW — Claude Code subprocess adapter |
+| `src/agents/types.ts` | DONE — Agent adapter interface |
+| `src/agents/claude-code.ts` | DONE — Claude Code subprocess adapter |
 | `src/agents/opencode.ts` | NEW — OpenCode SDK adapter |
-| `src/agents/factory.ts` | NEW — Config-driven adapter instantiation |
+| `src/agents/factory.ts` | DONE — Config-driven adapter instantiation |
 | `src/orchestrator/plan-review-loop.ts` | NEW — Loop 1 state machine (DB-backed) |
 | `src/orchestrator/phase-execution-loop.ts` | NEW — Loop 2 state machine (DB + lock + worktree) |
 | `src/parsers/plan.ts` | DONE — Implementation plan markdown parser |
@@ -1509,7 +1509,7 @@ $ 5x history --run abc123
 |-------|-------------|------|
 | 1 | Foundation — config (JS), parsers, signal protocol v1, status | 2 days (**COMPLETE**) |
 | 1.1 | Architecture foundation — SQLite DB, plan lock, config updates, test fixes | 1.5 days |
-| 2 | Agent adapters (Claude Code) + schema probe | 1 day |
+| 2 | Agent adapters (Claude Code) + schema probe | 1 day (**COMPLETE**) |
 | 3 | Prompt templates (bundled SSOT) + simplified init | 0.5 days |
 | 4 | Plan generation + review loop (DB-backed) | 1.5 days |
 | 5 | Phase execution loop + git safety + worktree + lock integration | 3 days |

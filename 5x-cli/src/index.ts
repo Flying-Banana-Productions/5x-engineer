@@ -1,5 +1,15 @@
 // Public API exports
 
+// Agents
+export type {
+	AdapterConfig,
+	AgentAdapter,
+	AgentResult,
+	InvokeOptions,
+} from "./agents/types.js";
+export { ClaudeCodeAdapter } from "./agents/claude-code.js";
+export { createAdapter, createAndVerifyAdapter } from "./agents/factory.js";
+
 export type { FiveXConfig } from "./config.js";
 export { defineConfig, loadConfig } from "./config.js";
 // DB
