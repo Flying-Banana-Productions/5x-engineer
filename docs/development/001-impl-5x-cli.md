@@ -63,7 +63,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 
 1. [Architecture Overview](#architecture-overview)
 2. [Phase 1: Foundation — Config, Parsers, Status](#phase-1-foundation--config-parsers-status) — COMPLETE
-3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates)
+3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates) — COMPLETE
 4. [Phase 2: Agent Adapters](#phase-2-agent-adapters)
 5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init)
 6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
@@ -422,12 +422,12 @@ export function getDb(projectRoot: string): Database { ... }
 export function closeDb(): void { ... }
 ```
 
-- [ ] Singleton `Database` instance, created on first access
-- [ ] DB path: `<projectRoot>/.5x/5x.db` (auto-create `.5x/` directory if missing)
-- [ ] Pragmas on open: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`
-- [ ] Register cleanup on `process.on('exit')`, `SIGINT`, `SIGTERM` — close DB gracefully
-- [ ] Export `getDb()` and `closeDb()` — no direct `Database` construction elsewhere
-- [ ] Unit tests: connection creates DB file, WAL mode is active, singleton returns same instance
+- [x] Singleton `Database` instance, created on first access
+- [x] DB path: `<projectRoot>/.5x/5x.db` (auto-create `.5x/` directory if missing)
+- [x] Pragmas on open: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`
+- [x] Register cleanup on `process.on('exit')`, `SIGINT`, `SIGTERM` — close DB gracefully
+- [x] Export `getDb()` and `closeDb()` — no direct `Database` construction elsewhere
+- [x] Unit tests: connection creates DB file, WAL mode is active, singleton returns same instance
 
 ### 1.1.2 `src/db/schema.ts` — Schema definition and migrations
 
@@ -559,11 +559,11 @@ CREATE TABLE quality_results (
 CREATE INDEX idx_quality_results_run ON quality_results(run_id, phase);
 ```
 
-- [ ] Migration runner: read `schema_version` table (create if missing), apply migrations with version > current
-- [ ] Each migration is a function: `(db: Database) => void`, runs in a transaction
-- [ ] Migrations stored as an ordered array in `schema.ts` (not separate SQL files — bundled with binary)
-- [ ] On schema mismatch: clear error message with DB path, suggest delete `.5x/5x.db` to reset
-- [ ] Unit tests: fresh DB gets all migrations, already-migrated DB is no-op, partial migration resumes
+- [x] Migration runner: read `schema_version` table (create if missing), apply migrations with version > current
+- [x] Each migration is a function: `(db: Database) => void`, runs in a transaction
+- [x] Migrations stored as an ordered array in `schema.ts` (not separate SQL files — bundled with binary)
+- [x] On schema mismatch: clear error message with DB path, suggest delete `.5x/5x.db` to reset
+- [x] Unit tests: fresh DB gets all migrations, already-migrated DB is no-op, partial migration resumes
 
 ### 1.1.3 `src/db/operations.ts` — Typed CRUD helpers
 
@@ -598,14 +598,14 @@ export function getRunHistory(db: Database, planPath?: string, limit?: number): 
 export function getRunMetrics(db: Database, runId: string): RunMetrics;
 ```
 
-- [ ] All write operations use prepared statements for safety and performance
-- [ ] Agent result upserts use `INSERT ... ON CONFLICT(run_id, role, phase, iteration, template_name) DO UPDATE` — on resume, re-running a step replaces the old result with the new one
-- [ ] Quality result upserts use `INSERT ... ON CONFLICT(run_id, phase, attempt) DO UPDATE`
-- [ ] `hasCompletedStep()` checks if a step already has a result — orchestrator uses this on resume to skip completed steps
-- [ ] Plan upserts use `INSERT ... ON CONFLICT(plan_path) DO UPDATE` for worktree/branch updates
-- [ ] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
-- [ ] Type-safe row interfaces matching the schema
-- [ ] Unit tests: CRUD round-trips for each table, upsert idempotency (re-insert same step key updates row), `hasCompletedStep` returns true after insert, concurrent read during write (WAL)
+- [x] All write operations use prepared statements for safety and performance
+- [x] Agent result upserts use `INSERT ... ON CONFLICT(run_id, role, phase, iteration, template_name) DO UPDATE` — on resume, re-running a step replaces the old result with the new one
+- [x] Quality result upserts use `INSERT ... ON CONFLICT(run_id, phase, attempt) DO UPDATE`
+- [x] `hasCompletedStep()` checks if a step already has a result — orchestrator uses this on resume to skip completed steps
+- [x] Plan upserts use `INSERT ... ON CONFLICT(plan_path) DO UPDATE` for worktree/branch updates
+- [x] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
+- [x] Type-safe row interfaces matching the schema
+- [x] Unit tests: CRUD round-trips for each table, upsert idempotency (re-insert same step key updates row), `hasCompletedStep` returns true after insert, concurrent read during write (WAL)
 
 ### 1.1.4 `src/lock.ts` — Plan-level file locking
 
@@ -636,11 +636,11 @@ Lock mechanics:
 - `registerLockCleanup()`: register `process.on('exit')`, `SIGINT`, `SIGTERM` handlers that call `releaseLock()`
 - Race condition note: there's a small TOCTOU window between checking and creating the lock file. Acceptable for a single-developer CLI tool — not a distributed system.
 
-- [ ] Implement `acquireLock` with PID liveness check
-- [ ] Implement `releaseLock` (idempotent delete)
-- [ ] Implement `registerLockCleanup` for graceful shutdown
-- [ ] Create `.5x/locks/` directory on first lock acquisition
-- [ ] Unit tests: acquire/release round-trip, stale lock detection (write lock with dead PID), double-acquire same PID (re-entrant), concurrent lock attempt
+- [x] Implement `acquireLock` with PID liveness check
+- [x] Implement `releaseLock` (idempotent delete)
+- [x] Implement `registerLockCleanup` for graceful shutdown
+- [x] Create `.5x/locks/` directory on first lock acquisition
+- [x] Unit tests: acquire/release round-trip, stale lock detection (write lock with dead PID), double-acquire same PID (re-entrant), concurrent lock attempt
 
 ### 1.1.5 Config updates
 
@@ -656,9 +656,9 @@ export interface FiveXConfig {
 }
 ```
 
-- [ ] Add optional `db.path` field to Zod schema with default `.5x/5x.db`
-- [ ] Update `configSchema` in `src/config.ts`
-- [ ] Unit test: config with db override, config without db (uses default)
+- [x] Add optional `db.path` field to Zod schema with default `.5x/5x.db`
+- [x] Update `configSchema` in `src/config.ts`
+- [x] Unit test: config with db override, config without db (uses default)
 
 ### 1.1.6 Status command enhancement
 
@@ -682,15 +682,15 @@ $ 5x status docs/development/001-impl-5x-cli.md
   Last event: verdict received (ready_with_corrections)
 ```
 
-- [ ] Check for DB existence at `.5x/5x.db`; if present, query for active/latest run
-- [ ] Display active run info: run ID, command, current phase, state, duration, iteration count, last event
-- [ ] Display latest completed run summary if no active run
-- [ ] Graceful when no DB exists (fresh project, pre-first-run) — show only plan progress
-- [ ] Unit tests: status with DB (active run), status with DB (no active run), status without DB
+- [x] Check for DB existence at `.5x/5x.db`; if present, query for active/latest run
+- [x] Display active run info: run ID, command, current phase, state, duration, iteration count, last event
+- [x] Display latest completed run summary if no active run
+- [x] Graceful when no DB exists (fresh project, pre-first-run) — show only plan progress
+- [x] Unit tests: status with DB (active run), status with DB (no active run), status without DB
 
 ### 1.1.7 Fix failing tests
 
-- [ ] Update stale assertions in `test/parsers/plan.test.ts` — tests hardcode expectations against `docs/development/001-impl-5x-cli.md` which has progressed since initial implementation. Either update expected values or use a dedicated test fixture file instead of the live plan.
+- [x] Update stale assertions in `test/parsers/plan.test.ts` — tests hardcode expectations against `docs/development/001-impl-5x-cli.md` which has progressed since initial implementation. Either update expected values or use a dedicated test fixture file instead of the live plan.
 
 ---
 

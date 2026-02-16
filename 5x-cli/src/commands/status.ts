@@ -1,7 +1,11 @@
 import { defineCommand } from "citty";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { parsePlan, type Phase } from "../parsers/plan.js";
+import { getDb, closeDb } from "../db/connection.js";
+import { runMigrations } from "../db/schema.js";
+import { getActiveRun, getLatestRun, getRunEvents } from "../db/operations.js";
+import type { RunRow } from "../db/operations.js";
 
 function progressBar(percentage: number, width: number = 12): string {
   const filled = Math.round((percentage / 100) * width);
@@ -28,9 +32,60 @@ function formatStatus(phases: Phase[]): string {
     return `Phase ${firstIncomplete?.number ?? 1} ready`;
   }
 
+  // Use actual phase numbers from the completed phases (handles dotted numbers like 1.1)
+  const completedPhases = phases.filter((p) => p.isComplete);
+  const firstNum = completedPhases[0]!.number;
+  const lastNum = completedPhases[completedPhases.length - 1]!.number;
   const completedRange =
-    completedCount === 1 ? "Phase 1" : `Phases 1\u2013${completedCount}`;
-  return `${completedRange} complete; Phase ${firstIncomplete?.number ?? completedCount + 1} ready`;
+    completedCount === 1
+      ? `Phase ${firstNum}`
+      : `Phases ${firstNum}\u2013${lastNum}`;
+  return `${completedRange} complete; Phase ${firstIncomplete?.number ?? "?"} ready`;
+}
+
+function formatDuration(startedAt: string): string {
+  const start = new Date(startedAt + "Z").getTime();
+  const now = Date.now();
+  const diffMs = now - start;
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m ago`;
+}
+
+function tryLoadRunState(
+  planPath: string
+): { active: RunRow | null; latest: RunRow | null; lastEventType: string | null } | null {
+  // Walk up from plan file to find project root (where .5x/ lives)
+  let dir = dirname(planPath);
+  const root = resolve("/");
+  while (dir !== root) {
+    const dbPath = resolve(dir, ".5x", "5x.db");
+    if (existsSync(dbPath)) {
+      try {
+        const db = getDb(dir);
+        runMigrations(db);
+        const active = getActiveRun(db, planPath);
+        const latest = active ?? getLatestRun(db, planPath);
+        let lastEventType: string | null = null;
+        if (active) {
+          const events = getRunEvents(db, active.id);
+          if (events.length > 0) {
+            lastEventType = events[events.length - 1]!.event_type;
+          }
+        }
+        return { active, latest, lastEventType };
+      } catch {
+        return null; // DB exists but failed to query — degrade gracefully
+      } finally {
+        closeDb();
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 export default defineCommand({
@@ -84,6 +139,20 @@ export default defineCommand({
     console.log(
       `  Overall: ${plan.completionPercentage}% (${completedCount}/${plan.phases.length} phases complete)`
     );
+
+    // Show DB run state if available
+    const runState = tryLoadRunState(planPath);
+    if (runState?.active) {
+      const r = runState.active;
+      console.log();
+      console.log(`  Active run: ${r.id.slice(0, 8)} (${r.command}, phase ${r.current_phase ?? "?"}, state: ${r.current_state ?? "?"})`);
+      console.log(`  Started: ${formatDuration(r.started_at)}${runState.lastEventType ? ` | Last event: ${runState.lastEventType}` : ""}`);
+    } else if (runState?.latest && runState.latest.status !== "active") {
+      const r = runState.latest;
+      console.log();
+      console.log(`  Last run: ${r.id.slice(0, 8)} (${r.command}, ${r.status})`);
+    }
+
     console.log();
   },
 });

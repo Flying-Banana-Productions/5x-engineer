@@ -1,33 +1,34 @@
 import { describe, test, expect } from "bun:test";
 import { parseReviewSummary } from "../../src/parsers/review.js";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const REAL_REVIEW = readFileSync(
-  resolve(
-    import.meta.dir,
-    "../../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md"
-  ),
-  "utf-8"
+const REAL_REVIEW_PATH = resolve(
+  import.meta.dir,
+  "../../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md"
 );
+const hasRealReview = existsSync(REAL_REVIEW_PATH);
+const REAL_REVIEW = hasRealReview ? readFileSync(REAL_REVIEW_PATH, "utf-8") : "";
 
 describe("parseReviewSummary", () => {
-  test("extracts subject from real review", () => {
+  // Smoke tests against real review file — loose structural assertions only
+  test.skipIf(!hasRealReview)("extracts subject from real review", () => {
     const summary = parseReviewSummary(REAL_REVIEW);
     expect(summary.subject).toContain("5x CLI");
   });
 
-  test("extracts readiness from real review", () => {
+  test.skipIf(!hasRealReview)("extracts readiness from real review", () => {
     const summary = parseReviewSummary(REAL_REVIEW);
-    expect(summary.readiness).toContain("Not ready");
+    // Readiness changes across addendums; just assert it's non-empty
+    expect(summary.readiness.length).toBeGreaterThan(0);
   });
 
-  test("counts P0 items from real review", () => {
+  test.skipIf(!hasRealReview)("counts P0 items from real review", () => {
     const summary = parseReviewSummary(REAL_REVIEW);
     expect(summary.p0Count).toBeGreaterThan(0);
   });
 
-  test("counts P1 items from real review", () => {
+  test.skipIf(!hasRealReview)("counts P1 items from real review", () => {
     const summary = parseReviewSummary(REAL_REVIEW);
     expect(summary.p1Count).toBeGreaterThan(0);
   });

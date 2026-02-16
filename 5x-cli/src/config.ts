@@ -21,11 +21,16 @@ const PathsSchema = z.object({
     .default({}),
 });
 
+const DbSchema = z.object({
+  path: z.string().default(".5x/5x.db"),
+});
+
 const FiveXConfigSchema = z.object({
   author: AgentConfigSchema.default({}),
   reviewer: AgentConfigSchema.default({}),
   qualityGates: z.array(z.string()).default([]),
   paths: PathsSchema.default({}),
+  db: DbSchema.default({}),
   maxReviewIterations: z.number().int().positive().default(5),
   maxQualityRetries: z.number().int().positive().default(3),
   maxAutoIterations: z.number().int().positive().default(10),

@@ -1,5 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { resolve } from "node:path";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 const PLAN_PATH = resolve(
@@ -24,13 +27,37 @@ describe("5x status", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("5x CLI");
     expect(stdout).toContain("Phase 1");
-    expect(stdout).toContain("Phase 7");
     expect(stdout).toContain("Overall:");
   });
 
-  test("shows 0% for all-unchecked plan", async () => {
-    const { stdout } = await runStatus([PLAN_PATH]);
-    expect(stdout).toContain("0%");
+  test("shows 0% for fixture with all-unchecked items", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "5x-status-"));
+    const fixture = join(tmp, "plan.md");
+    writeFileSync(
+      fixture,
+      `# Test Plan
+
+**Version:** 1.0
+
+## Phase 1: Setup
+
+- [ ] First task
+- [ ] Second task
+
+## Phase 2: Build
+
+- [ ] Third task
+`
+    );
+    try {
+      const { stdout, exitCode } = await runStatus([fixture]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("0%");
+      expect(stdout).toContain("Phase 1");
+      expect(stdout).toContain("Phase 2");
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
   });
 
   test("errors on missing file", async () => {
