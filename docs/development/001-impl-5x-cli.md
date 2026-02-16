@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.6
+**Version:** 1.7
 **Created:** February 15, 2026
-**Status:** Draft — v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
+**Status:** Draft — v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -43,7 +43,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 | **Adapter pattern for agent harnesses** | Abstract interface enables Claude Code and OpenCode without coupling orchestration logic to either. New harnesses can be added without changing the state machine. |
 | **SSOT prompt templates, not harness-specific commands** | Templates are bundled with the CLI and rendered into prompt strings at invocation time. No scaffolding into `.claude/commands/` or `.opencode/commands/`. No version tracking, checksums, or `5x upgrade` for templates. Adding a new harness requires only an adapter implementation — no template variants. Templates update when the CLI updates. |
 | **SQLite DB as orchestration SOT** | Local `.5x/5x.db` (via `bun:sqlite`) stores run state, parsed agent signals, quality gate results, and metrics. Replaces JSON journal files. Provides ACID transactions, WAL-mode concurrent reads (e.g., `5x status` during active `5x run`), indexed recovery lookups, and aggregation queries for reporting. Commented YAML in markdown files remains as a human-inspectable artifact but is not the source of truth for orchestration decisions. |
-| **Plan-level file locking** | `.5x/locks/<hash>.lock` with PID prevents concurrent `5x run` on the same plan. Stale lock detection via PID liveness check. File-based (not DB-based) so it works even if DB is corrupted. |
+| **Plan-level file locking** | `.5x/locks/<sha256(canonicalPlanPath).slice(0,16)>.lock` with PID prevents concurrent `5x run` on the same plan across relative/absolute/symlink path variants. Stale detection via `process.kill(pid, 0)` with EPERM treated as alive. File-based (not DB-based) so it works even if DB is corrupted. |
 | **Git worktree support** | `--worktree` flag on `5x run` creates an isolated worktree + branch for phase execution. Association persisted in DB so subsequent commands auto-resolve `workdir`. Enables parallel execution of different plans without branch conflicts. |
 | **Human gate between phases, auto-resolve within** | Within a phase, mechanical review fixes are handled automatically (reviewer says `auto_fix`, author fixes, reviewer re-reviews). Between phases, always pause for human unless `--auto`. Agents escalate judgment calls at any point via `human_required` / `needs_human` signals. |
 | **CLI owns artifact paths — no directory scanning** | The CLI computes deterministic output paths for plans, reviews, and logs before invoking agents, passes them to the agent prompt, and requires the `5x:status` block to echo the path back. The CLI never infers artifacts by "newest file" or directory-scanning heuristics. This prevents mis-association in repos with parallel workstreams, unrelated doc edits, or editor autosaves. |
@@ -104,7 +104,7 @@ The 5x workflow currently requires manual orchestration: invoking commands, rout
 
 **SQLite as orchestration SOT.** Parsed `5x:status` and `5x:verdict` blocks are stored in SQLite (`.5x/5x.db` via `bun:sqlite`) immediately after parsing. The DB is the source of truth for all orchestration decisions — resume detection, iteration tracking, retry decisions, reporting. The commented YAML blocks in markdown files remain as human-inspectable artifacts but are not re-read for decision making. Benefits: ACID transactions for reliable state updates, WAL mode for concurrent reads (`5x status` during active `5x run`), indexed lookups for fast recovery, aggregation queries for reporting, natural idempotency via unique constraints.
 
-**Plan-level file locking.** `.5x/locks/<sha256(planPath)>.lock` files contain `{ pid, startedAt, planPath }`. Acquired at `5x run` startup, released on exit. Stale detection via `process.kill(pid, 0)`. File-based rather than DB-based so locking works even if the DB is corrupted. Prevents concurrent `5x run` on the same plan while allowing parallel execution on different plans.
+**Plan-level file locking.** `.5x/locks/<sha256(canonicalPlanPath)>.lock` files contain `{ pid, startedAt, planPath }` where `planPath` is canonicalized (absolute + realpath when possible). Acquired at `5x run` startup, released on exit. Stale detection via `process.kill(pid, 0)`; `EPERM` is treated as "alive" (lock is not stealable across users). File-based rather than DB-based so locking works even if the DB is corrupted. Prevents concurrent `5x run` on the same plan while allowing parallel execution on different plans.
 
 **Git worktree support for isolated execution.** `--worktree` on `5x run` creates a git worktree + branch, persists the association in the DB `plans` table. All subsequent `5x` commands for that plan auto-resolve `workdir` from the DB without requiring `--worktree` again. Enables parallel plan execution without branch conflicts. Worktree creation is limited to `5x run` (not `plan` or `plan-review`) since plan/review operations only modify markdown files. Cleanup is non-destructive by default: `5x worktree cleanup` removes the worktree directory but retains the branch. Branch deletion requires `--delete-branch` and is only allowed if the branch is fully merged.
 
@@ -272,7 +272,7 @@ export interface ParsedPlan {
 }
 
 export interface Phase {
-  number: number;
+  number: string;               // phase label from the plan heading (e.g. '1', '1.1', '1.10')
   title: string;
   heading: string;              // raw markdown heading text
   completionGate?: string;
@@ -605,6 +605,7 @@ export function getRunMetrics(db: Database, runId: string): RunMetrics;
 - [x] Plan upserts use `INSERT ... ON CONFLICT(plan_path) DO UPDATE` for worktree/branch updates
 - [x] JSON fields serialized with `JSON.stringify()`, deserialized with `JSON.parse()` on read
 - [x] Type-safe row interfaces matching the schema
+- [x] Separate write input types (`AgentResultInput`, `QualityResultInput`) from read row types; `created_at` is DB-managed and updated on upsert overwrite
 - [x] Unit tests: CRUD round-trips for each table, upsert idempotency (re-insert same step key updates row), `hasCompletedStep` returns true after insert, concurrent read during write (WAL)
 
 ### 1.1.4 `src/lock.ts` — Plan-level file locking
@@ -629,9 +630,10 @@ export function registerLockCleanup(projectRoot: string, planPath: string): void
 ```
 
 Lock mechanics:
-- Lock path: `<projectRoot>/.5x/locks/<sha256(planPath).slice(0,16)>.lock`
-- Content: JSON `LockInfo` — `{ pid, startedAt, planPath }`
-- Acquire: check if lock file exists → if yes, check PID liveness via `process.kill(pid, 0)` → if dead, log stale lock warning and steal → if alive, return `{ acquired: false, existingLock, stale: false }`
+- Canonicalization: compute `canonicalPlanPath` = absolute + realpath (when possible) once at CLI boundaries; use it for DB + locks
+- Lock path: `<projectRoot>/.5x/locks/<sha256(canonicalPlanPath).slice(0,16)>.lock`
+- Content: JSON `LockInfo` — `{ pid, startedAt, planPath }` where `planPath` is canonical
+- Acquire: check if lock file exists → if yes, check PID liveness via `process.kill(pid, 0)` (treat `EPERM` as alive) → if dead, log stale lock warning and steal → if alive, return `{ acquired: false, existingLock, stale: false }`
 - Release: delete lock file (no-op if already gone)
 - `registerLockCleanup()`: register `process.on('exit')`, `SIGINT`, `SIGTERM` handlers that call `releaseLock()`
 - Race condition note: there's a small TOCTOU window between checking and creating the lock file. Acceptable for a single-developer CLI tool — not a distributed system.
@@ -682,7 +684,9 @@ $ 5x status docs/development/001-impl-5x-cli.md
   Last event: verdict received (ready_with_corrections)
 ```
 
-- [x] Check for DB existence at `.5x/5x.db`; if present, query for active/latest run
+- [x] Check for DB existence at resolved `config.db.path`; if present, query for active/latest run
+- [x] Resolve project root deterministically (config root if present, else git root) and resolve DB path from `config.db.path`
+- [x] `status` is read-only: never creates a DB file and never runs migrations; if DB exists but schema is stale, omit DB info with a clear warning
 - [x] Display active run info: run ID, command, current phase, state, duration, iteration count, last event
 - [x] Display latest completed run summary if no active run
 - [x] Graceful when no DB exists (fresh project, pre-first-run) — show only plan progress

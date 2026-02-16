@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 const DEFAULT_DB_PATH = ".5x/5x.db";
 
@@ -14,65 +14,74 @@ let cleanupRegistered = false;
  * Sets WAL mode, foreign keys, and busy timeout on first open.
  */
 export function getDb(projectRoot: string, dbPath?: string): Database {
-  const resolvedPath = resolve(projectRoot, dbPath ?? DEFAULT_DB_PATH);
+	const resolvedPath = resolve(projectRoot, dbPath ?? DEFAULT_DB_PATH);
 
-  if (instance && instancePath === resolvedPath) {
-    return instance;
-  }
+	if (instance && instancePath === resolvedPath) {
+		return instance;
+	}
 
-  // Close any existing connection to a different path
-  if (instance) {
-    closeDb();
-  }
+	// Close any existing connection to a different path
+	if (instance) {
+		closeDb();
+	}
 
-  const dir = dirname(resolvedPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+	const dir = dirname(resolvedPath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
 
-  const db = new Database(resolvedPath);
-  db.exec("PRAGMA journal_mode=WAL");
-  db.exec("PRAGMA foreign_keys=ON");
-  db.exec("PRAGMA busy_timeout=5000");
+	const db = new Database(resolvedPath);
+	db.exec("PRAGMA journal_mode=WAL");
+	db.exec("PRAGMA foreign_keys=ON");
+	db.exec("PRAGMA busy_timeout=5000");
 
-  instance = db;
-  instancePath = resolvedPath;
+	instance = db;
+	instancePath = resolvedPath;
 
-  if (!cleanupRegistered) {
-    cleanupRegistered = true;
-    const cleanup = () => {
-      closeDb();
-    };
-    process.on("exit", cleanup);
-    process.on("SIGINT", () => {
-      cleanup();
-      process.exit(130);
-    });
-    process.on("SIGTERM", () => {
-      cleanup();
-      process.exit(143);
-    });
-  }
+	if (!cleanupRegistered) {
+		cleanupRegistered = true;
+		const cleanup = () => {
+			closeDb();
+		};
+		process.on("exit", cleanup);
+		process.on("SIGINT", () => {
+			cleanup();
+			process.exit(130);
+		});
+		process.on("SIGTERM", () => {
+			cleanup();
+			process.exit(143);
+		});
+	}
 
-  return db;
+	return db;
+}
+
+/**
+ * Open a read-only connection for inspection commands (e.g. `5x status`).
+ * Does not run pragmas or create files.
+ */
+export function openDbReadOnly(projectRoot: string, dbPath?: string): Database {
+	const resolvedPath = resolve(projectRoot, dbPath ?? DEFAULT_DB_PATH);
+	return new Database(resolvedPath, { readonly: true });
 }
 
 /** Close the singleton database connection. Safe to call multiple times. */
 export function closeDb(): void {
-  if (instance) {
-    try {
-      instance.close();
-    } catch {
-      // Already closed or other error — ignore
-    }
-    instance = null;
-    instancePath = null;
-  }
+	if (instance) {
+		try {
+			instance.close();
+		} catch {
+			// Already closed or other error — ignore
+		}
+		instance = null;
+		instancePath = null;
+	}
 }
 
 /** Get the resolved path of the current DB instance (for diagnostics). */
 export function getDbPath(): string | null {
-  return instancePath;
+	return instancePath;
 }
 
 /**
@@ -80,6 +89,6 @@ export function getDbPath(): string | null {
  * @internal
  */
 export function _resetForTest(): void {
-  instance = null;
-  instancePath = null;
+	instance = null;
+	instancePath = null;
 }

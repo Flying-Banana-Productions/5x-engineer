@@ -1,45 +1,57 @@
 // Public API exports
-export { loadConfig, defineConfig } from "./config.js";
+
 export type { FiveXConfig } from "./config.js";
-export { parsePlan } from "./parsers/plan.js";
-export type { ParsedPlan, Phase, ChecklistItem } from "./parsers/plan.js";
-export { parseVerdictBlock, parseStatusBlock } from "./parsers/signals.js";
-export type { VerdictBlock, VerdictItem, StatusBlock } from "./parsers/signals.js";
-export { parseReviewSummary } from "./parsers/review.js";
-export type { ReviewSummary } from "./parsers/review.js";
-
+export { defineConfig, loadConfig } from "./config.js";
 // DB
-export { getDb, closeDb } from "./db/connection.js";
-export { runMigrations, getSchemaVersion } from "./db/schema.js";
-export {
-  upsertPlan,
-  getPlan,
-  createRun,
-  updateRunStatus,
-  getActiveRun,
-  getLatestRun,
-  appendRunEvent,
-  getRunEvents,
-  upsertAgentResult,
-  getAgentResults,
-  getLatestVerdict,
-  getLatestStatus,
-  hasCompletedStep,
-  upsertQualityResult,
-  getQualityResults,
-  getRunHistory,
-  getRunMetrics,
-} from "./db/operations.js";
+export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
 export type {
-  PlanRow,
-  RunRow,
-  RunEventRow,
-  AgentResultRow,
-  QualityResultRow,
-  RunSummary,
-  RunMetrics,
+	AgentResultInput,
+	AgentResultRow,
+	PlanRow,
+	QualityResultInput,
+	QualityResultRow,
+	RunEventRow,
+	RunMetrics,
+	RunRow,
+	RunSummary,
 } from "./db/operations.js";
-
-// Lock
-export { acquireLock, releaseLock, isLocked, registerLockCleanup } from "./lock.js";
+export {
+	appendRunEvent,
+	createRun,
+	getActiveRun,
+	getAgentResults,
+	getLatestRun,
+	getLatestStatus,
+	getLatestVerdict,
+	getPlan,
+	getQualityResults,
+	getRunEvents,
+	getRunHistory,
+	getRunMetrics,
+	hasCompletedStep,
+	updateRunStatus,
+	upsertAgentResult,
+	upsertPlan,
+	upsertQualityResult,
+} from "./db/operations.js";
+export { getSchemaVersion, runMigrations } from "./db/schema.js";
 export type { LockInfo, LockResult } from "./lock.js";
+// Lock
+export {
+	acquireLock,
+	isLocked,
+	registerLockCleanup,
+	releaseLock,
+} from "./lock.js";
+export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
+export { parsePlan } from "./parsers/plan.js";
+export type { ReviewSummary } from "./parsers/review.js";
+export { parseReviewSummary } from "./parsers/review.js";
+export type {
+	StatusBlock,
+	VerdictBlock,
+	VerdictItem,
+} from "./parsers/signals.js";
+export { parseStatusBlock, parseVerdictBlock } from "./parsers/signals.js";
+// Paths
+export { canonicalizePlanPath } from "./paths.js";

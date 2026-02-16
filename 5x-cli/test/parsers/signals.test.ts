@@ -1,9 +1,26 @@
-import { describe, test, expect } from "bun:test";
-import { parseVerdictBlock, parseStatusBlock } from "../../src/parsers/signals.js";
+import { describe, expect, test } from "bun:test";
+import {
+	parseStatusBlock,
+	parseVerdictBlock,
+} from "../../src/parsers/signals.js";
+
+function unwrap<T>(value: T | null): T {
+	if (value === null) {
+		throw new Error("Expected value to be non-null");
+	}
+	return value;
+}
+
+function unwrapDefined<T>(value: T | undefined): T {
+	if (value === undefined) {
+		throw new Error("Expected value to be defined");
+	}
+	return value;
+}
 
 describe("parseVerdictBlock", () => {
-  test("parses valid verdict block", () => {
-    const text = `Some review content...
+	test("parses valid verdict block", () => {
+		const text = `Some review content...
 
 <!-- 5x:verdict
 protocolVersion: 1
@@ -20,49 +37,52 @@ items:
     reason: Requires judgment about validation strategy
 -->
 `;
-    const verdict = parseVerdictBlock(text);
-    expect(verdict).not.toBeNull();
-    expect(verdict!.protocolVersion).toBe(1);
-    expect(verdict!.readiness).toBe("ready_with_corrections");
-    expect(verdict!.reviewPath).toBe("docs/development/reviews/2026-02-15-001-review.md");
-    expect(verdict!.items.length).toBe(2);
-    expect(verdict!.items[0]!.id).toBe("p1-naming");
-    expect(verdict!.items[0]!.action).toBe("auto_fix");
-    expect(verdict!.items[1]!.action).toBe("human_required");
-  });
+		const verdict = unwrap(parseVerdictBlock(text));
+		expect(verdict.protocolVersion).toBe(1);
+		expect(verdict.readiness).toBe("ready_with_corrections");
+		expect(verdict.reviewPath).toBe(
+			"docs/development/reviews/2026-02-15-001-review.md",
+		);
+		expect(verdict.items.length).toBe(2);
+		const item0 = unwrapDefined(verdict.items[0]);
+		const item1 = unwrapDefined(verdict.items[1]);
+		expect(item0.id).toBe("p1-naming");
+		expect(item0.action).toBe("auto_fix");
+		expect(item1.action).toBe("human_required");
+	});
 
-  test("returns null for missing block", () => {
-    expect(parseVerdictBlock("No block here")).toBeNull();
-  });
+	test("returns null for missing block", () => {
+		expect(parseVerdictBlock("No block here")).toBeNull();
+	});
 
-  test("returns null for malformed YAML", () => {
-    const text = `<!-- 5x:verdict
+	test("returns null for malformed YAML", () => {
+		const text = `<!-- 5x:verdict
 {{{not valid yaml
 -->`;
-    expect(parseVerdictBlock(text)).toBeNull();
-  });
+		expect(parseVerdictBlock(text)).toBeNull();
+	});
 
-  test("returns null for missing required fields", () => {
-    const text = `<!-- 5x:verdict
+	test("returns null for missing required fields", () => {
+		const text = `<!-- 5x:verdict
 protocolVersion: 1
 readiness: ready
 -->`;
-    // Missing reviewPath and items
-    expect(parseVerdictBlock(text)).toBeNull();
-  });
+		// Missing reviewPath and items
+		expect(parseVerdictBlock(text)).toBeNull();
+	});
 
-  test("returns null for invalid readiness value", () => {
-    const text = `<!-- 5x:verdict
+	test("returns null for invalid readiness value", () => {
+		const text = `<!-- 5x:verdict
 protocolVersion: 1
 readiness: maybe
 reviewPath: foo.md
 items: []
 -->`;
-    expect(parseVerdictBlock(text)).toBeNull();
-  });
+		expect(parseVerdictBlock(text)).toBeNull();
+	});
 
-  test("last block wins when multiple present", () => {
-    const text = `
+	test("last block wins when multiple present", () => {
+		const text = `
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: not_ready
@@ -79,26 +99,30 @@ reviewPath: second.md
 items: []
 -->
 `;
-    const verdict = parseVerdictBlock(text);
-    expect(verdict!.readiness).toBe("ready");
-    expect(verdict!.reviewPath).toBe("second.md");
-  });
+		const verdict = unwrap(parseVerdictBlock(text));
+		expect(verdict.readiness).toBe("ready");
+		expect(verdict.reviewPath).toBe("second.md");
+	});
 
-  test("handles unknown protocolVersion gracefully", () => {
-    const text = `<!-- 5x:verdict
+	test("handles unknown protocolVersion gracefully", () => {
+		const text = `<!-- 5x:verdict
 protocolVersion: 99
 readiness: ready
 reviewPath: foo.md
 items: []
 -->`;
-    const verdict = parseVerdictBlock(text);
-    // Still parses, just warns
-    expect(verdict).not.toBeNull();
-    expect(verdict!.readiness).toBe("ready");
-  });
+		const originalWarn = console.warn;
+		try {
+			console.warn = () => {};
+			const verdict = unwrap(parseVerdictBlock(text));
+			expect(verdict.readiness).toBe("ready");
+		} finally {
+			console.warn = originalWarn;
+		}
+	});
 
-  test("skips items with invalid action", () => {
-    const text = `<!-- 5x:verdict
+	test("skips items with invalid action", () => {
+		const text = `<!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
 reviewPath: foo.md
@@ -112,13 +136,14 @@ items:
     action: maybe_fix
     reason: nope
 -->`;
-    const verdict = parseVerdictBlock(text);
-    expect(verdict!.items.length).toBe(1);
-    expect(verdict!.items[0]!.id).toBe("a");
-  });
+		const verdict = unwrap(parseVerdictBlock(text));
+		expect(verdict.items.length).toBe(1);
+		const item0 = unwrapDefined(verdict.items[0]);
+		expect(item0.id).toBe("a");
+	});
 
-  test("handles item with missing reason", () => {
-    const text = `<!-- 5x:verdict
+	test("handles item with missing reason", () => {
+		const text = `<!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
 reviewPath: foo.md
@@ -127,14 +152,15 @@ items:
     title: No reason
     action: auto_fix
 -->`;
-    const verdict = parseVerdictBlock(text);
-    expect(verdict!.items[0]!.reason).toBe("");
-  });
+		const verdict = unwrap(parseVerdictBlock(text));
+		const item0 = unwrapDefined(verdict.items[0]);
+		expect(item0.reason).toBe("");
+	});
 });
 
 describe("parseStatusBlock", () => {
-  test("parses valid status block", () => {
-    const text = `Agent output...
+	test("parses valid status block", () => {
+		const text = `Agent output...
 
 <!-- 5x:status
 protocolVersion: 1
@@ -143,70 +169,69 @@ planPath: docs/development/001-impl-foo.md
 summary: Generated 5-phase implementation plan
 -->
 `;
-    const status = parseStatusBlock(text);
-    expect(status).not.toBeNull();
-    expect(status!.protocolVersion).toBe(1);
-    expect(status!.result).toBe("completed");
-    expect(status!.planPath).toBe("docs/development/001-impl-foo.md");
-    expect(status!.summary).toBe("Generated 5-phase implementation plan");
-  });
+		const status = unwrap(parseStatusBlock(text));
+		expect(status.protocolVersion).toBe(1);
+		expect(status.result).toBe("completed");
+		expect(status.planPath).toBe("docs/development/001-impl-foo.md");
+		expect(status.summary).toBe("Generated 5-phase implementation plan");
+	});
 
-  test("parses status with commit and phase", () => {
-    const text = `<!-- 5x:status
+	test("parses status with commit and phase", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 1
 result: completed
 commit: abc123def
 phase: 3
 summary: Implemented phase 3 components
 -->`;
-    const status = parseStatusBlock(text);
-    expect(status!.commit).toBe("abc123def");
-    expect(status!.phase).toBe(3);
-  });
+		const status = unwrap(parseStatusBlock(text));
+		expect(status.commit).toBe("abc123def");
+		expect(status.phase).toBe(3);
+	});
 
-  test("parses needs_human result", () => {
-    const text = `<!-- 5x:status
+	test("parses needs_human result", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 1
 result: needs_human
 reason: Ambiguous requirements
 blockedOn: Database schema decision
 context: Two valid approaches exist
 -->`;
-    const status = parseStatusBlock(text);
-    expect(status!.result).toBe("needs_human");
-    expect(status!.reason).toBe("Ambiguous requirements");
-    expect(status!.blockedOn).toBe("Database schema decision");
-  });
+		const status = unwrap(parseStatusBlock(text));
+		expect(status.result).toBe("needs_human");
+		expect(status.reason).toBe("Ambiguous requirements");
+		expect(status.blockedOn).toBe("Database schema decision");
+	});
 
-  test("returns null for missing block", () => {
-    expect(parseStatusBlock("No status here")).toBeNull();
-  });
+	test("returns null for missing block", () => {
+		expect(parseStatusBlock("No status here")).toBeNull();
+	});
 
-  test("returns null for malformed YAML", () => {
-    const text = `<!-- 5x:status
+	test("returns null for malformed YAML", () => {
+		const text = `<!-- 5x:status
 :::bad yaml:::
 -->`;
-    expect(parseStatusBlock(text)).toBeNull();
-  });
+		expect(parseStatusBlock(text)).toBeNull();
+	});
 
-  test("returns null for invalid result value", () => {
-    const text = `<!-- 5x:status
+	test("returns null for invalid result value", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 1
 result: maybe_done
 -->`;
-    expect(parseStatusBlock(text)).toBeNull();
-  });
+		expect(parseStatusBlock(text)).toBeNull();
+	});
 
-  test("returns null for missing result field", () => {
-    const text = `<!-- 5x:status
+	test("returns null for missing result field", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 1
 summary: No result field
 -->`;
-    expect(parseStatusBlock(text)).toBeNull();
-  });
+		expect(parseStatusBlock(text)).toBeNull();
+	});
 
-  test("last block wins", () => {
-    const text = `
+	test("last block wins", () => {
+		const text = `
 <!-- 5x:status
 protocolVersion: 1
 result: failed
@@ -221,29 +246,34 @@ result: completed
 summary: retry succeeded
 -->
 `;
-    const status = parseStatusBlock(text);
-    expect(status!.result).toBe("completed");
-    expect(status!.summary).toBe("retry succeeded");
-  });
+		const status = unwrap(parseStatusBlock(text));
+		expect(status.result).toBe("completed");
+		expect(status.summary).toBe("retry succeeded");
+	});
 
-  test("optional fields default to undefined", () => {
-    const text = `<!-- 5x:status
+	test("optional fields default to undefined", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 1
 result: completed
 -->`;
-    const status = parseStatusBlock(text);
-    expect(status!.planPath).toBeUndefined();
-    expect(status!.commit).toBeUndefined();
-    expect(status!.phase).toBeUndefined();
-  });
+		const status = unwrap(parseStatusBlock(text));
+		expect(status.planPath).toBeUndefined();
+		expect(status.commit).toBeUndefined();
+		expect(status.phase).toBeUndefined();
+	});
 
-  test("handles unknown protocolVersion", () => {
-    const text = `<!-- 5x:status
+	test("handles unknown protocolVersion", () => {
+		const text = `<!-- 5x:status
 protocolVersion: 2
 result: completed
 -->`;
-    const status = parseStatusBlock(text);
-    expect(status).not.toBeNull();
-    expect(status!.result).toBe("completed");
-  });
+		const originalWarn = console.warn;
+		try {
+			console.warn = () => {};
+			const status = unwrap(parseStatusBlock(text));
+			expect(status.result).toBe("completed");
+		} finally {
+			console.warn = originalWarn;
+		}
+	});
 });

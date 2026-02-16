@@ -1,40 +1,42 @@
-import { describe, test, expect } from "bun:test";
-import { parseReviewSummary } from "../../src/parsers/review.js";
+import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseReviewSummary } from "../../src/parsers/review.js";
 
 const REAL_REVIEW_PATH = resolve(
-  import.meta.dir,
-  "../../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md"
+	import.meta.dir,
+	"../../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md",
 );
 const hasRealReview = existsSync(REAL_REVIEW_PATH);
-const REAL_REVIEW = hasRealReview ? readFileSync(REAL_REVIEW_PATH, "utf-8") : "";
+const REAL_REVIEW = hasRealReview
+	? readFileSync(REAL_REVIEW_PATH, "utf-8")
+	: "";
 
 describe("parseReviewSummary", () => {
-  // Smoke tests against real review file — loose structural assertions only
-  test.skipIf(!hasRealReview)("extracts subject from real review", () => {
-    const summary = parseReviewSummary(REAL_REVIEW);
-    expect(summary.subject).toContain("5x CLI");
-  });
+	// Smoke tests against real review file — loose structural assertions only
+	test.skipIf(!hasRealReview)("extracts subject from real review", () => {
+		const summary = parseReviewSummary(REAL_REVIEW);
+		expect(summary.subject).toContain("5x CLI");
+	});
 
-  test.skipIf(!hasRealReview)("extracts readiness from real review", () => {
-    const summary = parseReviewSummary(REAL_REVIEW);
-    // Readiness changes across addendums; just assert it's non-empty
-    expect(summary.readiness.length).toBeGreaterThan(0);
-  });
+	test.skipIf(!hasRealReview)("extracts readiness from real review", () => {
+		const summary = parseReviewSummary(REAL_REVIEW);
+		// Readiness changes across addendums; just assert it's non-empty
+		expect(summary.readiness.length).toBeGreaterThan(0);
+	});
 
-  test.skipIf(!hasRealReview)("counts P0 items from real review", () => {
-    const summary = parseReviewSummary(REAL_REVIEW);
-    expect(summary.p0Count).toBeGreaterThan(0);
-  });
+	test.skipIf(!hasRealReview)("counts P0 items from real review", () => {
+		const summary = parseReviewSummary(REAL_REVIEW);
+		expect(summary.p0Count).toBeGreaterThan(0);
+	});
 
-  test.skipIf(!hasRealReview)("counts P1 items from real review", () => {
-    const summary = parseReviewSummary(REAL_REVIEW);
-    expect(summary.p1Count).toBeGreaterThan(0);
-  });
+	test.skipIf(!hasRealReview)("counts P1 items from real review", () => {
+		const summary = parseReviewSummary(REAL_REVIEW);
+		expect(summary.p1Count).toBeGreaterThan(0);
+	});
 
-  test("parses minimal review", () => {
-    const md = `# Review: Widget Feature
+	test("parses minimal review", () => {
+		const md = `# Review: Widget Feature
 
 **Readiness:** Ready — all items addressed
 
@@ -50,17 +52,17 @@ No high priority items.
 
 No medium priority items.
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.subject).toBe("Widget Feature");
-    expect(summary.readiness).toBe("Ready — all items addressed");
-    expect(summary.p0Count).toBe(0);
-    expect(summary.p1Count).toBe(0);
-    expect(summary.p2Count).toBe(0);
-    expect(summary.hasAddendums).toBe(false);
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.subject).toBe("Widget Feature");
+		expect(summary.readiness).toBe("Ready — all items addressed");
+		expect(summary.p0Count).toBe(0);
+		expect(summary.p1Count).toBe(0);
+		expect(summary.p2Count).toBe(0);
+		expect(summary.hasAddendums).toBe(false);
+	});
 
-  test("counts P0 and P1 headings", () => {
-    const md = `# Review: Test
+	test("counts P0 and P1 headings", () => {
+		const md = `# Review: Test
 
 **Readiness:** Not ready
 
@@ -79,13 +81,13 @@ Description.
 ### P1.3 — Third
 Description.
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.p0Count).toBe(2);
-    expect(summary.p1Count).toBe(3);
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.p0Count).toBe(2);
+		expect(summary.p1Count).toBe(3);
+	});
 
-  test("counts P2 bullet items in Medium priority section", () => {
-    const md = `# Review: Test
+	test("counts P2 bullet items in Medium priority section", () => {
+		const md = `# Review: Test
 
 **Readiness:** Ready with corrections
 
@@ -97,12 +99,12 @@ Description.
 
 ## Readiness checklist
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.p2Count).toBe(3);
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.p2Count).toBe(3);
+	});
 
-  test("detects addendums", () => {
-    const md = `# Review: Test
+	test("detects addendums", () => {
+		const md = `# Review: Test
 
 **Readiness:** Not ready
 
@@ -119,36 +121,36 @@ Fix it.
 ### What's addressed
 - More fixes
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.hasAddendums).toBe(true);
-    expect(summary.latestAddendumDate).toBe("2026-02-15");
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.hasAddendums).toBe(true);
+		expect(summary.latestAddendumDate).toBe("2026-02-15");
+	});
 
-  test("no addendums returns undefined date", () => {
-    const md = `# Review: Simple
-
-**Readiness:** Ready
-`;
-    const summary = parseReviewSummary(md);
-    expect(summary.hasAddendums).toBe(false);
-    expect(summary.latestAddendumDate).toBeUndefined();
-  });
-
-  test("handles 'Review:' prefix in title", () => {
-    const md = `# Review: My Feature
+	test("no addendums returns undefined date", () => {
+		const md = `# Review: Simple
 
 **Readiness:** Ready
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.subject).toBe("My Feature");
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.hasAddendums).toBe(false);
+		expect(summary.latestAddendumDate).toBeUndefined();
+	});
 
-  test("handles title without 'Review:' prefix", () => {
-    const md = `# My Feature Review
+	test("handles 'Review:' prefix in title", () => {
+		const md = `# Review: My Feature
 
 **Readiness:** Ready
 `;
-    const summary = parseReviewSummary(md);
-    expect(summary.subject).toBe("My Feature Review");
-  });
+		const summary = parseReviewSummary(md);
+		expect(summary.subject).toBe("My Feature");
+	});
+
+	test("handles title without 'Review:' prefix", () => {
+		const md = `# My Feature Review
+
+**Readiness:** Ready
+`;
+		const summary = parseReviewSummary(md);
+		expect(summary.subject).toBe("My Feature Review");
+	});
 });

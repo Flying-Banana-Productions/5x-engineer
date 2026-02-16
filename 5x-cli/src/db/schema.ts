@@ -1,17 +1,18 @@
 import type { Database } from "bun:sqlite";
 
 export type Migration = {
-  version: number;
-  description: string;
-  up: (db: Database) => void;
+	version: number;
+	description: string;
+	up: (db: Database) => void;
 };
 
 const migrations: Migration[] = [
-  {
-    version: 1,
-    description: "Initial schema — plans, runs, events, agent_results, quality_results",
-    up(db) {
-      db.exec(`
+	{
+		version: 1,
+		description:
+			"Initial schema — plans, runs, events, agent_results, quality_results",
+		up(db) {
+			db.exec(`
         -- Schema version tracking
         CREATE TABLE schema_version (
           version INTEGER PRIMARY KEY,
@@ -91,8 +92,8 @@ const migrations: Migration[] = [
         );
         CREATE INDEX idx_quality_results_run ON quality_results(run_id, phase);
       `);
-    },
-  },
+		},
+	},
 ];
 
 /**
@@ -100,15 +101,15 @@ const migrations: Migration[] = [
  * Returns 0 if the schema_version table doesn't exist yet.
  */
 export function getSchemaVersion(db: Database): number {
-  try {
-    const row = db
-      .query("SELECT MAX(version) as v FROM schema_version")
-      .get() as { v: number | null } | null;
-    return row?.v ?? 0;
-  } catch {
-    // Table doesn't exist yet
-    return 0;
-  }
+	try {
+		const row = db
+			.query("SELECT MAX(version) as v FROM schema_version")
+			.get() as { v: number | null } | null;
+		return row?.v ?? 0;
+	} catch {
+		// Table doesn't exist yet
+		return 0;
+	}
 }
 
 /**
@@ -116,27 +117,27 @@ export function getSchemaVersion(db: Database): number {
  * Idempotent — skips already-applied migrations.
  */
 export function runMigrations(db: Database): void {
-  const currentVersion = getSchemaVersion(db);
+	const currentVersion = getSchemaVersion(db);
 
-  for (const migration of migrations) {
-    if (migration.version <= currentVersion) continue;
+	for (const migration of migrations) {
+		if (migration.version <= currentVersion) continue;
 
-    db.exec("BEGIN TRANSACTION");
-    try {
-      migration.up(db);
-      db.exec(
-        `INSERT INTO schema_version (version) VALUES (${migration.version})`
-      );
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Migration ${migration.version} (${migration.description}) failed: ${message}. ` +
-          `Database may be in an inconsistent state. Delete the DB file to reset.`
-      );
-    }
-  }
+		db.exec("BEGIN TRANSACTION");
+		try {
+			migration.up(db);
+			db.exec(
+				`INSERT INTO schema_version (version) VALUES (${migration.version})`,
+			);
+			db.exec("COMMIT");
+		} catch (err) {
+			db.exec("ROLLBACK");
+			const message = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Migration ${migration.version} (${migration.description}) failed: ${message}. ` +
+					`Database may be in an inconsistent state. Delete the DB file to reset.`,
+			);
+		}
+	}
 }
 
 /** Exported for testing only. */
