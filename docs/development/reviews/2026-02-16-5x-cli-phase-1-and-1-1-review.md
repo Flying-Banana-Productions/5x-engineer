@@ -126,3 +126,35 @@ Biome currently fails (unused import in `5x-cli/src/db/connection.ts`, unused va
 
 - **Phase 1 + 1.1 completion:** ✅ — previously raised P0/P1 remediation items are addressed in code and tests.
 - **Ready for next phase (Phase 2: Agent Adapters):** ✅ — proceed. Carry the canonical-write-boundary guardrail into later orchestration phases (Phase 4/5) where DB writes expand.
+
+---
+
+## Addendum (2026-02-16) — Review of follow-up remediation (canonical-write + status tail)
+
+**Reviewed:** `fc8232dfafdf67ad97e1d1da894ac511c36268bc` (no follow-on commits)
+
+**Local verification:** `bun test --concurrent --dots` PASS (117 tests); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **P1 canonical DB write boundaries:** `createRun()` and `upsertPlan()` now canonicalize `planPath` internally (`5x-cli/src/db/operations.ts`) so callers cannot accidentally create split identities (relative/absolute/symlink). Added regression tests covering relative/absolute/symlink variants (`5x-cli/test/db/operations.test.ts`).
+- **P2 status last-event lookup:** `status` now uses a targeted `LIMIT 1` query (`getLastRunEvent`) rather than fetching full history (`5x-cli/src/db/operations.ts`, `5x-cli/src/commands/status.ts`).
+
+### Staff assessment (by dimension)
+
+- **Correctness:** Path normalization at the DB write boundary materially reduces identity drift risk, but note it is not a full migration strategy: legacy DB rows keyed by non-canonical paths remain and future commands that read from DB (beyond `status`, which already has fallback logic) should either migrate or dual-lookup to avoid “lost association” behavior.
+- **Architecture:** Slight layering leak (DB ops now depend on filesystem `realpath`), but it functions as an enforcement guardrail and is acceptable at this stage. Keep command-boundary canonicalization as the primary contract; treat DB-side canonicalization as defense-in-depth.
+- **Tenancy/security:** No new trust boundaries introduced. Canonicalization via `realpath` reduces symlink ambiguity for local cooperative locking/state. No cross-user escalation risk observed.
+- **Performance:** `getLastRunEvent()` is the right micro-optimization for `status` once run event volume grows. Canonicalization cost (`realpathSync`) is negligible for current write frequency.
+- **Operability:** `status` becomes more predictable under large DBs; fewer reads and less memory pressure.
+- **Test strategy:** Added focused regression tests for the exact failure mode cited in the prior addendum. Symlink tests can be environment-sensitive (CI/user privileges); if this ever flakes, gate the symlink cases on platform capability rather than removing coverage.
+
+### Remaining concerns / follow-ups
+
+- **Back-compat for existing DB rows:** Consider a one-time migration or a “canonical + legacy fallback” read helper for `plans`/`runs` once additional commands start reading these tables (Phase 4/5+). Without this, upgrading could strand earlier `plans.plan_path` associations.
+- **Relative path semantics:** `canonicalizePlanPath()` resolves relative paths against process CWD. Ensure all command boundaries pass absolute paths (project-root-relative resolution) so DB canonicalization can’t accidentally anchor to an unexpected working directory.
+
+### Updated readiness
+
+- **Phase 1 + 1.1 completion:** ✅ — remaining concerns from the prior addendum are addressed with code + tests.
+- **Ready for next phase (Phase 2: Agent Adapters):** ✅ — proceed.
