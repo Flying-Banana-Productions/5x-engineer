@@ -12,7 +12,7 @@
  * Timeout guarantee: `invoke(timeout=X)` returns within O(X + KILL_GRACE_MS +
  * DRAIN_TIMEOUT_MS) regardless of subprocess behavior. After the deadline the
  * adapter sends SIGTERM, waits a short grace, then SIGKILL, and bounds stream
- * draining with an AbortController.
+ * draining via reader cancellation with a timeout.
  *
  * Failure semantics: a non-zero exit code OR `is_error === true` in the parsed
  * JSON output maps to a non-zero `AgentResult.exitCode` with `error` populated
@@ -383,8 +383,10 @@ async function drainWithTimeout(
 		// Reader was cancelled or stream errored — decode what we have
 	} finally {
 		clearTimeout(timer);
-		if (!timedOut) {
+		try {
 			reader.releaseLock();
+		} catch {
+			// Already released or cancelled — safe to ignore
 		}
 	}
 
