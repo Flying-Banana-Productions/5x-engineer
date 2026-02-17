@@ -70,3 +70,13 @@ export type {
 export { parseStatusBlock, parseVerdictBlock } from "./parsers/signals.js";
 // Paths
 export { canonicalizePlanPath } from "./paths.js";
+// Templates
+export type {
+	RenderedTemplate,
+	TemplateMetadata,
+} from "./templates/loader.js";
+export {
+	listTemplates,
+	loadTemplate,
+	renderTemplate,
+} from "./templates/loader.js";

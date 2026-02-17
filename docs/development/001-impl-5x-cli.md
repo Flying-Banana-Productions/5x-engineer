@@ -65,7 +65,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 2. [Phase 1: Foundation — Config, Parsers, Status](#phase-1-foundation--config-parsers-status) — COMPLETE
 3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates) — COMPLETE
 4. [Phase 2: Agent Adapters](#phase-2-agent-adapters) — COMPLETE
-5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init)
+5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init) — COMPLETE
 6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
 7. [Phase 5: Phase Execution Loop](#phase-5-phase-execution-loop)
 8. [Phase 6: OpenCode Adapter](#phase-6-opencode-adapter)
@@ -903,12 +903,12 @@ Templates are loaded from the bundled source (compiled into the binary). `render
 - Variable values are inserted verbatim (no quoting, no escaping). Since variables are file paths and simple strings controlled by the CLI (not user input), injection risk is negligible. The 5x signal protocol constrains YAML values to safe scalars; the template instructions remind agents of this.
 - Unresolved `{{...}}` after substitution (indicating a typo or missing variable) is a hard error — never pass a partially-rendered template to an agent.
 
-- [ ] Implement template loader (reads from bundled files)
-- [ ] Implement `{{variable}}` substitution with validation against frontmatter `variables` list
-- [ ] Implement `\{{` escape sequence (literal `{{` passthrough)
-- [ ] Error on missing variables (list which are missing)
-- [ ] Error on unresolved `{{...}}` after substitution (typo detection)
-- [ ] Unit tests: rendering, escaping, missing variables, unresolved variables
+- [x] Implement template loader (reads from bundled files)
+- [x] Implement `{{variable}}` substitution with validation against frontmatter `variables` list
+- [x] Implement `\{{` escape sequence (literal `{{` passthrough)
+- [x] Error on missing variables (list which are missing)
+- [x] Error on unresolved `{{...}}` after substitution (typo detection)
+- [x] Unit tests: rendering, escaping, missing variables, unresolved variables
 
 ### 3.2 Prompt templates — Author templates
 
@@ -929,11 +929,11 @@ Templates are loaded from the bundled source (compiled into the binary). `render
 - If task is plan revision only, skip test execution
 - 5x protocol: emit `<!-- 5x:status -->` with `result`
 
-- [ ] Write `author-generate-plan.md` template
-- [ ] Write `author-next-phase.md` template
-- [ ] Write `author-process-review.md` template
-- [ ] Ensure all templates include 5x protocol section with format spec + classification guidance
-- [ ] Unit tests: each template renders with valid variables, missing variable errors
+- [x] Write `author-generate-plan.md` template
+- [x] Write `author-next-phase.md` template
+- [x] Write `author-process-review.md` template
+- [x] Ensure all templates include 5x protocol section with format spec + classification guidance
+- [x] Unit tests: each template renders with valid variables, missing variable errors
 
 ### 3.3 Prompt templates — Reviewer templates
 
@@ -948,10 +948,10 @@ Templates are loaded from the bundled source (compiled into the binary). `render
 - Staff Engineer review of implementation
 - 5x protocol: append `<!-- 5x:verdict -->` with `readiness`, `reviewPath` echoing `{{review_path}}`, per-item `action` classification
 
-- [ ] Write `reviewer-plan.md` template
-- [ ] Write `reviewer-commit.md` template
-- [ ] Ensure verdict block format spec includes classification guidance (auto_fix vs human_required with examples)
-- [ ] Unit tests: each template renders with valid variables
+- [x] Write `reviewer-plan.md` template
+- [x] Write `reviewer-commit.md` template
+- [x] Ensure verdict block format spec includes classification guidance (auto_fix vs human_required with examples)
+- [x] Unit tests: each template renders with valid variables
 
 ### 3.4 `src/commands/init.ts` — Project initialization (simplified)
 
@@ -962,11 +962,11 @@ $ 5x init
   Added .5x/ to .gitignore
 ```
 
-- [ ] Generate `5x.config.js` with detected defaults (detect which agent harnesses are available via `claude --version`, `opencode --version`), including JSDoc `@type` annotation for autocomplete
-- [ ] Create `.5x/` directory
-- [ ] Append `.5x/` to `.gitignore` if not already present
-- [ ] Skip config file if already exists (with `--force` flag to overwrite)
-- [ ] Unit tests: init to empty project, init with existing config, .gitignore append idempotency
+- [x] Generate `5x.config.js` with detected defaults (detect which agent harnesses are available via `claude --version`, `opencode --version`), including JSDoc `@type` annotation for autocomplete
+- [x] Create `.5x/` directory
+- [x] Append `.5x/` to `.gitignore` if not already present
+- [x] Skip config file if already exists (with `--force` flag to overwrite)
+- [x] Unit tests: init to empty project, init with existing config, .gitignore append idempotency
 
 ---
 
@@ -1451,20 +1451,20 @@ $ 5x history --run abc123
 
 | File | Change |
 |------|--------|
-| `src/bin.ts` | DONE — CLI entry point, command routing |
+| `src/bin.ts` | MOD — CLI entry point, command routing (added init subcommand) |
 | `src/config.ts` | MOD — Config loader with Zod validation (add `db.path` field) |
 | `src/version.ts` | DONE — CLI version tracking |
 | `src/db/connection.ts` | NEW — SQLite singleton, WAL mode, cleanup handlers |
 | `src/db/schema.ts` | NEW — Schema DDL, migration runner |
 | `src/db/operations.ts` | NEW — Typed CRUD helpers for all tables |
 | `src/lock.ts` | NEW — Plan-level file locking with stale PID detection |
-| `src/templates/loader.ts` | NEW — Template loading + `{{variable}}` rendering |
-| `src/templates/author-generate-plan.md` | NEW — Bundled prompt template |
-| `src/templates/author-next-phase.md` | NEW — Bundled prompt template |
-| `src/templates/author-process-review.md` | NEW — Bundled prompt template |
-| `src/templates/reviewer-plan.md` | NEW — Bundled prompt template |
-| `src/templates/reviewer-commit.md` | NEW — Bundled prompt template |
-| `src/commands/init.ts` | NEW — Project initialization (config + .5x/ + .gitignore) |
+| `src/templates/loader.ts` | DONE — Template loading + `{{variable}}` rendering |
+| `src/templates/author-generate-plan.md` | DONE — Bundled prompt template |
+| `src/templates/author-next-phase.md` | DONE — Bundled prompt template |
+| `src/templates/author-process-review.md` | DONE — Bundled prompt template |
+| `src/templates/reviewer-plan.md` | DONE — Bundled prompt template |
+| `src/templates/reviewer-commit.md` | DONE — Bundled prompt template |
+| `src/commands/init.ts` | DONE — Project initialization (config + .5x/ + .gitignore) |
 | `src/commands/plan.ts` | NEW — Plan generation command |
 | `src/commands/plan-review.ts` | NEW — Plan review loop command |
 | `src/commands/run.ts` | NEW — Phase execution loop command |
@@ -1536,7 +1536,7 @@ $ 5x history --run abc123
 | 1 | Foundation — config (JS), parsers, signal protocol v1, status | 2 days (**COMPLETE**) |
 | 1.1 | Architecture foundation — SQLite DB, plan lock, config updates, test fixes | 1.5 days |
 | 2 | Agent adapters (Claude Code) + schema probe | 1 day (**COMPLETE**) |
-| 3 | Prompt templates (bundled SSOT) + simplified init | 0.5 days |
+| 3 | Prompt templates (bundled SSOT) + simplified init | 0.5 days (**COMPLETE**) |
 | 4 | Plan generation + review loop (DB-backed) | 1.5 days |
 | 5 | Phase execution loop + git safety + worktree + lock integration | 3 days |
 | 6 | OpenCode adapter | 1 day |

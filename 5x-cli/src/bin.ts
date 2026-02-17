@@ -10,6 +10,7 @@ const main = defineCommand({
 	},
 	subCommands: {
 		status: () => import("./commands/status.js").then((m) => m.default),
+		init: () => import("./commands/init.js").then((m) => m.default),
 	},
 });
 
