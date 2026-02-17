@@ -106,3 +106,34 @@ items:
     action: auto_fix
     reason: Defense-in-depth against newline or comment-terminator injection into protocol examples
 -->
+
+---
+
+## Addendum (2026-02-16) - Validation of remediation commit
+
+**Reviewed:** `31b8cdef`
+
+**Local verification:** `cd 5x-cli && bun test` PASS (197 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **P0.1 escaped literal braces:** `\{{...}}` now renders to literal `{{...}}` via a sentinel approach and no longer trips unresolved-variable detection; regression tests added (`5x-cli/src/templates/loader.ts`, `5x-cli/test/templates/loader.test.ts`).
+- **P1.1 frontmatter name vs registry key:** hard validation added in `parseTemplate()`; tests ensure bundled templates pass (`5x-cli/src/templates/loader.ts`, `5x-cli/test/templates/loader.test.ts`).
+- **P1.2 parsed template caching:** `loadTemplate()` now caches parsed results; tests verify stable reference reuse (`5x-cli/src/templates/loader.ts`, `5x-cli/test/templates/loader.test.ts`).
+- **P2-1 signal-block safety:** declared variable values are validated to reject newlines and `-->`; regression tests added (`5x-cli/src/templates/loader.ts`, `5x-cli/test/templates/loader.test.ts`).
+
+### Remaining concerns
+
+- No further required changes from this review.
+
+### Updated readiness
+
+- **Phase 3 completion:** ✅ - all items from the initial review are addressed with tests and local suite green.
+- **Ready for next phase (Phase 4: Plan Generation + Review Loop):** ✅
+
+<!-- 5x:verdict
+protocolVersion: 1
+readiness: ready
+reviewPath: docs/development/reviews/2026-02-16-5x-cli-phase-3-templates-init-review.md
+items: []
+-->
