@@ -5,6 +5,7 @@ import { createAndVerifyAdapter } from "../agents/factory.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
+import { checkGitSafety } from "../git.js";
 import {
 	resolveReviewPath,
 	runPlanReviewLoop,
@@ -67,16 +68,11 @@ export default defineCommand({
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
 
-		// Git safety check (basic — full implementation in Phase 5)
+		// Git safety check
 		if (!args["allow-dirty"]) {
 			try {
-				const result = Bun.spawnSync(["git", "status", "--porcelain"], {
-					cwd: projectRoot,
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				const output = result.stdout.toString().trim();
-				if (output.length > 0) {
+				const safety = await checkGitSafety(projectRoot);
+				if (!safety.safe) {
 					console.error(
 						"Error: Working tree has uncommitted changes. " +
 							"Commit or stash them, or pass --allow-dirty to proceed.",

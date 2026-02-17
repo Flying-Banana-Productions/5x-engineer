@@ -1141,13 +1141,13 @@ export async function runQualityGates(
 - Terminal display: show truncated output inline; on failure, display path to full log file.
 - Cleanup: log files are retained until `5x worktree cleanup` or manual deletion. No automatic retention policy for v1.
 
-- [ ] Run each configured command sequentially
-- [ ] Capture stdout/stderr for each; write full output to `.5x/logs/<run-id>/`
-- [ ] Store truncated output (first 4KB) + file path in DB results JSON
-- [ ] Report pass/fail per command and overall
-- [ ] Timeout handling per command
-- [ ] Store structured results in DB via `upsertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
-- [ ] Unit tests with mocked commands
+- [x] Run each configured command sequentially
+- [x] Capture stdout/stderr for each; write full output to `.5x/logs/<run-id>/`
+- [x] Store truncated output (first 4KB) + file path in DB results JSON
+- [x] Report pass/fail per command and overall
+- [x] Timeout handling per command
+- [x] Store structured results in DB via `upsertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
+- [x] Unit tests with mocked commands
 
 ### 5.2 `src/git.ts` — Git operations, safety invariants, and worktree support
 
@@ -1191,13 +1191,13 @@ Worktree operations:
 - `listWorktrees()` runs `git worktree list --porcelain` and parses output.
 - If branch already exists, reuse it: `git worktree add <path> <branch>` (no `-b`).
 
-- [ ] Implement `checkGitSafety()` via `git status --porcelain` + `git rev-parse`
-- [ ] Implement remaining git helpers via subprocess
-- [ ] Branch name generation from plan title/number (e.g., `5x/001-impl-5x-cli`)
-- [ ] Validate branch relevance (does branch name relate to plan?)
-- [ ] Implement `createWorktree()`, `removeWorktree()`, `listWorktrees()`
-- [ ] Handle worktree reuse (branch/path already exists)
-- [ ] Unit tests with a temp git repo: clean state, dirty state, untracked files, worktree create/remove
+- [x] Implement `checkGitSafety()` via `git status --porcelain` + `git rev-parse`
+- [x] Implement remaining git helpers via subprocess
+- [x] Branch name generation from plan title/number (e.g., `5x/001-impl-5x-cli`)
+- [x] Validate branch relevance (does branch name relate to plan?)
+- [x] Implement `createWorktree()`, `removeWorktree()`, `listWorktrees()`
+- [x] Handle worktree reuse (branch/path already exists)
+- [x] Unit tests with a temp git repo: clean state, dirty state, untracked files, worktree create/remove
 
 ### 5.3 `src/orchestrator/phase-execution-loop.ts` — Loop 2 state machine
 
@@ -1257,28 +1257,28 @@ Per-phase inner loop:
 
 **Worktree integration:** If `--worktree` flag is set (and no worktree exists for this plan), create worktree + branch. Persist in DB. On subsequent runs for the same plan, auto-resolve `workdir` from DB even without `--worktree` flag. All agent invocations and quality gates run in the worktree.
 
-- [ ] Acquire plan lock at loop start; release on exit (including signal handlers)
-- [ ] Resolve workdir: check `getPlan(planPath)` for worktree association
-- [ ] If `--worktree` and no existing worktree: create via `createWorktree()`, persist in DB via `upsertPlan()`
-- [ ] Create `run` record in DB at loop start
-- [ ] Implement outer loop (iterate phases)
-- [ ] Implement inner review-fix loop (within a phase)
-- [ ] Render author prompt from `author-next-phase` template with variables `{ plan_path, phase_number, user_notes }`
-- [ ] Invoke author adapter; store result in `agent_results` table
-- [ ] Render reviewer prompt from `reviewer-commit` template with variables `{ commit_hash, review_path, plan_path }`
-- [ ] Invoke reviewer adapter; store result in `agent_results` table
-- [ ] Quality gate integration with retry logic; store results in `quality_results` table
-- [ ] Append `run_event` on each state transition
-- [ ] Update `runs.current_phase`, `runs.current_state` on each transition
-- [ ] Git branch validation/creation at phase start (in correct workdir)
-- [ ] Detect new commits after author invocation (for reviewer input)
-- [ ] Human gate between phases: display summary, prompt for continue/review/abort
-- [ ] `--auto` mode: skip inter-phase gate, still escalate on `human_required`
-- [ ] `--phase N` flag: skip to specific phase
-- [ ] Detect interrupted runs on startup; prompt for resume
-- [ ] Mark run as `completed`/`aborted`/`failed` on exit
-- [ ] Track and display cumulative progress
-- [ ] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression, lock contention, worktree creation, resume after interruption
+- [x] Acquire plan lock at loop start; release on exit (including signal handlers)
+- [x] Resolve workdir: check `getPlan(planPath)` for worktree association
+- [x] If `--worktree` and no existing worktree: create via `createWorktree()`, persist in DB via `upsertPlan()`
+- [x] Create `run` record in DB at loop start
+- [x] Implement outer loop (iterate phases)
+- [x] Implement inner review-fix loop (within a phase)
+- [x] Render author prompt from `author-next-phase` template with variables `{ plan_path, phase_number, user_notes }`
+- [x] Invoke author adapter; store result in `agent_results` table
+- [x] Render reviewer prompt from `reviewer-commit` template with variables `{ commit_hash, review_path, plan_path }`
+- [x] Invoke reviewer adapter; store result in `agent_results` table
+- [x] Quality gate integration with retry logic; store results in `quality_results` table
+- [x] Append `run_event` on each state transition
+- [x] Update `runs.current_phase`, `runs.current_state` on each transition
+- [x] Git branch validation/creation at phase start (in correct workdir)
+- [x] Detect new commits after author invocation (for reviewer input)
+- [x] Human gate between phases: display summary, prompt for continue/review/abort
+- [x] `--auto` mode: skip inter-phase gate, still escalate on `human_required`
+- [x] `--phase N` flag: skip to specific phase
+- [x] Detect interrupted runs on startup; prompt for resume
+- [x] Mark run as `completed`/`aborted`/`failed` on exit
+- [x] Track and display cumulative progress
+- [x] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression, lock contention, worktree creation, resume after interruption
 
 ### 5.4 `src/gates/human.ts` — Interactive prompts
 
@@ -1287,21 +1287,21 @@ export async function phaseGate(summary: PhaseSummary): Promise<'continue' | 're
 export async function escalationGate(event: EscalationEvent): Promise<EscalationResponse>;
 ```
 
-- [ ] Phase gate: display phase summary (files changed, tests, review verdict), prompt for decision
-- [ ] Escalation gate: display escalation reason + context, prompt for guidance or override
-- [ ] Handle non-interactive mode (pipe detection) — default to abort with message
-- [ ] Unit tests with simulated stdin
+- [x] Phase gate: display phase summary (files changed, tests, review verdict), prompt for decision
+- [x] Escalation gate: display escalation reason + context, prompt for guidance or override
+- [x] Handle non-interactive mode (pipe detection) — default to abort with message
+- [x] Unit tests with simulated stdin
 
 ### 5.5 `src/commands/run.ts` — CLI command wiring
 
-- [ ] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`, `--worktree`)
-- [ ] Initialize DB connection and run migrations
-- [ ] Resolve workdir from DB plan association (worktree auto-detection)
-- [ ] Run git safety check in resolved workdir; abort on dirty tree unless `--allow-dirty`
-- [ ] Validate plan file, check for incomplete phases
-- [ ] Initialize adapters from config
-- [ ] Call `runPhaseExecutionLoop` (with DB, lock, and worktree integration)
-- [ ] Display final result (phases completed, total time, review links, run ID)
+- [x] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`, `--worktree`)
+- [x] Initialize DB connection and run migrations
+- [x] Resolve workdir from DB plan association (worktree auto-detection)
+- [x] Run git safety check in resolved workdir; abort on dirty tree unless `--allow-dirty`
+- [x] Validate plan file, check for incomplete phases
+- [x] Initialize adapters from config
+- [x] Call `runPhaseExecutionLoop` (with DB, lock, and worktree integration)
+- [x] Display final result (phases completed, total time, review links, run ID)
 
 ### 5.6 `src/commands/worktree.ts` — Worktree management
 
@@ -1333,12 +1333,12 @@ Cleanup safety:
 - Refuses to remove worktree if it has uncommitted changes — user must commit/stash first, or pass `--force`.
 - `--force`: removes worktree even with uncommitted changes (data loss warning displayed). Does NOT force-delete unmerged branches — that requires explicit `--force --delete-branch`.
 
-- [ ] `5x worktree status <plan-path>` — show worktree info from DB
-- [ ] `5x worktree cleanup <plan-path>` — remove worktree only, retain branch, clear DB association
-- [ ] `--delete-branch` flag: also delete branch if fully merged; abort if unmerged
-- [ ] Refuse cleanup if worktree has uncommitted changes (unless `--force`)
-- [ ] `--force`: remove worktree with uncommitted changes (display data loss warning)
-- [ ] `--force --delete-branch`: NOT allowed for unmerged branches (always aborts)
+- [x] `5x worktree status <plan-path>` — show worktree info from DB
+- [x] `5x worktree cleanup <plan-path>` — remove worktree only, retain branch, clear DB association
+- [x] `--delete-branch` flag: also delete branch if fully merged; abort if unmerged
+- [x] Refuse cleanup if worktree has uncommitted changes (unless `--force`)
+- [x] `--force`: remove worktree with uncommitted changes (display data loss warning)
+- [x] `--force --delete-branch`: NOT allowed for unmerged branches (always aborts)
 
 ---
 

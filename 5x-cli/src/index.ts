@@ -50,6 +50,38 @@ export {
 	upsertQualityResult,
 } from "./db/operations.js";
 export { getSchemaVersion, runMigrations } from "./db/schema.js";
+// Gates
+export type {
+	EscalationResponse,
+	PhaseSummary,
+} from "./gates/human.js";
+export {
+	escalationGate,
+	phaseGate,
+	resumeGate,
+	staleLockGate,
+} from "./gates/human.js";
+export type { QualityCommandResult, QualityResult } from "./gates/quality.js";
+export { runQualityGates } from "./gates/quality.js";
+// Git
+export type { GitSafetyReport, WorktreeInfo } from "./git.js";
+export {
+	branchExists,
+	branchNameFromPlan,
+	checkGitSafety,
+	checkoutBranch,
+	createBranch,
+	createWorktree,
+	deleteBranch,
+	getBranchCommits,
+	getCurrentBranch,
+	getLatestCommit,
+	hasUncommittedChanges,
+	isBranchMerged,
+	isBranchRelevant,
+	listWorktrees,
+	removeWorktree,
+} from "./git.js";
 export type { LockInfo, LockResult } from "./lock.js";
 // Lock
 export {
@@ -59,6 +91,11 @@ export {
 	releaseLock,
 } from "./lock.js";
 // Orchestrator
+export type {
+	PhaseExecutionOptions,
+	PhaseExecutionResult,
+} from "./orchestrator/phase-execution-loop.js";
+export { runPhaseExecutionLoop } from "./orchestrator/phase-execution-loop.js";
 export type {
 	EscalationEvent,
 	PlanReviewLoopOptions,
