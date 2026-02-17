@@ -120,3 +120,35 @@ items:
     action: auto_fix
     reason: Hardens against stale/corrupt DB state directing agents to write unexpected files
 -->
+
+---
+
+## Addendum (2026-02-17) - Re-review after remediation
+
+**Reviewed:** `424f03642d`
+
+**Local verification:** `cd 5x-cli && bun test` PASS (232 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
+
+### What's addressed (✅)
+
+- **P0.1 non-ready approval fallback:** `runPlanReviewLoop()` now escalates on any `readiness != ready` verdict with no auto-fixable items; no fallback-to-APPROVED path remains (`5x-cli/src/orchestrator/plan-review-loop.ts`). Regression tests added for `ready_with_corrections` + empty items and `not_ready` + empty items (`5x-cli/test/orchestrator/plan-review-loop.test.ts`).
+- **P1.1 project root consistency:** new `resolveProjectRoot()` (config file > git root > cwd) centralizes root selection; `plan`, `plan-review`, and `status` now anchor DB/artifacts/safety checks consistently (`5x-cli/src/project-root.ts`, `5x-cli/src/commands/plan.ts`, `5x-cli/src/commands/plan-review.ts`, `5x-cli/src/commands/status.ts`).
+- **P1.2 agent workdir:** plan-review loop now accepts `projectRoot` and uses it as the agent `workdir` instead of `dirname(planPath)` (`5x-cli/src/orchestrator/plan-review-loop.ts`).
+- **P1.3 review path hardening:** DB-provided `review_path` is reused only if it resolves under the configured reviews dir; otherwise warn + compute fresh path; tests cover the rejection case (`5x-cli/src/orchestrator/plan-review-loop.ts`, `5x-cli/test/orchestrator/plan-review-loop.test.ts`).
+- **P2 edge cases:** empty slug fallback in `computePlanPath()`; `5x plan` now actually enforces `--allow-dirty` semantics (previously declared but unused) (`5x-cli/src/commands/plan.ts`).
+
+### Remaining concerns
+
+- No new staff-level blockers identified for Phase 4. (Minor: `resolveReviewPath()` uses string-prefix checks; if you later care about platform portability, consider `path.relative()`-based containment checks.)
+
+### Updated readiness
+
+- **Phase 4 completion:** ✅
+- **Ready for next phase (Phase 5: Phase Execution Loop):** ✅
+
+<!-- 5x:verdict
+protocolVersion: 1
+readiness: ready
+reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-4-plan-generation-review-loop-review.md
+items: []
+-->
