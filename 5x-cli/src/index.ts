@@ -80,6 +80,8 @@ export type {
 export { parseStatusBlock, parseVerdictBlock } from "./parsers/signals.js";
 // Paths
 export { canonicalizePlanPath } from "./paths.js";
+// Project root
+export { findGitRoot, resolveProjectRoot } from "./project-root.js";
 // Templates
 export type {
 	RenderedTemplate,

@@ -130,5 +130,5 @@ export async function loadConfig(
 	};
 }
 
-// Re-export schema for testing
-export { FiveXConfigSchema };
+// Re-export for shared use
+export { discoverConfigFile, FiveXConfigSchema };

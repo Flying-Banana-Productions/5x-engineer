@@ -51,6 +51,8 @@ type LoopState =
 export interface PlanReviewLoopOptions {
 	auto?: boolean;
 	allowDirty?: boolean;
+	/** Project root directory for agent workdir. Falls back to dirname(planPath) if unset. */
+	projectRoot?: string;
 	/** Override for testing — supply a function that prompts for human decisions. */
 	humanGate?: (
 		event: EscalationEvent,
@@ -82,14 +84,31 @@ export function resolveReviewPath(
 	reviewsDir: string,
 ): string {
 	const canonical = canonicalizePlanPath(planPath);
+	const resolvedReviewsDir = resolve(reviewsDir);
 
-	// Check DB for existing review path
+	// Check DB for existing review path — validate it's under the reviews dir
 	const latestRun = getLatestRun(db, canonical);
-	if (latestRun?.review_path) return latestRun.review_path;
+	if (latestRun?.review_path) {
+		const resolved = resolve(latestRun.review_path);
+		if (resolved.startsWith(`${resolvedReviewsDir}/`)) {
+			return latestRun.review_path;
+		}
+		console.warn(
+			`  Warning: DB review path "${latestRun.review_path}" is outside configured reviews dir. Computing fresh path.`,
+		);
+	}
 
 	// Also check non-canonical path
 	const latestRunAlt = getLatestRun(db, planPath);
-	if (latestRunAlt?.review_path) return latestRunAlt.review_path;
+	if (latestRunAlt?.review_path) {
+		const resolved = resolve(latestRunAlt.review_path);
+		if (resolved.startsWith(`${resolvedReviewsDir}/`)) {
+			return latestRunAlt.review_path;
+		}
+		console.warn(
+			`  Warning: DB review path "${latestRunAlt.review_path}" is outside configured reviews dir. Computing fresh path.`,
+		);
+	}
 
 	// Compute fresh path
 	const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -209,6 +228,7 @@ export async function runPlanReviewLoop(
 	const humanGate = options.humanGate ?? defaultHumanGate;
 	const resumeGate = options.resumeGate ?? defaultResumeGate;
 	const maxIterations = config.maxReviewIterations;
+	const workdir = options.projectRoot ?? dirname(resolve(planPath));
 
 	const canonical = canonicalizePlanPath(planPath);
 	const escalations: EscalationEvent[] = [];
@@ -331,7 +351,7 @@ export async function runPlanReviewLoop(
 				const reviewResult = await reviewerAdapter.invoke({
 					prompt: reviewerTemplate.prompt,
 					model: config.reviewer.model,
-					workdir: dirname(resolve(planPath)),
+					workdir,
 				});
 
 				// Store result
@@ -513,21 +533,39 @@ export async function runPlanReviewLoop(
 						state = "AUTO_FIX";
 						break;
 					}
-					// No items at all but not_ready — escalate
-					if (verdict.items.length === 0 && readiness === "not_ready") {
-						const event: EscalationEvent = {
-							reason: "Reviewer returned not_ready with no actionable items",
-							iteration,
-						};
-						escalations.push(event);
-						state = "ESCALATE";
-						break;
-					}
+					// Non-ready with no auto-fixable items — escalate
+					// (covers parser-dropped items, reviewer mistakes, etc.)
+					const event: EscalationEvent = {
+						reason: `Reviewer returned ${readiness} with no auto-fixable items`,
+						iteration,
+					};
+					escalations.push(event);
+					appendRunEvent(db, {
+						runId,
+						eventType: "escalation",
+						iteration,
+						data: event,
+					});
+					state = "ESCALATE";
+					break;
 				}
 
-				// Fallback — shouldn't reach here normally
-				state = "APPROVED";
-				break;
+				// Fallback — unexpected readiness value; escalate rather than approve
+				{
+					const event: EscalationEvent = {
+						reason: `Unexpected readiness value "${readiness}" — escalating for manual review`,
+						iteration,
+					};
+					escalations.push(event);
+					appendRunEvent(db, {
+						runId,
+						eventType: "escalation",
+						iteration,
+						data: event,
+					});
+					state = "ESCALATE";
+					break;
+				}
 			}
 
 			case "AUTO_FIX": {
@@ -561,7 +599,7 @@ export async function runPlanReviewLoop(
 				const authorResult = await authorAdapter.invoke({
 					prompt: authorTemplate.prompt,
 					model: config.author.model,
-					workdir: dirname(resolve(planPath)),
+					workdir,
 				});
 
 				// Parse status from author output

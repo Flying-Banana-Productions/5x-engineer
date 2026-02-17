@@ -14,6 +14,7 @@ import {
 import { runMigrations } from "../db/schema.js";
 import { parsePlan } from "../parsers/plan.js";
 import { parseStatusBlock } from "../parsers/signals.js";
+import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
 
 /**
@@ -57,7 +58,7 @@ export function slugFromPath(prdPath: string): string {
  * auto-increment the sequence number until a free path is found.
  */
 export function computePlanPath(plansDir: string, prdPath: string): string {
-	const slug = slugFromPath(prdPath);
+	const slug = slugFromPath(prdPath) || "plan";
 	const seqNum = Number.parseInt(nextSequenceNumber(plansDir), 10);
 
 	for (let i = 0; i < 100; i++) {
@@ -106,9 +107,30 @@ export default defineCommand({
 			process.exit(1);
 		}
 
-		// Load config
-		const projectRoot = resolve(".");
+		// Derive project root consistently (config file > git root > cwd)
+		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
+
+		// Git safety check
+		if (!args["allow-dirty"]) {
+			try {
+				const result = Bun.spawnSync(["git", "status", "--porcelain"], {
+					cwd: projectRoot,
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const output = result.stdout.toString().trim();
+				if (output.length > 0) {
+					console.error(
+						"Error: Working tree has uncommitted changes. " +
+							"Commit or stash them, or pass --allow-dirty to proceed.",
+					);
+					process.exit(1);
+				}
+			} catch {
+				// git not available or not a repo — skip check
+			}
+		}
 
 		// Compute target plan path
 		const plansDir = resolve(projectRoot, config.paths.plans);

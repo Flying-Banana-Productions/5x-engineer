@@ -187,7 +187,33 @@ describe("resolveReviewPath", () => {
 		expect(path).toContain(`${dateStr}-001-test-plan-review.md`);
 	});
 
-	test("reuses review path from prior run in DB", () => {
+	test("reuses review path from prior run in DB when under reviews dir", () => {
+		const planPath = canonicalizePlanPath(
+			join(tmp, "docs/development/001-test-plan.md"),
+		);
+		const reviewsDir = join(tmp, "docs/development/reviews");
+		const priorReviewPath = join(reviewsDir, "2026-01-01-prior-review.md");
+		const {
+			createRun,
+			updateRunStatus,
+		} = require("../../src/db/operations.js");
+		createRun(db, {
+			id: "prior-run",
+			planPath,
+			command: "plan-review",
+			reviewPath: priorReviewPath,
+		});
+		updateRunStatus(db, "prior-run", "completed");
+
+		const path = resolveReviewPath(
+			db,
+			join(tmp, "docs/development/001-test-plan.md"),
+			reviewsDir,
+		);
+		expect(path).toBe(priorReviewPath);
+	});
+
+	test("rejects DB review path outside configured reviews dir", () => {
 		const planPath = canonicalizePlanPath(
 			join(tmp, "docs/development/001-test-plan.md"),
 		);
@@ -199,7 +225,7 @@ describe("resolveReviewPath", () => {
 			id: "prior-run",
 			planPath,
 			command: "plan-review",
-			reviewPath: "/some/prior/review.md",
+			reviewPath: "/some/outside/review.md",
 		});
 		updateRunStatus(db, "prior-run", "completed");
 
@@ -208,7 +234,10 @@ describe("resolveReviewPath", () => {
 			join(tmp, "docs/development/001-test-plan.md"),
 			join(tmp, "docs/development/reviews"),
 		);
-		expect(path).toBe("/some/prior/review.md");
+		// Should compute fresh path, not reuse the outside path
+		expect(path).not.toBe("/some/outside/review.md");
+		const dateStr = new Date().toISOString().slice(0, 10);
+		expect(path).toContain(`${dateStr}-001-test-plan-review.md`);
 	});
 });
 
@@ -704,6 +733,84 @@ describe("runPlanReviewLoop", () => {
 		expect(eventTypes).toContain("agent_invoke");
 		expect(eventTypes).toContain("verdict");
 		expect(eventTypes).toContain("plan_review_complete");
+	});
+
+	test("P0.1 regression: ready_with_corrections + empty items → escalation (not approval)", async () => {
+		const planPath = join(tmp, "docs/development/001-test-plan.md");
+		const reviewPath = join(tmp, "docs/development/reviews/test-review.md");
+
+		// Simulate parser-dropped items: reviewer says ready_with_corrections
+		// but all items had invalid actions, so parsed items array is empty.
+		const reviewer = mockAdapter("reviewer", [
+			{
+				output: "Corrections needed.",
+				writeFile: {
+					path: reviewPath,
+					content: `# Review\n\n${verdictBlock({
+						readiness: "ready_with_corrections",
+						reviewPath,
+						items: [], // All items dropped by parser
+					})}`,
+				},
+			},
+		]);
+		const author = mockAdapter("author", []);
+
+		const result = await runPlanReviewLoop(
+			planPath,
+			reviewPath,
+			db,
+			author,
+			reviewer,
+			defaultConfig(),
+			{ humanGate: fixedHumanGate("abort") },
+		);
+
+		expect(result.approved).toBe(false);
+		expect(result.escalations.length).toBeGreaterThan(0);
+		expect(
+			result.escalations.some((e) =>
+				e.reason.includes("no auto-fixable items"),
+			),
+		).toBe(true);
+	});
+
+	test("not_ready + empty items → escalation (not approval)", async () => {
+		const planPath = join(tmp, "docs/development/001-test-plan.md");
+		const reviewPath = join(tmp, "docs/development/reviews/test-review.md");
+
+		const reviewer = mockAdapter("reviewer", [
+			{
+				output: "Not ready.",
+				writeFile: {
+					path: reviewPath,
+					content: `# Review\n\n${verdictBlock({
+						readiness: "not_ready",
+						reviewPath,
+						items: [],
+					})}`,
+				},
+			},
+		]);
+		const author = mockAdapter("author", []);
+
+		const result = await runPlanReviewLoop(
+			planPath,
+			reviewPath,
+			db,
+			author,
+			reviewer,
+			defaultConfig(),
+			{ humanGate: fixedHumanGate("abort") },
+		);
+
+		expect(result.approved).toBe(false);
+		expect(result.escalations.length).toBeGreaterThan(0);
+		expect(
+			result.escalations.some((e) =>
+				e.reason.includes("no auto-fixable items"),
+			),
+		).toBe(true);
 	});
 
 	test("resume detection: start-fresh marks old run as aborted", async () => {

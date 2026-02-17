@@ -11,6 +11,7 @@ import {
 } from "../orchestrator/plan-review-loop.js";
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
+import { resolveProjectRoot } from "../project-root.js";
 
 export default defineCommand({
 	meta: {
@@ -62,8 +63,8 @@ export default defineCommand({
 			process.exit(1);
 		}
 
-		// Load config
-		const projectRoot = resolve(".");
+		// Derive project root consistently (config file > git root > cwd)
+		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
 
 		// Git safety check (basic — full implementation in Phase 5)
@@ -115,6 +116,7 @@ export default defineCommand({
 			{
 				auto: args.auto,
 				allowDirty: args["allow-dirty"],
+				projectRoot,
 			},
 		);
 

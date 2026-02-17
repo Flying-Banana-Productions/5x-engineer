@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { openDbReadOnly } from "../db/connection.js";
@@ -11,6 +11,7 @@ import {
 } from "../db/operations.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
+import { findGitRoot } from "../project-root.js";
 
 function progressBar(percentage: number, width: number = 12): string {
 	const filled = Math.round((percentage / 100) * width);
@@ -57,18 +58,6 @@ function formatDuration(startedAt: string): string {
 	if (mins < 60) return `${mins}m ago`;
 	const hours = Math.floor(mins / 60);
 	return `${hours}h ${mins % 60}m ago`;
-}
-
-function findGitRoot(startDir: string): string | null {
-	let dir = resolve(startDir);
-	const root = resolve("/");
-	while (true) {
-		if (existsSync(join(dir, ".git"))) return dir;
-		const parent = dirname(dir);
-		if (parent === dir || dir === root) break;
-		dir = parent;
-	}
-	return null;
 }
 
 function tryLoadRunState(opts: {

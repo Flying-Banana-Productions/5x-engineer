@@ -996,9 +996,9 @@ $ 5x plan docs/workflows/370-court-time-allocation-reporting.md
   Next: 5x plan-review docs/development/720-impl-court-time-allocation-reporting.md
 ```
 
-Target path computation: `<config.paths.plans>/<next-sequence-number>-impl-<slug-from-prd>.md`. User can override with `--out <path>`. If the computed path already exists (e.g., parallel runs), auto-increment the sequence number until a free path is found.
+Target path computation: `<config.paths.plans>/<next-sequence-number>-impl-<slug-from-prd>.md`. User can override with `--out <path>`. If the computed path already exists (e.g., parallel runs), auto-increment the sequence number until a free path is found. If the slug is empty (e.g., numeric-only filename), falls back to `"plan"`.
 
-Review path computation (used in `plan-review` and `run`): on the first review for a plan, the CLI computes `<config.paths.reviews>/<date>-<plan-basename>-review.md` (e.g., plan `001-impl-5x-cli.md` → review `2026-02-15-001-impl-5x-cli-review.md`) and persists it in the `runs` table (`review_path` column). On subsequent runs for the same plan, the CLI checks the DB for an existing `review_path` and reuses it — this keeps a single addendum trail even across multi-day runs, without directory scanning. If no DB entry exists (first run, or DB reset), the path is computed fresh. If the review file already exists on disk, append to it (addendum model).
+Review path computation (used in `plan-review` and `run`): on the first review for a plan, the CLI computes `<config.paths.reviews>/<date>-<plan-basename>-review.md` (e.g., plan `001-impl-5x-cli.md` → review `2026-02-15-001-impl-5x-cli-review.md`) and persists it in the `runs` table (`review_path` column). On subsequent runs for the same plan, the CLI checks the DB for an existing `review_path` and reuses it — this keeps a single addendum trail even across multi-day runs, without directory scanning. If the DB-provided path is outside the configured `config.paths.reviews` directory, it is rejected with a warning and a fresh path is computed instead (guards against stale/corrupt DB state). If no DB entry exists (first run, or DB reset), the path is computed fresh. If the review file already exists on disk, append to it (addendum model).
 
 - [x] Compute target plan path deterministically (sequence number from existing plans + slug from PRD title), or accept `--out <path>` override
 - [x] Read PRD/TDD file(s) from provided path(s)
@@ -1018,13 +1018,26 @@ export interface PlanReviewResult {
   approved: boolean;
   iterations: number;
   reviewPath: string;
+  runId: string;
   escalations: EscalationEvent[];
+}
+
+export interface PlanReviewLoopOptions {
+  auto?: boolean;
+  allowDirty?: boolean;
+  projectRoot?: string; // agent workdir — falls back to dirname(planPath)
+  humanGate?: (event: EscalationEvent) => Promise<'continue' | 'approve' | 'abort'>;
+  resumeGate?: (runId: string, iteration: number) => Promise<'resume' | 'start-fresh' | 'abort'>;
 }
 
 export async function runPlanReviewLoop(
   planPath: string,
+  reviewPath: string,
+  db: Database,
+  authorAdapter: AgentAdapter,
+  reviewerAdapter: AgentAdapter,
   config: FiveXConfig,
-  options: { auto?: boolean },
+  options?: PlanReviewLoopOptions,
 ): Promise<PlanReviewResult> { ... }
 ```
 
@@ -1035,6 +1048,7 @@ REVIEW → PARSE_VERDICT → APPROVED          (ready)
 REVIEW → PARSE_VERDICT → AUTO_FIX → REVIEW (ready_with_corrections, all auto_fix)
 REVIEW → PARSE_VERDICT → ESCALATE          (has human_required items)
 REVIEW → PARSE_VERDICT → ESCALATE          (missing verdict block)
+REVIEW → PARSE_VERDICT → ESCALATE          (non-ready with no auto-fixable items)
 AUTO_FIX → PARSE_STATUS → REVIEW           (author completed)
 AUTO_FIX → PARSE_STATUS → ESCALATE         (author needs_human)
 ESCALATE → REVIEW                          (human provides guidance, continue)
@@ -1042,6 +1056,8 @@ ESCALATE → APPROVED                        (human overrides, accepts)
 ESCALATE → ABORTED                         (human aborts)
 any → ESCALATE                             (max iterations reached)
 ```
+
+**Safety invariant:** For any verdict where `readiness !== 'ready'`, the loop must NOT approve unless it has at least one auto-fixable item (routes to AUTO_FIX) or the human gate explicitly overrides. A non-ready verdict with zero actionable items always escalates — this covers parser-dropped items and reviewer mistakes.
 
 **DB integration:** Each state transition is recorded as a `run_event`. Parsed `5x:verdict` and `5x:status` blocks are stored in `agent_results` as the SOT for routing decisions. The commented YAML in the review markdown file is a human-inspectable artifact but is not re-read by the orchestrator after initial parse.
 
@@ -1074,8 +1090,21 @@ any → ESCALATE                             (max iterations reached)
 - [x] Validate plan file exists and is parseable
 - [x] Initialize DB connection and run migrations
 - [x] Initialize adapters from config
-- [x] Call `runPlanReviewLoop`
+- [x] Call `runPlanReviewLoop` with `projectRoot` for consistent agent workdir
 - [x] Display final result (with run ID for future reference)
+
+### 4.4 `src/project-root.ts` — Project root resolution
+
+All commands derive the project root via `resolveProjectRoot()` (in `src/project-root.ts`) rather than hard-coding `resolve(".")`. Resolution strategy: (1) discover config file by walking up from cwd → use its parent directory; (2) else walk up to find `.git` → use that directory; (3) else fall back to cwd. This ensures DB paths, artifact roots, and git safety checks all anchor to the same directory regardless of which subdirectory the CLI is invoked from.
+
+`findGitRoot()` is also exported as a shared utility (previously inlined in `status.ts`).
+
+- [x] Create `resolveProjectRoot()` utility with config-file > git-root > cwd strategy
+- [x] Export `findGitRoot()` for shared use
+- [x] Update `plan.ts`, `plan-review.ts`, `status.ts` to use `resolveProjectRoot()` / `findGitRoot()`
+- [x] `plan.ts`: enforce `--allow-dirty` git check (was previously declared but unused)
+- [x] `plan-review-loop.ts`: accept `projectRoot` in options, use as agent workdir (instead of `dirname(planPath)`)
+- [x] `resolveReviewPath()`: validate DB-provided paths are under the configured reviews directory
 
 ---
 
