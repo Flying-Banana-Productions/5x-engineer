@@ -58,6 +58,16 @@ export {
 	registerLockCleanup,
 	releaseLock,
 } from "./lock.js";
+// Orchestrator
+export type {
+	EscalationEvent,
+	PlanReviewLoopOptions,
+	PlanReviewResult,
+} from "./orchestrator/plan-review-loop.js";
+export {
+	resolveReviewPath,
+	runPlanReviewLoop,
+} from "./orchestrator/plan-review-loop.js";
 export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
 export { parsePlan } from "./parsers/plan.js";
 export type { ReviewSummary } from "./parsers/review.js";

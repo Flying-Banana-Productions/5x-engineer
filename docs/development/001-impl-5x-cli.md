@@ -66,7 +66,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 3. [Phase 1.1: Architecture Foundation — DB, Lock, Templates](#phase-11-architecture-foundation--db-lock-templates) — COMPLETE
 4. [Phase 2: Agent Adapters](#phase-2-agent-adapters) — COMPLETE
 5. [Phase 3: Prompt Templates + Init](#phase-3-prompt-templates--init) — COMPLETE
-6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop)
+6. [Phase 4: Plan Generation + Review Loop](#phase-4-plan-generation--review-loop) — COMPLETE
 7. [Phase 5: Phase Execution Loop](#phase-5-phase-execution-loop)
 8. [Phase 6: OpenCode Adapter](#phase-6-opencode-adapter)
 9. [Phase 7: Reporting, Auto Mode, Polish](#phase-7-reporting-auto-mode-polish)
@@ -975,7 +975,7 @@ $ 5x init
 
 ---
 
-## Phase 4: Plan Generation + Review Loop
+## Phase 4: Plan Generation + Review Loop — COMPLETE
 
 **Completion gate:** `5x plan <prd-path>` generates an implementation plan via the author agent. `5x plan-review <plan-path>` runs the full review loop: reviewer → verdict → auto-fix → re-review, with human escalation on `human_required` items or max iterations. All orchestration state persisted to SQLite — resume works after interruption. End-to-end integration test proves the loop with mocked agent responses.
 
@@ -1000,16 +1000,16 @@ Target path computation: `<config.paths.plans>/<next-sequence-number>-impl-<slug
 
 Review path computation (used in `plan-review` and `run`): on the first review for a plan, the CLI computes `<config.paths.reviews>/<date>-<plan-basename>-review.md` (e.g., plan `001-impl-5x-cli.md` → review `2026-02-15-001-impl-5x-cli-review.md`) and persists it in the `runs` table (`review_path` column). On subsequent runs for the same plan, the CLI checks the DB for an existing `review_path` and reuses it — this keeps a single addendum trail even across multi-day runs, without directory scanning. If no DB entry exists (first run, or DB reset), the path is computed fresh. If the review file already exists on disk, append to it (addendum model).
 
-- [ ] Compute target plan path deterministically (sequence number from existing plans + slug from PRD title), or accept `--out <path>` override
-- [ ] Read PRD/TDD file(s) from provided path(s)
-- [ ] Render prompt from `author-generate-plan` template with variables `{ prd_path, plan_path, plan_template_path }`
-- [ ] Invoke author adapter with rendered prompt
-- [ ] Parse `5x:status` from output; verify `planPath` matches expected target path
-- [ ] Store parsed status in DB via `upsertAgentResult()` (run_id, role='author', template_name, signal_data)
-- [ ] If no `5x:status` block → escalate to human (never scan for new files)
-- [ ] Upsert plan record in DB (`plans` table) for future association
-- [ ] Display result with suggested next command
-- [ ] Handle author `needs_human` / `failed` signals
+- [x] Compute target plan path deterministically (sequence number from existing plans + slug from PRD title), or accept `--out <path>` override
+- [x] Read PRD/TDD file(s) from provided path(s)
+- [x] Render prompt from `author-generate-plan` template with variables `{ prd_path, plan_path, plan_template_path }`
+- [x] Invoke author adapter with rendered prompt
+- [x] Parse `5x:status` from output; verify `planPath` matches expected target path
+- [x] Store parsed status in DB via `upsertAgentResult()` (run_id, role='author', template_name, signal_data)
+- [x] If no `5x:status` block → escalate to human (never scan for new files)
+- [x] Upsert plan record in DB (`plans` table) for future association
+- [x] Display result with suggested next command
+- [x] Handle author `needs_human` / `failed` signals
 
 ### 4.2 `src/orchestrator/plan-review-loop.ts` — Loop 1 state machine
 
@@ -1047,35 +1047,35 @@ any → ESCALATE                             (max iterations reached)
 
 **Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists for command `plan-review`, prompt: `"Found interrupted run <id> at iteration <N>. Resume? [yes/no/start-fresh]"`. Resume re-enters the state machine at the recorded `currentState`. Before each agent invocation, the orchestrator calls `hasCompletedStep(runId, role, phase, iteration, templateName)` — if the step already has a result in the DB, it skips invocation and uses the stored result. If a step is re-run (e.g., interrupted mid-invocation), the new result replaces the old via `ON CONFLICT DO UPDATE`.
 
-- [ ] Create `run` record in DB at loop start (`createRun()`)
-- [ ] Resolve review path: check DB for existing `review_path` from prior runs on this plan (reuse for addendum continuity); if none, compute `<config.paths.reviews>/<date>-<plan-basename>-review.md`
-- [ ] Implement state machine with clear transition logging
-- [ ] Append `run_event` on each state transition (`appendRunEvent()`)
-- [ ] Render reviewer prompt from `reviewer-plan` template with variables `{ plan_path, review_path }`
-- [ ] Invoke reviewer adapter; store result in `agent_results` table
-- [ ] Parse `5x:verdict` from the CLI-computed review file path (never scan for review files)
-- [ ] Store parsed verdict in DB as SOT; use DB for routing decisions
-- [ ] Verify `5x:verdict.reviewPath` matches expected path; warn if mismatched
-- [ ] Route based on verdict: ready → done, auto_fix items → author, human_required → escalate
-- [ ] Render author prompt from `author-process-review` template for auto-fix cycles
-- [ ] Invoke author adapter; store result in `agent_results` table
-- [ ] Parse `5x:status` from author output; store in DB
-- [ ] Track iteration count, enforce `maxReviewIterations`
-- [ ] Update run status on completion/abort (`updateRunStatus()`)
-- [ ] Implement human escalation prompt (display items, options: continue/abort/override)
-- [ ] Implement `--auto` behavior: proceed on auto_fix, still escalate on human_required
-- [ ] Detect interrupted runs on startup; prompt for resume
-- [ ] Unit tests with mocked adapters: happy path, two-iteration fix, escalation, max iterations, resume after interruption
+- [x] Create `run` record in DB at loop start (`createRun()`)
+- [x] Resolve review path: check DB for existing `review_path` from prior runs on this plan (reuse for addendum continuity); if none, compute `<config.paths.reviews>/<date>-<plan-basename>-review.md`
+- [x] Implement state machine with clear transition logging
+- [x] Append `run_event` on each state transition (`appendRunEvent()`)
+- [x] Render reviewer prompt from `reviewer-plan` template with variables `{ plan_path, review_path }`
+- [x] Invoke reviewer adapter; store result in `agent_results` table
+- [x] Parse `5x:verdict` from the CLI-computed review file path (never scan for review files)
+- [x] Store parsed verdict in DB as SOT; use DB for routing decisions
+- [x] Verify `5x:verdict.reviewPath` matches expected path; warn if mismatched
+- [x] Route based on verdict: ready → done, auto_fix items → author, human_required → escalate
+- [x] Render author prompt from `author-process-review` template for auto-fix cycles
+- [x] Invoke author adapter; store result in `agent_results` table
+- [x] Parse `5x:status` from author output; store in DB
+- [x] Track iteration count, enforce `maxReviewIterations`
+- [x] Update run status on completion/abort (`updateRunStatus()`)
+- [x] Implement human escalation prompt (display items, options: continue/abort/override)
+- [x] Implement `--auto` behavior: proceed on auto_fix, still escalate on human_required
+- [x] Detect interrupted runs on startup; prompt for resume
+- [x] Unit tests with mocked adapters: happy path, two-iteration fix, escalation, max iterations, resume after interruption
 
 ### 4.3 `src/commands/plan-review.ts` — CLI command wiring
 
-- [ ] Parse command arguments (plan path, `--auto`, `--allow-dirty`, flags)
-- [ ] Run git safety check; abort on dirty tree unless `--allow-dirty`
-- [ ] Validate plan file exists and is parseable
-- [ ] Initialize DB connection and run migrations
-- [ ] Initialize adapters from config
-- [ ] Call `runPlanReviewLoop`
-- [ ] Display final result (with run ID for future reference)
+- [x] Parse command arguments (plan path, `--auto`, `--allow-dirty`, flags)
+- [x] Run git safety check; abort on dirty tree unless `--allow-dirty`
+- [x] Validate plan file exists and is parseable
+- [x] Initialize DB connection and run migrations
+- [x] Initialize adapters from config
+- [x] Call `runPlanReviewLoop`
+- [x] Display final result (with run ID for future reference)
 
 ---
 
@@ -1470,8 +1470,8 @@ $ 5x history --run abc123
 | `src/templates/reviewer-plan.md` | DONE — Bundled prompt template |
 | `src/templates/reviewer-commit.md` | DONE — Bundled prompt template |
 | `src/commands/init.ts` | DONE — Project initialization (config + .5x/ + .gitignore) |
-| `src/commands/plan.ts` | NEW — Plan generation command |
-| `src/commands/plan-review.ts` | NEW — Plan review loop command |
+| `src/commands/plan.ts` | DONE — Plan generation command |
+| `src/commands/plan-review.ts` | DONE — Plan review loop command |
 | `src/commands/run.ts` | NEW — Phase execution loop command |
 | `src/commands/status.ts` | MOD — Plan status display (add DB run state) |
 | `src/commands/history.ts` | NEW — Run history and reporting from DB |
@@ -1480,7 +1480,7 @@ $ 5x history --run abc123
 | `src/agents/claude-code.ts` | DONE — Claude Code subprocess adapter |
 | `src/agents/opencode.ts` | NEW — OpenCode SDK adapter |
 | `src/agents/factory.ts` | DONE — Config-driven adapter instantiation |
-| `src/orchestrator/plan-review-loop.ts` | NEW — Loop 1 state machine (DB-backed) |
+| `src/orchestrator/plan-review-loop.ts` | DONE — Loop 1 state machine (DB-backed) |
 | `src/orchestrator/phase-execution-loop.ts` | NEW — Loop 2 state machine (DB + lock + worktree) |
 | `src/parsers/plan.ts` | DONE — Implementation plan markdown parser |
 | `src/parsers/signals.ts` | DONE — 5x:verdict / 5x:status block parsers |
@@ -1542,7 +1542,7 @@ $ 5x history --run abc123
 | 1.1 | Architecture foundation — SQLite DB, plan lock, config updates, test fixes | 1.5 days |
 | 2 | Agent adapters (Claude Code) + schema probe | 1 day (**COMPLETE**) |
 | 3 | Prompt templates (bundled SSOT) + simplified init | 0.5 days (**COMPLETE**) |
-| 4 | Plan generation + review loop (DB-backed) | 1.5 days |
+| 4 | Plan generation + review loop (DB-backed) | 1.5 days (**COMPLETE**) |
 | 5 | Phase execution loop + git safety + worktree + lock integration | 3 days |
 | 6 | OpenCode adapter | 1 day |
 | 7 | Reporting (DB), auto mode guardrails, polish | 2 days |

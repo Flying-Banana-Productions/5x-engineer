@@ -11,6 +11,9 @@ const main = defineCommand({
 	subCommands: {
 		status: () => import("./commands/status.js").then((m) => m.default),
 		init: () => import("./commands/init.js").then((m) => m.default),
+		plan: () => import("./commands/plan.js").then((m) => m.default),
+		"plan-review": () =>
+			import("./commands/plan-review.js").then((m) => m.default),
 	},
 });
 
