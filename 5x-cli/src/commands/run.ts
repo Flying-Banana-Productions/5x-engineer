@@ -202,6 +202,16 @@ export default defineCommand({
 			const reviewRel = relative(projectRoot, reviewPath);
 			if (!reviewRel.startsWith("..")) {
 				reviewPath = resolve(workdir, reviewRel);
+			} else {
+				console.error(
+					"Warning: Review path is outside the project root and cannot be " +
+						"remapped into the worktree. Agents will read/write reviews in the " +
+						"primary checkout, breaking worktree isolation.",
+				);
+				console.error(`  Review path: ${reviewPath}`);
+				console.error(
+					"  Fix: set paths.reviews to a path within the project root.",
+				);
 			}
 		}
 

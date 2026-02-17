@@ -197,25 +197,15 @@ export async function runSingleCommand(
 
 		// Open log file for streaming writes
 		const logStream = createWriteStream(logPath);
-		const capture = new BoundedCapture();
+		const stdoutCapture = new BoundedCapture();
+		const stderrCapture = new BoundedCapture();
 
-		// Start streaming stdout immediately (don't wait for exit)
-		const stdoutDone = drainStream(proc.stdout, logStream, capture);
-
-		// Collect stderr separately — we'll append it after stdout
-		const stderrChunks: Buffer[] = [];
-		const stderrDone = (async () => {
-			const reader = proc.stderr.getReader();
-			try {
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					stderrChunks.push(Buffer.from(value));
-				}
-			} finally {
-				reader.releaseLock();
-			}
-		})();
+		// Stream both stdout and stderr concurrently to the log file.
+		// Individual write() calls are serialized by the stream, so chunks
+		// may interleave but won't corrupt each other. The inline captures
+		// are kept separate and combined with a marker at the end.
+		const stdoutDone = drainStream(proc.stdout, logStream, stdoutCapture);
+		const stderrDone = drainStream(proc.stderr, logStream, stderrCapture);
 
 		// Race subprocess against timeout
 		const timeoutPromise = new Promise<"timeout">((resolve) =>
@@ -236,13 +226,20 @@ export async function runSingleCommand(
 				// Already dead
 			}
 
-			// Drain any remaining data
+			// Drain any remaining data then append timeout marker —
+			// preserves partial output already streamed to the log file.
 			await Promise.allSettled([stdoutDone, stderrDone]);
+			const timeoutMsg = `\n[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)}s: ${command}\n`;
+			logStream.write(timeoutMsg);
 			logStream.end();
 
 			const duration = performance.now() - start;
-			const output = `[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)}s: ${command}`;
-			writeFileSync(logPath, output);
+			const stderrStr = stderrCapture.toString();
+			let partial = stdoutCapture.toString();
+			if (stderrStr) {
+				partial += `\n--- stderr ---\n${stderrStr}`;
+			}
+			const output = `${partial}\n[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)}s: ${command}`;
 
 			return {
 				command,
@@ -258,24 +255,19 @@ export async function runSingleCommand(
 
 		// Wait for streams to fully drain
 		await Promise.all([stdoutDone, stderrDone]);
-
-		// Append stderr to log file and capture buffer
-		if (stderrChunks.length > 0) {
-			const separator = Buffer.from("\n--- stderr ---\n");
-			logStream.write(separator);
-			capture.push(separator);
-			for (const chunk of stderrChunks) {
-				logStream.write(chunk);
-				capture.push(chunk);
-			}
-		}
-
 		logStream.end();
+
+		// Build inline output — stdout capture + optional stderr section
+		const stderrStr = stderrCapture.toString();
+		let inlineOutput = stdoutCapture.toString();
+		if (stderrStr) {
+			inlineOutput += `\n--- stderr ---\n${stderrStr}`;
+		}
 
 		return {
 			command,
 			passed: exitCode === 0,
-			output: capture.toString(),
+			output: inlineOutput,
 			outputPath: logPath,
 			duration,
 		};
