@@ -1,4 +1,9 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -21,7 +26,7 @@ export interface QualityResult {
 export interface QualityGateOptions {
 	runId: string;
 	logDir: string; // .5x/logs/<run-id>/
-	phase: number;
+	phase: string;
 	attempt: number;
 	timeout?: number; // per-command timeout in ms, default 300_000
 }
@@ -30,7 +35,8 @@ export interface QualityGateOptions {
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_INLINE_OUTPUT = 4096; // 4KB truncation for DB/display
+const INLINE_HEAD_BYTES = 2048; // first 2KB for inline output
+const INLINE_TAIL_BYTES = 2048; // last 2KB for inline output
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 
 // ---------------------------------------------------------------------------
@@ -46,10 +52,64 @@ function commandSlug(command: string): string {
 		.toLowerCase();
 }
 
-/** Truncate output to MAX_INLINE_OUTPUT bytes, appending a notice if truncated. */
-function truncateOutput(output: string): string {
-	if (output.length <= MAX_INLINE_OUTPUT) return output;
-	return `${output.slice(0, MAX_INLINE_OUTPUT)}\n... [truncated — see full log file]`;
+/**
+ * Bounded ring buffer that captures the first N and last N bytes of a stream
+ * for inline display, without buffering the full output in memory.
+ */
+class BoundedCapture {
+	private head: Buffer[] = [];
+	private headBytes = 0;
+	private tail: Buffer[] = [];
+	private tailBytes = 0;
+	private totalBytes = 0;
+	private readonly headLimit: number;
+	private readonly tailLimit: number;
+
+	constructor(headLimit = INLINE_HEAD_BYTES, tailLimit = INLINE_TAIL_BYTES) {
+		this.headLimit = headLimit;
+		this.tailLimit = tailLimit;
+	}
+
+	push(chunk: Buffer): void {
+		this.totalBytes += chunk.length;
+
+		// Fill head buffer first
+		if (this.headBytes < this.headLimit) {
+			const remaining = this.headLimit - this.headBytes;
+			if (chunk.length <= remaining) {
+				this.head.push(chunk);
+				this.headBytes += chunk.length;
+				return; // fully consumed into head
+			}
+			this.head.push(chunk.subarray(0, remaining));
+			this.headBytes += remaining;
+			chunk = chunk.subarray(remaining);
+		}
+
+		// Append to tail, evicting old data to stay within tailLimit
+		this.tail.push(chunk);
+		this.tailBytes += chunk.length;
+		while (this.tailBytes > this.tailLimit && this.tail.length > 1) {
+			const evicted = this.tail.shift();
+			if (evicted) this.tailBytes -= evicted.length;
+		}
+		// If a single chunk exceeds tailLimit, trim from the start
+		if (this.tailBytes > this.tailLimit && this.tail.length === 1) {
+			const buf = this.tail[0] as Buffer;
+			this.tail[0] = buf.subarray(buf.length - this.tailLimit);
+			this.tailBytes = this.tail[0].length;
+		}
+	}
+
+	/** Build the inline output string. */
+	toString(): string {
+		const headStr = Buffer.concat(this.head).toString("utf-8");
+		if (this.totalBytes <= this.headLimit) {
+			return headStr;
+		}
+		const tailStr = Buffer.concat(this.tail).toString("utf-8");
+		return `${headStr}\n... [truncated — see full log file]\n${tailStr}`;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +146,34 @@ export async function runQualityGates(
 }
 
 /**
+ * Stream a readable stream to both a log file and a bounded capture buffer.
+ * Returns when the stream is fully consumed.
+ */
+async function drainStream(
+	stream: ReadableStream<Uint8Array>,
+	logStream: NodeJS.WritableStream,
+	capture: BoundedCapture,
+): Promise<void> {
+	const reader = stream.getReader();
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			const buf = Buffer.from(value);
+			logStream.write(buf);
+			capture.push(buf);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+/**
  * Run a single quality gate command. Exposed for testing.
+ *
+ * Streams stdout/stderr directly to the log file while maintaining a bounded
+ * in-memory buffer (first 2KB + last 2KB) for the truncated inline output.
+ * This prevents OOM on large build/test logs.
  */
 export async function runSingleCommand(
 	command: string,
@@ -108,6 +195,28 @@ export async function runSingleCommand(
 			env: { ...process.env },
 		});
 
+		// Open log file for streaming writes
+		const logStream = createWriteStream(logPath);
+		const capture = new BoundedCapture();
+
+		// Start streaming stdout immediately (don't wait for exit)
+		const stdoutDone = drainStream(proc.stdout, logStream, capture);
+
+		// Collect stderr separately — we'll append it after stdout
+		const stderrChunks: Buffer[] = [];
+		const stderrDone = (async () => {
+			const reader = proc.stderr.getReader();
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					stderrChunks.push(Buffer.from(value));
+				}
+			} finally {
+				reader.releaseLock();
+			}
+		})();
+
 		// Race subprocess against timeout
 		const timeoutPromise = new Promise<"timeout">((resolve) =>
 			setTimeout(() => resolve("timeout"), timeout),
@@ -117,7 +226,6 @@ export async function runSingleCommand(
 
 		if (race === "timeout") {
 			proc.kill("SIGTERM");
-			// Wait a brief grace then force-kill
 			await Promise.race([
 				proc.exited,
 				new Promise((r) => setTimeout(r, 2000)),
@@ -128,6 +236,10 @@ export async function runSingleCommand(
 				// Already dead
 			}
 
+			// Drain any remaining data
+			await Promise.allSettled([stdoutDone, stderrDone]);
+			logStream.end();
+
 			const duration = performance.now() - start;
 			const output = `[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)}s: ${command}`;
 			writeFileSync(logPath, output);
@@ -135,7 +247,7 @@ export async function runSingleCommand(
 			return {
 				command,
 				passed: false,
-				output: truncateOutput(output),
+				output,
 				outputPath: logPath,
 				duration,
 			};
@@ -144,21 +256,26 @@ export async function runSingleCommand(
 		const exitCode = race as number;
 		const duration = performance.now() - start;
 
-		// Drain stdout/stderr
-		const [stdout, stderr] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-		]);
+		// Wait for streams to fully drain
+		await Promise.all([stdoutDone, stderrDone]);
 
-		const fullOutput = stdout + (stderr ? `\n--- stderr ---\n${stderr}` : "");
+		// Append stderr to log file and capture buffer
+		if (stderrChunks.length > 0) {
+			const separator = Buffer.from("\n--- stderr ---\n");
+			logStream.write(separator);
+			capture.push(separator);
+			for (const chunk of stderrChunks) {
+				logStream.write(chunk);
+				capture.push(chunk);
+			}
+		}
 
-		// Write full output to log file
-		writeFileSync(logPath, fullOutput);
+		logStream.end();
 
 		return {
 			command,
 			passed: exitCode === 0,
-			output: truncateOutput(fullOutput),
+			output: capture.toString(),
 			outputPath: logPath,
 			duration,
 		};
@@ -172,7 +289,7 @@ export async function runSingleCommand(
 		return {
 			command,
 			passed: false,
-			output: truncateOutput(output),
+			output,
 			outputPath: logPath,
 			duration,
 		};

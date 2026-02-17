@@ -211,7 +211,7 @@ export default defineCommand({
 			run_id: runId,
 			role: "author",
 			template_name: template.name,
-			phase: -1,
+			phase: "-1",
 			iteration: 0,
 			exit_code: result.exitCode,
 			duration_ms: result.duration,

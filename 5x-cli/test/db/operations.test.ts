@@ -79,6 +79,37 @@ describe("plans", () => {
 	test("get non-existent plan returns null", () => {
 		expect(getPlan(db, "/nope.md")).toBeNull();
 	});
+
+	test("upsertPlan with empty string clears worktree/branch", () => {
+		upsertPlan(db, {
+			planPath: "/test/plan.md",
+			worktreePath: "/tmp/wt",
+			branch: "5x/test",
+		});
+		const before = unwrap(getPlan(db, "/test/plan.md"));
+		expect(before.worktree_path).toBe("/tmp/wt");
+		expect(before.branch).toBe("5x/test");
+
+		// Pass empty string to explicitly clear
+		upsertPlan(db, { planPath: "/test/plan.md", worktreePath: "", branch: "" });
+		const after = unwrap(getPlan(db, "/test/plan.md"));
+		expect(after.worktree_path).toBeNull();
+		expect(after.branch).toBeNull();
+	});
+
+	test("upsertPlan with undefined preserves existing values", () => {
+		upsertPlan(db, {
+			planPath: "/test/plan.md",
+			worktreePath: "/tmp/wt",
+			branch: "5x/test",
+		});
+
+		// Omit worktreePath/branch — should preserve existing
+		upsertPlan(db, { planPath: "/test/plan.md" });
+		const plan = unwrap(getPlan(db, "/test/plan.md"));
+		expect(plan.worktree_path).toBe("/tmp/wt");
+		expect(plan.branch).toBe("5x/test");
+	});
 });
 
 // --- Runs ---
@@ -94,12 +125,12 @@ describe("runs", () => {
 
 	test("update run status to completed", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
-		updateRunStatus(db, "run1", "completed", "DONE", 3);
+		updateRunStatus(db, "run1", "completed", "DONE", "3");
 
 		const run = unwrap(getLatestRun(db, "/plan.md"));
 		expect(run.status).toBe("completed");
 		expect(run.current_state).toBe("DONE");
-		expect(run.current_phase).toBe(3);
+		expect(run.current_phase).toBe("3");
 		expect(run.completed_at).not.toBeNull();
 	});
 
@@ -135,11 +166,11 @@ describe("runs", () => {
 describe("events", () => {
 	test("append and retrieve events", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
-		appendRunEvent(db, { runId: "run1", eventType: "phase_start", phase: 1 });
+		appendRunEvent(db, { runId: "run1", eventType: "phase_start", phase: "1" });
 		appendRunEvent(db, {
 			runId: "run1",
 			eventType: "agent_invoke",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			data: { template: "author-next-phase" },
 		});
@@ -176,7 +207,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "author",
 			template_name: "author-next-phase",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 5000,
@@ -187,7 +218,7 @@ describe("agent results", () => {
 			signal_data: JSON.stringify({ result: "completed", phase: 1 }),
 		});
 
-		const results = getAgentResults(db, "run1", 1);
+		const results = getAgentResults(db, "run1", "1");
 		expect(results).toHaveLength(1);
 		const r0 = unwrapDefined(results[0]);
 		expect(r0.role).toBe("author");
@@ -203,7 +234,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "author",
 			template_name: "author-next-phase",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 1,
 			duration_ms: 5000,
@@ -220,7 +251,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "author",
 			template_name: "author-next-phase",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 8000,
@@ -231,7 +262,7 @@ describe("agent results", () => {
 			signal_data: JSON.stringify({ result: "completed" }),
 		});
 
-		const results = getAgentResults(db, "run1", 1);
+		const results = getAgentResults(db, "run1", "1");
 		expect(results).toHaveLength(1);
 		// id should be updated to the new one (log file tracks latest attempt)
 		const r0 = unwrapDefined(results[0]);
@@ -247,7 +278,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "reviewer",
 			template_name: "reviewer-commit",
-			phase: 2,
+			phase: "2",
 			iteration: 1,
 			exit_code: 0,
 			duration_ms: 3000,
@@ -259,13 +290,13 @@ describe("agent results", () => {
 		});
 
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", 2, 1, "reviewer-commit"),
+			hasCompletedStep(db, "run1", "reviewer", "2", 1, "reviewer-commit"),
 		).toBe(true);
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", 2, 2, "reviewer-commit"),
+			hasCompletedStep(db, "run1", "reviewer", "2", 2, "reviewer-commit"),
 		).toBe(false);
 		expect(
-			hasCompletedStep(db, "run1", "author", 2, 1, "reviewer-commit"),
+			hasCompletedStep(db, "run1", "author", "2", 1, "reviewer-commit"),
 		).toBe(false);
 	});
 
@@ -282,7 +313,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "reviewer",
 			template_name: "reviewer-commit",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 3000,
@@ -293,7 +324,7 @@ describe("agent results", () => {
 			signal_data: JSON.stringify(verdict),
 		});
 
-		const result = getLatestVerdict(db, "run1", 1);
+		const result = getLatestVerdict(db, "run1", "1");
 		expect(result).toEqual(verdict);
 	});
 
@@ -310,7 +341,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "author",
 			template_name: "author-next-phase",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 5000,
@@ -321,7 +352,7 @@ describe("agent results", () => {
 			signal_data: JSON.stringify(status),
 		});
 
-		const result = getLatestStatus(db, "run1", 1);
+		const result = getLatestStatus(db, "run1", "1");
 		expect(result).toEqual(status);
 	});
 
@@ -332,7 +363,7 @@ describe("agent results", () => {
 			run_id: "run1",
 			role: "reviewer",
 			template_name: "reviewer-plan",
-			phase: -1,
+			phase: "-1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 3000,
@@ -344,22 +375,22 @@ describe("agent results", () => {
 		});
 
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", -1, 0, "reviewer-plan"),
+			hasCompletedStep(db, "run1", "reviewer", "-1", 0, "reviewer-plan"),
 		).toBe(true);
-		const results = getAgentResults(db, "run1", -1);
+		const results = getAgentResults(db, "run1", "-1");
 		expect(results).toHaveLength(1);
 	});
 
 	test("filter by phase returns only matching results", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
-		for (const phase of [1, 1, 2]) {
+		for (const phase of ["1", "1", "2"]) {
 			upsertAgentResult(db, {
 				id: `ar-${phase}-${Math.random()}`,
 				run_id: "run1",
 				role: "author",
 				template_name: "author-next-phase",
 				phase,
-				iteration: phase === 1 ? getAgentResults(db, "run1", 1).length : 0,
+				iteration: phase === "1" ? getAgentResults(db, "run1", "1").length : 0,
 				exit_code: 0,
 				duration_ms: 1000,
 				tokens_in: null,
@@ -370,8 +401,8 @@ describe("agent results", () => {
 			});
 		}
 
-		expect(getAgentResults(db, "run1", 1)).toHaveLength(2);
-		expect(getAgentResults(db, "run1", 2)).toHaveLength(1);
+		expect(getAgentResults(db, "run1", "1")).toHaveLength(2);
+		expect(getAgentResults(db, "run1", "2")).toHaveLength(1);
 		expect(getAgentResults(db, "run1")).toHaveLength(3);
 	});
 });
@@ -384,14 +415,14 @@ describe("quality results", () => {
 		upsertQualityResult(db, {
 			id: "qr1",
 			run_id: "run1",
-			phase: 1,
+			phase: "1",
 			attempt: 0,
 			passed: 1,
 			results: JSON.stringify([{ command: "bun test", passed: true }]),
 			duration_ms: 3000,
 		});
 
-		const results = getQualityResults(db, "run1", 1);
+		const results = getQualityResults(db, "run1", "1");
 		expect(results).toHaveLength(1);
 		const r0 = unwrapDefined(results[0]);
 		expect(r0.passed).toBe(1);
@@ -403,7 +434,7 @@ describe("quality results", () => {
 		upsertQualityResult(db, {
 			id: "qr1",
 			run_id: "run1",
-			phase: 1,
+			phase: "1",
 			attempt: 0,
 			passed: 0,
 			results: JSON.stringify([{ command: "bun test", passed: false }]),
@@ -413,14 +444,14 @@ describe("quality results", () => {
 		upsertQualityResult(db, {
 			id: "qr2",
 			run_id: "run1",
-			phase: 1,
+			phase: "1",
 			attempt: 0,
 			passed: 1,
 			results: JSON.stringify([{ command: "bun test", passed: true }]),
 			duration_ms: 4000,
 		});
 
-		const results = getQualityResults(db, "run1", 1);
+		const results = getQualityResults(db, "run1", "1");
 		expect(results).toHaveLength(1);
 		const r0 = unwrapDefined(results[0]);
 		expect(r0.id).toBe("qr2");
@@ -459,7 +490,7 @@ describe("reporting", () => {
 			run_id: "run1",
 			role: "author",
 			template_name: "author-next-phase",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 			exit_code: 0,
 			duration_ms: 5000,
@@ -475,7 +506,7 @@ describe("reporting", () => {
 			run_id: "run1",
 			role: "reviewer",
 			template_name: "reviewer-commit",
-			phase: 1,
+			phase: "1",
 			iteration: 1,
 			exit_code: 0,
 			duration_ms: 3000,
@@ -489,7 +520,7 @@ describe("reporting", () => {
 		upsertQualityResult(db, {
 			id: "qr1",
 			run_id: "run1",
-			phase: 1,
+			phase: "1",
 			attempt: 0,
 			passed: 0,
 			results: "[]",
@@ -499,7 +530,7 @@ describe("reporting", () => {
 		upsertQualityResult(db, {
 			id: "qr2",
 			run_id: "run1",
-			phase: 1,
+			phase: "1",
 			attempt: 1,
 			passed: 1,
 			results: "[]",
@@ -616,17 +647,17 @@ describe("canonical path enforcement", () => {
 describe("getLastRunEvent", () => {
 	test("returns the most recent event", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
-		appendRunEvent(db, { runId: "run1", eventType: "phase_start", phase: 1 });
+		appendRunEvent(db, { runId: "run1", eventType: "phase_start", phase: "1" });
 		appendRunEvent(db, {
 			runId: "run1",
 			eventType: "agent_invoke",
-			phase: 1,
+			phase: "1",
 			iteration: 0,
 		});
 		appendRunEvent(db, {
 			runId: "run1",
 			eventType: "verdict",
-			phase: 1,
+			phase: "1",
 			iteration: 1,
 		});
 

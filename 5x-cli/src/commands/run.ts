@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
 import { loadConfig } from "../config.js";
@@ -181,7 +181,29 @@ export default defineCommand({
 
 		// --- Resolve review path ---
 		const reviewsDir = resolve(projectRoot, config.paths.reviews);
-		const reviewPath = resolveReviewPath(db, canonical, reviewsDir);
+		let reviewPath = resolveReviewPath(db, canonical, reviewsDir);
+
+		// --- Remap paths for worktree isolation ---
+		// When workdir is a worktree, plan/review paths must resolve inside
+		// the worktree so agents read/write artifacts there, not in the
+		// primary checkout. DB lookups continue using the canonical
+		// (primary checkout) path.
+		let effectivePlanPath = canonical;
+		if (workdir !== projectRoot) {
+			const planRel = relative(projectRoot, canonical);
+			if (planRel.startsWith("..")) {
+				console.error(
+					"Error: Plan file is outside the project root — cannot remap for worktree.",
+				);
+				process.exit(1);
+			}
+			effectivePlanPath = resolve(workdir, planRel);
+
+			const reviewRel = relative(projectRoot, reviewPath);
+			if (!reviewRel.startsWith("..")) {
+				reviewPath = resolve(workdir, reviewRel);
+			}
+		}
 
 		// --- Display header ---
 		console.log();
@@ -202,7 +224,7 @@ export default defineCommand({
 		// --- Run the loop ---
 		try {
 			const result = await runPhaseExecutionLoop(
-				canonical,
+				effectivePlanPath,
 				reviewPath,
 				db,
 				authorAdapter,
@@ -214,6 +236,7 @@ export default defineCommand({
 					skipQuality: args["skip-quality"],
 					startPhase: args.phase,
 					workdir,
+					projectRoot,
 				},
 			);
 

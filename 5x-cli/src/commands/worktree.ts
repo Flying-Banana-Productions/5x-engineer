@@ -100,8 +100,8 @@ const cleanupCmd = defineCommand({
 		// Check worktree exists
 		if (!existsSync(wtPath)) {
 			console.log(`  Worktree directory ${wtPath} does not exist.`);
-			// Clear DB association
-			upsertPlan(db, { planPath: canonical });
+			// Clear DB association (pass empty string to null the fields)
+			upsertPlan(db, { planPath: canonical, worktreePath: "", branch: "" });
 			console.log("  Cleared plan worktree association from DB.");
 			return;
 		}
@@ -120,6 +120,10 @@ const cleanupCmd = defineCommand({
 			} catch {
 				// Can't check — proceed with caution
 			}
+		} else {
+			console.log(
+				"  WARNING: --force will discard all uncommitted changes in the worktree.",
+			);
 		}
 
 		// Remove worktree
@@ -158,8 +162,8 @@ const cleanupCmd = defineCommand({
 			);
 		}
 
-		// Clear DB association
-		upsertPlan(db, { planPath: canonical });
+		// Clear DB association (pass empty string to explicitly null the fields)
+		upsertPlan(db, { planPath: canonical, worktreePath: "", branch: "" });
 		console.log("  Cleared plan worktree association from DB.");
 	},
 });

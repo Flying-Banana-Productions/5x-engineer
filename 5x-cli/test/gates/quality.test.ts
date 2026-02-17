@@ -31,7 +31,7 @@ function makeOpts(
 	return {
 		runId: "run",
 		logDir: join(tmp, ".5x", "logs", "run"),
-		phase: 1,
+		phase: "1",
 		attempt: 0,
 		...overrides,
 	};
@@ -109,7 +109,7 @@ describe("runSingleCommand", () => {
 			await runSingleCommand(
 				"echo test",
 				tmp,
-				makeOpts(tmp, { phase: 2, attempt: 1 }),
+				makeOpts(tmp, { phase: "2", attempt: 1 }),
 			);
 			const logDir = join(tmp, ".5x", "logs", "run");
 			expect(

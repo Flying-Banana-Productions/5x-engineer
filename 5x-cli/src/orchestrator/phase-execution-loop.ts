@@ -27,6 +27,8 @@ import {
 	createRun,
 	getActiveRun,
 	getAgentResults,
+	getMaxIterationForPhase,
+	getQualityAttemptCount,
 	hasCompletedStep,
 	updateRunStatus,
 	upsertAgentResult,
@@ -40,7 +42,7 @@ import type {
 } from "../gates/human.js";
 import type { QualityResult } from "../gates/quality.js";
 import { runQualityGates } from "../gates/quality.js";
-import { getLatestCommit } from "../git.js";
+import { getCurrentBranch, getLatestCommit, isBranchRelevant } from "../git.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { VerdictBlock } from "../parsers/signals.js";
 import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
@@ -66,6 +68,7 @@ export interface PhaseExecutionOptions {
 	skipQuality?: boolean;
 	startPhase?: string; // phase number to start from (e.g. "3", "1.1")
 	workdir: string; // agent workdir (project root or worktree path)
+	projectRoot?: string; // original project root (for log/DB anchoring when using worktrees)
 	/** Override for testing — phase gate prompt. */
 	phaseGate?: (
 		summary: PhaseSummary,
@@ -75,7 +78,7 @@ export interface PhaseExecutionOptions {
 	/** Override for testing — resume gate prompt. */
 	resumeGate?: (
 		runId: string,
-		phase: number,
+		phase: string,
 		state: string,
 	) => Promise<"resume" | "start-fresh" | "abort">;
 }
@@ -129,19 +132,23 @@ export async function runPhaseExecutionLoop(
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;
 	const maxReviewIterations = config.maxReviewIterations;
-	const logBaseDir = join(dirname(resolve(planPath)), ".5x", "logs");
+	// Anchor logs to the project root (not the plan path directory), so
+	// logs stay in one predictable location even when running in a worktree.
+	const logRoot = options.projectRoot ?? dirname(resolve(planPath));
+	const logBaseDir = join(logRoot, ".5x", "logs");
 
 	// --- Resume detection ---
 	let runId: string;
 	let startPhaseNumber: string | undefined = options.startPhase;
-	let resumedIteration = 0;
+	let resumedState: PhaseState | undefined;
+	let resumedPhase: string | undefined;
 
 	const activeRun = getActiveRun(db, canonical);
 	if (activeRun && activeRun.command === "run") {
 		const resumeGateFn = options.resumeGate ?? defaultResumeGate;
 		const resumeDecision = await resumeGateFn(
 			activeRun.id,
-			activeRun.current_phase ?? 0,
+			activeRun.current_phase ?? "0",
 			activeRun.current_state ?? "EXECUTE",
 		);
 
@@ -158,15 +165,32 @@ export async function runPhaseExecutionLoop(
 
 		if (resumeDecision === "resume") {
 			runId = activeRun.id;
-			// On resume, start from the phase the run was on
-			if (activeRun.current_phase !== null && activeRun.current_phase >= 0) {
-				startPhaseNumber = String(activeRun.current_phase);
+			// On resume, start from the phase the run was on and restore state
+			if (activeRun.current_phase !== null) {
+				startPhaseNumber = activeRun.current_phase;
+				resumedPhase = activeRun.current_phase;
 			}
-			// Get iteration count from agent results
-			const results = getAgentResults(db, runId);
-			resumedIteration = results.length;
+			// Restore the state machine position
+			const validStates: PhaseState[] = [
+				"EXECUTE",
+				"PARSE_AUTHOR_STATUS",
+				"QUALITY_CHECK",
+				"QUALITY_RETRY",
+				"REVIEW",
+				"PARSE_VERDICT",
+				"AUTO_FIX",
+				"PARSE_FIX_STATUS",
+				"ESCALATE",
+				"PHASE_GATE",
+			];
+			if (
+				activeRun.current_state &&
+				validStates.includes(activeRun.current_state as PhaseState)
+			) {
+				resumedState = activeRun.current_state as PhaseState;
+			}
 			console.log(
-				`  Resuming run ${runId.slice(0, 8)} at phase ${startPhaseNumber ?? "next"}, iteration ${resumedIteration}`,
+				`  Resuming run ${runId.slice(0, 8)} at phase ${startPhaseNumber ?? "next"}, state ${resumedState ?? "EXECUTE"}`,
 			);
 		} else {
 			// start-fresh
@@ -236,22 +260,58 @@ export async function runPhaseExecutionLoop(
 		console.log();
 		console.log(`  ── Phase ${phase.number}: ${phase.title} ──`);
 
-		let state: PhaseState = "EXECUTE";
-		let iteration = resumedIteration; // iteration counter within phase
-		let qualityAttempt = 0;
+		// Determine initial state for this phase: if resuming into this exact
+		// phase, restore the recorded state; otherwise start fresh.
+		const isResumedPhase =
+			resumedPhase === phase.number && resumedState !== undefined;
+		let state: PhaseState = isResumedPhase
+			? (resumedState as PhaseState)
+			: "EXECUTE";
+
+		// Derive iteration from DB: max(iteration) + 1 for this phase, so the
+		// next agent invocation gets a deterministic, non-colliding identity.
+		let iteration = isResumedPhase
+			? getMaxIterationForPhase(db, runId, phase.number) + 1
+			: 0;
+
+		// Restore quality attempt counter from DB
+		let qualityAttempt = isResumedPhase
+			? getQualityAttemptCount(db, runId, phase.number)
+			: 0;
+
 		let lastCommit: string | undefined;
 		let qualityResult: QualityResult | undefined;
 		let _phaseAborted = false;
+		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
 
-		updateRunStatus(db, runId, "active", "EXECUTE", Number(phase.number) || 0);
+		// Clear resume markers after consuming them — only the first phase
+		// in the loop should get the restored state.
+		if (isResumedPhase) {
+			resumedState = undefined;
+			resumedPhase = undefined;
+		}
+
+		updateRunStatus(db, runId, "active", state, phase.number);
 
 		appendRunEvent(db, {
 			runId,
 			eventType: "phase_start",
-			phase: Number(phase.number) || 0,
+			phase: phase.number,
 			iteration,
 			data: { phaseNumber: phase.number, phaseTitle: phase.title },
 		});
+
+		// --- Branch relevance warning ---
+		try {
+			const branch = await getCurrentBranch(workdir);
+			if (!isBranchRelevant(branch, planPath)) {
+				console.log(
+					`  Warning: current branch "${branch}" does not appear related to this plan.`,
+				);
+			}
+		} catch {
+			// git not available or not a repo — skip check
+		}
 
 		// --- Inner loop: per-phase state machine ---
 		while (state !== "PHASE_COMPLETE" && state !== "ABORTED") {
@@ -260,13 +320,7 @@ export async function runPhaseExecutionLoop(
 				// EXECUTE: invoke author to implement the phase
 				// ───────────────────────────────────────────────────────
 				case "EXECUTE": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"EXECUTE",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "EXECUTE", phase.number);
 
 					// Check if step already completed (resume)
 					if (
@@ -274,7 +328,7 @@ export async function runPhaseExecutionLoop(
 							db,
 							runId,
 							"author",
-							Number(phase.number) || 0,
+							phase.number,
 							iteration,
 							"author-next-phase",
 						)
@@ -289,8 +343,10 @@ export async function runPhaseExecutionLoop(
 					const authorTemplate = renderTemplate("author-next-phase", {
 						plan_path: planPath,
 						phase_number: phase.number,
-						user_notes: "(No additional notes)",
+						user_notes: userGuidance ?? "(No additional notes)",
 					});
+					// Clear guidance after use — it applies only to the next invocation
+					userGuidance = undefined;
 
 					console.log(`  Author implementing phase ${phase.number}...`);
 
@@ -309,7 +365,7 @@ export async function runPhaseExecutionLoop(
 						run_id: runId,
 						role: "author",
 						template_name: "author-next-phase",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						exit_code: authorResult.exitCode,
 						duration_ms: authorResult.duration,
@@ -323,7 +379,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "agent_invoke",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							role: "author",
@@ -353,7 +409,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -374,11 +430,11 @@ export async function runPhaseExecutionLoop(
 						runId,
 						"active",
 						"PARSE_AUTHOR_STATUS",
-						Number(phase.number) || 0,
+						phase.number,
 					);
 
 					const { getLatestStatus } = await import("../db/operations.js");
-					const status = getLatestStatus(db, runId, Number(phase.number) || 0);
+					const status = getLatestStatus(db, runId, phase.number);
 
 					if (!status) {
 						const event: EscalationEvent = {
@@ -390,7 +446,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -407,7 +463,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -424,7 +480,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -455,13 +511,7 @@ export async function runPhaseExecutionLoop(
 				// QUALITY_CHECK: run quality gates
 				// ───────────────────────────────────────────────────────
 				case "QUALITY_CHECK": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"QUALITY_CHECK",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "QUALITY_CHECK", phase.number);
 
 					if (config.qualityGates.length === 0) {
 						console.log("  No quality gates configured — skipping.");
@@ -476,7 +526,7 @@ export async function runPhaseExecutionLoop(
 					qualityResult = await runQualityGates(config.qualityGates, workdir, {
 						runId,
 						logDir,
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						attempt: qualityAttempt,
 					});
 
@@ -485,7 +535,7 @@ export async function runPhaseExecutionLoop(
 					const qrInput: QualityResultInput = {
 						id: qrId,
 						run_id: runId,
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						attempt: qualityAttempt,
 						passed: qualityResult.passed ? 1 : 0,
 						results: JSON.stringify(
@@ -507,7 +557,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "quality_gate",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							attempt: qualityAttempt,
@@ -537,7 +587,7 @@ export async function runPhaseExecutionLoop(
 							appendRunEvent(db, {
 								runId,
 								eventType: "escalation",
-								phase: Number(phase.number) || 0,
+								phase: phase.number,
 								iteration,
 								data: event,
 							});
@@ -551,13 +601,7 @@ export async function runPhaseExecutionLoop(
 				// QUALITY_RETRY: re-invoke author to fix quality failures
 				// ───────────────────────────────────────────────────────
 				case "QUALITY_RETRY": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"QUALITY_RETRY",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "QUALITY_RETRY", phase.number);
 
 					qualityAttempt++;
 
@@ -593,7 +637,7 @@ export async function runPhaseExecutionLoop(
 						run_id: runId,
 						role: "author",
 						template_name: "author-process-review",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						exit_code: fixResult.exitCode,
 						duration_ms: fixResult.duration,
@@ -607,7 +651,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "agent_invoke",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							role: "author",
@@ -625,6 +669,13 @@ export async function runPhaseExecutionLoop(
 							iteration,
 						};
 						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: { reason: event.reason, trigger: "quality_retry_failure" },
+						});
 						state = "ESCALATE";
 						break;
 					}
@@ -638,13 +689,7 @@ export async function runPhaseExecutionLoop(
 				// REVIEW: invoke reviewer
 				// ───────────────────────────────────────────────────────
 				case "REVIEW": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"REVIEW",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "REVIEW", phase.number);
 
 					// Check if step already completed (resume)
 					if (
@@ -652,7 +697,7 @@ export async function runPhaseExecutionLoop(
 							db,
 							runId,
 							"reviewer",
-							Number(phase.number) || 0,
+							phase.number,
 							iteration,
 							"reviewer-commit",
 						)
@@ -668,7 +713,7 @@ export async function runPhaseExecutionLoop(
 					const reviewIterations = getAgentResults(
 						db,
 						runId,
-						Number(phase.number) || 0,
+						phase.number,
 					).filter((r) => r.role === "reviewer").length;
 					if (reviewIterations >= maxReviewIterations) {
 						const event: EscalationEvent = {
@@ -679,7 +724,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -717,7 +762,7 @@ export async function runPhaseExecutionLoop(
 						run_id: runId,
 						role: "reviewer",
 						template_name: "reviewer-commit",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						exit_code: reviewResult.exitCode,
 						duration_ms: reviewResult.duration,
@@ -731,7 +776,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "agent_invoke",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							role: "reviewer",
@@ -752,7 +797,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -768,20 +813,10 @@ export async function runPhaseExecutionLoop(
 				// PARSE_VERDICT: route based on reviewer verdict
 				// ───────────────────────────────────────────────────────
 				case "PARSE_VERDICT": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"PARSE_VERDICT",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "PARSE_VERDICT", phase.number);
 
 					const { getLatestVerdict } = await import("../db/operations.js");
-					const verdict = getLatestVerdict(
-						db,
-						runId,
-						Number(phase.number) || 0,
-					);
+					const verdict = getLatestVerdict(db, runId, phase.number);
 
 					if (!verdict) {
 						const event: EscalationEvent = {
@@ -793,7 +828,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -804,7 +839,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "verdict",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							readiness: verdict.readiness,
@@ -842,7 +877,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -870,7 +905,7 @@ export async function runPhaseExecutionLoop(
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
-							phase: Number(phase.number) || 0,
+							phase: phase.number,
 							iteration,
 							data: event,
 						});
@@ -883,20 +918,14 @@ export async function runPhaseExecutionLoop(
 				// AUTO_FIX: invoke author to fix review items
 				// ───────────────────────────────────────────────────────
 				case "AUTO_FIX": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"AUTO_FIX",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "AUTO_FIX", phase.number);
 
 					if (
 						hasCompletedStep(
 							db,
 							runId,
 							"author",
-							Number(phase.number) || 0,
+							phase.number,
 							iteration,
 							"author-process-review",
 						)
@@ -926,7 +955,7 @@ export async function runPhaseExecutionLoop(
 						run_id: runId,
 						role: "author",
 						template_name: "author-process-review",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						exit_code: fixResult.exitCode,
 						duration_ms: fixResult.duration,
@@ -940,7 +969,7 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "agent_invoke",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: {
 							role: "author",
@@ -975,15 +1004,11 @@ export async function runPhaseExecutionLoop(
 						runId,
 						"active",
 						"PARSE_FIX_STATUS",
-						Number(phase.number) || 0,
+						phase.number,
 					);
 
 					const { getLatestStatus } = await import("../db/operations.js");
-					const fixStatus = getLatestStatus(
-						db,
-						runId,
-						Number(phase.number) || 0,
-					);
+					const fixStatus = getLatestStatus(db, runId, phase.number);
 
 					if (!fixStatus) {
 						const event: EscalationEvent = {
@@ -991,6 +1016,13 @@ export async function runPhaseExecutionLoop(
 							iteration,
 						};
 						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: { reason: event.reason, trigger: "missing_fix_status" },
+						});
 						state = "ESCALATE";
 						break;
 					}
@@ -1001,6 +1033,17 @@ export async function runPhaseExecutionLoop(
 							iteration,
 						};
 						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason: event.reason,
+								trigger: "fix_needs_human",
+								status: fixStatus.result,
+							},
+						});
 						state = "ESCALATE";
 						break;
 					}
@@ -1011,6 +1054,17 @@ export async function runPhaseExecutionLoop(
 							iteration,
 						};
 						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason: event.reason,
+								trigger: "fix_failed",
+								status: fixStatus.result,
+							},
+						});
 						state = "ESCALATE";
 						break;
 					}
@@ -1031,13 +1085,7 @@ export async function runPhaseExecutionLoop(
 				// ESCALATE: human intervention needed
 				// ───────────────────────────────────────────────────────
 				case "ESCALATE": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"ESCALATE",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "ESCALATE", phase.number);
 
 					const lastEscalation =
 						escalations[escalations.length - 1] ??
@@ -1048,6 +1096,13 @@ export async function runPhaseExecutionLoop(
 
 					if (options.auto) {
 						console.log(`  Auto mode: escalation — ${lastEscalation.reason}`);
+						appendRunEvent(db, {
+							runId,
+							eventType: "auto_escalation_abort",
+							phase: phase.number,
+							iteration,
+							data: { reason: lastEscalation.reason },
+						});
 						state = "ABORTED";
 						break;
 					}
@@ -1059,14 +1114,17 @@ export async function runPhaseExecutionLoop(
 					appendRunEvent(db, {
 						runId,
 						eventType: "human_decision",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: { response, escalation: lastEscalation },
 					});
 
 					switch (response.action) {
 						case "continue":
-							// Re-run author with the same phase
+							// Re-run author with the same phase; plumb guidance if provided
+							if ("guidance" in response && response.guidance) {
+								userGuidance = response.guidance;
+							}
 							state = "EXECUTE";
 							break;
 						case "approve":
@@ -1083,13 +1141,7 @@ export async function runPhaseExecutionLoop(
 				// PHASE_GATE: human confirmation between phases
 				// ───────────────────────────────────────────────────────
 				case "PHASE_GATE": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"PHASE_GATE",
-						Number(phase.number) || 0,
-					);
+					updateRunStatus(db, runId, "active", "PHASE_GATE", phase.number);
 
 					if (options.auto) {
 						console.log(
@@ -1100,19 +1152,24 @@ export async function runPhaseExecutionLoop(
 					}
 
 					const phaseGateFn = options.phaseGate ?? defaultPhaseGate;
+					// Compute actual verdict from DB (not hard-coded "ready")
+					const { getLatestVerdict: getVerdictForSummary } = await import(
+						"../db/operations.js"
+					);
+					const dbVerdict = getVerdictForSummary(db, runId, phase.number);
 					const summary: PhaseSummary = {
 						phaseNumber: phase.number,
 						phaseTitle: phase.title,
 						commit: lastCommit,
 						qualityPassed: qualityResult?.passed ?? true,
-						reviewVerdict: "ready",
+						reviewVerdict: dbVerdict?.readiness ?? "ready",
 					};
 
 					const decision = await phaseGateFn(summary);
 					appendRunEvent(db, {
 						runId,
 						eventType: "human_decision",
-						phase: Number(phase.number) || 0,
+						phase: phase.number,
 						iteration,
 						data: { decision, type: "phase_gate" },
 					});
@@ -1151,15 +1208,12 @@ export async function runPhaseExecutionLoop(
 		appendRunEvent(db, {
 			runId,
 			eventType: "phase_complete",
-			phase: Number(phase.number) || 0,
+			phase: phase.number,
 			iteration,
 			data: { phaseNumber: phase.number, commit: lastCommit },
 		});
 
 		console.log(`  Phase ${phase.number} complete.`);
-
-		// Reset iteration counter for next phase
-		resumedIteration = 0;
 
 		// Re-parse plan for next phase (author may have updated checklist)
 		try {
@@ -1220,7 +1274,7 @@ async function defaultEscalationGate(
 
 async function defaultResumeGate(
 	runId: string,
-	phase: number,
+	phase: string,
 	state: string,
 ): Promise<"resume" | "start-fresh" | "abort"> {
 	const { resumeGate } = await import("../gates/human.js");

@@ -252,10 +252,7 @@ export async function runPlanReviewLoop(
 
 	const activeRun = getActiveRun(db, canonical);
 	if (activeRun && activeRun.command === "plan-review") {
-		const resumeDecision = await resumeGate(
-			activeRun.id,
-			activeRun.current_phase ?? 0,
-		);
+		const resumeDecision = await resumeGate(activeRun.id, iteration);
 
 		if (resumeDecision === "abort") {
 			return {
@@ -273,7 +270,7 @@ export async function runPlanReviewLoop(
 			state = (activeRun.current_state as LoopState) ?? "REVIEW";
 			// Iteration is tracked via agent_results count
 			const { getAgentResults } = await import("../db/operations.js");
-			const results = getAgentResults(db, runId, -1); // phase -1 for plan-review
+			const results = getAgentResults(db, runId, "-1"); // phase -1 for plan-review
 			iteration = results.length;
 			console.log(
 				`  Resuming run ${runId.slice(0, 8)} at iteration ${iteration}, state ${state}`,
@@ -339,7 +336,7 @@ export async function runPlanReviewLoop(
 						db,
 						runId,
 						"reviewer",
-						-1,
+						"-1",
 						iteration,
 						"reviewer-plan",
 					)
@@ -384,7 +381,7 @@ export async function runPlanReviewLoop(
 					run_id: runId,
 					role: "reviewer",
 					template_name: "reviewer-plan",
-					phase: -1,
+					phase: "-1",
 					iteration,
 					exit_code: reviewResult.exitCode,
 					duration_ms: reviewResult.duration,
@@ -435,7 +432,7 @@ export async function runPlanReviewLoop(
 
 				// Get the latest verdict from DB
 				const { getLatestVerdict } = await import("../db/operations.js");
-				const verdict = getLatestVerdict(db, runId, -1);
+				const verdict = getLatestVerdict(db, runId, "-1");
 
 				if (!verdict) {
 					// Missing verdict — escalate
@@ -589,7 +586,7 @@ export async function runPlanReviewLoop(
 						db,
 						runId,
 						"author",
-						-1,
+						"-1",
 						iteration,
 						"author-process-review",
 					)
@@ -624,7 +621,7 @@ export async function runPlanReviewLoop(
 					run_id: runId,
 					role: "author",
 					template_name: "author-process-review",
-					phase: -1,
+					phase: "-1",
 					iteration,
 					exit_code: authorResult.exitCode,
 					duration_ms: authorResult.duration,
@@ -657,7 +654,7 @@ export async function runPlanReviewLoop(
 
 				// Get latest author status from DB
 				const { getLatestStatus } = await import("../db/operations.js");
-				const authorStatus = getLatestStatus(db, runId, -1);
+				const authorStatus = getLatestStatus(db, runId, "-1");
 
 				if (!authorStatus) {
 					// Missing status — escalate

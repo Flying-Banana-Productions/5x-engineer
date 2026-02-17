@@ -175,7 +175,7 @@ export async function escalationGate(
  */
 export async function resumeGate(
 	runId: string,
-	phase: number,
+	phase: string,
 	state: string,
 ): Promise<"resume" | "start-fresh" | "abort"> {
 	console.log();

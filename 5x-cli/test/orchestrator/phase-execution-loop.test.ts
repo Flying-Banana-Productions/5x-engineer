@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -9,7 +15,13 @@ import type {
 	InvokeOptions,
 } from "../../src/agents/types.js";
 import type { FiveXConfig } from "../../src/config.js";
-import { getAgentResults, getRunEvents } from "../../src/db/operations.js";
+import {
+	createRun,
+	getAgentResults,
+	getRunEvents,
+	updateRunStatus,
+	upsertAgentResult,
+} from "../../src/db/operations.js";
 import { runMigrations } from "../../src/db/schema.js";
 import type {
 	EscalationEvent,
@@ -841,6 +853,287 @@ describe("runPhaseExecutionLoop", () => {
 
 			expect(result.phasesCompleted).toBe(3);
 			expect(result.complete).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume from mid-phase restores state at QUALITY_CHECK", async () => {
+		// Simulate: phase 1 author completed (EXECUTE done), interrupted before quality check.
+		// On resume, should skip author EXECUTE and enter QUALITY_CHECK directly.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const runId = "resume-test-run-id-1234";
+			// Create an "active" run at QUALITY_CHECK for phase 1
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "QUALITY_CHECK", "1");
+
+			// Record that author EXECUTE step was already completed (iteration 0)
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: runId,
+				role: "author",
+				template_name: "author-next-phase",
+				phase: "1",
+				iteration: 0,
+				exit_code: 0,
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				signal_type: "status",
+				signal_data: JSON.stringify({
+					protocolVersion: 1,
+					result: "completed",
+					commit: "abc123",
+				}),
+			});
+
+			// Author should NOT be called for EXECUTE (it was completed).
+			// The reviewer WILL be called after quality check passes.
+			const author = mockAdapter("author", []);
+			const reviewer = mockAdapter("reviewer", [
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => "resume",
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(result.phasesCompleted).toBe(1);
+			expect(result.runId).toBe(runId);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume from PHASE_GATE enters gate directly", async () => {
+		// Simulate: phase 1 completed author+quality+review, interrupted at PHASE_GATE.
+		// On resume, should skip all agents and enter PHASE_GATE directly.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const runId = "resume-gate-test-1234";
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "PHASE_GATE", "1");
+
+			// Record completed steps
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: runId,
+				role: "author",
+				template_name: "author-next-phase",
+				phase: "1",
+				iteration: 0,
+				exit_code: 0,
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				signal_type: "status",
+				signal_data: JSON.stringify({
+					protocolVersion: 1,
+					result: "completed",
+					commit: "abc123",
+				}),
+			});
+			upsertAgentResult(db, {
+				id: "ar-reviewer-0",
+				run_id: runId,
+				role: "reviewer",
+				template_name: "reviewer-commit",
+				phase: "1",
+				iteration: 1,
+				exit_code: 0,
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				signal_type: "verdict",
+				signal_data: JSON.stringify({
+					protocolVersion: 1,
+					readiness: "ready",
+					reviewPath,
+					items: [],
+				}),
+			});
+
+			// No agents should be called — goes straight to PHASE_GATE.
+			const author = mockAdapter("author", []);
+			const reviewer = mockAdapter("reviewer", []);
+
+			let phaseGateCalled = false;
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					resumeGate: async () => "resume",
+					phaseGate: async () => {
+						phaseGateCalled = true;
+						return "continue";
+					},
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(phaseGateCalled).toBe(true);
+			expect(result.runId).toBe(runId);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume derives iteration from DB max, not global count", async () => {
+		// Ensure iteration counter on resume uses per-phase max, not all-results count.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const runId = "resume-iter-test-1234";
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "REVIEW", "1");
+
+			// Author at iteration 0 completed
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: runId,
+				role: "author",
+				template_name: "author-next-phase",
+				phase: "1",
+				iteration: 0,
+				exit_code: 0,
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				signal_type: "status",
+				signal_data: JSON.stringify({
+					protocolVersion: 1,
+					result: "completed",
+					commit: "def456",
+				}),
+			});
+
+			// Reviewer should be called (at iteration >= 1)
+			const reviewer = mockAdapter("reviewer", [
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				mockAdapter("author", []),
+				reviewer,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => "resume",
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			// The reviewer result should be stored with iteration 1 (max(0) + 1)
+			const results = getAgentResults(db, runId, "1");
+			const reviewerResult = results.find((r) => r.role === "reviewer");
+			expect(reviewerResult).toBeDefined();
+			expect(reviewerResult?.iteration).toBe(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("worktree mode: logBaseDir anchored to projectRoot, not planPath", async () => {
+		// When projectRoot is provided, logs should go to projectRoot/.5x/logs/
+		// not to dirname(planPath)/.5x/logs/ (which would be inside the worktree).
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		const fakeProjectRoot = join(tmp, "main-checkout");
+		mkdirSync(join(fakeProjectRoot, ".5x"), { recursive: true });
+
+		try {
+			const author = mockAdapter("author", [
+				{
+					output: statusBlock({
+						result: "completed",
+						commit: "abc123",
+						phase: 1,
+					}),
+				},
+			]);
+			const reviewer = mockAdapter("reviewer", [
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					projectRoot: fakeProjectRoot,
+				},
+			);
+
+			expect(result.complete).toBe(true);
+
+			// Logs should be under projectRoot, not under dirname(planPath)
+			const logDir = join(fakeProjectRoot, ".5x", "logs", result.runId);
+			expect(existsSync(logDir)).toBe(true);
 		} finally {
 			cleanup();
 		}

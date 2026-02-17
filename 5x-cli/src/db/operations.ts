@@ -18,7 +18,7 @@ export interface RunRow {
 	review_path: string | null;
 	command: string;
 	status: string;
-	current_phase: number | null;
+	current_phase: string | null;
 	current_state: string | null;
 	started_at: string;
 	completed_at: string | null;
@@ -28,7 +28,7 @@ export interface RunEventRow {
 	id: number;
 	run_id: string;
 	event_type: string;
-	phase: number | null;
+	phase: string | null;
 	iteration: number | null;
 	data: string | null;
 	created_at: string;
@@ -39,7 +39,7 @@ export interface AgentResultRow {
 	run_id: string;
 	role: string;
 	template_name: string;
-	phase: number;
+	phase: string;
 	iteration: number;
 	exit_code: number;
 	duration_ms: number;
@@ -56,7 +56,7 @@ export type AgentResultInput = Omit<AgentResultRow, "created_at">;
 export interface QualityResultRow {
 	id: string;
 	run_id: string;
-	phase: number;
+	phase: string;
 	attempt: number;
 	passed: number; // 0 or 1
 	results: string; // JSON
@@ -73,7 +73,7 @@ export interface RunSummary {
 	status: string;
 	started_at: string;
 	completed_at: string | null;
-	current_phase: number | null;
+	current_phase: string | null;
 	event_count: number;
 	agent_count: number;
 }
@@ -93,19 +93,59 @@ export interface RunMetrics {
 
 // --- Plans ---
 
+/**
+ * Upsert a plan record. Pass `worktreePath`/`branch` to set values.
+ * Omit them (undefined) to preserve existing values.
+ * Pass empty string `""` to explicitly clear them to NULL.
+ */
 export function upsertPlan(
 	db: Database,
 	plan: { planPath: string; worktreePath?: string; branch?: string },
 ): void {
 	const canonical = canonicalizePlanPath(plan.planPath);
-	db.query(
-		`INSERT INTO plans (plan_path, worktree_path, branch, updated_at)
-     VALUES (?1, ?2, ?3, datetime('now'))
-     ON CONFLICT(plan_path) DO UPDATE SET
-       worktree_path = COALESCE(?2, worktree_path),
-       branch = COALESCE(?3, branch),
-       updated_at = datetime('now')`,
-	).run(canonical, plan.worktreePath ?? null, plan.branch ?? null);
+	// Distinguish "not provided" (undefined → preserve via COALESCE) from
+	// "clear" (empty string → set NULL).
+	const wt =
+		plan.worktreePath === undefined
+			? undefined // will be null in SQL → COALESCE preserves
+			: plan.worktreePath === ""
+				? null // explicit clear
+				: plan.worktreePath;
+	const br =
+		plan.branch === undefined
+			? undefined
+			: plan.branch === ""
+				? null
+				: plan.branch;
+
+	// When clearing, we must bypass COALESCE. Use a separate UPDATE path
+	// for clarity: if the caller explicitly set a value (including null-clear),
+	// use a direct assignment; otherwise COALESCE to preserve.
+	const wtClear = plan.worktreePath !== undefined;
+	const brClear = plan.branch !== undefined;
+
+	if (wtClear || brClear) {
+		// At least one field is being explicitly set/cleared.
+		const wtSql = wtClear ? "?2" : "COALESCE(?2, worktree_path)";
+		const brSql = brClear ? "?3" : "COALESCE(?3, branch)";
+		db.query(
+			`INSERT INTO plans (plan_path, worktree_path, branch, updated_at)
+       VALUES (?1, ?2, ?3, datetime('now'))
+       ON CONFLICT(plan_path) DO UPDATE SET
+         worktree_path = ${wtSql},
+         branch = ${brSql},
+         updated_at = datetime('now')`,
+		).run(canonical, wt ?? null, br ?? null);
+	} else {
+		db.query(
+			`INSERT INTO plans (plan_path, worktree_path, branch, updated_at)
+       VALUES (?1, ?2, ?3, datetime('now'))
+       ON CONFLICT(plan_path) DO UPDATE SET
+         worktree_path = COALESCE(?2, worktree_path),
+         branch = COALESCE(?3, branch),
+         updated_at = datetime('now')`,
+		).run(canonical, null, null);
+	}
 }
 
 export function getPlan(db: Database, planPath: string): PlanRow | null {
@@ -132,7 +172,7 @@ export function updateRunStatus(
 	runId: string,
 	status: string,
 	state?: string,
-	phase?: number,
+	phase?: string,
 ): void {
 	db.query(
 		`UPDATE runs SET
@@ -167,7 +207,7 @@ export function appendRunEvent(
 	event: {
 		runId: string;
 		eventType: string;
-		phase?: number;
+		phase?: string;
 		iteration?: number;
 		data?: unknown;
 	},
@@ -248,7 +288,7 @@ export function upsertAgentResult(
 export function getAgentResults(
 	db: Database,
 	runId: string,
-	phase?: number,
+	phase?: string,
 ): AgentResultRow[] {
 	if (phase !== undefined) {
 		return db
@@ -267,7 +307,7 @@ export function getAgentResults(
 export function getLatestVerdict(
 	db: Database,
 	runId: string,
-	phase: number,
+	phase: string,
 ): VerdictBlock | null {
 	const row = db
 		.query(
@@ -287,7 +327,7 @@ export function getLatestVerdict(
 export function getLatestStatus(
 	db: Database,
 	runId: string,
-	phase: number,
+	phase: string,
 ): StatusBlock | null {
 	const row = db
 		.query(
@@ -305,6 +345,43 @@ export function getLatestStatus(
 }
 
 /**
+ * Get the maximum iteration number for a given run+phase.
+ * Returns -1 if no results exist for that phase. Used by the orchestrator
+ * on resume to compute the next deterministic iteration value.
+ */
+export function getMaxIterationForPhase(
+	db: Database,
+	runId: string,
+	phase: string,
+): number {
+	const row = db
+		.query(
+			`SELECT MAX(iteration) as max_iter FROM agent_results
+       WHERE run_id = ?1 AND phase = ?2`,
+		)
+		.get(runId, phase) as { max_iter: number | null } | null;
+	return row?.max_iter ?? -1;
+}
+
+/**
+ * Get the number of quality gate attempts for a given run+phase.
+ * Used by the orchestrator on resume to restore the quality attempt counter.
+ */
+export function getQualityAttemptCount(
+	db: Database,
+	runId: string,
+	phase: string,
+): number {
+	const row = db
+		.query(
+			`SELECT COUNT(*) as cnt FROM quality_results
+       WHERE run_id = ?1 AND phase = ?2`,
+		)
+		.get(runId, phase) as { cnt: number };
+	return row.cnt;
+}
+
+/**
  * Check if a step has already been completed (has a result in the DB).
  * Used by the orchestrator on resume to skip completed steps.
  */
@@ -312,7 +389,7 @@ export function hasCompletedStep(
 	db: Database,
 	runId: string,
 	role: string,
-	phase: number,
+	phase: string,
 	iteration: number,
 	templateName: string,
 ): boolean {
@@ -359,7 +436,7 @@ export function upsertQualityResult(
 export function getQualityResults(
 	db: Database,
 	runId: string,
-	phase: number,
+	phase: string,
 ): QualityResultRow[] {
 	return db
 		.query(

@@ -343,7 +343,7 @@ describe("runPlanReviewLoop", () => {
 		expect(result.escalations).toHaveLength(0);
 
 		// Verify agent results in DB
-		const agentResults = getAgentResults(db, result.runId, -1);
+		const agentResults = getAgentResults(db, result.runId, "-1");
 		expect(agentResults.length).toBe(3);
 		expect(agentResults[0]?.role).toBe("reviewer");
 		expect(agentResults[1]?.role).toBe("author");

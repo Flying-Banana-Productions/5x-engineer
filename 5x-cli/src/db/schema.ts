@@ -35,7 +35,7 @@ const migrations: Migration[] = [
           review_path TEXT,
           command TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'active',
-          current_phase INTEGER,
+          current_phase TEXT,
           current_state TEXT,
           started_at TEXT NOT NULL DEFAULT (datetime('now')),
           completed_at TEXT
@@ -48,7 +48,7 @@ const migrations: Migration[] = [
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           run_id TEXT NOT NULL REFERENCES runs(id),
           event_type TEXT NOT NULL,
-          phase INTEGER,
+          phase TEXT,
           iteration INTEGER,
           data TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -63,7 +63,7 @@ const migrations: Migration[] = [
           run_id TEXT NOT NULL REFERENCES runs(id),
           role TEXT NOT NULL,
           template_name TEXT NOT NULL,
-          phase INTEGER NOT NULL DEFAULT -1,
+          phase TEXT NOT NULL DEFAULT '-1',
           iteration INTEGER NOT NULL DEFAULT 0,
           exit_code INTEGER NOT NULL,
           duration_ms INTEGER NOT NULL,
@@ -82,7 +82,7 @@ const migrations: Migration[] = [
         CREATE TABLE quality_results (
           id TEXT PRIMARY KEY,
           run_id TEXT NOT NULL REFERENCES runs(id),
-          phase INTEGER NOT NULL,
+          phase TEXT NOT NULL,
           attempt INTEGER NOT NULL,
           passed INTEGER NOT NULL,
           results TEXT NOT NULL,

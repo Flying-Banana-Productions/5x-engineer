@@ -1135,15 +1135,16 @@ export async function runQualityGates(
 
 **Output retention strategy:** Quality gate command output and agent output can be large (multi-MB test output, verbose build logs). The DB stores structured summaries only; full output goes to the filesystem.
 
-- DB `quality_results.results` JSON: per-command `{ command, passed, duration, outputPath }` + first 4KB of output (truncated, for terminal display and quick diagnostics).
+- DB `quality_results.results` JSON: per-command `{ command, passed, duration, outputPath }` + bounded inline output (first 2KB + last 2KB, for terminal display and quick diagnostics).
 - Full output: `.5x/logs/<run-id>/quality-phase<N>-attempt<M>-<command-slug>.log`
+- **Streaming output:** `runSingleCommand()` streams stdout/stderr directly to the log file via `createWriteStream` while maintaining a bounded in-memory ring buffer (first 2KB + last 2KB) for the truncated inline output. This prevents OOM on large build/test logs.
 - Agent output: `.5x/logs/<run-id>/agent-<invocation-id>.log` (full adapter output, referenced by `agent_results.id`)
 - Terminal display: show truncated output inline; on failure, display path to full log file.
 - Cleanup: log files are retained until `5x worktree cleanup` or manual deletion. No automatic retention policy for v1.
 
 - [x] Run each configured command sequentially
-- [x] Capture stdout/stderr for each; write full output to `.5x/logs/<run-id>/`
-- [x] Store truncated output (first 4KB) + file path in DB results JSON
+- [x] Stream stdout/stderr to log file; capture bounded inline output (first 2KB + last 2KB) to avoid OOM on large logs
+- [x] Store bounded inline output + file path in DB results JSON
 - [x] Report pass/fail per command and overall
 - [x] Timeout handling per command
 - [x] Store structured results in DB via `upsertQualityResult()` (id, run_id, phase, attempt, passed, results JSON)
@@ -1213,9 +1214,25 @@ export interface PhaseExecutionResult {
 
 export async function runPhaseExecutionLoop(
   planPath: string,
+  reviewPath: string,
+  db: Database,
+  authorAdapter: AgentAdapter,
+  reviewerAdapter: AgentAdapter,
   config: FiveXConfig,
-  options: { auto?: boolean; startPhase?: number; worktree?: boolean },
+  options: PhaseExecutionOptions,
 ): Promise<PhaseExecutionResult> { ... }
+
+interface PhaseExecutionOptions {
+  auto?: boolean;
+  startPhase?: string;       // phase number label (e.g. "3", "1.1")
+  workdir: string;           // agent workdir (project root or worktree)
+  projectRoot?: string;      // for log/DB anchoring when using worktrees
+  skipQuality?: boolean;
+  allowDirty?: boolean;
+  phaseGate?: ...;           // injectable for testing
+  escalationGate?: ...;      // injectable for testing
+  resumeGate?: ...;          // injectable for testing
+}
 ```
 
 Per-phase inner loop:
@@ -1225,7 +1242,7 @@ Per-phase inner loop:
 1. Resolve workdir: check DB for worktree association, or create if --worktree
 2. Run git safety check in workdir (fail-closed unless --allow-dirty)
 3. Parse plan → identify current phase
-4. Validate/create git branch in workdir
+4. Check branch relevance (warn if current branch doesn't match plan)
 5. Render author prompt from author-next-phase template
 6. Invoke author → store result in agent_results table
 7. Parse 5x:status → handle needs_human / failed
@@ -1245,17 +1262,17 @@ Per-phase inner loop:
 ```
 
 **DB integration:** All orchestration state flows through the database:
-- `runs` table: create on start, update `current_phase`/`current_state` on each transition
-- `run_events` table: append-only journal of every state transition
-- `agent_results` table: parsed signals stored immediately after agent invocation, used as SOT for routing
-- `quality_results` table: gate outcomes stored per phase/attempt
-- `plans` table: worktree/branch association persisted for future command resolution
+- `runs` table: create on start, update `current_phase` (TEXT)/`current_state` on each transition
+- `run_events` table: append-only journal of every state transition and escalation
+- `agent_results` table: parsed signals stored immediately after agent invocation, used as SOT for routing. Phase stored as TEXT (preserves string labels like "1.10")
+- `quality_results` table: gate outcomes stored per phase (TEXT)/attempt
+- `plans` table: worktree/branch association persisted for future command resolution. `upsertPlan` distinguishes "preserve existing" (omit param) from "clear" (pass empty string)
 
-**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists, prompt: `"Found interrupted run <id> at phase <N>, state <S>. Resume? [yes/no/start-fresh]"`. Resume re-enters at the recorded state. Before each agent invocation, the orchestrator calls `hasCompletedStep()` — if the step already has a result, skip and use stored result. If re-running (interrupted mid-invocation), `ON CONFLICT DO UPDATE` replaces the old result. Starting fresh marks the old run as `aborted`.
+**Resume behavior:** On startup, check `getActiveRun(planPath)` — if an active run exists, prompt: `"Found interrupted run <id> at phase <N>, state <S>. Resume? [yes/no/start-fresh]"`. Resume restores `current_state` from the DB and re-enters the phase loop at that exact state (e.g., QUALITY_CHECK, REVIEW, PHASE_GATE). The iteration counter is derived per-phase from `max(agent_results.iteration) + 1` for that run+phase (not a global count), and quality attempt count is restored from `count(quality_results)` for that phase. Before each agent invocation, the orchestrator calls `hasCompletedStep()` — if the step already has a result, skip and use stored result. If re-running (interrupted mid-invocation), `ON CONFLICT DO UPDATE` replaces the old result. Starting fresh marks the old run as `aborted`.
 
 **Lock integration:** `acquireLock()` at startup, `releaseLock()` on exit. If locked by another live process, abort with message: `"Plan is locked by PID <N> (started <time>). Another 5x process is running on this plan."` If stale, prompt to steal.
 
-**Worktree integration:** If `--worktree` flag is set (and no worktree exists for this plan), create worktree + branch. Persist in DB. On subsequent runs for the same plan, auto-resolve `workdir` from DB even without `--worktree` flag. All agent invocations and quality gates run in the worktree.
+**Worktree integration:** If `--worktree` flag is set (and no worktree exists for this plan), create worktree + branch. Persist in DB. On subsequent runs for the same plan, auto-resolve `workdir` from DB even without `--worktree` flag. All agent invocations and quality gates run in the worktree. When `workdir !== projectRoot`, `run.ts` remaps `planPath` and `reviewPath` into the worktree via `path.relative(projectRoot, path)` → `resolve(workdir, rel)`, ensuring agents read/write artifacts inside the worktree (not the primary checkout). Logs remain anchored to `projectRoot/.5x/logs/` via the `projectRoot` option.
 
 - [x] Acquire plan lock at loop start; release on exit (including signal handlers)
 - [x] Resolve workdir: check `getPlan(planPath)` for worktree association
@@ -1270,7 +1287,7 @@ Per-phase inner loop:
 - [x] Quality gate integration with retry logic; store results in `quality_results` table
 - [x] Append `run_event` on each state transition
 - [x] Update `runs.current_phase`, `runs.current_state` on each transition
-- [x] Git branch validation/creation at phase start (in correct workdir)
+- [x] Git branch relevance warning at phase start (warn if current branch doesn't match plan; non-blocking)
 - [x] Detect new commits after author invocation (for reviewer input)
 - [x] Human gate between phases: display summary, prompt for continue/review/abort
 - [x] `--auto` mode: skip inter-phase gate, still escalate on `human_required`
@@ -1278,7 +1295,10 @@ Per-phase inner loop:
 - [x] Detect interrupted runs on startup; prompt for resume
 - [x] Mark run as `completed`/`aborted`/`failed` on exit
 - [x] Track and display cumulative progress
-- [x] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression, lock contention, worktree creation, resume after interruption
+- [x] Escalation guidance plumbed into next author invocation as `user_notes`
+- [x] Phase gate summary uses actual DB verdict (not hard-coded "ready")
+- [x] Run events logged for all escalation transitions (including auto-mode aborts)
+- [x] Unit tests with mocked adapters: single-phase happy path, quality gate failure + retry, review fix cycle, escalation, multi-phase progression, lock contention, worktree creation, resume after interruption, resume from mid-phase states (QUALITY_CHECK, PHASE_GATE), worktree log anchoring
 
 ### 5.4 `src/gates/human.ts` — Interactive prompts
 
@@ -1300,6 +1320,7 @@ export async function escalationGate(event: EscalationEvent): Promise<Escalation
 - [x] Run git safety check in resolved workdir; abort on dirty tree unless `--allow-dirty`
 - [x] Validate plan file, check for incomplete phases
 - [x] Initialize adapters from config
+- [x] When workdir is a worktree: remap planPath/reviewPath into worktree, pass projectRoot for log anchoring
 - [x] Call `runPhaseExecutionLoop` (with DB, lock, and worktree integration)
 - [x] Display final result (phases completed, total time, review links, run ID)
 
