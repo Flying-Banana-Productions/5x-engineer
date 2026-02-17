@@ -78,5 +78,6 @@ export type {
 export {
 	listTemplates,
 	loadTemplate,
+	renderBody,
 	renderTemplate,
 } from "./templates/loader.js";

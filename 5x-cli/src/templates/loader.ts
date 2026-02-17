@@ -48,8 +48,9 @@ const TEMPLATES: Record<string, string> = {
 };
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-const VARIABLE_RE = /(?<!\\)\{\{([a-z_]+)\}\}/g;
 const ESCAPED_BRACES_RE = /\\\{\{/g;
+const VARIABLE_RE = /\{\{([a-z_]+)\}\}/g;
+const ESCAPED_SENTINEL = "\x00LBRACE\x00";
 
 /**
  * Parse YAML frontmatter from a raw template string.
@@ -111,6 +112,12 @@ function parseTemplate(raw: string, templateName: string): ParsedTemplate {
 		}
 	}
 
+	if (fm.name !== templateName) {
+		throw new Error(
+			`Template "${templateName}" frontmatter name "${fm.name}" does not match registry key.`,
+		);
+	}
+
 	return {
 		metadata: {
 			name: fm.name,
@@ -121,6 +128,9 @@ function parseTemplate(raw: string, templateName: string): ParsedTemplate {
 	};
 }
 
+// Cache parsed templates to avoid repeated YAML parsing on each load/render/list call.
+const parsedCache = new Map<string, ParsedTemplate>();
+
 /**
  * Load a template by name. Returns parsed metadata and raw body.
  * Throws if the template does not exist or has invalid frontmatter.
@@ -129,6 +139,9 @@ export function loadTemplate(name: string): {
 	metadata: TemplateMetadata;
 	body: string;
 } {
+	const cached = parsedCache.get(name);
+	if (cached) return cached;
+
 	const raw = TEMPLATES[name];
 	if (raw === undefined) {
 		const available = Object.keys(TEMPLATES).join(", ");
@@ -136,7 +149,74 @@ export function loadTemplate(name: string): {
 			`Unknown template "${name}". Available templates: ${available}`,
 		);
 	}
-	return parseTemplate(raw, name);
+	const result = parseTemplate(raw, name);
+	parsedCache.set(name, result);
+	return result;
+}
+
+/**
+ * Render a template body with variable substitution.
+ *
+ * Exported for direct testing of rendering mechanics (escape handling, etc.)
+ * without requiring a registered template.
+ *
+ * Rules:
+ * - `{{variable_name}}` is replaced with the provided value.
+ * - `\{{` in the body is treated as a literal `{{` (escape sequence).
+ * - Any unresolved `{{...}}` after substitution is a hard error.
+ * - Variable values must be safe scalars (no newlines, no `-->`).
+ */
+export function renderBody(
+	body: string,
+	variables: Record<string, string>,
+	declaredVars: string[],
+	templateName: string,
+): string {
+	// Validate variable values are safe scalars (defense-in-depth for signal blocks)
+	for (const [key, value] of Object.entries(variables)) {
+		if (declaredVars.includes(key)) {
+			if (value.includes("-->")) {
+				throw new Error(
+					`Template "${templateName}" variable "${key}" contains unsafe sequence "-->". ` +
+						`Variable values must be safe scalars for signal block integrity.`,
+				);
+			}
+			if (value.includes("\n")) {
+				throw new Error(
+					`Template "${templateName}" variable "${key}" contains a newline. ` +
+						`Variable values must be safe scalars for signal block integrity.`,
+				);
+			}
+		}
+	}
+
+	// 1. Replace escaped \{{ with sentinel (before substitution and unresolved check)
+	let rendered = body.replace(ESCAPED_BRACES_RE, ESCAPED_SENTINEL);
+
+	// 2. Substitute {{variable_name}} with values
+	rendered = rendered.replace(VARIABLE_RE, (_match, varName: string) => {
+		if (varName in variables) {
+			return variables[varName] ?? "";
+		}
+		// Will be caught by unresolved check below
+		return _match;
+	});
+
+	// 3. Check for any unresolved {{...}} (typo or extra variable in template)
+	//    Sentinels are invisible here — only real unresolved variables are caught
+	const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g);
+	if (unresolved) {
+		const unique = [...new Set(unresolved)];
+		throw new Error(
+			`Template "${templateName}" has unresolved variables after substitution: ${unique.join(", ")}. ` +
+				`Check for typos in the template or provide the missing variables.`,
+		);
+	}
+
+	// 4. Restore sentinels to literal {{
+	rendered = rendered.replaceAll(ESCAPED_SENTINEL, "{{");
+
+	return rendered;
 }
 
 /**
@@ -162,31 +242,11 @@ export function renderTemplate(
 		);
 	}
 
-	// Substitute {{variable_name}} with values
-	let rendered = body.replace(VARIABLE_RE, (_match, varName: string) => {
-		if (varName in variables) {
-			return variables[varName] ?? "";
-		}
-		// Will be caught by unresolved check below
-		return _match;
-	});
-
-	// Replace escaped \{{ with literal {{
-	rendered = rendered.replace(ESCAPED_BRACES_RE, "{{");
-
-	// Check for any unresolved {{...}} (typo or extra variable in template)
-	const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g);
-	if (unresolved) {
-		const unique = [...new Set(unresolved)];
-		throw new Error(
-			`Template "${name}" has unresolved variables after substitution: ${unique.join(", ")}. ` +
-				`Check for typos in the template or provide the missing variables.`,
-		);
-	}
+	const prompt = renderBody(body, variables, metadata.variables, name);
 
 	return {
 		name: metadata.name,
-		prompt: rendered,
+		prompt,
 	};
 }
 

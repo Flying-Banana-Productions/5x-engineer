@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	listTemplates,
 	loadTemplate,
+	renderBody,
 	renderTemplate,
 } from "../../src/templates/loader.js";
 
@@ -251,6 +252,99 @@ describe("listTemplates", () => {
 		const templates = listTemplates();
 		for (const t of templates) {
 			expect(t.version).toBe(1);
+		}
+	});
+});
+
+describe("renderBody — escaped literal braces", () => {
+	test("\\{{ renders to literal {{ without error (P0.1 regression)", () => {
+		const body = "Use \\{{example}} to show a placeholder.";
+		const result = renderBody(body, {}, [], "test");
+		expect(result).toBe("Use {{example}} to show a placeholder.");
+	});
+
+	test("escaped braces do not trigger unresolved variable error", () => {
+		const body = "Literal: \\{{foo}} and \\{{bar}}.";
+		// Should NOT throw — these are escaped, not real variables
+		const result = renderBody(body, {}, [], "test");
+		expect(result).toBe("Literal: {{foo}} and {{bar}}.");
+	});
+
+	test("mixed real variables and escaped braces", () => {
+		const body = "Path: {{my_var}} and escaped: \\{{not_a_var}} end.";
+		const result = renderBody(
+			body,
+			{ my_var: "/some/path" },
+			["my_var"],
+			"test",
+		);
+		expect(result).toBe("Path: /some/path and escaped: {{not_a_var}} end.");
+	});
+
+	test("multiple escaped braces in same body", () => {
+		const body = "A \\{{x}} B \\{{y}} C";
+		const result = renderBody(body, {}, [], "test");
+		expect(result).toBe("A {{x}} B {{y}} C");
+	});
+
+	test("escaped brace adjacent to real variable", () => {
+		const body = "\\{{literal}} then {{real}}";
+		const result = renderBody(body, { real: "value" }, ["real"], "test");
+		expect(result).toBe("{{literal}} then value");
+	});
+});
+
+describe("renderBody — signal-block safety (P2-1)", () => {
+	test("rejects variable value containing -->", () => {
+		expect(() =>
+			renderBody("{{my_var}}", { my_var: "bad --> value" }, ["my_var"], "test"),
+		).toThrow(/unsafe sequence "-->"/);
+	});
+
+	test("rejects variable value containing newline", () => {
+		expect(() =>
+			renderBody("{{my_var}}", { my_var: "line1\nline2" }, ["my_var"], "test"),
+		).toThrow(/contains a newline/);
+	});
+
+	test("allows safe scalar values", () => {
+		const result = renderBody(
+			"{{my_var}}",
+			{ my_var: "docs/development/001-impl-cli.md" },
+			["my_var"],
+			"test",
+		);
+		expect(result).toBe("docs/development/001-impl-cli.md");
+	});
+
+	test("only validates declared variables (extras ignored)", () => {
+		// extra_var has a newline but is not in declaredVars, so no error
+		const result = renderBody(
+			"{{my_var}}",
+			{ my_var: "safe", extra_var: "has\nnewline" },
+			["my_var"],
+			"test",
+		);
+		expect(result).toBe("safe");
+	});
+});
+
+describe("template caching (P1.2)", () => {
+	test("loadTemplate returns same object reference on repeated calls", () => {
+		const first = loadTemplate("author-generate-plan");
+		const second = loadTemplate("author-generate-plan");
+		expect(first).toBe(second);
+	});
+});
+
+describe("frontmatter name validation (P1.1)", () => {
+	test("all bundled templates have frontmatter name matching registry key", () => {
+		const templates = listTemplates();
+		for (const t of templates) {
+			// loadTemplate already validates name === key; this confirms
+			// it doesn't throw for any bundled template
+			const { metadata } = loadTemplate(t.name);
+			expect(metadata.name).toBe(t.name);
 		}
 	});
 });

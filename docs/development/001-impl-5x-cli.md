@@ -1,8 +1,8 @@
 # 5x CLI — Automated Author-Review Loop Runner
 
-**Version:** 1.9
+**Version:** 1.10
 **Created:** February 15, 2026
-**Status:** Draft — v1.9: Phase 2 review corrections — timeout upper bound (SIGTERM→SIGKILL + bounded drain), is_error→failure semantics, prompt length guard, spawn injection for test fidelity, schema probe relaxation, factory comment alignment; v1.8: enforce canonical path on DB write boundaries (createRun/upsertPlan), optimized last-event query for status; v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
+**Status:** Draft — v1.10: Phase 3 review corrections — escape sentinel approach (P0.1), frontmatter name-vs-key validation (P1.1), parsed template caching (P1.2), signal-block safety on variable values (P2-1); v1.9: Phase 2 review corrections — timeout upper bound (SIGTERM→SIGKILL + bounded drain), is_error→failure semantics, prompt length guard, spawn injection for test fidelity, schema probe relaxation, factory comment alignment; v1.8: enforce canonical path on DB write boundaries (createRun/upsertPlan), optimized last-event query for status; v1.7: canonical plan path identity (locks/DB lookup), status respects config db.path and avoids migrations, phase numbering preserved as string, DB write types split from read types; v1.6: clarify id/upsert/log lifecycle, monotonic iteration counter for quality retries, naming consistency; v1.5: resume idempotency fix (composite unique + ON CONFLICT DO UPDATE), phase sentinel -1, review path reuse from DB; v1.4: runtime story, DB idempotency, worktree safety, log retention, template escaping; v1.3: SSOT prompt templates, SQLite DB, plan locking, git worktree support; v1.2: template contracts, .5x hygiene, scope, collision handling; v1.1: P0/P1 blockers
 
 ---
 
@@ -892,23 +892,28 @@ export interface RenderedTemplate {
 
 export function loadTemplate(name: string): { metadata: TemplateMetadata; body: string };
 export function renderTemplate(name: string, variables: Record<string, string>): RenderedTemplate;
+export function renderBody(body: string, variables: Record<string, string>, declaredVars: string[], templateName: string): string;
 export function listTemplates(): TemplateMetadata[];
 ```
 
-Templates are loaded from the bundled source (compiled into the binary). `renderTemplate()` validates all required variables are present (from frontmatter `variables` list), performs `{{variable}}` substitution, and returns the prompt string ready for `adapter.invoke()`.
+Templates are loaded from the bundled source (compiled into the binary). Parsed templates are cached in a module-level `Map` to avoid repeated YAML parsing across `loadTemplate()`, `renderTemplate()`, and `listTemplates()` calls. `renderTemplate()` validates all required variables are present (from frontmatter `variables` list), performs `{{variable}}` substitution, and returns the prompt string ready for `adapter.invoke()`. `renderBody()` exposes the core rendering logic (escape handling, substitution, unresolved-variable check, signal-block safety) for direct testing without requiring a registered template.
+
+**Frontmatter validation:** `parseTemplate()` validates that the frontmatter `name` field matches the registry key used to load the template. A mismatch is a hard error, preventing silent identity confusion between `listTemplates()` and `renderTemplate()`.
 
 **Rendering rules:**
 - Substitution: all `{{variable_name}}` occurrences are replaced with the variable value. Variable names are `[a-z_]+` only.
-- Escaping: literal `{{` in templates that should NOT be substituted must be written as `\{{`. The renderer replaces `\{{` with `{{` after substitution. This is only needed in the rare case a template must show `{{example}}` syntax to the agent.
-- Variable values are inserted verbatim (no quoting, no escaping). Since variables are file paths and simple strings controlled by the CLI (not user input), injection risk is negligible. The 5x signal protocol constrains YAML values to safe scalars; the template instructions remind agents of this.
+- Escaping: literal `{{` in templates that should NOT be substituted must be written as `\{{`. The renderer uses a sentinel approach: `\{{` is replaced with a null-byte sentinel before substitution and the unresolved-variable check, then restored to `{{` afterwards. This ensures escaped braces are invisible to both the substitution regex and the unresolved-variable check.
+- Signal-block safety (defense-in-depth): variable values substituted into templates are validated to not contain `-->` or newline characters. Since variables are often rendered inside `<!-- 5x:status ... -->` signal blocks, these characters could break signal parsing. Values are file paths and simple strings controlled by the CLI, but this check provides defense-in-depth.
 - Unresolved `{{...}}` after substitution (indicating a typo or missing variable) is a hard error — never pass a partially-rendered template to an agent.
 
-- [x] Implement template loader (reads from bundled files)
+- [x] Implement template loader (reads from bundled files) with parsed template caching
 - [x] Implement `{{variable}}` substitution with validation against frontmatter `variables` list
-- [x] Implement `\{{` escape sequence (literal `{{` passthrough)
+- [x] Implement `\{{` escape sequence via sentinel approach (literal `{{` passthrough without triggering unresolved-variable check)
+- [x] Validate frontmatter `name` matches registry key
+- [x] Validate variable values are safe scalars (no `-->`, no newlines) for signal-block integrity
 - [x] Error on missing variables (list which are missing)
 - [x] Error on unresolved `{{...}}` after substitution (typo detection)
-- [x] Unit tests: rendering, escaping, missing variables, unresolved variables
+- [x] Unit tests: rendering, escaping (sentinel regression), missing variables, unresolved variables, signal-block safety, caching
 
 ### 3.2 Prompt templates — Author templates
 
