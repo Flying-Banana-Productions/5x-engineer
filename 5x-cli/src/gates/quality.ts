@@ -43,6 +43,14 @@ const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Promisified end — resolves once the write stream has flushed to disk. */
+function endStream(stream: NodeJS.WritableStream): Promise<void> {
+	return new Promise((resolve, reject) => {
+		stream.end(() => resolve());
+		stream.on("error", reject);
+	});
+}
+
 /** Slugify a command string for use in log filenames. */
 function commandSlug(command: string): string {
 	return command
@@ -231,7 +239,7 @@ export async function runSingleCommand(
 			await Promise.allSettled([stdoutDone, stderrDone]);
 			const timeoutMsg = `\n[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)}s: ${command}\n`;
 			logStream.write(timeoutMsg);
-			logStream.end();
+			await endStream(logStream);
 
 			const duration = performance.now() - start;
 			const stderrStr = stderrCapture.toString();
@@ -255,7 +263,7 @@ export async function runSingleCommand(
 
 		// Wait for streams to fully drain
 		await Promise.all([stdoutDone, stderrDone]);
-		logStream.end();
+		await endStream(logStream);
 
 		// Build inline output — stdout capture + optional stderr section
 		const stderrStr = stderrCapture.toString();
