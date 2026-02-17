@@ -1,6 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import type { AgentAdapter } from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import {
@@ -86,11 +93,17 @@ export function resolveReviewPath(
 	const canonical = canonicalizePlanPath(planPath);
 	const resolvedReviewsDir = resolve(reviewsDir);
 
+	/** True when `filePath` resolves to somewhere strictly inside `reviewsDir`. */
+	const isUnderReviewsDir = (filePath: string): boolean => {
+		const rel = relative(resolvedReviewsDir, resolve(filePath));
+		// Outside if empty (same dir), starts with "..", or is absolute (Windows cross-drive)
+		return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+	};
+
 	// Check DB for existing review path — validate it's under the reviews dir
 	const latestRun = getLatestRun(db, canonical);
 	if (latestRun?.review_path) {
-		const resolved = resolve(latestRun.review_path);
-		if (resolved.startsWith(`${resolvedReviewsDir}/`)) {
+		if (isUnderReviewsDir(latestRun.review_path)) {
 			return latestRun.review_path;
 		}
 		console.warn(
@@ -101,8 +114,7 @@ export function resolveReviewPath(
 	// Also check non-canonical path
 	const latestRunAlt = getLatestRun(db, planPath);
 	if (latestRunAlt?.review_path) {
-		const resolved = resolve(latestRunAlt.review_path);
-		if (resolved.startsWith(`${resolvedReviewsDir}/`)) {
+		if (isUnderReviewsDir(latestRunAlt.review_path)) {
 			return latestRunAlt.review_path;
 		}
 		console.warn(
