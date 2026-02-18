@@ -22,7 +22,7 @@ This plan replaces the incomplete phases (6–7 of 001) with a focused refactor 
 
 > **Scope note (v1):** The adapter runs the OpenCode server **locally only** (same host, same filesystem as the CLI). Remote/cross-host server support is out of scope for this plan — it requires a separate design covering remote filesystem access and tool execution semantics. See P0.2 in the review addendum.
 
-**DB upgrade:** The schema is bumped to version 2 with a new migration. On schema version mismatch the CLI emits a clear error and instructs the user to delete `.5x/5x.db` to reset. The existing DB is never silently discarded.
+**DB upgrade:** The schema is bumped to version 2 via a new additive migration. If the on-disk DB is *ahead* of the CLI's known schema (newer CLI wrote it), the CLI emits a clear error and aborts rather than operating against an unknown schema. Being *behind* is safe — pending migrations are applied. The existing DB is never silently discarded or mutated in unexpected ways.
 
 ---
 
@@ -47,35 +47,35 @@ This plan replaces the incomplete phases (6–7 of 001) with a focused refactor 
 ┌────────────────────────────────────────────────────────────────────┐
 │                            5x CLI                                  │
 │                                                                    │
-│  ┌──────────┐   ┌──────────────┐   ┌────────────────────────────┐ │
-│  │ Commands │──▶│ Orchestrator │──▶│   OpenCode Adapter         │ │
-│  │          │   │              │   │                            │ │
-│  │ plan     │   │ plan-review  │   │  managed (local) mode:     │ │
-│  │ plan-rev │   │   loop       │   │  ┌──────────────────────┐  │ │
-│  │ run      │   │              │   │  │ opencode server      │  │ │
-│  │ status   │   │ phase-exec   │   │  │ (spawned locally,    │  │ │
-│  │ history  │   │   loop       │   │  │  same filesystem)    │  │ │
-│  │ init     │   │              │   │  └──────────┬───────────┘  │ │
-│  └──────────┘   └──────┬───────┘   │             │              │ │
-│                        │           │  per-invocation:           │ │
-│                        │           │  session.create()          │ │
-│                        │           │  session.prompt(           │ │
-│                        │           │    format: json_schema)    │ │
-│                        │           │  → typed structured output │ │
-│              ┌─────────┤           │  event.subscribe() → log   │ │
-│              │         │           └────────────────────────────┘ │
-│              ▼         ▼                                          │
-│  ┌──────────────┐ ┌───────────────┐  ┌────────────────────────┐  │
-│  │ Prompt       │ │ SQLite DB     │  │ Gates                  │  │
-│  │ Templates    │ │ (.5x/5x.db)   │  │                        │  │
-│  │ (bundled)    │ │               │  │ quality (shell cmds)   │  │
-│  │              │ │ runs, events  │  │ human  (terminal tty)  │  │
-│  │ render()     │ │ agent_results │  └────────────────────────┘  │
-│  │   ↓ prompt   │ │ quality_res   │                              │
-│  │   → adapter  │ │ plans, locks  │  ┌────────────────────────┐  │
-│  └──────────────┘ └───────────────┘  │ Plan Lock              │  │
-│                                      │ (.5x/locks/)           │  │
-│                                      └────────────────────────┘  │
+│  ┌──────────┐   ┌──────────────┐   ┌────────────────────────────┐  │
+│  │ Commands │──▶│ Orchestrator │──▶│   OpenCode Adapter         │  │ 
+│  │          │   │              │   │                            │  │
+│  │ plan     │   │ plan-review  │   │  managed (local) mode:     │  │
+│  │ plan-rev │   │   loop       │   │  ┌──────────────────────┐  │  │
+│  │ run      │   │              │   │  │ opencode server      │  │  │
+│  │ status   │   │ phase-exec   │   │  │ (spawned locally,    │  │  │
+│  │ history  │   │   loop       │   │  │  same filesystem)    │  │  │
+│  │ init     │   │              │   │  └──────────┬───────────┘  │  │
+│  └──────────┘   └──────┬───────┘   │             │              │  │
+│                        │           │  per-invocation:           │  │
+│                        │           │  session.create()          │  │
+│                        │           │  session.prompt(           │  │
+│                        │           │    format: json_schema)    │  │
+│                        │           │  → typed structured output │  │
+│              ┌─────────┤           │  event.subscribe() → log   │  │
+│              │         │           └────────────────────────────┘  │
+│              ▼         ▼                                           │
+│  ┌──────────────┐ ┌───────────────┐  ┌────────────────────────┐    │
+│  │ Prompt       │ │ SQLite DB     │  │ Gates                  │    │
+│  │ Templates    │ │ (.5x/5x.db)   │  │                        │    │
+│  │ (bundled)    │ │               │  │ quality (shell cmds)   │    │
+│  │              │ │ runs, events  │  │ human  (terminal tty)  │    │
+│  │ render()     │ │ agent_results │  └────────────────────────┘    │
+│  │   ↓ prompt   │ │ quality_res   │                                │
+│  │   → adapter  │ │ plans, locks  │  ┌────────────────────────┐    │
+│  └──────────────┘ └───────────────┘  │ Plan Lock              │    │
+│                                      │ (.5x/locks/)           │    │
+│                                      └────────────────────────┘    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -135,7 +135,7 @@ Key difference from 001: **no `PARSE_*` states**. Structured output is returned 
 | **SSE event stream → log file** | OpenCode's `event.subscribe()` SSE stream replaces the Claude Code NDJSON stdout pipe. Events (message.part.updated, tool calls, etc.) are streamed to the per-invocation log file. Same log retention contract, different source format. |
 | **Abort via session.abort()** | Timeout/cancellation uses `client.session.abort()` + AbortSignal on the SDK client. No subprocess kill required. |
 | **Config: model specified per role** | `5x.config.js` specifies `author.model` and `reviewer.model` in `provider/model` format (e.g. `"anthropic/claude-sonnet-4-6"`). Passed to `session.prompt()` at invocation time. Different models can be used per role or per phase. |
-| **DB schema — migration to v2** | New migration 002 applied on top of migration 001. On schema version mismatch the CLI emits a clear error message with instructions to delete `.5x/5x.db` to reset — never silent data loss. The new schema stores structured output JSON directly in `agent_results`, removing `output` and separate `signal_type`/`signal_data` columns. |
+| **DB schema — migration to v2** | New migration 002 applied on top of migration 001 (additive). If the on-disk DB version is ahead of the CLI's maximum known version, the CLI errors and aborts — never operates against an unknown schema. Being behind is safe; migrations are applied automatically. The new schema stores structured output JSON directly in `agent_results`, removing `output` and separate `signal_type`/`signal_data` columns. |
 | **Templates simplified** | Prompt templates no longer instruct agents to emit `<!-- 5x:status -->` or `<!-- 5x:verdict -->` blocks. The structured output schema is enforced at the SDK layer, not by prompt engineering. Templates focus on the task, not the signal protocol. |
 | **Quality gates unchanged** | `src/gates/quality.ts` runs shell commands and captures output — entirely agent-agnostic. No changes needed. |
 | **Human gates unchanged** | `src/gates/human.ts` is a terminal prompt — no agent coupling. No changes needed. |
@@ -265,21 +265,28 @@ If OpenCode's structured output validation fails after retries, the SDK returns 
 
 ## Phase 1: Prune + SDK Install
 
-**Goal:** Remove all Claude Code adapter code and prepare the project for the new adapter. Install `@opencode-ai/sdk`. No functional changes yet — tests for deleted code are removed, remaining tests still pass.
+**Goal:** Remove all Claude Code adapter code and prepare the project for the new adapter. Install `@opencode-ai/sdk`.
 
-**Completion gate:** `bun test` passes. No references to `claude-code` adapter or `ndjson-formatter` remain in `src/`.
+> **Note on interim non-functionality:** This phase deletes the only working agent harness (`claude-code.ts`) before the OpenCode adapter exists. This is intentional for a speed-first, local-branch refactor — `5x plan`, `5x plan-review`, and `5x run` will throw at the factory call until Phase 3 completes. Tests for the deleted code are removed; all remaining tests must pass. Treat this phase as the start of the big-bang window.
 
-### 1.1 Remove deprecated files
+**Completion gate:** `bun test` passes. No references to `claude-code` adapter remain in `src/`. `ndjson-formatter.ts` is **renamed** to `sse-formatter.ts` (not deleted) — see 1.1 below.
+
+### 1.1 Remove deprecated files / rename formatter
 
 Delete the following files entirely:
 
 - `src/agents/claude-code.ts` — subprocess harness, replaced by OpenCode SDK
-- `src/utils/ndjson-formatter.ts` — formats Claude Code NDJSON events; replaced by SSE event handling
 - `test/agents/claude-code.test.ts`
 - `test/agents/claude-code-schema-probe.test.ts`
-- `test/utils/ndjson-formatter.test.ts`
 
-- [ ] Delete the 5 deprecated files listed above
+**Rename (not delete):**
+
+- `src/utils/ndjson-formatter.ts` → `src/utils/sse-formatter.ts` — Phase 3 will update the internals to handle SSE event shapes. Renaming preserves the module for consumers (Phase 3.3 references it); deleting and re-adding later would leave a gap where Phase 3 has no formatter to build on.
+- `test/utils/ndjson-formatter.test.ts` → `test/utils/sse-formatter.test.ts` — update test file name and adjust imports accordingly.
+
+- [ ] Delete the 3 deprecated agent files listed above
+- [ ] Rename `src/utils/ndjson-formatter.ts` → `src/utils/sse-formatter.ts`; update all import references in `src/`
+- [ ] Rename `test/utils/ndjson-formatter.test.ts` → `test/utils/sse-formatter.test.ts`; update imports
 
 ### 1.2 Install OpenCode SDK
 
@@ -408,8 +415,8 @@ Create `src/protocol.ts`:
 
 Add a new migration 002 on top of the existing migration 001. **Do not replace migration 001** — the migration runner is additive. Migration 002 drops the old `agent_results` table and recreates it with the new structure (acceptable since DB wipe is explicitly accepted for this effort).
 
-> **Schema mismatch behavior:** If the on-disk DB schema version is ahead of what the CLI expects (future-compatibility) or behind by more than one version, the CLI must emit a clear error:
-> `"Schema version mismatch (found vN, expected vM). Delete .5x/5x.db to reset and start fresh."` — never silently discard user data.
+> **Schema mismatch behavior:** The migration runner is additive — a DB that is *behind* the CLI's known schema is fine; pending migrations are applied automatically. The only hard error case is **DB ahead of CLI** (on-disk version > CLI's maximum known migration version), which indicates the DB was written by a newer CLI build. In that case, emit a clear error and abort:
+> `"DB schema version vN is newer than this CLI's maximum known version vM. Upgrade the CLI or delete .5x/5x.db to reset."` — never silently operate against an unknown schema.
 
 **`agent_results` table** — new structure:
 
@@ -460,7 +467,7 @@ CREATE TABLE agent_results (
 
 ### 2.4 Update tests
 
-- [ ] Update `test/db/schema.test.ts` — verify new schema (v2) creates correctly; verify schema mismatch produces a clear error
+- [ ] Update `test/db/schema.test.ts` — verify new schema (v2) creates correctly; verify "DB ahead of CLI" (on-disk version > CLI max) produces a clear error; verify "DB behind CLI" applies pending migrations without error
 - [ ] Update `test/db/operations.test.ts` — update for new `AgentResultInput` shape, corrected composite unique key, and new `getLatestVerdict/getLatestStatus` query behavior
 
 ### 2.5 Post-parse invariant validators
@@ -631,7 +638,7 @@ async function writeEventsToLog(
 - `EscalationEvent.logPath` is always populated (computed before invocation, passed in; never inferred after the fact)
 
 **Console streaming:**
-- When `!quiet`: format SSE events for console display (text content, tool call summaries, etc.). Implement a lightweight `formatSseEvent(event)` formatter — either adapt `formatNdjsonEvent()` from `ndjson-formatter.ts` to the new event shapes, or introduce `sse-formatter.ts` with equivalent behavior. Do not delete console streaming without documenting it as an explicit v1 regression.
+- When `!quiet`: format SSE events for console display (text content, tool call summaries, etc.) using `formatSseEvent(event)` from `src/utils/sse-formatter.ts`. This module is the Phase 1 rename of `ndjson-formatter.ts`; Phase 3 updates its internals to handle OpenCode SSE event shapes in place of Claude Code NDJSON events.
 - When `quiet`: suppress all console output; log file still written.
 
 - [ ] Subscribe: `client.event.subscribe()` → iterate `events.stream`
@@ -792,24 +799,39 @@ New states: `REVIEW, AUTO_FIX, APPROVED, ESCALATE`
 
 ### 4.6 Persist structured verdict/status in review artifacts
 
-After storing a verdict or status result in the DB, also append a compact JSON audit record to the review file. This enables humans to inspect result history outside the DB and provides an audit trail that survives DB resets.
+After storing a verdict or status result in the DB, also append a compact audit record to the review file. This enables humans to inspect result history outside the DB and provides an audit trail that survives DB resets.
+
+**Encoding:** The JSON payload is **base64url-encoded** before embedding in the HTML comment. This prevents `-->` (or any `--` sequence) appearing in string fields — a real risk since review item titles and reasons routinely contain prose with dashes — from breaking the comment delimiter.
 
 Format (append to end of review file, one record per invocation):
 
 ```
-<!-- 5x:structured {"schema":1,"type":"verdict","phase":"-1","iteration":0,"data":{...}} -->
+<!-- 5x:structured:v1 <base64url(JSON)> -->
 ```
 
-- Append-only — never overwrite existing blobs
+Where the base64url payload decodes to the record object, e.g.:
+```json
+{"schema":1,"type":"verdict","phase":"-1","iteration":0,"data":{...}}
+```
+
+Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
+
+- Append-only — never overwrite existing blobs; each invocation appends one new line
 - DB remains the source of truth for all orchestration decisions; this is for auditability only
 - Parsing by the orchestrator is optional (not in the routing path)
-- Implement in a helper `appendStructuredAuditRecord(filePath: string, record: object): Promise<void>` in `src/utils/audit.ts`
+- Implement in `appendStructuredAuditRecord(filePath: string, record: object): Promise<void>` in `src/utils/audit.ts`:
+  - Encode: `Buffer.from(JSON.stringify(record)).toString('base64url')`
+  - Append: `\n<!-- 5x:structured:v1 ${encoded} -->\n` to the file (append-only file write)
 - Call after `upsertAgentResult()` in both orchestrators (plan-review-loop REVIEW and AUTO_FIX results, phase-execution-loop REVIEW and EXECUTE results)
 
-- [ ] Implement `appendStructuredAuditRecord()` in `src/utils/audit.ts`
+- [ ] Implement `appendStructuredAuditRecord()` in `src/utils/audit.ts` with base64url encoding
 - [ ] Call from `plan-review-loop.ts` after storing each verdict/status result
 - [ ] Call from `phase-execution-loop.ts` after storing each verdict/status result
-- [ ] Add to `test/utils/audit.test.ts` — verify append-only behavior, correct format
+- [ ] Add to `test/utils/audit.test.ts`:
+  - [ ] Append-only: multiple calls accumulate, never overwrite
+  - [ ] Format: each appended line matches `<!-- 5x:structured:v1 <base64url> -->`
+  - [ ] Round-trip: decoded payload equals original record object
+  - [ ] Encoding safety: payload containing `-->` or `--` in string values does not break comment delimiter
 
 ---
 
@@ -966,10 +988,15 @@ Plumbing exists (DB schema has `auto` flag on runs) but human gate bypass is not
 | File | Reason |
 |------|--------|
 | `src/agents/claude-code.ts` | Replaced by OpenCode SDK adapter |
-| `src/utils/ndjson-formatter.ts` | Claude Code NDJSON-specific, no longer needed |
 | `test/agents/claude-code.test.ts` | Tests deleted module |
 | `test/agents/claude-code-schema-probe.test.ts` | Live Claude Code probe |
-| `test/utils/ndjson-formatter.test.ts` | Tests deleted module |
+
+### To rename (Phase 1)
+
+| From | To | Reason |
+|------|----|--------|
+| `src/utils/ndjson-formatter.ts` | `src/utils/sse-formatter.ts` | Rename in place; Phase 3 updates internals for SSE event shapes. Rename (not delete) ensures there is always a formatter module. |
+| `test/utils/ndjson-formatter.test.ts` | `test/utils/sse-formatter.test.ts` | Follows source rename |
 
 ### To delete (Phase 2)
 
@@ -1000,12 +1027,14 @@ Plumbing exists (DB schema has `auto` flag on runs) but human gate bypass is not
 | `src/agents/types.ts` | 1 | New `AgentAdapter` interface: `invokeForStatus`, `invokeForVerdict`, `verify`, `close` |
 | `src/agents/factory.ts` | 1, 3 | Async factory, OpenCode only, no role parameter |
 | `src/config.ts` | 1 | Remove `claude-code` adapter and `server` block; add `model` fields |
+| `src/utils/sse-formatter.ts` | 1, 3 | Renamed from `ndjson-formatter.ts` (Phase 1); internals updated for SSE event shapes (Phase 3) |
+| `test/utils/sse-formatter.test.ts` | 1, 3 | Renamed from `ndjson-formatter.test.ts` (Phase 1); tests updated for SSE (Phase 3) |
 | `src/protocol.ts` | 2 | (new) — includes validators |
 | `src/db/schema.ts` | 2 | Migration 002: `agent_results` redesigned with corrected step identity + tokens/cost columns |
 | `src/db/operations.ts` | 2 | New `upsertAgentResult` with correct composite key; updated `getLatestVerdict`/`getLatestStatus` |
 | `src/orchestrator/phase-execution-loop.ts` | 4 | Remove `PARSE_*` states; add invariant validators; audit record writes; quiet/logPath parity |
 | `src/orchestrator/plan-review-loop.ts` | 4 | Remove `PARSE_*` states; add invariant validators; audit record writes |
-| `src/utils/agent-event-helpers.ts` | 4 | Remove `makeOnEvent`, simplify `buildEscalationReason`; add SSE formatter |
+| `src/utils/agent-event-helpers.ts` | 4 | Remove `makeOnEvent`, simplify `buildEscalationReason` |
 | `src/templates/*.md` | 5 | Remove signal block instructions |
 | `src/commands/plan.ts` | 5 | Async adapter lifecycle |
 | `src/commands/run.ts` | 5 | Async adapter lifecycle; pass reviewer model via `InvokeOptions.model` |
