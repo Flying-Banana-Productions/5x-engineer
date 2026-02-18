@@ -494,7 +494,7 @@ CREATE INDEX idx_run_events_run_id ON run_events(run_id);
 -- authoritative).
 --
 -- ULID `id` and log file lifecycle: `id` is generated fresh per invocation
--- and serves as the PK + log file key (.5x/logs/<run-id>/agent-<id>.log).
+-- and serves as the PK + log file key (.5x/logs/<run-id>/agent-<id>.ndjson).
 -- On upsert (ON CONFLICT DO UPDATE), the `id` column IS updated to the new
 -- invocation's ULID — the new log file replaces the logical slot. The old
 -- log file from the interrupted/crashed attempt remains on disk as an
@@ -502,7 +502,7 @@ CREATE INDEX idx_run_events_run_id ON run_events(run_id);
 -- The derivable log path (run_id + id) always points to the latest attempt.
 --
 -- Output retention: full agent output is written to
--- .5x/logs/<run-id>/agent-<id>.log on disk. The DB stores parsed signal
+-- .5x/logs/<run-id>/agent-<id>.ndjson on disk. The DB stores parsed signal
 -- data (signal_type + signal_data) and metrics only — not the full output
 -- blob. Log file path is derivable from run_id + id (always the latest).
 --
@@ -723,6 +723,9 @@ export interface InvokeOptions {
   timeout?: number;           // ms, default 300_000
   maxTurns?: number;          // default 50
   allowedTools?: string[];    // adapter-specific tool filter
+  // Added by 002-impl-realtime-agent-logs:
+  logStream?: NodeJS.WritableStream;                   // raw NDJSON streamed to disk
+  onEvent?: (event: unknown, rawLine: string) => void; // parsed event + raw line for console formatting
 }
 
 export interface AgentResult {
@@ -1108,7 +1111,7 @@ All commands derive the project root via `resolveProjectRoot()` (in `src/project
 
 ---
 
-## Phase 5: Phase Execution Loop
+## Phase 5: Phase Execution Loop - COMPLETE
 
 **Completion gate:** `5x run <plan-path>` executes phases sequentially. Per phase: author implements → quality gates → reviewer → auto-fix cycles → human gate → next phase. Plan-level locking prevents concurrent execution. `--worktree` creates isolated git worktrees. All state persisted to SQLite — resume works after interruption. Quality gate results stored in DB. End-to-end integration test with mocked agents proves the full loop.
 
@@ -1138,7 +1141,7 @@ export async function runQualityGates(
 - DB `quality_results.results` JSON: per-command `{ command, passed, duration, outputPath }` + bounded inline output (first 2KB + last 2KB, for terminal display and quick diagnostics).
 - Full output: `.5x/logs/<run-id>/quality-phase<N>-attempt<M>-<command-slug>.log`
 - **Streaming output:** `runSingleCommand()` streams stdout/stderr directly to the log file via `createWriteStream` while maintaining a bounded in-memory ring buffer (first 2KB + last 2KB) for the truncated inline output. This prevents OOM on large build/test logs.
-- Agent output: `.5x/logs/<run-id>/agent-<invocation-id>.log` (full adapter output, referenced by `agent_results.id`)
+- Agent output: `.5x/logs/<run-id>/agent-<invocation-id>.ndjson` (NDJSON event stream, referenced by `agent_results.id`; see [002-impl-realtime-agent-logs.md](002-impl-realtime-agent-logs.md) for streaming details)
 - Terminal display: show truncated output inline; on failure, display path to full log file.
 - Cleanup: log files are retained until `5x worktree cleanup` or manual deletion. No automatic retention policy for v1.
 
@@ -1490,6 +1493,7 @@ $ 5x history --run abc123
 ### 7.5 `src/logger.ts` — Structured output
 
 - [ ] Log levels: info (default), verbose (`--verbose`), quiet (`--quiet`)
+- [ ] `--quiet` default behavior: `quiet = !process.stdout.isTTY` (TTY streams formatted agent events; non-TTY defaults quiet). Explicit `--quiet`/`--no-quiet` overrides. See [002-impl-realtime-agent-logs.md](002-impl-realtime-agent-logs.md) for agent-specific streaming and console output policy.
 - [ ] Machine-readable output mode (`--json`) for CI/scripting
 - [ ] Agent invocation logging (prompt length, duration, tokens)
 
@@ -1536,6 +1540,8 @@ $ 5x history --run abc123
 | `src/parsers/signals.ts` | DONE — 5x:verdict / 5x:status block parsers |
 | `src/parsers/review.ts` | DONE — Review summary parser |
 | `src/parsers/markdown.ts` | NEW — Shared markdown utilities |
+| `src/utils/stream.ts` | NEW — Shared `endStream()` helper (extracted from quality.ts; see [002](002-impl-realtime-agent-logs.md)) |
+| `src/utils/ndjson-formatter.ts` | NEW — NDJSON event → formatted console string (see [002](002-impl-realtime-agent-logs.md)) |
 | `src/gates/quality.ts` | NEW — Quality gate command runner (results → DB) |
 | `src/gates/human.ts` | NEW — Interactive terminal prompts |
 | `src/git.ts` | NEW — Git operations, safety invariants, worktree support |
@@ -1555,7 +1561,8 @@ $ 5x history --run abc123
 | Unit | `db/operations.test.ts` | CRUD round-trips, upsert idempotency, concurrent read (WAL) |
 | Unit | `lock.test.ts` | Acquire/release, stale PID detection, re-entrant same PID, contention |
 | Unit | `templates/loader.test.ts` | Template rendering, missing variable errors, unknown variable errors |
-| Unit | `agents/claude-code.test.ts` | Subprocess argument construction, output parsing, exit code mapping |
+| Unit | `agents/claude-code.test.ts` | Subprocess argument construction, output parsing, exit code mapping, NDJSON streaming, logStream/onEvent, non-fatal error handling |
+| Unit | `utils/ndjson-formatter.test.ts` | Event type mapping, multi-part content, unknown types, system.init suppression |
 | Unit | `agents/factory.test.ts` | Config-driven adapter instantiation |
 | Unit | `orchestrator/plan-review-loop.test.ts` | State transitions with mocked adapters + DB: happy path, multi-iteration, escalation, resume |
 | Unit | `orchestrator/phase-execution-loop.test.ts` | Phase progression, quality retry, review fix cycles, human gates, lock contention, worktree creation, resume |

@@ -1,0 +1,233 @@
+# Real-time Agent Log Streaming
+
+**Version:** 1.2
+**Created:** February 17, 2026
+**Parent:** [001-impl-5x-cli.md](001-impl-5x-cli.md)
+**Status:** Draft — v1.2: review corrections — safe concurrent streaming/timeout (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
+
+---
+
+## Problem Statement
+
+Agent invocations in the 5x CLI buffer all output in memory and write to disk only after the process exits. For long-running phases (minutes to tens of minutes), there is no way to observe agent progress. The user stares at `Author implementing phase N...` with no feedback until the agent finishes or fails.
+
+Additionally, only 1 of 6 agent invocation sites writes a log file at all. The other 5 (quality retry, reviewer, auto-fix in both orchestrators) discard raw output after signal parsing. If those invocations fail, the only diagnostic is a bare exit code in the escalation message.
+
+### Current state
+
+| Invocation site | Loop | Writes log? | Streams to disk? | Console output? |
+|---|---|---|---|---|
+| EXECUTE (author implements phase) | phase-execution | Yes (post-hoc) | No | No |
+| QUALITY_RETRY (author fixes quality) | phase-execution | No | No | No |
+| REVIEW (reviewer) | phase-execution | No | No | No |
+| AUTO_FIX (author fixes review items) | phase-execution | No | No | No |
+| REVIEW (reviewer) | plan-review | No | No | No |
+| AUTO_FIX (author fixes review items) | plan-review | No | No | No |
+| Quality gates (subprocess) | phase-execution | Yes | Yes | No |
+
+### Desired state
+
+All agent invocations stream output to disk in real time via NDJSON event logs. Formatted agent activity is printed to the console by default, giving the user real-time visibility into what the agent is doing. A `--quiet` flag suppresses console output for CI or headless use. When `--quiet` is active and an agent fails, a truncated output snippet is included in the escalation message as inline diagnostic context.
+
+---
+
+## Design
+
+### Claude Code `stream-json` output format
+
+Claude Code CLI supports `--output-format stream-json --verbose`, which emits newline-delimited JSON events during execution:
+
+```
+{"type":"system","subtype":"init","model":"claude-opus-4-6","session_id":"...","tools":[...]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"..."}],...}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{...}}],...}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"..."}],...}}
+{"type":"result","subtype":"success","result":"...","total_cost_usd":0.03,...}
+```
+
+Each line is a self-contained JSON object. The final `type: "result"` event contains the same fields as the current `--output-format json` response (`result`, `is_error`, `subtype`, `duration_ms`, `total_cost_usd`, `usage`, `session_id`).
+
+This format enables:
+- Streaming each event line to the log file as it arrives (real-time disk writes)
+- Formatting intermediate events for real-time console display
+- Parsing `type: "result"` for the `AgentResult` return value (same data as today)
+- No change to the `AgentResult` interface or downstream signal parsing
+
+### Console output model
+
+Formatted agent output to the console is the **default mode for interactive (TTY) sessions**. The user watches agent activity in real time — text output, tool invocations, tool results — as it happens.
+
+**Default verbosity rule:** `quiet = !process.stdout.isTTY`. When stdout is a TTY, formatted events stream to the terminal. When stdout is not a TTY (pipes, CI, cron), console output is suppressed by default to avoid flooding CI logs and incurring stdout backpressure slowdowns. Explicit `--quiet` / `--no-quiet` flags override the default in either direction.
+
+- **TTY (default):** formatted NDJSON events printed to stdout as they arrive
+- **Non-TTY (default):** equivalent to `--quiet` — only orchestrator status messages (phase headers, verdicts, escalations) are printed
+- **`--quiet`:** forces suppression regardless of TTY status
+- **`--no-quiet`:** forces streaming output regardless of TTY status
+- **Log files:** always written regardless of quiet mode, since they serve as the diagnostic record
+
+When quiet mode is active (whether by default or flag) and an agent exits non-zero, the escalation message includes: (1) a snippet derived from assistant text or the final result event (not raw NDJSON lines), (2) stderr/error context from `AgentResult.error` when available, and (3) the path to the NDJSON log file. In non-quiet mode, the log path is still included in escalation messages (for easy copy-paste), but the output snippet is omitted — the user already watched the output arrive.
+
+### Key decisions
+
+| Decision | Rationale |
+|---|---|
+| **`stream-json` over `json`** | Enables real-time logging and console display without changing the adapter return type. The final `result` event is a superset of the `json` output. |
+| **NDJSON log files (`.ndjson` extension)** | One JSON object per line. Standard format, tooling-friendly (`jq`, custom parsers). `.ndjson` extension makes the format obvious; quality gate logs remain `.log` (plain text). Non-NDJSON lines in agent logs handled gracefully by any future reader. |
+| **`logStream` + `onEvent` as optional adapter parameters** | `logStream` writes raw NDJSON to disk. `onEvent` delivers the parsed event object and raw line to the caller for console formatting (avoids re-parsing). Both optional — adapter stays testable without disk I/O or console coupling. Both wrapped in try/catch inside the adapter — failures are non-fatal warnings, never crash the invocation. |
+| **Default verbose on TTY, quiet on non-TTY** | Long-running agents need observability in interactive use. Non-TTY contexts (CI, pipes) default to quiet to avoid log flooding and stdout backpressure. Explicit `--quiet` / `--no-quiet` overrides. |
+| **Formatter in orchestrator, not adapter** | The adapter delivers structured events. The orchestrator (or a shared formatter module) decides how to render them. This keeps the adapter focused on subprocess lifecycle. |
+| **Conditional escalation snippets** | In non-quiet mode, the user has already seen the output — snippet omitted, but log path still included. In quiet mode, the snippet is the only inline diagnostic: derived from assistant text / final result (not raw NDJSON), includes stderr/error context when available, and always includes the log path. |
+| **No `5x logs` command in this plan** | Deferred to a follow-up after 001 and 002 are complete and we have real user feedback. Raw NDJSON log files are inspectable with `cat`/`jq` in the interim. |
+
+---
+
+## Implementation Plan
+
+### Phase 1: Adapter Streaming Infrastructure
+
+**Goal:** `ClaudeCodeAdapter` outputs NDJSON, streams to an optional `logStream`, calls an optional `onEvent` callback per event line, and parses the final `result` event for `AgentResult`.
+
+#### Checklist
+
+- [ ] Add to `InvokeOptions` in `agents/types.ts`:
+  - `logStream?: NodeJS.WritableStream` — raw NDJSON written to disk
+  - `onEvent?: (event: unknown, rawLine: string) => void` — called with each parsed event object and the raw NDJSON line (avoids re-parsing in formatter)
+- [ ] Change `buildArgs()` in `agents/claude-code.ts`: `--output-format stream-json --verbose` replaces `--output-format json`
+- [ ] Implement concurrent NDJSON streaming algorithm in `claude-code.ts`:
+  - **Spawn:** `proc = spawnProcess(args, { cwd })`. Immediately start concurrent drain tasks:
+    - `stdoutDone = readNdjson(proc.stdout, { logStream, onEvent })` — streaming NDJSON reader (see below)
+    - `stderrDone = drainStream(proc.stderr)` — buffered string (stderr is diagnostic, not large)
+  - **Race exit vs timeout:** `raceWithTimeout(proc.exited, timeout)`
+  - **Normal exit path:** `await stdoutDone` (process exit guarantees EOF on stdout pipe). Collect stderr via `await stderrDone`.
+  - **Timeout path:** `killWithEscalation(proc)` (SIGTERM → grace → SIGKILL), then bounded drain: `await Promise.race([stdoutDone, sleep(DRAIN_TIMEOUT_MS)])`. If `stdoutDone` doesn't resolve within `DRAIN_TIMEOUT_MS`, cancel the reader via `reader.cancel()`. Partial NDJSON lines in the log file are acceptable — logs are diagnostic artifacts.
+  - **Result extraction:** same `AgentResult` fields as today (`result`, `is_error`, `subtype`, `duration_ms`, `total_cost_usd`, `usage`, `session_id`), sourced from the `type: "result"` event.
+- [ ] Implement `readNdjson(stream, opts)` helper:
+  - Use `TextDecoder` with `{ stream: true }` for multi-byte char safety across chunk boundaries.
+  - Buffer partial lines; split on `\n`; trim trailing `\r`.
+  - For each complete line:
+    - Write to `opts.logStream` (if provided) — wrapped in try/catch; on error, log warning, set `logStreamFailed = true`, stop writing but continue draining/parsing.
+    - Parse JSON; on parse failure, skip (non-JSON lines are tolerated).
+    - Call `opts.onEvent(parsedEvent, rawLine)` (if provided) — wrapped in try/catch; on error, log warning, set `onEventFailed = true`, stop calling but continue draining/parsing.
+    - If `type === "result"`, retain as `resultEvent` (parsed object) and `rawResultText` (the `result` field string).
+  - **Bounded memory:** do NOT accumulate full stdout. Retain only: `resultEvent`, `rawResultText`, and a `boundedFallback` (first ~4KB of stdout) for "no result event" scenarios. This prevents OOM on long-running agents with verbose tool output.
+  - Return `{ resultEvent, rawResultText, boundedFallback }`.
+- [ ] Build `AgentResult` from `readNdjson` output:
+  - If `resultEvent` found: extract fields as today, use `rawResultText` as `output`.
+  - If no `resultEvent` (timeout, crash): use `boundedFallback` as `output`, set appropriate `exitCode`.
+  - Map `is_error === true` to non-zero `exitCode` (same logic as current adapter).
+- [ ] Update `parseJsonOutput()` to handle the result event shape (or inline its logic into the NDJSON reader)
+- [ ] **Non-fatal logging invariant:** `logStream.write()` and `opts.onEvent()` failures MUST NOT fail the agent invocation or abort the stdout reader. They are wrapped in try/catch; on first error, a warning is emitted and the failing callback is disabled for the remainder of the stream.
+- [ ] Update tests in `test/agents/claude-code.test.ts`:
+  - Mock `spawnProcess` to return NDJSON lines (init + assistant + result) instead of a single JSON blob
+  - Test `logStream` teeing: provide a `PassThrough` stream, verify chunks arrive during (not after) reading
+  - Test `onEvent` callback: verify it is called per line with `(parsedEvent, rawLine)` arguments
+  - Test result extraction from `type: "result"` line
+  - Test timeout with partial NDJSON (no result event) — verify bounded drain + cancellation
+  - Test non-JSON stdout fallback (graceful degradation)
+  - Test `logStream` write error is non-fatal (adapter continues, returns valid result)
+  - Test `onEvent` exception is non-fatal (adapter continues, returns valid result)
+  - Test bounded memory: large stdout does not accumulate unboundedly (only fallback snippet retained)
+
+### Phase 2: Orchestrator Log Wiring + Console Output
+
+**Goal:** Every agent invocation in both orchestrators opens a log stream before calling `invoke()`, streams formatted output to the console by default, and flushes the log after. `--quiet` suppresses console output. Escalation messages include output snippets only in quiet mode.
+
+#### Checklist
+
+- [ ] Extract `endStream()` helper from `gates/quality.ts` into `src/utils/stream.ts` for shared use. Update quality.ts to import from the shared location.
+- [ ] **Backpressure consideration:** When writing to `logStream`, check `Writable.write()` return value. If it returns `false`, the stream's internal buffer is full. For v1, this is a noted concern but not a blocker — NDJSON event lines are small (typically <4KB) and disk I/O is fast. If profiling shows memory growth from buffered writes, add `await once(stream, 'drain')` gating in a future iteration.
+- [ ] Implement NDJSON console formatter in `src/utils/ndjson-formatter.ts`:
+  - Accepts a parsed event object (not a raw string — adapter already parsed it, see P1.2).
+  - `type: "system"` (subtype `init`) → `  [session] model=<model>` (suppress verbose `tools` array from `system.init.tools` payloads)
+  - `type: "assistant"` with `content[]` — iterate all content parts (a single message may contain both `text` and `tool_use` blocks):
+    - `type === "text"` → print the text verbatim (indented)
+    - `type === "tool_use"` → `  [tool] <name>: <input summary truncated to 120 chars>`
+  - `type: "user"` with `content[].type === "tool_result"` → `  [result] <first 200 chars of content>`
+  - `type: "result"` → `  [done] <subtype> | cost=$<cost> | <duration>s`
+  - Unknown event types → skip silently (forward-compatible with new event types from future Claude Code versions)
+  - Export as a pure function `formatNdjsonEvent(event: unknown): string | null` (returns null to suppress)
+- [ ] Add `--quiet` / `--no-quiet` flags to `commands/run.ts` and `commands/plan-review.ts`:
+  - `quiet: { type: "boolean", description: "Suppress formatted agent output (default: auto, quiet when stdout is not a TTY)" }`
+  - `no-quiet: { type: "boolean", description: "Force formatted agent output even when stdout is not a TTY" }`
+  - Resolve effective quiet: `--quiet` → true, `--no-quiet` → false, neither → `!process.stdout.isTTY`
+  - Pass resolved `quiet` through to orchestrator options
+- [ ] Add `quiet?: boolean` to `PhaseExecutionOptions` and `PlanReviewOptions`
+- [ ] `phase-execution-loop.ts` — wire log streams and console output at all 4 agent invocation sites:
+  - EXECUTE (author): replace post-hoc `Bun.write(agentLogPath, authorResult.output)` with pre-opened `logStream`. Remove the `Bun.write` call. Wire `onEvent` to formatter unless `quiet`.
+  - QUALITY_RETRY (author): add `resultId` generation + `logStream` open/close + `onEvent`
+  - REVIEW (reviewer): add `resultId` generation + `logStream` open/close + `onEvent`
+  - AUTO_FIX (author): add `resultId` generation + `logStream` open/close + `onEvent`
+- [ ] `plan-review-loop.ts` — add log infrastructure:
+  - Accept `projectRoot` in options (needed to anchor log directory)
+  - Create log directory: `join(projectRoot, ".5x", "logs", runId)`
+  - Wire log streams and `onEvent` at both invocation sites (REVIEW, AUTO_FIX)
+- [ ] Update `commands/plan-review.ts` to pass `projectRoot` and `quiet` through to the loop
+- [ ] Consistent log file naming: `agent-<resultId>.ndjson` for all agent NDJSON logs, `quality-phase<N>-attempt<N>-<slug>.log` for quality gates (unchanged, plain text)
+- [ ] **Guaranteed flush/close invariant:** Every opened `logStream` MUST be ended and awaited in a `finally` block — covering success, timeout, error, and early-return paths. Use `await endStream(stream)` from `src/utils/stream.ts`. This prevents the "log file exists but empty/partial" regression seen in quality gates.
+  - Each invocation site follows: `const logStream = createWriteStream(path); try { await invoke({ logStream, ... }); } finally { await endStream(logStream); }`
+- [ ] Conditional escalation output snippets:
+  - Add `outputSnippet(result: AgentResult)` helper to both orchestrator files. Snippet content:
+    - Derive from assistant text or `result.output` (the final result text), NOT raw NDJSON event lines
+    - When `result.error` is available (stderr/error context), prepend it to the snippet
+    - Truncate to first ~500 chars
+  - At all non-zero exit escalation sites:
+    - **Always** include the NDJSON log file path in the escalation reason (even in non-quiet mode)
+    - Include the output snippet **only when `quiet` is true** — in non-quiet mode the user already saw the streaming output
+  - Add `logPath` to `EscalationEvent` type so downstream consumers (human gates, DB events) always have it
+- [ ] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
+- [ ] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
+
+---
+
+## Testing Strategy
+
+### Unit tests
+
+- `test/agents/claude-code.test.ts` — NDJSON parsing, logStream teeing, onEvent callback (with `(event, rawLine)` signature), timeout with partial stream + bounded drain cancellation, result extraction, non-fatal logStream errors, non-fatal onEvent errors, bounded memory (no full stdout accumulation)
+- `test/utils/ndjson-formatter.test.ts` — each event type maps to expected display string; multi-part content arrays; unknown event types return null; `system.init.tools` suppression
+
+### Integration tests
+
+- Phase execution loop with mock adapter that writes NDJSON to `logStream` → verify `.ndjson` log files exist for all 4 invocation sites (EXECUTE, QUALITY_RETRY, REVIEW, AUTO_FIX)
+- Plan review loop same treatment (REVIEW, AUTO_FIX)
+- Verify `onEvent` is called when `quiet: false` and not called when `quiet: true`
+- Verify escalation output snippet is included only when `quiet: true`; verify log path is always included
+- Verify `logStream` is flushed/closed even on error/timeout paths (no empty log files)
+
+### Manual verification
+
+- Run `5x run` on a real plan, observe formatted agent output in the terminal in real time
+- Run with `--quiet`, verify only orchestrator status messages appear
+- Run with `--quiet`, trigger an agent failure, verify escalation includes output snippet
+- Kill a run mid-phase, verify partial NDJSON log is on disk and readable with `cat`/`jq`
+
+---
+
+## Dependencies
+
+- Claude Code CLI >= 2.x with `--output-format stream-json --verbose` support (confirmed available)
+- No new npm dependencies
+
+## Out of scope (deferred)
+
+- `5x logs` command — deferred to follow-up after 001 and 002 plans are complete. Raw NDJSON logs at `.5x/logs/<runId>/agent-<resultId>.ndjson` are inspectable with `cat`/`jq` in the interim.
+- `--verbose` flag for additional debug output (state machine transitions, DB writes, etc.) — deferred pending user feedback on what level of detail is useful.
+
+## Files to create or modify
+
+| File | Action | Description |
+|---|---|---|
+| `src/agents/types.ts` | Modify | Add `logStream` and `onEvent` (with `(event: unknown, rawLine: string)` signature) to `InvokeOptions` |
+| `src/agents/claude-code.ts` | Modify | Switch to stream-json, concurrent NDJSON reader with bounded memory, logStream teeing (non-fatal), onEvent callback (non-fatal), timeout drain cancellation |
+| `src/utils/stream.ts` | Create | Extract `endStream()` helper from quality.ts for shared use |
+| `src/utils/ndjson-formatter.ts` | Create | Parsed NDJSON event → formatted console string (accepts pre-parsed event object) |
+| `src/gates/quality.ts` | Modify | Import `endStream` from shared util instead of local definition |
+| `src/orchestrator/phase-execution-loop.ts` | Modify | Log streams (with finally-block flush) + onEvent at all 4 agent invocation sites, conditional escalation snippets with log path always included |
+| `src/orchestrator/plan-review-loop.ts` | Modify | Add log directory, log streams (with finally-block flush) + onEvent at 2 sites, conditional snippets with log path |
+| `src/commands/run.ts` | Modify | Add `--quiet`/`--no-quiet` flags, resolve effective quiet from TTY detection, pass through to orchestrator |
+| `src/commands/plan-review.ts` | Modify | Add `--quiet`/`--no-quiet` flags, resolve effective quiet, pass projectRoot and quiet to loop |
+| `docs/development/001-impl-5x-cli.md` | Modify | Update agent log extension to `.ndjson`, note `InvokeOptions` extensions from 002, add utility files to Files table, `--quiet` cross-reference |
+| `test/agents/claude-code.test.ts` | Modify | NDJSON mock responses, logStream + onEvent tests, non-fatal error tests, bounded memory test, timeout drain cancellation |
+| `test/utils/ndjson-formatter.test.ts` | Create | Formatter unit tests: event type mapping, multi-part content, unknown types, system.init suppression |
+| `test/orchestrator/phase-execution-loop.test.ts` | Modify | Account for logStream in mock adapters, test quiet-mode snippets |
+| `test/orchestrator/plan-review-loop.test.ts` | Modify | Account for logStream in mock adapters |
