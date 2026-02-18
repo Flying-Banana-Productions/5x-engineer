@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
+import type { LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
@@ -189,7 +190,7 @@ export default defineCommand({
 
 		// Invoke agent
 		const startTime = Date.now();
-		const result = await adapter.invoke({
+		const result = await (adapter as unknown as LegacyAgentAdapter).invoke({
 			prompt: template.prompt,
 			model: config.author.model,
 			workdir: projectRoot,

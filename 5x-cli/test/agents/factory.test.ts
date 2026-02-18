@@ -1,33 +1,32 @@
 import { describe, expect, test } from "bun:test";
-import { ClaudeCodeAdapter } from "../../src/agents/claude-code.js";
-import { createAdapter } from "../../src/agents/factory.js";
+import {
+	createAdapter,
+	createAndVerifyAdapter,
+} from "../../src/agents/factory.js";
 
-describe("createAdapter", () => {
-	test('returns ClaudeCodeAdapter for "claude-code"', () => {
-		const adapter = createAdapter({ adapter: "claude-code" });
-		expect(adapter).toBeInstanceOf(ClaudeCodeAdapter);
-		expect(adapter.name).toBe("claude-code");
+describe("createAndVerifyAdapter", () => {
+	test("Phase 1: throws with clear message — not yet implemented", async () => {
+		await expect(
+			createAndVerifyAdapter({
+				author: { model: "anthropic/claude-sonnet-4-6" },
+				reviewer: { model: "anthropic/claude-haiku" },
+			}),
+		).rejects.toThrow("OpenCode adapter not yet implemented");
 	});
 
-	test('throws for "opencode" (not yet implemented)', () => {
-		expect(() => createAdapter({ adapter: "opencode" })).toThrow(
-			"not yet implemented",
-		);
+	test("Phase 1: accepts any config shape", async () => {
+		// Factory should accept any config without throwing until actual implementation
+		await expect(
+			createAndVerifyAdapter({
+				author: { model: "test-author" },
+				reviewer: { model: "test-reviewer" },
+			}),
+		).rejects.toThrow("OpenCode adapter not yet implemented");
 	});
+});
 
-	test("throws for unknown adapter", () => {
-		expect(() => createAdapter({ adapter: "gpt-4" as "claude-code" })).toThrow(
-			"Unknown adapter",
-		);
-	});
-
-	test("adapter has isAvailable method", () => {
-		const adapter = createAdapter({ adapter: "claude-code" });
-		expect(typeof adapter.isAvailable).toBe("function");
-	});
-
-	test("adapter has invoke method", () => {
-		const adapter = createAdapter({ adapter: "claude-code" });
-		expect(typeof adapter.invoke).toBe("function");
+describe("createAdapter (deprecated)", () => {
+	test("throws with deprecation message", () => {
+		expect(() => createAdapter()).toThrow("deprecated");
 	});
 });

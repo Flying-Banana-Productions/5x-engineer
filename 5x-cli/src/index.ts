@@ -1,17 +1,22 @@
 // Public API exports
 
-export type { SpawnHandle } from "./agents/claude-code.js";
-export {
-	ClaudeCodeAdapter,
-	MAX_PROMPT_LENGTH,
-} from "./agents/claude-code.js";
-export { createAdapter, createAndVerifyAdapter } from "./agents/factory.js";
+export { createAndVerifyAdapter } from "./agents/factory.js";
 // Agents
 export type {
 	AdapterConfig,
 	AgentAdapter,
 	AgentResult,
+	AuthorStatus,
 	InvokeOptions,
+	InvokeResult,
+	InvokeStatus,
+	InvokeVerdict,
+	// Legacy exports for backward compatibility
+	LegacyAgentAdapter,
+	LegacyAgentResult,
+	LegacyInvokeOptions,
+	ReviewerVerdict,
+	VerdictItem,
 } from "./agents/types.js";
 
 export type { FiveXConfig } from "./config.js";
@@ -111,12 +116,6 @@ export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
 export { parsePlan } from "./parsers/plan.js";
 export type { ReviewSummary } from "./parsers/review.js";
 export { parseReviewSummary } from "./parsers/review.js";
-export type {
-	StatusBlock,
-	VerdictBlock,
-	VerdictItem,
-} from "./parsers/signals.js";
-export { parseStatusBlock, parseVerdictBlock } from "./parsers/signals.js";
 // Paths
 export { canonicalizePlanPath } from "./paths.js";
 // Project root

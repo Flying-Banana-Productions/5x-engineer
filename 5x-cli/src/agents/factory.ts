@@ -1,53 +1,37 @@
 /**
  * Config-driven adapter factory.
  *
- * `createAdapter()` instantiates an adapter from config without checking
- * availability (fast, synchronous).
+ * `createAndVerifyAdapter()` creates a managed (local) OpenCode adapter and
+ * verifies the server is available.
  *
- * `createAndVerifyAdapter()` additionally verifies the adapter binary is
- * reachable and throws if not (async, for use at startup).
+ * Phase 1: throws with clear message — OpenCode adapter not yet implemented.
+ * Phase 3: will implement OpenCodeAdapter and factory will return it.
  */
 
-import { ClaudeCodeAdapter } from "./claude-code.js";
-import type { AdapterConfig, AgentAdapter } from "./types.js";
+import type { AgentAdapter } from "./types.js";
 
 /**
- * Create an agent adapter from config (synchronous, no availability check).
- *
- * @throws if the adapter type is unknown or not yet implemented.
+ * Create and verify a managed (local) OpenCode adapter.
+ * Phase 1: throws — adapter not yet implemented.
+ * Phase 3: will create OpenCodeAdapter, verify health, and return it.
  */
-export function createAdapter(config: AdapterConfig): AgentAdapter {
-	switch (config.adapter) {
-		case "claude-code":
-			return new ClaudeCodeAdapter();
-
-		case "opencode":
-			// Phase 6 — OpenCode adapter not yet implemented
-			throw new Error(
-				`Adapter "opencode" is not yet implemented. Use "claude-code" for now.`,
-			);
-
-		default:
-			throw new Error(
-				`Unknown adapter: ${config.adapter as string}. Valid adapters: claude-code, opencode.`,
-			);
-	}
+export async function createAndVerifyAdapter(
+	_config: Record<string, unknown>,
+): Promise<AgentAdapter> {
+	throw new Error(
+		"OpenCode adapter not yet implemented. " +
+			"This is Phase 1 of the 5x CLI refactor. " +
+			"The adapter will be implemented in Phase 3.",
+	);
 }
 
 /**
- * Create an adapter and verify it is available (async).
- * Returns the adapter if available; throws with an actionable message if not.
+ * @deprecated Synchronous adapter creation is no longer supported. Server
+ * startup is inherently async. Use `createAndVerifyAdapter()` instead.
  */
-export async function createAndVerifyAdapter(
-	config: AdapterConfig,
-): Promise<AgentAdapter> {
-	const adapter = createAdapter(config);
-	const available = await adapter.isAvailable();
-	if (!available) {
-		throw new Error(
-			`Adapter "${config.adapter}" is configured but not available. ` +
-				`Ensure the "${config.adapter === "claude-code" ? "claude" : "opencode"}" CLI is installed and on your PATH.`,
-		);
-	}
-	return adapter;
+export function createAdapter(): never {
+	throw new Error(
+		"createAdapter() is deprecated. " +
+			"Use createAndVerifyAdapter() which handles async server startup.",
+	);
 }

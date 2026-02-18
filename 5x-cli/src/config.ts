@@ -2,10 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
-const AdapterSchema = z.enum(["claude-code", "opencode"]);
-
 const AgentConfigSchema = z.object({
-	adapter: AdapterSchema.default("claude-code"),
 	model: z.string().optional(),
 });
 

@@ -19,8 +19,9 @@ describe("config", () => {
 		try {
 			const { config, configPath } = await loadConfig(tmp);
 			expect(configPath).toBeNull();
-			expect(config.author.adapter).toBe("claude-code");
-			expect(config.reviewer.adapter).toBe("claude-code");
+			// Phase 1: adapter field removed — model field is optional string
+			expect(config.author.model).toBeUndefined();
+			expect(config.reviewer.model).toBeUndefined();
 			expect(config.qualityGates).toEqual([]);
 			expect(config.maxReviewIterations).toBe(5);
 			expect(config.maxAutoIterations).toBe(10);
@@ -35,12 +36,12 @@ describe("config", () => {
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
-				`export default { author: { adapter: "opencode" }, qualityGates: ["bun test"] };`,
+				`export default { author: { model: "anthropic/claude-sonnet-4-6" }, qualityGates: ["bun test"] };`,
 			);
 			const { config, configPath } = await loadConfig(tmp);
 			expect(configPath).toBe(join(tmp, "5x.config.js"));
-			expect(config.author.adapter).toBe("opencode");
-			expect(config.reviewer.adapter).toBe("claude-code"); // default
+			expect(config.author.model).toBe("anthropic/claude-sonnet-4-6");
+			expect(config.reviewer.model).toBeUndefined(); // default
 			expect(config.qualityGates).toEqual(["bun test"]);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -63,14 +64,16 @@ describe("config", () => {
 		}
 	});
 
-	test("invalid adapter value throws with clear message", async () => {
+	test("both author and reviewer models can be configured", async () => {
 		const tmp = makeTmpDir();
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
-				`export default { author: { adapter: "gpt-4" } };`,
+				`export default { author: { model: "model-a" }, reviewer: { model: "model-b" } };`,
 			);
-			await expect(loadConfig(tmp)).rejects.toThrow("Invalid config");
+			const { config } = await loadConfig(tmp);
+			expect(config.author.model).toBe("model-a");
+			expect(config.reviewer.model).toBe("model-b");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -104,11 +107,11 @@ describe("config", () => {
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.mjs"),
-				`export default { author: { adapter: "opencode" } };`,
+				`export default { author: { model: "anthropic/claude-haiku" } };`,
 			);
 			const { config, configPath } = await loadConfig(tmp);
 			expect(configPath).toEndWith("5x.config.mjs");
-			expect(config.author.adapter).toBe("opencode");
+			expect(config.author.model).toBe("anthropic/claude-haiku");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -119,14 +122,14 @@ describe("config", () => {
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
-				`export default { author: { adapter: "claude-code" } };`,
+				`export default { author: { model: "model-js" } };`,
 			);
 			writeFileSync(
 				join(tmp, "5x.config.mjs"),
-				`export default { author: { adapter: "opencode" } };`,
+				`export default { author: { model: "model-mjs" } };`,
 			);
 			const { config } = await loadConfig(tmp);
-			expect(config.author.adapter).toBe("claude-code");
+			expect(config.author.model).toBe("model-js");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -150,15 +153,19 @@ describe("config", () => {
 	});
 
 	test("defineConfig passes through partial config", () => {
-		const partial = defineConfig({ author: { adapter: "opencode" } });
-		expect(partial.author?.adapter).toBe("opencode");
+		const partial = defineConfig({
+			author: { model: "anthropic/claude-opus" },
+		});
+		expect(partial.author?.model).toBe("anthropic/claude-opus");
 	});
 
 	test("schema validates full config shape", () => {
 		const result = FiveXConfigSchema.safeParse({});
 		expect(result.success).toBe(true);
 		if (result.success) {
-			expect(result.data.author.adapter).toBe("claude-code");
+			// Phase 1: model field is optional, no default
+			expect(result.data.author.model).toBeUndefined();
+			expect(result.data.reviewer.model).toBeUndefined();
 		}
 	});
 });

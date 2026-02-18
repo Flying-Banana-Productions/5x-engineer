@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { formatNdjsonEvent } from "../../src/utils/ndjson-formatter.js";
+import { formatSseEvent } from "../../src/utils/sse-formatter.js";
 
-describe("formatNdjsonEvent", () => {
+describe("formatSseEvent", () => {
 	// ---------------------------------------------------------------------------
 	// system init
 	// ---------------------------------------------------------------------------
@@ -14,17 +14,17 @@ describe("formatNdjsonEvent", () => {
 			session_id: "abc123",
 			tools: [{ name: "Bash" }, { name: "Read" }], // should be suppressed
 		};
-		expect(formatNdjsonEvent(event)).toBe("  [session] model=claude-opus-4-6");
+		expect(formatSseEvent(event)).toBe("  [session] model=claude-opus-4-6");
 	});
 
 	test("system init with unknown model", () => {
 		const event = { type: "system", subtype: "init" };
-		expect(formatNdjsonEvent(event)).toBe("  [session] model=unknown");
+		expect(formatSseEvent(event)).toBe("  [session] model=unknown");
 	});
 
 	test("system with other subtype → null (suppress)", () => {
 		const event = { type: "system", subtype: "other" };
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	// ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "text", text: "Hello world" }],
 			},
 		};
-		expect(formatNdjsonEvent(event)).toBe("  Hello world");
+		expect(formatSseEvent(event)).toBe("  Hello world");
 	});
 
 	test("assistant text multi-line → each line indented", () => {
@@ -48,7 +48,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "text", text: "Line 1\nLine 2\nLine 3" }],
 			},
 		};
-		expect(formatNdjsonEvent(event)).toBe("  Line 1\n  Line 2\n  Line 3");
+		expect(formatSseEvent(event)).toBe("  Line 1\n  Line 2\n  Line 3");
 	});
 
 	test("assistant text empty string → null", () => {
@@ -58,7 +58,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "text", text: "" }],
 			},
 		};
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	// ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toContain("[tool] Bash:");
 		expect(result).toContain("ls -la");
 	});
@@ -99,7 +99,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
 		if (!result) throw new Error("Expected non-null result");
 		// Output must be bounded (well under the 120-char limit for the key summary).
@@ -122,7 +122,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toContain("[tool] unknown:");
 	});
 
@@ -140,7 +140,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
 		expect(result).toContain("I'll run a command");
 		expect(result).toContain("[tool] Bash:");
@@ -151,12 +151,12 @@ describe("formatNdjsonEvent", () => {
 			type: "assistant",
 			message: { content: [] },
 		};
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	test("assistant without message → null", () => {
 		const event = { type: "assistant" };
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	// ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toBe("  [result] Command output here");
 	});
 
@@ -191,7 +191,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toBe("  [result] Array output");
 	});
 
@@ -208,7 +208,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
 		if (!result) throw new Error("Expected non-null result");
 		const contentPart = result.replace("  [result] ", "");
@@ -227,7 +227,7 @@ describe("formatNdjsonEvent", () => {
 				],
 			},
 		};
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	test("user message with no tool_result parts → null", () => {
@@ -237,7 +237,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "something_else", content: "x" }],
 			},
 		};
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	// ---------------------------------------------------------------------------
@@ -251,19 +251,19 @@ describe("formatNdjsonEvent", () => {
 			total_cost_usd: 0.0312,
 			duration_ms: 5432,
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toBe("  [done] success | cost=$0.0312 | 5.4s");
 	});
 
 	test("result event with missing cost/duration → 'unknown'", () => {
 		const event = { type: "result", subtype: "error" };
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toBe("  [done] error | cost=unknown | unknown");
 	});
 
 	test("result event without subtype → 'unknown'", () => {
 		const event = { type: "result", total_cost_usd: 0.01, duration_ms: 1000 };
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toBe("  [done] unknown | cost=$0.0100 | 1.0s");
 	});
 
@@ -273,20 +273,20 @@ describe("formatNdjsonEvent", () => {
 
 	test("unknown event type → null (forward-compatible)", () => {
 		const event = { type: "future_event_type", data: "something" };
-		expect(formatNdjsonEvent(event)).toBeNull();
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	test("null event → null", () => {
-		expect(formatNdjsonEvent(null)).toBeNull();
+		expect(formatSseEvent(null)).toBeNull();
 	});
 
 	test("non-object event → null", () => {
-		expect(formatNdjsonEvent("string")).toBeNull();
-		expect(formatNdjsonEvent(42)).toBeNull();
+		expect(formatSseEvent("string")).toBeNull();
+		expect(formatSseEvent(42)).toBeNull();
 	});
 
 	// ---------------------------------------------------------------------------
-	// safeInputSummary edge cases (via formatNdjsonEvent tool_use path)
+	// safeInputSummary edge cases (via formatSseEvent tool_use path)
 	// ---------------------------------------------------------------------------
 
 	test("tool_use with circular-reference input → [unserializable] fallback", () => {
@@ -298,7 +298,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "tool_use", name: "Test", input: circular }],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
 		// Should include the tool name and not throw
 		expect(result).toContain("[tool] Test:");
@@ -315,7 +315,7 @@ describe("formatNdjsonEvent", () => {
 				content: [{ type: "tool_use", name: "Bash", input: smallInput }],
 			},
 		};
-		const result = formatNdjsonEvent(event);
+		const result = formatSseEvent(event);
 		expect(result).toContain('{"cmd":"ls"}');
 	});
 });

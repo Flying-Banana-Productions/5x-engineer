@@ -20,6 +20,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "^1.2.6",
     "citty": "^0.1.6",
     "yaml": "^2.7.0",
     "zod": "^3.24.0"

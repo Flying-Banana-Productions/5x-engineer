@@ -284,14 +284,14 @@ Delete the following files entirely:
 - `src/utils/ndjson-formatter.ts` → `src/utils/sse-formatter.ts` — Phase 3 will update the internals to handle SSE event shapes. Renaming preserves the module for consumers (Phase 3.3 references it); deleting and re-adding later would leave a gap where Phase 3 has no formatter to build on.
 - `test/utils/ndjson-formatter.test.ts` → `test/utils/sse-formatter.test.ts` — update test file name and adjust imports accordingly.
 
-- [ ] Delete the 3 deprecated agent files listed above
-- [ ] Rename `src/utils/ndjson-formatter.ts` → `src/utils/sse-formatter.ts`; update all import references in `src/`
-- [ ] Rename `test/utils/ndjson-formatter.test.ts` → `test/utils/sse-formatter.test.ts`; update imports
+- [x] Delete the 3 deprecated agent files listed above
+- [x] Rename `src/utils/ndjson-formatter.ts` → `src/utils/sse-formatter.ts`; update all import references in `src/`
+- [x] Rename `test/utils/ndjson-formatter.test.ts` → `test/utils/sse-formatter.test.ts`; update imports
 
 ### 1.2 Install OpenCode SDK
 
-- [ ] `bun add @opencode-ai/sdk` in `5x-cli/`
-- [ ] Verify import resolves: `import { createOpencode } from "@opencode-ai/sdk"`
+- [x] `bun add @opencode-ai/sdk` in `5x-cli/`
+- [x] Verify import resolves: `import { createOpencode } from "@opencode-ai/sdk"`
 - [ ] **Bun/compiled-binary compatibility gate:** verify `@opencode-ai/sdk` imports resolve and a basic object can be constructed under `bun build --compile` (smoke test: import + construct client, assert no bundler errors). Add as an env-gated test similar to `FIVE_X_TEST_LIVE_AGENTS=1` pattern so it is opt-in during CI and can be run locally before broad refactoring.
 
 ### 1.3 Update config schema
@@ -317,9 +317,9 @@ export interface FiveXConfig {
 
 > **Note:** Remote/cross-host server config (`server.url`, `server.password`) is intentionally absent from v1. Deferring until a concrete remote filesystem/tool-execution design exists.
 
-- [ ] Remove `'claude-code'` from adapter enum; the `adapter` field is removed entirely (only one adapter exists)
-- [ ] Add `author.model?: string` and `reviewer.model?: string`
-- [ ] Update Zod schema and `defineConfig()` JSDoc types
+- [x] Remove `'claude-code'` from adapter enum; the `adapter` field is removed entirely (only one adapter exists)
+- [x] Add `author.model?: string` and `reviewer.model?: string`
+- [x] Update Zod schema and `defineConfig()` JSDoc types
 - [ ] Update `src/commands/init.ts` to generate config with example model strings and a comment noting remote server support is a future feature
 
 ### 1.4 Stub out new agent interface
@@ -369,21 +369,21 @@ export interface AgentAdapter {
 }
 ```
 
-- [ ] Update `src/agents/types.ts` with interface above (import `AuthorStatus`, `ReviewerVerdict` from new protocol types file — created in Phase 2)
-- [ ] Update `src/agents/factory.ts`: `createAdapter()` throws `Error("opencode adapter not yet implemented")` with clear message; remove all Claude Code references
-- [ ] Update `test/agents/factory.test.ts` to match new interface
+- [x] Update `src/agents/types.ts` with interface above (import `AuthorStatus`, `ReviewerVerdict` from new protocol types file — created in Phase 2)
+- [x] Update `src/agents/factory.ts`: `createAdapter()` throws `Error("opencode adapter not yet implemented")` with clear message; remove all Claude Code references
+- [x] Update `test/agents/factory.test.ts` to match new interface
 
 ### 1.5 Update agent-event-helpers
 
 `src/utils/agent-event-helpers.ts` currently exports `makeOnEvent()` (Claude Code NDJSON-specific), `outputSnippet()`, and `buildEscalationReason()`. The `makeOnEvent()` helper is deprecated. The other two are partially reusable but will change shape.
 
-- [ ] Remove `makeOnEvent()` entirely
-- [ ] Keep `outputSnippet()` and `buildEscalationReason()` as stubs; they will be updated in Phase 4 when the orchestrator is refactored
-- [ ] Update test for `agent-event-helpers` if one exists (currently it's tested implicitly via orchestrator tests)
+- [x] Remove `makeOnEvent()` entirely
+- [x] Keep `outputSnippet()` and `buildEscalationReason()` as stubs; they will be updated in Phase 4 when the orchestrator is refactored
+- [x] Update test for `agent-event-helpers` if one exists (currently it's tested implicitly via orchestrator tests)
 
 ### 1.6 Verify tests pass
 
-- [ ] `bun test --concurrent --dots` — all remaining tests pass, 0 failures
+- [x] `bun test --concurrent --dots` — all remaining tests pass, 0 failures
 
 ---
 

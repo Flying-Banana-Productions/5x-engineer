@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
+import type { LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
@@ -246,8 +247,8 @@ export default defineCommand({
 				effectivePlanPath,
 				reviewPath,
 				db,
-				authorAdapter,
-				reviewerAdapter,
+				authorAdapter as unknown as LegacyAgentAdapter,
+				reviewerAdapter as unknown as LegacyAgentAdapter,
 				config,
 				{
 					auto: args.auto,

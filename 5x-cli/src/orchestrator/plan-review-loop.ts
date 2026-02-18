@@ -13,7 +13,10 @@ import {
 	relative,
 	resolve,
 } from "node:path";
-import type { AgentAdapter, AgentResult } from "../agents/types.js";
+import type {
+	LegacyAgentAdapter as AgentAdapter,
+	AgentResult,
+} from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import {
 	appendRunEvent,

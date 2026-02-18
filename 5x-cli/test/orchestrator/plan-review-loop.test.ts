@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-	AgentAdapter,
+	LegacyAgentAdapter as AgentAdapter,
 	AgentResult,
-	InvokeOptions,
+	LegacyInvokeOptions,
 } from "../../src/agents/types.js";
 import type { FiveXConfig } from "../../src/config.js";
 import {
@@ -40,8 +40,8 @@ const PLAN_CONTENT = `# Test Implementation Plan
 
 function defaultConfig(): FiveXConfig {
 	return {
-		author: { adapter: "claude-code" },
-		reviewer: { adapter: "claude-code" },
+		author: {},
+		reviewer: {},
 		qualityGates: [],
 		paths: {
 			plans: "docs/development",
@@ -153,7 +153,7 @@ function mockAdapter(
 		async isAvailable() {
 			return true;
 		},
-		async invoke(_opts: InvokeOptions): Promise<AgentResult> {
+		async invoke(_opts: LegacyInvokeOptions): Promise<AgentResult> {
 			const response = responses[callIndex];
 			if (!response) {
 				throw new Error(

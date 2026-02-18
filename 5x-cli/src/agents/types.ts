@@ -1,26 +1,34 @@
 /**
  * Agent adapter interface — the contract between the orchestrator and agent harnesses.
  *
- * Design: intentionally minimal. The orchestrator depends on `exitCode`, `output` (full text),
- * and `duration` for correctness decisions. All routing logic uses parsed `5x:*` signals
- * from `output` and git observations (e.g., new commits). Optional fields like `tokens`
- * and `cost` are for display/logging only — never for routing.
+ * Phase 1 new design: structured output via OpenCode SDK. No more free-text
+ * signal parsing. The orchestrator receives typed results directly.
  */
 
 // ---------------------------------------------------------------------------
-// Adapter interface
+// Structured output types (from protocol.ts — will be created in Phase 2)
 // ---------------------------------------------------------------------------
 
-export interface AgentAdapter {
-	/** Human-readable adapter name (e.g. "claude-code", "opencode") */
-	readonly name: string;
+export type AuthorStatus = {
+	result: "complete" | "needs_human" | "failed";
+	commit?: string;
+	reason?: string;
+	notes?: string;
+};
 
-	/** Invoke the agent with a rendered prompt string. */
-	invoke(opts: InvokeOptions): Promise<AgentResult>;
+export type VerdictItem = {
+	id: string;
+	title: string;
+	action: "auto_fix" | "human_required";
+	reason: string;
+	priority?: "P0" | "P1" | "P2";
+};
 
-	/** Check if the adapter's underlying tool is installed and reachable. */
-	isAvailable(): Promise<boolean>;
-}
+export type ReviewerVerdict = {
+	readiness: "ready" | "ready_with_corrections" | "not_ready";
+	items: VerdictItem[];
+	summary?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Invoke options
@@ -30,72 +38,104 @@ export interface InvokeOptions {
 	/** Fully rendered prompt string (from template engine). */
 	prompt: string;
 
-	/** Model override — adapter-specific format. */
+	/** Model override — provider/model format (e.g. "anthropic/claude-sonnet-4-6"). */
 	model?: string;
 
-	/** Working directory for the agent subprocess. */
-	workdir: string;
+	/** Path to write SSE event log (always written; independent of quiet). */
+	logPath: string;
+
+	/** Suppress console output; log file still written. */
+	quiet?: boolean;
 
 	/** Timeout in milliseconds. Default: 300_000 (5 min). */
 	timeout?: number;
 
-	/** Max conversation turns. Default: 50. */
+	/** AbortSignal for cancellation. */
+	signal?: AbortSignal;
+}
+
+// ---------------------------------------------------------------------------
+// Invoke results
+// ---------------------------------------------------------------------------
+
+export type InvokeStatus = {
+	type: "status";
+	status: AuthorStatus;
+	duration: number;
+	sessionId: string;
+	tokensIn?: number;
+	tokensOut?: number;
+	costUsd?: number;
+};
+
+export type InvokeVerdict = {
+	type: "verdict";
+	verdict: ReviewerVerdict;
+	duration: number;
+	sessionId: string;
+	tokensIn?: number;
+	tokensOut?: number;
+	costUsd?: number;
+};
+
+export type InvokeResult = InvokeStatus | InvokeVerdict;
+
+// ---------------------------------------------------------------------------
+// Adapter interface
+// ---------------------------------------------------------------------------
+
+export interface AgentAdapter {
+	/** Invoke agent and return structured status. Throws on hard failure. */
+	invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus>;
+
+	/** Invoke agent and return structured verdict. Throws on hard failure. */
+	invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict>;
+
+	/** Check adapter is available (server reachable, model configured). */
+	verify(): Promise<void>;
+
+	/** Shut down the underlying server (called once at end of run). */
+	close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy exports (for backward compatibility until full migration)
+// ---------------------------------------------------------------------------
+
+/** @deprecated Use InvokeOptions with new AgentAdapter */
+export interface LegacyInvokeOptions {
+	prompt: string;
+	model?: string;
+	workdir: string;
+	timeout?: number;
 	maxTurns?: number;
-
-	/** Allowed tools filter (adapter-specific). */
 	allowedTools?: string[];
-
-	/**
-	 * Writable stream for raw NDJSON event lines. Each line is written as it
-	 * arrives from the agent subprocess. Failures are non-fatal: the adapter
-	 * warns and stops writing but continues the invocation.
-	 */
 	logStream?: NodeJS.WritableStream;
-
-	/**
-	 * Called for each parsed NDJSON event object and the raw line it was
-	 * parsed from. Failures are non-fatal: the adapter warns and stops calling
-	 * but continues the invocation.
-	 */
 	onEvent?: (event: unknown, rawLine: string) => void;
 }
 
-// ---------------------------------------------------------------------------
-// Agent result
-// ---------------------------------------------------------------------------
-
-export interface AgentResult {
-	// --- Required (orchestration depends on these) ---
-
-	/** Full text output from the agent — 5x:* signal blocks are parsed from this. */
+/** @deprecated Use InvokeResult with new AgentAdapter */
+export interface LegacyAgentResult {
 	output: string;
-
-	/** Process exit code. Non-zero → assume failed. */
 	exitCode: number;
-
-	/** Wall-clock duration in milliseconds. */
 	duration: number;
-
-	// --- Optional (display/logging only, never used for routing) ---
-
-	/** Token usage if the adapter reports it. */
 	tokens?: { input: number; output: number };
-
-	/** Total cost in USD if the adapter reports it. */
 	cost?: number;
-
-	/** stderr or error message on failure. */
 	error?: string;
-
-	/** Session ID for reference/debugging. */
 	sessionId?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Adapter factory config
-// ---------------------------------------------------------------------------
+/** @deprecated Alias for LegacyAgentResult for backward compatibility */
+export type AgentResult = LegacyAgentResult;
 
+/** @deprecated Legacy AgentAdapter interface — will be replaced in Phase 4 */
+export interface LegacyAgentAdapter {
+	readonly name: string;
+	invoke(opts: LegacyInvokeOptions): Promise<LegacyAgentResult>;
+	isAvailable(): Promise<boolean>;
+}
+
+/** @deprecated Adapter config no longer needed — OpenCode is the sole adapter */
 export interface AdapterConfig {
-	adapter: "claude-code" | "opencode";
 	model?: string;
 }

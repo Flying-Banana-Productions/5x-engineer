@@ -57,8 +57,11 @@ function safeInputSummary(input: unknown, limit: number): string {
 	}
 }
 
-/** Format a parsed NDJSON event for console display. Returns null to suppress. */
-export function formatNdjsonEvent(event: unknown): string | null {
+/**
+ * Format a parsed SSE event for console display. Returns null to suppress.
+ * Currently handles legacy NDJSON shapes; will be updated for SSE in Phase 3.
+ */
+export function formatSseEvent(event: unknown): string | null {
 	if (typeof event !== "object" || event === null) return null;
 	const ev = event as Record<string, unknown>;
 

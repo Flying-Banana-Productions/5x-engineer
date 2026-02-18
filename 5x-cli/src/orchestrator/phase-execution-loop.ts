@@ -24,7 +24,10 @@ import {
 	readFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { AgentAdapter, AgentResult } from "../agents/types.js";
+import type {
+	LegacyAgentAdapter as AgentAdapter,
+	AgentResult,
+} from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import type { QualityResultInput } from "../db/operations.js";
 import {

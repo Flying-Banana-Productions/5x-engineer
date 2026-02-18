@@ -7,7 +7,7 @@
  */
 
 import type { AgentResult } from "../agents/types.js";
-import { formatNdjsonEvent } from "./ndjson-formatter.js";
+import { formatSseEvent } from "./sse-formatter.js";
 
 /**
  * Build a short output snippet from an agent result for escalation messages.
@@ -48,15 +48,16 @@ export function buildEscalationReason(
 }
 
 /**
- * Build an onEvent handler that formats NDJSON events to stdout.
+ * Build an onEvent handler that formats SSE events to stdout.
  * Returns undefined when quiet is true (suppresses all agent console output).
+ * @deprecated Will be updated for SSE streaming in Phase 3.
  */
 export function makeOnEvent(
 	quiet: boolean,
 ): ((event: unknown, _rawLine: string) => void) | undefined {
 	if (quiet) return undefined;
 	return (event: unknown) => {
-		const line = formatNdjsonEvent(event);
+		const line = formatSseEvent(event);
 		if (line != null) process.stdout.write(`${line}\n`);
 	};
 }

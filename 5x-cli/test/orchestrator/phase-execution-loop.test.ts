@@ -10,9 +10,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-	AgentAdapter,
+	LegacyAgentAdapter as AgentAdapter,
 	AgentResult,
-	InvokeOptions,
+	LegacyInvokeOptions,
 } from "../../src/agents/types.js";
 import type { FiveXConfig } from "../../src/config.js";
 import {
@@ -103,8 +103,8 @@ function createTestEnv(planContent: string = PLAN_CONTENT) {
 
 function defaultConfig(tmp: string): FiveXConfig {
 	return {
-		author: { adapter: "claude-code" },
-		reviewer: { adapter: "claude-code" },
+		author: {},
+		reviewer: {},
 		qualityGates: [],
 		paths: {
 			plans: "docs/development",
@@ -185,7 +185,7 @@ function mockAdapter(
 		async isAvailable() {
 			return true;
 		},
-		async invoke(_opts: InvokeOptions): Promise<AgentResult> {
+		async invoke(_opts: LegacyInvokeOptions): Promise<AgentResult> {
 			const response = responses[callIndex];
 			if (!response) {
 				throw new Error(
@@ -1255,7 +1255,7 @@ describe("runPhaseExecutionLoop", () => {
 			const capturingAdapter: AgentAdapter = {
 				name: "capture",
 				isAvailable: async () => true,
-				invoke: async (opts: InvokeOptions) => {
+				invoke: async (opts: LegacyInvokeOptions) => {
 					if (opts.onEvent) {
 						// Simulate an event being fired
 						opts.onEvent({ type: "result", subtype: "success" }, "{}");
@@ -1312,7 +1312,7 @@ describe("runPhaseExecutionLoop", () => {
 			const capturingAdapter: AgentAdapter = {
 				name: "capture-quiet",
 				isAvailable: async () => true,
-				invoke: async (opts: InvokeOptions) => {
+				invoke: async (opts: LegacyInvokeOptions) => {
 					if (opts.onEvent) onEventWasSet = true;
 					return {
 						output: statusBlock({
