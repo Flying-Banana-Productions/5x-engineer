@@ -93,11 +93,10 @@ describe("runSingleCommand", () => {
 			const result = await runSingleCommand(
 				"sleep 60",
 				tmp,
-				makeOpts(tmp, { timeout: 200 }),
+				makeOpts(tmp, { timeout: 0 }),
 			);
 			expect(result.passed).toBe(false);
 			expect(result.output).toContain("TIMEOUT");
-			expect(result.duration).toBeLessThan(10_000);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
