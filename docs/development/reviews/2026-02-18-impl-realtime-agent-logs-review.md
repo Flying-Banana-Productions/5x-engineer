@@ -108,3 +108,28 @@ In `--quiet` mode, “first ~500 chars of agent output” should be derived from
 - [ ] Switch agent log extension to `.ndjson`/`.jsonl` (P1.1)
 - [ ] Consider passing parsed events to formatter to avoid re-parse (P1.2)
 - [ ] Standardize escalation messages: include stderr + log path; snippet only in quiet (P1.3)
+
+---
+
+## Addendum (2026-02-18) — Re-review after plan updates
+
+**Reviewed:** `c1e6eec` (docs) | `docs/development/002-impl-realtime-agent-logs.md` (v1.2)
+
+### What's addressed (✅)
+
+- **P0.1 streaming/timeout algorithm:** plan now calls for concurrent stdout draining from spawn time, bounded retention, and timeout drain cancellation.
+- **P0.2 non-fatal + durable logging:** `logStream`/`onEvent` are explicitly try/catch non-fatal; orchestrators required to `await endStream()` in `finally` for all paths.
+- **P0.3 non-TTY default:** explicit `quiet = !process.stdout.isTTY` default with `--quiet`/`--no-quiet` override.
+- **P1.1 NDJSON extension:** agent logs renamed to `agent-<id>.ndjson` and cross-referenced from `docs/development/001-impl-5x-cli.md`.
+- **P1.2 avoid re-parse:** `onEvent(event, rawLine)` signature added in the plan.
+- **P1.3 escalation context:** quiet-mode snippet explicitly derived from assistant/final result (plus stderr/error context) and log path is always included.
+- **P2 hardening notes:** formatter multi-part handling + unknown types + init-tools suppression; backpressure called out.
+
+### Remaining concerns
+
+- **CLI flag shape (`--no-quiet`):** in most CLI frameworks (incl. `citty`) `--no-quiet` is the negation form of a single `quiet` boolean flag; avoid adding a separate `no-quiet` arg that can conflict with built-in negation semantics. Acceptance: `quiet` boolean supports both `--quiet` and `--no-quiet` without a second option name.
+- **Timeout cancellation implementability:** the plan references cancelling via `reader.cancel()` on timeout; make the cancellation mechanism explicit (e.g., `readNdjson(..., { signal })` with `AbortController`, or return `{ done, cancel }`) so it’s straightforward to implement + unit test.
+
+### Updated readiness
+
+- **Implementation readiness:** ✅ — plan is now actionable and covers the key failure modes (deadlocks, log durability, CI noise).
