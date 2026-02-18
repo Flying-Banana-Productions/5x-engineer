@@ -140,6 +140,70 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		};
 	}
 
+	/**
+	 * Race process exit against a timeout. Override in tests to control
+	 * which code path (normal vs timeout) executes without real timers.
+	 */
+	protected raceWithTimeout(
+		exited: Promise<number>,
+		timeoutMs: number,
+	): Promise<RaceResult> {
+		return new Promise<RaceResult>((resolve) => {
+			const timer = setTimeout(() => {
+				resolve({ timedOut: true });
+			}, timeoutMs);
+
+			exited.then((exitCode) => {
+				clearTimeout(timer);
+				resolve({ timedOut: false, exitCode });
+			});
+		});
+	}
+
+	/**
+	 * Escalating kill: SIGTERM → wait grace period → SIGKILL.
+	 * Override in tests to make kill instantaneous without timers.
+	 */
+	protected async killWithEscalation(proc: SpawnHandle): Promise<void> {
+		proc.kill(); // SIGTERM
+
+		const exited = await Promise.race([
+			proc.exited.then(() => true as const),
+			new Promise<false>((resolve) =>
+				setTimeout(() => resolve(false), KILL_GRACE_MS),
+			),
+		]);
+
+		if (!exited) {
+			proc.kill(9); // SIGKILL
+		}
+	}
+
+	/**
+	 * Bounded drain of stdout + stderr after a timeout kill. Aborts the
+	 * NDJSON reader via `ac` if streams don't close within DRAIN_TIMEOUT_MS.
+	 * Override in tests to avoid real drain timers.
+	 */
+	protected async boundedDrain(
+		stdoutDone: Promise<NdjsonResult>,
+		stderrDone: Promise<string>,
+		ac: AbortController,
+	): Promise<[NdjsonResult, string]> {
+		const drainAbortTimer = setTimeout(() => ac.abort(), DRAIN_TIMEOUT_MS);
+		const stderrDrained = Promise.race([
+			stderrDone,
+			new Promise<string>((resolve) =>
+				setTimeout(() => resolve(""), DRAIN_TIMEOUT_MS),
+			),
+		]);
+		const result = (await Promise.all([stdoutDone, stderrDrained])) satisfies [
+			NdjsonResult,
+			string,
+		];
+		clearTimeout(drainAbortTimer);
+		return result;
+	}
+
 	async invoke(opts: InvokeOptions): Promise<AgentResult> {
 		const startTime = performance.now();
 		const timeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
@@ -188,7 +252,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		const stderrDone = drainStream(proc.stderr);
 
 		// Race process exit against the timeout.
-		const raceResult = await raceWithTimeout(proc.exited, timeout);
+		const raceResult = await this.raceWithTimeout(proc.exited, timeout);
 		const duration = Math.round(performance.now() - startTime);
 
 		let ndjsonResult: NdjsonResult;
@@ -197,18 +261,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
 		if (raceResult.timedOut) {
 			// SIGTERM → grace → SIGKILL
-			await killWithEscalation(proc);
-			// Bounded drain: abort the stdout reader if it doesn't close in time.
-			// Stderr is raced against the same deadline. Both run in parallel.
-			const drainAbortTimer = setTimeout(() => ac.abort(), DRAIN_TIMEOUT_MS);
-			const stderrDrained = Promise.race([
+			await this.killWithEscalation(proc);
+			// Bounded drain with abort deadline.
+			[ndjsonResult, stderr] = await this.boundedDrain(
+				stdoutDone,
 				stderrDone,
-				new Promise<string>((resolve) =>
-					setTimeout(() => resolve(""), DRAIN_TIMEOUT_MS),
-				),
-			]);
-			[ndjsonResult, stderr] = await Promise.all([stdoutDone, stderrDrained]);
-			clearTimeout(drainAbortTimer);
+				ac,
+			);
 			exitCode = 124; // conventional timeout exit code
 		} else {
 			// Process exited normally — stdout EOF is guaranteed.
@@ -549,41 +608,6 @@ interface RaceResult {
 	exitCode?: number;
 }
 
-async function raceWithTimeout(
-	exited: Promise<number>,
-	timeoutMs: number,
-): Promise<RaceResult> {
-	return new Promise<RaceResult>((resolve) => {
-		const timer = setTimeout(() => {
-			resolve({ timedOut: true });
-		}, timeoutMs);
-
-		exited.then((exitCode) => {
-			clearTimeout(timer);
-			resolve({ timedOut: false, exitCode });
-		});
-	});
-}
-
-/**
- * Escalating kill: SIGTERM → wait grace period → SIGKILL.
- * Ensures the process is dead within KILL_GRACE_MS of calling.
- */
-async function killWithEscalation(proc: SpawnHandle): Promise<void> {
-	proc.kill(); // SIGTERM
-
-	const exited = await Promise.race([
-		proc.exited.then(() => true as const),
-		new Promise<false>((resolve) =>
-			setTimeout(() => resolve(false), KILL_GRACE_MS),
-		),
-	]);
-
-	if (!exited) {
-		proc.kill(9); // SIGKILL
-	}
-}
-
 // Re-export for testing
 export {
 	buildArgs,
@@ -591,6 +615,7 @@ export {
 	readNdjson,
 	type ClaudeCodeJsonOutput,
 	type NdjsonResult,
+	type RaceResult,
 	type SpawnHandle,
 	MAX_PROMPT_LENGTH,
 	BOUNDED_FALLBACK_LIMIT,

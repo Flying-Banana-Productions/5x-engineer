@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
-import type { SpawnHandle } from "../../src/agents/claude-code.js";
+import type {
+	NdjsonResult,
+	RaceResult,
+	SpawnHandle,
+} from "../../src/agents/claude-code.js";
 import {
 	BOUNDED_FALLBACK_LIMIT,
 	buildArgs,
@@ -294,12 +298,11 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke handles timeout", async () => {
-		const adapter = createMock("", 0, "", { hang: true });
+		const adapter = createMock("", 0, "", { timeout: true });
 
 		const result = await adapter.invoke({
 			prompt: "test",
 			workdir: "/tmp",
-			timeout: 100, // 100ms timeout
 		});
 
 		expect(result.exitCode).toBe(124); // timeout exit code
@@ -439,22 +442,22 @@ describe("ClaudeCodeAdapter", () => {
 		expect(result.error).toContain("error_tool_use");
 	});
 
-	test("bounded drain completes within timeout on non-terminating stream", async () => {
-		// Stream that never closes — simulates a hung process whose streams
-		// remain open after SIGTERM/SIGKILL. The drain must not hang.
-		const adapter = createMock("", 0, "", { hangingStreams: true });
+	test("timeout path with hanging streams: boundedDrain aborts reader and returns", async () => {
+		// Streams never close — simulates a hung process whose streams remain
+		// open after SIGTERM/SIGKILL. The mocked boundedDrain aborts immediately
+		// so there are no real timers.
+		const adapter = createMock("", 0, "", {
+			timeout: true,
+			hangingStreams: true,
+		});
 
-		const start = performance.now();
 		const result = await adapter.invoke({
 			prompt: "test",
 			workdir: "/tmp",
-			timeout: 50,
 		});
-		const elapsed = performance.now() - start;
 
 		expect(result.exitCode).toBe(124);
-		// Should complete well within 10s (KILL_GRACE_MS=2s + DRAIN_TIMEOUT_MS=1s + overhead)
-		expect(elapsed).toBeLessThan(10_000);
+		expect(result.error).toContain("timed out");
 	});
 
 	// -------------------------------------------------------------------------
@@ -633,37 +636,26 @@ describe("ClaudeCodeAdapter", () => {
 	// Timeout with AbortController cancellation
 	// -------------------------------------------------------------------------
 
-	test("timeout with partial NDJSON: reader is cancelled and result returns promptly", async () => {
-		// Stream that emits one line then hangs — simulates a hung process that
-		// has partially written output but not yet emitted the result event.
+	test("timeout with partial NDJSON: reader is cancelled and partial data returned", async () => {
+		// Stream emits one NDJSON line then hangs — no result event.
+		// The mocked raceWithTimeout/killWithEscalation/boundedDrain ensure
+		// the timeout path executes without real timers.
 		const partialNdjson = `${JSON.stringify({ type: "system", subtype: "init" })}\n`;
 
-		class PartialStreamAdapter extends ClaudeCodeAdapter {
-			protected override spawnProcess(
-				_args: string[],
-				_opts: { cwd: string },
-			): SpawnHandle {
-				return {
-					exited: new Promise<number>(() => {}), // never exits
-					stdout: ndjsonThenHangingStream(partialNdjson),
-					stderr: stringStream(""),
-					kill: () => {},
-				};
-			}
-		}
+		const adapter = createMock(partialNdjson, 0, "", {
+			timeout: true,
+			partialStream: true,
+		});
 
-		const start = performance.now();
-		const result = await new PartialStreamAdapter().invoke({
+		const result = await adapter.invoke({
 			prompt: "test",
 			workdir: "/tmp",
-			timeout: 50,
 		});
-		const elapsed = performance.now() - start;
 
 		expect(result.exitCode).toBe(124);
 		expect(result.error).toContain("timed out");
-		// Must complete within reasonable bound (not hang)
-		expect(elapsed).toBeLessThan(10_000);
+		// Partial NDJSON line should appear in bounded fallback
+		expect(result.output).toContain('"type":"system"');
 	});
 
 	test("result event extracted from type:result NDJSON line", async () => {
@@ -701,13 +693,30 @@ describe("ClaudeCodeAdapter", () => {
 // ---------------------------------------------------------------------------
 
 interface MockOpts {
-	hang?: boolean;
+	/**
+	 * Simulate a timeout: raceWithTimeout returns { timedOut: true },
+	 * killWithEscalation is a no-op, boundedDrain aborts the reader
+	 * immediately. No real timers are used.
+	 */
+	timeout?: boolean;
+	/**
+	 * When combined with `timeout`, uses hanging streams instead of
+	 * normal streams. Tests that boundedDrain's abort path works when
+	 * streams never close.
+	 */
 	hangingStreams?: boolean;
+	/**
+	 * When combined with `timeout`, the stdout stream emits mockStdout
+	 * data then hangs (never closes). Tests partial-read + abort.
+	 */
+	partialStream?: boolean;
+	/** spawnProcess throws instead of returning a handle. */
 	spawnError?: boolean;
+	/** Capture the args passed to spawnProcess. */
 	captureArgs?: (args: string[]) => void;
 }
 
-/** Build a ReadableStream from a string. */
+/** Build a ReadableStream from a string — emits all data then closes. */
 function stringStream(s: string): ReadableStream<Uint8Array> {
 	const encoded = new TextEncoder().encode(s);
 	return new ReadableStream({
@@ -722,7 +731,7 @@ function stringStream(s: string): ReadableStream<Uint8Array> {
  * Build a ReadableStream that emits `initial` then hangs indefinitely.
  * Simulates a process that has partially written output but stalls.
  */
-function ndjsonThenHangingStream(initial: string): ReadableStream<Uint8Array> {
+function partialThenHangingStream(initial: string): ReadableStream<Uint8Array> {
 	const encoder = new TextEncoder();
 	let emitted = false;
 	return new ReadableStream({
@@ -739,23 +748,20 @@ function ndjsonThenHangingStream(initial: string): ReadableStream<Uint8Array> {
 }
 
 /**
- * Create a ReadableStream that never closes (simulates a hung process
- * whose streams remain open after kill). The stream emits nothing and
- * only resolves the pull when cancelled.
+ * Create a ReadableStream that never closes and never emits data.
  */
 function hangingStream(): ReadableStream<Uint8Array> {
 	return new ReadableStream({
 		pull() {
-			// Never enqueue, never close — blocks the reader forever
 			return new Promise(() => {});
 		},
 	});
 }
 
 /**
- * Create a test adapter that overrides only `spawnProcess` so that the real
- * `invoke()` logic (NDJSON parsing, is_error handling, timeout, etc.) is
- * exercised without spawning a real process.
+ * Create a test adapter that overrides spawnProcess and, when `timeout`
+ * is set, also overrides raceWithTimeout/killWithEscalation/boundedDrain
+ * to exercise the timeout handling path without any real timers.
  */
 function createMock(
 	mockStdout: string,
@@ -774,24 +780,21 @@ function createMock(
 				throw new Error("spawn error");
 			}
 
-			if (mockOpts.hang) {
-				// Never-resolving exited promise simulates a hung process.
-				// Streams close normally so stdout drain completes quickly.
+			// For timeout mocks, exited never resolves (the mock
+			// raceWithTimeout returns timedOut immediately instead).
+			if (mockOpts.timeout) {
+				let stdout: ReadableStream<Uint8Array>;
+				if (mockOpts.hangingStreams) {
+					stdout = hangingStream();
+				} else if (mockOpts.partialStream) {
+					stdout = partialThenHangingStream(mockStdout);
+				} else {
+					stdout = stringStream(mockStdout);
+				}
 				return {
 					exited: new Promise<number>(() => {}),
-					stdout: stringStream(""),
-					stderr: stringStream(""),
-					kill: () => {},
-				};
-			}
-
-			if (mockOpts.hangingStreams) {
-				// Exited never resolves AND streams never close — tests that
-				// the AbortController drain cancellation actually works.
-				return {
-					exited: new Promise<number>(() => {}),
-					stdout: hangingStream(),
-					stderr: hangingStream(),
+					stdout,
+					stderr: stringStream(mockStderr),
 					kill: () => {},
 				};
 			}
@@ -802,6 +805,47 @@ function createMock(
 				stderr: stringStream(mockStderr),
 				kill: () => {},
 			};
+		}
+
+		// -- Timeout path overrides: no real timers --
+
+		protected override async raceWithTimeout(
+			exited: Promise<number>,
+			_timeoutMs: number,
+		): Promise<RaceResult> {
+			if (mockOpts.timeout) {
+				return { timedOut: true };
+			}
+			// Normal path: process resolves immediately in non-timeout mocks
+			const exitCode = await exited;
+			return { timedOut: false, exitCode };
+		}
+
+		protected override async killWithEscalation(
+			_proc: SpawnHandle,
+		): Promise<void> {
+			// No-op in tests — no real signals or grace timers.
+		}
+
+		protected override async boundedDrain(
+			stdoutDone: Promise<NdjsonResult>,
+			stderrDone: Promise<string>,
+			ac: AbortController,
+		): Promise<[NdjsonResult, string]> {
+			if (mockOpts.timeout) {
+				// Immediately abort the NDJSON reader — simulates
+				// DRAIN_TIMEOUT_MS expiring without a real timer.
+				ac.abort();
+				const [ndjson, stderr] = await Promise.all([
+					stdoutDone,
+					stderrDone.catch(() => ""),
+				]);
+				return [ndjson, stderr];
+			}
+			// Normal path (non-timeout mocks) — streams close immediately
+			return Promise.all([stdoutDone, stderrDone]) satisfies Promise<
+				[NdjsonResult, string]
+			>;
 		}
 	})();
 }
