@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "bun run src/bin.ts",
-    "test": "bun test",
+    "test": "bun test --concurrent --dots",
     "build": "bun build --compile src/bin.ts --outfile dist/5x",
     "lint": "bunx --bun @biomejs/biome check src/ test/",
     "typecheck": "bunx --bun tsc --noEmit"
