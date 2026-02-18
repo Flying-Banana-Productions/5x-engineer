@@ -120,3 +120,5 @@ Main remaining risks are around failure modes at scale: a single huge NDJSON lin
 
 - **002 Phase 1 completion:** ✅ - prior P0/P1 items raised in this review are addressed with code + tests.
 - **Ready for Phase 2:** ✅ - proceed with orchestrator wiring; keep backpressure + permissions/docs as primary follow-ups.
+
+Note: Phase 2 execution review moved to `docs/development/reviews/2026-02-18-realtime-agent-logs-phase2-execution-review.md`.

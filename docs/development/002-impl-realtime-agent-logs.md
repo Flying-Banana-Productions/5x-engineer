@@ -1,9 +1,9 @@
 # Real-time Agent Log Streaming
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** February 17, 2026
 **Parent:** [001-impl-5x-cli.md](001-impl-5x-cli.md)
-**Status:** Draft — v1.3: Phase 1 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase1-execution-review.md)) — bound per-line buffering with degraded mode (P0.1), defensive async logStream error handler (P0.2), bounded stderr capture (P1.2), DI logger for concurrent-test safety (P1.4), Phase 2 security documentation note (P1.3); Phase 2 complete (335 pass, 0 fail); v1.2: safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
+**Status:** Draft — v1.4: Phase 2 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase2-execution-review.md)) — `endStream()` hardened with pre-attached listeners (P0.1), log dir `0o700` mode enforced in `quality.ts` (P0.2), bounded `safeInputSummary()` in formatter (P1.2), `lastAgentLogPath` propagation and `iteration` off-by-one fix across all PARSE_* escalations (P1.3), shared `agent-event-helpers.ts` module eliminates duplication (P2), run log dir printed at start, `EscalationEvent` consolidated to single definition in `gates/human.ts` (P2); v1.3: Phase 1 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase1-execution-review.md)) — bound per-line buffering with degraded mode (P0.1), defensive async logStream error handler (P0.2), bounded stderr capture (P1.2), DI logger for concurrent-test safety (P1.4), Phase 2 security documentation note (P1.3); Phase 2 complete (335 pass, 0 fail); v1.2: safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
 
 ---
 
@@ -147,7 +147,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 
 **Goal:** Every agent invocation in both orchestrators opens a log stream before calling `invoke()`, streams formatted output to the console by default, and flushes the log after. `--quiet` suppresses console output. Escalation messages include output snippets only in quiet mode.
 
-**Status:** Complete. All items implemented and tested (335 pass, 0 fail).
+**Status:** Complete with corrections. All items implemented and tested. Corrections from Phase 2 review ([review](reviews/2026-02-18-realtime-agent-logs-phase2-execution-review.md)) applied in v1.4.
 
 #### Checklist
 
@@ -196,6 +196,19 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 - [x] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
 - [x] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
 
+### Phase 2 Review Corrections (v1.4) ✅
+
+Corrections applied in response to the Phase 2 execution review.
+
+- [x] **P0.1 — Harden `endStream()` for deterministic close under errors:** Rewritten to attach `once("finish")` and `once("error")` listeners BEFORE calling `stream.end()`, eliminating the race where `end()` could emit `error`/`finish` before the listener was registered. `once()` prevents listener accumulation per invocation. Non-throwing contract preserved (errors → resolve, not reject).
+- [x] **P0.2 — Enforce `0o700` on all log directory creation sites:** `runQualityGates()` in `src/gates/quality.ts` now passes `mode: 0o700` to `mkdirSync(opts.logDir, ...)`, consistent with both orchestrators. Previously lacked the mode parameter, risking world-readable log dirs when quality.ts created the directory first.
+- [x] **P1.2 — Bounded safe-stringify in `ndjson-formatter.ts`:** Replaced raw `JSON.stringify(part.input ?? {})` with `safeInputSummary()`: wraps stringify in try/catch (handles circular references), and for objects whose JSON form exceeds `TOOL_INPUT_LIMIT`, falls back to a key-names-only summary (e.g., `{command} (214 chars)`) rather than retaining a huge intermediate string. Small inputs stringify normally.
+- [x] **P1.3 — `logPath` propagation across state transitions:** Both orchestrators now track `lastAgentLogPath: string | undefined` across state transitions. Each agent invocation state (EXECUTE, QUALITY_RETRY, REVIEW, AUTO_FIX) sets `lastAgentLogPath` after flushing the stream. PARSE_* states (PARSE_AUTHOR_STATUS, PARSE_VERDICT, PARSE_FIX_STATUS in phase-execution-loop; PARSE_VERDICT, PARSE_STATUS in plan-review-loop) now include `logPath: lastAgentLogPath` in all their escalation events. Previously 21 of 26 escalation sites were missing `logPath`.
+- [x] **P1.3 — `iteration` off-by-one fix in exit-code escalations:** Moved `iteration++` to AFTER the exit-code check in each agent invocation state (EXECUTE, QUALITY_RETRY, REVIEW, AUTO_FIX in both orchestrators). Exit-code escalation events now carry the same `iteration` value as the triggering `agent_results` DB row, rather than the already-incremented next value.
+- [x] **P2 — Deduplicate helper functions:** Extracted `outputSnippet()`, `buildEscalationReason()`, and `makeOnEvent()` from both orchestrators into a new shared module `src/utils/agent-event-helpers.ts`. Both orchestrators now import from the shared module; no duplication remains.
+- [x] **P2 — Consolidate `EscalationEvent` type:** Removed the duplicate local definition from `plan-review-loop.ts`. Both orchestrators now use the single authoritative definition in `src/gates/human.ts`. `plan-review-loop.ts` re-exports the type for backward compatibility with existing consumers.
+- [x] **P2 — Log directory UX:** Both orchestrators now print `Logs: <logDir>` immediately after creating the run log directory, giving users quick access to artifact paths without requiring a separate `5x logs` command.
+
 ---
 
 ## Testing Strategy
@@ -238,8 +251,9 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 |---|---|---|
 | `src/agents/types.ts` | Modify | Add `logStream` and `onEvent` (with `(event: unknown, rawLine: string)` signature) to `InvokeOptions` |
 | `src/agents/claude-code.ts` | Modify | Switch to stream-json, concurrent NDJSON reader with bounded memory + line-buffer bounding (degraded mode) + defensive async logStream error handler + bounded stderr capture, logStream teeing (non-fatal), onEvent callback (non-fatal), timeout drain cancellation, DI `warn()` method for test injection |
-| `src/utils/stream.ts` | Create | Extract `endStream()` helper from quality.ts for shared use |
-| `src/utils/ndjson-formatter.ts` | Create | Parsed NDJSON event → formatted console string (accepts pre-parsed event object) |
+| `src/utils/stream.ts` | Create | Extract `endStream()` helper from quality.ts for shared use; hardened listener ordering (v1.4) |
+| `src/utils/ndjson-formatter.ts` | Create | Parsed NDJSON event → formatted console string (accepts pre-parsed event object); bounded `safeInputSummary()` (v1.4) |
+| `src/utils/agent-event-helpers.ts` | Create | Shared `outputSnippet`, `buildEscalationReason`, `makeOnEvent` — extracted from orchestrators (v1.4) |
 | `src/gates/quality.ts` | Modify | Import `endStream` from shared util instead of local definition |
 | `src/orchestrator/phase-execution-loop.ts` | Modify | Log streams (with finally-block flush) + onEvent at all 4 agent invocation sites, conditional escalation snippets with log path always included |
 | `src/orchestrator/plan-review-loop.ts` | Modify | Add log directory, log streams (with finally-block flush) + onEvent at 2 sites, conditional snippets with log path |

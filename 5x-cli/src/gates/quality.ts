@@ -130,9 +130,9 @@ export async function runQualityGates(
 	const results: QualityCommandResult[] = [];
 	let allPassed = true;
 
-	// Ensure log directory exists
+	// Ensure log directory exists with user-only permissions (consistent with orchestrators)
 	if (!existsSync(opts.logDir)) {
-		mkdirSync(opts.logDir, { recursive: true });
+		mkdirSync(opts.logDir, { recursive: true, mode: 0o700 });
 	}
 
 	for (const command of commands) {

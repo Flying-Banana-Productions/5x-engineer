@@ -15,6 +15,48 @@
 const TOOL_INPUT_LIMIT = 120;
 const TOOL_RESULT_LIMIT = 200;
 
+/**
+ * Safely stringify a tool input for console display.
+ * Non-throwing: handles circular references and other unserializable inputs.
+ * When the stringified form exceeds the limit, large objects fall back to a
+ * key-only summary to avoid allocating huge intermediate strings.
+ */
+function safeInputSummary(input: unknown, limit: number): string {
+	if (typeof input !== "object" || input === null) {
+		try {
+			const s = JSON.stringify(input) ?? "null";
+			return s.length > limit ? `${s.slice(0, limit)}...` : s;
+		} catch {
+			return String(input).slice(0, limit);
+		}
+	}
+	try {
+		const s = JSON.stringify(input);
+		if (s.length > limit) {
+			// Avoid retaining the large allocation — use a key summary instead.
+			const keys = Object.keys(input as object);
+			const summary =
+				keys.length > 0
+					? `{${keys.join(", ")}} (${s.length} chars)`
+					: `{} (${s.length} chars)`;
+			return summary.length > limit ? `${summary.slice(0, limit)}...` : summary;
+		}
+		return s;
+	} catch {
+		// Circular reference or other unserializable input — show key names only.
+		try {
+			const keys = Object.keys(input as object);
+			const summary =
+				keys.length > 0
+					? `{${keys.join(", ")}} [unserializable]`
+					: "{} [unserializable]";
+			return summary.length > limit ? `${summary.slice(0, limit)}...` : summary;
+		} catch {
+			return "[unserializable]";
+		}
+	}
+}
+
 /** Format a parsed NDJSON event for console display. Returns null to suppress. */
 export function formatNdjsonEvent(event: unknown): string | null {
 	if (typeof event !== "object" || event === null) return null;
@@ -47,12 +89,8 @@ export function formatNdjsonEvent(event: unknown): string | null {
 				}
 			} else if (part.type === "tool_use") {
 				const name = (part.name as string | undefined) ?? "unknown";
-				const inputStr = JSON.stringify(part.input ?? {});
-				const truncated =
-					inputStr.length > TOOL_INPUT_LIMIT
-						? `${inputStr.slice(0, TOOL_INPUT_LIMIT)}...`
-						: inputStr;
-				lines.push(`  [tool] ${name}: ${truncated}`);
+				const inputStr = safeInputSummary(part.input, TOOL_INPUT_LIMIT);
+				lines.push(`  [tool] ${name}: ${inputStr}`);
 			}
 		}
 		return lines.length > 0 ? lines.join("\n") : null;

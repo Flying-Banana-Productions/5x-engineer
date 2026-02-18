@@ -1542,8 +1542,9 @@ $ 5x history --run abc123
 | `src/parsers/signals.ts` | DONE — 5x:verdict / 5x:status block parsers |
 | `src/parsers/review.ts` | DONE — Review summary parser |
 | `src/parsers/markdown.ts` | NEW — Shared markdown utilities |
-| `src/utils/stream.ts` | NEW — Shared `endStream()` helper (extracted from quality.ts; see [002](002-impl-realtime-agent-logs.md)) |
-| `src/utils/ndjson-formatter.ts` | NEW — NDJSON event → formatted console string (see [002](002-impl-realtime-agent-logs.md)) |
+| `src/utils/stream.ts` | NEW — Shared `endStream()` helper (extracted from quality.ts; see [002](002-impl-realtime-agent-logs.md)); hardened listener ordering |
+| `src/utils/ndjson-formatter.ts` | NEW — NDJSON event → formatted console string (see [002](002-impl-realtime-agent-logs.md)); bounded `safeInputSummary()` |
+| `src/utils/agent-event-helpers.ts` | NEW — Shared escalation helpers: `outputSnippet`, `buildEscalationReason`, `makeOnEvent` (extracted from orchestrators; see [002](002-impl-realtime-agent-logs.md)) |
 | `src/gates/quality.ts` | NEW — Quality gate command runner (results → DB) |
 | `src/gates/human.ts` | NEW — Interactive terminal prompts |
 | `src/git.ts` | NEW — Git operations, safety invariants, worktree support |

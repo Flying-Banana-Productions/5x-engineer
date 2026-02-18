@@ -1422,4 +1422,104 @@ describe("runPhaseExecutionLoop", () => {
 			cleanup();
 		}
 	});
+
+	test("PARSE_AUTHOR_STATUS escalation includes logPath from preceding EXECUTE", async () => {
+		// When author produces no status block, the escalation should carry the
+		// NDJSON log path of the EXECUTE invocation that produced the bad output.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [
+				{ output: "Did some work but forgot status block" },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, projectRoot: tmp },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			const escalation = result.escalations[0];
+			if (!escalation) throw new Error("Expected at least one escalation");
+			// PARSE_AUTHOR_STATUS escalation must carry the EXECUTE log path.
+			expect(escalation.logPath).toBeDefined();
+			expect(escalation.logPath).toMatch(/agent-.+\.ndjson$/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("PARSE_VERDICT escalation includes logPath from preceding REVIEW", async () => {
+		// When reviewer produces no verdict block, the escalation should carry the
+		// NDJSON log path of the REVIEW invocation.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [
+				{
+					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
+				},
+			]);
+			const reviewer = mockAdapter("reviewer", [
+				{ output: "Great work! No verdict block." },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, projectRoot: tmp },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			const escalation = result.escalations[0];
+			if (!escalation) throw new Error("Expected at least one escalation");
+			// PARSE_VERDICT escalation must carry the REVIEW log path.
+			expect(escalation.logPath).toBeDefined();
+			expect(escalation.logPath).toMatch(/agent-.+\.ndjson$/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("exit-code escalation iteration matches agent result iteration (no off-by-one)", async () => {
+		// When author exits non-zero, the escalation's iteration should equal the
+		// iteration at which the agent was invoked (not post-increment).
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [{ output: "error", exitCode: 1 }]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.escalations.length).toBeGreaterThan(0);
+			const escalation = result.escalations[0];
+			if (!escalation) throw new Error("Expected at least one escalation");
+			// Author was invoked at iteration 0; escalation should be at iteration 0.
+			expect(escalation.iteration).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
 });

@@ -83,7 +83,9 @@ describe("formatNdjsonEvent", () => {
 		expect(result).toContain("ls -la");
 	});
 
-	test("assistant tool_use with long input → truncated to 120 chars with ellipsis", () => {
+	test("assistant tool_use with long input → bounded key summary (no large allocation)", () => {
+		// Input whose JSON form exceeds TOOL_INPUT_LIMIT (120 chars).
+		// safeInputSummary produces a key-only summary to avoid retaining huge strings.
 		const longInput = { command: "x".repeat(200) };
 		const event = {
 			type: "assistant",
@@ -100,10 +102,12 @@ describe("formatNdjsonEvent", () => {
 		const result = formatNdjsonEvent(event);
 		expect(result).not.toBeNull();
 		if (!result) throw new Error("Expected non-null result");
-		// The tool input summary should be truncated
+		// Output must be bounded (well under the 120-char limit for the key summary).
 		const inputPart = result.replace("  [tool] Bash: ", "");
-		expect(inputPart.length).toBeLessThanOrEqual(124); // 120 + "..."
-		expect(inputPart.endsWith("...")).toBe(true);
+		expect(inputPart.length).toBeLessThanOrEqual(124);
+		// Key summary shows the object's keys and the serialized size.
+		expect(inputPart).toContain("command");
+		expect(inputPart).toContain("chars");
 	});
 
 	test("assistant tool_use unknown name → 'unknown'", () => {
@@ -279,5 +283,39 @@ describe("formatNdjsonEvent", () => {
 	test("non-object event → null", () => {
 		expect(formatNdjsonEvent("string")).toBeNull();
 		expect(formatNdjsonEvent(42)).toBeNull();
+	});
+
+	// ---------------------------------------------------------------------------
+	// safeInputSummary edge cases (via formatNdjsonEvent tool_use path)
+	// ---------------------------------------------------------------------------
+
+	test("tool_use with circular-reference input → [unserializable] fallback", () => {
+		const circular: Record<string, unknown> = { a: 1 };
+		circular.self = circular; // creates circular reference
+		const event = {
+			type: "assistant",
+			message: {
+				content: [{ type: "tool_use", name: "Test", input: circular }],
+			},
+		};
+		const result = formatNdjsonEvent(event);
+		expect(result).not.toBeNull();
+		// Should include the tool name and not throw
+		expect(result).toContain("[tool] Test:");
+		// Should contain unserializable marker or key names
+		const inputPart = (result ?? "").replace("  [tool] Test: ", "");
+		expect(inputPart.length).toBeLessThanOrEqual(124);
+	});
+
+	test("tool_use with small input → exact JSON output (no key-summary)", () => {
+		const smallInput = { cmd: "ls" };
+		const event = {
+			type: "assistant",
+			message: {
+				content: [{ type: "tool_use", name: "Bash", input: smallInput }],
+			},
+		};
+		const result = formatNdjsonEvent(event);
+		expect(result).toContain('{"cmd":"ls"}');
 	});
 });

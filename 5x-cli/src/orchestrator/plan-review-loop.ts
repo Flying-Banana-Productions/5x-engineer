@@ -29,20 +29,21 @@ import type { VerdictBlock } from "../parsers/signals.js";
 import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { renderTemplate } from "../templates/loader.js";
-import { formatNdjsonEvent } from "../utils/ndjson-formatter.js";
+import {
+	buildEscalationReason,
+	makeOnEvent,
+} from "../utils/agent-event-helpers.js";
 import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-export interface EscalationEvent {
-	reason: string;
-	items?: Array<{ id: string; title: string; reason: string }>;
-	iteration: number;
-	/** Path to the NDJSON agent log file, when the escalation originated from an agent invocation. */
-	logPath?: string;
-}
+// EscalationEvent is defined once in gates/human.ts (shared with phase-execution-loop).
+// Re-exported here for backward compatibility with existing consumers.
+export type { EscalationEvent } from "../gates/human.js";
+
+import type { EscalationEvent } from "../gates/human.js";
 
 export interface PlanReviewResult {
 	approved: boolean;
@@ -93,55 +94,6 @@ export interface PlanReviewLoopOptions {
 /** Generate a simple unique ID (UUID v4). */
 function generateId(): string {
 	return crypto.randomUUID();
-}
-
-/**
- * Build a short output snippet from an agent result for escalation messages.
- * Derived from result.output (final result text) and optionally result.error (stderr).
- * Never raw NDJSON event lines.
- */
-function outputSnippet(result: AgentResult): string {
-	const parts: string[] = [];
-	if (result.error) {
-		parts.push(`stderr: ${result.error.slice(0, 200)}`);
-	}
-	const text = (result.output ?? "").slice(0, 500);
-	if (text) parts.push(text);
-	return parts.join("\n").slice(0, 500);
-}
-
-/**
- * Build an escalation reason that always includes the log path, and
- * conditionally includes an output snippet (quiet mode only).
- */
-function buildEscalationReason(
-	base: string,
-	logPath: string,
-	result: AgentResult,
-	quiet: boolean,
-): string {
-	const pathLine = `Log: ${logPath}`;
-	if (quiet) {
-		const snippet = outputSnippet(result);
-		return snippet
-			? `${base}\n${pathLine}\n${snippet}`
-			: `${base}\n${pathLine}`;
-	}
-	return `${base}\n${pathLine}`;
-}
-
-/**
- * Build an onEvent handler that formats events to stdout.
- * Returns undefined when quiet is true (no console output).
- */
-function makeOnEvent(
-	quiet: boolean,
-): ((event: unknown, _rawLine: string) => void) | undefined {
-	if (quiet) return undefined;
-	return (event: unknown) => {
-		const line = formatNdjsonEvent(event);
-		if (line != null) process.stdout.write(`${line}\n`);
-	};
 }
 
 /**
@@ -364,11 +316,12 @@ export async function runPlanReviewLoop(
 	// Ensure plan is recorded
 	upsertPlan(db, { planPath });
 
-	// Create log directory for this run (user-only permissions per P1.3)
+	// Create log directory for this run (user-only permissions)
 	const logDir = join(workdir, ".5x", "logs", runId);
 	if (!existsSync(logDir)) {
 		mkdirSync(logDir, { recursive: true, mode: 0o700 });
 	}
+	console.log(`  Logs: ${logDir}`);
 
 	appendRunEvent(db, {
 		runId,
@@ -376,6 +329,10 @@ export async function runPlanReviewLoop(
 		iteration,
 		data: { planPath, reviewPath },
 	});
+
+	// Tracks the most recent agent NDJSON log path across state transitions so
+	// PARSE_* states can include it in escalation events.
+	let lastAgentLogPath: string | undefined;
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
@@ -492,9 +449,11 @@ export async function runPlanReviewLoop(
 					},
 				});
 
-				iteration++;
+				// Record log path for PARSE_VERDICT escalations before incrementing.
+				lastAgentLogPath = reviewLogPath;
 
-				// Handle non-zero exit
+				// Handle non-zero exit — escalation uses pre-increment iteration to
+				// match the agent_results row for this invocation.
 				if (reviewResult.exitCode !== 0) {
 					const event: EscalationEvent = {
 						reason: buildEscalationReason(
@@ -513,10 +472,12 @@ export async function runPlanReviewLoop(
 						iteration,
 						data: event,
 					});
+					iteration++;
 					state = "ESCALATE";
 					break;
 				}
 
+				iteration++;
 				state = "PARSE_VERDICT";
 				break;
 			}
@@ -534,6 +495,7 @@ export async function runPlanReviewLoop(
 						reason:
 							"Reviewer did not produce a 5x:verdict block. Manual review required.",
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -589,6 +551,7 @@ export async function runPlanReviewLoop(
 							reason: i.reason,
 						})),
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -611,6 +574,7 @@ export async function runPlanReviewLoop(
 							reason: i.reason,
 						})),
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -641,6 +605,7 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason: `Reviewer returned ${readiness} with no auto-fixable items`,
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -658,6 +623,7 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason: `Unexpected readiness value "${readiness}" — escalating for manual review`,
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -755,6 +721,8 @@ export async function runPlanReviewLoop(
 					},
 				});
 
+				// Record log path for PARSE_STATUS escalations before incrementing.
+				lastAgentLogPath = authorLogPath;
 				iteration++;
 				state = "PARSE_STATUS";
 				break;
@@ -773,6 +741,7 @@ export async function runPlanReviewLoop(
 						reason:
 							"Author did not produce a 5x:status block after fix. Manual review required.",
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -790,6 +759,7 @@ export async function runPlanReviewLoop(
 						reason:
 							authorStatus.reason ?? "Author needs human input during fix",
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -806,6 +776,7 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason: authorStatus.reason ?? "Author reported failure during fix",
 						iteration,
+						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
