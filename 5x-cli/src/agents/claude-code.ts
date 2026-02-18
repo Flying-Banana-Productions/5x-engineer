@@ -87,6 +87,19 @@ const DRAIN_TIMEOUT_MS = 1_000;
 const MAX_PROMPT_LENGTH = 128_000; // ~128 KiB, conservative for Linux
 /** Cap on the bounded fallback buffer — prevents OOM on verbose stdout. */
 const BOUNDED_FALLBACK_LIMIT = 4_096; // ~4KB
+/**
+ * Maximum in-flight line buffer size before degrading the NDJSON reader.
+ * A single event line exceeding this threshold (e.g., a huge tool_result)
+ * triggers degraded mode: line-based parsing stops, raw bytes are teed to
+ * logStream directly, and onEvent is disabled. If a newline appears in a
+ * subsequent chunk, the reader recovers to normal mode.
+ */
+const MAX_LINE_BUFFER_SIZE = 1_048_576; // 1 MiB
+/**
+ * Maximum stderr capture size. Stderr is buffered into a single string for
+ * error diagnostics; cap it to prevent memory spikes from verbose agents.
+ */
+const MAX_STDERR_SIZE = 65_536; // 64 KiB
 
 // ---------------------------------------------------------------------------
 // Adapter implementation
@@ -106,6 +119,14 @@ interface SpawnHandle {
 
 export class ClaudeCodeAdapter implements AgentAdapter {
 	readonly name = "claude-code" as const;
+
+	/**
+	 * Emit a warning. Override in tests to capture warnings without global
+	 * console.warn mutation (concurrent-test safe).
+	 */
+	protected warn(msg: string): void {
+		console.warn(msg);
+	}
 
 	async isAvailable(): Promise<boolean> {
 		try {
@@ -244,12 +265,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
 		// Start concurrent draining immediately — must not block on each other.
 		// If stdout fills while we wait on proc.exited, the process would block.
+		const warnFn = (msg: string) => this.warn(msg);
 		const stdoutDone = readNdjson(proc.stdout, {
 			logStream: opts.logStream,
 			onEvent: opts.onEvent,
 			signal: ac.signal,
+			warn: warnFn,
 		});
-		const stderrDone = drainStream(proc.stderr);
+		const stderrDone = drainStream(proc.stderr, MAX_STDERR_SIZE);
 
 		// Race process exit against the timeout.
 		const raceResult = await this.raceWithTimeout(proc.exited, timeout);
@@ -337,8 +360,15 @@ function buildArgs(opts: InvokeOptions, maxTurns: number): string[] {
  *
  * Kept for backward compat / standalone use. In the streaming path, result
  * events are parsed line-by-line inside readNdjson().
+ *
+ * @param stdout - Raw stdout string to parse.
+ * @param warn - Warning sink; defaults to console.warn. Inject a capturing
+ *   function in tests to avoid global console mutation under --concurrent.
  */
-function parseJsonOutput(stdout: string): ClaudeCodeJsonOutput | null {
+function parseJsonOutput(
+	stdout: string,
+	warn: (msg: string) => void = console.warn,
+): ClaudeCodeJsonOutput | null {
 	const trimmed = stdout.trim();
 	if (!trimmed.startsWith("{")) return null;
 
@@ -349,7 +379,7 @@ function parseJsonOutput(stdout: string): ClaudeCodeJsonOutput | null {
 			(f) => parsed[f as keyof ClaudeCodeJsonOutput] === undefined,
 		);
 		if (missing.length > 0) {
-			console.warn(
+			warn(
 				`[claude-code] JSON output missing expected fields: ${missing.join(", ")}. ` +
 					`Claude Code CLI output schema may have changed.`,
 			);
@@ -453,6 +483,11 @@ function readWithAbort(
  * - Retains the `type: "result"` event for AgentResult extraction.
  * - Retains only the first ~4KB of stdout as a bounded diagnostic fallback.
  * - Checks `opts.signal` before each read; resolves promptly when aborted.
+ * - Bounds per-line buffering: if a single line exceeds MAX_LINE_BUFFER_SIZE,
+ *   enters degraded mode (stops parsing, tees raw bytes to logStream, disables
+ *   onEvent). Recovers on the next newline.
+ * - Attaches a defensive `'error'` handler on logStream to prevent unhandled
+ *   error events from crashing the process.
  */
 async function readNdjson(
 	stream: ReadableStream<Uint8Array> | null,
@@ -460,12 +495,14 @@ async function readNdjson(
 		logStream?: NodeJS.WritableStream;
 		onEvent?: (event: unknown, rawLine: string) => void;
 		signal?: AbortSignal;
+		warn?: (msg: string) => void;
 	},
 ): Promise<NdjsonResult> {
 	if (!stream) {
 		return { resultEvent: null, rawResultText: "", boundedFallback: "" };
 	}
 
+	const warn = opts.warn ?? console.warn;
 	const reader = stream.getReader();
 	const decoder = new TextDecoder("utf-8");
 	let buffer = "";
@@ -474,20 +511,39 @@ async function readNdjson(
 	let boundedFallback = "";
 	let logStreamFailed = false;
 	let onEventFailed = false;
+	/** When true, line-based parsing is suspended due to buffer overflow. */
+	let degraded = false;
+
+	// P0.2: Attach a defensive 'error' handler on logStream to prevent
+	// unhandled error events (e.g., disk full, permission denied) from
+	// crashing the process. The handler flips logStreamFailed so we stop
+	// writing, matching the synchronous try/catch behavior.
+	// biome-ignore lint/suspicious/noExplicitAny: logStream may be a Node EventEmitter with .on()
+	const logStreamAny = opts.logStream as any;
+	if (opts.logStream && typeof logStreamAny?.on === "function") {
+		logStreamAny.on("error", (err: Error) => {
+			if (!logStreamFailed) {
+				logStreamFailed = true;
+				warn(`[claude-code] logStream error event (non-fatal): ${err.message}`);
+			}
+		});
+	}
+
+	/** Write raw bytes to logStream if still active. Non-fatal. */
+	const teeToLogStream = (data: string): void => {
+		if (logStreamFailed || !opts.logStream) return;
+		try {
+			opts.logStream.write(data);
+		} catch (err) {
+			logStreamFailed = true;
+			warn(`[claude-code] logStream write failed (non-fatal): ${err}`);
+		}
+	};
 
 	// processLine is defined here so it closes over the mutable state above.
 	const processLine = (line: string): void => {
 		// Write to logStream (non-fatal: disable on first error).
-		if (!logStreamFailed && opts.logStream) {
-			try {
-				opts.logStream.write(`${line}\n`);
-			} catch (err) {
-				logStreamFailed = true;
-				console.warn(
-					`[claude-code] logStream write failed (non-fatal): ${err}`,
-				);
-			}
-		}
+		teeToLogStream(`${line}\n`);
 
 		// Parse JSON; skip non-JSON lines (they may appear in degraded output).
 		let parsed: unknown;
@@ -503,9 +559,7 @@ async function readNdjson(
 				opts.onEvent(parsed, line);
 			} catch (err) {
 				onEventFailed = true;
-				console.warn(
-					`[claude-code] onEvent callback threw (non-fatal): ${err}`,
-				);
+				warn(`[claude-code] onEvent callback threw (non-fatal): ${err}`);
 			}
 		}
 
@@ -547,9 +601,29 @@ async function readNdjson(
 						: textChunk.slice(0, remaining);
 			}
 
-			buffer += textChunk;
+			// P0.1: In degraded mode, skip line buffering — tee raw bytes to
+			// logStream and check for a newline to recover.
+			if (degraded) {
+				teeToLogStream(textChunk);
+				const nlIdx = textChunk.indexOf("\n");
+				if (nlIdx !== -1) {
+					// Recovery: the first newline terminates the oversized line.
+					// Everything after it is normal data — set as buffer and
+					// fall through to the normal line-splitting code below.
+					degraded = false;
+					buffer = textChunk.slice(nlIdx + 1);
+					// Fall through to line splitting below
+				} else {
+					continue;
+				}
+			} else {
+				buffer += textChunk;
+			}
 
 			// Split on newlines; keep last (possibly incomplete) chunk as buffer.
+			// This must happen BEFORE the buffer size check so that chunks
+			// containing multiple valid newline-separated lines are processed
+			// normally even if the total chunk exceeds MAX_LINE_BUFFER_SIZE.
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 
@@ -558,14 +632,34 @@ async function readNdjson(
 				if (!line) continue;
 				processLine(line);
 			}
+
+			// P0.1: Check if the remaining buffer (a partial line awaiting
+			// its terminating newline) has grown beyond the safety limit.
+			// A single huge NDJSON line (e.g., massive tool_result content)
+			// can force unbounded buffering. On overflow: discard the buffer,
+			// disable onEvent, tee raw bytes going forward, and attempt to
+			// recover when the next newline appears.
+			if (buffer.length > MAX_LINE_BUFFER_SIZE) {
+				degraded = true;
+				onEventFailed = true; // disable onEvent in degraded mode
+				warn(
+					`[claude-code] NDJSON line buffer exceeded ${MAX_LINE_BUFFER_SIZE} bytes; ` +
+						`entering degraded mode (parsing disabled, raw tee continues)`,
+				);
+				// Tee what we have so far (the oversized partial line) to logStream.
+				teeToLogStream(buffer);
+				buffer = "";
+			}
 		}
 
 		// Flush TextDecoder and handle any remaining partial line.
 		const flushed = decoder.decode();
 		if (flushed) buffer += flushed;
-		if (buffer) {
+		if (buffer && !degraded) {
 			const line = buffer.replace(/\r$/, "");
 			if (line) processLine(line);
+		} else if (buffer && degraded) {
+			teeToLogStream(buffer);
 		}
 	} finally {
 		try {
@@ -583,20 +677,72 @@ async function readNdjson(
 // ---------------------------------------------------------------------------
 
 /**
- * Drain a ReadableStream into a string.
+ * Drain a ReadableStream into a string, optionally bounded by `maxBytes`.
  *
- * Uses `new Response(stream).text()` which correctly handles multi-byte
- * character boundaries and flushes the decoder on EOF.
+ * When `maxBytes` is provided, stops accumulating after that many bytes
+ * (approximate — measured in decoded string chars, not raw bytes, for
+ * simplicity). Remaining stream data is consumed and discarded to prevent
+ * backpressure on the subprocess pipe.
+ *
+ * When `maxBytes` is omitted, uses `new Response(stream).text()` which
+ * correctly handles multi-byte character boundaries and flushes the
+ * decoder on EOF.
  */
 async function drainStream(
 	stream: ReadableStream<Uint8Array> | null,
+	maxBytes?: number,
 ): Promise<string> {
 	if (!stream) return "";
-	try {
-		return await new Response(stream).text();
-	} catch {
-		return "";
+
+	// Unbounded path — original fast path.
+	if (maxBytes === undefined) {
+		try {
+			return await new Response(stream).text();
+		} catch {
+			return "";
+		}
 	}
+
+	// Bounded path — cap capture size but consume the full stream.
+	const reader = stream.getReader();
+	const decoder = new TextDecoder("utf-8");
+	let result = "";
+	let capped = false;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			if (!capped) {
+				const chunk = decoder.decode(value, { stream: true });
+				const remaining = maxBytes - result.length;
+				if (chunk.length <= remaining) {
+					result += chunk;
+				} else {
+					result += chunk.slice(0, remaining);
+					capped = true;
+				}
+			}
+			// Continue reading to drain the pipe even after cap.
+		}
+		// Flush decoder.
+		if (!capped) {
+			const flushed = decoder.decode();
+			if (flushed) {
+				const remaining = maxBytes - result.length;
+				result += flushed.slice(0, remaining);
+			}
+		}
+	} catch {
+		// Stream errored — return whatever we have.
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch {
+			// Already released — safe to ignore.
+		}
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,4 +765,6 @@ export {
 	type SpawnHandle,
 	MAX_PROMPT_LENGTH,
 	BOUNDED_FALLBACK_LIMIT,
+	MAX_LINE_BUFFER_SIZE,
+	MAX_STDERR_SIZE,
 };

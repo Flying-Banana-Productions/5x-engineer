@@ -1,9 +1,9 @@
 # Real-time Agent Log Streaming
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** February 17, 2026
 **Parent:** [001-impl-5x-cli.md](001-impl-5x-cli.md)
-**Status:** Draft — v1.2: review corrections — safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
+**Status:** Draft — v1.3: Phase 1 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase1-execution-review.md)) — bound per-line buffering with degraded mode (P0.1), defensive async logStream error handler (P0.2), bounded stderr capture (P1.2), DI logger for concurrent-test safety (P1.4), Phase 2 security documentation note (P1.3); v1.2: safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
 
 ---
 
@@ -86,7 +86,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 
 **Goal:** `ClaudeCodeAdapter` outputs NDJSON, streams to an optional `logStream`, calls an optional `onEvent` callback per event line, and parses the final `result` event for `AgentResult`.
 
-**Status:** Complete. All items implemented and tested (302 pass, 0 fail).
+**Status:** Complete. All items implemented and tested (306 pass, 0 fail). Includes v1.3 review corrections: bounded line buffering (P0.1), defensive async logStream error handling (P0.2), bounded stderr capture (P1.2), and DI logger for concurrent-test safety (P1.4).
 
 #### Checklist
 
@@ -113,6 +113,9 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
     - Call `opts.onEvent(parsedEvent, rawLine)` (if provided) — wrapped in try/catch; on error, log warning, set `onEventFailed = true`, stop calling but continue draining/parsing.
     - If `type === "result"`, retain as `resultEvent` (parsed object) and `rawResultText` (the `result` field string).
   - **Bounded memory:** does NOT accumulate full stdout. Retains only: `resultEvent`, `rawResultText`, and a `boundedFallback` (first ~4KB of stdout) for "no result event" scenarios.
+  - **Line-buffer bounding (P0.1):** after line splitting, check if the remaining partial-line buffer exceeds `MAX_LINE_BUFFER_SIZE` (1 MiB). On overflow: enter degraded mode (tee raw bytes to logStream, disable onEvent, stop line-based parsing). On next newline: recover to normal processing via the first `\n` in the chunk (everything after it is normal data). The size check runs after splitting so chunks with many valid lines are handled normally.
+  - **Defensive error handler (P0.2):** at function start, attach `'error'` event handler on `logStream` (when `.on()` is available) to catch async errors and set `logStreamFailed = true`.
+  - **DI warn sink (P1.4):** accepts optional `warn` parameter for injectable warning output; defaults to `console.warn`.
   - Return `{ resultEvent, rawResultText, boundedFallback }`.
 - [x] Build `AgentResult` from `readNdjson` output:
   - If `resultEvent` found: extract fields as today, use `rawResultText` as `output`.
@@ -120,6 +123,10 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
   - Map `is_error === true` to non-zero `exitCode` (same logic as current adapter).
 - [x] `parseJsonOutput()` kept for backward compat; result event parsing inlined into `readNdjson`.
 - [x] **Non-fatal logging invariant:** `logStream.write()` and `opts.onEvent()` failures are wrapped in try/catch; on first error, a warning is emitted and the failing callback is disabled for the remainder of the stream.
+- [x] **P0.1 — Bound per-line buffering:** `readNdjson` enforces `MAX_LINE_BUFFER_SIZE` (1 MiB) on the in-flight partial line buffer. If a single line exceeds this threshold (e.g., a massive `tool_result` content), the reader enters **degraded mode**: line-based parsing stops, `onEvent` is disabled, raw bytes are teed directly to `logStream` (no line buffering), and `boundedFallback` continues accumulating (already capped at 4KB). On the next newline, the reader recovers to normal line-based processing. The check runs after line splitting, so chunks containing multiple valid newline-separated lines are processed normally even if the total chunk exceeds the limit.
+- [x] **P0.2 — Defensive async logStream error handling (adapter-side):** `readNdjson` attaches a defensive `'error'` event handler on `logStream` (when it exposes an `.on()` method) at the start of processing. If an async error fires (e.g., disk full, permission denied), the handler sets `logStreamFailed = true` and emits a warning — preventing unhandled error events from crashing the process. This complements the synchronous try/catch around `write()`. Full orchestrator-side error handling (stream creation + cleanup) is addressed in Phase 2.
+- [x] **P1.2 — Bounded stderr capture:** `drainStream()` accepts an optional `maxBytes` parameter. Stderr is capped at `MAX_STDERR_SIZE` (64 KiB) to prevent memory spikes from verbose agents. The full stream is still consumed (preventing subprocess pipe backpressure) but only the first `maxBytes` of decoded text is retained.
+- [x] **P1.4 — DI logger for concurrent-test safety:** `ClaudeCodeAdapter` exposes a `protected warn(msg)` method (defaults to `console.warn`). `readNdjson` and `parseJsonOutput` accept an optional `warn` parameter. All adapter warnings flow through this injectable sink. Tests override `warn()` via the existing mock subclass pattern (`captureWarnings` option in `createMock`), completely eliminating global `console.warn` monkey-patching from adapter tests. This removes the race condition risk under `bun test --concurrent`.
 - [x] Update tests in `test/agents/claude-code.test.ts`:
   - Mock `spawnProcess` returns NDJSON lines (init + assistant + result) instead of a single JSON blob
   - Test `logStream` teeing: `PassThrough` stream verifies lines arrive during reading
@@ -130,6 +137,11 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
   - Test `logStream` write error is non-fatal (adapter continues, returns valid result)
   - Test `onEvent` exception is non-fatal (adapter continues, returns valid result)
   - Test bounded memory: large stdout (5000 lines) yields output ≤ `BOUNDED_FALLBACK_LIMIT` bytes
+  - Test P0.1: huge partial line triggers degraded mode, then recovers for result event
+  - Test P0.1: logStream still receives raw bytes during degraded mode
+  - Test P0.2: async logStream error event is non-fatal (defensive handler catches it)
+  - Test P1.2: large stderr output is bounded by `MAX_STDERR_SIZE`
+  - All warning assertions use DI `captureWarnings` — no global `console.warn` mutation
 
 ### Phase 2: Orchestrator Log Wiring + Console Output
 
@@ -138,6 +150,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 #### Checklist
 
 - [ ] Extract `endStream()` helper from `gates/quality.ts` into `src/utils/stream.ts` for shared use. Update quality.ts to import from the shared location.
+- [ ] **P0.2 — Orchestrator-side logStream error handling:** When creating the `logStream` (via `createWriteStream`) at each invocation site, attach an `'error'` handler that logs a warning and marks the stream as failed. This complements the adapter-side defensive handler (which catches errors during processing) by ensuring the stream creator also handles errors that arrive during `endStream()` / after processing. Pattern: `const logStream = createWriteStream(path); logStream.on('error', (err) => console.warn(...));`
 - [ ] **Backpressure consideration:** When writing to `logStream`, check `Writable.write()` return value. If it returns `false`, the stream's internal buffer is full. For v1, this is a noted concern but not a blocker — NDJSON event lines are small (typically <4KB) and disk I/O is fast. If profiling shows memory growth from buffered writes, add `await once(stream, 'drain')` gating in a future iteration.
 - [ ] Implement NDJSON console formatter in `src/utils/ndjson-formatter.ts`:
   - Accepts a parsed event object (not a raw string — adapter already parsed it, see P1.2).
@@ -177,6 +190,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
     - **Always** include the NDJSON log file path in the escalation reason (even in non-quiet mode)
     - Include the output snippet **only when `quiet` is true** — in non-quiet mode the user already saw the streaming output
   - Add `logPath` to `EscalationEvent` type so downstream consumers (human gates, DB events) always have it
+- [ ] **P1.3 — Security posture of verbose NDJSON logs:** Document in CLI help/docs that `--verbose` NDJSON logs may contain sensitive data (tool inputs/results including file contents, environment variables, etc.). Ensure `.5x/logs/` directory permissions default to user-only (`0o700`). Add a note to `--quiet` help text: "Log files are always written regardless of quiet mode. Logs may contain sensitive data."
 - [ ] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
 - [ ] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
 
@@ -186,7 +200,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 
 ### Unit tests
 
-- `test/agents/claude-code.test.ts` — NDJSON parsing, logStream teeing, onEvent callback (with `(event, rawLine)` signature), timeout with partial stream + bounded drain cancellation, result extraction, non-fatal logStream errors, non-fatal onEvent errors, bounded memory (no full stdout accumulation)
+- `test/agents/claude-code.test.ts` — NDJSON parsing, logStream teeing, onEvent callback (with `(event, rawLine)` signature), timeout with partial stream + bounded drain cancellation, result extraction, non-fatal logStream errors (sync throw + async error event), non-fatal onEvent errors, bounded memory (no full stdout accumulation), line-buffer overflow with degraded mode + recovery, bounded stderr capture, DI `captureWarnings` (no global console.warn mutation)
 - `test/utils/ndjson-formatter.test.ts` — each event type maps to expected display string; multi-part content arrays; unknown event types return null; `system.init.tools` suppression
 
 ### Integration tests
@@ -221,7 +235,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 | File | Action | Description |
 |---|---|---|
 | `src/agents/types.ts` | Modify | Add `logStream` and `onEvent` (with `(event: unknown, rawLine: string)` signature) to `InvokeOptions` |
-| `src/agents/claude-code.ts` | Modify | Switch to stream-json, concurrent NDJSON reader with bounded memory, logStream teeing (non-fatal), onEvent callback (non-fatal), timeout drain cancellation |
+| `src/agents/claude-code.ts` | Modify | Switch to stream-json, concurrent NDJSON reader with bounded memory + line-buffer bounding (degraded mode) + defensive async logStream error handler + bounded stderr capture, logStream teeing (non-fatal), onEvent callback (non-fatal), timeout drain cancellation, DI `warn()` method for test injection |
 | `src/utils/stream.ts` | Create | Extract `endStream()` helper from quality.ts for shared use |
 | `src/utils/ndjson-formatter.ts` | Create | Parsed NDJSON event → formatted console string (accepts pre-parsed event object) |
 | `src/gates/quality.ts` | Modify | Import `endStream` from shared util instead of local definition |

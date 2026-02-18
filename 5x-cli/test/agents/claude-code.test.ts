@@ -9,7 +9,9 @@ import {
 	BOUNDED_FALLBACK_LIMIT,
 	buildArgs,
 	ClaudeCodeAdapter,
+	MAX_LINE_BUFFER_SIZE,
 	MAX_PROMPT_LENGTH,
+	MAX_STDERR_SIZE,
 	parseJsonOutput,
 } from "../../src/agents/claude-code.js";
 import type { InvokeOptions } from "../../src/agents/types.js";
@@ -150,25 +152,17 @@ describe("parseJsonOutput", () => {
 	});
 
 	test("warns but still returns when result field is missing", () => {
-		// Capture console.warn
 		const warnings: string[] = [];
-		const origWarn = console.warn;
-		console.warn = (msg: string) => warnings.push(msg);
-
-		try {
-			const json = JSON.stringify({
-				type: "result",
-				duration_ms: 500,
-			});
-			const parsed = parseJsonOutput(json);
-			expect(parsed).not.toBeNull();
-			expect(parsed?.duration_ms).toBe(500);
-			expect(warnings.length).toBe(1);
-			expect(warnings[0]).toContain("missing expected fields");
-			expect(warnings[0]).toContain("result");
-		} finally {
-			console.warn = origWarn;
-		}
+		const json = JSON.stringify({
+			type: "result",
+			duration_ms: 500,
+		});
+		const parsed = parseJsonOutput(json, (msg) => warnings.push(msg));
+		expect(parsed).not.toBeNull();
+		expect(parsed?.duration_ms).toBe(500);
+		expect(warnings.length).toBe(1);
+		expect(warnings[0]).toContain("missing expected fields");
+		expect(warnings[0]).toContain("result");
 	});
 
 	test("parses output with is_error=true", () => {
@@ -505,25 +499,20 @@ describe("ClaudeCodeAdapter", () => {
 		} as unknown as NodeJS.WritableStream;
 
 		const warnings: string[] = [];
-		const origWarn = console.warn;
-		console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+		const adapter = createMock(ndjson, 0, "", {
+			captureWarnings: (msg) => warnings.push(msg),
+		});
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			logStream: badLogStream,
+		});
 
-		try {
-			const adapter = createMock(ndjson, 0);
-			const result = await adapter.invoke({
-				prompt: "test",
-				workdir: "/tmp",
-				logStream: badLogStream,
-			});
-
-			expect(result.exitCode).toBe(0);
-			expect(result.output).toBe("Done");
-			expect(warnings.some((w) => w.includes("logStream write failed"))).toBe(
-				true,
-			);
-		} finally {
-			console.warn = origWarn;
-		}
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Done");
+		expect(warnings.some((w) => w.includes("logStream write failed"))).toBe(
+			true,
+		);
 	});
 
 	// -------------------------------------------------------------------------
@@ -583,30 +572,25 @@ describe("ClaudeCodeAdapter", () => {
 
 		let callCount = 0;
 		const warnings: string[] = [];
-		const origWarn = console.warn;
-		console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+		const adapter = createMock(ndjson, 0, "", {
+			captureWarnings: (msg) => warnings.push(msg),
+		});
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			onEvent: () => {
+				callCount++;
+				throw new Error("formatter crash");
+			},
+		});
 
-		try {
-			const adapter = createMock(ndjson, 0);
-			const result = await adapter.invoke({
-				prompt: "test",
-				workdir: "/tmp",
-				onEvent: () => {
-					callCount++;
-					throw new Error("formatter crash");
-				},
-			});
-
-			expect(result.exitCode).toBe(0);
-			expect(result.output).toBe("Done");
-			// Called once, then disabled after the first throw
-			expect(callCount).toBe(1);
-			expect(warnings.some((w) => w.includes("onEvent callback threw"))).toBe(
-				true,
-			);
-		} finally {
-			console.warn = origWarn;
-		}
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Done");
+		// Called once, then disabled after the first throw
+		expect(callCount).toBe(1);
+		expect(warnings.some((w) => w.includes("onEvent callback threw"))).toBe(
+			true,
+		);
 	});
 
 	// -------------------------------------------------------------------------
@@ -657,6 +641,137 @@ describe("ClaudeCodeAdapter", () => {
 		// Partial NDJSON line should appear in bounded fallback
 		expect(result.output).toContain('"type":"system"');
 	});
+
+	// -------------------------------------------------------------------------
+	// P0.1: Line-buffer bounding (degraded mode)
+	// -------------------------------------------------------------------------
+
+	test("huge single NDJSON line triggers degraded mode then recovers for result event", async () => {
+		// Degraded mode triggers when a PARTIAL line (no terminating newline)
+		// exceeds MAX_LINE_BUFFER_SIZE. We simulate this with a multi-chunk
+		// stream: chunk 1 has a normal init line + the start of a huge line
+		// (no trailing newline), chunk 2 has the rest of the huge line + newline
+		// + a result event. The adapter should degrade on the huge partial line
+		// but recover and parse the result event.
+		const initEvent = JSON.stringify({
+			type: "system",
+			subtype: "init",
+			model: "test",
+		});
+		const hugePayload = "x".repeat(MAX_LINE_BUFFER_SIZE + 100);
+		const resultEvent = JSON.stringify(makeResultEvent("Recovered"));
+
+		// Chunk 1: complete init line + start of huge line (no trailing \n)
+		const chunk1 = `${initEvent}\n${hugePayload}`;
+		// Chunk 2: trailing newline for huge line + result event
+		const chunk2 = `\n${resultEvent}\n`;
+
+		const warnings: string[] = [];
+		const adapter = createMockWithChunkedStdout([chunk1, chunk2], 0, "", {
+			captureWarnings: (msg) => warnings.push(msg),
+		});
+		const result = await adapter.invoke({ prompt: "test", workdir: "/tmp" });
+
+		// Should have recovered and parsed the result event
+		expect(result.output).toBe("Recovered");
+		expect(result.exitCode).toBe(0);
+		// Should have emitted a degraded-mode warning
+		expect(warnings.some((w) => w.includes("entering degraded mode"))).toBe(
+			true,
+		);
+	});
+
+	test("logStream still receives bytes during degraded mode", async () => {
+		const initEvent = JSON.stringify({ type: "system", subtype: "init" });
+		const hugePayload = "y".repeat(MAX_LINE_BUFFER_SIZE + 50);
+		const resultEvent = JSON.stringify(makeResultEvent("Done"));
+
+		// Chunk 1: complete init + start of huge line (partial — no \n)
+		const chunk1 = `${initEvent}\n${hugePayload}`;
+		// Chunk 2: end of huge line + result
+		const chunk2 = `\n${resultEvent}\n`;
+
+		const logStream = new PassThrough();
+		const chunks: string[] = [];
+		logStream.on("data", (chunk: Buffer) => chunks.push(chunk.toString()));
+
+		const adapter = createMockWithChunkedStdout([chunk1, chunk2], 0, "", {
+			captureWarnings: () => {},
+		});
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			logStream,
+		});
+
+		expect(result.output).toBe("Done");
+		const fullLog = chunks.join("");
+		// The init event should have been logged normally
+		expect(fullLog).toContain(initEvent);
+		// The huge line's raw bytes should also be teed during degraded mode
+		expect(fullLog.length).toBeGreaterThan(MAX_LINE_BUFFER_SIZE);
+	});
+
+	// -------------------------------------------------------------------------
+	// P0.2: Async logStream error handling
+	// -------------------------------------------------------------------------
+
+	test("logStream async error event is non-fatal — adapter continues and returns result", async () => {
+		const ndjson = makeNdjson(
+			{ type: "system", subtype: "init" },
+			makeResultEvent("Done"),
+		);
+
+		// A logStream backed by a real EventEmitter so the defensive 'error'
+		// handler can be attached by readNdjson.
+		const logStream = new PassThrough();
+
+		const warnings: string[] = [];
+		const adapter = createMock(ndjson, 0, "", {
+			captureWarnings: (msg) => warnings.push(msg),
+		});
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			logStream,
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toBe("Done");
+
+		// The defensive 'error' handler was attached during readNdjson.
+		// Emit an error now — simulates an async disk error that arrives
+		// after processing completes. Without the handler, this would crash.
+		logStream.emit("error", new Error("disk full async"));
+
+		expect(warnings.some((w) => w.includes("logStream error event"))).toBe(
+			true,
+		);
+	});
+
+	// -------------------------------------------------------------------------
+	// P1.2: Bounded stderr
+	// -------------------------------------------------------------------------
+
+	test("large stderr output is bounded by MAX_STDERR_SIZE", async () => {
+		const ndjson = makeNdjson(makeResultEvent("ok"));
+		// Generate stderr larger than MAX_STDERR_SIZE
+		const largeStderr = "E".repeat(MAX_STDERR_SIZE * 2);
+
+		const adapter = createMock(ndjson, 1, largeStderr);
+		const result = await adapter.invoke({ prompt: "test", workdir: "/tmp" });
+
+		expect(result.exitCode).toBe(1);
+		// error field includes stderr, which should be bounded
+		expect(result.error).toBeDefined();
+		// The stderr content in the error should not exceed MAX_STDERR_SIZE
+		// (error may have prefix text, so just check it's reasonably bounded)
+		expect(result.error?.length).toBeLessThanOrEqual(MAX_STDERR_SIZE + 200);
+	});
+
+	// -------------------------------------------------------------------------
+	// Result extraction
+	// -------------------------------------------------------------------------
 
 	test("result event extracted from type:result NDJSON line", async () => {
 		// Verify that intermediate events don't interfere with result extraction
@@ -714,6 +829,11 @@ interface MockOpts {
 	spawnError?: boolean;
 	/** Capture the args passed to spawnProcess. */
 	captureArgs?: (args: string[]) => void;
+	/**
+	 * Capture warnings via the DI warn() method instead of mutating
+	 * the global console.warn. Concurrent-test safe.
+	 */
+	captureWarnings?: (msg: string) => void;
 }
 
 /** Build a ReadableStream from a string — emits all data then closes. */
@@ -770,6 +890,14 @@ function createMock(
 	mockOpts: MockOpts = {},
 ): ClaudeCodeAdapter {
 	return new (class extends ClaudeCodeAdapter {
+		protected override warn(msg: string): void {
+			if (mockOpts.captureWarnings) {
+				mockOpts.captureWarnings(msg);
+			}
+			// When no captureWarnings provided, swallow warnings (test/setup.ts
+			// already suppresses console.warn globally).
+		}
+
 		protected override spawnProcess(
 			args: string[],
 			_opts: { cwd: string },
@@ -846,6 +974,65 @@ function createMock(
 			return Promise.all([stdoutDone, stderrDone]) satisfies Promise<
 				[NdjsonResult, string]
 			>;
+		}
+	})();
+}
+
+/**
+ * Build a ReadableStream that emits multiple string chunks sequentially.
+ * Each chunk is enqueued in order; the stream closes after the last chunk.
+ */
+function chunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	let idx = 0;
+	return new ReadableStream({
+		pull(controller) {
+			if (idx < chunks.length) {
+				// biome-ignore lint/style/noNonNullAssertion: idx is bounds-checked
+				controller.enqueue(encoder.encode(chunks[idx]!));
+				idx++;
+			} else {
+				controller.close();
+			}
+		},
+	});
+}
+
+/**
+ * Create a test adapter with multi-chunk stdout (for testing degraded mode
+ * where partial lines exceed MAX_LINE_BUFFER_SIZE across chunk boundaries).
+ */
+function createMockWithChunkedStdout(
+	stdoutChunks: string[],
+	mockExitCode: number,
+	mockStderr = "",
+	mockOpts: MockOpts = {},
+): ClaudeCodeAdapter {
+	return new (class extends ClaudeCodeAdapter {
+		protected override warn(msg: string): void {
+			if (mockOpts.captureWarnings) {
+				mockOpts.captureWarnings(msg);
+			}
+		}
+
+		protected override spawnProcess(
+			_args: string[],
+			_opts: { cwd: string },
+		): SpawnHandle {
+			return {
+				exited: Promise.resolve(mockExitCode),
+				stdout: chunkedStream(stdoutChunks),
+				stderr: stringStream(mockStderr),
+				kill: () => {},
+			};
+		}
+
+		protected override async raceWithTimeout(
+			exited: Promise<number>,
+			_timeoutMs: number,
+		): Promise<RaceResult> {
+			const exitCode = await exited;
+			return { timedOut: false, exitCode };
 		}
 	})();
 }
