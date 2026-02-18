@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "scripts": {
+    "5x": "bun run 5x-cli/src/bin.ts"
+  }
+}
