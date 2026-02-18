@@ -98,20 +98,20 @@ Both NDJSON log writes (adapter) and quality gate writes ignore `write()` return
 
 ### What's addressed (OK)
 
-**P0 blockers — resolved:**
+**P0 blockers - resolved:**
 
-- **P0.1** — `endStream()` hardened: listeners (`once("finish")`, `once("error")`) now attached BEFORE `stream.end()` is called, eliminating the race where errors emitted during `end()` were not caught. `once()` prevents per-invocation listener accumulation. Non-throwing contract preserved (errors → resolve). (`src/utils/stream.ts`)
-- **P0.2** — Log dir permissions consistent: `runQualityGates()` now passes `mode: 0o700` to `mkdirSync(opts.logDir, ...)`, matching the permission level both orchestrators apply. (`src/gates/quality.ts:135`)
+- **P0.1** - `endStream()` hardened: listeners (`once("finish")`, `once("error")`) now attached BEFORE `stream.end()` is called, eliminating the race where errors emitted during `end()` were not caught. `once()` prevents per-invocation listener accumulation. Non-throwing contract preserved (errors -> resolve). (`src/utils/stream.ts`)
+- **P0.2** - Log dir permissions consistent: `runQualityGates()` now passes `mode: 0o700` to `mkdirSync(opts.logDir, ...)`, matching the permission level both orchestrators apply. (`src/gates/quality.ts:135`)
 
-**P1 — resolved:**
+**P1 - resolved:**
 
-- **P1.1** — Backpressure: noted-but-not-blocking per review. No code change needed for v1; documented in implementation plan.
-- **P1.2** — Bounded formatter allocations: `ndjson-formatter.ts` now uses `safeInputSummary()` for `tool_use.input` — wraps `JSON.stringify` in try/catch (handles circular refs), and falls back to a key-names-only summary for large objects to avoid retaining huge intermediate strings. (`src/utils/ndjson-formatter.ts`)
-- **P1.3** — Traceability metadata consistency:
+- **P1.1** - Backpressure: noted-but-not-blocking per review. No code change needed for v1; documented in implementation plan.
+- **P1.2** - Bounded formatter allocations: `ndjson-formatter.ts` now uses `safeInputSummary()` for `tool_use.input` - wraps `JSON.stringify` in try/catch (handles circular refs), and falls back to a key-names-only summary for large objects to avoid retaining huge intermediate strings. (`src/utils/ndjson-formatter.ts`)
+- **P1.3** - Traceability metadata consistency:
   - `logPath` now propagated via `lastAgentLogPath` variable across all state transitions in both orchestrators. PARSE_AUTHOR_STATUS, PARSE_VERDICT, PARSE_FIX_STATUS (phase-execution-loop) and PARSE_VERDICT, PARSE_STATUS (plan-review-loop) all include `logPath` in escalation events. 21 of 26 previously-missing sites now have `logPath`.
   - `iteration` off-by-one fixed: `iteration++` moved to after exit-code checks in EXECUTE, QUALITY_RETRY, REVIEW, and AUTO_FIX states. Exit-code escalation events now carry the same iteration as the triggering `agent_results` row.
 
-**P2 — resolved:**
+**P2 - resolved:**
 
 - Extracted `outputSnippet()`, `buildEscalationReason()`, `makeOnEvent()` into `src/utils/agent-event-helpers.ts`. Both orchestrators import from the shared module.
 - `EscalationEvent` consolidated to single definition in `src/gates/human.ts`; local duplicate removed from `plan-review-loop.ts` (re-exported for backward compat).
@@ -119,7 +119,31 @@ Both NDJSON log writes (adapter) and quality gate writes ignore `write()` return
 
 ### Remaining concerns
 
-- (none — all P0/P1/P2 items addressed)
+- (none - all P0/P1/P2 items addressed)
 
 ### Updated readiness
-- **002 Phase 2 completion:** COMPLETE — all P0 blockers resolved; P1/P2 improvements applied.
+- **002 Phase 2 completion:** COMPLETE - all P0 blockers resolved; P1/P2 improvements applied.
+
+---
+
+## Addendum (2026-02-18) - Staff re-review of remediation commit
+
+**Reviewed:** `14d3ccfc927d`
+
+### What's addressed (OK)
+
+- **P0.1 endStream race:** listener attach order fixed; `endStream()` no longer misses synchronous `finish`/`error` emissions during `end()` and remains non-throwing. (`5x-cli/src/utils/stream.ts`)
+- **P0.2 permissions consistency:** `runQualityGates()` creates the log dir with `mode: 0o700` when it is the creator. (`5x-cli/src/gates/quality.ts`)
+- **P1.2 formatter hardening:** `safeInputSummary()` adds non-throwing stringification and bounds output size for tool inputs; avoids printing full huge payloads by falling back to key summaries. (`5x-cli/src/utils/ndjson-formatter.ts`)
+- **P1.3 traceability + iteration:** `lastAgentLogPath` is propagated into PARSE_* escalations; exit-code escalations now use pre-increment iteration matching the triggering `agent_results` row; regression tests added for PARSE_* logPath propagation. (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`, `5x-cli/test/orchestrator/phase-execution-loop.test.ts`)
+- **P2 maintainability:** duplicated helper functions are centralized in `5x-cli/src/utils/agent-event-helpers.ts`; `EscalationEvent` unified under `5x-cli/src/gates/human.ts`; both loops print the run log dir at start.
+
+### Remaining concerns
+
+- **Quality gate log stream errors can still crash:** `runSingleCommand()` creates a write stream without an `'error'` handler. A disk/full/permission failure during writes can emit an unhandled `'error'` event and take down the process. Recommendation: attach an error listener on the quality-gate `logStream` at creation time and treat log write failure as best-effort (warn + keep running, similar to agent logs).
+- **safeInputSummary still allocates to measure size:** it still calls `JSON.stringify(input)` for objects before deciding to fall back, so worst-case allocations can still spike. If this shows up in practice, replace with a depth/byte-limited serializer that never allocates an unbounded intermediate string.
+- **endStream corner:** with the current contract (call-site attaches `'error'` at creation), this is likely fine; but `endStream()` can still hang if called after the stream already emitted `finish`/`error` before listeners are attached. If this is a concern, guard with `writableFinished`/`destroyed` checks or switch to `stream/promises` `finished()`.
+
+### Updated readiness
+
+- **002 Phase 2 completion:** COMPLETE - acceptable for local interactive use; address the quality-gate logStream error handling if you want logs to be reliably best-effort under IO failures.

@@ -830,7 +830,7 @@ export async function createAndVerifyAdapter(config: AdapterConfig): Promise<Age
 
 ---
 
-## Phase 3: Prompt Templates + Init
+## Phase 3: Prompt Templates + Init - COMPLETE
 
 **Completion gate:** Template loader renders all 5 prompt templates with variable substitution. `5x init` creates config file and `.5x/` directory. Templates are bundled with the CLI binary — no scaffolding into harness directories.
 
