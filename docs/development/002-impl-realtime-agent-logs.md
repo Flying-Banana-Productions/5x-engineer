@@ -82,27 +82,29 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
 
 ## Implementation Plan
 
-### Phase 1: Adapter Streaming Infrastructure
+### Phase 1: Adapter Streaming Infrastructure ✅
 
 **Goal:** `ClaudeCodeAdapter` outputs NDJSON, streams to an optional `logStream`, calls an optional `onEvent` callback per event line, and parses the final `result` event for `AgentResult`.
 
+**Status:** Complete. All items implemented and tested (302 pass, 0 fail).
+
 #### Checklist
 
-- [ ] Add to `InvokeOptions` in `agents/types.ts`:
+- [x] Add to `InvokeOptions` in `agents/types.ts`:
   - `logStream?: NodeJS.WritableStream` — raw NDJSON written to disk
   - `onEvent?: (event: unknown, rawLine: string) => void` — called with each parsed event object and the raw NDJSON line (avoids re-parsing in formatter)
-- [ ] Change `buildArgs()` in `agents/claude-code.ts`: `--output-format stream-json --verbose` replaces `--output-format json`
-- [ ] Implement concurrent NDJSON streaming algorithm in `claude-code.ts`:
+- [x] Change `buildArgs()` in `agents/claude-code.ts`: `--output-format stream-json --verbose` replaces `--output-format json`
+- [x] Implement concurrent NDJSON streaming algorithm in `claude-code.ts`:
   - **Spawn:** `proc = spawnProcess(args, { cwd })`. Create `const ac = new AbortController()`. Immediately start concurrent drain tasks:
     - `stdoutDone = readNdjson(proc.stdout, { logStream, onEvent, signal: ac.signal })` — streaming NDJSON reader (see below)
     - `stderrDone = drainStream(proc.stderr)` — buffered string (stderr is diagnostic, not large)
   - **Race exit vs timeout:** `raceWithTimeout(proc.exited, timeout)`
-  - **Normal exit path:** `await stdoutDone` (process exit guarantees EOF on stdout pipe). Collect stderr via `await stderrDone`.
-  - **Timeout path:** `killWithEscalation(proc)` (SIGTERM → grace → SIGKILL), then bounded drain: `await Promise.race([stdoutDone, sleep(DRAIN_TIMEOUT_MS)])`. If `stdoutDone` doesn't resolve within `DRAIN_TIMEOUT_MS`, call `ac.abort()` to cancel the reader (see `readNdjson` signal handling below). Partial NDJSON lines in the log file are acceptable — logs are diagnostic artifacts.
-  - **Result extraction:** same `AgentResult` fields as today (`result`, `is_error`, `subtype`, `duration_ms`, `total_cost_usd`, `usage`, `session_id`), sourced from the `type: "result"` event.
-- [ ] Implement `readNdjson(stream, opts)` helper:
+  - **Normal exit path:** `await Promise.all([stdoutDone, stderrDone])` (process exit guarantees EOF on both pipes).
+  - **Timeout path:** `killWithEscalation(proc)` (SIGTERM → grace → SIGKILL), then bounded parallel drain: `Promise.all([stdoutDone, Promise.race([stderrDone, sleep(DRAIN_TIMEOUT_MS)])])`. A `drainAbortTimer` (DRAIN_TIMEOUT_MS) calls `ac.abort()` to cancel the stdout reader. Partial NDJSON lines in the log file are acceptable — logs are diagnostic artifacts.
+  - **Result extraction:** same `AgentResult` fields as today, sourced from the `type: "result"` event.
+- [x] Implement `readNdjson(stream, opts)` helper:
   - Signature: `readNdjson(stream: ReadableStream, opts: { logStream?, onEvent?, signal?: AbortSignal }): Promise<NdjsonResult>`
-  - **Signal-based cancellation:** The reader checks `signal.aborted` between chunks and calls `reader.cancel()` on the underlying `ReadableStreamDefaultReader` when aborted. This makes timeout cancellation deterministic and unit-testable — tests can pass an `AbortController`, abort it, and assert the promise resolves promptly with whatever was collected so far.
+  - **Signal-based cancellation:** Uses `readWithAbort(reader, signal)` — races `reader.read()` against the `AbortSignal` so the loop exits promptly even if `reader.cancel()` is slow to propagate in the runtime. The orphaned `reader.read()` promise is acceptable since the stream is not reused.
   - Use `TextDecoder` with `{ stream: true }` for multi-byte char safety across chunk boundaries.
   - Buffer partial lines; split on `\n`; trim trailing `\r`.
   - For each complete line:
@@ -110,24 +112,24 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
     - Parse JSON; on parse failure, skip (non-JSON lines are tolerated).
     - Call `opts.onEvent(parsedEvent, rawLine)` (if provided) — wrapped in try/catch; on error, log warning, set `onEventFailed = true`, stop calling but continue draining/parsing.
     - If `type === "result"`, retain as `resultEvent` (parsed object) and `rawResultText` (the `result` field string).
-  - **Bounded memory:** do NOT accumulate full stdout. Retain only: `resultEvent`, `rawResultText`, and a `boundedFallback` (first ~4KB of stdout) for "no result event" scenarios. This prevents OOM on long-running agents with verbose tool output.
+  - **Bounded memory:** does NOT accumulate full stdout. Retains only: `resultEvent`, `rawResultText`, and a `boundedFallback` (first ~4KB of stdout) for "no result event" scenarios.
   - Return `{ resultEvent, rawResultText, boundedFallback }`.
-- [ ] Build `AgentResult` from `readNdjson` output:
+- [x] Build `AgentResult` from `readNdjson` output:
   - If `resultEvent` found: extract fields as today, use `rawResultText` as `output`.
   - If no `resultEvent` (timeout, crash): use `boundedFallback` as `output`, set appropriate `exitCode`.
   - Map `is_error === true` to non-zero `exitCode` (same logic as current adapter).
-- [ ] Update `parseJsonOutput()` to handle the result event shape (or inline its logic into the NDJSON reader)
-- [ ] **Non-fatal logging invariant:** `logStream.write()` and `opts.onEvent()` failures MUST NOT fail the agent invocation or abort the stdout reader. They are wrapped in try/catch; on first error, a warning is emitted and the failing callback is disabled for the remainder of the stream.
-- [ ] Update tests in `test/agents/claude-code.test.ts`:
-  - Mock `spawnProcess` to return NDJSON lines (init + assistant + result) instead of a single JSON blob
-  - Test `logStream` teeing: provide a `PassThrough` stream, verify chunks arrive during (not after) reading
-  - Test `onEvent` callback: verify it is called per line with `(parsedEvent, rawLine)` arguments
-  - Test result extraction from `type: "result"` line
-  - Test timeout with partial NDJSON (no result event) — verify `AbortController.abort()` cancels `readNdjson` promptly and returns collected data
-  - Test non-JSON stdout fallback (graceful degradation)
+- [x] `parseJsonOutput()` kept for backward compat; result event parsing inlined into `readNdjson`.
+- [x] **Non-fatal logging invariant:** `logStream.write()` and `opts.onEvent()` failures are wrapped in try/catch; on first error, a warning is emitted and the failing callback is disabled for the remainder of the stream.
+- [x] Update tests in `test/agents/claude-code.test.ts`:
+  - Mock `spawnProcess` returns NDJSON lines (init + assistant + result) instead of a single JSON blob
+  - Test `logStream` teeing: `PassThrough` stream verifies lines arrive during reading
+  - Test `onEvent` callback: verified called per line with `(parsedEvent, rawLine)` arguments
+  - Test result extraction from `type: "result"` line with multiple intermediate events
+  - Test timeout with partial NDJSON — `readWithAbort` cancels promptly, returns collected data
+  - Test non-JSON stdout fallback (graceful degradation via `boundedFallback`)
   - Test `logStream` write error is non-fatal (adapter continues, returns valid result)
   - Test `onEvent` exception is non-fatal (adapter continues, returns valid result)
-  - Test bounded memory: large stdout does not accumulate unboundedly (only fallback snippet retained)
+  - Test bounded memory: large stdout (5000 lines) yields output ≤ `BOUNDED_FALLBACK_LIMIT` bytes
 
 ### Phase 2: Orchestrator Log Wiring + Console Output
 

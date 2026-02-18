@@ -44,6 +44,20 @@ export interface InvokeOptions {
 
 	/** Allowed tools filter (adapter-specific). */
 	allowedTools?: string[];
+
+	/**
+	 * Writable stream for raw NDJSON event lines. Each line is written as it
+	 * arrives from the agent subprocess. Failures are non-fatal: the adapter
+	 * warns and stops writing but continues the invocation.
+	 */
+	logStream?: NodeJS.WritableStream;
+
+	/**
+	 * Called for each parsed NDJSON event object and the raw line it was
+	 * parsed from. Failures are non-fatal: the adapter warns and stops calling
+	 * but continues the invocation.
+	 */
+	onEvent?: (event: unknown, rawLine: string) => void;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,12 +1,41 @@
 import { describe, expect, test } from "bun:test";
+import { PassThrough } from "node:stream";
 import type { SpawnHandle } from "../../src/agents/claude-code.js";
 import {
+	BOUNDED_FALLBACK_LIMIT,
 	buildArgs,
 	ClaudeCodeAdapter,
 	MAX_PROMPT_LENGTH,
 	parseJsonOutput,
 } from "../../src/agents/claude-code.js";
 import type { InvokeOptions } from "../../src/agents/types.js";
+
+// ---------------------------------------------------------------------------
+// NDJSON test helpers
+// ---------------------------------------------------------------------------
+
+/** Serialize an array of event objects into a newline-delimited JSON string. */
+function makeNdjson(...events: object[]): string {
+	return `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+}
+
+/** Build a standard `type: "result"` event, with sensible defaults. */
+function makeResultEvent(
+	result: string,
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		type: "result",
+		subtype: "success",
+		is_error: false,
+		result,
+		duration_ms: 1234,
+		total_cost_usd: 0.01,
+		session_id: "sess-abc",
+		usage: { input_tokens: 200, output_tokens: 30 },
+		...overrides,
+	};
+}
 
 // ---------------------------------------------------------------------------
 // buildArgs
@@ -23,7 +52,8 @@ describe("buildArgs", () => {
 			"-p",
 			"say hello",
 			"--output-format",
-			"json",
+			"stream-json",
+			"--verbose",
 			"--max-turns",
 			"50",
 		]);
@@ -183,21 +213,12 @@ describe("ClaudeCodeAdapter", () => {
 		expect(adapter.name).toBe("claude-code");
 	});
 
-	test("invoke returns structured result from valid JSON output", async () => {
+	test("invoke returns structured result from NDJSON stream", async () => {
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				subtype: "success",
-				is_error: false,
-				result: "Test output",
-				duration_ms: 1234,
-				total_cost_usd: 0.01,
-				session_id: "sess-abc",
-				usage: {
-					input_tokens: 200,
-					output_tokens: 30,
-				},
-			}),
+			makeNdjson(
+				{ type: "system", subtype: "init", model: "claude-opus-4-6" },
+				makeResultEvent("Test output"),
+			),
 			0,
 		);
 
@@ -222,19 +243,19 @@ describe("ClaudeCodeAdapter", () => {
 			workdir: "/tmp",
 		});
 
+		// No result event found — falls back to bounded content
 		expect(result.output).toBe("plain text output");
 		expect(result.exitCode).toBe(0);
 	});
 
 	test("invoke captures non-zero exit code with is_error", async () => {
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				subtype: "error",
-				is_error: true,
-				result: "Something went wrong",
-				duration_ms: 500,
-			}),
+			makeNdjson(
+				makeResultEvent("Something went wrong", {
+					subtype: "error",
+					is_error: true,
+				}),
+			),
 			1,
 			"error on stderr",
 		);
@@ -251,13 +272,13 @@ describe("ClaudeCodeAdapter", () => {
 
 	test("invoke maps is_error=true to non-zero exitCode even when process exits 0", async () => {
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				subtype: "error_max_turns",
-				is_error: true,
-				result: "Ran out of turns",
-				duration_ms: 60000,
-			}),
+			makeNdjson(
+				makeResultEvent("Ran out of turns", {
+					subtype: "error_max_turns",
+					is_error: true,
+					duration_ms: 60000,
+				}),
+			),
 			0, // process exits 0
 		);
 
@@ -299,11 +320,7 @@ describe("ClaudeCodeAdapter", () => {
 
 	test("invoke with empty result field", async () => {
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				result: "",
-				duration_ms: 100,
-			}),
+			makeNdjson(makeResultEvent("", { duration_ms: 100 })),
 			0,
 		);
 
@@ -319,7 +336,7 @@ describe("ClaudeCodeAdapter", () => {
 	test("invoke passes model and maxTurns to args", async () => {
 		let capturedArgs: string[] = [];
 		const adapter = createMock(
-			JSON.stringify({ type: "result", result: "ok", duration_ms: 100 }),
+			makeNdjson(makeResultEvent("ok", { duration_ms: 100 })),
 			0,
 			"",
 			{
@@ -343,10 +360,7 @@ describe("ClaudeCodeAdapter", () => {
 	});
 
 	test("invoke rejects prompts exceeding MAX_PROMPT_LENGTH (byte-based)", async () => {
-		const adapter = createMock(
-			JSON.stringify({ type: "result", result: "ok" }),
-			0,
-		);
+		const adapter = createMock(makeNdjson(makeResultEvent("ok")), 0);
 
 		// ASCII: 1 byte per char
 		const result = await adapter.invoke({
@@ -368,14 +382,16 @@ describe("ClaudeCodeAdapter", () => {
 		expect(result2.error).toContain("MAX_PROMPT_LENGTH");
 	});
 
-	test("invoke always populates error on non-zero exitCode (JSON path)", async () => {
+	test("invoke always populates error on non-zero exitCode (NDJSON path)", async () => {
 		// exitCode=2, no stderr, no is_error/subtype — should still get error
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				result: "partial output",
-				duration_ms: 100,
-			}),
+			makeNdjson(
+				makeResultEvent("partial output", {
+					duration_ms: 100,
+					subtype: undefined,
+					is_error: undefined,
+				}),
+			),
 			2,
 		);
 
@@ -404,12 +420,13 @@ describe("ClaudeCodeAdapter", () => {
 
 	test("invoke includes subtype in error even without is_error flag", async () => {
 		const adapter = createMock(
-			JSON.stringify({
-				type: "result",
-				subtype: "error_tool_use",
-				result: "tool failed",
-				duration_ms: 100,
-			}),
+			makeNdjson(
+				makeResultEvent("tool failed", {
+					subtype: "error_tool_use",
+					is_error: false,
+					duration_ms: 100,
+				}),
+			),
 			1,
 		);
 
@@ -439,10 +456,248 @@ describe("ClaudeCodeAdapter", () => {
 		// Should complete well within 10s (KILL_GRACE_MS=2s + DRAIN_TIMEOUT_MS=1s + overhead)
 		expect(elapsed).toBeLessThan(10_000);
 	});
+
+	// -------------------------------------------------------------------------
+	// logStream
+	// -------------------------------------------------------------------------
+
+	test("logStream receives each NDJSON line written during streaming", async () => {
+		const events = [
+			{ type: "system", subtype: "init", model: "claude-opus-4-6" },
+			{
+				type: "assistant",
+				message: { content: [{ type: "text", text: "Working..." }] },
+			},
+			makeResultEvent("Done"),
+		];
+		const ndjson = makeNdjson(...events);
+
+		const logStream = new PassThrough();
+		const chunks: string[] = [];
+		logStream.on("data", (chunk: Buffer) => chunks.push(chunk.toString()));
+
+		const adapter = createMock(ndjson, 0);
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			logStream,
+		});
+
+		expect(result.output).toBe("Done");
+		const fullLog = chunks.join("");
+		// Each original event line should appear in the log
+		expect(fullLog).toContain(JSON.stringify(events[0]));
+		expect(fullLog).toContain(JSON.stringify(events[1]));
+		expect(fullLog).toContain(JSON.stringify(events[2]));
+	});
+
+	test("logStream write error is non-fatal — adapter continues and returns result", async () => {
+		const ndjson = makeNdjson(makeResultEvent("Done"));
+
+		// A logStream that always throws on write
+		const badLogStream = {
+			write() {
+				throw new Error("disk full");
+			},
+		} as unknown as NodeJS.WritableStream;
+
+		const warnings: string[] = [];
+		const origWarn = console.warn;
+		console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+
+		try {
+			const adapter = createMock(ndjson, 0);
+			const result = await adapter.invoke({
+				prompt: "test",
+				workdir: "/tmp",
+				logStream: badLogStream,
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toBe("Done");
+			expect(warnings.some((w) => w.includes("logStream write failed"))).toBe(
+				true,
+			);
+		} finally {
+			console.warn = origWarn;
+		}
+	});
+
+	// -------------------------------------------------------------------------
+	// onEvent
+	// -------------------------------------------------------------------------
+
+	test("onEvent is called per line with parsed event object and raw line", async () => {
+		const events = [
+			{ type: "system", subtype: "init", model: "claude-opus-4-6" },
+			makeResultEvent("Done"),
+		];
+		const ndjson = makeNdjson(...events);
+
+		const received: { event: unknown; rawLine: string }[] = [];
+		const adapter = createMock(ndjson, 0);
+
+		const result = await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			onEvent: (event, rawLine) => {
+				received.push({ event, rawLine });
+			},
+		});
+
+		expect(result.output).toBe("Done");
+		expect(received).toHaveLength(2);
+		expect((received[0]?.event as Record<string, unknown>).type).toBe("system");
+		expect(received[0]?.rawLine).toBe(JSON.stringify(events[0]));
+		expect((received[1]?.event as Record<string, unknown>).type).toBe("result");
+	});
+
+	test("onEvent is not called for non-JSON lines", async () => {
+		// Mix of valid JSON and non-JSON
+		const ndjson = `not json at all\n${JSON.stringify(makeResultEvent("Done"))}\n`;
+
+		let callCount = 0;
+		const adapter = createMock(ndjson, 0);
+
+		await adapter.invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			onEvent: () => {
+				callCount++;
+			},
+		});
+
+		// Only the valid JSON line triggers onEvent
+		expect(callCount).toBe(1);
+	});
+
+	test("onEvent exception is non-fatal — adapter continues and returns result", async () => {
+		const events = [
+			{ type: "system", subtype: "init", model: "claude-opus-4-6" },
+			makeResultEvent("Done"),
+		];
+		const ndjson = makeNdjson(...events);
+
+		let callCount = 0;
+		const warnings: string[] = [];
+		const origWarn = console.warn;
+		console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+
+		try {
+			const adapter = createMock(ndjson, 0);
+			const result = await adapter.invoke({
+				prompt: "test",
+				workdir: "/tmp",
+				onEvent: () => {
+					callCount++;
+					throw new Error("formatter crash");
+				},
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(result.output).toBe("Done");
+			// Called once, then disabled after the first throw
+			expect(callCount).toBe(1);
+			expect(warnings.some((w) => w.includes("onEvent callback threw"))).toBe(
+				true,
+			);
+		} finally {
+			console.warn = origWarn;
+		}
+	});
+
+	// -------------------------------------------------------------------------
+	// Bounded memory
+	// -------------------------------------------------------------------------
+
+	test("bounded fallback does not accumulate more than BOUNDED_FALLBACK_LIMIT bytes", async () => {
+		// Large stdout with many lines but no result event — process exits non-zero
+		const manyLines = `${Array.from(
+			{ length: 5_000 },
+			(_, i) => `{"type":"data","line":${i}}`,
+		).join("\n")}\n`;
+
+		const adapter = createMock(manyLines, 1);
+		const result = await adapter.invoke({ prompt: "test", workdir: "/tmp" });
+
+		// No result event → output is boundedFallback
+		expect(result.exitCode).toBe(1);
+		// Output must not exceed the fallback limit (with a small tolerance for
+		// chunk alignment at the boundary)
+		expect(result.output.length).toBeLessThanOrEqual(
+			BOUNDED_FALLBACK_LIMIT + 200,
+		);
+	});
+
+	// -------------------------------------------------------------------------
+	// Timeout with AbortController cancellation
+	// -------------------------------------------------------------------------
+
+	test("timeout with partial NDJSON: reader is cancelled and result returns promptly", async () => {
+		// Stream that emits one line then hangs — simulates a hung process that
+		// has partially written output but not yet emitted the result event.
+		const partialNdjson = `${JSON.stringify({ type: "system", subtype: "init" })}\n`;
+
+		class PartialStreamAdapter extends ClaudeCodeAdapter {
+			protected override spawnProcess(
+				_args: string[],
+				_opts: { cwd: string },
+			): SpawnHandle {
+				return {
+					exited: new Promise<number>(() => {}), // never exits
+					stdout: ndjsonThenHangingStream(partialNdjson),
+					stderr: stringStream(""),
+					kill: () => {},
+				};
+			}
+		}
+
+		const start = performance.now();
+		const result = await new PartialStreamAdapter().invoke({
+			prompt: "test",
+			workdir: "/tmp",
+			timeout: 50,
+		});
+		const elapsed = performance.now() - start;
+
+		expect(result.exitCode).toBe(124);
+		expect(result.error).toContain("timed out");
+		// Must complete within reasonable bound (not hang)
+		expect(elapsed).toBeLessThan(10_000);
+	});
+
+	test("result event extracted from type:result NDJSON line", async () => {
+		// Verify that intermediate events don't interfere with result extraction
+		const ndjson = makeNdjson(
+			{
+				type: "system",
+				subtype: "init",
+				model: "test-model",
+				session_id: "s1",
+			},
+			{
+				type: "assistant",
+				message: { content: [{ type: "text", text: "Thinking..." }] },
+			},
+			{
+				type: "user",
+				message: { content: [{ type: "tool_result", content: "ok" }] },
+			},
+			makeResultEvent("Final answer", { session_id: "s1", duration_ms: 5000 }),
+		);
+
+		const adapter = createMock(ndjson, 0);
+		const result = await adapter.invoke({ prompt: "test", workdir: "/tmp" });
+
+		expect(result.output).toBe("Final answer");
+		expect(result.exitCode).toBe(0);
+		expect(result.sessionId).toBe("s1");
+		expect(result.duration).toBe(5000);
+	});
 });
 
 // ---------------------------------------------------------------------------
-// Mockable adapter for testing — injects at the spawn boundary
+// Mock helpers
 // ---------------------------------------------------------------------------
 
 interface MockOpts {
@@ -452,15 +707,33 @@ interface MockOpts {
 	captureArgs?: (args: string[]) => void;
 }
 
-/**
- * Helper to create a ReadableStream from a string.
- */
+/** Build a ReadableStream from a string. */
 function stringStream(s: string): ReadableStream<Uint8Array> {
 	const encoded = new TextEncoder().encode(s);
 	return new ReadableStream({
 		start(controller) {
 			controller.enqueue(encoded);
 			controller.close();
+		},
+	});
+}
+
+/**
+ * Build a ReadableStream that emits `initial` then hangs indefinitely.
+ * Simulates a process that has partially written output but stalls.
+ */
+function ndjsonThenHangingStream(initial: string): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	let emitted = false;
+	return new ReadableStream({
+		pull(controller) {
+			if (!emitted) {
+				emitted = true;
+				controller.enqueue(encoder.encode(initial));
+				return;
+			}
+			// Never enqueue more — stalls the reader until cancelled
+			return new Promise<void>(() => {});
 		},
 	});
 }
@@ -481,8 +754,8 @@ function hangingStream(): ReadableStream<Uint8Array> {
 
 /**
  * Create a test adapter that overrides only `spawnProcess` so that the real
- * `invoke()` logic (JSON parsing, is_error handling, timeout, etc.) is
- * exercised. This avoids duplicating parsing/arg-building in the mock.
+ * `invoke()` logic (NDJSON parsing, is_error handling, timeout, etc.) is
+ * exercised without spawning a real process.
  */
 function createMock(
 	mockStdout: string,
@@ -503,7 +776,7 @@ function createMock(
 
 			if (mockOpts.hang) {
 				// Never-resolving exited promise simulates a hung process.
-				// Streams close normally so boundedDrain completes quickly.
+				// Streams close normally so stdout drain completes quickly.
 				return {
 					exited: new Promise<number>(() => {}),
 					stdout: stringStream(""),
@@ -514,7 +787,7 @@ function createMock(
 
 			if (mockOpts.hangingStreams) {
 				// Exited never resolves AND streams never close — tests that
-				// boundedDrain's reader cancellation actually works.
+				// the AbortController drain cancellation actually works.
 				return {
 					exited: new Promise<number>(() => {}),
 					stdout: hangingStream(),
