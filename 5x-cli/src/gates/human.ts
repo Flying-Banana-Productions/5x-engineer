@@ -23,6 +23,8 @@ export interface EscalationEvent {
 	reason: string;
 	items?: Array<{ id: string; title: string; reason: string }>;
 	iteration: number;
+	/** Path to the NDJSON agent log file, when the escalation originated from an agent invocation. */
+	logPath?: string;
 }
 
 export type EscalationResponse =

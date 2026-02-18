@@ -1029,6 +1029,7 @@ export interface PlanReviewLoopOptions {
   auto?: boolean;
   allowDirty?: boolean;
   projectRoot?: string; // agent workdir — falls back to dirname(planPath)
+  quiet?: boolean;      // suppress formatted agent console output (see 002-impl-realtime-agent-logs.md)
   humanGate?: (event: EscalationEvent) => Promise<'continue' | 'approve' | 'abort'>;
   resumeGate?: (runId: string, iteration: number) => Promise<'resume' | 'start-fresh' | 'abort'>;
 }
@@ -1088,12 +1089,12 @@ any → ESCALATE                             (max iterations reached)
 
 ### 4.3 `src/commands/plan-review.ts` — CLI command wiring
 
-- [x] Parse command arguments (plan path, `--auto`, `--allow-dirty`, flags)
+- [x] Parse command arguments (plan path, `--auto`, `--allow-dirty`, `--quiet`/`--no-quiet`, flags)
 - [x] Run git safety check; abort on dirty tree unless `--allow-dirty`
 - [x] Validate plan file exists and is parseable
 - [x] Initialize DB connection and run migrations
 - [x] Initialize adapters from config
-- [x] Call `runPlanReviewLoop` with `projectRoot` for consistent agent workdir
+- [x] Call `runPlanReviewLoop` with `projectRoot` and `quiet` for consistent agent workdir
 - [x] Display final result (with run ID for future reference)
 
 ### 4.4 `src/project-root.ts` — Project root resolution
@@ -1232,6 +1233,7 @@ interface PhaseExecutionOptions {
   projectRoot?: string;      // for log/DB anchoring when using worktrees
   skipQuality?: boolean;
   allowDirty?: boolean;
+  quiet?: boolean;           // suppress formatted agent console output (see 002-impl-realtime-agent-logs.md)
   phaseGate?: ...;           // injectable for testing
   escalationGate?: ...;      // injectable for testing
   resumeGate?: ...;          // injectable for testing
@@ -1317,7 +1319,7 @@ export async function escalationGate(event: EscalationEvent): Promise<Escalation
 
 ### 5.5 `src/commands/run.ts` — CLI command wiring
 
-- [x] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`, `--worktree`)
+- [x] Parse command arguments (plan path, `--phase`, `--auto`, `--allow-dirty`, `--skip-quality`, `--worktree`, `--quiet`/`--no-quiet`)
 - [x] Initialize DB connection and run migrations
 - [x] Resolve workdir from DB plan association (worktree auto-detection)
 - [x] Run git safety check in resolved workdir; abort on dirty tree unless `--allow-dirty`

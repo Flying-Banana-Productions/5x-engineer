@@ -3,7 +3,7 @@
 **Version:** 1.3
 **Created:** February 17, 2026
 **Parent:** [001-impl-5x-cli.md](001-impl-5x-cli.md)
-**Status:** Draft — v1.3: Phase 1 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase1-execution-review.md)) — bound per-line buffering with degraded mode (P0.1), defensive async logStream error handler (P0.2), bounded stderr capture (P1.2), DI logger for concurrent-test safety (P1.4), Phase 2 security documentation note (P1.3); v1.2: safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
+**Status:** Draft — v1.3: Phase 1 execution review corrections ([review](reviews/2026-02-18-realtime-agent-logs-phase1-execution-review.md)) — bound per-line buffering with degraded mode (P0.1), defensive async logStream error handler (P0.2), bounded stderr capture (P1.2), DI logger for concurrent-test safety (P1.4), Phase 2 security documentation note (P1.3); Phase 2 complete (335 pass, 0 fail); v1.2: safe concurrent streaming/timeout with AbortController cancellation (P0.1), non-fatal logging with guaranteed flush (P0.2), default-quiet-for-non-TTY policy via single boolean flag (P0.3), .ndjson log extension (P1.1), parsed-event onEvent signature (P1.2), escalation snippet source + log path (P1.3), formatter hardening + backpressure notes (P2); v1.1: default console output with --quiet, remove logs command (deferred), conditional escalation snippets
 
 ---
 
@@ -143,16 +143,18 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
   - Test P1.2: large stderr output is bounded by `MAX_STDERR_SIZE`
   - All warning assertions use DI `captureWarnings` — no global `console.warn` mutation
 
-### Phase 2: Orchestrator Log Wiring + Console Output
+### Phase 2: Orchestrator Log Wiring + Console Output ✅
 
 **Goal:** Every agent invocation in both orchestrators opens a log stream before calling `invoke()`, streams formatted output to the console by default, and flushes the log after. `--quiet` suppresses console output. Escalation messages include output snippets only in quiet mode.
 
+**Status:** Complete. All items implemented and tested (335 pass, 0 fail).
+
 #### Checklist
 
-- [ ] Extract `endStream()` helper from `gates/quality.ts` into `src/utils/stream.ts` for shared use. Update quality.ts to import from the shared location.
-- [ ] **P0.2 — Orchestrator-side logStream error handling:** When creating the `logStream` (via `createWriteStream`) at each invocation site, attach an `'error'` handler that logs a warning and marks the stream as failed. This complements the adapter-side defensive handler (which catches errors during processing) by ensuring the stream creator also handles errors that arrive during `endStream()` / after processing. Pattern: `const logStream = createWriteStream(path); logStream.on('error', (err) => console.warn(...));`
-- [ ] **Backpressure consideration:** When writing to `logStream`, check `Writable.write()` return value. If it returns `false`, the stream's internal buffer is full. For v1, this is a noted concern but not a blocker — NDJSON event lines are small (typically <4KB) and disk I/O is fast. If profiling shows memory growth from buffered writes, add `await once(stream, 'drain')` gating in a future iteration.
-- [ ] Implement NDJSON console formatter in `src/utils/ndjson-formatter.ts`:
+- [x] Extract `endStream()` helper from `gates/quality.ts` into `src/utils/stream.ts` for shared use. Update quality.ts to import from the shared location.
+- [x] **P0.2 — Orchestrator-side logStream error handling:** When creating the `logStream` (via `createWriteStream`) at each invocation site, attach an `'error'` handler that logs a warning and marks the stream as failed. This complements the adapter-side defensive handler (which catches errors during processing) by ensuring the stream creator also handles errors that arrive during `endStream()` / after processing. Pattern: `const logStream = createWriteStream(path); logStream.on('error', (err) => console.warn(...));`
+- [x] **Backpressure consideration:** When writing to `logStream`, check `Writable.write()` return value. If it returns `false`, the stream's internal buffer is full. For v1, this is a noted concern but not a blocker — NDJSON event lines are small (typically <4KB) and disk I/O is fast. If profiling shows memory growth from buffered writes, add `await once(stream, 'drain')` gating in a future iteration.
+- [x] Implement NDJSON console formatter in `src/utils/ndjson-formatter.ts`:
   - Accepts a parsed event object (not a raw string — adapter already parsed it, see P1.2).
   - `type: "system"` (subtype `init`) → `  [session] model=<model>` (suppress verbose `tools` array from `system.init.tools` payloads)
   - `type: "assistant"` with `content[]` — iterate all content parts (a single message may contain both `text` and `tool_use` blocks):
@@ -162,26 +164,26 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
   - `type: "result"` → `  [done] <subtype> | cost=$<cost> | <duration>s`
   - Unknown event types → skip silently (forward-compatible with new event types from future Claude Code versions)
   - Export as a pure function `formatNdjsonEvent(event: unknown): string | null` (returns null to suppress)
-- [ ] Add `--quiet` flag to `commands/run.ts` and `commands/plan-review.ts`:
+- [x] Add `--quiet` flag to `commands/run.ts` and `commands/plan-review.ts`:
   - `quiet: { type: "boolean", description: "Suppress formatted agent output (default: auto, quiet when stdout is not a TTY)" }`
   - Single boolean flag — citty auto-generates `--no-quiet` as the negation form; no separate arg needed.
   - Resolve effective quiet: `--quiet` → true, `--no-quiet` → false, neither → `!process.stdout.isTTY`
   - Pass resolved `quiet` through to orchestrator options
-- [ ] Add `quiet?: boolean` to `PhaseExecutionOptions` and `PlanReviewOptions`
-- [ ] `phase-execution-loop.ts` — wire log streams and console output at all 4 agent invocation sites:
+- [x] Add `quiet?: boolean` to `PhaseExecutionOptions` and `PlanReviewOptions`
+- [x] `phase-execution-loop.ts` — wire log streams and console output at all 4 agent invocation sites:
   - EXECUTE (author): replace post-hoc `Bun.write(agentLogPath, authorResult.output)` with pre-opened `logStream`. Remove the `Bun.write` call. Wire `onEvent` to formatter unless `quiet`.
   - QUALITY_RETRY (author): add `resultId` generation + `logStream` open/close + `onEvent`
   - REVIEW (reviewer): add `resultId` generation + `logStream` open/close + `onEvent`
   - AUTO_FIX (author): add `resultId` generation + `logStream` open/close + `onEvent`
-- [ ] `plan-review-loop.ts` — add log infrastructure:
+- [x] `plan-review-loop.ts` — add log infrastructure:
   - Accept `projectRoot` in options (needed to anchor log directory)
   - Create log directory: `join(projectRoot, ".5x", "logs", runId)`
   - Wire log streams and `onEvent` at both invocation sites (REVIEW, AUTO_FIX)
-- [ ] Update `commands/plan-review.ts` to pass `projectRoot` and `quiet` through to the loop
-- [ ] Consistent log file naming: `agent-<resultId>.ndjson` for all agent NDJSON logs, `quality-phase<N>-attempt<N>-<slug>.log` for quality gates (unchanged, plain text)
-- [ ] **Guaranteed flush/close invariant:** Every opened `logStream` MUST be ended and awaited in a `finally` block — covering success, timeout, error, and early-return paths. Use `await endStream(stream)` from `src/utils/stream.ts`. This prevents the "log file exists but empty/partial" regression seen in quality gates.
+- [x] Update `commands/plan-review.ts` to pass `projectRoot` and `quiet` through to the loop
+- [x] Consistent log file naming: `agent-<resultId>.ndjson` for all agent NDJSON logs, `quality-phase<N>-attempt<N>-<slug>.log` for quality gates (unchanged, plain text)
+- [x] **Guaranteed flush/close invariant:** Every opened `logStream` MUST be ended and awaited in a `finally` block — covering success, timeout, error, and early-return paths. Use `await endStream(stream)` from `src/utils/stream.ts`. This prevents the "log file exists but empty/partial" regression seen in quality gates.
   - Each invocation site follows: `const logStream = createWriteStream(path); try { await invoke({ logStream, ... }); } finally { await endStream(logStream); }`
-- [ ] Conditional escalation output snippets:
+- [x] Conditional escalation output snippets:
   - Add `outputSnippet(result: AgentResult)` helper to both orchestrator files. Snippet content:
     - Derive from assistant text or `result.output` (the final result text), NOT raw NDJSON event lines
     - When `result.error` is available (stderr/error context), prepend it to the snippet
@@ -190,9 +192,9 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
     - **Always** include the NDJSON log file path in the escalation reason (even in non-quiet mode)
     - Include the output snippet **only when `quiet` is true** — in non-quiet mode the user already saw the streaming output
   - Add `logPath` to `EscalationEvent` type so downstream consumers (human gates, DB events) always have it
-- [ ] **P1.3 — Security posture of verbose NDJSON logs:** Document in CLI help/docs that `--verbose` NDJSON logs may contain sensitive data (tool inputs/results including file contents, environment variables, etc.). Ensure `.5x/logs/` directory permissions default to user-only (`0o700`). Add a note to `--quiet` help text: "Log files are always written regardless of quiet mode. Logs may contain sensitive data."
-- [ ] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
-- [ ] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
+- [x] **P1.3 — Security posture of verbose NDJSON logs:** Document in CLI help/docs that `--verbose` NDJSON logs may contain sensitive data (tool inputs/results including file contents, environment variables, etc.). Ensure `.5x/logs/` directory permissions default to user-only (`0o700`). Add a note to `--quiet` help text: "Log files are always written regardless of quiet mode. Logs may contain sensitive data."
+- [x] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
+- [x] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
 
 ---
 

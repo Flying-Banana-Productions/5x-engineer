@@ -94,3 +94,29 @@ Main remaining risks are around failure modes at scale: a single huge NDJSON lin
 - [ ] Cap stderr capture or stream it to disk.
 - [ ] Document sensitive-data expectations for verbose NDJSON logs.
 - [ ] Reduce global console mutation risk under concurrent tests.
+
+---
+
+## Addendum (2026-02-18) - Re-review after remediation commit
+
+**Reviewed:** `7d30d62d4c80` | `docs/development/002-impl-realtime-agent-logs.md` v1.3
+**Local verification:** `cd 5x-cli && bun test` PASS (306 pass, 1 skip)
+
+### What's addressed (✅)
+
+- **P0.1 line-buffer bounding:** `readNdjson` now caps the in-flight partial-line buffer (`MAX_LINE_BUFFER_SIZE=1MiB`) and enters degraded mode (raw tee to logStream, parsing + onEvent disabled) with recovery on next newline (`5x-cli/src/agents/claude-code.ts`). Added tests covering degrade + recovery.
+- **P0.2 async logStream errors non-fatal:** defensive `'error'` handler attached when logStream supports `.on()`, preventing unhandled error crashes and disabling further writes (`5x-cli/src/agents/claude-code.ts`). Added a unit test that emits `'error'` without crashing.
+- **P1.2 stderr bounded:** stderr capture is capped (`MAX_STDERR_SIZE=64KiB`) while still draining the full pipe to avoid subprocess backpressure (`5x-cli/src/agents/claude-code.ts`). Added a unit test for bounding.
+- **P1.4 concurrent-test safety:** warnings are routed via DI (`ClaudeCodeAdapter.warn()` + injectable `warn` sinks) so tests no longer monkey-patch global `console.warn` (`5x-cli/src/agents/claude-code.ts`, `5x-cli/test/agents/claude-code.test.ts`, `5x-cli/test/setup.ts`).
+
+### Remaining concerns
+
+- **P1.1 backpressure:** `logStream.write()` backpressure is still ignored; measure and/or gate on `'drain'` if buffered writes show memory growth under verbose streaming.
+- **Phase 2 still required for end-to-end P0.2:** adapter now defensively handles `'error'`, but orchestrators should still attach error handlers immediately on stream creation (before handing to adapter) to reduce race windows; plan v1.3 now calls this out.
+- **Security/tenancy (Phase 2):** NDJSON logs can contain sensitive tool I/O; ensure log dir permissions + doc/CLI messaging (plan now tracks as Phase 2 item).
+- **Precision nit:** size caps are enforced on JS string length (UTF-16 code units), not raw bytes; OK as a guardrail, but keep wording/docs consistent if this matters.
+
+### Updated readiness
+
+- **002 Phase 1 completion:** ✅ - prior P0/P1 items raised in this review are addressed with code + tests.
+- **Ready for Phase 2:** ✅ - proceed with orchestrator wiring; keep backpressure + permissions/docs as primary follow-ups.

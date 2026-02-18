@@ -5,6 +5,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,14 +43,6 @@ const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Promisified end — resolves once the write stream has flushed to disk. */
-function endStream(stream: NodeJS.WritableStream): Promise<void> {
-	return new Promise((resolve, reject) => {
-		stream.end(() => resolve());
-		stream.on("error", reject);
-	});
-}
 
 /** Slugify a command string for use in log filenames. */
 function commandSlug(command: string): string {

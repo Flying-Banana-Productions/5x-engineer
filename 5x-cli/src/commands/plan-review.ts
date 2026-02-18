@@ -36,6 +36,11 @@ export default defineCommand({
 			description: "Allow running with a dirty working tree",
 			default: false,
 		},
+		quiet: {
+			type: "boolean",
+			description:
+				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written. Logs may contain sensitive data.",
+		},
 	},
 	async run({ args }) {
 		const planPath = resolve(args.path);
@@ -101,6 +106,10 @@ export default defineCommand({
 		const authorAdapter = await createAndVerifyAdapter(config.author);
 		const reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
 
+		// Resolve effective quiet mode: explicit flag > TTY detection
+		const effectiveQuiet =
+			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
+
 		// Run the loop
 		const result = await runPlanReviewLoop(
 			canonical,
@@ -113,6 +122,7 @@ export default defineCommand({
 				auto: args.auto,
 				allowDirty: args["allow-dirty"],
 				projectRoot,
+				quiet: effectiveQuiet,
 			},
 		);
 

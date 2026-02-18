@@ -51,6 +51,11 @@ export default defineCommand({
 			description: "Create an isolated git worktree for execution",
 			default: false,
 		},
+		quiet: {
+			type: "boolean",
+			description:
+				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written. Logs may contain sensitive data.",
+		},
 	},
 	async run({ args }) {
 		const planPath = resolve(args.path);
@@ -232,6 +237,10 @@ export default defineCommand({
 		const reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
 
 		// --- Run the loop ---
+		// Resolve effective quiet mode: explicit flag > TTY detection
+		const effectiveQuiet =
+			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
+
 		try {
 			const result = await runPhaseExecutionLoop(
 				effectivePlanPath,
@@ -247,6 +256,7 @@ export default defineCommand({
 					startPhase: args.phase,
 					workdir,
 					projectRoot,
+					quiet: effectiveQuiet,
 				},
 			);
 

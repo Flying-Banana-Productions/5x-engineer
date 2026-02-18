@@ -1161,4 +1161,265 @@ describe("runPhaseExecutionLoop", () => {
 			cleanup();
 		}
 	});
+
+	test("ndjson log files created for EXECUTE, REVIEW, and AUTO_FIX sites", async () => {
+		// EXECUTE + REVIEW (needs fixes) + AUTO_FIX + REVIEW (ready) = 4 agent calls → 4 ndjson logs
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [
+				// EXECUTE: initial author run
+				{
+					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
+				},
+				// AUTO_FIX: author fixes review items
+				{
+					output: statusBlock({ result: "completed", commit: "ghi", phase: 1 }),
+				},
+			]);
+			const reviewer = mockAdapter("reviewer", [
+				// REVIEW: first review — needs fixes
+				{
+					output: verdictBlock({
+						readiness: "ready_with_corrections",
+						reviewPath,
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix test",
+								action: "auto_fix",
+								reason: "Missing test",
+							},
+						],
+					}),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({
+							readiness: "ready_with_corrections",
+							reviewPath,
+							items: [
+								{
+									id: "p1-1",
+									title: "Fix test",
+									action: "auto_fix",
+									reason: "Missing test",
+								},
+							],
+						})}`,
+					},
+				},
+				// REVIEW: second review after auto_fix — ready
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, projectRoot: tmp },
+			);
+
+			expect(result.complete).toBe(true);
+
+			// Verify .ndjson log files exist for all invocation sites
+			const logDir = join(tmp, ".5x", "logs", result.runId);
+			expect(existsSync(logDir)).toBe(true);
+
+			const { readdirSync } = await import("node:fs");
+			const logFiles = readdirSync(logDir).filter((f) => f.endsWith(".ndjson"));
+			// Should have 4 ndjson logs: EXECUTE + REVIEW(first) + AUTO_FIX + REVIEW(second)
+			expect(logFiles.length).toBe(4);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("onEvent called when quiet=false, not called when quiet=true", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			let onEventCallCount = 0;
+
+			// Create a mock adapter that captures whether onEvent is being set
+			const capturingAdapter: AgentAdapter = {
+				name: "capture",
+				isAvailable: async () => true,
+				invoke: async (opts: InvokeOptions) => {
+					if (opts.onEvent) {
+						// Simulate an event being fired
+						opts.onEvent({ type: "result", subtype: "success" }, "{}");
+						onEventCallCount++;
+					}
+					return {
+						output: statusBlock({
+							result: "completed",
+							commit: "abc",
+							phase: 1,
+						}),
+						exitCode: 0,
+						duration: 100,
+					};
+				},
+			};
+
+			const reviewer = mockAdapter("reviewer", [
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			// quiet=false: onEvent should be set
+			onEventCallCount = 0;
+			const result1 = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				capturingAdapter,
+				reviewer,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: false },
+			);
+			expect(result1.complete).toBe(true);
+			// onEvent was called at least once (EXECUTE + REVIEW)
+			expect(onEventCallCount).toBeGreaterThan(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("quiet=true suppresses onEvent (no formatting calls)", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			let onEventWasSet = false;
+
+			const capturingAdapter: AgentAdapter = {
+				name: "capture-quiet",
+				isAvailable: async () => true,
+				invoke: async (opts: InvokeOptions) => {
+					if (opts.onEvent) onEventWasSet = true;
+					return {
+						output: statusBlock({
+							result: "completed",
+							commit: "abc",
+							phase: 1,
+						}),
+						exitCode: 0,
+						duration: 100,
+					};
+				},
+			};
+
+			const reviewer = mockAdapter("reviewer", [
+				{
+					output: verdictBlock({ readiness: "ready", reviewPath }),
+					writeFile: {
+						path: reviewPath,
+						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
+					},
+				},
+			]);
+
+			// quiet=true: onEvent should NOT be set
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				capturingAdapter,
+				reviewer,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: true },
+			);
+			expect(result.complete).toBe(true);
+			expect(onEventWasSet).toBe(false);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("escalation in quiet mode includes output snippet and log path", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [
+				{
+					output: "Agent failed with some output",
+					exitCode: 1,
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			const escalation = result.escalations[0];
+			if (!escalation) throw new Error("Expected at least one escalation");
+			// In quiet mode: reason should include log path AND output snippet
+			expect(escalation.reason).toContain("Log:");
+			expect(escalation.reason).toContain("Agent failed with some output");
+			expect(escalation.logPath).toBeDefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("escalation in non-quiet mode includes log path but NOT output snippet", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const author = mockAdapter("author", [
+				{
+					output: "Agent failed with some output",
+					exitCode: 1,
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: false },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			const escalation = result.escalations[0];
+			if (!escalation) throw new Error("Expected at least one escalation");
+			// In non-quiet mode: reason should include log path but NOT output snippet
+			expect(escalation.reason).toContain("Log:");
+			expect(escalation.reason).not.toContain("Agent failed with some output");
+			expect(escalation.logPath).toBeDefined();
+		} finally {
+			cleanup();
+		}
+	});
 });

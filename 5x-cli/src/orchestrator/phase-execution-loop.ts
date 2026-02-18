@@ -17,9 +17,14 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { AgentAdapter } from "../agents/types.js";
+import type { AgentAdapter, AgentResult } from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import type { QualityResultInput } from "../db/operations.js";
 import {
@@ -48,6 +53,8 @@ import type { VerdictBlock } from "../parsers/signals.js";
 import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { renderTemplate } from "../templates/loader.js";
+import { formatNdjsonEvent } from "../utils/ndjson-formatter.js";
+import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -69,6 +76,12 @@ export interface PhaseExecutionOptions {
 	startPhase?: string; // phase number to start from (e.g. "3", "1.1")
 	workdir: string; // agent workdir (project root or worktree path)
 	projectRoot?: string; // original project root (for log/DB anchoring when using worktrees)
+	/**
+	 * When true, suppress formatted agent event output to stdout.
+	 * Default: false (show output). Use !process.stdout.isTTY as the default
+	 * at the command layer before passing here.
+	 */
+	quiet?: boolean;
 	/** Override for testing — phase gate prompt. */
 	phaseGate?: (
 		summary: PhaseSummary,
@@ -108,6 +121,55 @@ function generateId(): string {
 	return crypto.randomUUID();
 }
 
+/**
+ * Build a short output snippet from an agent result for escalation messages.
+ * Derived from result.output (final result text) and optionally result.error (stderr).
+ * Never raw NDJSON event lines.
+ */
+function outputSnippet(result: AgentResult): string {
+	const parts: string[] = [];
+	if (result.error) {
+		parts.push(`stderr: ${result.error.slice(0, 200)}`);
+	}
+	const text = (result.output ?? "").slice(0, 500);
+	if (text) parts.push(text);
+	return parts.join("\n").slice(0, 500);
+}
+
+/**
+ * Build an escalation reason that always includes the log path, and
+ * conditionally includes an output snippet (quiet mode only).
+ */
+function buildEscalationReason(
+	base: string,
+	logPath: string,
+	result: AgentResult,
+	quiet: boolean,
+): string {
+	const pathLine = `Log: ${logPath}`;
+	if (quiet) {
+		const snippet = outputSnippet(result);
+		return snippet
+			? `${base}\n${pathLine}\n${snippet}`
+			: `${base}\n${pathLine}`;
+	}
+	return `${base}\n${pathLine}`;
+}
+
+/**
+ * Build an onEvent handler that formats events to stdout.
+ * Returns undefined when quiet is true (no console output).
+ */
+function makeOnEvent(
+	quiet: boolean,
+): ((event: unknown, _rawLine: string) => void) | undefined {
+	if (quiet) return undefined;
+	return (event: unknown) => {
+		const line = formatNdjsonEvent(event);
+		if (line != null) process.stdout.write(`${line}\n`);
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
@@ -129,6 +191,7 @@ export async function runPhaseExecutionLoop(
 ): Promise<PhaseExecutionResult> {
 	const canonical = canonicalizePlanPath(planPath);
 	const workdir = options.workdir;
+	const quiet = options.quiet ?? false;
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;
 	const maxReviewIterations = config.maxReviewIterations;
@@ -218,7 +281,7 @@ export async function runPhaseExecutionLoop(
 
 	const logDir = join(logBaseDir, runId);
 	if (!existsSync(logDir)) {
-		mkdirSync(logDir, { recursive: true });
+		mkdirSync(logDir, { recursive: true, mode: 0o700 });
 	}
 
 	appendRunEvent(db, {
@@ -350,18 +413,37 @@ export async function runPhaseExecutionLoop(
 
 					console.log(`  Author implementing phase ${phase.number}...`);
 
-					const authorResult = await authorAdapter.invoke({
-						prompt: authorTemplate.prompt,
-						model: config.author.model,
-						workdir,
-					});
+					// Open log stream before invoking
+					const executeResultId = generateId();
+					const executeLogPath = join(
+						logDir,
+						`agent-${executeResultId}.ndjson`,
+					);
+					const executeLogStream = createWriteStream(executeLogPath);
+					executeLogStream.on("error", (err) =>
+						console.warn(
+							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+						),
+					);
+
+					let authorResult: AgentResult;
+					try {
+						authorResult = await authorAdapter.invoke({
+							prompt: authorTemplate.prompt,
+							model: config.author.model,
+							workdir,
+							logStream: executeLogStream,
+							onEvent: makeOnEvent(quiet),
+						});
+					} finally {
+						await endStream(executeLogStream);
+					}
 
 					// Parse status from author output
 					const authorStatus = parseStatusBlock(authorResult.output);
 
-					const resultId = generateId();
 					upsertAgentResult(db, {
-						id: resultId,
+						id: executeResultId,
 						run_id: runId,
 						role: "author",
 						template_name: "author-next-phase",
@@ -386,24 +468,23 @@ export async function runPhaseExecutionLoop(
 							template: "author-next-phase",
 							exitCode: authorResult.exitCode,
 							duration: authorResult.duration,
+							logPath: executeLogPath,
 						},
 					});
-
-					// Write full output to log file
-					const agentLogPath = join(logDir, `agent-${resultId}.log`);
-					try {
-						Bun.write(agentLogPath, authorResult.output);
-					} catch {
-						// Non-critical — log failure is acceptable
-					}
 
 					iteration++;
 
 					// Handle non-zero exit
 					if (authorResult.exitCode !== 0) {
 						const event: EscalationEvent = {
-							reason: `Author exited with code ${authorResult.exitCode}`,
+							reason: buildEscalationReason(
+								`Author exited with code ${authorResult.exitCode}`,
+								executeLogPath,
+								authorResult,
+								quiet,
+							),
 							iteration,
+							logPath: executeLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -624,16 +705,32 @@ export async function runPhaseExecutionLoop(
 						`  Author fixing quality failures (attempt ${qualityAttempt + 1})...`,
 					);
 
-					const fixResult = await authorAdapter.invoke({
-						prompt: qualityFixPrompt,
-						model: config.author.model,
-						workdir,
-					});
+					// Open log stream for quality retry
+					const qrFixResultId = generateId();
+					const qrFixLogPath = join(logDir, `agent-${qrFixResultId}.ndjson`);
+					const qrFixLogStream = createWriteStream(qrFixLogPath);
+					qrFixLogStream.on("error", (err) =>
+						console.warn(
+							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+						),
+					);
+
+					let fixResult: AgentResult;
+					try {
+						fixResult = await authorAdapter.invoke({
+							prompt: qualityFixPrompt,
+							model: config.author.model,
+							workdir,
+							logStream: qrFixLogStream,
+							onEvent: makeOnEvent(quiet),
+						});
+					} finally {
+						await endStream(qrFixLogStream);
+					}
 
 					const fixStatus = parseStatusBlock(fixResult.output);
-					const fixResultId = generateId();
 					upsertAgentResult(db, {
-						id: fixResultId,
+						id: qrFixResultId,
 						run_id: runId,
 						role: "author",
 						template_name: "author-process-review",
@@ -658,6 +755,7 @@ export async function runPhaseExecutionLoop(
 							template: "author-process-review",
 							reason: "quality_retry",
 							exitCode: fixResult.exitCode,
+							logPath: qrFixLogPath,
 						},
 					});
 
@@ -665,8 +763,14 @@ export async function runPhaseExecutionLoop(
 
 					if (fixResult.exitCode !== 0) {
 						const event: EscalationEvent = {
-							reason: `Author exited with code ${fixResult.exitCode} during quality fix`,
+							reason: buildEscalationReason(
+								`Author exited with code ${fixResult.exitCode} during quality fix`,
+								qrFixLogPath,
+								fixResult,
+								quiet,
+							),
 							iteration,
+							logPath: qrFixLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -740,11 +844,28 @@ export async function runPhaseExecutionLoop(
 
 					console.log(`  Reviewer reviewing phase ${phase.number}...`);
 
-					const reviewResult = await reviewerAdapter.invoke({
-						prompt: reviewerTemplate.prompt,
-						model: config.reviewer.model,
-						workdir,
-					});
+					// Open log stream for review
+					const reviewResultId = generateId();
+					const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
+					const reviewLogStream = createWriteStream(reviewLogPath);
+					reviewLogStream.on("error", (err) =>
+						console.warn(
+							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+						),
+					);
+
+					let reviewResult: AgentResult;
+					try {
+						reviewResult = await reviewerAdapter.invoke({
+							prompt: reviewerTemplate.prompt,
+							model: config.reviewer.model,
+							workdir,
+							logStream: reviewLogStream,
+							onEvent: makeOnEvent(quiet),
+						});
+					} finally {
+						await endStream(reviewLogStream);
+					}
 
 					// Parse verdict from the review file first, then from output
 					let verdict: VerdictBlock | null = null;
@@ -756,7 +877,6 @@ export async function runPhaseExecutionLoop(
 						verdict = parseVerdictBlock(reviewResult.output);
 					}
 
-					const reviewResultId = generateId();
 					upsertAgentResult(db, {
 						id: reviewResultId,
 						run_id: runId,
@@ -783,6 +903,7 @@ export async function runPhaseExecutionLoop(
 							template: "reviewer-commit",
 							exitCode: reviewResult.exitCode,
 							duration: reviewResult.duration,
+							logPath: reviewLogPath,
 						},
 					});
 
@@ -790,8 +911,14 @@ export async function runPhaseExecutionLoop(
 
 					if (reviewResult.exitCode !== 0) {
 						const event: EscalationEvent = {
-							reason: `Reviewer exited with code ${reviewResult.exitCode}`,
+							reason: buildEscalationReason(
+								`Reviewer exited with code ${reviewResult.exitCode}`,
+								reviewLogPath,
+								reviewResult,
+								quiet,
+							),
 							iteration,
+							logPath: reviewLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -942,26 +1069,45 @@ export async function runPhaseExecutionLoop(
 						plan_path: planPath,
 					});
 
-					const fixResult = await authorAdapter.invoke({
-						prompt: fixTemplate.prompt,
-						model: config.author.model,
-						workdir,
-					});
+					// Open log stream for auto-fix
+					const autoFixResultId = generateId();
+					const autoFixLogPath = join(
+						logDir,
+						`agent-${autoFixResultId}.ndjson`,
+					);
+					const autoFixLogStream = createWriteStream(autoFixLogPath);
+					autoFixLogStream.on("error", (err) =>
+						console.warn(
+							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+						),
+					);
 
-					const fixStatus = parseStatusBlock(fixResult.output);
-					const fixResultId = generateId();
+					let autoFixResult: AgentResult;
+					try {
+						autoFixResult = await authorAdapter.invoke({
+							prompt: fixTemplate.prompt,
+							model: config.author.model,
+							workdir,
+							logStream: autoFixLogStream,
+							onEvent: makeOnEvent(quiet),
+						});
+					} finally {
+						await endStream(autoFixLogStream);
+					}
+
+					const fixStatus = parseStatusBlock(autoFixResult.output);
 					upsertAgentResult(db, {
-						id: fixResultId,
+						id: autoFixResultId,
 						run_id: runId,
 						role: "author",
 						template_name: "author-process-review",
 						phase: phase.number,
 						iteration,
-						exit_code: fixResult.exitCode,
-						duration_ms: fixResult.duration,
-						tokens_in: fixResult.tokens?.input ?? null,
-						tokens_out: fixResult.tokens?.output ?? null,
-						cost_usd: fixResult.cost ?? null,
+						exit_code: autoFixResult.exitCode,
+						duration_ms: autoFixResult.duration,
+						tokens_in: autoFixResult.tokens?.input ?? null,
+						tokens_out: autoFixResult.tokens?.output ?? null,
+						cost_usd: autoFixResult.cost ?? null,
 						signal_type: fixStatus ? "status" : null,
 						signal_data: fixStatus ? JSON.stringify(fixStatus) : null,
 					});
@@ -975,16 +1121,23 @@ export async function runPhaseExecutionLoop(
 							role: "author",
 							template: "author-process-review",
 							reason: "auto_fix",
-							exitCode: fixResult.exitCode,
+							exitCode: autoFixResult.exitCode,
+							logPath: autoFixLogPath,
 						},
 					});
 
 					iteration++;
 
-					if (fixResult.exitCode !== 0) {
+					if (autoFixResult.exitCode !== 0) {
 						const event: EscalationEvent = {
-							reason: `Author exited with code ${fixResult.exitCode} during auto-fix`,
+							reason: buildEscalationReason(
+								`Author exited with code ${autoFixResult.exitCode} during auto-fix`,
+								autoFixLogPath,
+								autoFixResult,
+								quiet,
+							),
 							iteration,
+							logPath: autoFixLogPath,
 						};
 						escalations.push(event);
 						state = "ESCALATE";

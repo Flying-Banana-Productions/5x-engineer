@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import {
+	createWriteStream,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+} from "node:fs";
 import {
 	basename,
 	dirname,
@@ -8,7 +13,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
-import type { AgentAdapter } from "../agents/types.js";
+import type { AgentAdapter, AgentResult } from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import {
 	appendRunEvent,
@@ -24,6 +29,8 @@ import type { VerdictBlock } from "../parsers/signals.js";
 import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { renderTemplate } from "../templates/loader.js";
+import { formatNdjsonEvent } from "../utils/ndjson-formatter.js";
+import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -33,6 +40,8 @@ export interface EscalationEvent {
 	reason: string;
 	items?: Array<{ id: string; title: string; reason: string }>;
 	iteration: number;
+	/** Path to the NDJSON agent log file, when the escalation originated from an agent invocation. */
+	logPath?: string;
 }
 
 export interface PlanReviewResult {
@@ -60,6 +69,12 @@ export interface PlanReviewLoopOptions {
 	allowDirty?: boolean;
 	/** Project root directory for agent workdir. Falls back to dirname(planPath) if unset. */
 	projectRoot?: string;
+	/**
+	 * When true, suppress formatted agent event output to stdout.
+	 * Default: false (show output). Use !process.stdout.isTTY as the default
+	 * at the command layer before passing here.
+	 */
+	quiet?: boolean;
 	/** Override for testing — supply a function that prompts for human decisions. */
 	humanGate?: (
 		event: EscalationEvent,
@@ -78,6 +93,55 @@ export interface PlanReviewLoopOptions {
 /** Generate a simple unique ID (UUID v4). */
 function generateId(): string {
 	return crypto.randomUUID();
+}
+
+/**
+ * Build a short output snippet from an agent result for escalation messages.
+ * Derived from result.output (final result text) and optionally result.error (stderr).
+ * Never raw NDJSON event lines.
+ */
+function outputSnippet(result: AgentResult): string {
+	const parts: string[] = [];
+	if (result.error) {
+		parts.push(`stderr: ${result.error.slice(0, 200)}`);
+	}
+	const text = (result.output ?? "").slice(0, 500);
+	if (text) parts.push(text);
+	return parts.join("\n").slice(0, 500);
+}
+
+/**
+ * Build an escalation reason that always includes the log path, and
+ * conditionally includes an output snippet (quiet mode only).
+ */
+function buildEscalationReason(
+	base: string,
+	logPath: string,
+	result: AgentResult,
+	quiet: boolean,
+): string {
+	const pathLine = `Log: ${logPath}`;
+	if (quiet) {
+		const snippet = outputSnippet(result);
+		return snippet
+			? `${base}\n${pathLine}\n${snippet}`
+			: `${base}\n${pathLine}`;
+	}
+	return `${base}\n${pathLine}`;
+}
+
+/**
+ * Build an onEvent handler that formats events to stdout.
+ * Returns undefined when quiet is true (no console output).
+ */
+function makeOnEvent(
+	quiet: boolean,
+): ((event: unknown, _rawLine: string) => void) | undefined {
+	if (quiet) return undefined;
+	return (event: unknown) => {
+		const line = formatNdjsonEvent(event);
+		if (line != null) process.stdout.write(`${line}\n`);
+	};
 }
 
 /**
@@ -240,6 +304,7 @@ export async function runPlanReviewLoop(
 	const humanGate = options.humanGate ?? defaultHumanGate;
 	const resumeGate = options.resumeGate ?? defaultResumeGate;
 	const maxIterations = config.maxReviewIterations;
+	const quiet = options.quiet ?? false;
 	const workdir = options.projectRoot ?? dirname(resolve(planPath));
 
 	const canonical = canonicalizePlanPath(planPath);
@@ -299,6 +364,12 @@ export async function runPlanReviewLoop(
 	// Ensure plan is recorded
 	upsertPlan(db, { planPath });
 
+	// Create log directory for this run (user-only permissions per P1.3)
+	const logDir = join(workdir, ".5x", "logs", runId);
+	if (!existsSync(logDir)) {
+		mkdirSync(logDir, { recursive: true, mode: 0o700 });
+	}
+
 	appendRunEvent(db, {
 		runId,
 		eventType: "plan_review_start",
@@ -356,15 +427,31 @@ export async function runPlanReviewLoop(
 
 				console.log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
 
+				// Open log stream before invoking
+				const reviewResultId = generateId();
+				const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
+				const reviewLogStream = createWriteStream(reviewLogPath);
+				reviewLogStream.on("error", (err) =>
+					console.warn(
+						`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+					),
+				);
+
 				// Invoke reviewer
-				const reviewResult = await reviewerAdapter.invoke({
-					prompt: reviewerTemplate.prompt,
-					model: config.reviewer.model,
-					workdir,
-				});
+				let reviewResult: AgentResult;
+				try {
+					reviewResult = await reviewerAdapter.invoke({
+						prompt: reviewerTemplate.prompt,
+						model: config.reviewer.model,
+						workdir,
+						logStream: reviewLogStream,
+						onEvent: makeOnEvent(quiet),
+					});
+				} finally {
+					await endStream(reviewLogStream);
+				}
 
 				// Store result
-				const reviewResultId = generateId();
 				// Parse verdict from the review file (reviewer writes to it)
 				let verdict: VerdictBlock | null = null;
 				if (existsSync(reviewPath)) {
@@ -401,6 +488,7 @@ export async function runPlanReviewLoop(
 						template: "reviewer-plan",
 						exitCode: reviewResult.exitCode,
 						duration: reviewResult.duration,
+						logPath: reviewLogPath,
 					},
 				});
 
@@ -409,8 +497,14 @@ export async function runPlanReviewLoop(
 				// Handle non-zero exit
 				if (reviewResult.exitCode !== 0) {
 					const event: EscalationEvent = {
-						reason: `Reviewer exited with code ${reviewResult.exitCode}`,
+						reason: buildEscalationReason(
+							`Reviewer exited with code ${reviewResult.exitCode}`,
+							reviewLogPath,
+							reviewResult,
+							quiet,
+						),
 						iteration,
+						logPath: reviewLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -604,18 +698,34 @@ export async function runPlanReviewLoop(
 					plan_path: planPath,
 				});
 
+				// Open log stream before invoking
+				const authorResultId = generateId();
+				const authorLogPath = join(logDir, `agent-${authorResultId}.ndjson`);
+				const authorLogStream = createWriteStream(authorLogPath);
+				authorLogStream.on("error", (err) =>
+					console.warn(
+						`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
+					),
+				);
+
 				// Invoke author
-				const authorResult = await authorAdapter.invoke({
-					prompt: authorTemplate.prompt,
-					model: config.author.model,
-					workdir,
-				});
+				let authorResult: AgentResult;
+				try {
+					authorResult = await authorAdapter.invoke({
+						prompt: authorTemplate.prompt,
+						model: config.author.model,
+						workdir,
+						logStream: authorLogStream,
+						onEvent: makeOnEvent(quiet),
+					});
+				} finally {
+					await endStream(authorLogStream);
+				}
 
 				// Parse status from author output
 				const authorStatus = parseStatusBlock(authorResult.output);
 
 				// Store result
-				const authorResultId = generateId();
 				upsertAgentResult(db, {
 					id: authorResultId,
 					run_id: runId,
@@ -641,6 +751,7 @@ export async function runPlanReviewLoop(
 						template: "author-process-review",
 						exitCode: authorResult.exitCode,
 						duration: authorResult.duration,
+						logPath: authorLogPath,
 					},
 				});
 
