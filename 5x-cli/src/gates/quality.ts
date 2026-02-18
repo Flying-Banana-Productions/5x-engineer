@@ -196,8 +196,16 @@ export async function runSingleCommand(
 			env: { ...process.env },
 		});
 
-		// Open log file for streaming writes
+		// Open log file for streaming writes.
+		// Attach an error handler immediately: disk-full / permission errors emit
+		// 'error' on the stream; without a listener Node.js would crash the process.
+		// Log write failures are best-effort — we warn and keep running.
 		const logStream = createWriteStream(logPath);
+		logStream.on("error", (err) => {
+			console.warn(
+				`[warn] quality gate log write failed (${logPath}): ${err.message}`,
+			);
+		});
 		const stdoutCapture = new BoundedCapture();
 		const stderrCapture = new BoundedCapture();
 
