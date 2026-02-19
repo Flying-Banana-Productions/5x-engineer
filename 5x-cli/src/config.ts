@@ -84,6 +84,77 @@ export interface LoadConfigResult {
 	configPath: string | null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
+	if (!isRecord(rawConfig)) return;
+
+	const allowedRoot = new Set([
+		"author",
+		"reviewer",
+		"qualityGates",
+		"paths",
+		"db",
+		"maxReviewIterations",
+		"maxQualityRetries",
+		"maxAutoIterations",
+		"maxAutoRetries",
+	]);
+	const allowedAgent = new Set(["model"]);
+	const allowedPaths = new Set(["plans", "reviews", "archive", "templates"]);
+	const allowedTemplates = new Set(["plan", "review"]);
+	const allowedDb = new Set(["path"]);
+
+	const deprecatedHelp = new Map<string, string>([
+		["author.adapter", "Use author.model instead."],
+		["reviewer.adapter", "Use reviewer.model instead."],
+	]);
+
+	const unknown: string[] = [];
+
+	function collect(
+		obj: Record<string, unknown>,
+		allowed: Set<string>,
+		prefix: string,
+	): void {
+		for (const key of Object.keys(obj).sort()) {
+			if (!allowed.has(key)) {
+				unknown.push(prefix ? `${prefix}.${key}` : key);
+				continue;
+			}
+
+			const value = obj[key];
+			if (!isRecord(value)) continue;
+
+			const nextPrefix = prefix ? `${prefix}.${key}` : key;
+			if (key === "author" || key === "reviewer") {
+				collect(value, allowedAgent, nextPrefix);
+			} else if (key === "paths") {
+				collect(value, allowedPaths, nextPrefix);
+				const templates = value.templates;
+				if (isRecord(templates)) {
+					collect(templates, allowedTemplates, `${nextPrefix}.templates`);
+				}
+			} else if (key === "db") {
+				collect(value, allowedDb, nextPrefix);
+			}
+		}
+	}
+
+	collect(rawConfig, allowedRoot, "");
+
+	for (const path of unknown) {
+		const help = deprecatedHelp.get(path);
+		console.error(
+			help
+				? `Warning: Deprecated config key "${path}" in ${configPath} (ignored). ${help}`
+				: `Warning: Unknown config key "${path}" in ${configPath} (ignored).`,
+		);
+	}
+}
+
 /**
  * Load and validate 5x.config.js / .mjs from the project root.
  * Falls back to defaults if no config file is found.
@@ -112,6 +183,8 @@ export async function loadConfig(
 				`Config must be a JS/MJS module exporting a default config object.`,
 		);
 	}
+
+	warnUnknownConfigKeys(rawConfig, configPath);
 
 	const result = FiveXConfigSchema.safeParse(rawConfig);
 	if (!result.success) {

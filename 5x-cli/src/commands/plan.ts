@@ -177,6 +177,7 @@ export default defineCommand({
 		try {
 			adapter = await createAndVerifyAdapter(config.author);
 		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
 			appendRunEvent(db, {
 				runId,
 				eventType: "error",
@@ -190,6 +191,7 @@ export default defineCommand({
 				"\n  Error: Agent adapter not yet available. " +
 					"This is expected while 5x is being refactored.",
 			);
+			if (message) console.error(`  Cause: ${message}`);
 			process.exitCode = 1;
 			return;
 		}

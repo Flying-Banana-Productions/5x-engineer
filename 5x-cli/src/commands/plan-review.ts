@@ -109,11 +109,13 @@ export default defineCommand({
 		try {
 			authorAdapter = await createAndVerifyAdapter(config.author);
 			reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
-		} catch {
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
 			console.error(
 				"\n  Error: Agent adapter not yet available. " +
 					"This is expected while 5x is being refactored.",
 			);
+			if (message) console.error(`  Cause: ${message}`);
 			process.exitCode = 1;
 			return;
 		}

@@ -159,6 +159,30 @@ describe("config", () => {
 		expect(partial.author?.model).toBe("anthropic/claude-opus");
 	});
 
+	test("warns on unknown/deprecated keys", async () => {
+		const tmp = makeTmpDir();
+		const original = console.error;
+		const errors: string[] = [];
+		console.error = (...args: unknown[]) => {
+			errors.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { author: { adapter: "opencode" }, extra: true };`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.author.model).toBeUndefined();
+			expect(errors.join("\n")).toContain(
+				'Deprecated config key "author.adapter"',
+			);
+			expect(errors.join("\n")).toContain('Unknown config key "extra"');
+		} finally {
+			console.error = original;
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("schema validates full config shape", () => {
 		const result = FiveXConfigSchema.safeParse({});
 		expect(result.success).toBe(true);

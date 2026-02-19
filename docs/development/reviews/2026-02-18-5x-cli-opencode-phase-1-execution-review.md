@@ -71,9 +71,43 @@ With `createAndVerifyAdapter()` throwing, `5x plan`, `5x plan-review`, and `5x r
 ## Readiness checklist
 
 **P0 blockers**
-- [ ] Update `5x-cli/src/commands/init.ts` to generate a schema-valid, OpenCode-only config (no adapter fields; model examples).
+- [x] Update `5x-cli/src/commands/init.ts` to generate a schema-valid, OpenCode-only config (no adapter fields; model examples).
 
 **P1 recommended**
-- [ ] Reconcile Phase 1 plan vs code on `makeOnEvent()` (remove it or update the plan checklist).
-- [ ] Improve command-level error handling for the temporary “adapter not implemented” state.
+- [x] Reconcile Phase 1 plan vs code on `makeOnEvent()` (remove it or update the plan checklist).
+- [x] Improve command-level error handling for the temporary “adapter not implemented” state.
 
+---
+
+## Addendum (2026-02-18) — Phase 1 drift fixes + updated readiness
+
+**Reviewed:** `39db1ffd4b`
+
+### What's addressed (✅)
+
+- **P0.1 init config correctness:** `5x-cli/src/commands/init.ts` now generates schema-valid config (no adapter fields; model examples + local-only note).
+- **P1.2 CLI adapter init UX:** `5x-cli/src/commands/plan.ts`, `5x-cli/src/commands/plan-review.ts`, and `5x-cli/src/commands/run.ts` catch the expected Phase 1 “adapter unavailable” condition and emit a single user-facing error (no stack trace).
+- **P1.1 plan/implementation alignment:** `docs/development/003-impl-5x-cli-opencode.md` now explicitly defers `makeOnEvent()` removal to Phase 4 (matches the current legacy-orchestrator reality).
+
+### Remaining concerns
+
+- **Operability:** `plan-review`/`run` use a bare `catch` and drop error details. While fine for Phase 1 (everything errors), this will hide actionable causes once Phase 3 introduces real adapter startup failures (missing binary, health check failure, etc.). Prefer printing `err.message` (still no stack trace).
+- **Config hygiene (P2):** Consider warning if deprecated/unknown config keys are present (e.g. lingering `author.adapter`) to fail-loud on typos and reduce user confusion.
+
+### Updated readiness
+
+- **Phase 1 completion:** ✅ — Phase 1 checklist now matches implementation; tests/lint/typecheck pass.
+- **Ready for Phase 2:** ✅ — proceed.
+
+---
+
+## Addendum (2026-02-19) — Operability + config hygiene follow-up
+
+### What's addressed (✅)
+
+- **Operability:** `plan-review`/`run` now print the adapter init error message (no stack trace) so Phase 3 startup failures remain actionable.
+- **Config hygiene (P2):** `loadConfig()` warns on deprecated/unknown config keys (e.g. `author.adapter`, `reviewer.adapter`, or unexpected top-level keys) instead of silently stripping.
+
+### Updated readiness
+
+- **Phase 1 follow-up:** ✅ — remaining concerns addressed; tests pass.
