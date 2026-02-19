@@ -1,12 +1,10 @@
 /** @type {import('5x-cli').FiveXConfig} */
 export default {
   author: {
-    adapter: 'claude-code',
-    model: 'sonnet'
+    model: 'anthropic/claude-opus-4-6'
   },
   reviewer: {
-    adapter: 'claude-code',
-    model: 'opus'
+    model: 'openai/gpt-5.2'
   },
   qualityGates: [
     // Add your test/lint/build commands here, e.g.:
