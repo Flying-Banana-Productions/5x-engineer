@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
-import type { AgentAdapter, LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
@@ -104,11 +103,9 @@ export default defineCommand({
 		console.log(`  Review path: ${reviewPath}`);
 		console.log();
 
-		let authorAdapter: AgentAdapter;
-		let reviewerAdapter: AgentAdapter;
+		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
-			authorAdapter = await createAndVerifyAdapter(config.author);
-			reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
+			adapter = await createAndVerifyAdapter(config.author);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			console.error(
@@ -129,8 +126,7 @@ export default defineCommand({
 			canonical,
 			reviewPath,
 			db,
-			authorAdapter as unknown as LegacyAgentAdapter,
-			reviewerAdapter as unknown as LegacyAgentAdapter,
+			adapter,
 			config,
 			{
 				auto: args.auto,

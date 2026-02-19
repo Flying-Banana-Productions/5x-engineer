@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
-import type { AgentAdapter, LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
@@ -239,12 +238,10 @@ export default defineCommand({
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
 		try {
-			// --- Initialize adapters ---
-			let authorAdapter: AgentAdapter;
-			let reviewerAdapter: AgentAdapter;
+			// --- Initialize adapter ---
+			let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 			try {
-				authorAdapter = await createAndVerifyAdapter(config.author);
-				reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
+				adapter = await createAndVerifyAdapter(config.author);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				console.error(
@@ -260,8 +257,7 @@ export default defineCommand({
 				effectivePlanPath,
 				reviewPath,
 				db,
-				authorAdapter as unknown as LegacyAgentAdapter,
-				reviewerAdapter as unknown as LegacyAgentAdapter,
+				adapter,
 				config,
 				{
 					auto: args.auto,

@@ -748,34 +748,34 @@ Current states: `EXECUTE, PARSE_AUTHOR_STATUS, QUALITY_CHECK, QUALITY_RETRY, REV
 
 New states: `EXECUTE, QUALITY_CHECK, QUALITY_RETRY, REVIEW, AUTO_FIX, PHASE_GATE, ESCALATE`
 
-- [ ] **EXECUTE**: call `adapter.invokeForStatus(...)` → `InvokeStatus` returned directly
+- [x] **EXECUTE**: call `adapter.invokeForStatus(...)` → `InvokeStatus` returned directly
   - Call `assertAuthorStatus(result.status, "EXECUTE", { requireCommit: true })` — escalate on invariant violation
   - On `result.status.result === "complete"`: store to DB, advance to `QUALITY_CHECK`
   - On `result.status.result === "needs_human"` or `"failed"`: escalate immediately
   - On throw (timeout, network, invariant violation): escalate with error message
   - `PARSE_AUTHOR_STATUS` state eliminated
 
-- [ ] **REVIEW**: call `adapter.invokeForVerdict(...)` → `InvokeVerdict` returned directly
+- [x] **REVIEW**: call `adapter.invokeForVerdict(...)` → `InvokeVerdict` returned directly
   - Call `assertReviewerVerdict(result.verdict, "REVIEW")` — escalate on invariant violation
   - On `result.verdict.readiness === "ready"`: advance to `PHASE_GATE`
   - On `auto_fix` items: advance to `AUTO_FIX`
   - On `human_required` items or invariant violation: escalate
   - `PARSE_VERDICT` state eliminated
 
-- [ ] **AUTO_FIX**: call `adapter.invokeForStatus(...)` → `InvokeStatus`
+- [x] **AUTO_FIX**: call `adapter.invokeForStatus(...)` → `InvokeStatus`
   - Call `assertAuthorStatus(result.status, "AUTO_FIX")` — escalate on invariant violation
   - On complete: re-enter `QUALITY_CHECK`
   - On needs_human/failed/throw: escalate
   - `PARSE_FIX_STATUS` state eliminated
 
-- [ ] **QUALITY_RETRY**: call `adapter.invokeForStatus(...)` → same as EXECUTE
+- [x] **QUALITY_RETRY**: call `adapter.invokeForStatus(...)` → same as EXECUTE
   - `PARSE_FIX_STATUS` (quality variant) eliminated
 
-- [ ] Log path: compute `logPath = path.join(logDir, \`agent-\${resultId}.ndjson\`)` **before** each adapter invocation; pass to `InvokeOptions.logPath`. `EscalationEvent.logPath` is always populated from this pre-computed value — no cross-state tracking needed.
+- [x] Log path: compute `logPath = path.join(logDir, \`agent-\${resultId}.ndjson\`)` **before** each adapter invocation; pass to `InvokeOptions.logPath`. `EscalationEvent.logPath` is always populated from this pre-computed value — no cross-state tracking needed.
 
-- [ ] Remove iteration off-by-one workaround — structured output is synchronous; `iteration++` happens after the result is stored
+- [x] Remove iteration off-by-one workaround — structured output is synchronous; `iteration++` happens after the result is stored
 
-- [ ] Pass `quiet` flag through to `invokeForStatus`/`invokeForVerdict` so SSE console output is suppressed when `--quiet` is active (log file still written)
+- [x] Pass `quiet` flag through to `invokeForStatus`/`invokeForVerdict` so SSE console output is suppressed when `--quiet` is active (log file still written)
 
 ### 4.3 Refactor `plan-review-loop.ts`
 
@@ -783,27 +783,27 @@ Current states: `REVIEW, PARSE_VERDICT, AUTO_FIX, PARSE_STATUS, APPROVED, ESCALA
 
 New states: `REVIEW, AUTO_FIX, APPROVED, ESCALATE`
 
-- [ ] **REVIEW**: call `adapter.invokeForVerdict(...)` → `InvokeVerdict`
+- [x] **REVIEW**: call `adapter.invokeForVerdict(...)` → `InvokeVerdict`
   - Call `assertReviewerVerdict(result.verdict, "PLAN_REVIEW/REVIEW")` — escalate on violation
   - Routing identical to phase-execution REVIEW
   - `PARSE_VERDICT` eliminated
 
-- [ ] **AUTO_FIX**: call `adapter.invokeForStatus(...)` → `InvokeStatus`
+- [x] **AUTO_FIX**: call `adapter.invokeForStatus(...)` → `InvokeStatus`
   - Call `assertAuthorStatus(result.status, "PLAN_REVIEW/AUTO_FIX")` — escalate on violation
   - `PARSE_STATUS` eliminated
 
 ### 4.4 Update `agent-event-helpers.ts`
 
-- [ ] Remove `makeOnEvent()` (deferred from Phase 1; delete in Phase 4 once orchestrators no longer pass `onEvent`)
-- [ ] Update `buildEscalationReason()`:
+- [x] Remove `makeOnEvent()` (deferred from Phase 1; delete in Phase 4 once orchestrators no longer pass `onEvent`)
+- [x] Update `buildEscalationReason()`:
   - No longer takes `AgentResult` (no stdout output)
   - Takes `{ message: string; logPath?: string }` — simpler signature
   - Formats: `"${message}. Log: ${logPath}"`
-- [ ] Update `outputSnippet()` or remove if no longer needed (no captured stdout to snippet)
+- [x] Update `outputSnippet()` or remove if no longer needed (no captured stdout to snippet)
 
 ### 4.5 Update orchestrator tests
 
-- [ ] `test/orchestrator/phase-execution-loop.test.ts`:
+- [x] `test/orchestrator/phase-execution-loop.test.ts`:
   - Replace mock `AgentAdapter` from subprocess semantics to new `invokeForStatus`/`invokeForVerdict` interface
   - Remove tests for `PARSE_*` states (they no longer exist)
   - Add tests for structured output error handling (adapter throws)
@@ -811,7 +811,7 @@ New states: `REVIEW, AUTO_FIX, APPROVED, ESCALATE`
   - Keep: multi-phase, quality retry, escalation, resume, worktree tests
   - Verify: `EscalationEvent.logPath` is always populated; log file written even when quiet=true
 
-- [ ] `test/orchestrator/plan-review-loop.test.ts`:
+- [x] `test/orchestrator/plan-review-loop.test.ts`:
   - Same adapter mock update
   - Remove `PARSE_*` state tests
   - Add invariant validator integration tests
@@ -843,14 +843,14 @@ Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
   - Append: `\n<!-- 5x:structured:v1 ${encoded} -->\n` to the file (append-only file write)
 - Call after `upsertAgentResult()` in both orchestrators (plan-review-loop REVIEW and AUTO_FIX results, phase-execution-loop REVIEW and EXECUTE results)
 
-- [ ] Implement `appendStructuredAuditRecord()` in `src/utils/audit.ts` with base64url encoding
-- [ ] Call from `plan-review-loop.ts` after storing each verdict/status result
-- [ ] Call from `phase-execution-loop.ts` after storing each verdict/status result
-- [ ] Add to `test/utils/audit.test.ts`:
-  - [ ] Append-only: multiple calls accumulate, never overwrite
-  - [ ] Format: each appended line matches `<!-- 5x:structured:v1 <base64url> -->`
-  - [ ] Round-trip: decoded payload equals original record object
-  - [ ] Encoding safety: payload containing `-->` or `--` in string values does not break comment delimiter
+- [x] Implement `appendStructuredAuditRecord()` in `src/utils/audit.ts` with base64url encoding
+- [x] Call from `plan-review-loop.ts` after storing each verdict/status result
+- [x] Call from `phase-execution-loop.ts` after storing each verdict/status result
+- [x] Add to `test/utils/audit.test.ts`:
+  - [x] Append-only: multiple calls accumulate, never overwrite
+  - [x] Format: each appended line matches `<!-- 5x:structured:v1 <base64url> -->`
+  - [x] Round-trip: decoded payload equals original record object
+  - [x] Encoding safety: payload containing `-->` or `--` in string values does not break comment delimiter
 
 ---
 

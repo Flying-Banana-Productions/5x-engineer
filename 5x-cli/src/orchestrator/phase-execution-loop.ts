@@ -3,30 +3,29 @@
  *
  * Per-phase inner loop:
  *   1. Parse plan → identify current phase
- *   2. Render author prompt → invoke author → store result
- *   3. Parse 5x:status → handle needs_human / failed
+ *   2. Render author prompt → invoke adapter.invokeForStatus() → store result
+ *   3. Route on typed AuthorStatus (no parsing needed)
  *   4. Run quality gates → store result
  *      - If fail: re-invoke author (up to maxQualityRetries)
- *   5. Render reviewer prompt → invoke reviewer → store result
- *   6. Parse 5x:verdict
+ *   5. Render reviewer prompt → invoke adapter.invokeForVerdict() → store result
+ *   6. Route on typed ReviewerVerdict
  *      - ready → phase gate → next phase
  *      - auto_fix → author fix → back to step 4
  *      - human_required → escalate
  *   7. Phase gate (human confirmation unless --auto)
  *   8. Next phase
+ *
+ * Phase 4 refactor: PARSE_* states eliminated. Structured output is returned
+ * directly from the SDK — the orchestrator gets typed results immediately.
  */
 
 import type { Database } from "bun:sqlite";
-import {
-	createWriteStream,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type {
-	LegacyAgentAdapter as AgentAdapter,
-	AgentResult,
+	AgentAdapter,
+	InvokeStatus,
+	InvokeVerdict,
 } from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import type { QualityResultInput } from "../db/operations.js";
@@ -35,6 +34,8 @@ import {
 	createRun,
 	getActiveRun,
 	getAgentResults,
+	getLatestStatus,
+	getLatestVerdict,
 	getMaxIterationForPhase,
 	getQualityAttemptCount,
 	hasCompletedStep,
@@ -55,16 +56,8 @@ import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
-import {
-	buildEscalationReason,
-	makeOnEvent,
-} from "../utils/agent-event-helpers.js";
-import {
-	type LegacyVerdict,
-	parseStatusBlock,
-	parseVerdictBlock,
-} from "../utils/legacy-signals.js";
-import { endStream } from "../utils/stream.js";
+import { buildEscalationReason } from "../utils/agent-event-helpers.js";
+import { appendStructuredAuditRecord } from "../utils/audit.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -108,20 +101,30 @@ export interface PhaseExecutionOptions {
 
 /**
  * Inner-phase state machine states.
+ *
+ * Phase 4: PARSE_AUTHOR_STATUS, PARSE_VERDICT, PARSE_FIX_STATUS eliminated.
+ * Structured output is returned directly from adapter calls.
  */
 type PhaseState =
-	| "EXECUTE" // invoke author
-	| "PARSE_AUTHOR_STATUS" // parse 5x:status from author output
+	| "EXECUTE" // invoke author → get typed status directly
 	| "QUALITY_CHECK" // run quality gates
 	| "QUALITY_RETRY" // re-invoke author after quality failure
-	| "REVIEW" // invoke reviewer
-	| "PARSE_VERDICT" // parse 5x:verdict from review
+	| "REVIEW" // invoke reviewer → get typed verdict directly
 	| "AUTO_FIX" // invoke author to fix review items
-	| "PARSE_FIX_STATUS" // parse 5x:status after auto-fix
 	| "ESCALATE" // human intervention needed
 	| "PHASE_GATE" // human confirmation between phases
 	| "PHASE_COMPLETE" // phase done, move to next
 	| "ABORTED"; // run stopped
+
+/**
+ * Map deprecated PARSE_* states from old DB records to their parent states.
+ * Required for backward-compatible resume from runs started before Phase 4.
+ */
+const LEGACY_STATE_MAP: Record<string, PhaseState> = {
+	PARSE_AUTHOR_STATUS: "EXECUTE",
+	PARSE_VERDICT: "REVIEW",
+	PARSE_FIX_STATUS: "AUTO_FIX",
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,8 +148,7 @@ export async function runPhaseExecutionLoop(
 	planPath: string,
 	reviewPath: string,
 	db: Database,
-	authorAdapter: AgentAdapter,
-	reviewerAdapter: AgentAdapter,
+	adapter: AgentAdapter,
 	config: FiveXConfig,
 	options: PhaseExecutionOptions,
 ): Promise<PhaseExecutionResult> {
@@ -166,6 +168,8 @@ export async function runPhaseExecutionLoop(
 	let startPhaseNumber: string | undefined = options.startPhase;
 	let resumedState: PhaseState | undefined;
 	let resumedPhase: string | undefined;
+	/** True when the resumed state was a legacy PARSE_* state (needs special iteration handling). */
+	let resumedFromLegacyParse = false;
 
 	const activeRun = getActiveRun(db, canonical);
 	if (activeRun && activeRun.command === "run") {
@@ -194,24 +198,22 @@ export async function runPhaseExecutionLoop(
 				startPhaseNumber = activeRun.current_phase;
 				resumedPhase = activeRun.current_phase;
 			}
-			// Restore the state machine position
+			// Restore the state machine position, mapping legacy PARSE_* states
 			const validStates: PhaseState[] = [
 				"EXECUTE",
-				"PARSE_AUTHOR_STATUS",
 				"QUALITY_CHECK",
 				"QUALITY_RETRY",
 				"REVIEW",
-				"PARSE_VERDICT",
 				"AUTO_FIX",
-				"PARSE_FIX_STATUS",
 				"ESCALATE",
 				"PHASE_GATE",
 			];
-			if (
-				activeRun.current_state &&
-				validStates.includes(activeRun.current_state as PhaseState)
-			) {
-				resumedState = activeRun.current_state as PhaseState;
+			const rawState = activeRun.current_state ?? "";
+			if (rawState in LEGACY_STATE_MAP) {
+				resumedState = LEGACY_STATE_MAP[rawState];
+				resumedFromLegacyParse = true;
+			} else if (validStates.includes(rawState as PhaseState)) {
+				resumedState = rawState as PhaseState;
 			}
 			console.log(
 				`  Resuming run ${runId.slice(0, 8)} at phase ${startPhaseNumber ?? "next"}, state ${resumedState ?? "EXECUTE"}`,
@@ -293,11 +295,18 @@ export async function runPhaseExecutionLoop(
 			? (resumedState as PhaseState)
 			: "EXECUTE";
 
-		// Derive iteration from DB: max(iteration) + 1 for this phase, so the
-		// next agent invocation gets a deterministic, non-colliding identity.
-		let iteration = isResumedPhase
-			? getMaxIterationForPhase(db, runId, phase.number) + 1
-			: 0;
+		// Derive iteration from DB: max(iteration) for this phase.
+		// For legacy PARSE_* resume: use max iteration directly (the invocation
+		// whose result needs routing). For all other resume cases: use max + 1
+		// (the next invocation slot).
+		let iteration: number;
+		if (isResumedPhase && resumedFromLegacyParse) {
+			iteration = getMaxIterationForPhase(db, runId, phase.number);
+		} else if (isResumedPhase) {
+			iteration = getMaxIterationForPhase(db, runId, phase.number) + 1;
+		} else {
+			iteration = 0;
+		}
 
 		// Restore quality attempt counter from DB
 		let qualityAttempt = isResumedPhase
@@ -308,29 +317,13 @@ export async function runPhaseExecutionLoop(
 		let qualityResult: QualityResult | undefined;
 		let _phaseAborted = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
-		// Tracks the most recent agent NDJSON log path across state transitions so
-		// PARSE_* states can include it in escalation events without re-derivation.
-		let lastAgentLogPath: string | undefined;
-		// Tracks the iteration value at the time of the last agent invocation, so
-		// PARSE_* states attribute escalations to the correct invocation (before
-		// the monotonic iteration counter is incremented for the next state).
-		// On resume into a PARSE_* state, iteration is already max+1 (the next
-		// invocation slot), so lastInvokeIteration must be iteration-1 to
-		// correctly reference the invocation whose result is being parsed.
-		const isParseState =
-			isResumedPhase &&
-			(state === "PARSE_AUTHOR_STATUS" ||
-				state === "PARSE_VERDICT" ||
-				state === "PARSE_FIX_STATUS");
-		let lastInvokeIteration = isParseState
-			? Math.max(0, iteration - 1)
-			: iteration;
 
 		// Clear resume markers after consuming them — only the first phase
 		// in the loop should get the restored state.
 		if (isResumedPhase) {
 			resumedState = undefined;
 			resumedPhase = undefined;
+			resumedFromLegacyParse = false;
 		}
 
 		updateRunStatus(db, runId, "active", state, phase.number);
@@ -379,7 +372,81 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping author step ${iteration} (already completed)`,
 						);
-						state = "PARSE_AUTHOR_STATUS";
+						// Route based on stored result
+						const status = getLatestStatus(db, runId, phase.number);
+						if (!status) {
+							const event: EscalationEvent = {
+								reason:
+									"Author result stored but cannot be read. Manual review required.",
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						try {
+							assertAuthorStatus(status, "EXECUTE", {
+								requireCommit: true,
+							});
+						} catch (err) {
+							const event: EscalationEvent = {
+								reason: err instanceof Error ? err.message : String(err),
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						if (status.result === "needs_human" || status.result === "failed") {
+							const event: EscalationEvent = {
+								reason: status.reason ?? `Author reported ${status.result}`,
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						// Complete — capture commit and advance
+						lastCommit = status.commit;
+						if (!lastCommit) {
+							try {
+								lastCommit = await getLatestCommit(workdir);
+							} catch {
+								// Not critical
+							}
+						}
+						console.log(
+							`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
+						);
+						iteration++;
+						state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 						break;
 					}
 
@@ -393,79 +460,28 @@ export async function runPhaseExecutionLoop(
 
 					console.log(`  Author implementing phase ${phase.number}...`);
 
-					// Open log stream before invoking
+					// Compute log path before invocation
 					const executeResultId = generateId();
 					const executeLogPath = join(
 						logDir,
 						`agent-${executeResultId}.ndjson`,
 					);
-					const executeLogStream = createWriteStream(executeLogPath);
-					executeLogStream.on("error", (err) =>
-						console.warn(
-							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-						),
-					);
 
-					let authorResult: AgentResult;
+					let authorResult: InvokeStatus;
 					try {
-						authorResult = await authorAdapter.invoke({
+						authorResult = await adapter.invokeForStatus({
 							prompt: authorTemplate.prompt,
 							model: config.author.model,
 							workdir,
-							logStream: executeLogStream,
-							onEvent: makeOnEvent(quiet),
-						});
-					} finally {
-						await endStream(executeLogStream);
-					}
-
-					// Parse status from author output
-					const authorStatus = parseStatusBlock(authorResult.output);
-
-					upsertAgentResult(db, {
-						id: executeResultId,
-						run_id: runId,
-						phase: phase.number,
-						iteration,
-						role: "author",
-						template: "author-next-phase",
-						result_type: "status",
-						result_json: authorStatus ? JSON.stringify(authorStatus) : "null",
-						duration_ms: authorResult.duration,
-						log_path: executeLogPath,
-						session_id: authorResult.sessionId ?? null,
-						model: config.author.model ?? null,
-						tokens_in: authorResult.tokens?.input ?? null,
-						tokens_out: authorResult.tokens?.output ?? null,
-						cost_usd: authorResult.cost ?? null,
-					});
-
-					appendRunEvent(db, {
-						runId,
-						eventType: "agent_invoke",
-						phase: phase.number,
-						iteration,
-						data: {
-							role: "author",
-							template: "author-next-phase",
-							exitCode: authorResult.exitCode,
-							duration: authorResult.duration,
 							logPath: executeLogPath,
-						},
-					});
-
-					// Record log path for PARSE_AUTHOR_STATUS escalations before incrementing.
-					lastAgentLogPath = executeLogPath;
-
-					// Handle non-zero exit — escalation uses pre-increment iteration to
-					// match the agent_results row for this invocation.
-					if (authorResult.exitCode !== 0) {
+							quiet,
+						});
+					} catch (err) {
+						// Hard failure: timeout, network, structured output error
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Author exited with code ${authorResult.exitCode}`,
+								`Author invocation failed: ${err instanceof Error ? err.message : String(err)}`,
 								executeLogPath,
-								authorResult,
-								quiet,
 							),
 							iteration,
 							logPath: executeLogPath,
@@ -483,117 +499,129 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					lastInvokeIteration = iteration;
-					iteration++;
-					state = "PARSE_AUTHOR_STATUS";
-					break;
-				}
+					// Store result in DB
+					upsertAgentResult(db, {
+						id: executeResultId,
+						run_id: runId,
+						phase: phase.number,
+						iteration,
+						role: "author",
+						template: "author-next-phase",
+						result_type: "status",
+						result_json: JSON.stringify(authorResult.status),
+						duration_ms: authorResult.duration,
+						log_path: executeLogPath,
+						session_id: authorResult.sessionId ?? null,
+						model: config.author.model ?? null,
+						tokens_in: authorResult.tokensIn ?? null,
+						tokens_out: authorResult.tokensOut ?? null,
+						cost_usd: authorResult.costUsd ?? null,
+					});
 
-				// ───────────────────────────────────────────────────────
-				// PARSE_AUTHOR_STATUS: handle 5x:status from author
-				// ───────────────────────────────────────────────────────
-				case "PARSE_AUTHOR_STATUS": {
-					updateRunStatus(
-						db,
+					appendRunEvent(db, {
 						runId,
-						"active",
-						"PARSE_AUTHOR_STATUS",
-						phase.number,
-					);
+						eventType: "agent_invoke",
+						phase: phase.number,
+						iteration,
+						data: {
+							role: "author",
+							template: "author-next-phase",
+							duration: authorResult.duration,
+							logPath: executeLogPath,
+						},
+					});
 
-					const { getLatestStatus } = await import("../db/operations.js");
-					const status = getLatestStatus(db, runId, phase.number);
-
-					if (!status) {
-						const event: EscalationEvent = {
-							reason:
-								"Author did not produce a 5x:status block. Manual review required.",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
+					// Append audit record
+					try {
+						await appendStructuredAuditRecord(reviewPath, {
+							schema: 1,
+							type: "status",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
-							data: event,
+							iteration,
+							data: authorResult.status,
 						});
-						state = "ESCALATE";
-						break;
+					} catch {
+						// Best-effort — don't fail the run if audit write fails
 					}
 
+					// Validate invariants
 					try {
-						assertAuthorStatus(status, "EXECUTE", { requireCommit: true });
+						assertAuthorStatus(authorResult.status, "EXECUTE", {
+							requireCommit: true,
+						});
 					} catch (err) {
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							iteration,
+							logPath: executeLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
-					if (status.result === "needs_human") {
+					// Route on status
+					if (authorResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
-							reason: status.reason ?? "Author needs human input",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							reason: authorResult.status.reason ?? "Author needs human input",
+							iteration,
+							logPath: executeLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
-					if (status.result === "failed") {
+					if (authorResult.status.result === "failed") {
 						const event: EscalationEvent = {
-							reason: status.reason ?? "Author reported failure",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							reason: authorResult.status.reason ?? "Author reported failure",
+							iteration,
+							logPath: executeLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
-					// Capture commit hash from status
-					if (status.commit) {
-						lastCommit = status.commit;
+					// Complete — capture commit
+					if (authorResult.status.commit) {
+						lastCommit = authorResult.status.commit;
 					} else {
-						// Fallback: get latest commit from git
 						try {
 							lastCommit = await getLatestCommit(workdir);
 						} catch {
-							// Not critical — reviewer can work without commit hash
+							// Not critical
 						}
 					}
 
 					console.log(
 						`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
 					);
+					iteration++;
 					state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 					break;
 				}
@@ -715,71 +743,23 @@ export async function runPhaseExecutionLoop(
 						`  Author fixing quality failures (attempt ${qualityAttempt + 1})...`,
 					);
 
-					// Open log stream for quality retry
 					const qrFixResultId = generateId();
 					const qrFixLogPath = join(logDir, `agent-${qrFixResultId}.ndjson`);
-					const qrFixLogStream = createWriteStream(qrFixLogPath);
-					qrFixLogStream.on("error", (err) =>
-						console.warn(
-							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-						),
-					);
 
-					let fixResult: AgentResult;
+					let fixResult: InvokeStatus;
 					try {
-						fixResult = await authorAdapter.invoke({
+						fixResult = await adapter.invokeForStatus({
 							prompt: qualityFixPrompt,
 							model: config.author.model,
 							workdir,
-							logStream: qrFixLogStream,
-							onEvent: makeOnEvent(quiet),
-						});
-					} finally {
-						await endStream(qrFixLogStream);
-					}
-
-					const fixStatus = parseStatusBlock(fixResult.output);
-					upsertAgentResult(db, {
-						id: qrFixResultId,
-						run_id: runId,
-						phase: phase.number,
-						iteration,
-						role: "author",
-						template: "author-process-review",
-						result_type: "status",
-						result_json: fixStatus ? JSON.stringify(fixStatus) : "null",
-						duration_ms: fixResult.duration,
-						log_path: qrFixLogPath,
-						session_id: fixResult.sessionId ?? null,
-						model: config.author.model ?? null,
-						tokens_in: fixResult.tokens?.input ?? null,
-						tokens_out: fixResult.tokens?.output ?? null,
-						cost_usd: fixResult.cost ?? null,
-					});
-
-					appendRunEvent(db, {
-						runId,
-						eventType: "agent_invoke",
-						phase: phase.number,
-						iteration,
-						data: {
-							role: "author",
-							template: "author-process-review",
-							reason: "quality_retry",
-							exitCode: fixResult.exitCode,
 							logPath: qrFixLogPath,
-						},
-					});
-
-					lastAgentLogPath = qrFixLogPath;
-
-					if (fixResult.exitCode !== 0) {
+							quiet,
+						});
+					} catch (err) {
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Author exited with code ${fixResult.exitCode} during quality fix`,
+								`Author invocation failed during quality fix: ${err instanceof Error ? err.message : String(err)}`,
 								qrFixLogPath,
-								fixResult,
-								quiet,
 							),
 							iteration,
 							logPath: qrFixLogPath,
@@ -797,41 +777,47 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					// Missing status block — escalate (fail-closed, consistent
-					// with PARSE_AUTHOR_STATUS / PARSE_FIX_STATUS).
-					if (!fixStatus) {
-						const event: EscalationEvent = {
-							reason:
-								"Author did not produce a status block during quality fix. Manual review required.",
-							iteration,
-							logPath: qrFixLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
-							phase: phase.number,
-							iteration,
-							data: {
-								reason: event.reason,
-								trigger: "quality_retry_missing_status",
-							},
-						});
-						iteration++;
-						state = "ESCALATE";
-						break;
-					}
+					upsertAgentResult(db, {
+						id: qrFixResultId,
+						run_id: runId,
+						phase: phase.number,
+						iteration,
+						role: "author",
+						template: "author-process-review",
+						result_type: "status",
+						result_json: JSON.stringify(fixResult.status),
+						duration_ms: fixResult.duration,
+						log_path: qrFixLogPath,
+						session_id: fixResult.sessionId ?? null,
+						model: config.author.model ?? null,
+						tokens_in: fixResult.tokensIn ?? null,
+						tokens_out: fixResult.tokensOut ?? null,
+						cost_usd: fixResult.costUsd ?? null,
+					});
 
-					// Route on author status semantics — escalate if author
-					// explicitly reported needs_human or failed (P1.3 fix).
+					appendRunEvent(db, {
+						runId,
+						eventType: "agent_invoke",
+						phase: phase.number,
+						iteration,
+						data: {
+							role: "author",
+							template: "author-process-review",
+							reason: "quality_retry",
+							duration: fixResult.duration,
+							logPath: qrFixLogPath,
+						},
+					});
+
+					// Route on author status
 					if (
-						fixStatus.result === "needs_human" ||
-						fixStatus.result === "failed"
+						fixResult.status.result === "needs_human" ||
+						fixResult.status.result === "failed"
 					) {
 						const event: EscalationEvent = {
 							reason:
-								fixStatus.reason ??
-								`Author reported ${fixStatus.result} during quality fix`,
+								fixResult.status.reason ??
+								`Author reported ${fixResult.status.result} during quality fix`,
 							iteration,
 							logPath: qrFixLogPath,
 						};
@@ -844,7 +830,7 @@ export async function runPhaseExecutionLoop(
 							data: {
 								reason: event.reason,
 								trigger: "quality_retry_status",
-								status: fixStatus.result,
+								status: fixResult.status.result,
 							},
 						});
 						iteration++;
@@ -879,7 +865,59 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping reviewer step ${iteration} (already completed)`,
 						);
-						state = "PARSE_VERDICT";
+						// Route based on stored verdict
+						const verdict = getLatestVerdict(db, runId, phase.number);
+						if (!verdict) {
+							const event: EscalationEvent = {
+								reason:
+									"Reviewer result stored but cannot be read. Manual review required.",
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						try {
+							assertReviewerVerdict(verdict, "REVIEW");
+						} catch (err) {
+							const event: EscalationEvent = {
+								reason: err instanceof Error ? err.message : String(err),
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						// Route verdict (shared routing logic)
+						const routeResult = routeVerdict(
+							verdict,
+							iteration,
+							undefined,
+							escalations,
+							db,
+							runId,
+							phase.number,
+						);
+						if (routeResult.increment) iteration++;
+						state = routeResult.nextState;
 						break;
 					}
 
@@ -914,81 +952,23 @@ export async function runPhaseExecutionLoop(
 
 					console.log(`  Reviewer reviewing phase ${phase.number}...`);
 
-					// Open log stream for review
 					const reviewResultId = generateId();
 					const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
-					const reviewLogStream = createWriteStream(reviewLogPath);
-					reviewLogStream.on("error", (err) =>
-						console.warn(
-							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-						),
-					);
 
-					let reviewResult: AgentResult;
+					let reviewResult: InvokeVerdict;
 					try {
-						reviewResult = await reviewerAdapter.invoke({
+						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
 							workdir,
-							logStream: reviewLogStream,
-							onEvent: makeOnEvent(quiet),
-						});
-					} finally {
-						await endStream(reviewLogStream);
-					}
-
-					// Parse verdict from the review file first, then from output
-					let verdict: LegacyVerdict | null = null;
-					if (existsSync(resolve(reviewPath))) {
-						const reviewContent = readFileSync(resolve(reviewPath), "utf-8");
-						verdict = parseVerdictBlock(reviewContent);
-					}
-					if (!verdict) {
-						verdict = parseVerdictBlock(reviewResult.output);
-					}
-
-					upsertAgentResult(db, {
-						id: reviewResultId,
-						run_id: runId,
-						phase: phase.number,
-						iteration,
-						role: "reviewer",
-						template: "reviewer-commit",
-						result_type: "verdict",
-						result_json: verdict ? JSON.stringify(verdict) : "null",
-						duration_ms: reviewResult.duration,
-						log_path: reviewLogPath,
-						session_id: reviewResult.sessionId ?? null,
-						model: config.reviewer.model ?? null,
-						tokens_in: reviewResult.tokens?.input ?? null,
-						tokens_out: reviewResult.tokens?.output ?? null,
-						cost_usd: reviewResult.cost ?? null,
-					});
-
-					appendRunEvent(db, {
-						runId,
-						eventType: "agent_invoke",
-						phase: phase.number,
-						iteration,
-						data: {
-							role: "reviewer",
-							template: "reviewer-commit",
-							exitCode: reviewResult.exitCode,
-							duration: reviewResult.duration,
 							logPath: reviewLogPath,
-						},
-					});
-
-					// Record log path for PARSE_VERDICT escalations before incrementing.
-					lastAgentLogPath = reviewLogPath;
-
-					if (reviewResult.exitCode !== 0) {
+							quiet,
+						});
+					} catch (err) {
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Reviewer exited with code ${reviewResult.exitCode}`,
+								`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
 								reviewLogPath,
-								reviewResult,
-								quiet,
 							),
 							iteration,
 							logPath: reviewLogPath,
@@ -1006,56 +986,68 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					lastInvokeIteration = iteration;
-					iteration++;
-					state = "PARSE_VERDICT";
-					break;
-				}
+					upsertAgentResult(db, {
+						id: reviewResultId,
+						run_id: runId,
+						phase: phase.number,
+						iteration,
+						role: "reviewer",
+						template: "reviewer-commit",
+						result_type: "verdict",
+						result_json: JSON.stringify(reviewResult.verdict),
+						duration_ms: reviewResult.duration,
+						log_path: reviewLogPath,
+						session_id: reviewResult.sessionId ?? null,
+						model: config.reviewer.model ?? null,
+						tokens_in: reviewResult.tokensIn ?? null,
+						tokens_out: reviewResult.tokensOut ?? null,
+						cost_usd: reviewResult.costUsd ?? null,
+					});
 
-				// ───────────────────────────────────────────────────────
-				// PARSE_VERDICT: route based on reviewer verdict
-				// ───────────────────────────────────────────────────────
-				case "PARSE_VERDICT": {
-					updateRunStatus(db, runId, "active", "PARSE_VERDICT", phase.number);
+					appendRunEvent(db, {
+						runId,
+						eventType: "agent_invoke",
+						phase: phase.number,
+						iteration,
+						data: {
+							role: "reviewer",
+							template: "reviewer-commit",
+							duration: reviewResult.duration,
+							logPath: reviewLogPath,
+						},
+					});
 
-					const { getLatestVerdict } = await import("../db/operations.js");
-					const verdict = getLatestVerdict(db, runId, phase.number);
-
-					if (!verdict) {
-						const event: EscalationEvent = {
-							reason:
-								"Reviewer did not produce a 5x:verdict block. Manual review required.",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
+					// Append audit record
+					try {
+						await appendStructuredAuditRecord(reviewPath, {
+							schema: 1,
+							type: "verdict",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
-							data: event,
+							iteration,
+							data: reviewResult.verdict,
 						});
-						state = "ESCALATE";
-						break;
+					} catch {
+						// Best-effort
 					}
 
+					// Validate invariants
 					try {
-						assertReviewerVerdict(verdict, "REVIEW");
+						assertReviewerVerdict(reviewResult.verdict, "REVIEW");
 					} catch (err) {
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							iteration,
+							logPath: reviewLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -1064,79 +1056,33 @@ export async function runPhaseExecutionLoop(
 						runId,
 						eventType: "verdict",
 						phase: phase.number,
-						iteration: lastInvokeIteration,
+						iteration,
 						data: {
-							readiness: verdict.readiness,
-							itemCount: verdict.items.length,
-							autoFixCount: verdict.items.filter((i) => i.action === "auto_fix")
-								.length,
-							humanRequiredCount: verdict.items.filter(
+							readiness: reviewResult.verdict.readiness,
+							itemCount: reviewResult.verdict.items.length,
+							autoFixCount: reviewResult.verdict.items.filter(
+								(i) => i.action === "auto_fix",
+							).length,
+							humanRequiredCount: reviewResult.verdict.items.filter(
 								(i) => i.action === "human_required",
 							).length,
 						},
 					});
 
-					console.log(`  Verdict: ${verdict.readiness}`);
+					console.log(`  Verdict: ${reviewResult.verdict.readiness}`);
 
-					if (verdict.readiness === "ready") {
-						state = "PHASE_GATE";
-						break;
-					}
-
-					// Check for human_required items — always escalate even in auto
-					const humanItems = verdict.items.filter(
-						(i) => i.action === "human_required",
+					// Route verdict
+					const routeResult = routeVerdict(
+						reviewResult.verdict,
+						iteration,
+						reviewLogPath,
+						escalations,
+						db,
+						runId,
+						phase.number,
 					);
-					if (humanItems.length > 0) {
-						const event: EscalationEvent = {
-							reason: `${humanItems.length} item(s) require human review`,
-							items: humanItems.map((i) => ({
-								id: i.id,
-								title: i.title,
-								reason: i.reason,
-							})),
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
-							phase: phase.number,
-							iteration: lastInvokeIteration,
-							data: event,
-						});
-						state = "ESCALATE";
-						break;
-					}
-
-					// ready_with_corrections or not_ready with auto_fix items
-					const autoFixItems = verdict.items.filter(
-						(i) => i.action === "auto_fix",
-					);
-					if (autoFixItems.length > 0) {
-						console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
-						state = "AUTO_FIX";
-						break;
-					}
-
-					// Non-ready with no actionable items — escalate
-					{
-						const event: EscalationEvent = {
-							reason: `Reviewer returned ${verdict.readiness} with no auto-fixable items`,
-							iteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
-							phase: phase.number,
-							iteration,
-							data: event,
-						});
-						state = "ESCALATE";
-					}
+					if (routeResult.increment) iteration++;
+					state = routeResult.nextState;
 					break;
 				}
 
@@ -1160,7 +1106,74 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping auto-fix step ${iteration} (already completed)`,
 						);
-						state = "PARSE_FIX_STATUS";
+						// Route based on stored result
+						const fixStatus = getLatestStatus(db, runId, phase.number);
+						if (!fixStatus) {
+							const event: EscalationEvent = {
+								reason: "Author fix result stored but cannot be read.",
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						try {
+							assertAuthorStatus(fixStatus, "AUTO_FIX");
+						} catch (err) {
+							const event: EscalationEvent = {
+								reason: err instanceof Error ? err.message : String(err),
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						if (
+							fixStatus.result === "needs_human" ||
+							fixStatus.result === "failed"
+						) {
+							const event: EscalationEvent = {
+								reason:
+									fixStatus.reason ??
+									`Author reported ${fixStatus.result} during fix`,
+								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						if (fixStatus.commit) lastCommit = fixStatus.commit;
+						qualityAttempt = 0;
+						console.log("  Author fix applied. Re-checking...");
+						iteration++;
+						state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 						break;
 					}
 
@@ -1169,33 +1182,36 @@ export async function runPhaseExecutionLoop(
 						plan_path: planPath,
 					});
 
-					// Open log stream for auto-fix
 					const autoFixResultId = generateId();
 					const autoFixLogPath = join(
 						logDir,
 						`agent-${autoFixResultId}.ndjson`,
 					);
-					const autoFixLogStream = createWriteStream(autoFixLogPath);
-					autoFixLogStream.on("error", (err) =>
-						console.warn(
-							`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-						),
-					);
 
-					let autoFixResult: AgentResult;
+					let autoFixResult: InvokeStatus;
 					try {
-						autoFixResult = await authorAdapter.invoke({
+						autoFixResult = await adapter.invokeForStatus({
 							prompt: fixTemplate.prompt,
 							model: config.author.model,
 							workdir,
-							logStream: autoFixLogStream,
-							onEvent: makeOnEvent(quiet),
+							logPath: autoFixLogPath,
+							quiet,
 						});
-					} finally {
-						await endStream(autoFixLogStream);
+					} catch (err) {
+						const event: EscalationEvent = {
+							reason: buildEscalationReason(
+								`Author invocation failed during auto-fix: ${err instanceof Error ? err.message : String(err)}`,
+								autoFixLogPath,
+							),
+							iteration,
+							logPath: autoFixLogPath,
+						};
+						escalations.push(event);
+						iteration++;
+						state = "ESCALATE";
+						break;
 					}
 
-					const fixStatus = parseStatusBlock(autoFixResult.output);
 					upsertAgentResult(db, {
 						id: autoFixResultId,
 						run_id: runId,
@@ -1204,14 +1220,14 @@ export async function runPhaseExecutionLoop(
 						role: "author",
 						template: "author-process-review",
 						result_type: "status",
-						result_json: fixStatus ? JSON.stringify(fixStatus) : "null",
+						result_json: JSON.stringify(autoFixResult.status),
 						duration_ms: autoFixResult.duration,
 						log_path: autoFixLogPath,
 						session_id: autoFixResult.sessionId ?? null,
 						model: config.author.model ?? null,
-						tokens_in: autoFixResult.tokens?.input ?? null,
-						tokens_out: autoFixResult.tokens?.output ?? null,
-						cost_usd: autoFixResult.cost ?? null,
+						tokens_in: autoFixResult.tokensIn ?? null,
+						tokens_out: autoFixResult.tokensOut ?? null,
+						cost_usd: autoFixResult.costUsd ?? null,
 					});
 
 					appendRunEvent(db, {
@@ -1223,145 +1239,108 @@ export async function runPhaseExecutionLoop(
 							role: "author",
 							template: "author-process-review",
 							reason: "auto_fix",
-							exitCode: autoFixResult.exitCode,
+							duration: autoFixResult.duration,
 							logPath: autoFixLogPath,
 						},
 					});
 
-					// Record log path for PARSE_FIX_STATUS escalations before incrementing.
-					lastAgentLogPath = autoFixLogPath;
+					// Append audit record
+					try {
+						await appendStructuredAuditRecord(reviewPath, {
+							schema: 1,
+							type: "status",
+							phase: phase.number,
+							iteration,
+							data: autoFixResult.status,
+						});
+					} catch {
+						// Best-effort
+					}
 
-					if (autoFixResult.exitCode !== 0) {
+					// Validate invariants
+					try {
+						assertAuthorStatus(autoFixResult.status, "AUTO_FIX");
+					} catch (err) {
 						const event: EscalationEvent = {
-							reason: buildEscalationReason(
-								`Author exited with code ${autoFixResult.exitCode} during auto-fix`,
-								autoFixLogPath,
-								autoFixResult,
-								quiet,
-							),
+							reason: err instanceof Error ? err.message : String(err),
 							iteration,
 							logPath: autoFixLogPath,
 						};
 						escalations.push(event);
-						iteration++;
-						state = "ESCALATE";
-						break;
-					}
-
-					lastInvokeIteration = iteration;
-					iteration++;
-					state = "PARSE_FIX_STATUS";
-					break;
-				}
-
-				// ───────────────────────────────────────────────────────
-				// PARSE_FIX_STATUS: handle 5x:status after auto-fix
-				// ───────────────────────────────────────────────────────
-				case "PARSE_FIX_STATUS": {
-					updateRunStatus(
-						db,
-						runId,
-						"active",
-						"PARSE_FIX_STATUS",
-						phase.number,
-					);
-
-					const { getLatestStatus } = await import("../db/operations.js");
-					const fixStatus = getLatestStatus(db, runId, phase.number);
-
-					if (!fixStatus) {
-						const event: EscalationEvent = {
-							reason: "Author did not produce a 5x:status block after fix.",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
-							data: { reason: event.reason, trigger: "missing_fix_status" },
-						});
-						state = "ESCALATE";
-						break;
-					}
-
-					try {
-						assertAuthorStatus(fixStatus, "AUTO_FIX");
-					} catch (err) {
-						const event: EscalationEvent = {
-							reason: err instanceof Error ? err.message : String(err),
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
-						};
-						escalations.push(event);
-						appendRunEvent(db, {
-							runId,
-							eventType: "escalation",
-							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: {
 								reason: event.reason,
 								trigger: "status_invariant_violation",
 							},
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
-					if (fixStatus.result === "needs_human") {
+					if (autoFixResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
-							reason: fixStatus.reason ?? "Author needs human input during fix",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							reason:
+								autoFixResult.status.reason ??
+								"Author needs human input during fix",
+							iteration,
+							logPath: autoFixLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: {
 								reason: event.reason,
 								trigger: "fix_needs_human",
-								status: fixStatus.result,
+								status: autoFixResult.status.result,
 							},
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
-					if (fixStatus.result === "failed") {
+					if (autoFixResult.status.result === "failed") {
 						const event: EscalationEvent = {
-							reason: fixStatus.reason ?? "Author reported failure during fix",
-							iteration: lastInvokeIteration,
-							logPath: lastAgentLogPath,
+							reason:
+								autoFixResult.status.reason ??
+								"Author reported failure during fix",
+							iteration,
+							logPath: autoFixLogPath,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration: lastInvokeIteration,
+							iteration,
 							data: {
 								reason: event.reason,
 								trigger: "fix_failed",
-								status: fixStatus.result,
+								status: autoFixResult.status.result,
 							},
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
 
 					// Update commit if provided
-					if (fixStatus.commit) {
-						lastCommit = fixStatus.commit;
+					if (autoFixResult.status.commit) {
+						lastCommit = autoFixResult.status.commit;
 					}
 
 					// Back to quality check (or review if skipping quality)
 					qualityAttempt = 0; // reset quality attempts after fix
 					console.log("  Author fix applied. Re-checking...");
+					iteration++;
 					state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 					break;
 				}
@@ -1437,11 +1416,7 @@ export async function runPhaseExecutionLoop(
 					}
 
 					const phaseGateFn = options.phaseGate ?? defaultPhaseGate;
-					// Compute actual verdict from DB (not hard-coded "ready")
-					const { getLatestVerdict: getVerdictForSummary } = await import(
-						"../db/operations.js"
-					);
-					const dbVerdict = getVerdictForSummary(db, runId, phase.number);
+					const dbVerdict = getLatestVerdict(db, runId, phase.number);
 					const summary: PhaseSummary = {
 						phaseNumber: phase.number,
 						phaseTitle: phase.title,
@@ -1464,7 +1439,6 @@ export async function runPhaseExecutionLoop(
 							state = "PHASE_COMPLETE";
 							break;
 						case "review":
-							// Let user review, then continue
 							console.log(
 								"  Please review the changes. Run `5x run` again to continue.",
 							);
@@ -1536,6 +1510,76 @@ export async function runPhaseExecutionLoop(
 		escalations,
 		runId,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Verdict routing helper
+// ---------------------------------------------------------------------------
+
+interface VerdictRouteResult {
+	nextState: PhaseState;
+	increment: boolean;
+}
+
+function routeVerdict(
+	verdict: import("../protocol.js").ReviewerVerdict,
+	iteration: number,
+	logPath: string | undefined,
+	escalations: EscalationEvent[],
+	db: Database,
+	runId: string,
+	phase: string,
+): VerdictRouteResult {
+	if (verdict.readiness === "ready") {
+		return { nextState: "PHASE_GATE", increment: true };
+	}
+
+	// Check for human_required items — always escalate even in auto
+	const humanItems = verdict.items.filter((i) => i.action === "human_required");
+	if (humanItems.length > 0) {
+		const event: EscalationEvent = {
+			reason: `${humanItems.length} item(s) require human review`,
+			items: humanItems.map((i) => ({
+				id: i.id,
+				title: i.title,
+				reason: i.reason,
+			})),
+			iteration,
+			logPath,
+		};
+		escalations.push(event);
+		appendRunEvent(db, {
+			runId,
+			eventType: "escalation",
+			phase,
+			iteration,
+			data: event,
+		});
+		return { nextState: "ESCALATE", increment: true };
+	}
+
+	// ready_with_corrections or not_ready with auto_fix items
+	const autoFixItems = verdict.items.filter((i) => i.action === "auto_fix");
+	if (autoFixItems.length > 0) {
+		console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
+		return { nextState: "AUTO_FIX", increment: true };
+	}
+
+	// Non-ready with no actionable items — escalate
+	const event: EscalationEvent = {
+		reason: `Reviewer returned ${verdict.readiness} with no auto-fixable items`,
+		iteration,
+		logPath,
+	};
+	escalations.push(event);
+	appendRunEvent(db, {
+		runId,
+		eventType: "escalation",
+		phase,
+		iteration,
+		data: event,
+	});
+	return { nextState: "ESCALATE", increment: true };
 }
 
 // ---------------------------------------------------------------------------

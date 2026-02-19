@@ -1,10 +1,20 @@
+/**
+ * Plan review loop (Loop 1) — automated review cycle for implementation plans.
+ *
+ * State transitions (Phase 4 — PARSE_* states eliminated):
+ *   REVIEW → APPROVED                        (ready)
+ *   REVIEW → AUTO_FIX → REVIEW               (ready_with_corrections, all auto_fix)
+ *   REVIEW → ESCALATE                        (has human_required items)
+ *   AUTO_FIX → REVIEW                        (author completed)
+ *   AUTO_FIX → ESCALATE                      (author needs_human)
+ *   ESCALATE → REVIEW                        (human provides guidance, continue)
+ *   ESCALATE → APPROVED                      (human overrides, accepts)
+ *   ESCALATE → ABORTED                       (human aborts)
+ *   any → ESCALATE                           (max iterations reached)
+ */
+
 import type { Database } from "bun:sqlite";
-import {
-	createWriteStream,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import {
 	basename,
 	dirname,
@@ -14,15 +24,19 @@ import {
 	resolve,
 } from "node:path";
 import type {
-	LegacyAgentAdapter as AgentAdapter,
-	AgentResult,
+	AgentAdapter,
+	InvokeStatus,
+	InvokeVerdict,
 } from "../agents/types.js";
 import type { FiveXConfig } from "../config.js";
 import {
 	appendRunEvent,
 	createRun,
 	getActiveRun,
+	getAgentResults,
 	getLatestRun,
+	getLatestStatus,
+	getLatestVerdict,
 	hasCompletedStep,
 	updateRunStatus,
 	upsertAgentResult,
@@ -31,16 +45,8 @@ import {
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
-import {
-	buildEscalationReason,
-	makeOnEvent,
-} from "../utils/agent-event-helpers.js";
-import {
-	type LegacyVerdict,
-	parseStatusBlock,
-	parseVerdictBlock,
-} from "../utils/legacy-signals.js";
-import { endStream } from "../utils/stream.js";
+import { buildEscalationReason } from "../utils/agent-event-helpers.js";
+import { appendStructuredAuditRecord } from "../utils/audit.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -62,15 +68,18 @@ export interface PlanReviewResult {
 
 /**
  * State machine states for the plan-review loop.
+ *
+ * Phase 4: PARSE_VERDICT and PARSE_STATUS eliminated.
  */
-type LoopState =
-	| "REVIEW"
-	| "PARSE_VERDICT"
-	| "AUTO_FIX"
-	| "PARSE_STATUS"
-	| "ESCALATE"
-	| "APPROVED"
-	| "ABORTED";
+type LoopState = "REVIEW" | "AUTO_FIX" | "ESCALATE" | "APPROVED" | "ABORTED";
+
+/**
+ * Map deprecated PARSE_* states from old DB records to their parent states.
+ */
+const LEGACY_STATE_MAP: Record<string, LoopState> = {
+	PARSE_VERDICT: "REVIEW",
+	PARSE_STATUS: "AUTO_FIX",
+};
 
 export interface PlanReviewLoopOptions {
 	auto?: boolean;
@@ -239,24 +248,14 @@ function readLine(): Promise<string> {
 /**
  * Run the plan-review loop (Loop 1).
  *
- * State transitions:
- *   REVIEW → PARSE_VERDICT → APPROVED          (ready)
- *   REVIEW → PARSE_VERDICT → AUTO_FIX → REVIEW (ready_with_corrections, all auto_fix)
- *   REVIEW → PARSE_VERDICT → ESCALATE          (has human_required items)
- *   REVIEW → PARSE_VERDICT → ESCALATE          (missing verdict block)
- *   AUTO_FIX → PARSE_STATUS → REVIEW           (author completed)
- *   AUTO_FIX → PARSE_STATUS → ESCALATE         (author needs_human)
- *   ESCALATE → REVIEW                          (human provides guidance, continue)
- *   ESCALATE → APPROVED                        (human overrides, accepts)
- *   ESCALATE → ABORTED                         (human aborts)
- *   any → ESCALATE                             (max iterations reached)
+ * Uses a single AgentAdapter for both author and reviewer roles.
+ * Role distinction is expressed via the prompt template and model override.
  */
 export async function runPlanReviewLoop(
 	planPath: string,
 	reviewPath: string,
 	db: Database,
-	authorAdapter: AgentAdapter,
-	reviewerAdapter: AgentAdapter,
+	adapter: AgentAdapter,
 	config: FiveXConfig,
 	options: PlanReviewLoopOptions = {},
 ): Promise<PlanReviewResult> {
@@ -290,11 +289,15 @@ export async function runPlanReviewLoop(
 
 		if (resumeDecision === "resume") {
 			runId = activeRun.id;
-			// Restore state from DB
-			state = (activeRun.current_state as LoopState) ?? "REVIEW";
+			// Restore state from DB, mapping legacy PARSE_* states
+			const rawState = (activeRun.current_state ?? "REVIEW") as string;
+			if (rawState in LEGACY_STATE_MAP) {
+				state = LEGACY_STATE_MAP[rawState] as LoopState;
+			} else {
+				state = rawState as LoopState;
+			}
 			// Iteration is tracked via agent_results count
-			const { getAgentResults } = await import("../db/operations.js");
-			const results = getAgentResults(db, runId, "-1"); // phase -1 for plan-review
+			const results = getAgentResults(db, runId, "-1");
 			iteration = results.length;
 			console.log(
 				`  Resuming run ${runId.slice(0, 8)} at iteration ${iteration}, state ${state}`,
@@ -337,20 +340,6 @@ export async function runPlanReviewLoop(
 		data: { planPath, reviewPath },
 	});
 
-	// Tracks the most recent agent NDJSON log path across state transitions so
-	// PARSE_* states can include it in escalation events.
-	let lastAgentLogPath: string | undefined;
-	// Tracks the iteration value at the time of the last agent invocation, so
-	// PARSE_* states attribute escalations to the correct invocation (before
-	// the monotonic iteration counter is incremented for the next state).
-	// On resume into a PARSE_* state, iteration is already "next" (results.length),
-	// so lastInvokeIteration must be iteration-1 to reference the preceding invocation.
-	const isResumedParseState =
-		state === "PARSE_VERDICT" || state === "PARSE_STATUS";
-	let lastInvokeIteration = isResumedParseState
-		? Math.max(0, iteration - 1)
-		: iteration;
-
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
 		// Guard: max iterations
@@ -390,7 +379,65 @@ export async function runPlanReviewLoop(
 					console.log(
 						`  Skipping reviewer step ${iteration} (already completed)`,
 					);
-					state = "PARSE_VERDICT";
+					// Route based on stored verdict
+					const verdict = getLatestVerdict(db, runId, "-1");
+					if (!verdict) {
+						const event: EscalationEvent = {
+							reason:
+								"Reviewer result stored but cannot be read. Manual review required.",
+							iteration,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					try {
+						assertReviewerVerdict(verdict, "PLAN_REVIEW/REVIEW");
+					} catch (err) {
+						const event: EscalationEvent = {
+							reason: err instanceof Error ? err.message : String(err),
+							iteration,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					// Route verdict using shared logic
+					appendRunEvent(db, {
+						runId,
+						eventType: "verdict",
+						iteration,
+						data: {
+							readiness: verdict.readiness,
+							itemCount: verdict.items.length,
+						},
+					});
+					console.log(`  Verdict: ${verdict.readiness}`);
+					const routeResult = routePlanVerdict(
+						verdict,
+						iteration,
+						undefined,
+						escalations,
+						db,
+						runId,
+						options,
+					);
+					if (routeResult.incrementIteration) iteration++;
+					state = routeResult.nextState;
 					break;
 				}
 
@@ -402,85 +449,23 @@ export async function runPlanReviewLoop(
 
 				console.log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
 
-				// Open log stream before invoking
 				const reviewResultId = generateId();
 				const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
-				const reviewLogStream = createWriteStream(reviewLogPath);
-				reviewLogStream.on("error", (err) =>
-					console.warn(
-						`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-					),
-				);
 
-				// Invoke reviewer
-				let reviewResult: AgentResult;
+				let reviewResult: InvokeVerdict;
 				try {
-					reviewResult = await reviewerAdapter.invoke({
+					reviewResult = await adapter.invokeForVerdict({
 						prompt: reviewerTemplate.prompt,
 						model: config.reviewer.model,
 						workdir,
-						logStream: reviewLogStream,
-						onEvent: makeOnEvent(quiet),
-					});
-				} finally {
-					await endStream(reviewLogStream);
-				}
-
-				// Store result
-				// Parse verdict from the review file (reviewer writes to it)
-				let verdict: LegacyVerdict | null = null;
-				if (existsSync(reviewPath)) {
-					const reviewContent = readFileSync(reviewPath, "utf-8");
-					verdict = parseVerdictBlock(reviewContent);
-				}
-				// Also try parsing from output (in case reviewer emits in stdout)
-				if (!verdict) {
-					verdict = parseVerdictBlock(reviewResult.output);
-				}
-
-				upsertAgentResult(db, {
-					id: reviewResultId,
-					run_id: runId,
-					phase: "-1",
-					iteration,
-					role: "reviewer",
-					template: "reviewer-plan",
-					result_type: "verdict",
-					result_json: verdict ? JSON.stringify(verdict) : "null",
-					duration_ms: reviewResult.duration,
-					log_path: reviewLogPath,
-					session_id: reviewResult.sessionId ?? null,
-					model: config.reviewer.model ?? null,
-					tokens_in: reviewResult.tokens?.input ?? null,
-					tokens_out: reviewResult.tokens?.output ?? null,
-					cost_usd: reviewResult.cost ?? null,
-				});
-
-				appendRunEvent(db, {
-					runId,
-					eventType: "agent_invoke",
-					iteration,
-					data: {
-						role: "reviewer",
-						template: "reviewer-plan",
-						exitCode: reviewResult.exitCode,
-						duration: reviewResult.duration,
 						logPath: reviewLogPath,
-					},
-				});
-
-				// Record log path for PARSE_VERDICT escalations before incrementing.
-				lastAgentLogPath = reviewLogPath;
-
-				// Handle non-zero exit — escalation uses pre-increment iteration to
-				// match the agent_results row for this invocation.
-				if (reviewResult.exitCode !== 0) {
+						quiet,
+					});
+				} catch (err) {
 					const event: EscalationEvent = {
 						reason: buildEscalationReason(
-							`Reviewer exited with code ${reviewResult.exitCode}`,
+							`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
 							reviewLogPath,
-							reviewResult,
-							quiet,
 						),
 						iteration,
 						logPath: reviewLogPath,
@@ -497,51 +482,64 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
-				lastInvokeIteration = iteration;
-				iteration++;
-				state = "PARSE_VERDICT";
-				break;
-			}
+				// Store result
+				upsertAgentResult(db, {
+					id: reviewResultId,
+					run_id: runId,
+					phase: "-1",
+					iteration,
+					role: "reviewer",
+					template: "reviewer-plan",
+					result_type: "verdict",
+					result_json: JSON.stringify(reviewResult.verdict),
+					duration_ms: reviewResult.duration,
+					log_path: reviewLogPath,
+					session_id: reviewResult.sessionId ?? null,
+					model: config.reviewer.model ?? null,
+					tokens_in: reviewResult.tokensIn ?? null,
+					tokens_out: reviewResult.tokensOut ?? null,
+					cost_usd: reviewResult.costUsd ?? null,
+				});
 
-			case "PARSE_VERDICT": {
-				updateRunStatus(db, runId, "active", "PARSE_VERDICT");
+				appendRunEvent(db, {
+					runId,
+					eventType: "agent_invoke",
+					iteration,
+					data: {
+						role: "reviewer",
+						template: "reviewer-plan",
+						duration: reviewResult.duration,
+						logPath: reviewLogPath,
+					},
+				});
 
-				// Get the latest verdict from DB
-				const { getLatestVerdict } = await import("../db/operations.js");
-				const verdict = getLatestVerdict(db, runId, "-1");
-
-				if (!verdict) {
-					// Missing verdict — escalate
-					const event: EscalationEvent = {
-						reason:
-							"Reviewer did not produce a 5x:verdict block. Manual review required.",
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
+				// Append audit record
+				try {
+					await appendStructuredAuditRecord(reviewPath, {
+						schema: 1,
+						type: "verdict",
+						phase: "-1",
+						iteration,
+						data: reviewResult.verdict,
 					});
-					state = "ESCALATE";
-					break;
+				} catch {
+					// Best-effort
 				}
 
+				// Validate invariants
 				try {
-					assertReviewerVerdict(verdict, "PLAN_REVIEW/REVIEW");
+					assertReviewerVerdict(reviewResult.verdict, "PLAN_REVIEW/REVIEW");
 				} catch (err) {
 					const event: EscalationEvent = {
 						reason: err instanceof Error ? err.message : String(err),
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
+						iteration,
+						logPath: reviewLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration: lastInvokeIteration,
+						iteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -551,123 +549,34 @@ export async function runPlanReviewLoop(
 				appendRunEvent(db, {
 					runId,
 					eventType: "verdict",
-					iteration: lastInvokeIteration,
+					iteration,
 					data: {
-						readiness: verdict.readiness,
-						itemCount: verdict.items.length,
-						autoFixCount: verdict.items.filter((i) => i.action === "auto_fix")
-							.length,
-						humanRequiredCount: verdict.items.filter(
+						readiness: reviewResult.verdict.readiness,
+						itemCount: reviewResult.verdict.items.length,
+						autoFixCount: reviewResult.verdict.items.filter(
+							(i) => i.action === "auto_fix",
+						).length,
+						humanRequiredCount: reviewResult.verdict.items.filter(
 							(i) => i.action === "human_required",
 						).length,
 					},
 				});
 
-				const readiness = verdict.readiness;
-				console.log(`  Verdict: ${readiness}`);
+				console.log(`  Verdict: ${reviewResult.verdict.readiness}`);
 
-				if (readiness === "ready") {
-					state = "APPROVED";
-					break;
-				}
-
-				// Check for human_required items
-				const humanItems = verdict.items.filter(
-					(i) => i.action === "human_required",
+				// Route verdict
+				const routeResult = routePlanVerdict(
+					reviewResult.verdict,
+					iteration,
+					reviewLogPath,
+					escalations,
+					db,
+					runId,
+					options,
 				);
-				if (humanItems.length > 0 && !options.auto) {
-					const event: EscalationEvent = {
-						reason: `${humanItems.length} item(s) require human review`,
-						items: humanItems.map((i) => ({
-							id: i.id,
-							title: i.title,
-							reason: i.reason,
-						})),
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
-					});
-					state = "ESCALATE";
-					break;
-				}
-
-				if (humanItems.length > 0 && options.auto) {
-					// Even in auto mode, human_required items escalate
-					const event: EscalationEvent = {
-						reason: `${humanItems.length} item(s) require human review (auto mode cannot resolve)`,
-						items: humanItems.map((i) => ({
-							id: i.id,
-							title: i.title,
-							reason: i.reason,
-						})),
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
-					});
-					state = "ESCALATE";
-					break;
-				}
-
-				// ready_with_corrections or not_ready with all auto_fix items
-				if (
-					readiness === "ready_with_corrections" ||
-					readiness === "not_ready"
-				) {
-					const autoFixItems = verdict.items.filter(
-						(i) => i.action === "auto_fix",
-					);
-					if (autoFixItems.length > 0) {
-						console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
-						state = "AUTO_FIX";
-						break;
-					}
-					// Non-ready with no auto-fixable items — escalate
-					// (covers parser-dropped items, reviewer mistakes, etc.)
-					const event: EscalationEvent = {
-						reason: `Reviewer returned ${readiness} with no auto-fixable items`,
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
-					});
-					state = "ESCALATE";
-					break;
-				}
-
-				// Fallback — unexpected readiness value; escalate rather than approve
-				{
-					const event: EscalationEvent = {
-						reason: `Unexpected readiness value "${readiness}" — escalating for manual review`,
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
-					});
-					state = "ESCALATE";
-					break;
-				}
+				if (routeResult.incrementIteration) iteration++;
+				state = routeResult.nextState;
+				break;
 			}
 
 			case "AUTO_FIX": {
@@ -688,7 +597,48 @@ export async function runPlanReviewLoop(
 					console.log(
 						`  Skipping author-fix step ${iteration} (already completed)`,
 					);
-					state = "PARSE_STATUS";
+					// Route based on stored result
+					const authorStatus = getLatestStatus(db, runId, "-1");
+					if (!authorStatus) {
+						const event: EscalationEvent = {
+							reason: "Author fix result stored but cannot be read.",
+							iteration,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					if (
+						authorStatus.result === "needs_human" ||
+						authorStatus.result === "failed"
+					) {
+						const event: EscalationEvent = {
+							reason:
+								authorStatus.reason ??
+								`Author reported ${authorStatus.result} during fix`,
+							iteration,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					console.log("  Author fix applied. Re-reviewing...");
+					iteration++;
+					state = "REVIEW";
 					break;
 				}
 
@@ -698,32 +648,38 @@ export async function runPlanReviewLoop(
 					plan_path: planPath,
 				});
 
-				// Open log stream before invoking
 				const authorResultId = generateId();
 				const authorLogPath = join(logDir, `agent-${authorResultId}.ndjson`);
-				const authorLogStream = createWriteStream(authorLogPath);
-				authorLogStream.on("error", (err) =>
-					console.warn(
-						`[warn] agent log stream error: ${err instanceof Error ? err.message : String(err)}`,
-					),
-				);
 
-				// Invoke author
-				let authorResult: AgentResult;
+				let authorResult: InvokeStatus;
 				try {
-					authorResult = await authorAdapter.invoke({
+					authorResult = await adapter.invokeForStatus({
 						prompt: authorTemplate.prompt,
 						model: config.author.model,
 						workdir,
-						logStream: authorLogStream,
-						onEvent: makeOnEvent(quiet),
+						logPath: authorLogPath,
+						quiet,
 					});
-				} finally {
-					await endStream(authorLogStream);
+				} catch (err) {
+					const event: EscalationEvent = {
+						reason: buildEscalationReason(
+							`Author invocation failed during fix: ${err instanceof Error ? err.message : String(err)}`,
+							authorLogPath,
+						),
+						iteration,
+						logPath: authorLogPath,
+					};
+					escalations.push(event);
+					appendRunEvent(db, {
+						runId,
+						eventType: "escalation",
+						iteration,
+						data: event,
+					});
+					iteration++;
+					state = "ESCALATE";
+					break;
 				}
-
-				// Parse status from author output
-				const authorStatus = parseStatusBlock(authorResult.output);
 
 				// Store result
 				upsertAgentResult(db, {
@@ -734,14 +690,14 @@ export async function runPlanReviewLoop(
 					role: "author",
 					template: "author-process-review",
 					result_type: "status",
-					result_json: authorStatus ? JSON.stringify(authorStatus) : "null",
+					result_json: JSON.stringify(authorResult.status),
 					duration_ms: authorResult.duration,
 					log_path: authorLogPath,
 					session_id: authorResult.sessionId ?? null,
 					model: config.author.model ?? null,
-					tokens_in: authorResult.tokens?.input ?? null,
-					tokens_out: authorResult.tokens?.output ?? null,
-					cost_usd: authorResult.cost ?? null,
+					tokens_in: authorResult.tokensIn ?? null,
+					tokens_out: authorResult.tokensOut ?? null,
+					cost_usd: authorResult.costUsd ?? null,
 				});
 
 				appendRunEvent(db, {
@@ -751,94 +707,77 @@ export async function runPlanReviewLoop(
 					data: {
 						role: "author",
 						template: "author-process-review",
-						exitCode: authorResult.exitCode,
 						duration: authorResult.duration,
 						logPath: authorLogPath,
 					},
 				});
 
-				// Record log path and iteration for PARSE_STATUS escalation attribution.
-				lastAgentLogPath = authorLogPath;
-				lastInvokeIteration = iteration;
-				iteration++;
-				state = "PARSE_STATUS";
-				break;
-			}
-
-			case "PARSE_STATUS": {
-				updateRunStatus(db, runId, "active", "PARSE_STATUS");
-
-				// Get latest author status from DB
-				const { getLatestStatus } = await import("../db/operations.js");
-				const authorStatus = getLatestStatus(db, runId, "-1");
-
-				if (!authorStatus) {
-					// Missing status — escalate
-					const event: EscalationEvent = {
-						reason:
-							"Author did not produce a 5x:status block after fix. Manual review required.",
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
-					};
-					escalations.push(event);
-					appendRunEvent(db, {
-						runId,
-						eventType: "escalation",
-						iteration: lastInvokeIteration,
-						data: event,
+				// Append audit record
+				try {
+					await appendStructuredAuditRecord(reviewPath, {
+						schema: 1,
+						type: "status",
+						phase: "-1",
+						iteration,
+						data: authorResult.status,
 					});
-					state = "ESCALATE";
-					break;
+				} catch {
+					// Best-effort
 				}
 
+				// Validate invariants
 				try {
-					assertAuthorStatus(authorStatus, "PLAN_REVIEW/AUTO_FIX");
+					assertAuthorStatus(authorResult.status, "PLAN_REVIEW/AUTO_FIX");
 				} catch (err) {
 					const event: EscalationEvent = {
 						reason: err instanceof Error ? err.message : String(err),
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
+						iteration,
+						logPath: authorLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration: lastInvokeIteration,
+						iteration,
 						data: event,
 					});
 					state = "ESCALATE";
 					break;
 				}
 
-				if (authorStatus.result === "needs_human") {
+				// Route on status
+				if (authorResult.status.result === "needs_human") {
 					const event: EscalationEvent = {
 						reason:
-							authorStatus.reason ?? "Author needs human input during fix",
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
+							authorResult.status.reason ??
+							"Author needs human input during fix",
+						iteration,
+						logPath: authorLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration: lastInvokeIteration,
+						iteration,
 						data: event,
 					});
 					state = "ESCALATE";
 					break;
 				}
 
-				if (authorStatus.result === "failed") {
+				if (authorResult.status.result === "failed") {
 					const event: EscalationEvent = {
-						reason: authorStatus.reason ?? "Author reported failure during fix",
-						iteration: lastInvokeIteration,
-						logPath: lastAgentLogPath,
+						reason:
+							authorResult.status.reason ??
+							"Author reported failure during fix",
+						iteration,
+						logPath: authorLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration: lastInvokeIteration,
+						iteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -847,6 +786,7 @@ export async function runPlanReviewLoop(
 
 				// Author completed — back to review
 				console.log("  Author fix applied. Re-reviewing...");
+				iteration++;
 				state = "REVIEW";
 				break;
 			}
@@ -926,4 +866,93 @@ export async function runPlanReviewLoop(
 		runId,
 		escalations,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Verdict routing helper
+// ---------------------------------------------------------------------------
+
+interface PlanVerdictRouteResult {
+	nextState: LoopState;
+	incrementIteration: boolean;
+}
+
+function routePlanVerdict(
+	verdict: import("../protocol.js").ReviewerVerdict,
+	iteration: number,
+	logPath: string | undefined,
+	escalations: EscalationEvent[],
+	db: Database,
+	runId: string,
+	options: PlanReviewLoopOptions,
+): PlanVerdictRouteResult {
+	if (verdict.readiness === "ready") {
+		return { nextState: "APPROVED", incrementIteration: true };
+	}
+
+	// Check for human_required items
+	const humanItems = verdict.items.filter((i) => i.action === "human_required");
+	if (humanItems.length > 0) {
+		const event: EscalationEvent = {
+			reason: options.auto
+				? `${humanItems.length} item(s) require human review (auto mode cannot resolve)`
+				: `${humanItems.length} item(s) require human review`,
+			items: humanItems.map((i) => ({
+				id: i.id,
+				title: i.title,
+				reason: i.reason,
+			})),
+			iteration,
+			logPath,
+		};
+		escalations.push(event);
+		appendRunEvent(db, {
+			runId,
+			eventType: "escalation",
+			iteration,
+			data: event,
+		});
+		return { nextState: "ESCALATE", incrementIteration: true };
+	}
+
+	// ready_with_corrections or not_ready with all auto_fix items
+	if (
+		verdict.readiness === "ready_with_corrections" ||
+		verdict.readiness === "not_ready"
+	) {
+		const autoFixItems = verdict.items.filter((i) => i.action === "auto_fix");
+		if (autoFixItems.length > 0) {
+			console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
+			return { nextState: "AUTO_FIX", incrementIteration: true };
+		}
+		// Non-ready with no auto-fixable items — escalate
+		const event: EscalationEvent = {
+			reason: `Reviewer returned ${verdict.readiness} with no auto-fixable items`,
+			iteration,
+			logPath,
+		};
+		escalations.push(event);
+		appendRunEvent(db, {
+			runId,
+			eventType: "escalation",
+			iteration,
+			data: event,
+		});
+		return { nextState: "ESCALATE", incrementIteration: true };
+	}
+
+	// Fallback — unexpected readiness value; escalate rather than approve
+	const event: EscalationEvent = {
+		reason: `Unexpected readiness value "${verdict.readiness}" — escalating for manual review`,
+		iteration,
+		logPath,
+	};
+	escalations.push(event);
+	appendRunEvent(db, {
+		runId,
+		eventType: "escalation",
+		iteration,
+		data: event,
+	});
+	return { nextState: "ESCALATE", incrementIteration: true };
 }

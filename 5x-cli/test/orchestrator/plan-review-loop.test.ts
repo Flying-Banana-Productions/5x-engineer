@@ -4,9 +4,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-	LegacyAgentAdapter as AgentAdapter,
-	AgentResult,
-	LegacyInvokeOptions,
+	AgentAdapter,
+	InvokeOptions,
+	InvokeStatus,
+	InvokeVerdict,
 } from "../../src/agents/types.js";
 import type { FiveXConfig } from "../../src/config.js";
 import {
@@ -23,6 +24,7 @@ import {
 	runPlanReviewLoop,
 } from "../../src/orchestrator/plan-review-loop.js";
 import { canonicalizePlanPath } from "../../src/paths.js";
+import type { AuthorStatus, ReviewerVerdict } from "../../src/protocol.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,12 +63,10 @@ function defaultConfig(): FiveXConfig {
 	};
 }
 
-/** Create an isolated test environment. Returns { tmp, db, planPath, reviewPath, cleanup }. */
+/** Create an isolated test environment. */
 function createTestEnv() {
 	const tmp = mkdtempSync(join(tmpdir(), "5x-plan-review-loop-"));
 
-	// Use a direct DB connection (not the getDb singleton) to avoid concurrency
-	// issues when test files run concurrently under `bun test --concurrent`.
 	const dbDir = join(tmp, ".5x");
 	mkdirSync(dbDir, { recursive: true });
 	const db = new Database(join(dbDir, "5x.db"));
@@ -75,16 +75,16 @@ function createTestEnv() {
 	db.exec("PRAGMA busy_timeout=5000");
 	runMigrations(db);
 
-	// Create plan file
 	const plansDir = join(tmp, "docs", "development");
 	mkdirSync(plansDir, { recursive: true });
 	const planPath = join(plansDir, "001-test-plan.md");
 	writeFileSync(planPath, PLAN_CONTENT);
 
-	// Create reviews directory
 	const reviewsDir = join(tmp, "docs", "development", "reviews");
 	mkdirSync(reviewsDir, { recursive: true });
 	const reviewPath = join(reviewsDir, "test-review.md");
+	// Create review file so audit record append doesn't fail
+	writeFileSync(reviewPath, "");
 
 	const cleanup = () => {
 		try {
@@ -96,83 +96,59 @@ function createTestEnv() {
 	return { tmp, db, planPath, reviewPath, cleanup };
 }
 
-/** Build a verdict HTML comment block. */
-function verdictBlock(opts: {
-	readiness: string;
-	reviewPath: string;
-	items: Array<{
-		id: string;
-		title: string;
-		action: string;
-		reason: string;
-	}>;
-}): string {
-	if (opts.items.length === 0) {
-		return `<!-- 5x:verdict
-protocolVersion: 1
-readiness: ${opts.readiness}
-reviewPath: "${opts.reviewPath}"
-items: []
--->`;
-	}
-	const itemsYaml = opts.items
-		.map(
-			(i) =>
-				`  - id: "${i.id}"\n    title: "${i.title}"\n    action: ${i.action}\n    reason: "${i.reason}"`,
-		)
-		.join("\n");
-	return `<!-- 5x:verdict
-protocolVersion: 1
-readiness: ${opts.readiness}
-reviewPath: "${opts.reviewPath}"
-items:
-${itemsYaml}
--->`;
-}
+/** A single mock response for the adapter queue. */
+type MockResponse =
+	| {
+			type: "status";
+			status: AuthorStatus;
+			duration?: number;
+			writeFile?: { path: string; content: string };
+	  }
+	| {
+			type: "verdict";
+			verdict: ReviewerVerdict;
+			duration?: number;
+			writeFile?: { path: string; content: string };
+	  }
+	| {
+			type: "error";
+			error: Error;
+	  };
 
-/** Build a status HTML comment block. */
-function statusBlock(opts: { result: string; reason?: string }): string {
-	let yaml = `protocolVersion: 1\nresult: ${opts.result}`;
-	if (opts.reason) yaml += `\nreason: "${opts.reason}"`;
-	return `<!-- 5x:status\n${yaml}\n-->`;
-}
-
-/** Create a mock adapter that returns predetermined results. */
-function mockAdapter(
-	name: string,
-	responses: Array<{
-		output: string;
-		exitCode?: number;
-		duration?: number;
-		/** If provided, write this content to a file before returning. */
-		writeFile?: { path: string; content: string };
-	}>,
-): AgentAdapter {
-	let callIndex = 0;
+/** Build a mock adapter from a queue of responses. */
+function createMockAdapter(responses: MockResponse[]): AgentAdapter {
+	let idx = 0;
 	return {
-		name,
-		async isAvailable() {
-			return true;
-		},
-		async invoke(_opts: LegacyInvokeOptions): Promise<AgentResult> {
-			const response = responses[callIndex];
-			if (!response) {
-				throw new Error(
-					`Mock adapter "${name}" exhausted responses (called ${callIndex + 1} times)`,
-				);
-			}
-			callIndex++;
-
-			if (response.writeFile) {
-				writeFileSync(response.writeFile.path, response.writeFile.content);
-			}
-
+		async invokeForStatus(_opts: InvokeOptions): Promise<InvokeStatus> {
+			const r = responses[idx++];
+			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
+			if (r.type === "error") throw r.error;
+			if (r.type !== "status")
+				throw new Error(`Expected status at index ${idx - 1}, got ${r.type}`);
+			if (r.writeFile) writeFileSync(r.writeFile.path, r.writeFile.content);
 			return {
-				output: response.output,
-				exitCode: response.exitCode ?? 0,
-				duration: response.duration ?? 1000,
+				type: "status",
+				status: r.status,
+				duration: r.duration ?? 1000,
+				sessionId: "mock-session",
 			};
 		},
+		async invokeForVerdict(_opts: InvokeOptions): Promise<InvokeVerdict> {
+			const r = responses[idx++];
+			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
+			if (r.type === "error") throw r.error;
+			if (r.type !== "verdict")
+				throw new Error(`Expected verdict at index ${idx - 1}, got ${r.type}`);
+			if (r.writeFile) writeFileSync(r.writeFile.path, r.writeFile.content);
+			return {
+				type: "verdict",
+				verdict: r.verdict,
+				duration: r.duration ?? 1000,
+				sessionId: "mock-session",
+			};
+		},
+		async verify() {},
+		async close() {},
 	};
 }
 
@@ -244,7 +220,6 @@ describe("resolveReviewPath", () => {
 				planPath,
 				join(tmp, "docs/development/reviews"),
 			);
-			// Should compute fresh path, not reuse the outside path
 			expect(path).not.toBe("/some/outside/review.md");
 			const dateStr = new Date().toISOString().slice(0, 10);
 			expect(path).toContain(`${dateStr}-001-test-plan-review.md`);
@@ -258,36 +233,23 @@ describe("runPlanReviewLoop", () => {
 	test("happy path: reviewer approves immediately (ready)", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: "Review complete.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
 
 			expect(result.approved).toBe(true);
-			expect(result.iterations).toBe(1); // reviewer called once
+			expect(result.iterations).toBe(1);
 			expect(result.escalations).toHaveLength(0);
 
-			// Verify DB state
 			const canonical = canonicalizePlanPath(planPath);
 			const run = getLatestRun(db, canonical);
 			expect(run).not.toBeNull();
@@ -301,53 +263,33 @@ describe("runPlanReviewLoop", () => {
 	test("two-iteration fix: ready_with_corrections → auto_fix → re-review → ready", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				// First review: corrections needed
 				{
-					output: "Corrections needed.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [
-								{
-									id: "P1.1",
-									title: "Fix naming",
-									action: "auto_fix",
-									reason: "Inconsistent naming",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix naming",
+								action: "auto_fix",
+								reason: "Inconsistent naming",
+							},
+						],
 					},
 				},
+				// Author fix
+				{ type: "status", status: { result: "complete" } },
 				// Second review: approved
-				{
-					output: "Looks good now.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
-			]);
-
-			const author = mockAdapter("author", [
-				// Fix applied
-				{
-					output: `Fixed naming.\n${statusBlock({ result: "completed" })}`,
-				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -356,7 +298,6 @@ describe("runPlanReviewLoop", () => {
 			expect(result.iterations).toBe(3); // reviewer1 + author-fix + reviewer2
 			expect(result.escalations).toHaveLength(0);
 
-			// Verify agent results in DB
 			const agentResults = getAgentResults(db, result.runId, "-1");
 			expect(agentResults.length).toBe(3);
 			expect(agentResults[0]?.role).toBe("reviewer");
@@ -370,34 +311,28 @@ describe("runPlanReviewLoop", () => {
 	test("escalation: human_required items → human aborts", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Review complete.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [
-								{
-									id: "P0.1",
-									title: "Architecture concern",
-									action: "human_required",
-									reason: "Needs human decision on data model",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Architecture concern",
+								action: "human_required",
+								reason: "Needs human decision on data model",
+							},
+						],
 					},
 				},
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -414,34 +349,28 @@ describe("runPlanReviewLoop", () => {
 	test("escalation: human approves override", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Review complete.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [
-								{
-									id: "P0.1",
-									title: "Concern",
-									action: "human_required",
-									reason: "Needs decision",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Concern",
+								action: "human_required",
+								reason: "Needs decision",
+							},
+						],
 					},
 				},
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("approve"), projectRoot: tmp },
 			);
@@ -456,47 +385,31 @@ describe("runPlanReviewLoop", () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
 			let humanCalls = 0;
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				// First review: human_required
 				{
-					output: "Issues found.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [
-								{
-									id: "P0.1",
-									title: "Concern",
-									action: "human_required",
-									reason: "Needs decision",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Concern",
+								action: "human_required",
+								reason: "Needs decision",
+							},
+						],
 					},
 				},
 				// Second review after human continues: approved
-				{
-					output: "Approved.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{
 					humanGate: async () => {
@@ -517,17 +430,15 @@ describe("runPlanReviewLoop", () => {
 	test("max iterations reached → escalation", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			// Config with very low max iterations
 			const config = { ...defaultConfig(), maxReviewIterations: 1 };
 
-			// Create enough responses for 2 full cycles (reviewer + author fix each)
-			const reviewerResponses = Array.from({ length: 4 }, () => ({
-				output: "Corrections needed.",
-				writeFile: {
-					path: reviewPath,
-					content: `# Review\n\n${verdictBlock({
+			// Create enough responses for multiple cycles
+			const adapter = createMockAdapter([
+				// First review: corrections
+				{
+					type: "verdict",
+					verdict: {
 						readiness: "ready_with_corrections",
-						reviewPath,
 						items: [
 							{
 								id: "P1.1",
@@ -536,23 +447,32 @@ describe("runPlanReviewLoop", () => {
 								reason: "issue",
 							},
 						],
-					})}`,
+					},
 				},
-			}));
-
-			const authorResponses = Array.from({ length: 4 }, () => ({
-				output: `Fixed.\n${statusBlock({ result: "completed" })}`,
-			}));
-
-			const reviewer = mockAdapter("reviewer", reviewerResponses);
-			const author = mockAdapter("author", authorResponses);
+				// Author fix
+				{ type: "status", status: { result: "complete" } },
+				// Second review: still corrections (but will hit max iterations)
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "issue",
+							},
+						],
+					},
+				},
+			]);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				config,
 				{ auto: true, projectRoot: tmp },
 			);
@@ -568,37 +488,31 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("auto mode: auto_fix proceeds, human_required escalates and aborts", async () => {
+	test("auto mode: human_required escalates and aborts", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Issues found.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [
-								{
-									id: "P0.1",
-									title: "Architecture",
-									action: "human_required",
-									reason: "Needs decision",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Architecture",
+								action: "human_required",
+								reason: "Needs decision",
+							},
+						],
 					},
 				},
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ auto: true, projectRoot: tmp },
 			);
@@ -610,34 +524,25 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("missing verdict block → escalation", async () => {
+	test("reviewer invocation failure → escalation", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
-				{
-					// Reviewer produces output but no verdict block
-					output: "Some review text without a verdict block.",
-					writeFile: {
-						path: reviewPath,
-						content: "# Review\n\nSome feedback but no verdict block.",
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "error", error: new Error("connection timeout") },
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
 
 			expect(result.approved).toBe(false);
 			expect(
-				result.escalations.some((e) => e.reason.includes("5x:verdict")),
+				result.escalations.some((e) => e.reason.includes("connection timeout")),
 			).toBe(true);
 		} finally {
 			cleanup();
@@ -647,33 +552,27 @@ describe("runPlanReviewLoop", () => {
 	test("author needs_human during fix → escalation", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Corrections needed.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [
-								{
-									id: "P1.1",
-									title: "Fix",
-									action: "auto_fix",
-									reason: "Simple fix",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Simple fix",
+							},
+						],
 					},
 				},
-			]);
-
-			const author = mockAdapter("author", [
 				{
-					output: `I'm stuck.\n${statusBlock({
+					type: "status",
+					status: {
 						result: "needs_human",
 						reason: "Cannot determine the right approach",
-					})}`,
+					},
 				},
 			]);
 
@@ -681,8 +580,7 @@ describe("runPlanReviewLoop", () => {
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -700,60 +598,18 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("reviewer non-zero exit code → escalation", async () => {
-		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
-		try {
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: "Error occurred",
-					exitCode: 1,
-				},
-			]);
-			const author = mockAdapter("author", []);
-
-			const result = await runPlanReviewLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				reviewer,
-				defaultConfig(),
-				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
-			);
-
-			expect(result.approved).toBe(false);
-			expect(
-				result.escalations.some((e) => e.reason.includes("exited with code")),
-			).toBe(true);
-		} finally {
-			cleanup();
-		}
-	});
-
 	test("events are recorded in DB", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: "Approved.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -774,29 +630,21 @@ describe("runPlanReviewLoop", () => {
 	test("P0.1 regression: ready_with_corrections + empty items → escalation (not approval)", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			// Simulate parser-dropped items: reviewer says ready_with_corrections
-			// but all items had invalid actions, so parsed items array is empty.
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Corrections needed.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [], // All items dropped by parser
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [], // invariant violation
 					},
 				},
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -814,27 +662,18 @@ describe("runPlanReviewLoop", () => {
 	test("not_ready + empty items → escalation (not approval)", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
 				{
-					output: "Not ready.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
 				},
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
@@ -849,67 +688,48 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("ndjson log files created for REVIEW and AUTO_FIX sites", async () => {
-		// reviewer → auto_fix → re-review = 3 agent calls → 3 ndjson log files
+	test("log files created for REVIEW and AUTO_FIX sites", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
-			const reviewer = mockAdapter("reviewer", [
+			const adapter = createMockAdapter([
+				// REVIEW: corrections needed
 				{
-					output: "Corrections needed.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [
-								{
-									id: "P1.1",
-									title: "Fix naming",
-									action: "auto_fix",
-									reason: "Inconsistent naming",
-								},
-							],
-						})}`,
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix naming",
+								action: "auto_fix",
+								reason: "Inconsistent naming",
+							},
+						],
 					},
 				},
-				{
-					output: "Looks good now.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
-			]);
-			const author = mockAdapter("author", [
-				{
-					output: `Fixed.\n${statusBlock({ result: "completed" })}`,
-				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete" } },
+				// REVIEW: approved
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{ humanGate: fixedHumanGate("abort"), projectRoot: tmp },
 			);
 
 			expect(result.approved).toBe(true);
 
-			// Verify .ndjson log files exist for both invocation sites
-			const { existsSync, readdirSync } = await import("node:fs");
-			const logDir = join(tmp, ".5x", "logs", result.runId);
-			expect(existsSync(logDir)).toBe(true);
-
-			const logFiles = readdirSync(logDir).filter((f) => f.endsWith(".ndjson"));
-			// reviewer1 + author-fix + reviewer2 = 3 ndjson logs
-			expect(logFiles.length).toBe(3);
+			// Agent results should have log_path set
+			const agentResults = getAgentResults(db, result.runId, "-1");
+			for (const ar of agentResults) {
+				expect(ar.log_path).toBeDefined();
+				expect(ar.log_path).toMatch(/agent-.+\.ndjson$/);
+			}
 		} finally {
 			cleanup();
 		}
@@ -920,7 +740,6 @@ describe("runPlanReviewLoop", () => {
 		try {
 			const canonical = canonicalizePlanPath(planPath);
 
-			// Simulate an interrupted run
 			createRun(db, {
 				id: "old-run",
 				planPath: canonical,
@@ -928,27 +747,15 @@ describe("runPlanReviewLoop", () => {
 				reviewPath,
 			});
 
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: "Approved.",
-					writeFile: {
-						path: reviewPath,
-						content: `# Review\n\n${verdictBlock({
-							readiness: "ready",
-							reviewPath,
-							items: [],
-						})}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
-			const author = mockAdapter("author", []);
 
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(),
 				{
 					resumeGate: fixedResumeGate("start-fresh"),
@@ -973,9 +780,7 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("resume into PARSE_VERDICT uses correct lastInvokeIteration", async () => {
-		// Simulate: reviewer completed at iteration 0, interrupted at PARSE_VERDICT.
-		// On resume, escalation (missing verdict) should reference iteration 0, not 1.
+	test("resume backward compat: PARSE_VERDICT mapped to REVIEW", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
 			const canonical = canonicalizePlanPath(planPath);
@@ -1005,12 +810,13 @@ describe("runPlanReviewLoop", () => {
 				cost_usd: null,
 			});
 
+			const adapter = createMockAdapter([]);
+
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
 				db,
-				mockAdapter("author", []),
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(),
 				{
 					resumeGate: fixedResumeGate("resume"),
@@ -1021,8 +827,6 @@ describe("runPlanReviewLoop", () => {
 
 			expect(result.approved).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
-			// Escalation should reference iteration 0 (the reviewer invocation), not 1
-			expect(result.escalations[0]?.iteration).toBe(0);
 		} finally {
 			cleanup();
 		}

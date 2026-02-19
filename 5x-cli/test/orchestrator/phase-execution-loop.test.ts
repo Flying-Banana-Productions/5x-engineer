@@ -10,9 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
-	LegacyAgentAdapter as AgentAdapter,
-	AgentResult,
-	LegacyInvokeOptions,
+	AgentAdapter,
+	InvokeOptions,
+	InvokeStatus,
+	InvokeVerdict,
 } from "../../src/agents/types.js";
 import type { FiveXConfig } from "../../src/config.js";
 import {
@@ -29,6 +30,7 @@ import type {
 	PhaseSummary,
 } from "../../src/gates/human.js";
 import { runPhaseExecutionLoop } from "../../src/orchestrator/phase-execution-loop.js";
+import type { AuthorStatus, ReviewerVerdict } from "../../src/protocol.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,6 +92,8 @@ function createTestEnv(planContent: string = PLAN_CONTENT) {
 	const reviewsDir = join(tmp, "docs", "development", "reviews");
 	mkdirSync(reviewsDir, { recursive: true });
 	const reviewPath = join(reviewsDir, "test-review.md");
+	// Create review file so audit record append doesn't fail
+	writeFileSync(reviewPath, "");
 
 	const cleanup = () => {
 		try {
@@ -123,86 +127,75 @@ function defaultConfig(tmp: string): FiveXConfig {
 	};
 }
 
-function verdictBlock(opts: {
-	readiness: string;
-	reviewPath: string;
-	items?: Array<{
-		id: string;
-		title: string;
-		action: string;
-		reason: string;
-	}>;
-}): string {
-	const items = opts.items ?? [];
-	if (items.length === 0) {
-		return `<!-- 5x:verdict
-protocolVersion: 1
-readiness: ${opts.readiness}
-reviewPath: "${opts.reviewPath}"
-items: []
--->`;
-	}
-	const itemsYaml = items
-		.map(
-			(i) =>
-				`  - id: "${i.id}"\n    title: "${i.title}"\n    action: ${i.action}\n    reason: "${i.reason}"`,
-		)
-		.join("\n");
-	return `<!-- 5x:verdict
-protocolVersion: 1
-readiness: ${opts.readiness}
-reviewPath: "${opts.reviewPath}"
-items:
-${itemsYaml}
--->`;
-}
+/** A single mock response for the adapter queue. */
+type MockResponse =
+	| {
+			type: "status";
+			status: AuthorStatus;
+			duration?: number;
+			sessionId?: string;
+			writeFile?: { path: string; content: string };
+	  }
+	| {
+			type: "verdict";
+			verdict: ReviewerVerdict;
+			duration?: number;
+			sessionId?: string;
+			writeFile?: { path: string; content: string };
+	  }
+	| {
+			type: "error";
+			error: Error;
+	  };
 
-function statusBlock(opts: {
-	result: string;
-	commit?: string;
-	phase?: number;
-	reason?: string;
-}): string {
-	let yaml = `protocolVersion: 1\nresult: ${opts.result}`;
-	if (opts.commit) yaml += `\ncommit: ${opts.commit}`;
-	if (opts.phase !== undefined) yaml += `\nphase: ${opts.phase}`;
-	if (opts.reason) yaml += `\nreason: "${opts.reason}"`;
-	return `<!-- 5x:status\n${yaml}\n-->`;
-}
-
-function mockAdapter(
-	name: string,
-	responses: Array<{
-		output: string;
-		exitCode?: number;
-		duration?: number;
-		writeFile?: { path: string; content: string };
-	}>,
-): AgentAdapter {
-	let callIndex = 0;
-	return {
-		name,
-		async isAvailable() {
-			return true;
-		},
-		async invoke(_opts: LegacyInvokeOptions): Promise<AgentResult> {
-			const response = responses[callIndex];
-			if (!response) {
+/** Build a mock adapter from a queue of responses (called in order). */
+function createMockAdapter(
+	responses: MockResponse[],
+): AgentAdapter & { callCount: number; lastOpts?: InvokeOptions } {
+	let idx = 0;
+	const adapter = {
+		callCount: 0,
+		lastOpts: undefined as InvokeOptions | undefined,
+		async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
+			adapter.callCount++;
+			adapter.lastOpts = opts;
+			const r = responses[idx++];
+			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
+			if (r.type === "error") throw r.error;
+			if (r.type !== "status")
 				throw new Error(
-					`Mock adapter "${name}" exhausted responses (called ${callIndex + 1} times)`,
+					`Expected status response at index ${idx - 1}, got ${r.type}`,
 				);
-			}
-			callIndex++;
-			if (response.writeFile) {
-				writeFileSync(response.writeFile.path, response.writeFile.content);
-			}
+			if (r.writeFile) writeFileSync(r.writeFile.path, r.writeFile.content);
 			return {
-				output: response.output,
-				exitCode: response.exitCode ?? 0,
-				duration: response.duration ?? 1000,
+				type: "status",
+				status: r.status,
+				duration: r.duration ?? 1000,
+				sessionId: r.sessionId ?? "mock-session",
 			};
 		},
+		async invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict> {
+			adapter.callCount++;
+			adapter.lastOpts = opts;
+			const r = responses[idx++];
+			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
+			if (r.type === "error") throw r.error;
+			if (r.type !== "verdict")
+				throw new Error(
+					`Expected verdict response at index ${idx - 1}, got ${r.type}`,
+				);
+			if (r.writeFile) writeFileSync(r.writeFile.path, r.writeFile.content);
+			return {
+				type: "verdict",
+				verdict: r.verdict,
+				duration: r.duration ?? 1000,
+				sessionId: r.sessionId ?? "mock-session",
+			};
+		},
+		async verify() {},
+		async close() {},
 	};
+	return adapter;
 }
 
 function fixedPhaseGate(decision: "continue" | "review" | "abort") {
@@ -224,22 +217,11 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc123" } },
 				{
-					output: statusBlock({
-						result: "completed",
-						commit: "abc123",
-						phase: 1,
-					}),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
 				},
 			]);
 
@@ -247,8 +229,7 @@ describe("runPhaseExecutionLoop", () => {
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -265,36 +246,23 @@ describe("runPhaseExecutionLoop", () => {
 	test("multi-phase progression in auto mode", async () => {
 		const { tmp, db, reviewPath, planPath, cleanup } = createTestEnv();
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "aaa", phase: 1 }),
-				},
-				{
-					output: statusBlock({ result: "completed", commit: "bbb", phase: 2 }),
-				},
-				{
-					output: statusBlock({ result: "completed", commit: "ccc", phase: 3 }),
-				},
-			]);
-			const makeReviewer = () => ({
-				output: verdictBlock({ readiness: "ready", reviewPath }),
-				writeFile: {
-					path: reviewPath,
-					content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-				},
-			});
-			const reviewer = mockAdapter("reviewer", [
-				makeReviewer(),
-				makeReviewer(),
-				makeReviewer(),
+			const adapter = createMockAdapter([
+				// Phase 1: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "aaa" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				// Phase 2: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "bbb" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				// Phase 3: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "ccc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -314,27 +282,16 @@ describe("runPhaseExecutionLoop", () => {
 			const cfg = defaultConfig(tmp);
 			cfg.qualityGates = ["echo pass"];
 
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				cfg,
 				{ workdir: tmp, auto: true },
 			);
@@ -349,19 +306,14 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW: needs corrections
 				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-				{
-					output: statusBlock({ result: "completed", commit: "def", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({
+					type: "verdict",
+					verdict: {
 						readiness: "ready_with_corrections",
-						reviewPath,
 						items: [
 							{
 								id: "p1-1",
@@ -370,38 +322,19 @@ describe("runPhaseExecutionLoop", () => {
 								reason: "Add test",
 							},
 						],
-					}),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [
-								{
-									id: "p1-1",
-									title: "Missing test",
-									action: "auto_fix",
-									reason: "Add test",
-								},
-							],
-						})}`,
 					},
 				},
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW (second): ready
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -417,16 +350,12 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({
+					type: "verdict",
+					verdict: {
 						readiness: "not_ready",
-						reviewPath,
 						items: [
 							{
 								id: "p0-1",
@@ -435,21 +364,6 @@ describe("runPhaseExecutionLoop", () => {
 								reason: "Needs decision",
 							},
 						],
-					}),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({
-							readiness: "not_ready",
-							reviewPath,
-							items: [
-								{
-									id: "p0-1",
-									title: "API design",
-									action: "human_required",
-									reason: "Needs decision",
-								},
-							],
-						})}`,
 					},
 				},
 			]);
@@ -458,8 +372,7 @@ describe("runPhaseExecutionLoop", () => {
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -477,23 +390,21 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
 				{
-					output: statusBlock({
+					type: "status",
+					status: {
 						result: "needs_human",
-						phase: 1,
 						reason: "Ambiguous requirement",
-					}),
+					},
 				},
 			]);
-			const reviewer = mockAdapter("reviewer", []);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -505,118 +416,105 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
-	test("author failure escalates", async () => {
+	test("author invocation failure escalates", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [{ output: "error", exitCode: 1 }]);
-			const reviewer = mockAdapter("reviewer", []);
-
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				reviewer,
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true },
-			);
-
-			expect(result.complete).toBe(false);
-			expect(result.escalations[0]?.reason).toContain("exited with code 1");
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("missing status block escalates", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-		try {
-			const author = mockAdapter("author", [
-				{ output: "Did some work but forgot status block" },
+			const adapter = createMockAdapter([
+				{ type: "error", error: new Error("connection refused") },
 			]);
-			const reviewer = mockAdapter("reviewer", []);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
 
 			expect(result.complete).toBe(false);
-			expect(result.escalations[0]?.reason).toContain("5x:status");
+			expect(result.escalations[0]?.reason).toContain("connection refused");
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("missing verdict block escalates", async () => {
+	test("reviewer invocation failure escalates", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "error", error: new Error("timeout exceeded") },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations[0]?.reason).toContain("timeout exceeded");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("assertAuthorStatus invariant violation escalates", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			// complete but no commit → invariant violation
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete" } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations[0]?.reason).toContain("invariant violation");
+			expect(result.escalations[0]?.reason).toContain("commit");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("assertReviewerVerdict invariant violation escalates", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			// not_ready but empty items → invariant violation
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
 				},
 			]);
-			const reviewer = mockAdapter("reviewer", [
-				{ output: "Great work! No verdict block." },
-			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
 
 			expect(result.complete).toBe(false);
-			expect(result.escalations[0]?.reason).toContain("5x:verdict");
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("QUALITY_RETRY missing status block escalates", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-		try {
-			const cfg = defaultConfig(tmp);
-			cfg.qualityGates = ["exit 1"]; // will fail, triggering QUALITY_RETRY
-
-			const author = mockAdapter("author", [
-				// EXECUTE: completes with status
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-				// QUALITY_RETRY: succeeds (exitCode 0) but no status block
-				{ output: "Fixed things but forgot status block" },
-			]);
-			const reviewer = mockAdapter("reviewer", []);
-
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				reviewer,
-				cfg,
-				{ workdir: tmp, auto: true },
-			);
-
-			expect(result.complete).toBe(false);
-			expect(result.escalations.length).toBeGreaterThan(0);
-			expect(result.escalations[0]?.reason).toContain(
-				"did not produce a status block during quality fix",
-			);
+			expect(result.escalations[0]?.reason).toContain("items' is empty");
 		} finally {
 			cleanup();
 		}
@@ -626,27 +524,16 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, phaseGate: fixedPhaseGate("continue") },
 			);
@@ -661,27 +548,16 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, phaseGate: fixedPhaseGate("abort") },
 			);
@@ -697,23 +573,18 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
+			const adapter = createMockAdapter([
 				{
-					output: statusBlock({
-						result: "needs_human",
-						phase: 1,
-						reason: "Question",
-					}),
+					type: "status",
+					status: { result: "needs_human", reason: "Question" },
 				},
 			]);
-			const reviewer = mockAdapter("reviewer", []);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -732,27 +603,16 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -774,27 +634,16 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -819,27 +668,16 @@ describe("runPhaseExecutionLoop", () => {
 			const cfg = defaultConfig(tmp);
 			cfg.qualityGates = ["exit 1"]; // would fail
 
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				cfg,
 				{ workdir: tmp, auto: true, skipQuality: true },
 			);
@@ -858,32 +696,20 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, planPath, cleanup } =
 			createTestEnv(planWithP1Complete);
 		try {
-			const makeReviewer = () => ({
-				output: verdictBlock({ readiness: "ready", reviewPath }),
-				writeFile: {
-					path: reviewPath,
-					content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-				},
-			});
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "bbb", phase: 2 }),
-				},
-				{
-					output: statusBlock({ result: "completed", commit: "ccc", phase: 3 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				makeReviewer(),
-				makeReviewer(),
+			const adapter = createMockAdapter([
+				// Phase 2
+				{ type: "status", status: { result: "complete", commit: "bbb" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				// Phase 3
+				{ type: "status", status: { result: "complete", commit: "ccc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true, startPhase: "2" },
 			);
@@ -896,13 +722,10 @@ describe("runPhaseExecutionLoop", () => {
 	});
 
 	test("resume from mid-phase restores state at QUALITY_CHECK", async () => {
-		// Simulate: phase 1 author completed (EXECUTE done), interrupted before quality check.
-		// On resume, should skip author EXECUTE and enter QUALITY_CHECK directly.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
 			const runId = "resume-test-run-id-1234";
-			// Create an "active" run at QUALITY_CHECK for phase 1
 			createRun(db, {
 				id: runId,
 				planPath,
@@ -930,25 +753,16 @@ describe("runPhaseExecutionLoop", () => {
 				cost_usd: null,
 			});
 
-			// Author should NOT be called for EXECUTE (it was completed).
-			// The reviewer WILL be called after quality check passes.
-			const author = mockAdapter("author", []);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			// Author should NOT be called (step completed). Reviewer WILL be called.
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -966,8 +780,6 @@ describe("runPhaseExecutionLoop", () => {
 	});
 
 	test("resume from PHASE_GATE enters gate directly", async () => {
-		// Simulate: phase 1 completed author+quality+review, interrupted at PHASE_GATE.
-		// On resume, should skip all agents and enter PHASE_GATE directly.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
@@ -1008,7 +820,6 @@ describe("runPhaseExecutionLoop", () => {
 				result_type: "verdict",
 				result_json: JSON.stringify({
 					readiness: "ready",
-					reviewPath,
 					items: [],
 				}),
 				duration_ms: 1000,
@@ -1018,16 +829,14 @@ describe("runPhaseExecutionLoop", () => {
 			});
 
 			// No agents should be called — goes straight to PHASE_GATE.
-			const author = mockAdapter("author", []);
-			const reviewer = mockAdapter("reviewer", []);
+			const adapter = createMockAdapter([]);
 
 			let phaseGateCalled = false;
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -1048,7 +857,6 @@ describe("runPhaseExecutionLoop", () => {
 	});
 
 	test("resume derives iteration from DB max, not global count", async () => {
-		// Ensure iteration counter on resume uses per-phase max, not all-results count.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
@@ -1081,22 +889,15 @@ describe("runPhaseExecutionLoop", () => {
 			});
 
 			// Reviewer should be called (at iteration >= 1)
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				mockAdapter("author", []),
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -1117,39 +918,22 @@ describe("runPhaseExecutionLoop", () => {
 	});
 
 	test("worktree mode: logBaseDir anchored to projectRoot, not planPath", async () => {
-		// When projectRoot is provided, logs should go to projectRoot/.5x/logs/
-		// not to dirname(planPath)/.5x/logs/ (which would be inside the worktree).
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		const fakeProjectRoot = join(tmp, "main-checkout");
 		mkdirSync(join(fakeProjectRoot, ".5x"), { recursive: true });
 
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({
-						result: "completed",
-						commit: "abc123",
-						phase: 1,
-					}),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc123" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -1174,12 +958,12 @@ describe("runPhaseExecutionLoop", () => {
 		);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
+			const adapter = createMockAdapter([]);
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				mockAdapter("author", []),
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true },
 			);
@@ -1191,284 +975,21 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
-	test("ndjson log files created for EXECUTE, REVIEW, and AUTO_FIX sites", async () => {
-		// EXECUTE + REVIEW (needs fixes) + AUTO_FIX + REVIEW (ready) = 4 agent calls → 4 ndjson logs
+	test("log path always populated on escalation", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
 		try {
-			const author = mockAdapter("author", [
-				// EXECUTE: initial author run
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-				// AUTO_FIX: author fixes review items
-				{
-					output: statusBlock({ result: "completed", commit: "ghi", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				// REVIEW: first review — needs fixes
-				{
-					output: verdictBlock({
-						readiness: "ready_with_corrections",
-						reviewPath,
-						items: [
-							{
-								id: "p1-1",
-								title: "Fix test",
-								action: "auto_fix",
-								reason: "Missing test",
-							},
-						],
-					}),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({
-							readiness: "ready_with_corrections",
-							reviewPath,
-							items: [
-								{
-									id: "p1-1",
-									title: "Fix test",
-									action: "auto_fix",
-									reason: "Missing test",
-								},
-							],
-						})}`,
-					},
-				},
-				// REVIEW: second review after auto_fix — ready
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
+			// Author invocation throws
+			const adapter = createMockAdapter([
+				{ type: "error", error: new Error("boom") },
 			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, projectRoot: tmp },
-			);
-
-			expect(result.complete).toBe(true);
-
-			// Verify .ndjson log files exist for all invocation sites
-			const logDir = join(tmp, ".5x", "logs", result.runId);
-			expect(existsSync(logDir)).toBe(true);
-
-			const { readdirSync } = await import("node:fs");
-			const logFiles = readdirSync(logDir).filter((f) => f.endsWith(".ndjson"));
-			// Should have 4 ndjson logs: EXECUTE + REVIEW(first) + AUTO_FIX + REVIEW(second)
-			expect(logFiles.length).toBe(4);
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("onEvent called when quiet=false, not called when quiet=true", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-
-		try {
-			let onEventCallCount = 0;
-
-			// Create a mock adapter that captures whether onEvent is being set
-			const capturingAdapter: AgentAdapter = {
-				name: "capture",
-				isAvailable: async () => true,
-				invoke: async (opts: LegacyInvokeOptions) => {
-					if (opts.onEvent) {
-						// Simulate an event being fired
-						opts.onEvent({ type: "result", subtype: "success" }, "{}");
-						onEventCallCount++;
-					}
-					return {
-						output: statusBlock({
-							result: "completed",
-							commit: "abc",
-							phase: 1,
-						}),
-						exitCode: 0,
-						duration: 100,
-					};
-				},
-			};
-
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
-			]);
-
-			// quiet=false: onEvent should be set
-			onEventCallCount = 0;
-			const result1 = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				capturingAdapter,
-				reviewer,
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: false },
-			);
-			expect(result1.complete).toBe(true);
-			// onEvent was called at least once (EXECUTE + REVIEW)
-			expect(onEventCallCount).toBeGreaterThan(0);
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("quiet=true suppresses onEvent (no formatting calls)", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-
-		try {
-			let onEventWasSet = false;
-
-			const capturingAdapter: AgentAdapter = {
-				name: "capture-quiet",
-				isAvailable: async () => true,
-				invoke: async (opts: LegacyInvokeOptions) => {
-					if (opts.onEvent) onEventWasSet = true;
-					return {
-						output: statusBlock({
-							result: "completed",
-							commit: "abc",
-							phase: 1,
-						}),
-						exitCode: 0,
-						duration: 100,
-					};
-				},
-			};
-
-			const reviewer = mockAdapter("reviewer", [
-				{
-					output: verdictBlock({ readiness: "ready", reviewPath }),
-					writeFile: {
-						path: reviewPath,
-						content: `Review\n\n${verdictBlock({ readiness: "ready", reviewPath })}`,
-					},
-				},
-			]);
-
-			// quiet=true: onEvent should NOT be set
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				capturingAdapter,
-				reviewer,
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: true },
-			);
-			expect(result.complete).toBe(true);
-			expect(onEventWasSet).toBe(false);
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("escalation in quiet mode includes output snippet and log path", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-
-		try {
-			const author = mockAdapter("author", [
-				{
-					output: "Agent failed with some output",
-					exitCode: 1,
-				},
-			]);
-
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				mockAdapter("reviewer", []),
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: true },
-			);
-
-			expect(result.complete).toBe(false);
-			expect(result.escalations.length).toBeGreaterThan(0);
-			const escalation = result.escalations[0];
-			if (!escalation) throw new Error("Expected at least one escalation");
-			// In quiet mode: reason should include log path AND output snippet
-			expect(escalation.reason).toContain("Log:");
-			expect(escalation.reason).toContain("Agent failed with some output");
-			expect(escalation.logPath).toBeDefined();
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("escalation in non-quiet mode includes log path but NOT output snippet", async () => {
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-
-		try {
-			const author = mockAdapter("author", [
-				{
-					output: "Agent failed with some output",
-					exitCode: 1,
-				},
-			]);
-
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				mockAdapter("reviewer", []),
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: false },
-			);
-
-			expect(result.complete).toBe(false);
-			expect(result.escalations.length).toBeGreaterThan(0);
-			const escalation = result.escalations[0];
-			if (!escalation) throw new Error("Expected at least one escalation");
-			// In non-quiet mode: reason should include log path but NOT output snippet
-			expect(escalation.reason).toContain("Log:");
-			expect(escalation.reason).not.toContain("Agent failed with some output");
-			expect(escalation.logPath).toBeDefined();
-		} finally {
-			cleanup();
-		}
-	});
-
-	test("PARSE_AUTHOR_STATUS escalation includes logPath from preceding EXECUTE", async () => {
-		// When author produces no status block, the escalation should carry the
-		// NDJSON log path of the EXECUTE invocation that produced the bad output.
-		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
-		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
-
-		try {
-			const author = mockAdapter("author", [
-				{ output: "Did some work but forgot status block" },
-			]);
-
-			const result = await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				author,
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(tmp),
 				{ workdir: tmp, auto: true, projectRoot: tmp },
 			);
@@ -1477,7 +998,7 @@ describe("runPhaseExecutionLoop", () => {
 			expect(result.escalations.length).toBeGreaterThan(0);
 			const escalation = result.escalations[0];
 			if (!escalation) throw new Error("Expected at least one escalation");
-			// PARSE_AUTHOR_STATUS escalation must carry the EXECUTE log path.
+			// Log path should be populated (computed before invocation)
 			expect(escalation.logPath).toBeDefined();
 			expect(escalation.logPath).toMatch(/agent-.+\.ndjson$/);
 		} finally {
@@ -1485,80 +1006,104 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
-	test("PARSE_VERDICT escalation includes logPath from preceding REVIEW", async () => {
-		// When reviewer produces no verdict block, the escalation should carry the
-		// NDJSON log path of the REVIEW invocation.
+	test("quiet flag passed through to adapter", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
 		try {
-			const author = mockAdapter("author", [
-				{
-					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
-				},
-			]);
-			const reviewer = mockAdapter("reviewer", [
-				{ output: "Great work! No verdict block." },
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			const result = await runPhaseExecutionLoop(
+			await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				reviewer,
+				adapter,
 				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, projectRoot: tmp },
+				{ workdir: tmp, auto: true, quiet: true },
 			);
 
-			expect(result.complete).toBe(false);
-			expect(result.escalations.length).toBeGreaterThan(0);
-			const escalation = result.escalations[0];
-			if (!escalation) throw new Error("Expected at least one escalation");
-			// PARSE_VERDICT escalation must carry the REVIEW log path.
-			expect(escalation.logPath).toBeDefined();
-			expect(escalation.logPath).toMatch(/agent-.+\.ndjson$/);
+			// The adapter should have received quiet=true
+			expect(adapter.lastOpts?.quiet).toBe(true);
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("exit-code escalation iteration matches agent result iteration (no off-by-one)", async () => {
-		// When author exits non-zero, the escalation's iteration should equal the
-		// iteration at which the agent was invoked (not post-increment).
+	test("escalation includes logPath from invocation", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
 		try {
-			const author = mockAdapter("author", [{ output: "error", exitCode: 1 }]);
+			// Author needs_human → escalation should include logPath
+			const adapter = createMockAdapter([
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help me" },
+				},
+			]);
 
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				author,
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, projectRoot: tmp },
+			);
+
+			expect(result.complete).toBe(false);
+			const escalation = result.escalations[0];
+			expect(escalation?.logPath).toBeDefined();
+			expect(escalation?.logPath).toMatch(/agent-.+\.ndjson$/);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("QUALITY_RETRY: author needs_human during quality fix escalates", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const cfg = defaultConfig(tmp);
+			cfg.qualityGates = ["exit 1"]; // will fail
+
+			const adapter = createMockAdapter([
+				// EXECUTE: completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// QUALITY_RETRY: author reports needs_human
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "stuck on quality fix" },
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				cfg,
 				{ workdir: tmp, auto: true },
 			);
 
+			expect(result.complete).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
-			const escalation = result.escalations[0];
-			if (!escalation) throw new Error("Expected at least one escalation");
-			// Author was invoked at iteration 0; escalation should be at iteration 0.
-			expect(escalation.iteration).toBe(0);
+			expect(result.escalations[0]?.reason).toContain("stuck on quality fix");
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("resume into PARSE_AUTHOR_STATUS uses correct lastInvokeIteration", async () => {
-		// Simulate: author completed at iteration 0, then interrupted at PARSE_AUTHOR_STATUS.
-		// On resume, escalation (missing status) should reference iteration 0, not 1.
+	test("resume backward compat: PARSE_AUTHOR_STATUS mapped to EXECUTE", async () => {
+		// Simulate: old run interrupted at PARSE_AUTHOR_STATUS with a stored
+		// result. Should be mapped to EXECUTE and route based on stored result.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const runId = "resume-parse-status-1234";
+			const runId = "resume-legacy-parse-1234";
 			createRun(db, {
 				id: runId,
 				planPath,
@@ -1567,7 +1112,7 @@ describe("runPhaseExecutionLoop", () => {
 			});
 			updateRunStatus(db, runId, "active", "PARSE_AUTHOR_STATUS", "1");
 
-			// Author completed at iteration 0 but status was unparseable
+			// Author completed at iteration 0 but status was null (unparseable)
 			upsertAgentResult(db, {
 				id: "ar-author-0",
 				run_id: runId,
@@ -1583,12 +1128,13 @@ describe("runPhaseExecutionLoop", () => {
 				cost_usd: null,
 			});
 
+			const adapter = createMockAdapter([]);
+
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				mockAdapter("author", []),
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -1599,20 +1145,18 @@ describe("runPhaseExecutionLoop", () => {
 
 			expect(result.complete).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
-			// Escalation should reference iteration 0 (the invocation that produced the result)
+			// Escalation should reference iteration 0
 			expect(result.escalations[0]?.iteration).toBe(0);
 		} finally {
 			cleanup();
 		}
 	});
 
-	test("resume into PARSE_VERDICT uses correct lastInvokeIteration", async () => {
-		// Simulate: author at iter 0, reviewer at iter 1, interrupted at PARSE_VERDICT.
-		// On resume, escalation should reference iteration 1 (the reviewer invocation).
+	test("resume backward compat: PARSE_VERDICT mapped to REVIEW", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
-			const runId = "resume-parse-verdict-1234";
+			const runId = "resume-legacy-verdict-1234";
 			createRun(db, {
 				id: runId,
 				planPath,
@@ -1636,7 +1180,7 @@ describe("runPhaseExecutionLoop", () => {
 				tokens_out: null,
 				cost_usd: null,
 			});
-			// Reviewer at iteration 1 but verdict was unparseable
+			// Reviewer at iteration 1 but verdict was null
 			upsertAgentResult(db, {
 				id: "ar-reviewer-1",
 				run_id: runId,
@@ -1652,12 +1196,13 @@ describe("runPhaseExecutionLoop", () => {
 				cost_usd: null,
 			});
 
+			const adapter = createMockAdapter([]);
+
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
 				db,
-				mockAdapter("author", []),
-				mockAdapter("reviewer", []),
+				adapter,
 				defaultConfig(tmp),
 				{
 					workdir: tmp,
@@ -1668,7 +1213,7 @@ describe("runPhaseExecutionLoop", () => {
 
 			expect(result.complete).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
-			// Escalation should reference iteration 1 (the reviewer invocation), not 2
+			// Escalation should reference iteration 1 (the reviewer invocation)
 			expect(result.escalations[0]?.iteration).toBe(1);
 		} finally {
 			cleanup();
