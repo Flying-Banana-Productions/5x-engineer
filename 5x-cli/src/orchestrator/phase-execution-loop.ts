@@ -108,6 +108,13 @@ export interface PhaseExecutionOptions {
 		phase: string,
 		state: string,
 	) => Promise<"resume" | "start-fresh" | "abort">;
+	/**
+	 * Injectable logger for status messages. Defaults to `console.log`.
+	 * The orchestrator gates this on `quiet` internally — callers should
+	 * NOT pre-gate. Primarily exists for test DI (inject a recording
+	 * logger to assert output without touching the global `console`).
+	 */
+	_log?: (...args: unknown[]) => void;
 }
 
 /**
@@ -175,8 +182,9 @@ export async function runPhaseExecutionLoop(
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
 	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
+	const _sink = options._log ?? console.log;
 	const log = (...args: unknown[]) => {
-		if (!resolveQuiet()) console.log(...args);
+		if (!resolveQuiet()) _sink(...args);
 	};
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;

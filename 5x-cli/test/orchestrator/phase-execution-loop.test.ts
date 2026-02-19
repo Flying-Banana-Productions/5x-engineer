@@ -1110,19 +1110,16 @@ describe("runPhaseExecutionLoop", () => {
 
 	test("no stdout writes from orchestrator when quiet=true (TUI active regression)", async () => {
 		// When quiet is true (TUI active), the orchestrator must not write to
-		// stdout — only to log files and DB. Intercepts console.log directly
-		// (Bun's console.log bypasses process.stdout.write). Safe under Bun's
-		// concurrency model: each test file runs in a separate process, and
-		// tests within a file run sequentially.
+		// stdout — only to log files and DB. Uses _log DI to avoid mutating
+		// the global console object (safe under concurrent test execution).
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
-		const origLog = console.log;
-		const logCalls: unknown[][] = [];
-		console.log = (...args: unknown[]) => {
-			logCalls.push(args);
-		};
 		try {
+			const logCalls: unknown[][] = [];
+			const recorder = (...args: unknown[]) => {
+				logCalls.push(args);
+			};
 			const adapter = createMockAdapter([
 				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
@@ -1134,30 +1131,28 @@ describe("runPhaseExecutionLoop", () => {
 				db,
 				adapter,
 				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: true },
+				{ workdir: tmp, auto: true, quiet: true, _log: recorder },
 			);
 
-			// No console.log output should have been produced when quiet=true.
+			// No log output should have been produced when quiet=true.
 			expect(logCalls).toEqual([]);
 		} finally {
-			console.log = origLog;
 			cleanup();
 		}
 	});
 
-	test("orchestrator does produce console.log when quiet=false (regression sanity)", async () => {
+	test("orchestrator does produce log output when quiet=false (regression sanity)", async () => {
 		// Companion to the quiet=true test above: verifies that with quiet=false
 		// the orchestrator DOES produce log output, proving the quiet=true test
 		// isn't passing vacuously.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
-		const origLog = console.log;
-		const logCalls: unknown[][] = [];
-		console.log = (...args: unknown[]) => {
-			logCalls.push(args);
-		};
 		try {
+			const logCalls: unknown[][] = [];
+			const recorder = (...args: unknown[]) => {
+				logCalls.push(args);
+			};
 			const adapter = createMockAdapter([
 				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
@@ -1169,14 +1164,13 @@ describe("runPhaseExecutionLoop", () => {
 				db,
 				adapter,
 				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: false },
+				{ workdir: tmp, auto: true, quiet: false, _log: recorder },
 			);
 
 			// When quiet=false, orchestrator MUST produce at least some log output
 			// (phase headers, author status, verdict, etc.).
 			expect(logCalls.length).toBeGreaterThan(0);
 		} finally {
-			console.log = origLog;
 			cleanup();
 		}
 	});

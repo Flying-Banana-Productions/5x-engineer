@@ -110,6 +110,11 @@ export interface PlanReviewLoopOptions {
 		runId: string,
 		iteration: number,
 	) => Promise<"resume" | "start-fresh" | "abort">;
+	/**
+	 * Injectable logger for status messages. Defaults to `console.log`.
+	 * Gated on `quiet` internally. Primarily for test DI.
+	 */
+	_log?: (...args: unknown[]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,8 +282,9 @@ export async function runPlanReviewLoop(
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
 	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
+	const _sink = options._log ?? console.log;
 	const log = (...args: unknown[]) => {
-		if (!resolveQuiet()) console.log(...args);
+		if (!resolveQuiet()) _sink(...args);
 	};
 	const workdir = options.projectRoot ?? dirname(resolve(planPath));
 
