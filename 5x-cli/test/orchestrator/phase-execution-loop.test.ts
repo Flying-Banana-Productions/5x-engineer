@@ -1033,6 +1033,35 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("quiet function form is evaluated at each adapter invocation (P1.4)", async () => {
+		// Verify that when quiet is a function, it is resolved fresh at each
+		// adapter call so that TUI exit mid-run affects subsequent invocations.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const quietValue = false;
+			await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: () => quietValue },
+			);
+
+			// The adapter received the function's return value (false) at call time
+			expect(adapter.lastOpts?.quiet).toBe(false);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("escalation includes logPath from invocation", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

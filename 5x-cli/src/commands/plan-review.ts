@@ -143,10 +143,13 @@ export default defineCommand({
 			enabled: isTuiMode,
 		});
 
-		tui.onExit(() => {
-			if (tui.active) return;
-			process.stderr.write("TUI exited — continuing headless\n");
-		});
+		// Handle TUI early exit — continue headless.
+		// Only registered when TUI was actually spawned; no-op controller never fires.
+		if (isTuiMode) {
+			tui.onExit(() => {
+				process.stderr.write("TUI exited — continuing headless\n");
+			});
+		}
 
 		try {
 			// Run the loop
@@ -160,29 +163,36 @@ export default defineCommand({
 					auto: args.auto,
 					allowDirty: args["allow-dirty"],
 					projectRoot,
-					quiet: effectiveQuiet || tui.active,
+					// Function form: re-evaluated at each adapter call so TUI exit
+					// mid-run is reflected in subsequent invocations (P1.4).
+					quiet: () => effectiveQuiet || tui.active,
 					canonicalPlanPath: canonical,
 				},
 			);
 
-			// Display final result
-			console.log();
-			if (result.approved) {
-				console.log("  Plan review: APPROVED");
-			} else {
-				console.log("  Plan review: NOT APPROVED");
-			}
-			console.log(`  Iterations: ${result.iterations}`);
-			console.log(`  Review: ${result.reviewPath}`);
-			console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
-			if (result.escalations.length > 0) {
-				console.log(`  Escalations: ${result.escalations.length}`);
-			}
-			console.log();
-
-			if (result.approved) {
-				console.log(`  Next: 5x run ${planPath}`);
+			// Display final result.
+			// Guard on !tui.active: TUI may still own the terminal here (killed
+			// in finally below). Writing to stdout while TUI is active corrupts
+			// the display (P0.6 output ownership rule).
+			if (!tui.active) {
 				console.log();
+				if (result.approved) {
+					console.log("  Plan review: APPROVED");
+				} else {
+					console.log("  Plan review: NOT APPROVED");
+				}
+				console.log(`  Iterations: ${result.iterations}`);
+				console.log(`  Review: ${result.reviewPath}`);
+				console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
+				if (result.escalations.length > 0) {
+					console.log(`  Escalations: ${result.escalations.length}`);
+				}
+				console.log();
+
+				if (result.approved) {
+					console.log(`  Next: 5x run ${planPath}`);
+					console.log();
+				}
 			}
 
 			if (!result.approved) {

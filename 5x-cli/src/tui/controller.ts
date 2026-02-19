@@ -66,7 +66,14 @@ export interface TuiController {
 
 	/**
 	 * Register a callback for when the TUI process exits.
-	 * The callback fires once. If TUI is already dead (or headless), fires immediately.
+	 * The callback fires once when the TUI process exits.
+	 *
+	 * In headless mode (no-op controller), this is a no-op — the handler is
+	 * never called, because no TUI was ever started and therefore no exit event
+	 * occurs. Callers should gate registration on `isTuiMode` if they only want
+	 * to react to actual TUI exits.
+	 *
+	 * In active mode, fires immediately if the TUI has already exited.
 	 */
 	onExit(handler: () => void): void;
 
@@ -108,9 +115,10 @@ function createNoopController(): TuiController {
 		},
 		async selectSession() {},
 		async showToast() {},
-		onExit(handler) {
-			// TUI never started — fire immediately
-			handler();
+		onExit(_handler) {
+			// TUI never started — no exit event will fire; handler is not called.
+			// Callers should gate onExit registration on isTuiMode so that
+			// headless code paths do not receive spurious "TUI exited" callbacks.
 		},
 		kill() {},
 	};
@@ -193,6 +201,24 @@ function createActiveController(
 // Factory
 // ---------------------------------------------------------------------------
 
+/** Minimal spawn result used internally and in tests. */
+export type SpawnResult = {
+	exited: Promise<number | undefined>;
+	kill(): void;
+};
+
+/**
+ * Default spawner: calls Bun.spawn to start `opencode attach`.
+ * Extracted so tests can inject a throwing spawner to exercise the fallback.
+ */
+function defaultSpawner(serverUrl: string, workdir: string): SpawnResult {
+	const spawned = Bun.spawn(
+		["opencode", "attach", serverUrl, "--dir", workdir],
+		{ stdio: ["inherit", "inherit", "inherit"] },
+	);
+	return { exited: spawned.exited, kill: () => spawned.kill() };
+}
+
 /**
  * Create a TUI controller. When `enabled` is true, spawns `opencode attach`
  * with the terminal inherited (stdio: "inherit"). When false, returns a no-op
@@ -203,6 +229,7 @@ function createActiveController(
  */
 export function createTuiController(
 	opts: CreateTuiControllerOptions,
+	_spawner?: (serverUrl: string, workdir: string) => SpawnResult,
 ): TuiController {
 	if (!opts.enabled) {
 		return createNoopController();
@@ -211,18 +238,22 @@ export function createTuiController(
 	// Pre-attach startup message (written BEFORE TUI takes over)
 	process.stderr.write("Starting OpenCode...\n");
 
-	// Spawn the TUI process
-	const proc = Bun.spawn(
-		["opencode", "attach", opts.serverUrl, "--dir", opts.workdir],
-		{
-			stdio: ["inherit", "inherit", "inherit"],
-		},
-	);
+	// Spawn the TUI process. If the `opencode` binary is not on PATH (or spawn
+	// otherwise fails), fall back to headless with a warning rather than a hard
+	// crash (Phase 6 fallback, partially implemented here per P1.5).
+	const spawner = _spawner ?? defaultSpawner;
+	let proc: SpawnResult;
+	try {
+		proc = spawner(opts.serverUrl, opts.workdir);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		process.stderr.write(
+			`Warning: Failed to spawn opencode TUI — continuing headless. (${reason})\n`,
+		);
+		return createNoopController();
+	}
 
-	return createActiveController(
-		{ exited: proc.exited, kill: () => proc.kill() },
-		opts.client,
-	);
+	return createActiveController(proc, opts.client);
 }
 
 // ---------------------------------------------------------------------------

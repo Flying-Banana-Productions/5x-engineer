@@ -67,17 +67,57 @@ describe("no-op TuiController (headless)", () => {
 		await controller.showToast("Hello", "info");
 	});
 
-	test("no-op controller onExit fires handler immediately", () => {
+	test("no-op controller onExit does not fire handler (no TUI was started)", () => {
+		// The no-op controller represents headless mode — no TUI process was ever
+		// spawned, so there is no exit event. The handler must NOT be called.
+		// (Previously the handler fired immediately, causing a spurious "TUI exited"
+		// message on every headless run — P0.5 fix.)
 		const controller = _createNoopControllerForTest();
 		const handler = mock(() => {});
 		controller.onExit(handler);
-		expect(handler).toHaveBeenCalledTimes(1);
+		expect(handler).not.toHaveBeenCalled();
 	});
 
 	test("no-op controller kill is a no-op", () => {
 		const controller = _createNoopControllerForTest();
 		// Should not throw
 		controller.kill();
+	});
+
+	test("createTuiController falls back to no-op when spawn throws (P1.5)", () => {
+		// If the opencode binary is not on PATH, Bun.spawn throws. The controller
+		// must return a no-op controller and write a warning to stderr rather than
+		// propagating the error.
+		const throwingSpawner = (): never => {
+			throw new Error("spawn ENOENT: opencode not found");
+		};
+		// Suppress stderr for this test
+		const origWrite = process.stderr.write.bind(process.stderr);
+		const stderrLines: string[] = [];
+		process.stderr.write = (chunk: string | Uint8Array) => {
+			stderrLines.push(typeof chunk === "string" ? chunk : String(chunk));
+			return true;
+		};
+		try {
+			const controller = createTuiController(
+				{
+					serverUrl: "http://127.0.0.1:12345",
+					workdir: "/tmp",
+					client: createMockClient(),
+					enabled: true,
+				},
+				throwingSpawner,
+			);
+
+			// Should have fallen back to headless no-op controller
+			expect(controller.active).toBe(false);
+			// Should have written a warning to stderr
+			const allOutput = stderrLines.join("");
+			expect(allOutput).toContain("Warning: Failed to spawn opencode TUI");
+			expect(allOutput).toContain("spawn ENOENT");
+		} finally {
+			process.stderr.write = origWrite;
+		}
 	});
 });
 

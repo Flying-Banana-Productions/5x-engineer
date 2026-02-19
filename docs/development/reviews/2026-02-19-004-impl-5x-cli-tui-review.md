@@ -199,3 +199,76 @@ Plan text says `--quiet` is ignored in TUI mode, but the current CLI uses `--qui
 - **Ready for next phase:** ✅ — proceed to Phase 2.
 
 <!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJ2ZXJkaWN0IiwicGhhc2UiOiIxIiwiaXRlcmF0aW9uIjoxLCJkYXRhIjp7InJlYWRpbmVzcyI6InJlYWR5IiwiaXRlbXMiOltdLCJzdW1tYXJ5IjoiQ29tbWl0IDg1ZmQxZDAgY2xlYW5seSBjb21wbGV0ZXMgUGhhc2UgMSAoZXBoZW1lcmFsIHBvcnQgKyBzZXJ2ZXJVcmwgc3VyZmFjZSkgcGVyIHRoZSBwbGFuLCB3aXRoIHBhc3NpbmcgdGVzdHMgYW5kIG5vIGZvbGxvdy1vbiBjb21taXRzLiBSZWFkeSB0byBwcm9jZWVkIHRvIFBoYXNlIDIgKFRVSSBsaWZlY3ljbGUpLCBzdGFydGluZyB3aXRoIHRoZSBwbGFu4oCZcyBTREsgc3VyZmFjZSB2YWxpZGF0aW9uIGdhdGUuIn19 -->
+
+---
+
+## Addendum (2026-02-19) — Implementation review (Phase 2)
+
+**Reviewed:** `ae43cb0` (no follow-on commits)
+
+### What shipped
+
+- **TUI controller**: Adds `5x-cli/src/tui/controller.ts` with a `TuiController` interface, no-op controller, and active controller that spawns `opencode attach <serverUrl> --dir <workdir>` via `Bun.spawn(..., { stdio: inherit })`.
+- **TUI detection**: Adds `5x-cli/src/tui/detect.ts` (`stdin.isTTY && stdout.isTTY && !--no-tui && !--quiet`).
+- **Command wiring**: Adds `--no-tui` to `5x-cli/src/commands/run.ts`, `5x-cli/src/commands/plan-review.ts`, `5x-cli/src/commands/plan.ts`; spawns TUI and calls `tui.kill()` in `finally`; passes `quiet: effectiveQuiet || tui.active`.
+- **SDK validation note**: Documents verified SDK surface at top of `5x-cli/src/tui/controller.ts`.
+- **Tests**: Adds `5x-cli/test/tui/controller.test.ts` for controller lifecycle behavior.
+
+### Production readiness blockers
+
+### P0.5 — Headless runs emit a false “TUI exited” warning
+
+**Risk:** In headless mode (`enabled: false`), `TuiController.onExit()` fires immediately and the command layer prints `"TUI exited — continuing headless"` even though no TUI was started.
+
+**Requirement:** `onExit` in headless mode must not trigger “TUI exited” messaging, or the command layer must only register the warning handler when TUI was actually spawned.
+
+**Implementation guidance:** Gate the `tui.onExit(...)` registration on `isTuiMode` (or change the no-op controller `onExit` semantics to a no-op).
+
+---
+
+### P0.6 — TUI mode currently corrupts the terminal and breaks interactive control flows
+
+**Risk:** With the TUI attached (`stdio: inherit`), the parent process continues to write extensively to stdout (and in `plan-review-loop` writes interactive prompts to stdout). This will interleave with and corrupt the TUI display. Additionally, non-auto human gates currently require readline/stdin ownership (Phase 5), which cannot work once the TUI owns the terminal.
+
+**Requirement:** Do not enable TUI for flows that still rely on stdout/readline gates; and enforce “no parent stdout/stderr while `tuiController.active`” as a hard contract.
+
+**Implementation guidance:** Either (a) defer enabling TUI by default until Phase 3–5 land (permissions + cooperative cancellation + TUI gates + output ownership), or (b) complete the missing phases in the same rollout and add regression tests that assert zero parent stdout writes when TUI is active.
+
+---
+
+### P0.7 — Signal handling still uses hard `process.exit()` (cleanup risk in TUI mode)
+
+**Risk:** Existing `registerAdapterShutdown()` installs SIGINT/SIGTERM handlers that call `process.exit(...)`, bypassing async `finally` cleanup. In TUI mode, signal routing is more complex; if SIGINT lands on the parent, this can leak locks/worktrees/server processes.
+
+**Requirement:** Before TUI is enabled by default, implement Phase 3’s cooperative cancellation semantics (exitCode + AbortController + finally cleanup) for TUI mode.
+
+**Implementation guidance:** Update `registerAdapterShutdown(adapter, { tuiMode, cancelController })` per the plan and plumb `signal` into orchestrator loops.
+
+---
+
+## High priority (P1)
+
+### P1.4 — “Continue headless” doesn’t actually restore headless output
+
+The command layer computes `quiet: effectiveQuiet || tui.active` once. If the TUI exits early, `tui.active` flips to false, but the loop stays in `quiet: true`, so headless output remains suppressed. Consider making `quiet` depend on current TUI state (or explicitly re-enable output on TUI exit) if “continue headless” is intended to be visible.
+
+### P1.5 — Missing `opencode` binary handling
+
+`createTuiController()` assumes `opencode` is on PATH; if spawn throws or the process exits immediately, the UX is likely a hard failure instead of the planned Phase 6 fallback (warn + continue headless).
+
+---
+
+## Medium priority (P2)
+
+- **Adapter coupling:** Commands cast `adapter` to `OpenCodeAdapter` to reach `_clientForTui`. If/when other adapters exist, consider formalizing a minimal “tui client surface” on the `AgentAdapter` contract or providing it via the adapter factory.
+
+---
+
+### Updated readiness
+
+- **Phase 2 completion:** ❌ — spawning the TUI without output ownership, gate integration, and updated signal handling makes default TUI mode unsafe/unusable.
+- **Ready for next phase:** ⚠️ — proceed, but address P0.5 immediately and treat Phases 3–5 as the real enablement gate for TUI-by-default.
+
+<!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJzdGF0dXMiLCJwaGFzZSI6IjIiLCJpdGVyYXRpb24iOjAsImRhdGEiOnsicmVzdWx0IjoiY29tcGxldGUiLCJjb21taXQiOiJhZTQzY2IwIiwibm90ZXMiOiJQaGFzZSAyIChUVUkgc3Bhd24gKyBsaWZlY3ljbGUpIGltcGxlbWVudGVkIG9uIGJyYW5jaCBgaW1wbC8wMDQtNXgtY2xpLXR1aWAuXG5cbioqTmV3IGZpbGVzOioqXG4tIGBzcmMvdHVpL2NvbnRyb2xsZXIudHNgIOKAlCBUdWlDb250cm9sbGVyIGludGVyZmFjZSArIGBjcmVhdGVUdWlDb250cm9sbGVyKClgIGZhY3RvcnkuIEFjdGl2ZSBjb250cm9sbGVyIHNwYXducyBgb3BlbmNvZGUgYXR0YWNoIDx1cmw-IC0tZGlyIDx3b3JrZGlyPmAgdmlhIEJ1bi5zcGF3biB3aXRoIHN0ZGlvOiBpbmhlcml0LiBOby1vcCBjb250cm9sbGVyIGZvciBoZWFkbGVzcyBtb2RlIHdpdGggaWRlbnRpY2FsIGludGVyZmFjZS4gU0RLIHN1cmZhY2UgdmFsaWRhdGlvbiBkb2N1bWVudGVkIGF0IGZpbGUgdG9wIHBlciBwbGFuIHJlcXVpcmVtZW50cy5cbi0gYHNyYy90dWkvZGV0ZWN0LnRzYCDigJQgYHNob3VsZEVuYWJsZVR1aSgpYCBpbXBsZW1lbnRpbmcgVFRZIGF1dG8tZGV0ZWN0aW9uIChzdGRpbitzdGRvdXQgVFRZLCAtLW5vLXR1aSwgLS1xdWlldCBmbGFncykuXG4tIGB0ZXN0L3R1aS9jb250cm9sbGVyLnRlc3QudHNgIOKAlCAyNSB0ZXN0cyBjb3ZlcmluZyBuby1vcCBjb250cm9sbGVyIGJlaGF2aW9yLCBhY3RpdmUgY29udHJvbGxlciBsaWZlY3ljbGUgKGFjdGl2ZSBmbGFnLCBzZWxlY3RTZXNzaW9uLCBzaG93VG9hc3QsIG9uRXhpdCBoYW5kbGVycywga2lsbCwgZXJyb3Igc3dhbGxvd2luZykuXG5cbioqTW9kaWZpZWQgZmlsZXM6Kipcbi0gYHNyYy9hZ2VudHMvb3BlbmNvZGUudHNgIOKAlCBBZGRlZCBgX2NsaWVudEZvclR1aWAgZ2V0dGVyIHRvIGV4cG9zZSBTREsgY2xpZW50IGZvciBUVUkgQVBJIGNhbGxzLlxuLSBgc3JjL2NvbW1hbmRzL3J1bi50c2Ag4oCUIEFkZGVkIGAtLW5vLXR1aWAgZmxhZywgVFVJIG1vZGUgZGV0ZWN0aW9uLCBUVUkgc3Bhd24va2lsbCBpbiBsaWZlY3ljbGUuXG4tIGBzcmMvY29tbWFuZHMvcGxhbi1yZXZpZXcudHNgIOKAlCBTYW1lIFRVSSBpbnRlZ3JhdGlvbiBwYXR0ZXJuLlxuLSBgc3JjL2NvbW1hbmRzL3BsYW4udHNgIOKAlCBTYW1lIFRVSSBpbnRlZ3JhdGlvbiBwYXR0ZXJuLlxuLSBgZG9jcy9kZXZlbG9wbWVudC8wMDQtaW1wbC01eC1jbGktdHVpLm1kYCDigJQgQWxsIFBoYXNlIDIgY2hlY2tsaXN0IGl0ZW1zIG1hcmtlZCBbeF0uXG5cbioqU0RLIHZhbGlkYXRpb24gZmluZGluZ3MgKGRvY3VtZW50ZWQgaW4gY29udHJvbGxlci50cyk6Kipcbi0gYGNsaWVudC50dWkuc2hvd1RvYXN0KClgIOKAlCBFWElTVFMsIG1lc3NhZ2UrdmFyaWFudCByZXF1aXJlZFxuLSBgY2xpZW50LnR1aS5zZWxlY3RTZXNzaW9uKClgIOKAlCBFWElTVFMsIHN1cHBvcnRzIGRpcmVjdG9yeSBwYXJhbWV0ZXJcbi0gYGNsaWVudC50dWkuc2hvd0RpYWxvZygpYCDigJQgRE9FUyBOT1QgRVhJU1QgKG5vdGVkIGZvciBQaGFzZSA1IGZhbGxiYWNrKVxuLSBgY2xpZW50LnBlcm1pc3Npb24ucmVwbHkoKWAg4oCUIEVYSVNUUyAocHJlZmVycmVkIG92ZXIgZGVwcmVjYXRlZCAucmVzcG9uZCgpKVxuLSBgY2xpZW50LnR1aS5jb250cm9sLm5leHQoKS8ucmVzcG9uc2UoKWAg4oCUIEVYSVNUUyAoZm9yIFBoYXNlIDUgZ2F0ZSBmYWxsYmFjaylcblxuQWxsIDM4OCB0ZXN0cyBwYXNzICgyNSBuZXcgKyAzNjMgZXhpc3RpbmcpLiBQcmUtY29tbWl0IGhvb2tzIChiaW9tZSBsaW50ICsgdHNjKSBwYXNzZWQuIn19 -->
+
+<!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJ2ZXJkaWN0IiwicGhhc2UiOiIyIiwiaXRlcmF0aW9uIjoxLCJkYXRhIjp7InJlYWRpbmVzcyI6Im5vdF9yZWFkeSIsIml0ZW1zIjpbeyJpZCI6IlAwLjUiLCJ0aXRsZSI6IkhlYWRsZXNzIHJ1bnMgcHJpbnQgZmFsc2UgXCJUVUkgZXhpdGVkXCIgd2FybmluZyIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiTm8tb3AgVHVpQ29udHJvbGxlci5vbkV4aXQgZmlyZXMgaW1tZWRpYXRlbHk7IGNvbW1hbmRzIHJlZ2lzdGVyIGFuIG9uRXhpdCBoYW5kbGVyIHVuY29uZGl0aW9uYWxseSBhbmQgZW1pdCBcIlRVSSBleGl0ZWQg4oCUIGNvbnRpbnVpbmcgaGVhZGxlc3NcIiBldmVuIHdoZW4gVFVJIHdhcyBuZXZlciBzdGFydGVkLiIsInByaW9yaXR5IjoiUDAifSx7ImlkIjoiUDAuNiIsInRpdGxlIjoiVFVJIG1vZGUgY29ycnVwdHMgdGVybWluYWwgKyBicmVha3MgaW50ZXJhY3RpdmUgZ2F0ZXMiLCJhY3Rpb24iOiJodW1hbl9yZXF1aXJlZCIsInJlYXNvbiI6Ik9uY2UgYG9wZW5jb2RlIGF0dGFjaGAgb3ducyB0aGUgdGVybWluYWwgKHN0ZGlvIGluaGVyaXQpLCBjdXJyZW50IG9yY2hlc3RyYXRvciBsb29wcyBhbmQgcGxhbi1yZXZpZXcgZ2F0ZXMgc3RpbGwgd3JpdGUgdG8gc3Rkb3V0IGFuZCB1c2UgcmVhZGxpbmUtc3R5bGUgcHJvbXB0cywgd2hpY2ggd2lsbCBpbnRlcmxlYXZlIHdpdGgvY29ycnVwdCB0aGUgVFVJIGFuZCBjYW4gaGFuZyBub24tYXV0byBmbG93cy4gUmVxdWlyZXMgYSBkZWxpYmVyYXRlIHJvbGxvdXQgZGVjaXNpb246IGRpc2FibGUgVFVJIHVudGlsIFBoYXNlcyAz4oCTNSBsYW5kIHZzIGltcGxlbWVudCBvdXRwdXQgb3duZXJzaGlwICsgVFVJIGdhdGVzIG5vdy4iLCJwcmlvcml0eSI6IlAwIn0seyJpZCI6IlAwLjciLCJ0aXRsZSI6IlNpZ25hbCBoYW5kbGluZyBzdGlsbCB1c2VzIHByb2Nlc3MuZXhpdCAoY2xlYW51cCByZWdyZXNzaW9ucyBpbiBUVUkgbW9kZSkiLCJhY3Rpb24iOiJhdXRvX2ZpeCIsInJlYXNvbiI6IkV4aXN0aW5nIFNJR0lOVC9TSUdURVJNIGhhbmRsZXJzIGNhbGwgYHByb2Nlc3MuZXhpdCguLi4pYCwgYnlwYXNzaW5nIGFzeW5jIGBmaW5hbGx5YCBjbGVhbnVwOyBwbGFuIFBoYXNlIDMgc3BlY2lmaWVzIGNvb3BlcmF0aXZlIGNhbmNlbGxhdGlvbiAoQWJvcnRDb250cm9sbGVyICsgZXhpdENvZGUpIGJ1dCBpdCBpcyBub3QgaW1wbGVtZW50ZWQgd2hpbGUgVFVJIGlzIGVuYWJsZWQuIiwicHJpb3JpdHkiOiJQMCJ9LHsiaWQiOiJQMS40IiwidGl0bGUiOiJcIkNvbnRpbnVlIGhlYWRsZXNzXCIgZG9lcyBub3QgcmVzdG9yZSBoZWFkbGVzcyBvdXRwdXQgYWZ0ZXIgVFVJIGV4aXQiLCJhY3Rpb24iOiJhdXRvX2ZpeCIsInJlYXNvbiI6ImBxdWlldGAgaXMgY29tcHV0ZWQgb25jZSBhcyBgZWZmZWN0aXZlUXVpZXQgfHwgdHVpLmFjdGl2ZWA7IGlmIHRoZSBUVUkgZXhpdHMgZWFybHksIGxvb3BzIHJlbWFpbiBpbiBxdWlldCBtb2RlIGFuZCBtYXkgc3VwcHJlc3MgdGhlIGludGVuZGVkIGhlYWRsZXNzIG91dHB1dCBwYXRoLiIsInByaW9yaXR5IjoiUDEifSx7ImlkIjoiUDEuNSIsInRpdGxlIjoiTm8gZmFsbGJhY2sgaWYgYG9wZW5jb2RlYCBiaW5hcnkgaXMgbWlzc2luZy91bnNwYXduYWJsZSIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiYGNyZWF0ZVR1aUNvbnRyb2xsZXIoKWAgYXNzdW1lcyBgb3BlbmNvZGVgIGlzIG9uIFBBVEggYW5kIGRvZXNu4oCZdCBjYXRjaCBzcGF3biBmYWlsdXJlczsgUGhhc2UgNiBleHBlY3RzIGEgd2Fybi1hbmQtZmFsbGJhY2stdG8taGVhZGxlc3MgYmVoYXZpb3IgaW5zdGVhZCBvZiBoYXJkIGZhaWx1cmUuIiwicHJpb3JpdHkiOiJQMSJ9LHsiaWQiOiJQMi4xIiwidGl0bGUiOiJDb21tYW5kIGxheWVyIGRlcGVuZHMgb24gT3BlbkNvZGVBZGFwdGVyIHByaXZhdGUgY2xpZW50IHN1cmZhY2UiLCJhY3Rpb24iOiJodW1hbl9yZXF1aXJlZCIsInJlYXNvbiI6IkNvbW1hbmRzIGNhc3QgYEFnZW50QWRhcHRlcmAgdG8gYE9wZW5Db2RlQWRhcHRlcmAgdG8gYWNjZXNzIGBfY2xpZW50Rm9yVHVpYDsgaWYgYWRkaXRpb25hbCBhZGFwdGVycyBhcmUgaW50cm9kdWNlZCwgZGVjaWRlIHdoZXRoZXIgdG8gZm9ybWFsaXplIGEgbWluaW1hbCBUVUktY2FwYWJsZSBhZGFwdGVyIGludGVyZmFjZSBvciByZWZhY3RvciB0aGUgZmFjdG9yeSB0byBwcm92aWRlIHRoZSBuZWVkZWQgY2xpZW50IHdpdGhvdXQgY2FzdGluZy4iLCJwcmlvcml0eSI6IlAyIn1dLCJzdW1tYXJ5IjoiUmV2aWV3IHdyaXR0ZW4gdG8gYGRvY3MvZGV2ZWxvcG1lbnQvcmV2aWV3cy8yMDI2LTAyLTE5LTAwNC1pbXBsLTV4LWNsaS10dWktcmV2aWV3Lm1kYCBhcyBhIG5ldyBBZGRlbmR1bSBmb3IgUGhhc2UgMi4gVGhlIFBoYXNlIDIgaW1wbGVtZW50YXRpb24gbWF0Y2hlcyB0aGUgcGxhbuKAmXMgd2lyaW5nLCBidXQgZW5hYmxpbmcgVFVJIGF0IHRoaXMgcG9pbnQgaXMgbm90IHNoaXBwYWJsZSBkdWUgdG8gdGVybWluYWwgb3V0cHV0IGludGVybGVhdmluZywgbWlzc2luZyBUVUkgZ2F0ZSBpbnRlZ3JhdGlvbiwgYW5kIHVuc2FmZSBzaWduYWwvY2xlYW51cCBzZW1hbnRpY3MuIn19 -->

@@ -93,11 +93,14 @@ export interface PlanReviewLoopOptions {
 	 */
 	canonicalPlanPath?: string;
 	/**
-	 * When true, suppress formatted agent event output to stdout.
+	 * When true (or the function returns true), suppress formatted agent event
+	 * output to stdout. Accepts a function so callers can re-evaluate at each
+	 * invocation — e.g. `() => effectiveQuiet || tui.active` so that TUI exit
+	 * mid-run is reflected in subsequent invocations (P1.4).
 	 * Default: false (show output). Use !process.stdout.isTTY as the default
 	 * at the command layer before passing here.
 	 */
-	quiet?: boolean;
+	quiet?: boolean | (() => boolean);
 	/** Override for testing — supply a function that prompts for human decisions. */
 	humanGate?: (
 		event: EscalationEvent,
@@ -268,7 +271,11 @@ export async function runPlanReviewLoop(
 	const humanGate = options.humanGate ?? defaultHumanGate;
 	const resumeGate = options.resumeGate ?? defaultResumeGate;
 	const maxIterations = config.maxReviewIterations;
-	const quiet = options.quiet ?? false;
+	// Resolve quiet: accepts boolean or function (function form re-evaluated at
+	// each adapter call so TUI exit mid-run affects subsequent invocations).
+	const _quietOpt = options.quiet;
+	const resolveQuiet: () => boolean =
+		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
 	const workdir = options.projectRoot ?? dirname(resolve(planPath));
 
 	// DB identity: use the stable canonical path provided by the command layer,
@@ -504,7 +511,7 @@ export async function runPlanReviewLoop(
 						timeout: config.reviewer.timeout ?? 300_000,
 						workdir,
 						logPath: reviewLogPath,
-						quiet,
+						quiet: resolveQuiet(),
 					});
 				} catch (err) {
 					const event: EscalationEvent = {
@@ -734,7 +741,7 @@ export async function runPlanReviewLoop(
 						timeout: config.author.timeout,
 						workdir,
 						logPath: authorLogPath,
-						quiet,
+						quiet: resolveQuiet(),
 					});
 				} catch (err) {
 					const event: EscalationEvent = {

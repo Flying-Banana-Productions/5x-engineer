@@ -1,8 +1,8 @@
 # 5x CLI — TUI Integration
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** February 19, 2026
-**Updated:** February 19, 2026 — v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
+**Updated:** February 19, 2026 — v1.4: Phase 2 implementation review corrections (2026-02-19-004-impl-5x-cli-tui-review.md addendum) — no-op controller `onExit` is now a no-op (was firing immediately, causing false "TUI exited" warning in headless mode; P0.5), `onExit` registration gated on `isTuiMode` in all commands, stdout output in commands guarded on `!tui.active` (P0.6 output ownership), TUI-by-default rollout gate documented (P0.6/P0.7 — gated on Phases 3-5), `quiet` option accepts `boolean | (() => boolean)` in orchestrators for dynamic re-evaluation on TUI exit (P1.4), `createTuiController` falls back to no-op controller when spawn fails (P1.5 / Phase 6 partial), `_spawner` injectable for testability, adapter coupling future-work note added (P2); v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
 **Status:** Approved for implementation
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
 
@@ -241,6 +241,29 @@ try {
 mode. The server is still alive; `tuiController.active` flips to `false` and
 subsequent `tui.*` calls become no-ops (same as the headless no-op controller).
 A warning is written to stderr.
+
+---
+
+## TUI Rollout Gate
+
+> **Current status (v1.4):** TUI spawn and lifecycle are implemented (Phase 2
+> complete). However, **TUI-by-default is unsafe until Phases 3–5 land**:
+>
+> - **Phase 3 (permission policy + signal handling):** Without this, non-TTY
+>   runs lack a permission policy and SIGINT bypass `finally` cleanup in TUI mode.
+>   The existing headless `process.exit()` signal behavior is preserved as-is.
+> - **Phase 4 (session integration + output ownership):** Without this, stdout
+>   output from 5x-cli is not fully suppressed during TUI mode; the per-command
+>   guards added in v1.4 reduce the surface but do not cover SSE event stdout
+>   that originates inside the adapter/orchestrator.
+> - **Phase 5 (TUI human gates):** Without this, non-auto mode is unusable in
+>   TUI (readline gates conflict with TUI owning stdin). TUI mode in non-auto
+>   flows will hang or be unresponsive.
+>
+> **Interim behavior (v1.4):** TUI mode is available and works correctly for
+> `--auto` mode. Non-auto TUI mode should not be used until Phase 5 is
+> complete. TUI mode in non-auto flows is not explicitly disabled but is
+> unsupported.
 
 ---
 
@@ -681,10 +704,15 @@ the top of `src/tui/controller.ts` before submitting Phase 2 for review.
   - `createTuiController({ enabled: false })` returns no-op controller
   - No-op controller's methods resolve without side effects
   - No-op controller `active === false`
+  - No-op controller `onExit` does NOT fire the handler (no TUI was started)
+  - `createTuiController` falls back to no-op controller when spawn fails (P1.5)
+- [x] Guard stdout/stderr writes in commands on `!tui.active` (P0.6)
+- [x] Gate `onExit` handler registration on `isTuiMode` in all three commands (P0.5)
 
 **Completion gate:** `5x run --no-tui plan.md` behaves identically to today.
-`5x run plan.md` in a TTY spawns the TUI via `opencode attach` and keeps it
-alive.
+`5x run plan.md` in a TTY with `--auto` spawns the TUI via `opencode attach`
+and keeps it alive. Headless mode emits no spurious "TUI exited" warnings.
+See "TUI Rollout Gate" section for non-auto limitations until Phases 3–5.
 
 ### Phase 3: Permission policy + signal handling
 
@@ -749,8 +777,9 @@ stdout writes from 5x-cli after TUI attach.
   - Review approved: `"Phase N approved — continuing"`
   - Escalation: `"Human required — Phase N escalated"`
   - Error: `"Phase N failed — <reason>"`
-- [ ] Pass `quiet: tuiController.active` to `invokeForStatus`/`invokeForVerdict`
-  (suppresses SSE stdout formatting when TUI is active)
+- [ ] Pass `quiet: () => tuiController.active` to `invokeForStatus`/`invokeForVerdict`
+  (function form so TUI exit mid-run is reflected; orchestrators already accept
+  `boolean | (() => boolean)` as of v1.4)
 - [ ] Verify no `console.log()` / stdout writes from 5x-cli after TUI attach in
   TUI mode (stdout-clean guarantee)
 - [ ] Tests:
@@ -792,8 +821,9 @@ phase boundaries with a native TUI dialog rather than readline.
 
 ### Phase 6: Edge cases + polish
 
-- [ ] Handle `opencode attach` not found (opencode not on PATH): fall back to
+- [x] Handle `opencode attach` not found (opencode not on PATH): fall back to
   headless with a warning on stderr, not a fatal error
+  *(implemented in Phase 2 v1.4 — `createTuiController` catches spawn errors)*
 - [ ] Handle TUI crash / early exit gracefully (continue headless; `tuiController.active = false`)
 - [ ] `plan` command: TUI lifecycle is shorter (single invocation); ensure
   TUI exits cleanly when plan generation completes
@@ -814,20 +844,23 @@ repo shows clean TUI experience across a full multi-phase run.
 |---|---|---|
 | `src/agents/opencode.ts` | 1 | Use `port: 0`; expose `get serverUrl()` |
 | `src/agents/types.ts` | 1 | Add `readonly serverUrl: string` to `AgentAdapter` interface |
-| `src/tui/controller.ts` | 2 | New: `TuiController` interface + `createTuiController()` |
-| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`, `--ci`; spawn TUI; permission policy; fail-closed non-TTY check; pass gates |
-| `src/commands/plan-review.ts` | 2, 3, 4, 5 | Same |
-| `src/commands/plan.ts` | 2, 3, 4 | Same (simpler — no human gates) |
+| `src/tui/controller.ts` | 2 | New: `TuiController` interface + `createTuiController()`; v1.4: no-op `onExit` is a no-op, spawn fallback on error, injectable `_spawner` |
+| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`, `--ci`; spawn TUI; permission policy; fail-closed non-TTY check; pass gates; v1.4: `onExit` gated on `isTuiMode`, stdout guards |
+| `src/commands/plan-review.ts` | 2, 3, 4, 5 | Same; v1.4: same P0.5/P0.6 fixes |
+| `src/commands/plan.ts` | 2, 3, 4 | Same (simpler — no human gates); v1.4: same P0.5/P0.6 fixes |
+| `src/orchestrator/phase-execution-loop.ts` | 2 | v1.4: `quiet` option accepts `boolean \| (() => boolean)` |
+| `src/orchestrator/plan-review-loop.ts` | 2 | v1.4: same `quiet` type change |
 | `src/agents/factory.ts` | 3 | `registerAdapterShutdown()` accepts TUI mode option |
 | `src/tui/permissions.ts` | 3 | New: permission policy + handler |
-| `src/orchestrator/phase-execution-loop.ts` | 4 | TUI controller; session titles; toasts; signal option |
+| `src/orchestrator/phase-execution-loop.ts` | 4 | TUI controller; session titles; toasts; signal option (`quiet` type already updated in v1.4 Phase 2) |
 | `src/orchestrator/plan-review-loop.ts` | 4 | Same |
 | `src/agents/opencode.ts` | 4 | Accept `sessionTitle` in invoke options; pass `quiet` through |
 | `src/agents/types.ts` | 4 | Add `sessionTitle?` to `InvokeOptions` |
 | `src/tui/gates.ts` | 5 | New: TUI gate implementations (dialog-based, not SSE-based) |
 | `src/orchestrator/phase-execution-loop.ts` | 5 | Wire TUI gates for non-auto mode |
 | `test/agents/opencode.test.ts` | 1 | serverUrl exposure test |
-| `test/tui/controller.test.ts` | 2 | TUI controller tests (no-op path) |
+| `test/tui/controller.test.ts` | 2 | TUI controller tests (no-op path); v1.4: no-op `onExit` assertion inverted, spawn-failure fallback test |
+| `test/orchestrator/phase-execution-loop.test.ts` | 2 | v1.4: quiet function form test |
 | `test/tui/permissions.test.ts` | 3 | Permission policy tests (hang-prevention test) |
 | `test/tui/gates.test.ts` | 5 | Gate mechanism tests (timeout, cancel, dialog response) |
 
@@ -859,6 +892,14 @@ repo shows clean TUI experience across a full multi-phase run.
    be optional even in TTY mode — some users may prefer to attach manually.
    `--no-tui` covers this, but `--tui-url` (print the URL and let the user
    attach manually) could be a future addition.
+
+4. **Adapter coupling / `_clientForTui`:** Commands currently cast `adapter`
+   to `OpenCodeAdapter` to access the `_clientForTui` getter. If/when other
+   adapter implementations exist, consider formalizing a minimal "TUI client
+   surface" on the `AgentAdapter` interface, or providing it via the adapter
+   factory rather than a cast. The `_clientForTui` prefix signals that this is
+   a stopgap; it should be promoted or refactored in Phase 4 when the TUI
+   integration is more deeply integrated.
 
 ---
 

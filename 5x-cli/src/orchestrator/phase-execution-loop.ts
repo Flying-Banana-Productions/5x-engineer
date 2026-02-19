@@ -88,11 +88,14 @@ export interface PhaseExecutionOptions {
 	 */
 	canonicalPlanPath?: string;
 	/**
-	 * When true, suppress formatted agent event output to stdout.
+	 * When true (or the function returns true), suppress formatted agent event
+	 * output to stdout. Accepts a function so callers can re-evaluate at each
+	 * invocation — e.g. `() => effectiveQuiet || tui.active` so that TUI exit
+	 * mid-run is reflected in subsequent invocations (P1.4).
 	 * Default: false (show output). Use !process.stdout.isTTY as the default
 	 * at the command layer before passing here.
 	 */
-	quiet?: boolean;
+	quiet?: boolean | (() => boolean);
 	/** Override for testing — phase gate prompt. */
 	phaseGate?: (
 		summary: PhaseSummary,
@@ -166,7 +169,11 @@ export async function runPhaseExecutionLoop(
 	const dbPlanPath =
 		options.canonicalPlanPath ?? canonicalizePlanPath(planPath);
 	const workdir = options.workdir;
-	const quiet = options.quiet ?? false;
+	// Resolve quiet: accepts boolean or function (function form re-evaluated at
+	// each adapter call so TUI exit mid-run affects subsequent invocations).
+	const _quietOpt = options.quiet;
+	const resolveQuiet: () => boolean =
+		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;
 	const maxReviewIterations = config.maxReviewIterations;
@@ -528,7 +535,7 @@ export async function runPhaseExecutionLoop(
 							timeout: config.author.timeout,
 							workdir,
 							logPath: executeLogPath,
-							quiet,
+							quiet: resolveQuiet(),
 						});
 					} catch (err) {
 						// Hard failure: timeout, network, structured output error
@@ -808,7 +815,7 @@ export async function runPhaseExecutionLoop(
 							timeout: config.author.timeout,
 							workdir,
 							logPath: qrFixLogPath,
-							quiet,
+							quiet: resolveQuiet(),
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1052,7 +1059,7 @@ export async function runPhaseExecutionLoop(
 							timeout: config.reviewer.timeout ?? 300_000,
 							workdir,
 							logPath: reviewLogPath,
-							quiet,
+							quiet: resolveQuiet(),
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1319,7 +1326,7 @@ export async function runPhaseExecutionLoop(
 							timeout: config.author.timeout,
 							workdir,
 							logPath: autoFixLogPath,
-							quiet,
+							quiet: resolveQuiet(),
 						});
 					} catch (err) {
 						const event: EscalationEvent = {

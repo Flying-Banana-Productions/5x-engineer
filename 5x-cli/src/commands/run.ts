@@ -275,11 +275,13 @@ export default defineCommand({
 			enabled: isTuiMode,
 		});
 
-		// Handle TUI early exit — continue headless
-		tui.onExit(() => {
-			if (tui.active) return; // only act when actually exited
-			process.stderr.write("TUI exited — continuing headless\n");
-		});
+		// Handle TUI early exit — continue headless.
+		// Only registered when TUI was actually spawned; no-op controller never fires.
+		if (isTuiMode) {
+			tui.onExit(() => {
+				process.stderr.write("TUI exited — continuing headless\n");
+			});
+		}
 
 		try {
 			const result = await runPhaseExecutionLoop(
@@ -295,7 +297,9 @@ export default defineCommand({
 					startPhase: args.phase,
 					workdir,
 					projectRoot,
-					quiet: effectiveQuiet || tui.active,
+					// Function form: re-evaluated at each adapter call so TUI exit
+					// mid-run is reflected in subsequent invocations (P1.4).
+					quiet: () => effectiveQuiet || tui.active,
 					// Stable DB identity anchored to the primary checkout path.
 					// effectivePlanPath may be remapped to a worktree; canonical
 					// stays consistent so resume/history lookups always match.
@@ -304,22 +308,27 @@ export default defineCommand({
 			);
 
 			// --- Display final result ---
-			console.log();
-			if (result.complete) {
-				console.log("  Run: COMPLETE");
-			} else if (result.aborted) {
-				console.log("  Run: ABORTED");
-			} else {
-				console.log("  Run: INCOMPLETE");
+			// Guard on !tui.active: TUI may still own the terminal here (it is
+			// killed in the finally block below). Writing to stdout/stderr while
+			// the TUI is active corrupts the display (P0.6 output ownership rule).
+			if (!tui.active) {
+				console.log();
+				if (result.complete) {
+					console.log("  Run: COMPLETE");
+				} else if (result.aborted) {
+					console.log("  Run: ABORTED");
+				} else {
+					console.log("  Run: INCOMPLETE");
+				}
+				console.log(
+					`  Phases completed: ${result.phasesCompleted}/${result.totalPhases}`,
+				);
+				console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
+				if (result.escalations.length > 0) {
+					console.log(`  Escalations: ${result.escalations.length}`);
+				}
+				console.log();
 			}
-			console.log(
-				`  Phases completed: ${result.phasesCompleted}/${result.totalPhases}`,
-			);
-			console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
-			if (result.escalations.length > 0) {
-				console.log(`  Escalations: ${result.escalations.length}`);
-			}
-			console.log();
 
 			if (!result.complete) {
 				process.exitCode = 1;

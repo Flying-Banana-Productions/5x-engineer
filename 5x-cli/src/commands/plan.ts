@@ -222,10 +222,13 @@ export default defineCommand({
 			enabled: isTuiMode,
 		});
 
-		tui.onExit(() => {
-			if (tui.active) return;
-			process.stderr.write("TUI exited — continuing headless\n");
-		});
+		// Handle TUI early exit — continue headless.
+		// Only registered when TUI was actually spawned; no-op controller never fires.
+		if (isTuiMode) {
+			tui.onExit(() => {
+				process.stderr.write("TUI exited — continuing headless\n");
+			});
+		}
 
 		try {
 			// Render prompt
@@ -235,11 +238,14 @@ export default defineCommand({
 				plan_template_path: planTemplatePath,
 			});
 
-			console.log();
-			console.log("  Generating implementation plan from PRD...");
-			console.log(`  Target: ${planPath}`);
-			const modelName = config.author.model ?? "default";
-			process.stdout.write(`  Author (${modelName}) `);
+			// Guard stdout writes: TUI owns the terminal while active (P0.6).
+			if (!tui.active) {
+				console.log();
+				console.log("  Generating implementation plan from PRD...");
+				console.log(`  Target: ${planPath}`);
+				const modelName = config.author.model ?? "default";
+				process.stdout.write(`  Author (${modelName}) `);
+			}
 
 			// Resolve effective quiet mode: explicit flag > TTY detection
 			const effectiveQuiet =
@@ -260,11 +266,13 @@ export default defineCommand({
 				quiet: effectiveQuiet,
 			});
 
-			const durationStr =
-				result.duration < 60_000
-					? `${Math.round(result.duration / 1000)}s`
-					: `${Math.round(result.duration / 60_000)}m ${Math.round((result.duration % 60_000) / 1000)}s`;
-			console.log(`done (${durationStr})`);
+			if (!tui.active) {
+				const durationStr =
+					result.duration < 60_000
+						? `${Math.round(result.duration / 1000)}s`
+						: `${Math.round(result.duration / 60_000)}m ${Math.round((result.duration % 60_000) / 1000)}s`;
+				console.log(`done (${durationStr})`);
+			}
 
 			// Store agent result
 			upsertAgentResult(db, {
@@ -297,11 +305,14 @@ export default defineCommand({
 					},
 				});
 				updateRunStatus(db, runId, "active", "NEEDS_HUMAN");
-				console.log();
-				console.log(
-					`  Author needs human input: ${status.reason ?? "no reason given"}`,
-				);
-				console.log();
+				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
+				if (!tui.active) {
+					console.log();
+					console.log(
+						`  Author needs human input: ${status.reason ?? "no reason given"}`,
+					);
+					console.log();
+				}
 				process.exitCode = 1;
 				return;
 			}
@@ -313,9 +324,12 @@ export default defineCommand({
 					data: { reason: status.reason },
 				});
 				updateRunStatus(db, runId, "failed");
-				console.error(
-					`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
-				);
+				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
+				if (!tui.active) {
+					console.error(
+						`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
+					);
+				}
 				process.exitCode = 1;
 				return;
 			}
@@ -328,9 +342,12 @@ export default defineCommand({
 					data: { reason: "Plan file not found after author completion" },
 				});
 				updateRunStatus(db, runId, "failed");
-				console.error(
-					`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
-				);
+				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
+				if (!tui.active) {
+					console.error(
+						`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
+					);
+				}
 				process.exitCode = 1;
 				return;
 			}
@@ -344,27 +361,30 @@ export default defineCommand({
 			});
 			updateRunStatus(db, runId, "completed");
 
-			// Display result
-			let phaseCount = 0;
-			try {
-				const planContent = readFileSync(planPath, "utf-8");
-				const parsed = parsePlan(planContent);
-				phaseCount = parsed.phases.length;
-			} catch {
-				// Non-critical — just for display
-			}
+			// Display result — guard on !tui.active (TUI may still own terminal
+			// here; it is killed in finally below). P0.6 output ownership rule.
+			if (!tui.active) {
+				let phaseCount = 0;
+				try {
+					const planContent = readFileSync(planPath, "utf-8");
+					const parsed = parsePlan(planContent);
+					phaseCount = parsed.phases.length;
+				} catch {
+					// Non-critical — just for display
+				}
 
-			console.log();
-			console.log(`  Created: ${planPath}`);
-			if (phaseCount > 0) {
-				console.log(`  Phases: ${phaseCount}`);
+				console.log();
+				console.log(`  Created: ${planPath}`);
+				if (phaseCount > 0) {
+					console.log(`  Phases: ${phaseCount}`);
+				}
+				if (status.notes) {
+					console.log(`  Summary: ${status.notes}`);
+				}
+				console.log();
+				console.log(`  Next: 5x plan-review ${planPath}`);
+				console.log();
 			}
-			if (status.notes) {
-				console.log(`  Summary: ${status.notes}`);
-			}
-			console.log();
-			console.log(`  Next: 5x plan-review ${planPath}`);
-			console.log();
 		} catch (err) {
 			// Handle adapter invocation errors (timeout, network, etc.)
 			const message = err instanceof Error ? err.message : String(err);
@@ -374,8 +394,11 @@ export default defineCommand({
 				data: { error: message },
 			});
 			updateRunStatus(db, runId, "failed");
-			console.error(`\n  Error: Agent invocation failed.`);
-			if (message) console.error(`  Cause: ${message}`);
+			// Guard: TUI owns terminal while active (P0.6 output ownership rule)
+			if (!tui.active) {
+				console.error(`\n  Error: Agent invocation failed.`);
+				if (message) console.error(`  Cause: ${message}`);
+			}
 			process.exitCode = 1;
 		} finally {
 			await adapter.close();
