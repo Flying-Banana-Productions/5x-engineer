@@ -100,3 +100,25 @@ When `hasCompletedStep()` returns true, the orchestrators route using `getLatest
 
 - **Phase 4 completion:** ✅ — `PARSE_*` states removed from both loops; adapter-direct invocation; legacy resume compat; tests updated; audit trail implemented.
 - **Ready for Phase 5:** ✅ — proceed, but treat P0.1/P0.2 as “early Phase 5” must-fix items before enabling the real adapter/factory.
+
+---
+
+## Addendum (2026-02-19) — Review Feedback Closure
+
+**Reviewed:** `2b31d50502`
+
+**Local verification:** `bun test` in `5x-cli/` (354 pass, 1 skip)
+
+### What's addressed (✅)
+
+- **P0.2 worktree DB identity split:** `canonicalPlanPath` is threaded from command layer into both orchestrators; orchestrators use `dbPlanPath` for all DB operations while `planPath` remains file I/O.
+- **P1.1 resume skip routing correctness:** new `getStepResult()` exact composite-key lookup replaces phase-wide `getLatestStatus/getLatestVerdict` in all resume/skip paths; `log_path` is propagated into escalation events on those paths.
+
+### Remaining concerns
+
+- **P0.1 adapter lifecycle (`close()`):** still outstanding and must land early in Phase 5 once `createAndVerifyAdapter()` is enabled (commands must `await adapter.close()` in `finally` across all exit paths).
+
+### Updated readiness
+
+- **Phase 4 completion:** ✅ — Phase 4 review corrections (P0.2, P1.1) are implemented and tested.
+- **Ready for Phase 5:** ✅ — proceed; treat adapter lifecycle close as Phase 5 P0.

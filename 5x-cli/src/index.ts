@@ -6,16 +6,11 @@ export { AgentTimeoutError, OpenCodeAdapter } from "./agents/opencode.js";
 export type {
 	AdapterConfig,
 	AgentAdapter,
-	AgentResult,
 	AuthorStatus,
 	InvokeOptions,
 	InvokeResult,
 	InvokeStatus,
 	InvokeVerdict,
-	// Legacy exports for backward compatibility
-	LegacyAgentAdapter,
-	LegacyAgentResult,
-	LegacyInvokeOptions,
 	ReviewerVerdict,
 	VerdictItem,
 } from "./agents/types.js";

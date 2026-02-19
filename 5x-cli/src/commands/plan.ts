@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
-import type { AgentAdapter, LegacyAgentAdapter } from "../agents/types.js";
+import type { AgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
@@ -16,7 +16,6 @@ import { runMigrations } from "../db/schema.js";
 import { parsePlan } from "../parsers/plan.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
-import { parseStatusBlock } from "../utils/legacy-signals.js";
 
 /**
  * Compute the next available sequence number from existing plan files.
@@ -98,6 +97,11 @@ export default defineCommand({
 			type: "boolean",
 			description: "Allow running with a dirty working tree",
 			default: false,
+		},
+		quiet: {
+			type: "boolean",
+			description:
+				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written.",
 		},
 	},
 	async run({ args }) {
@@ -187,180 +191,160 @@ export default defineCommand({
 				},
 			});
 			updateRunStatus(db, runId, "failed");
-			console.error(
-				"\n  Error: Agent adapter not yet available. " +
-					"This is expected while 5x is being refactored.",
-			);
+			console.error(`\n  Error: Failed to initialize agent adapter.`);
 			if (message) console.error(`  Cause: ${message}`);
 			process.exitCode = 1;
 			return;
 		}
 
-		// Render prompt
-		const template = renderTemplate("author-generate-plan", {
-			prd_path: prdPath,
-			plan_path: planPath,
-			plan_template_path: planTemplatePath,
-		});
-
-		console.log();
-		console.log("  Generating implementation plan from PRD...");
-		console.log(`  Target: ${planPath}`);
-		const modelName = config.author.model ?? "default";
-		process.stdout.write(`  Author (${modelName}) `);
-
-		// Invoke agent
-		const startTime = Date.now();
-		const result = await (adapter as unknown as LegacyAgentAdapter).invoke({
-			prompt: template.prompt,
-			model: config.author.model,
-			workdir: projectRoot,
-		});
-		const duration = Date.now() - startTime;
-		const durationStr =
-			duration < 60_000
-				? `${Math.round(duration / 1000)}s`
-				: `${Math.round(duration / 60_000)}m ${Math.round((duration % 60_000) / 1000)}s`;
-		console.log(`done (${durationStr})`);
-
-		// Parse 5x:status from output
-		const status = parseStatusBlock(result.output);
-
-		// Store agent result
-		const agentResultId = generateId();
-		upsertAgentResult(db, {
-			id: agentResultId,
-			run_id: runId,
-			phase: "-1",
-			iteration: 0,
-			role: "author",
-			template: template.name,
-			result_type: "status",
-			result_json: status ? JSON.stringify(status) : "null",
-			duration_ms: result.duration,
-			model: config.author.model ?? null,
-			tokens_in: result.tokens?.input ?? null,
-			tokens_out: result.tokens?.output ?? null,
-			cost_usd: result.cost ?? null,
-		});
-
-		// Handle non-zero exit code
-		if (result.exitCode !== 0) {
-			appendRunEvent(db, {
-				runId,
-				eventType: "error",
-				data: { exitCode: result.exitCode, error: result.error },
+		try {
+			// Render prompt
+			const template = renderTemplate("author-generate-plan", {
+				prd_path: prdPath,
+				plan_path: planPath,
+				plan_template_path: planTemplatePath,
 			});
-			updateRunStatus(db, runId, "failed");
-			console.error(
-				`\n  Error: Author agent exited with code ${result.exitCode}`,
-			);
-			if (result.error) console.error(`  ${result.error}`);
-			process.exit(1);
-		}
 
-		// Handle missing status block
-		if (!status) {
-			appendRunEvent(db, {
-				runId,
-				eventType: "escalation",
-				data: { reason: "Missing 5x:status block in author output" },
-			});
-			updateRunStatus(db, runId, "failed", "ESCALATE");
-			console.error(
-				"\n  Error: Author did not produce a 5x:status block. Manual review required.",
-			);
-			console.error(
-				"  Check if the plan file was created at the expected path.",
-			);
-			process.exit(1);
-		}
-
-		// Handle author signals
-		if (status.result === "needs_human") {
-			appendRunEvent(db, {
-				runId,
-				eventType: "escalation",
-				data: {
-					reason: status.reason ?? "Author needs human input",
-					blockedOn: status.blockedOn,
-				},
-			});
-			updateRunStatus(db, runId, "active", "NEEDS_HUMAN");
 			console.log();
-			console.log(
-				`  Author needs human input: ${status.reason ?? "no reason given"}`,
-			);
-			if (status.blockedOn) {
-				console.log(`  Blocked on: ${status.blockedOn}`);
+			console.log("  Generating implementation plan from PRD...");
+			console.log(`  Target: ${planPath}`);
+			const modelName = config.author.model ?? "default";
+			process.stdout.write(`  Author (${modelName}) `);
+
+			// Resolve effective quiet mode: explicit flag > TTY detection
+			const effectiveQuiet =
+				args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
+
+			// Compute log path
+			const logDir = join(projectRoot, ".5x", "logs", runId);
+			const agentResultId = generateId();
+			const logPath = join(logDir, `agent-${agentResultId}.ndjson`);
+
+			// Invoke agent with structured output
+			const result = await adapter.invokeForStatus({
+				prompt: template.prompt,
+				model: config.author.model,
+				workdir: projectRoot,
+				logPath,
+				quiet: effectiveQuiet,
+			});
+
+			const durationStr =
+				result.duration < 60_000
+					? `${Math.round(result.duration / 1000)}s`
+					: `${Math.round(result.duration / 60_000)}m ${Math.round((result.duration % 60_000) / 1000)}s`;
+			console.log(`done (${durationStr})`);
+
+			// Store agent result
+			upsertAgentResult(db, {
+				id: agentResultId,
+				run_id: runId,
+				phase: "-1",
+				iteration: 0,
+				role: "author",
+				template: template.name,
+				result_type: "status",
+				result_json: JSON.stringify(result.status),
+				duration_ms: result.duration,
+				log_path: logPath,
+				session_id: result.sessionId,
+				model: config.author.model ?? null,
+				tokens_in: result.tokensIn ?? null,
+				tokens_out: result.tokensOut ?? null,
+				cost_usd: result.costUsd ?? null,
+			});
+
+			const status = result.status;
+
+			// Handle author signals
+			if (status.result === "needs_human") {
+				appendRunEvent(db, {
+					runId,
+					eventType: "escalation",
+					data: {
+						reason: status.reason ?? "Author needs human input",
+					},
+				});
+				updateRunStatus(db, runId, "active", "NEEDS_HUMAN");
+				console.log();
+				console.log(
+					`  Author needs human input: ${status.reason ?? "no reason given"}`,
+				);
+				console.log();
+				process.exit(1);
+			}
+
+			if (status.result === "failed") {
+				appendRunEvent(db, {
+					runId,
+					eventType: "error",
+					data: { reason: status.reason },
+				});
+				updateRunStatus(db, runId, "failed");
+				console.error(
+					`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
+				);
+				process.exit(1);
+			}
+
+			// Verify file was created
+			if (!existsSync(planPath)) {
+				appendRunEvent(db, {
+					runId,
+					eventType: "error",
+					data: { reason: "Plan file not found after author completion" },
+				});
+				updateRunStatus(db, runId, "failed");
+				console.error(
+					`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
+				);
+				process.exit(1);
+			}
+
+			// Record plan in DB
+			upsertPlan(db, { planPath });
+			appendRunEvent(db, {
+				runId,
+				eventType: "plan_generate_complete",
+				data: { planPath, summary: status.notes },
+			});
+			updateRunStatus(db, runId, "completed");
+
+			// Display result
+			let phaseCount = 0;
+			try {
+				const planContent = readFileSync(planPath, "utf-8");
+				const parsed = parsePlan(planContent);
+				phaseCount = parsed.phases.length;
+			} catch {
+				// Non-critical — just for display
+			}
+
+			console.log();
+			console.log(`  Created: ${planPath}`);
+			if (phaseCount > 0) {
+				console.log(`  Phases: ${phaseCount}`);
+			}
+			if (status.notes) {
+				console.log(`  Summary: ${status.notes}`);
 			}
 			console.log();
-			process.exit(1);
-		}
-
-		if (status.result === "failed") {
+			console.log(`  Next: 5x plan-review ${planPath}`);
+			console.log();
+		} catch (err) {
+			// Handle adapter invocation errors (timeout, network, etc.)
+			const message = err instanceof Error ? err.message : String(err);
 			appendRunEvent(db, {
 				runId,
 				eventType: "error",
-				data: { reason: status.reason },
+				data: { error: message },
 			});
 			updateRunStatus(db, runId, "failed");
-			console.error(
-				`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
-			);
-			process.exit(1);
+			console.error(`\n  Error: Agent invocation failed.`);
+			if (message) console.error(`  Cause: ${message}`);
+			process.exitCode = 1;
+		} finally {
+			await adapter.close();
 		}
-
-		// Verify planPath matches
-		if (status.planPath && status.planPath !== planPath) {
-			console.warn(
-				`  Warning: status.planPath "${status.planPath}" differs from expected "${planPath}"`,
-			);
-		}
-
-		// Verify file was created
-		if (!existsSync(planPath)) {
-			appendRunEvent(db, {
-				runId,
-				eventType: "error",
-				data: { reason: "Plan file not found after author completion" },
-			});
-			updateRunStatus(db, runId, "failed");
-			console.error(
-				`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
-			);
-			process.exit(1);
-		}
-
-		// Record plan in DB
-		upsertPlan(db, { planPath });
-		appendRunEvent(db, {
-			runId,
-			eventType: "plan_generate_complete",
-			data: { planPath, summary: status.summary },
-		});
-		updateRunStatus(db, runId, "completed");
-
-		// Display result
-		let phaseCount = 0;
-		try {
-			const planContent = readFileSync(planPath, "utf-8");
-			const parsed = parsePlan(planContent);
-			phaseCount = parsed.phases.length;
-		} catch {
-			// Non-critical — just for display
-		}
-
-		console.log();
-		console.log(`  Created: ${planPath}`);
-		if (phaseCount > 0) {
-			console.log(`  Phases: ${phaseCount}`);
-		}
-		if (status.summary) {
-			console.log(`  Summary: ${status.summary}`);
-		}
-		console.log();
-		console.log(`  Next: 5x plan-review ${planPath}`);
-		console.log();
 	},
 });

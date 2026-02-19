@@ -14,7 +14,7 @@ describe("loadTemplate", () => {
 		expect(metadata.variables).toContain("prd_path");
 		expect(metadata.variables).toContain("plan_path");
 		expect(metadata.variables).toContain("plan_template_path");
-		expect(body).toContain("5x:status");
+		expect(body).toContain("Completion");
 		expect(body).not.toContain("---\nname:");
 	});
 
@@ -91,21 +91,15 @@ describe("author-generate-plan template", () => {
 	test("renders with valid variables", () => {
 		const result = renderTemplate("author-generate-plan", vars);
 		expect(result.prompt).toContain("370-feature.md");
-		expect(result.prompt).toContain("5x:status");
-		expect(result.prompt).toContain("protocolVersion: 1");
-		expect(result.prompt).toContain("planPath:");
+		expect(result.prompt).toContain("370-impl-feature.md");
 	});
 
-	test("includes protocol output section for completed, needs_human, and failed", () => {
+	test("includes completion section (no signal blocks)", () => {
 		const result = renderTemplate("author-generate-plan", vars);
-		expect(result.prompt).toContain("result: completed");
-		expect(result.prompt).toContain("result: needs_human");
-		expect(result.prompt).toContain("result: failed");
-	});
-
-	test("includes YAML safety reminder", () => {
-		const result = renderTemplate("author-generate-plan", vars);
-		expect(result.prompt).toContain("safe scalars");
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured format");
+		expect(result.prompt).not.toContain("5x:status");
+		expect(result.prompt).not.toContain("5x:verdict");
 	});
 });
 
@@ -121,9 +115,13 @@ describe("author-next-phase template", () => {
 		expect(result.prompt).toContain("phase 3");
 		expect(result.prompt).toContain("001-impl-cli.md");
 		expect(result.prompt).toContain("Focus on test coverage");
-		expect(result.prompt).toContain("5x:status");
-		expect(result.prompt).toContain("commit:");
-		expect(result.prompt).toContain("phase:");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("author-next-phase", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured output");
+		expect(result.prompt).not.toContain("5x:status");
 	});
 
 	test("includes branch management guidance", () => {
@@ -150,7 +148,13 @@ describe("author-process-review template", () => {
 		const result = renderTemplate("author-process-review", vars);
 		expect(result.prompt).toContain("2026-02-15-cli-review.md");
 		expect(result.prompt).toContain("001-impl-cli.md");
-		expect(result.prompt).toContain("5x:status");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("author-process-review", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured output");
+		expect(result.prompt).not.toContain("5x:status");
 	});
 
 	test("instructs to focus on latest addendum", () => {
@@ -174,7 +178,13 @@ describe("reviewer-plan template", () => {
 		const result = renderTemplate("reviewer-plan", vars);
 		expect(result.prompt).toContain("001-impl-cli.md");
 		expect(result.prompt).toContain("2026-02-15-cli-review.md");
-		expect(result.prompt).toContain("5x:verdict");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("reviewer-plan", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured output");
+		expect(result.prompt).not.toContain("5x:verdict");
 	});
 
 	test("includes action classification guidance", () => {
@@ -190,14 +200,11 @@ describe("reviewer-plan template", () => {
 		expect(result.prompt).toContain("not_ready");
 	});
 
-	test("instructs to echo reviewPath", () => {
+	test("describes structured response fields", () => {
 		const result = renderTemplate("reviewer-plan", vars);
-		expect(result.prompt).toContain("reviewPath:");
-	});
-
-	test("includes YAML safety reminder", () => {
-		const result = renderTemplate("reviewer-plan", vars);
-		expect(result.prompt).toContain("safe scalars");
+		expect(result.prompt).toContain("readiness");
+		expect(result.prompt).toContain("items");
+		expect(result.prompt).toContain("summary");
 	});
 });
 
@@ -213,7 +220,13 @@ describe("reviewer-commit template", () => {
 		expect(result.prompt).toContain("abc123def");
 		expect(result.prompt).toContain("2026-02-15-cli-review.md");
 		expect(result.prompt).toContain("001-impl-cli.md");
-		expect(result.prompt).toContain("5x:verdict");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("reviewer-commit", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured output");
+		expect(result.prompt).not.toContain("5x:verdict");
 	});
 
 	test("includes review dimensions", () => {

@@ -39,34 +39,6 @@ You are implementing the 5x workflow. Generate an implementation plan from the p
 - Design decisions should be documented with rationale.
 - Test strategy should cover unit, integration, and edge cases.
 
-## 5x Protocol Output
+## Completion
 
-You MUST emit a status block as the LAST thing in your output. Use this exact format:
-
-<!-- 5x:status
-protocolVersion: 1
-result: completed
-planPath: {{plan_path}}
-summary: <brief description of the plan generated>
--->
-
-If you encounter an issue that requires human judgment:
-
-<!-- 5x:status
-protocolVersion: 1
-result: needs_human
-planPath: {{plan_path}}
-reason: <what you need help with>
-blockedOn: <specific decision or clarification needed>
--->
-
-If you cannot complete the task:
-
-<!-- 5x:status
-protocolVersion: 1
-result: failed
-planPath: {{plan_path}}
-reason: <what went wrong>
--->
-
-**IMPORTANT:** All YAML values in the status block must be safe scalars — no multi-line strings, no sequences containing `-->`. Keep summary, reason, and blockedOn to single lines.
+Write the plan to `{{plan_path}}` and return when done. You will be asked to report the outcome of your work in a structured format when you complete.

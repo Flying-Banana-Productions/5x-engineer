@@ -237,22 +237,20 @@ export default defineCommand({
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
+		// --- Initialize adapter ---
+		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
-			// --- Initialize adapter ---
-			let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
-			try {
-				adapter = await createAndVerifyAdapter(config.author);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(
-					"\n  Error: Agent adapter not yet available. " +
-						"This is expected while 5x is being refactored.",
-				);
-				if (message) console.error(`  Cause: ${message}`);
-				process.exitCode = 1;
-				return;
-			}
+			adapter = await createAndVerifyAdapter(config.author);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.error(`\n  Error: Failed to initialize agent adapter.`);
+			if (message) console.error(`  Cause: ${message}`);
+			releaseLock(projectRoot, canonical);
+			process.exitCode = 1;
+			return;
+		}
 
+		try {
 			const result = await runPhaseExecutionLoop(
 				effectivePlanPath,
 				reviewPath,
@@ -296,6 +294,7 @@ export default defineCommand({
 				process.exit(1);
 			}
 		} finally {
+			await adapter.close();
 			releaseLock(projectRoot, canonical);
 		}
 	},

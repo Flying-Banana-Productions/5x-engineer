@@ -33,32 +33,6 @@ You are addressing review feedback for the implementation plan at `{{plan_path}}
 - If code was changed, run all tests and ensure they pass.
 - Commit your changes with a message referencing the review document and (if applicable) which addendum was addressed.
 
-## 5x Protocol Output
+## Completion
 
-You MUST emit a status block as the LAST thing in your output. Use this exact format:
-
-<!-- 5x:status
-protocolVersion: 1
-result: completed
-summary: <brief description of what was addressed>
--->
-
-If you encounter an issue that requires human judgment:
-
-<!-- 5x:status
-protocolVersion: 1
-result: needs_human
-reason: <what you need help with>
-blockedOn: <specific decision or clarification needed>
-context: <relevant context for the human>
--->
-
-If you cannot complete the task:
-
-<!-- 5x:status
-protocolVersion: 1
-result: failed
-reason: <what went wrong>
--->
-
-**IMPORTANT:** All YAML values in the status block must be safe scalars — no multi-line strings, no sequences containing `-->`. Keep summary, reason, blockedOn, and context to single lines.
+Address the review items and return when done. The structured outcome is captured separately via structured output — you do not need to emit any special blocks.

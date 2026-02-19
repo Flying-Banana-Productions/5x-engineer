@@ -3,26 +3,25 @@
  *
  * `createAndVerifyAdapter()` creates a managed (local) OpenCode adapter and
  * verifies the server is available.
- *
- * Phase 1: throws with clear message — OpenCode adapter not yet implemented.
- * Phase 3: will implement OpenCodeAdapter and factory will return it.
  */
 
+import { OpenCodeAdapter } from "./opencode.js";
 import type { AgentAdapter } from "./types.js";
 
 /**
  * Create and verify a managed (local) OpenCode adapter.
- * Phase 1: throws — adapter not yet implemented.
- * Phase 3: will create OpenCodeAdapter, verify health, and return it.
+ * Spawns a local OpenCode server, verifies health, and returns a ready adapter.
+ *
+ * The caller MUST call adapter.close() in a finally block to shut down the
+ * managed server when done.
  */
 export async function createAndVerifyAdapter(
-	_config: Record<string, unknown>,
+	config: Record<string, unknown>,
 ): Promise<AgentAdapter> {
-	throw new Error(
-		"OpenCode adapter not yet implemented. " +
-			"This is Phase 1 of the 5x CLI refactor. " +
-			"The adapter will be implemented in Phase 3.",
-	);
+	const model = typeof config.model === "string" ? config.model : undefined;
+	const adapter = await OpenCodeAdapter.create({ model });
+	await adapter.verify();
+	return adapter;
 }
 
 /**

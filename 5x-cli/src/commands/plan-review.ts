@@ -108,10 +108,7 @@ export default defineCommand({
 			adapter = await createAndVerifyAdapter(config.author);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			console.error(
-				"\n  Error: Agent adapter not yet available. " +
-					"This is expected while 5x is being refactored.",
-			);
+			console.error(`\n  Error: Failed to initialize agent adapter.`);
 			if (message) console.error(`  Cause: ${message}`);
 			process.exitCode = 1;
 			return;
@@ -121,44 +118,48 @@ export default defineCommand({
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
-		// Run the loop
-		const result = await runPlanReviewLoop(
-			canonical,
-			reviewPath,
-			db,
-			adapter,
-			config,
-			{
-				auto: args.auto,
-				allowDirty: args["allow-dirty"],
-				projectRoot,
-				quiet: effectiveQuiet,
-				canonicalPlanPath: canonical,
-			},
-		);
+		try {
+			// Run the loop
+			const result = await runPlanReviewLoop(
+				canonical,
+				reviewPath,
+				db,
+				adapter,
+				config,
+				{
+					auto: args.auto,
+					allowDirty: args["allow-dirty"],
+					projectRoot,
+					quiet: effectiveQuiet,
+					canonicalPlanPath: canonical,
+				},
+			);
 
-		// Display final result
-		console.log();
-		if (result.approved) {
-			console.log("  Plan review: APPROVED");
-		} else {
-			console.log("  Plan review: NOT APPROVED");
-		}
-		console.log(`  Iterations: ${result.iterations}`);
-		console.log(`  Review: ${result.reviewPath}`);
-		console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
-		if (result.escalations.length > 0) {
-			console.log(`  Escalations: ${result.escalations.length}`);
-		}
-		console.log();
-
-		if (result.approved) {
-			console.log(`  Next: 5x run ${planPath}`);
+			// Display final result
 			console.log();
-		}
+			if (result.approved) {
+				console.log("  Plan review: APPROVED");
+			} else {
+				console.log("  Plan review: NOT APPROVED");
+			}
+			console.log(`  Iterations: ${result.iterations}`);
+			console.log(`  Review: ${result.reviewPath}`);
+			console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
+			if (result.escalations.length > 0) {
+				console.log(`  Escalations: ${result.escalations.length}`);
+			}
+			console.log();
 
-		if (!result.approved) {
-			process.exit(1);
+			if (result.approved) {
+				console.log(`  Next: 5x run ${planPath}`);
+				console.log();
+			}
+
+			if (!result.approved) {
+				process.exit(1);
+			}
+		} finally {
+			await adapter.close();
 		}
 	},
 });

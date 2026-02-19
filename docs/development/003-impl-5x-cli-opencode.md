@@ -899,55 +899,55 @@ try {
 
 A single `OpenCodeAdapter` instance serves both author and reviewer roles. The role distinction is expressed through the prompt template content and `InvokeOptions.model` at each call site (e.g., `config.reviewer.model` is passed for reviewer invocations). The adapter itself is model-agnostic.
 
-- [ ] **Enable factory:** Update `createAndVerifyAdapter()` in `src/agents/factory.ts` to call `OpenCodeAdapter.create({ model: config.author.model })` + `adapter.verify()` instead of throwing (deferred from Phase 3 per P0.1 resolution)
-- [ ] Remove all `as unknown as LegacyAgentAdapter` casts from `commands/run.ts`
-- [ ] Update `commands/run.ts` to create adapter before loop, close in `finally`
-- [ ] Pass single `adapter` through to orchestrator (replaces separate author/reviewer adapters)
+- [x] **Enable factory:** Update `createAndVerifyAdapter()` in `src/agents/factory.ts` to call `OpenCodeAdapter.create({ model: config.author.model })` + `adapter.verify()` instead of throwing (deferred from Phase 3 per P0.1 resolution)
+- [x] Remove all `as unknown as LegacyAgentAdapter` casts from `commands/run.ts`
+- [x] Update `commands/run.ts` to create adapter before loop, close in `finally`
+- [x] Pass single `adapter` through to orchestrator (replaces separate author/reviewer adapters)
 
 ### 5.2 Update `commands/plan-review.ts`
 
 Same adapter lifecycle pattern:
 
-- [ ] Remove all `as unknown as LegacyAgentAdapter` casts
-- [ ] Create single adapter, pass to `runPlanReviewLoop()`, close in `finally`
+- [x] Remove all `as unknown as LegacyAgentAdapter` casts
+- [x] Create single adapter, pass to `runPlanReviewLoop()`, close in `finally`
 
 ### 5.3 Update `commands/plan.ts`
 
 The plan generation command invokes an author agent to create the plan. Update to use `adapter.invokeForStatus()`:
 
-- [ ] Remove `as unknown as LegacyAgentAdapter` cast
-- [ ] Create `OpenCodeAdapter` via factory, call `invokeForStatus()` with `author-generate-plan` template
-- [ ] The `result.status.result === "complete"` path means the plan file was written; use `result.status.commit` if a commit was made
-- [ ] Close adapter in `finally`
-- [ ] **Delete `LegacyAgentAdapter`:** After all commands are updated, remove the `LegacyAgentAdapter` interface and all legacy types from `src/agents/types.ts`
+- [x] Remove `as unknown as LegacyAgentAdapter` cast
+- [x] Create `OpenCodeAdapter` via factory, call `invokeForStatus()` with `author-generate-plan` template
+- [x] The `result.status.result === "complete"` path means the plan file was written; use `result.status.commit` if a commit was made
+- [x] Close adapter in `finally`
+- [x] **Delete `LegacyAgentAdapter`:** After all commands are updated, remove the `LegacyAgentAdapter` interface and all legacy types from `src/agents/types.ts`
 
 ### 5.4 Update prompt templates
 
 Remove all structured signal instructions. Templates become simpler — they describe the task and the expected output artifact (file path to write), but the structured result is captured by the SDK, not embedded in agent output.
 
 **`author-generate-plan.md`:**
-- [ ] Remove any `5x:status` block instructions
-- [ ] Add: instruct the agent to write the plan to `{{plan_path}}` and return when done
-- [ ] Add: "You will be asked to report the outcome of your work in a structured format when you complete"
+- [x] Remove any `5x:status` block instructions
+- [x] Add: instruct the agent to write the plan to `{{plan_path}}` and return when done
+- [x] Add: "You will be asked to report the outcome of your work in a structured format when you complete"
 
 **`author-next-phase.md`:**
-- [ ] Remove `5x:status` block instructions
-- [ ] Clarify: commit your work and return when the phase is implemented
-- [ ] Note: the structured outcome (complete/needs_human/failed + commit hash) is captured separately
+- [x] Remove `5x:status` block instructions
+- [x] Clarify: commit your work and return when the phase is implemented
+- [x] Note: the structured outcome (complete/needs_human/failed + commit hash) is captured separately
 
 **`author-process-review.md`:**
-- [ ] Remove `5x:status` block instructions
-- [ ] Simplify to: address the review items and return when done
+- [x] Remove `5x:status` block instructions
+- [x] Simplify to: address the review items and return when done
 
 **`reviewer-plan.md`:**
-- [ ] Remove `5x:verdict` block instructions (verdict is returned via structured output)
-- [ ] Keep: detailed reviewer instructions for classifying items as `auto_fix` vs `human_required`
-- [ ] Keep: priority (P0/P1/P2) guidance
-- [ ] Update: items should be returned in the structured response (describe the fields: id, title, action, reason, priority)
+- [x] Remove `5x:verdict` block instructions (verdict is returned via structured output)
+- [x] Keep: detailed reviewer instructions for classifying items as `auto_fix` vs `human_required`
+- [x] Keep: priority (P0/P1/P2) guidance
+- [x] Update: items should be returned in the structured response (describe the fields: id, title, action, reason, priority)
 
 **`reviewer-commit.md`:**
-- [ ] Same removals/updates as `reviewer-plan.md`
-- [ ] Remove `5x:verdict` block instructions
+- [x] Same removals/updates as `reviewer-plan.md`
+- [x] Remove `5x:verdict` block instructions
 
 ### 5.5 Update `commands/init.ts`
 
@@ -960,14 +960,17 @@ Remove all structured signal instructions. Templates become simpler — they des
 
 The review summary parser reads human-readable review markdown. Verify it has no dependency on `parsers/signals.ts` (it shouldn't — it parses the prose, not signal blocks):
 
-- [ ] Audit `parsers/review.ts` for any signal block imports — remove if present
-- [ ] No functional changes expected
+- [x] Audit `parsers/review.ts` for any signal block imports — remove if present
+- [x] No functional changes expected
 
 ### 5.7 Tests
 
-- [ ] Update `test/commands/plan.test.ts` — mock adapter
-- [ ] Update `test/commands/plan-review.test.ts` — mock adapter
-- [ ] Verify `test/commands/init.test.ts` — config output matches new format
+- [x] Update `test/commands/plan.test.ts` — no adapter mock changes needed (tests pure utility functions)
+- [x] Update `test/commands/plan-review.test.ts` — no adapter mock changes needed (CLI integration tests)
+- [x] Verify `test/commands/init.test.ts` — config output matches new format
+- [x] Update `test/agents/factory.test.ts` — factory now creates real adapter; tests handle both server-available and server-unavailable cases
+- [x] Update `test/agents/opencode.test.ts` — factory test updated from "still throws" to "creates real adapter"
+- [x] Update `test/templates/loader.test.ts` — template assertions updated to match new content (no signal blocks, structured output completion sections)
 
 ### 5.8 Phase 4 review — P2 considerations (deferred)
 

@@ -1066,16 +1066,17 @@ describe("P1.2: events without session ID are skipped", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Factory still throws (Phase 3 constraint)
+// Factory enabled (Phase 5)
 // ---------------------------------------------------------------------------
 
-describe("factory still throws in Phase 3", () => {
-	test("createAndVerifyAdapter throws not-implemented", async () => {
+describe("factory creates real adapter (Phase 5)", () => {
+	test("createAndVerifyAdapter rejects when server unavailable", async () => {
 		const { createAndVerifyAdapter } = await import(
 			"../../src/agents/factory.js"
 		);
+		// Without a running OpenCode server, should throw with actionable message
 		await expect(createAndVerifyAdapter({})).rejects.toThrow(
-			"OpenCode adapter not yet implemented",
+			/OpenCode server failed to start/,
 		);
 	});
 });

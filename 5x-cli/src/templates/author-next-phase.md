@@ -40,36 +40,6 @@ You are implementing phase {{phase_number}} of the implementation plan at `{{pla
 
 {{user_notes}}
 
-## 5x Protocol Output
+## Completion
 
-You MUST emit a status block as the LAST thing in your output. Use this exact format:
-
-<!-- 5x:status
-protocolVersion: 1
-result: completed
-phase: {{phase_number}}
-commit: <git commit hash of your work>
-summary: <brief description of what was implemented>
--->
-
-If you encounter an issue that requires human judgment:
-
-<!-- 5x:status
-protocolVersion: 1
-result: needs_human
-phase: {{phase_number}}
-reason: <what you need help with>
-blockedOn: <specific decision or clarification needed>
-context: <relevant context for the human>
--->
-
-If you cannot complete the task:
-
-<!-- 5x:status
-protocolVersion: 1
-result: failed
-phase: {{phase_number}}
-reason: <what went wrong>
--->
-
-**IMPORTANT:** All YAML values in the status block must be safe scalars — no multi-line strings, no sequences containing `-->`. Keep summary, reason, blockedOn, and context to single lines.
+Commit your work and return when the phase is implemented. The structured outcome (complete/needs_human/failed + commit hash) is captured separately via structured output — you do not need to emit any special blocks.

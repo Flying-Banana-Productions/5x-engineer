@@ -53,28 +53,11 @@ Provide an overall readiness assessment:
 - **ready_with_corrections**: Plan needs corrections but they are all mechanical (auto_fix). No human judgment needed.
 - **not_ready**: Plan has fundamental issues requiring human decisions or significant rework.
 
-## 5x Protocol Output
+## Completion
 
-You MUST append a verdict block at the END of the review document you write to `{{review_path}}`. Use this exact format as an HTML comment:
+Write your review to `{{review_path}}` and return when done. The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 
-<!-- 5x:verdict
-protocolVersion: 1
-readiness: ready | ready_with_corrections | not_ready
-reviewPath: {{review_path}}
-items:
-  - id: p0-1
-    title: <issue title>
-    action: auto_fix | human_required
-    reason: <brief explanation of why this action classification>
-  - id: p1-1
-    title: <issue title>
-    action: auto_fix | human_required
-    reason: <brief explanation>
--->
-
-**IMPORTANT:**
-- All YAML values must be safe scalars — no multi-line strings, no sequences containing `-->`.
-- Keep title and reason to single lines.
-- The `reviewPath` field MUST echo back exactly: `{{review_path}}`
-- If no issues are found, use `readiness: ready` with an empty `items: []` list.
-- Each item `id` should match the issue numbering in your review (e.g., `p0-1`, `p1-2`, `p2-3`).
+Your structured response will include:
+- **readiness**: `ready`, `ready_with_corrections`, or `not_ready`
+- **items**: array of review items, each with `id`, `title`, `action` (`auto_fix` or `human_required`), `reason`, and optional `priority` (`P0`/`P1`/`P2`)
+- **summary**: optional 1-3 sentence overall assessment

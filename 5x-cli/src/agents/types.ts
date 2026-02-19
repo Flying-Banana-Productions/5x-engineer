@@ -85,43 +85,10 @@ export interface AgentAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy exports (for backward compatibility until full migration)
+// Adapter config
 // ---------------------------------------------------------------------------
 
-/** @deprecated Use InvokeOptions with new AgentAdapter */
-export interface LegacyInvokeOptions {
-	prompt: string;
-	model?: string;
-	workdir: string;
-	timeout?: number;
-	maxTurns?: number;
-	allowedTools?: string[];
-	logStream?: NodeJS.WritableStream;
-	onEvent?: (event: unknown, rawLine: string) => void;
-}
-
-/** @deprecated Use InvokeResult with new AgentAdapter */
-export interface LegacyAgentResult {
-	output: string;
-	exitCode: number;
-	duration: number;
-	tokens?: { input: number; output: number };
-	cost?: number;
-	error?: string;
-	sessionId?: string;
-}
-
-/** @deprecated Alias for LegacyAgentResult for backward compatibility */
-export type AgentResult = LegacyAgentResult;
-
-/** @deprecated Legacy AgentAdapter interface — will be replaced in Phase 4 */
-export interface LegacyAgentAdapter {
-	readonly name: string;
-	invoke(opts: LegacyInvokeOptions): Promise<LegacyAgentResult>;
-	isAvailable(): Promise<boolean>;
-}
-
-/** @deprecated Adapter config no longer needed — OpenCode is the sole adapter */
+/** Config passed to createAndVerifyAdapter(). */
 export interface AdapterConfig {
 	model?: string;
 }
