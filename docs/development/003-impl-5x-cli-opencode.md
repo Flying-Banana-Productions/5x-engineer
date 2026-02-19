@@ -367,12 +367,16 @@ export interface AgentAdapter {
   verify(): Promise<void>
   /** Shut down the underlying server (called once at end of run). */
   close(): Promise<void>
+  /** URL of the managed OpenCode server (e.g. "http://127.0.0.1:51234"). Used by TUI attach. See 004-impl-5x-cli-tui.md Phase 1. */
+  readonly serverUrl: string
 }
 ```
 
 - [x] Update `src/agents/types.ts` with interface above (import `AuthorStatus`, `ReviewerVerdict` from new protocol types file — created in Phase 2)
 - [x] Update `src/agents/factory.ts`: `createAdapter()` throws `Error("opencode adapter not yet implemented")` with clear message; remove all Claude Code references
 - [x] Update `test/agents/factory.test.ts` to match new interface
+
+> **TUI cross-reference (004 Phase 1):** `AgentAdapter.serverUrl` added above is implemented in Phase 1 of `004-impl-5x-cli-tui.md`. The interface stub here documents the contract; the implementation comes from `OpenCodeAdapter`'s `get serverUrl()` getter exposing `this.server.url`.
 
 ### 1.5 Update agent-event-helpers
 
@@ -585,8 +589,9 @@ export async function createAndVerifyAdapter(config: FiveXConfig): Promise<OpenC
 > **Single adapter, both roles:** One `OpenCodeAdapter` instance is created per `5x run` or `5x plan-review` invocation and used for both the author and reviewer roles. Role distinction is expressed via `InvokeOptions.model` (per-invocation override) and the prompt template content, not via separate adapter instances.
 
 - [x] `static async create()`:
-  - Calls `createOpencode({ timeout: 15_000 })` (v2 SDK)
+  - Calls `createOpencode({ hostname: "127.0.0.1", port: 0, timeout: 15_000 })` — `port: 0` lets the OS assign an ephemeral port, eliminating TOCTOU races from `findFreePort()` probing. See `004-impl-5x-cli-tui.md` Phase 1.
   - Stores server reference; waits for server start
+  - Exposes `get serverUrl(): string` returning `this.server.url` (the actual bound URL with ephemeral port)
   - Throws descriptive error if server startup times out: `"OpenCode server failed to start — check that opencode is installed and on PATH"`
 
 - [x] `async close()`:
@@ -887,7 +892,7 @@ Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
 > - **P0.2 — Log directory permissions `0o700`:** `writeEventsToLog()` in `opencode.ts` now creates log directories with `mode: 0o700` to prevent group/world-readable logs (which may contain sensitive content). This is the single creation site — `plan.ts` computes `logDir` but does not create it.
 > - **P1.1 — Hermetic factory tests:** The factory test in `opencode.test.ts` uses the success-or-actionable-error pattern (try/catch/finally) matching `factory.test.ts`, so it passes regardless of whether OpenCode is installed on the test machine.
 > - **P1.2 — Typed `AdapterConfig` parameter:** `createAndVerifyAdapter()` in `factory.ts` now accepts `AdapterConfig` (from `types.ts`) instead of `Record<string, unknown>`, enabling compile-time validation of the config shape.
-> - **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown()` added to `factory.ts`. Registers a `process.on("exit")` handler that calls `adapter.close()` (whose body is synchronous — `server.close()` runs immediately). Also registers SIGINT/SIGTERM handlers that call `process.exit()` to ensure the "exit" event fires for cleanup, rather than relying on the default signal handler (which terminates without the "exit" event). All three commands call this after adapter creation.
+ > - **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown()` added to `factory.ts`. Registers a `process.on("exit")` handler that calls `adapter.close()` (whose body is synchronous — `server.close()` runs immediately). Also registers SIGINT/SIGTERM handlers that call `process.exit()` to ensure the "exit" event fires for cleanup, rather than relying on the default signal handler (which terminates without the "exit" event). All three commands call this after adapter creation. **TUI cross-reference (004 Phase 3):** In TUI mode, `registerAdapterShutdown()` is updated to accept `{ tuiMode, cancelController }` — SIGINT/SIGTERM handlers set `cancelController.abort()` + `process.exitCode` instead of calling `process.exit()`, enabling cooperative cancellation via async `finally` blocks. See `004-impl-5x-cli-tui.md` Phase 3.
 > - **P2 — Model selection semantics documented:** `createAndVerifyAdapter()` JSDoc documents that `config.model` (typically `config.author`) becomes the adapter's default model. Reviewer model is passed as a per-invocation override via `InvokeOptions.model` at each call site, not baked into the adapter.
 
 **Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`. All commands close the adapter in `finally`. No post-adapter `process.exit()` calls remain.
@@ -999,7 +1004,7 @@ The following items from the Phase 5 execution review have been addressed:
 - [x] **P0.2 — Log directory permissions `0o700`:** `writeEventsToLog()` in `opencode.ts` now passes `mode: 0o700` to `mkdirSync`
 - [x] **P1.1 — Hermetic factory test:** `test/agents/opencode.test.ts` factory test rewritten to try/catch/finally pattern (success-or-actionable-error)
 - [x] **P1.2 — Typed factory config:** `createAndVerifyAdapter()` parameter changed from `Record<string, unknown>` to `AdapterConfig`
-- [x] **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown(adapter)` added to `factory.ts`; called by all three commands after adapter creation. Registers `process.on("exit")` handler + SIGINT/SIGTERM handlers for correct cleanup
+- [x] **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown(adapter)` added to `factory.ts`; called by all three commands after adapter creation. Registers `process.on("exit")` handler + SIGINT/SIGTERM handlers for correct cleanup. Note: the function signature is extended in `004-impl-5x-cli-tui.md` Phase 3 to accept `{ tuiMode, cancelController }` for cooperative TUI-mode cancellation.
 - [x] **P2 — Model selection semantics:** Documented in `createAndVerifyAdapter()` JSDoc that `config.model` is the adapter default (author model); reviewer model is a per-invocation override via `InvokeOptions.model`
 
 ---

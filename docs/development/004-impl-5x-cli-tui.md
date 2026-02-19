@@ -1,8 +1,8 @@
 # 5x CLI — TUI Integration
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** February 19, 2026
-**Updated:** February 19, 2026 — `opencode attach` verified working against a programmatically-started server; design committed
+**Updated:** February 19, 2026 — v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
 **Status:** Approved for implementation
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
 
@@ -54,17 +54,17 @@ highlighting, model switching, and session history for free.
 ```
 5x run plan.md
   │
-  ├─ createOpencode({ port: <random> })  ← spawns "opencode serve" on free port
-  │   returns { client, server }
+  ├─ createOpencode({ port: 0, hostname: '127.0.0.1' })  ← spawns on ephemeral port
+  │   returns { client, server }  server.url has the actual port
   │
-  ├─ if (isTTY && !--no-tui):
+  ├─ if (stdin.isTTY && stdout.isTTY && !--no-tui && !--quiet):
   │   spawn: opencode attach http://127.0.0.1:<port>  ← TUI takes terminal
-  │   (stdio: "inherit" — TUI renders everything from this point)
+  │   (stdio: "inherit" — TUI renders from this point; 5x-cli writes nothing to stdout)
   │
   └─ Orchestration loop  (UNCHANGED internally)
       client.session.create({ title: "Phase 3 — author" })
-      client.tui.selectSession({ sessionID })    ← NEW: TUI focuses session
-      client.session.prompt({ format: json_schema })  ← UNCHANGED: blocks, returns typed result
+      client.tui.selectSession({ sessionID, directory: workdir })  ← NEW: TUI focuses session
+      client.session.prompt({ format: json_schema })   ← UNCHANGED: blocks, returns typed result
       client.event.subscribe()   ← log file only (skip stdout when TUI active)
       evaluate structured output → next step
       client.tui.showToast({ message: "Phase 3 complete" })   ← NEW: phase feedback
@@ -92,31 +92,83 @@ The structured output pipeline requires zero changes. The TUI is bolt-on.
 
 | Condition | Behavior |
 |---|---|
-| stdout is a TTY, no `--no-tui` | TUI mode (default) |
+| `stdin.isTTY && stdout.isTTY`, no `--no-tui`, no `--quiet` | TUI mode (default) |
 | `--no-tui` flag | Headless mode (current behavior) |
+| `--quiet` flag | Headless mode, logs only (`--quiet` implies `--no-tui`) |
 | stdout is not a TTY (pipe/CI) | Headless mode (auto-detected) |
-| `--quiet` | Headless mode, logs only |
+| stdin is not a TTY (pipe/redirected input) | Headless mode (auto-detected) |
 
-The `--quiet` flag continues to suppress all console output (log files are
-always written). In TUI mode, `--quiet` is ignored — the TUI controls display.
+**`--quiet` implies `--no-tui`:** `--quiet` is a strong user intent signal to
+suppress all output. Attaching a full TUI contradicts that intent. When
+`--quiet` is active, TUI mode is unconditionally disabled.
+
+**Both stdin and stdout must be TTYs:** A TUI requires interactive input. Cases
+exist where stdout is a TTY but stdin is not (piped input, redirected stdin).
+Detecting only `stdout.isTTY` would attach a TUI that cannot receive keyboard
+input. TUI mode requires `process.stdin.isTTY && process.stdout.isTTY`.
 
 ---
 
 ## Port Selection
 
 The hardcoded port 4096 is the source of the stale-server conflicts seen in
-testing. The new design uses a random available port per invocation.
+testing. The new design uses an OS-assigned ephemeral port per invocation via
+`port: 0`.
 
 ```typescript
-// Find a free port and start the server on it
-const port = await findFreePort(); // tries random ports in 14000–15000 range
-const { client, server } = await createOpencode({ port, hostname: "127.0.0.1" });
-const serverUrl = `http://127.0.0.1:${port}`;
+// Use port: 0 — OS assigns an ephemeral port atomically (no TOCTOU race)
+const { client, server } = await createOpencode({
+  hostname: "127.0.0.1",
+  port: 0,
+  timeout: 15_000,
+});
+const serverUrl = server.url; // e.g. "http://127.0.0.1:51234"
 // Pass serverUrl to opencode attach
 ```
 
-The `opencode attach <url>` command accepts the full URL, so discovery is
-trivial. The server URL is returned from `createOpencode()` as `server.url`.
+Using `port: 0` eliminates the probe race (`findFreePort()` check-then-bind is
+a TOCTOU: another process can bind the port between the check and our bind).
+The OS-assigned port is already bound when `server.url` is available — no
+probing required. This removes the need for a `findFreePort()` utility
+entirely.
+
+`OpenCodeAdapter` exposes the server URL as `readonly serverUrl: string`
+(from `this.server.url`), and `AgentAdapter` interface gains
+`readonly serverUrl: string`.
+
+---
+
+## Terminal Output Ownership
+
+Once `opencode attach` takes over the terminal (stdio: `inherit`), any
+parent-process `console.log` / stdout writes corrupt the TUI display. The rule
+is simple:
+
+**After TUI attach: 5x-cli writes nothing to stdout or stderr.**
+
+All user-facing messages in TUI mode go through the TUI's own APIs:
+
+| Event | TUI mode | Headless mode |
+|---|---|---|
+| Run start banner | `client.tui.showToast(...)` (before first session) | `console.log(...)` |
+| Phase start | `client.tui.showToast(...)` | `console.log(...)` |
+| Phase complete | `client.tui.showToast(...)` | `console.log(...)` |
+| Review approved | `client.tui.showToast(...)` | `console.log(...)` |
+| Escalation | `client.tui.showToast(..., { variant: "error" })` | `console.warn(...)` |
+| Final summary | printed to **stderr** after TUI exits | `console.log(...)` |
+| Pre-attach startup message | printed to **stderr** before `opencode attach` spawns | N/A |
+
+**Pre-attach window:** In the brief interval between server start and TUI
+attach, any startup messages (e.g., "Starting OpenCode...") are written to
+stderr only. This avoids interleaving with the TUI, which takes over stdout
+immediately on spawn.
+
+**Post-TUI window:** After the TUI process exits (orchestration complete, user
+closed terminal, or TUI crash), the final run summary is printed to stderr.
+This is safe because the TUI no longer owns the terminal at that point.
+
+**Log files:** All SSE event log writes and DB writes are unaffected — they
+never go to stdout/stderr.
 
 ---
 
@@ -124,32 +176,316 @@ trivial. The server URL is returned from `createOpencode()` as `server.url`.
 
 ```typescript
 // Pseudo-code for TUI spawn + cleanup
-const tuiProcess = Bun.spawn(
-  ["opencode", "attach", server.url, "--dir", workdir],
-  { stdio: ["inherit", "inherit", "inherit"] }
-);
+let tuiController: TuiController;
 
-registerAdapterShutdown(adapter);  // existing: closes server on SIGINT/SIGTERM
+// Print startup message to stderr BEFORE TUI takes over
+process.stderr.write("Starting OpenCode...\n");
 
-// On orchestration complete:
+const tuiController = await createTuiController({
+  serverUrl: adapter.serverUrl,
+  workdir,
+  client,
+  enabled: isTuiMode,  // false → returns no-op controller
+});
+
+// cancelController shared with orchestrator loop for cooperative cancellation
+const cancelController = new AbortController();
+
+// Handle TUI early exit (user closed terminal, crash) during orchestration
+tuiController.onExit(() => {
+  process.stderr.write("TUI exited — continuing headless\n");
+  // orchestration continues without TUI; tuiController.active becomes false
+  // Note: Ctrl-C is handled separately (see Signal Handling section)
+});
+
 try {
-  await runPhaseExecutionLoop(...);
+  await runPhaseExecutionLoop({
+    ...,
+    signal: cancelController.signal,  // NEW: orchestrator respects abort signal
+    tui: tuiController,
+  });
 } finally {
-  await adapter.close();     // closes server
-  tuiProcess.kill();         // TUI exits (server gone, it will exit anyway)
+  await adapter.close();
+  tuiController.kill();
   releaseLock(...);
 }
 ```
 
 **TUI crash handling:** If the TUI exits before the orchestration completes
 (user closes terminal, TUI crash), the orchestration continues in headless
-mode. The server is still alive; 5x-cli detects the TUI process has exited and
-continues without it. A warning is printed to stderr after the TUI exits.
+mode. The server is still alive; `tuiController.active` flips to `false` and
+subsequent `tui.*` calls become no-ops (same as the headless no-op controller).
+A warning is written to stderr.
 
-**Signal flow:** With the TUI owning the terminal, Ctrl-C goes to the TUI
-process first. The TUI exits. The `tuiProcess` exit triggers our "TUI exited"
-handler which sets `process.exitCode = 1` and lets the orchestration abort
-naturally. The `finally` block closes the server.
+---
+
+## Signal Handling and Cooperative Cancellation
+
+The current `registerAdapterShutdown()` in `factory.ts` registers
+`process.on("SIGINT", () => process.exit(130))` / `process.on("SIGTERM", () =>
+process.exit(143))`. These `process.exit()` calls bypass async `finally`
+cleanup blocks in command handlers, risking leaked locks, servers, and
+worktrees.
+
+### TUI mode: Ctrl-C flow
+
+With the TUI owning the terminal, **Ctrl-C is delivered to the TUI process
+first** (it is the terminal's foreground process group leader). The TUI handles
+the signal and exits. 5x-cli's SIGINT handler is **not** called in this
+scenario — the TUI absorbs the signal.
+
+When the TUI process exits (detected via `tuiProcess.exited`), 5x-cli:
+1. Sets `cancelController.abort()` — notifies the orchestrator loop to stop at
+   the next await point
+2. Sets `process.exitCode = 1`
+3. Does NOT call `process.exit()` — lets the `finally` blocks run naturally
+
+```typescript
+tuiProcess.exited.then(() => {
+  if (userInitiatedExit) {
+    cancelController.abort();
+    process.exitCode = 1;
+  }
+});
+```
+
+### Headless mode: Ctrl-C flow
+
+In headless mode, SIGINT reaches 5x-cli directly. The existing
+`registerAdapterShutdown()` behavior (`process.exit()` in SIGINT/SIGTERM
+handlers) is preserved for headless use — the "exit" event fires and
+`adapter.close()` runs synchronously. This is the existing behavior from 003
+Phase 5 review and is not changed by this plan.
+
+However, the signal handler chain must be updated so that TUI mode registers
+**different** SIGINT/SIGTERM behavior:
+
+```typescript
+// factory.ts (updated)
+export function registerAdapterShutdown(
+  adapter: AgentAdapter,
+  opts: { tuiMode?: boolean; cancelController?: AbortController } = {},
+): void {
+  process.on("exit", () => { adapter.close() });  // synchronous close on exit
+
+  if (opts.tuiMode) {
+    // TUI mode: Ctrl-C goes to TUI first; we rely on tuiProcess.exited to
+    // cooperatively cancel. SIGINT/SIGTERM still need handlers to prevent
+    // abrupt termination if somehow delivered to the parent directly.
+    process.once("SIGINT",  () => { opts.cancelController?.abort(); process.exitCode = 130; });
+    process.once("SIGTERM", () => { opts.cancelController?.abort(); process.exitCode = 143; });
+  } else {
+    // Headless mode: convert signal to process.exit() to trigger the "exit" event
+    if (!_signalHandlersRegistered) {
+      _signalHandlersRegistered = true;
+      process.on("SIGINT",  () => process.exit(130));
+      process.on("SIGTERM", () => process.exit(143));
+    }
+  }
+}
+```
+
+### Acceptance criteria
+
+- [ ] Ctrl-C in TUI mode: TUI exits → `cancelController` aborted → orchestrator
+  stops at next await → `finally` runs `adapter.close()` + lock release
+- [ ] Ctrl-C in headless mode: SIGINT → `process.exit(130)` → "exit" event →
+  `adapter.close()` sync
+- [ ] Programmatic `cancelController.abort()` stops the orchestration loop and
+  runs cleanup (tested with mock adapter)
+- [ ] No leaked server processes or lock files after Ctrl-C in either mode
+
+---
+
+## Permission Policy
+
+OpenCode tool calls may require explicit permission grants. Unhandled permission
+prompts block indefinitely in headless/CI mode. The policy must be specified for
+each mode.
+
+### Policy table
+
+| Mode | Permission behavior |
+|---|---|
+| `--auto` (any TTY state) | All tool permissions auto-approved. Pass `dangerouslyAutoApproveEverything: true` to session prompt (or equivalent SDK option). |
+| TUI mode (non-auto) | Permissions handled natively by the TUI. The TUI renders a dialog; the user responds. 5x-cli does not need to reply programmatically. |
+| Headless mode (non-auto, TTY) | Listen for permission requests via `client.permission.*` events; auto-approve file read/write/exec within `opts.workdir`. Require human reply for operations outside workdir. |
+| Non-interactive / CI (non-TTY stdin) | Same as `--auto`: all permissions auto-approved. Non-interactive mode implies unattended execution. |
+
+### Implementation
+
+The permission behavior is wrapped in a `PermissionPolicy` object and kept out
+of the adapter internals:
+
+```typescript
+// src/tui/permissions.ts
+export type PermissionPolicy =
+  | { mode: "auto-approve-all" }            // --auto, CI
+  | { mode: "tui-native" }                  // TUI handles it
+  | { mode: "workdir-scoped"; workdir: string }  // headless, restrict to workdir
+
+export function createPermissionHandler(
+  client: OpencodeClient,
+  policy: PermissionPolicy,
+): PermissionHandler
+```
+
+The handler is wired after adapter creation, before the orchestration loop
+starts. Policy is resolved in the command layer:
+
+```typescript
+const permissionPolicy: PermissionPolicy =
+  args.auto || !process.stdin.isTTY ? { mode: "auto-approve-all" } :
+  isTuiMode                         ? { mode: "tui-native" } :
+  /* headless, interactive */         { mode: "workdir-scoped", workdir };
+```
+
+### Acceptance criteria
+
+- [ ] `--auto` mode: agent tool calls proceed without permission dialogs in a
+  non-TTY environment (no hang)
+- [ ] Headless non-auto mode: file read/write within workdir is auto-approved;
+  operations outside workdir prompt (or escalate if non-interactive)
+- [ ] Test that would hang without policy: mock a permission request event with
+  no reply handler → assert it is handled within 5s (timeout = test failure)
+
+---
+
+## Human Gates (Non-auto Mode)
+
+In `--auto` mode, phases continue automatically after the reviewer approves.
+In interactive (non-auto) mode, 5x-cli currently pauses at a readline prompt
+between phases.
+
+With the TUI owning the terminal, readline is not available. The new mechanism
+uses the **existing injectable gate override pattern** already present in the
+orchestrator loops (`options.phaseGate`, `options.escalationGate`,
+`options.resumeGate`). TUI mode supplies TUI-backed implementations; headless
+mode uses the existing readline implementations unchanged.
+
+### Gate protocol
+
+The gate protocol must work in all contexts:
+
+| Context | Gate mechanism |
+|---|---|
+| TUI active | `client.tui.showDialog()` (or equivalent blocking confirmation dialog) |
+| Headless TTY | Existing readline prompt (`gates/human.ts`) |
+| Non-interactive stdin | Auto-abort (existing behavior in `gates/human.ts` when `!process.stdin.isTTY`) |
+| Resume flow | `resumeGate` override behaves identically to non-resume flow |
+
+### TUI gate implementation
+
+```typescript
+// src/tui/gates.ts
+export function createTuiPhaseGate(
+  client: OpencodeClient,
+  tui: TuiController,
+  opts: { timeoutMs?: number } = {},
+): (summary: PhaseSummary) => Promise<"continue" | "review" | "abort"> {
+  return async (summary) => {
+    // Show a toast with instructions
+    await tui.showToast({
+      title: `Phase ${summary.phaseNumber} complete`,
+      message: "Ready for next phase. Confirm to continue or abort.",
+      variant: "info",
+    });
+
+    // Use explicit TUI control channel for the gate response.
+    // client.tui.control.* or client.tui.showDialog() (blocking confirm/cancel)
+    const result = await Promise.race([
+      client.tui.showDialog({
+        title: `Continue to next phase?`,
+        message: `Phase ${summary.phaseNumber} — ${summary.phaseTitle} complete.`,
+        choices: ["continue", "abort"],
+      }),
+      timeout(opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS).then(() => "abort" as const),
+    ]);
+
+    return result;
+  };
+}
+```
+
+**Key properties:**
+- Uses an explicit control channel (`client.tui.showDialog()` or
+  `client.tui.control.*`), not SSE event inference. No guessing from
+  `session.idle` events.
+- Timeout semantics: gate times out after `DEFAULT_GATE_TIMEOUT_MS` (default:
+  30 minutes). On timeout, the gate resolves `"abort"` and the orchestrator
+  escalates cleanly.
+- TUI exit during gate: if `tuiController.active` becomes false while a gate is
+  pending, the gate promise rejects → orchestrator escalates (same path as
+  timeout/abort).
+- Cancel semantics: if the `cancelController` signal is aborted (Ctrl-C), the
+  gate promise rejects immediately.
+
+### Gate cleanup
+
+No "gate session" is created. The gate is a TUI-native dialog, not an OpenCode
+session. There is no session to clean up or delete.
+
+> **P2 note:** The previous design created a disposable "gate session" that was
+> deleted after the gate resolved. That approach has been replaced. If future
+> audit requirements need gate decisions recorded, append them to the review
+> file via `appendStructuredAuditRecord()` rather than creating and deleting
+> sessions.
+
+### Fallback for headless mode
+
+In headless mode (no TUI), the gate falls back to the current readline
+behavior:
+
+```typescript
+// No TUI — use existing readline gates
+const phaseGate = tuiController.active
+  ? createTuiPhaseGate(client, tuiController)
+  : undefined;  // undefined → orchestrator uses default gates/human.ts
+
+await runPhaseExecutionLoop({ ..., phaseGate });
+```
+
+Passing `undefined` is equivalent to today's behavior — the orchestrator
+lazy-imports `gates/human.ts` for the default implementation. No changes to
+`gates/human.ts`.
+
+### Acceptance criteria
+
+- [ ] TUI gate responds to explicit dialog selection (continue/abort) — no SSE
+  event inference
+- [ ] Gate times out after `DEFAULT_GATE_TIMEOUT_MS` with `"abort"` resolution
+  (tested with fast timeout in tests)
+- [ ] Gate aborts immediately when `cancelController` signal fires (Ctrl-C)
+- [ ] TUI exit during gate → gate rejects → orchestrator escalates
+- [ ] Headless mode gate unchanged: uses existing readline prompt from
+  `gates/human.ts`
+- [ ] Non-interactive stdin gate auto-aborts as today
+
+---
+
+## TUI Session Switching
+
+After each `session.create()`, 5x-cli calls `client.tui.selectSession()` to
+focus the TUI on the new session. The user sees the active session's
+conversation stream as the agent works.
+
+```typescript
+const session = await client.session.create({ title, directory: workdir });
+if (tuiActive) {
+  try {
+    await client.tui.selectSession({
+      sessionID: session.data.id,
+      directory: workdir,  // always pass workdir for worktree-correctness
+    });
+  } catch { /* ignore — TUI may have disconnected */ }
+}
+```
+
+**Worktree note:** `client.tui.selectSession()` supports an optional
+`directory` parameter. We always pass `workdir` so that multi-workdir runs
+(where `workdir` is the worktree path, not the primary checkout) focus the TUI
+on the correct directory context. This is particularly important for worktree
+runs where `workdir !== projectRoot`.
 
 ---
 
@@ -171,65 +507,6 @@ management.
 
 ---
 
-## TUI Session Switching
-
-After each `session.create()`, 5x-cli calls `client.tui.selectSession()` to
-focus the TUI on the new session. The user sees the active session's
-conversation stream as the agent works.
-
-```typescript
-const session = await client.session.create({ title, directory: workdir });
-if (tuiActive) {
-  // Best-effort — ignore if TUI has disconnected
-  try {
-    await client.tui.selectSession({ sessionID: session.data.id });
-  } catch { /* ignore */ }
-}
-```
-
----
-
-## Human Gates (Non-auto Mode)
-
-In `--auto` mode, phases continue automatically after the reviewer approves.
-In interactive (non-auto) mode, 5x-cli currently pauses at a readline prompt
-between phases.
-
-With the TUI owning the terminal, readline is not available. The new mechanism:
-
-1. **Phase completes:** 5x-cli shows a toast:
-   ```
-   client.tui.showToast({
-     title: "Phase 3 complete",
-     message: "Type 'continue' to start Phase 4, or 'abort' to stop.",
-     variant: "info",
-   })
-   ```
-
-2. **Pre-fill prompt:** 5x-cli injects a hint into the TUI input:
-   ```
-   client.tui.appendPrompt("continue")
-   ```
-   The user sees the word "continue" pre-filled. They can edit it to "abort"
-   or just press Enter.
-
-3. **Monitor for gate response:** 5x-cli subscribes to SSE events and waits
-   for the next `session.idle` on the gate session. The user's input is the
-   first message in a lightweight "gate" session. We parse the assistant
-   reply (or the user message text directly) for "continue" / "abort" /
-   "stop".
-
-4. **Gate session:** A minimal session titled `"Gate — after Phase 3"` is
-   created. The first user message is parsed locally (no LLM call needed for
-   simple continue/abort decisions). If the user types something other than
-   a recognized command, we show another toast asking them to type "continue"
-   or "abort".
-
-This mechanism is refined during Phase 3 implementation. The fallback for
-headless mode (no TUI) remains the existing readline prompt, unchanged.
-
----
-
 ## SSE Log Streaming
 
 `writeEventsToLog()` currently serves two purposes:
@@ -248,17 +525,29 @@ This requires no changes to `writeEventsToLog()` — it already accepts a
 ## Adapter Changes
 
 `OpenCodeAdapter.create()` currently hardcodes `createOpencode({ timeout: 15_000 })`.
-The new version accepts a `port` option to support random port selection.
+The new version uses `port: 0` and exposes `serverUrl`.
 
 ```typescript
-// factory.ts
-const port = await findFreePort();
-const adapter = await OpenCodeAdapter.create({ model: config.model, port });
-const serverUrl = adapter.serverUrl; // NEW: expose for TUI attach
+// opencode.ts
+static async create(opts: { model?: string } = {}): Promise<OpenCodeAdapter> {
+  const { client, server } = await createOpencode({
+    hostname: "127.0.0.1",
+    port: 0,            // OS assigns ephemeral port — no TOCTOU race
+    timeout: 15_000,
+  });
+  return new OpenCodeAdapter(client, server, opts.model);
+}
+
+get serverUrl(): string {
+  return this.server.url;
+}
 ```
 
-`OpenCodeAdapter` gains a `serverUrl` property (already available as
-`this.server.url` internally — just needs to be exposed).
+The `port` option from the previous plan iteration is removed — `port: 0` is
+always used (there is no use case for passing a specific port in v1). The
+`findFreePort()` utility from Phase 1 is not needed.
+
+`AgentAdapter` interface gains `readonly serverUrl: string`.
 
 ---
 
@@ -268,62 +557,98 @@ const serverUrl = adapter.serverUrl; // NEW: expose for TUI attach
 
 **Goal:** Eliminate hardcoded port 4096. Expose server URL for TUI attach.
 
-- [ ] Implement `findFreePort()` utility in `src/utils/port.ts`
-  - Tries random ports in range 14000–15000 until bind succeeds
-  - Uses `net.createServer().listen(port)` probe
-- [ ] Update `OpenCodeAdapter.create()` to accept `port?: number`
-  - Passes port to `createOpencode({ port, timeout: 15_000 })`
-  - Defaults to random port when not specified
-- [ ] Expose `serverUrl: string` on `OpenCodeAdapter` (from `this.server.url`)
-- [ ] Update `AgentAdapter` interface to include `readonly serverUrl: string`
-- [ ] Update `createAndVerifyAdapter()` to accept `port?: number` and thread through
-- [ ] Tests: `findFreePort()` returns a usable port; adapter exposes serverUrl
+**Change from v1.1:** Use `port: 0` instead of `findFreePort()`. No port
+utility file needed.
+
+- [ ] Update `OpenCodeAdapter.create()` to pass `{ hostname: "127.0.0.1", port: 0, timeout: 15_000 }` to `createOpencode()`
+- [ ] Expose `get serverUrl(): string` on `OpenCodeAdapter` (returns `this.server.url`)
+- [ ] Add `readonly serverUrl: string` to `AgentAdapter` interface in `src/agents/types.ts`
+- [ ] Tests: adapter exposes `serverUrl` with expected hostname/port format; port is not hardcoded 4096
 
 **Completion gate:** Tests pass. No hardcoded 4096 references in adapter code.
 
 ### Phase 2: TUI spawn + lifecycle
 
-**Goal:** When running in a TTY, spawn `opencode attach` and manage its lifecycle.
+**Goal:** When running in an interactive TTY (both stdin and stdout), spawn
+`opencode attach` and manage its lifecycle.
 
 - [ ] Implement `TuiController` in `src/tui/controller.ts`:
   ```typescript
   interface TuiController {
     active: boolean;
-    selectSession(sessionID: string): Promise<void>;
+    selectSession(sessionID: string, directory?: string): Promise<void>;
     showToast(message: string, variant: "info" | "success" | "error"): Promise<void>;
-    appendPrompt(text: string): Promise<void>;
+    onExit(handler: () => void): void;
     kill(): void;
   }
   ```
-  - `createTuiController(serverUrl, workdir, client)` — spawns `opencode attach`,
-    returns controller; or returns a no-op controller if TUI mode is disabled
+  - `createTuiController(opts: { serverUrl, workdir, client, enabled })` — spawns
+    `opencode attach` if `enabled`, returns no-op controller otherwise
 - [ ] Add `--no-tui` flag to `run`, `plan-review`, `plan` commands
-- [ ] TTY auto-detection: `process.stdout.isTTY && !args["no-tui"]`
+- [ ] TTY auto-detection: `process.stdin.isTTY && process.stdout.isTTY && !args["no-tui"] && !args.quiet`
 - [ ] Spawn `opencode attach <serverUrl> --dir <workdir>` via `Bun.spawn` with `stdio: "inherit"`
-- [ ] Handle TUI exit: monitor child process; if TUI exits during orchestration,
-  log a warning and continue headless
-- [ ] `TuiController.kill()` called from `finally` blocks after `adapter.close()`
+- [ ] Print `"Starting OpenCode..."` to **stderr** before spawn (pre-attach window)
+- [ ] Handle TUI exit: `tuiController.onExit()` callback sets `tuiController.active = false`;
+  subsequent `tui.*` calls become no-ops; orchestration continues headless
 - [ ] No-op `TuiController` (when headless) has identical interface — callers
   don't need `if (tui)` guards everywhere
-- [ ] Tests: `createTuiController` with TTY=false returns no-op controller;
-  no-op controller's methods resolve without side effects
+- [ ] Tests:
+  - `createTuiController({ enabled: false })` returns no-op controller
+  - No-op controller's methods resolve without side effects
+  - No-op controller `active === false`
 
 **Completion gate:** `5x run --no-tui plan.md` behaves identically to today.
 `5x run plan.md` in a TTY spawns the TUI via `opencode attach` and keeps it
-alive. Manual verification confirmed `opencode attach` works against a
-programmatically-started server.
+alive.
 
-### Phase 3: TUI session integration
+### Phase 3: Permission policy + signal handling
 
-**Goal:** TUI tracks the active session; phase transitions are visible.
+**Goal:** Wire permission policy; update signal handling to support cooperative
+cancellation in TUI mode.
+
+- [ ] Implement `createPermissionHandler(client, policy)` in `src/tui/permissions.ts`:
+  - `"auto-approve-all"`: subscribe to permission requests; reply "approve" immediately
+  - `"tui-native"`: no-op handler (TUI handles it natively)
+  - `"workdir-scoped"`: subscribe; auto-approve paths under workdir; escalate others
+- [ ] Resolve policy in command layer (run.ts, plan-review.ts, plan.ts):
+  ```typescript
+  const policy: PermissionPolicy =
+    args.auto || !process.stdin.isTTY ? { mode: "auto-approve-all" } :
+    isTuiMode ? { mode: "tui-native" } :
+    { mode: "workdir-scoped", workdir };
+  ```
+- [ ] Update `registerAdapterShutdown()` in `src/agents/factory.ts` to accept
+  optional `{ tuiMode, cancelController }`:
+  - TUI mode: registers SIGINT/SIGTERM handlers that call `cancelController.abort()`
+    + set `process.exitCode` (no `process.exit()`)
+  - Headless mode: existing `process.exit()` behavior (unchanged)
+- [ ] Create a shared `cancelController = new AbortController()` in command handlers;
+  pass `cancelController.signal` to orchestrator options (as `signal?: AbortSignal`)
+- [ ] Wire TUI exit → `cancelController.abort()` + `process.exitCode = 1` in the
+  `tuiController.onExit()` callback (for Ctrl-C via TUI)
+- [ ] Tests:
+  - `"auto-approve-all"` handler approves a mock permission request immediately
+  - Permission handler test that would hang without policy (mock request + assert
+    resolved within 1s)
+  - TUI-mode signal handler sets `cancelController.aborted === true` (no `process.exit()`)
+  - Headless-mode signal handler: existing behavior preserved
+
+**Completion gate:** A `--auto` run in non-TTY mode does not hang on permission
+prompts. TUI-mode Ctrl-C cancels the orchestrator and runs `finally` cleanup.
+
+### Phase 4: TUI session integration
+
+**Goal:** TUI tracks the active session; phase transitions are visible; no
+stdout writes from 5x-cli after TUI attach.
 
 - [ ] Update `OpenCodeAdapter.invokeForStatus()` and `invokeForVerdict()` to
   accept a `sessionTitle?: string` option (forwarded to `session.create()`)
 - [ ] Update all `InvokeOptions` call sites in the orchestrator to pass
   descriptive titles (see Session Titles table above)
-- [ ] After each `session.create()`, call `tui.selectSession()` via
-  `TuiController`
-- [ ] Add `tui.showToast()` calls at key orchestrator events:
+- [ ] After each `session.create()`, call `tui.selectSession(sessionId, workdir)`
+  via `TuiController`
+- [ ] Add `tui.showToast()` calls at key orchestrator events (replacing any
+  `console.log()` calls that would interleave with TUI):
   - Phase start: `"Starting Phase N — <title>"`
   - Phase complete (auto mode): `"Phase N complete — starting review"`
   - Review approved: `"Phase N approved — continuing"`
@@ -331,48 +656,57 @@ programmatically-started server.
   - Error: `"Phase N failed — <reason>"`
 - [ ] Pass `quiet: tuiController.active` to `invokeForStatus`/`invokeForVerdict`
   (suppresses SSE stdout formatting when TUI is active)
-- [ ] Tests: orchestrator passes correct titles; TuiController methods called
-  at expected points (mock TuiController with recorded calls)
+- [ ] Verify no `console.log()` / stdout writes from 5x-cli after TUI attach in
+  TUI mode (stdout-clean guarantee)
+- [ ] Tests:
+  - Orchestrator passes correct titles to adapter
+  - `TuiController.selectSession()` called after each `session.create()`
+  - `TuiController.showToast()` called at phase boundaries (mock with recorded calls)
+  - No stdout output from orchestrator when `tuiController.active === true`
+    (integration-ish test: no-op controller + forced quiet, verify no stdout writes)
 
 **Completion gate:** Running `5x run` in a TTY shows session switches and
-toast notifications at phase boundaries.
+toast notifications at phase boundaries without any stdout corruption.
 
-### Phase 4: Human gates via TUI
+### Phase 5: Human gates via TUI
 
-**Goal:** Non-auto mode human gates work through the TUI prompt.
+**Goal:** Non-auto mode human gates work through the TUI's native dialog API.
 
-- [ ] Design and implement gate session mechanism in `src/tui/gate.ts`:
-  - Create a gate session: `client.session.create({ title: "Gate — after Phase N" })`
-  - `client.tui.selectSession()` to focus it
-  - Show toast with instructions
-  - `client.tui.appendPrompt("continue")`
-  - Subscribe to SSE `session.idle` events on the gate session
-  - First message content is inspected for "continue" / "abort" / "stop"
-  - Simple string matching — no LLM call for gate decisions
-- [ ] Gate session is deleted after gate resolves:
-  `client.session.delete({ sessionID: gateSessionId })`
-- [ ] Fallback: in headless mode, gate falls back to current readline behavior
-  (no change to existing code path)
-- [ ] Tests: gate resolves `continue` on matching input; resolves `abort` on
-  abort input; gate session is cleaned up
+- [ ] Implement TUI gate factories in `src/tui/gates.ts`:
+  - `createTuiPhaseGate(client, tui, opts)` — returns injectable `phaseGate` function
+  - `createTuiEscalationGate(client, tui, opts)` — returns injectable `escalationGate`
+  - `createTuiResumeGate(client, tui, opts)` — returns injectable `resumeGate`
+  - All use `client.tui.showDialog()` or `client.tui.control.*` for deterministic
+    user input — no SSE event inference
+  - All include timeout semantics (`timeoutMs`, default 30 min → resolves `"abort"`)
+  - All respect `cancelController.signal` for prompt abort on Ctrl-C
+- [ ] Wire in `commands/run.ts`: if TUI active, pass TUI gate factories to
+  `runPhaseExecutionLoop` options; else pass `undefined` (uses `gates/human.ts`)
+- [ ] Wire in `commands/plan-review.ts`: same pattern with `humanGate` override
+- [ ] Fallback: in headless mode, all gate options are `undefined` →
+  orchestrator uses default readline behavior (no changes to `gates/human.ts`)
+- [ ] Tests:
+  - Gate resolves `"continue"` on dialog confirm selection
+  - Gate resolves `"abort"` on dialog cancel selection
+  - Gate resolves `"abort"` after timeout (fast timeout in test)
+  - Gate rejects when `cancelController.signal` is aborted
+  - Gate rejects when `tuiController.active` becomes false mid-wait
 
 **Completion gate:** `5x run plan.md` (without `--auto`) in a TTY pauses at
-phase boundaries and waits for user input through the TUI.
+phase boundaries with a native TUI dialog rather than readline.
 
-### Phase 5: Edge cases + polish
+### Phase 6: Edge cases + polish
 
-- [ ] TUI cold-start delay: show a brief `"Starting OpenCode..."` spinner on
-  stderr before the TUI takes over (in the gap between server start and
-  TUI attach)
 - [ ] Handle `opencode attach` not found (opencode not on PATH): fall back to
-  headless with a warning, not a fatal error
-- [ ] Handle TUI crash / early exit gracefully (continue headless)
-- [ ] Ctrl-C flow: TUI exits → 5x-cli detects → sets `process.exitCode = 1`
-  → `finally` cleans up server and lock
+  headless with a warning on stderr, not a fatal error
+- [ ] Handle TUI crash / early exit gracefully (continue headless; `tuiController.active = false`)
 - [ ] `plan` command: TUI lifecycle is shorter (single invocation); ensure
   TUI exits cleanly when plan generation completes
-- [ ] `--quiet` in TUI mode: warn that `--quiet` is ignored when TUI is active
-- [ ] Update `5x init` output to mention TUI mode
+- [ ] `--quiet` in TUI mode: document that `--quiet` always implies `--no-tui`
+  (no warning needed — it is consistent by definition)
+- [ ] Update `5x init` output to mention TUI mode and `--no-tui`
+- [ ] TUI cold-start delay: print `"Starting OpenCode..."` to stderr before
+  TUI attach (already in Phase 2 — verify it works end-to-end)
 
 **Completion gate:** All integration tests pass. Manual test on `player_desk`
 repo shows clean TUI experience across a full multi-phase run.
@@ -383,39 +717,49 @@ repo shows clean TUI experience across a full multi-phase run.
 
 | File | Phase | Change summary |
 |---|---|---|
-| `src/utils/port.ts` | 1 | New: `findFreePort()` utility |
-| `src/agents/opencode.ts` | 1 | Accept `port?` in `create()`; expose `serverUrl` |
-| `src/agents/types.ts` | 1 | Add `serverUrl` to `AgentAdapter` interface |
-| `src/agents/factory.ts` | 1 | Thread `port?` through `createAndVerifyAdapter()` |
+| `src/agents/opencode.ts` | 1 | Use `port: 0`; expose `get serverUrl()` |
+| `src/agents/types.ts` | 1 | Add `readonly serverUrl: string` to `AgentAdapter` interface |
 | `src/tui/controller.ts` | 2 | New: `TuiController` interface + `createTuiController()` |
-| `src/commands/run.ts` | 2, 3, 4 | Add `--no-tui`; spawn TUI; pass controller to orchestrator |
-| `src/commands/plan-review.ts` | 2, 3, 4 | Same |
-| `src/commands/plan.ts` | 2, 3 | Same (simpler — no human gates) |
-| `src/orchestrator/phase-execution-loop.ts` | 3 | Pass TUI controller; session titles; toasts |
-| `src/orchestrator/plan-review-loop.ts` | 3 | Same |
-| `src/agents/opencode.ts` | 3 | Accept `sessionTitle` in invoke options; pass `quiet` through |
-| `src/agents/types.ts` | 3 | Add `sessionTitle?` to `InvokeOptions` |
-| `src/tui/gate.ts` | 4 | New: gate session mechanism |
-| `src/orchestrator/phase-execution-loop.ts` | 4 | Wire human gate for non-auto mode |
-| `test/utils/port.test.ts` | 1 | Port utility tests |
+| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`; spawn TUI; permission policy; pass gates |
+| `src/commands/plan-review.ts` | 2, 3, 4, 5 | Same |
+| `src/commands/plan.ts` | 2, 3, 4 | Same (simpler — no human gates) |
+| `src/agents/factory.ts` | 3 | `registerAdapterShutdown()` accepts TUI mode option |
+| `src/tui/permissions.ts` | 3 | New: permission policy + handler |
+| `src/orchestrator/phase-execution-loop.ts` | 4 | TUI controller; session titles; toasts; signal option |
+| `src/orchestrator/plan-review-loop.ts` | 4 | Same |
+| `src/agents/opencode.ts` | 4 | Accept `sessionTitle` in invoke options; pass `quiet` through |
+| `src/agents/types.ts` | 4 | Add `sessionTitle?` to `InvokeOptions` |
+| `src/tui/gates.ts` | 5 | New: TUI gate implementations (dialog-based, not SSE-based) |
+| `src/orchestrator/phase-execution-loop.ts` | 5 | Wire TUI gates for non-auto mode |
+| `test/agents/opencode.test.ts` | 1 | serverUrl exposure test |
 | `test/tui/controller.test.ts` | 2 | TUI controller tests (no-op path) |
-| `test/tui/gate.test.ts` | 4 | Gate mechanism tests (mock SSE) |
+| `test/tui/permissions.test.ts` | 3 | Permission policy tests (hang-prevention test) |
+| `test/tui/gates.test.ts` | 5 | Gate mechanism tests (timeout, cancel, dialog response) |
+
+**Removed from v1.1 file map:**
+- `src/utils/port.ts` — not needed; `port: 0` replaces `findFreePort()`
+- `test/utils/port.test.ts` — not needed
+- `src/tui/gate.ts` — replaced by `src/tui/gates.ts` (plural; contains all gate types)
 
 ---
 
 ## Open Questions
 
-1. **Permission prompts in TUI mode:** When the agent requests a tool
-   permission, the TUI shows a native dialog. In headless mode, 5x-cli would
-   need to auto-reply via `client.permission.reply()`. Clarify the expected
-   permission model for `5x run` (likely: auto-approve file read/write within
-   workdir, require human for bash exec).
+1. **`client.tui.showDialog()` API shape:** The exact API for a blocking
+   TUI dialog (`client.tui.showDialog()` or `client.tui.control.*`) needs
+   verification against the current OpenCode SDK before Phase 5 implementation.
+   If no native dialog API exists, the fallback is: create a short-lived
+   "gate session" (not deleted after resolution, retained for audit), subscribe
+   to the session's first user message for the gate response, and time out after
+   `DEFAULT_GATE_TIMEOUT_MS`. The session is retained (not deleted) as an audit
+   trail. This fallback preserves the deterministic contract: the gate resolves
+   on a specific event (first user message), not on generic `session.idle`
+   inference.
 
-3. **Gate UX iteration:** The toast + pre-fill mechanism for human gates is
-   a first design. It may need adjustment after hands-on testing. The
-   alternative (readline in a side channel) is preserved as a fallback.
+2. **Gate UX iteration:** The toast + dialog mechanism for human gates is a
+   first design. It may need adjustment after hands-on testing.
 
-4. **Multi-monitor setups / split-pane:** Users often run `5x` in one pane
+3. **Multi-monitor setups / split-pane:** Users often run `5x` in one pane
    and have another terminal open. Consider whether `opencode attach` should
    be optional even in TTY mode — some users may prefer to attach manually.
    `--no-tui` covers this, but `--tui-url` (print the URL and let the user
@@ -427,7 +771,13 @@ repo shows clean TUI experience across a full multi-phase run.
 
 - `003-impl-5x-cli-opencode.md` — governs the orchestration, adapter, DB, and
   structured output pipeline. That document remains authoritative for those
-  concerns. This document is additive.
+  concerns. This document is additive. Cross-references:
+  - Phase 3 of 003 (`opencode.ts`): updated by Phase 1 of this document
+    (`port: 0`, `serverUrl` exposure)
+  - Phase 5 of 003 (`factory.ts`, `registerAdapterShutdown`): updated by
+    Phase 3 of this document (TUI-mode cooperative cancellation)
+  - `AgentAdapter` interface (Phase 1.4 of 003, `types.ts`): gains
+    `readonly serverUrl: string` in Phase 1 of this document
 - `001-impl-5x-cli.md` — superseded baseline. Not updated.
 - `002-impl-realtime-agent-logs.md` — log file strategy is unchanged. SSE
   event log writing continues as-is; only the stdout rendering path changes.
