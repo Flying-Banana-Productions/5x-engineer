@@ -111,3 +111,30 @@ Recommendation: default to `continue` when session ID is absent unless there is 
 
 - **Phase 3 completion:** ⚠️ — core adapter + tests landed, but SSE shutdown/cancellation and directory semantics need correction before the adapter is safe to wire into orchestrators.
 - **Ready for Phase 4:** ⚠️ — proceed after P0 fixes; Phase 4 will amplify these issues (hangs/cwd mistakes become end-to-end failures).
+
+---
+
+## Addendum (2026-02-19) — Phase 3 Execution Review Closure
+
+**Reviewed:** `1716b3d705`
+
+**Local verification:** `bun test` (355 pass, 1 skip)
+
+### What's addressed (✅)
+
+- **P0.1 SSE abortability:** `5x-cli/src/agents/opencode.ts` passes the abort signal into `client.event.subscribe(..., { signal })`; adds regression test proving no hang with an idle/never-ending SSE stream.
+- **P0.2 external cancellation:** `InvokeOptions.signal` is threaded via `AbortSignal.any()` into both `session.prompt(..., { signal })` and SSE streaming; timeout vs external cancel distinguished; session aborted on both.
+- **P0.3 workdir propagation:** `InvokeOptions.workdir` added in `5x-cli/src/agents/types.ts` and passed as `directory` to `session.create()` and `session.prompt()`; tests cover present/absent behavior.
+- **P1.1 cost correctness:** `costUsd` uses `info.cost ?? undefined` so `0` is preserved.
+- **P1.2 log isolation:** events without a session ID are skipped, preventing cross-session/global event pollution.
+- **P2 operability/perf/paper cuts:** quiet-mode suppresses warning spam; `safeInputSummary()` avoids `JSON.stringify` on large top-level string fields; plan header bumped to v1.2 with explicit correction notes.
+
+### Remaining concerns / further required changes
+
+- None required for Phase 3 scope.
+- **Phase 4 reminder:** when wiring the adapter into orchestrators, ensure every invocation sets `workdir` deterministically (especially for git worktree runs) and threads a cancellation `signal` from command-level Ctrl-C handling.
+
+### Updated readiness
+
+- **Phase 3 completion:** ✅ — adapter cancellation/log/workdir semantics are now correct and regression-tested.
+- **Ready for Phase 4:** ✅
