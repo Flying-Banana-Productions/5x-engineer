@@ -71,6 +71,9 @@ export type InvokeResult = InvokeStatus | InvokeVerdict;
 // ---------------------------------------------------------------------------
 
 export interface AgentAdapter {
+	/** The URL of the running agent server (e.g. "http://127.0.0.1:51234"). */
+	readonly serverUrl: string;
+
 	/** Invoke agent and return structured status. Throws on hard failure. */
 	invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus>;
 

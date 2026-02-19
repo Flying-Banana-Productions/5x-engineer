@@ -88,9 +88,9 @@ function createMockClient(
 	};
 }
 
-function createMockServer() {
+function createMockServer(url = "http://127.0.0.1:51234") {
 	return {
-		url: "http://127.0.0.1:4096",
+		url,
 		close: mock(() => {}),
 	};
 }
@@ -215,7 +215,7 @@ describe("OpenCodeAdapter.close", () => {
 
 	test("does not throw if server.close() fails", async () => {
 		const server = {
-			url: "http://127.0.0.1:4096",
+			url: "http://127.0.0.1:51234",
 			close: () => {
 				throw new Error("already closed");
 			},
@@ -1111,5 +1111,43 @@ describe("adapter creates managed (local) adapter", () => {
 		);
 		// Adapter was created with a server — it's managed
 		expect(adapter).toBeDefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 (004): serverUrl exposure + port randomization
+// ---------------------------------------------------------------------------
+
+describe("serverUrl exposure (004 Phase 1)", () => {
+	test("exposes serverUrl matching server.url", () => {
+		const { adapter } = createTestAdapter();
+		expect(adapter.serverUrl).toBe("http://127.0.0.1:51234");
+	});
+
+	test("serverUrl reflects the actual server URL", () => {
+		const client = createMockClient();
+		const server = createMockServer("http://127.0.0.1:9999");
+		const adapter = new OpenCodeAdapter(
+			client as unknown as ConstructorParameters<typeof OpenCodeAdapter>[0],
+			server,
+		);
+		expect(adapter.serverUrl).toBe("http://127.0.0.1:9999");
+	});
+
+	test("serverUrl is not hardcoded to port 4096", () => {
+		const { adapter } = createTestAdapter();
+		const url = new URL(adapter.serverUrl);
+		// The mock uses 51234 (simulating an ephemeral port), not 4096
+		expect(url.port).not.toBe("4096");
+		expect(url.hostname).toBe("127.0.0.1");
+		expect(url.protocol).toBe("http:");
+	});
+
+	test("serverUrl has expected hostname/port format", () => {
+		const { adapter } = createTestAdapter();
+		const url = new URL(adapter.serverUrl);
+		expect(url.hostname).toBe("127.0.0.1");
+		expect(Number(url.port)).toBeGreaterThan(0);
+		expect(adapter.serverUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 	});
 });

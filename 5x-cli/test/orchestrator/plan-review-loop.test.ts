@@ -119,6 +119,7 @@ type MockResponse =
 function createMockAdapter(responses: MockResponse[]): AgentAdapter {
 	let idx = 0;
 	return {
+		serverUrl: "http://127.0.0.1:51234",
 		async invokeForStatus(_opts: InvokeOptions): Promise<InvokeStatus> {
 			const r = responses[idx++];
 			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);

@@ -259,7 +259,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 	 */
 	static async create(opts: { model?: string } = {}): Promise<OpenCodeAdapter> {
 		try {
-			const { client, server } = await createOpencode({ timeout: 15_000 });
+			const { client, server } = await createOpencode({
+				hostname: "127.0.0.1",
+				port: 0,
+				timeout: 15_000,
+			});
 			return new OpenCodeAdapter(client, server, opts.model);
 		} catch (err) {
 			throw new Error(
@@ -267,6 +271,14 @@ export class OpenCodeAdapter implements AgentAdapter {
 					`Details: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
+	}
+
+	/**
+	 * The URL of the running OpenCode server (e.g. "http://127.0.0.1:51234").
+	 * Available after construction — the server is already listening.
+	 */
+	get serverUrl(): string {
+		return this.server.url;
 	}
 
 	/**

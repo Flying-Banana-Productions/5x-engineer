@@ -156,6 +156,7 @@ function createMockAdapter(
 	const adapter = {
 		callCount: 0,
 		lastOpts: undefined as InvokeOptions | undefined,
+		serverUrl: "http://127.0.0.1:51234",
 		async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
 			adapter.callCount++;
 			adapter.lastOpts = opts;

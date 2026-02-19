@@ -620,10 +620,10 @@ always used (there is no use case for passing a specific port in v1). The
 **Change from v1.1:** Use `port: 0` instead of `findFreePort()`. No port
 utility file needed.
 
-- [ ] Update `OpenCodeAdapter.create()` to pass `{ hostname: "127.0.0.1", port: 0, timeout: 15_000 }` to `createOpencode()`
-- [ ] Expose `get serverUrl(): string` on `OpenCodeAdapter` (returns `this.server.url`)
-- [ ] Add `readonly serverUrl: string` to `AgentAdapter` interface in `src/agents/types.ts`
-- [ ] Tests: adapter exposes `serverUrl` with expected hostname/port format; port is not hardcoded 4096
+- [x] Update `OpenCodeAdapter.create()` to pass `{ hostname: "127.0.0.1", port: 0, timeout: 15_000 }` to `createOpencode()`
+- [x] Expose `get serverUrl(): string` on `OpenCodeAdapter` (returns `this.server.url`)
+- [x] Add `readonly serverUrl: string` to `AgentAdapter` interface in `src/agents/types.ts`
+- [x] Tests: adapter exposes `serverUrl` with expected hostname/port format; port is not hardcoded 4096
 
 **Completion gate:** Tests pass. No hardcoded 4096 references in adapter code.
 
