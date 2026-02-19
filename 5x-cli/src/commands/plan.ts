@@ -14,9 +14,9 @@ import {
 } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
 import { parsePlan } from "../parsers/plan.js";
-import { parseStatusBlock } from "../parsers/signals.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
+import { parseStatusBlock } from "../utils/legacy-signals.js";
 
 /**
  * Compute the next available sequence number from existing plan files.
@@ -231,17 +231,17 @@ export default defineCommand({
 		upsertAgentResult(db, {
 			id: agentResultId,
 			run_id: runId,
-			role: "author",
-			template_name: template.name,
 			phase: "-1",
 			iteration: 0,
-			exit_code: result.exitCode,
+			role: "author",
+			template: template.name,
+			result_type: "status",
+			result_json: status ? JSON.stringify(status) : "null",
 			duration_ms: result.duration,
+			model: config.author.model ?? null,
 			tokens_in: result.tokens?.input ?? null,
 			tokens_out: result.tokens?.output ?? null,
 			cost_usd: result.cost ?? null,
-			signal_type: status ? "status" : null,
-			signal_data: status ? JSON.stringify(status) : null,
 		});
 
 		// Handle non-zero exit code

@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _resetForTest, closeDb, getDb } from "../../src/db/connection.js";
-import { getSchemaVersion, runMigrations } from "../../src/db/schema.js";
+import {
+	_migrations,
+	getSchemaVersion,
+	runMigrations,
+} from "../../src/db/schema.js";
 
 function makeTmp(): string {
 	return mkdtempSync(join(tmpdir(), "5x-db-schema-"));
@@ -20,8 +24,7 @@ describe("runMigrations", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			const version = getSchemaVersion(db);
-			expect(version).toBe(1);
+			expect(getSchemaVersion(db)).toBe(2);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -32,9 +35,8 @@ describe("runMigrations", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			runMigrations(db); // second run should be no-op
-			const version = getSchemaVersion(db);
-			expect(version).toBe(1);
+			runMigrations(db);
+			expect(getSchemaVersion(db)).toBe(2);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -64,30 +66,42 @@ describe("runMigrations", () => {
 		}
 	});
 
-	test("agent_results has composite unique constraint", () => {
+	test("agent_results uses corrected composite unique key", () => {
 		const tmp = makeTmp();
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			// Insert a run first (FK requirement)
 			db.exec(
 				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/test.md', 'run')",
 			);
 
-			// Insert an agent result
 			db.exec(
-				`INSERT INTO agent_results (id, run_id, role, template_name, phase, iteration, exit_code, duration_ms)
-         VALUES ('id1', 'run1', 'author', 'tmpl', 1, 0, 0, 100)`,
+				`INSERT INTO agent_results (
+           id, run_id, phase, iteration, role, template, result_type, result_json, duration_ms
+         ) VALUES (
+           'id1', 'run1', '1', 0, 'author', 'author-next-phase', 'status', '{"result":"complete"}', 100
+         )`,
 			);
 
-			// Same step identity with different id should conflict
 			expect(() => {
 				db.exec(
-					`INSERT INTO agent_results (id, run_id, role, template_name, phase, iteration, exit_code, duration_ms)
-           VALUES ('id2', 'run1', 'author', 'tmpl', 1, 0, 0, 200)`,
+					`INSERT INTO agent_results (
+             id, run_id, phase, iteration, role, template, result_type, result_json, duration_ms
+           ) VALUES (
+             'id2', 'run1', '1', 0, 'author', 'author-next-phase', 'status', '{"result":"failed"}', 100
+           )`,
 				);
 			}).toThrow();
+
+			// Same run/phase/iteration/role/template with different result_type is allowed.
+			db.exec(
+				`INSERT INTO agent_results (
+           id, run_id, phase, iteration, role, template, result_type, result_json, duration_ms
+         ) VALUES (
+           'id3', 'run1', '1', 0, 'author', 'author-next-phase', 'verdict', '{"readiness":"ready","items":[]}', 100
+         )`,
+			);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -105,15 +119,59 @@ describe("runMigrations", () => {
 
 			db.exec(
 				`INSERT INTO quality_results (id, run_id, phase, attempt, passed, results, duration_ms)
-         VALUES ('qr1', 'run1', 1, 0, 1, '[]', 100)`,
+         VALUES ('qr1', 'run1', '1', 0, 1, '[]', 100)`,
 			);
 
 			expect(() => {
 				db.exec(
 					`INSERT INTO quality_results (id, run_id, phase, attempt, passed, results, duration_ms)
-           VALUES ('qr2', 'run1', 1, 0, 0, '[]', 200)`,
+           VALUES ('qr2', 'run1', '1', 0, 0, '[]', 200)`,
 				);
 			}).toThrow();
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("DB ahead of CLI throws clear schema mismatch error", () => {
+		const tmp = makeTmp();
+		try {
+			const db = getDb(tmp);
+			db.exec(`
+        CREATE TABLE schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO schema_version (version) VALUES (999);
+      `);
+
+			expect(() => runMigrations(db)).toThrow(
+				"DB schema version v999 is newer than this CLI's maximum known version v2",
+			);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("DB behind CLI applies pending migrations without error", () => {
+		const tmp = makeTmp();
+		try {
+			const db = getDb(tmp);
+			const migration1 = _migrations.find((m) => m.version === 1);
+			if (!migration1) throw new Error("missing migration 1");
+
+			migration1.up(db);
+			db.exec("INSERT INTO schema_version (version) VALUES (1)");
+			expect(getSchemaVersion(db)).toBe(1);
+
+			runMigrations(db);
+			expect(getSchemaVersion(db)).toBe(2);
+
+			const columns = db
+				.query("PRAGMA table_info(agent_results)")
+				.all() as Array<{ name: string }>;
+			expect(columns.map((c) => c.name)).toContain("result_json");
+			expect(columns.map((c) => c.name)).toContain("result_type");
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -125,8 +183,7 @@ describe("getSchemaVersion", () => {
 		const tmp = makeTmp();
 		try {
 			const db = getDb(tmp);
-			const version = getSchemaVersion(db);
-			expect(version).toBe(0);
+			expect(getSchemaVersion(db)).toBe(0);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

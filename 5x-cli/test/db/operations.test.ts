@@ -36,7 +36,7 @@ function unwrapDefined<T>(value: T | undefined): T {
 }
 
 import { runMigrations } from "../../src/db/schema.js";
-import type { VerdictItem } from "../../src/parsers/signals.js";
+import type { VerdictItem } from "../../src/protocol.js";
 
 let tmp: string;
 let db: Database;
@@ -205,24 +205,23 @@ describe("agent results", () => {
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "author",
-			template_name: "author-next-phase",
 			phase: "1",
 			iteration: 0,
-			exit_code: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: JSON.stringify({ result: "complete" }),
 			duration_ms: 5000,
 			tokens_in: 1000,
 			tokens_out: 500,
 			cost_usd: 0.05,
-			signal_type: "status",
-			signal_data: JSON.stringify({ result: "completed", phase: 1 }),
 		});
 
 		const results = getAgentResults(db, "run1", "1");
 		expect(results).toHaveLength(1);
 		const r0 = unwrapDefined(results[0]);
 		expect(r0.role).toBe("author");
-		expect(r0.exit_code).toBe(0);
+		expect(r0.result_type).toBe("status");
 	});
 
 	test("upsert on conflict replaces id and data", () => {
@@ -232,34 +231,32 @@ describe("agent results", () => {
 		upsertAgentResult(db, {
 			id: "old-id",
 			run_id: "run1",
-			role: "author",
-			template_name: "author-next-phase",
 			phase: "1",
 			iteration: 0,
-			exit_code: 1,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: "null",
 			duration_ms: 5000,
 			tokens_in: null,
 			tokens_out: null,
 			cost_usd: null,
-			signal_type: null,
-			signal_data: null,
 		});
 
 		// Upsert with same step identity, new id
 		upsertAgentResult(db, {
 			id: "new-id",
 			run_id: "run1",
-			role: "author",
-			template_name: "author-next-phase",
 			phase: "1",
 			iteration: 0,
-			exit_code: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: JSON.stringify({ result: "complete" }),
 			duration_ms: 8000,
 			tokens_in: 1000,
 			tokens_out: 500,
 			cost_usd: 0.05,
-			signal_type: "status",
-			signal_data: JSON.stringify({ result: "completed" }),
 		});
 
 		const results = getAgentResults(db, "run1", "1");
@@ -267,7 +264,7 @@ describe("agent results", () => {
 		// id should be updated to the new one (log file tracks latest attempt)
 		const r0 = unwrapDefined(results[0]);
 		expect(r0.id).toBe("new-id");
-		expect(r0.exit_code).toBe(0);
+		expect(r0.result_type).toBe("status");
 		expect(r0.duration_ms).toBe(8000);
 	});
 
@@ -276,17 +273,16 @@ describe("agent results", () => {
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "reviewer",
-			template_name: "reviewer-commit",
 			phase: "2",
 			iteration: 1,
-			exit_code: 0,
+			role: "reviewer",
+			template: "reviewer-commit",
+			result_type: "verdict",
+			result_json: "null",
 			duration_ms: 3000,
 			tokens_in: null,
 			tokens_out: null,
 			cost_usd: null,
-			signal_type: null,
-			signal_data: null,
 		});
 
 		expect(
@@ -300,56 +296,50 @@ describe("agent results", () => {
 		).toBe(false);
 	});
 
-	test("getLatestVerdict returns parsed signal data", () => {
+	test("getLatestVerdict returns parsed result JSON", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
 		const verdict = {
-			protocolVersion: 1 as const,
 			readiness: "ready" as const,
-			reviewPath: "/review.md",
 			items: [] as VerdictItem[],
 		};
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "reviewer",
-			template_name: "reviewer-commit",
 			phase: "1",
 			iteration: 0,
-			exit_code: 0,
+			role: "reviewer",
+			template: "reviewer-commit",
+			result_type: "verdict",
+			result_json: JSON.stringify(verdict),
 			duration_ms: 3000,
 			tokens_in: null,
 			tokens_out: null,
 			cost_usd: null,
-			signal_type: "verdict",
-			signal_data: JSON.stringify(verdict),
 		});
 
 		const result = getLatestVerdict(db, "run1", "1");
 		expect(result).toEqual(verdict);
 	});
 
-	test("getLatestStatus returns parsed signal data", () => {
+	test("getLatestStatus returns parsed result JSON", () => {
 		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
 		const status = {
-			protocolVersion: 1 as const,
-			result: "completed" as const,
-			phase: 1,
+			result: "complete" as const,
 			commit: "abc123",
 		};
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "author",
-			template_name: "author-next-phase",
 			phase: "1",
 			iteration: 0,
-			exit_code: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: JSON.stringify(status),
 			duration_ms: 5000,
 			tokens_in: null,
 			tokens_out: null,
 			cost_usd: null,
-			signal_type: "status",
-			signal_data: JSON.stringify(status),
 		});
 
 		const result = getLatestStatus(db, "run1", "1");
@@ -361,17 +351,16 @@ describe("agent results", () => {
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "reviewer",
-			template_name: "reviewer-plan",
 			phase: "-1",
 			iteration: 0,
-			exit_code: 0,
+			role: "reviewer",
+			template: "reviewer-plan",
+			result_type: "verdict",
+			result_json: "null",
 			duration_ms: 3000,
 			tokens_in: null,
 			tokens_out: null,
 			cost_usd: null,
-			signal_type: null,
-			signal_data: null,
 		});
 
 		expect(
@@ -387,17 +376,16 @@ describe("agent results", () => {
 			upsertAgentResult(db, {
 				id: `ar-${phase}-${Math.random()}`,
 				run_id: "run1",
-				role: "author",
-				template_name: "author-next-phase",
 				phase,
 				iteration: phase === "1" ? getAgentResults(db, "run1", "1").length : 0,
-				exit_code: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: "null",
 				duration_ms: 1000,
 				tokens_in: null,
 				tokens_out: null,
 				cost_usd: null,
-				signal_type: null,
-				signal_data: null,
 			});
 		}
 
@@ -488,33 +476,31 @@ describe("reporting", () => {
 		upsertAgentResult(db, {
 			id: "ar1",
 			run_id: "run1",
-			role: "author",
-			template_name: "author-next-phase",
 			phase: "1",
 			iteration: 0,
-			exit_code: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: "{}",
 			duration_ms: 5000,
 			tokens_in: 1000,
 			tokens_out: 500,
 			cost_usd: 0.05,
-			signal_type: "status",
-			signal_data: "{}",
 		});
 
 		upsertAgentResult(db, {
 			id: "ar2",
 			run_id: "run1",
-			role: "reviewer",
-			template_name: "reviewer-commit",
 			phase: "1",
 			iteration: 1,
-			exit_code: 0,
+			role: "reviewer",
+			template: "reviewer-commit",
+			result_type: "verdict",
+			result_json: "{}",
 			duration_ms: 3000,
 			tokens_in: 800,
 			tokens_out: 400,
 			cost_usd: 0.03,
-			signal_type: "verdict",
-			signal_data: "{}",
 		});
 
 		upsertQualityResult(db, {

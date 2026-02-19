@@ -878,21 +878,19 @@ describe("runPhaseExecutionLoop", () => {
 			upsertAgentResult(db, {
 				id: "ar-author-0",
 				run_id: runId,
-				role: "author",
-				template_name: "author-next-phase",
 				phase: "1",
 				iteration: 0,
-				exit_code: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				}),
 				duration_ms: 1000,
 				tokens_in: null,
 				tokens_out: null,
 				cost_usd: null,
-				signal_type: "status",
-				signal_data: JSON.stringify({
-					protocolVersion: 1,
-					result: "completed",
-					commit: "abc123",
-				}),
 			});
 
 			// Author should NOT be called for EXECUTE (it was completed).
@@ -949,41 +947,37 @@ describe("runPhaseExecutionLoop", () => {
 			upsertAgentResult(db, {
 				id: "ar-author-0",
 				run_id: runId,
-				role: "author",
-				template_name: "author-next-phase",
 				phase: "1",
 				iteration: 0,
-				exit_code: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				}),
 				duration_ms: 1000,
 				tokens_in: null,
 				tokens_out: null,
 				cost_usd: null,
-				signal_type: "status",
-				signal_data: JSON.stringify({
-					protocolVersion: 1,
-					result: "completed",
-					commit: "abc123",
-				}),
 			});
 			upsertAgentResult(db, {
 				id: "ar-reviewer-0",
 				run_id: runId,
-				role: "reviewer",
-				template_name: "reviewer-commit",
 				phase: "1",
 				iteration: 1,
-				exit_code: 0,
-				duration_ms: 1000,
-				tokens_in: null,
-				tokens_out: null,
-				cost_usd: null,
-				signal_type: "verdict",
-				signal_data: JSON.stringify({
-					protocolVersion: 1,
+				role: "reviewer",
+				template: "reviewer-commit",
+				result_type: "verdict",
+				result_json: JSON.stringify({
 					readiness: "ready",
 					reviewPath,
 					items: [],
 				}),
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
 			});
 
 			// No agents should be called — goes straight to PHASE_GATE.
@@ -1034,21 +1028,19 @@ describe("runPhaseExecutionLoop", () => {
 			upsertAgentResult(db, {
 				id: "ar-author-0",
 				run_id: runId,
-				role: "author",
-				template_name: "author-next-phase",
 				phase: "1",
 				iteration: 0,
-				exit_code: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({
+					result: "complete",
+					commit: "def456",
+				}),
 				duration_ms: 1000,
 				tokens_in: null,
 				tokens_out: null,
 				cost_usd: null,
-				signal_type: "status",
-				signal_data: JSON.stringify({
-					protocolVersion: 1,
-					result: "completed",
-					commit: "def456",
-				}),
 			});
 
 			// Reviewer should be called (at iteration >= 1)

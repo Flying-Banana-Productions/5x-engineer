@@ -28,14 +28,18 @@ import {
 	upsertAgentResult,
 	upsertPlan,
 } from "../db/operations.js";
-import type { VerdictBlock } from "../parsers/signals.js";
-import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
+import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
 import {
 	buildEscalationReason,
 	makeOnEvent,
 } from "../utils/agent-event-helpers.js";
+import {
+	type LegacyVerdict,
+	parseStatusBlock,
+	parseVerdictBlock,
+} from "../utils/legacy-signals.js";
 import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
@@ -413,7 +417,7 @@ export async function runPlanReviewLoop(
 
 				// Store result
 				// Parse verdict from the review file (reviewer writes to it)
-				let verdict: VerdictBlock | null = null;
+				let verdict: LegacyVerdict | null = null;
 				if (existsSync(reviewPath)) {
 					const reviewContent = readFileSync(reviewPath, "utf-8");
 					verdict = parseVerdictBlock(reviewContent);
@@ -426,17 +430,19 @@ export async function runPlanReviewLoop(
 				upsertAgentResult(db, {
 					id: reviewResultId,
 					run_id: runId,
-					role: "reviewer",
-					template_name: "reviewer-plan",
 					phase: "-1",
 					iteration,
-					exit_code: reviewResult.exitCode,
+					role: "reviewer",
+					template: "reviewer-plan",
+					result_type: "verdict",
+					result_json: verdict ? JSON.stringify(verdict) : "null",
 					duration_ms: reviewResult.duration,
+					log_path: reviewLogPath,
+					session_id: reviewResult.sessionId ?? null,
+					model: config.reviewer.model ?? null,
 					tokens_in: reviewResult.tokens?.input ?? null,
 					tokens_out: reviewResult.tokens?.output ?? null,
 					cost_usd: reviewResult.cost ?? null,
-					signal_type: verdict ? "verdict" : null,
-					signal_data: verdict ? JSON.stringify(verdict) : null,
 				});
 
 				appendRunEvent(db, {
@@ -511,11 +517,23 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
-				// Verify reviewPath matches
-				if (verdict.reviewPath !== reviewPath) {
-					console.warn(
-						`  Warning: verdict.reviewPath "${verdict.reviewPath}" differs from expected "${reviewPath}"`,
-					);
+				try {
+					assertReviewerVerdict(verdict, "PLAN_REVIEW/REVIEW");
+				} catch (err) {
+					const event: EscalationEvent = {
+						reason: err instanceof Error ? err.message : String(err),
+						iteration,
+						logPath: lastAgentLogPath,
+					};
+					escalations.push(event);
+					appendRunEvent(db, {
+						runId,
+						eventType: "escalation",
+						iteration,
+						data: event,
+					});
+					state = "ESCALATE";
+					break;
 				}
 
 				appendRunEvent(db, {
@@ -698,17 +716,19 @@ export async function runPlanReviewLoop(
 				upsertAgentResult(db, {
 					id: authorResultId,
 					run_id: runId,
-					role: "author",
-					template_name: "author-process-review",
 					phase: "-1",
 					iteration,
-					exit_code: authorResult.exitCode,
+					role: "author",
+					template: "author-process-review",
+					result_type: "status",
+					result_json: authorStatus ? JSON.stringify(authorStatus) : "null",
 					duration_ms: authorResult.duration,
+					log_path: authorLogPath,
+					session_id: authorResult.sessionId ?? null,
+					model: config.author.model ?? null,
 					tokens_in: authorResult.tokens?.input ?? null,
 					tokens_out: authorResult.tokens?.output ?? null,
 					cost_usd: authorResult.cost ?? null,
-					signal_type: authorStatus ? "status" : null,
-					signal_data: authorStatus ? JSON.stringify(authorStatus) : null,
 				});
 
 				appendRunEvent(db, {
@@ -743,6 +763,25 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason:
 							"Author did not produce a 5x:status block after fix. Manual review required.",
+						iteration,
+						logPath: lastAgentLogPath,
+					};
+					escalations.push(event);
+					appendRunEvent(db, {
+						runId,
+						eventType: "escalation",
+						iteration,
+						data: event,
+					});
+					state = "ESCALATE";
+					break;
+				}
+
+				try {
+					assertAuthorStatus(authorStatus, "PLAN_REVIEW/AUTO_FIX");
+				} catch (err) {
+					const event: EscalationEvent = {
+						reason: err instanceof Error ? err.message : String(err),
 						iteration,
 						logPath: lastAgentLogPath,
 					};

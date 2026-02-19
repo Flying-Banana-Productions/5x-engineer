@@ -401,17 +401,17 @@ Create `src/protocol.ts`:
 
 > **Enum naming:** The previous signal protocol (001) used `result: "completed"`. The structured output protocol uses `result: "complete"` (no trailing 'd'). This is intentional — the old enum only existed in text-parsed signal blocks which are fully removed by this refactor. All new code must use `"complete"`.
 
-- [ ] Export `AuthorStatus`, `ReviewerVerdict`, `VerdictItem` TypeScript types (as shown in the Signal Protocol section above)
-- [ ] Export `AuthorStatusSchema` and `ReviewerVerdictSchema` JSON schema objects (used by adapter when calling `session.prompt()`)
-- [ ] Export a helper `isStructuredOutputError(result): boolean` that checks for SDK structured output failures
-- [ ] Export `assertAuthorStatus(status: AuthorStatus, context: string): void` — post-parse routing invariant validator (see Phase 2.5)
-- [ ] Export `assertReviewerVerdict(verdict: ReviewerVerdict): void` — post-parse routing invariant validator (see Phase 2.5)
+- [x] Export `AuthorStatus`, `ReviewerVerdict`, `VerdictItem` TypeScript types (as shown in the Signal Protocol section above)
+- [x] Export `AuthorStatusSchema` and `ReviewerVerdictSchema` JSON schema objects (used by adapter when calling `session.prompt()`)
+- [x] Export a helper `isStructuredOutputError(result): boolean` that checks for SDK structured output failures
+- [x] Export `assertAuthorStatus(status: AuthorStatus, context: string): void` — post-parse routing invariant validator (see Phase 2.5)
+- [x] Export `assertReviewerVerdict(verdict: ReviewerVerdict): void` — post-parse routing invariant validator (see Phase 2.5)
 
 ### 2.2 Remove signal parsers
 
-- [ ] Delete `src/parsers/signals.ts`
-- [ ] Delete `test/parsers/signals.test.ts`
-- [ ] Remove signal parser exports from `src/index.ts`
+- [x] Delete `src/parsers/signals.ts`
+- [x] Delete `test/parsers/signals.test.ts`
+- [x] Remove signal parser exports from `src/index.ts`
 
 ### 2.3 Update DB schema
 
@@ -457,20 +457,20 @@ CREATE TABLE agent_results (
 
 **Other tables** (`plans`, `run_events`, `quality_results`) — unchanged.
 
-- [ ] Update `src/db/schema.ts`: add migration 002 that drops and recreates `agent_results` with the new structure (schema version bumps to 2)
-- [ ] Add schema version mismatch error to `runMigrations()` in `src/db/schema.ts`
-- [ ] Update `src/db/operations.ts`:
-  - [ ] Remove `getLatestVerdict()` and `getLatestStatus()` which queried the old `signal_data` column
-  - [ ] Add `upsertAgentResult(db, input: AgentResultInput): void` — stores structured result; uses `INSERT ... ON CONFLICT(run_id, phase, iteration, role, template, result_type) DO UPDATE`
-  - [ ] Add `getLatestVerdict(db, runId, phase): ReviewerVerdict | null` — queries `agent_results` where `result_type = 'verdict'`, returns parsed `result_json`
-  - [ ] Add `getLatestStatus(db, runId, phase): AuthorStatus | null` — queries `agent_results` where `result_type = 'status'`, returns parsed `result_json`
-  - [ ] `AgentResultRow` includes: `id`, `run_id`, `phase`, `iteration`, `role`, `template`, `result_type`, `result_json`, `duration_ms`, `log_path`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `created_at`
-  - [ ] Update `upsertAgentResult()` input type to match new schema
+- [x] Update `src/db/schema.ts`: add migration 002 that drops and recreates `agent_results` with the new structure (schema version bumps to 2)
+- [x] Add schema version mismatch error to `runMigrations()` in `src/db/schema.ts`
+- [x] Update `src/db/operations.ts`:
+  - [x] Remove `getLatestVerdict()` and `getLatestStatus()` which queried the old `signal_data` column
+  - [x] Add `upsertAgentResult(db, input: AgentResultInput): void` — stores structured result; uses `INSERT ... ON CONFLICT(run_id, phase, iteration, role, template, result_type) DO UPDATE`
+  - [x] Add `getLatestVerdict(db, runId, phase): ReviewerVerdict | null` — queries `agent_results` where `result_type = 'verdict'`, returns parsed `result_json`
+  - [x] Add `getLatestStatus(db, runId, phase): AuthorStatus | null` — queries `agent_results` where `result_type = 'status'`, returns parsed `result_json`
+  - [x] `AgentResultRow` includes: `id`, `run_id`, `phase`, `iteration`, `role`, `template`, `result_type`, `result_json`, `duration_ms`, `log_path`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `created_at`
+  - [x] Update `upsertAgentResult()` input type to match new schema
 
 ### 2.4 Update tests
 
-- [ ] Update `test/db/schema.test.ts` — verify new schema (v2) creates correctly; verify "DB ahead of CLI" (on-disk version > CLI max) produces a clear error; verify "DB behind CLI" applies pending migrations without error
-- [ ] Update `test/db/operations.test.ts` — update for new `AgentResultInput` shape, corrected composite unique key, and new `getLatestVerdict/getLatestStatus` query behavior
+- [x] Update `test/db/schema.test.ts` — verify new schema (v2) creates correctly; verify "DB ahead of CLI" (on-disk version > CLI max) produces a clear error; verify "DB behind CLI" applies pending migrations without error
+- [x] Update `test/db/operations.test.ts` — update for new `AgentResultInput` shape, corrected composite unique key, and new `getLatestVerdict/getLatestStatus` query behavior
 
 ### 2.5 Post-parse invariant validators
 
@@ -524,15 +524,15 @@ export function assertReviewerVerdict(verdict: ReviewerVerdict, context: string)
 }
 ```
 
-- [ ] Implement `assertAuthorStatus()` in `src/protocol.ts`
-- [ ] Implement `assertReviewerVerdict()` in `src/protocol.ts`
-- [ ] Add `test/protocol.test.ts` — unit tests for both validators:
-  - [ ] `assertAuthorStatus` — passes with valid complete+commit, valid needs_human+reason, valid failed+reason
-  - [ ] `assertAuthorStatus` — throws when complete+requireCommit but no commit
-  - [ ] `assertAuthorStatus` — throws when needs_human/failed but no reason
-  - [ ] `assertReviewerVerdict` — passes with ready+empty items, not_ready+items with actions
-  - [ ] `assertReviewerVerdict` — throws when not_ready+empty items
-  - [ ] `assertReviewerVerdict` — throws when item missing action
+- [x] Implement `assertAuthorStatus()` in `src/protocol.ts`
+- [x] Implement `assertReviewerVerdict()` in `src/protocol.ts`
+- [x] Add `test/protocol.test.ts` — unit tests for both validators:
+  - [x] `assertAuthorStatus` — passes with valid complete+commit, valid needs_human+reason, valid failed+reason
+  - [x] `assertAuthorStatus` — throws when complete+requireCommit but no commit
+  - [x] `assertAuthorStatus` — throws when needs_human/failed but no reason
+  - [x] `assertReviewerVerdict` — passes with ready+empty items, not_ready+items with actions
+  - [x] `assertReviewerVerdict` — throws when not_ready+empty items
+  - [x] `assertReviewerVerdict` — throws when item missing action
 
 ---
 

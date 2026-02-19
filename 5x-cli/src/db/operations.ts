@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import type { StatusBlock, VerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
+import type { AuthorStatus, ReviewerVerdict } from "../protocol.js";
 
 // --- Row types ---
 
@@ -37,21 +37,39 @@ export interface RunEventRow {
 export interface AgentResultRow {
 	id: string;
 	run_id: string;
-	role: string;
-	template_name: string;
 	phase: string;
 	iteration: number;
-	exit_code: number;
+	role: string;
+	template: string;
+	result_type: "status" | "verdict";
+	result_json: string;
 	duration_ms: number;
+	log_path: string | null;
+	session_id: string | null;
+	model: string | null;
 	tokens_in: number | null;
 	tokens_out: number | null;
 	cost_usd: number | null;
-	signal_type: string | null;
-	signal_data: string | null;
 	created_at: string;
 }
 
-export type AgentResultInput = Omit<AgentResultRow, "created_at">;
+export interface AgentResultInput {
+	id: string;
+	run_id: string;
+	phase: string;
+	iteration: number;
+	role: string;
+	template: string;
+	result_type: "status" | "verdict";
+	result_json: string;
+	duration_ms: number;
+	log_path?: string | null;
+	session_id?: string | null;
+	model?: string | null;
+	tokens_in?: number | null;
+	tokens_out?: number | null;
+	cost_usd?: number | null;
+}
 
 export interface QualityResultRow {
 	id: string;
@@ -246,7 +264,7 @@ export function getLastRunEvent(
 
 /**
  * Upsert an agent result. The composite key (run_id, role, phase, iteration,
- * template_name) identifies the logical step. On conflict (resume), the row
+ * template, result_type) identifies the logical step. On conflict (resume), the row
  * is replaced entirely — including `id`, so the log file path tracks the
  * latest attempt.
  */
@@ -255,33 +273,36 @@ export function upsertAgentResult(
 	result: AgentResultInput,
 ): void {
 	db.query(
-		`INSERT INTO agent_results (id, run_id, role, template_name, phase, iteration,
-       exit_code, duration_ms, tokens_in, tokens_out, cost_usd, signal_type, signal_data)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-      ON CONFLICT(run_id, role, phase, iteration, template_name) DO UPDATE SET
+		`INSERT INTO agent_results (id, run_id, phase, iteration, role, template, result_type,
+       result_json, duration_ms, log_path, session_id, model, tokens_in, tokens_out, cost_usd)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+      ON CONFLICT(run_id, phase, iteration, role, template, result_type) DO UPDATE SET
         id = excluded.id,
-        exit_code = excluded.exit_code,
+        result_json = excluded.result_json,
         duration_ms = excluded.duration_ms,
+        log_path = excluded.log_path,
+        session_id = excluded.session_id,
+        model = excluded.model,
         tokens_in = excluded.tokens_in,
         tokens_out = excluded.tokens_out,
         cost_usd = excluded.cost_usd,
-        signal_type = excluded.signal_type,
-        signal_data = excluded.signal_data,
         created_at = datetime('now')`,
 	).run(
 		result.id,
 		result.run_id,
-		result.role,
-		result.template_name,
 		result.phase,
 		result.iteration,
-		result.exit_code,
+		result.role,
+		result.template,
+		result.result_type,
+		result.result_json,
 		result.duration_ms,
+		result.log_path ?? null,
+		result.session_id ?? null,
+		result.model ?? null,
 		result.tokens_in ?? null,
 		result.tokens_out ?? null,
 		result.cost_usd ?? null,
-		result.signal_type ?? null,
-		result.signal_data ?? null,
 	);
 }
 
@@ -308,17 +329,19 @@ export function getLatestVerdict(
 	db: Database,
 	runId: string,
 	phase: string,
-): VerdictBlock | null {
+): ReviewerVerdict | null {
 	const row = db
 		.query(
-			`SELECT signal_data FROM agent_results
-       WHERE run_id = ?1 AND phase = ?2 AND signal_type = 'verdict'
-       ORDER BY iteration DESC LIMIT 1`,
+			`SELECT result_json FROM agent_results
+       WHERE run_id = ?1 AND phase = ?2 AND result_type = 'verdict'
+       ORDER BY iteration DESC, created_at DESC LIMIT 1`,
 		)
-		.get(runId, phase) as { signal_data: string } | null;
-	if (!row?.signal_data) return null;
+		.get(runId, phase) as { result_json: string } | null;
+	if (!row?.result_json) return null;
 	try {
-		return JSON.parse(row.signal_data) as VerdictBlock;
+		const parsed = JSON.parse(row.result_json) as unknown;
+		if (!parsed || typeof parsed !== "object") return null;
+		return parsed as ReviewerVerdict;
 	} catch {
 		return null;
 	}
@@ -328,17 +351,19 @@ export function getLatestStatus(
 	db: Database,
 	runId: string,
 	phase: string,
-): StatusBlock | null {
+): AuthorStatus | null {
 	const row = db
 		.query(
-			`SELECT signal_data FROM agent_results
-       WHERE run_id = ?1 AND phase = ?2 AND signal_type = 'status'
-       ORDER BY iteration DESC LIMIT 1`,
+			`SELECT result_json FROM agent_results
+       WHERE run_id = ?1 AND phase = ?2 AND result_type = 'status'
+       ORDER BY iteration DESC, created_at DESC LIMIT 1`,
 		)
-		.get(runId, phase) as { signal_data: string } | null;
-	if (!row?.signal_data) return null;
+		.get(runId, phase) as { result_json: string } | null;
+	if (!row?.result_json) return null;
 	try {
-		return JSON.parse(row.signal_data) as StatusBlock;
+		const parsed = JSON.parse(row.result_json) as unknown;
+		if (!parsed || typeof parsed !== "object") return null;
+		return parsed as AuthorStatus;
 	} catch {
 		return null;
 	}
@@ -396,7 +421,7 @@ export function hasCompletedStep(
 	const row = db
 		.query(
 			`SELECT 1 FROM agent_results
-       WHERE run_id = ?1 AND role = ?2 AND phase = ?3 AND iteration = ?4 AND template_name = ?5
+       WHERE run_id = ?1 AND role = ?2 AND phase = ?3 AND iteration = ?4 AND template = ?5
        LIMIT 1`,
 		)
 		.get(runId, role, phase, iteration, templateName);

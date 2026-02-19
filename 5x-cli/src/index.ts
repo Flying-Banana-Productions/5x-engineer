@@ -18,7 +18,6 @@ export type {
 	ReviewerVerdict,
 	VerdictItem,
 } from "./agents/types.js";
-
 export type { FiveXConfig } from "./config.js";
 export { defineConfig, loadConfig } from "./config.js";
 // DB
@@ -120,6 +119,13 @@ export { parseReviewSummary } from "./parsers/review.js";
 export { canonicalizePlanPath } from "./paths.js";
 // Project root
 export { findGitRoot, resolveProjectRoot } from "./project-root.js";
+export {
+	AuthorStatusSchema,
+	assertAuthorStatus,
+	assertReviewerVerdict,
+	isStructuredOutputError,
+	ReviewerVerdictSchema,
+} from "./protocol.js";
 // Templates
 export type {
 	RenderedTemplate,

@@ -94,6 +94,39 @@ const migrations: Migration[] = [
       `);
 		},
 	},
+	{
+		version: 2,
+		description:
+			"Rework agent_results for structured output (result_type/result_json)",
+		up(db) {
+			db.exec(`
+        DROP TABLE IF EXISTS agent_results;
+
+        CREATE TABLE agent_results (
+          id          TEXT    NOT NULL PRIMARY KEY,
+          run_id      TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          phase       TEXT    NOT NULL,
+          iteration   INTEGER NOT NULL,
+          role        TEXT    NOT NULL,
+          template    TEXT    NOT NULL,
+          result_type TEXT    NOT NULL,
+          result_json TEXT    NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          log_path    TEXT,
+          session_id  TEXT,
+          model       TEXT,
+          tokens_in   INTEGER,
+          tokens_out  INTEGER,
+          cost_usd    REAL,
+          created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(run_id, phase, iteration, role, template, result_type)
+        );
+
+        CREATE INDEX idx_agent_results_run ON agent_results(run_id);
+        CREATE INDEX idx_agent_results_run_phase ON agent_results(run_id, phase);
+      `);
+		},
+	},
 ];
 
 /**
@@ -118,6 +151,14 @@ export function getSchemaVersion(db: Database): number {
  */
 export function runMigrations(db: Database): void {
 	const currentVersion = getSchemaVersion(db);
+	const maxKnownVersion = migrations[migrations.length - 1]?.version ?? 0;
+
+	if (currentVersion > maxKnownVersion) {
+		throw new Error(
+			`DB schema version v${currentVersion} is newer than this CLI's maximum known version v${maxKnownVersion}. ` +
+				"Upgrade the CLI or delete .5x/5x.db to reset.",
+		);
+	}
 
 	for (const migration of migrations) {
 		if (migration.version <= currentVersion) continue;

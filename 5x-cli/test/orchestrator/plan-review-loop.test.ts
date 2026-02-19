@@ -803,9 +803,7 @@ describe("runPlanReviewLoop", () => {
 			expect(result.approved).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
 			expect(
-				result.escalations.some((e) =>
-					e.reason.includes("no auto-fixable items"),
-				),
+				result.escalations.some((e) => e.reason.includes("items' is empty")),
 			).toBe(true);
 		} finally {
 			cleanup();
@@ -843,9 +841,7 @@ describe("runPlanReviewLoop", () => {
 			expect(result.approved).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
 			expect(
-				result.escalations.some((e) =>
-					e.reason.includes("no auto-fixable items"),
-				),
+				result.escalations.some((e) => e.reason.includes("items' is empty")),
 			).toBe(true);
 		} finally {
 			cleanup();

@@ -5,30 +5,13 @@
  * signal parsing. The orchestrator receives typed results directly.
  */
 
-// ---------------------------------------------------------------------------
-// Structured output types (from protocol.ts — will be created in Phase 2)
-// ---------------------------------------------------------------------------
+import type {
+	AuthorStatus,
+	ReviewerVerdict,
+	VerdictItem,
+} from "../protocol.js";
 
-export type AuthorStatus = {
-	result: "complete" | "needs_human" | "failed";
-	commit?: string;
-	reason?: string;
-	notes?: string;
-};
-
-export type VerdictItem = {
-	id: string;
-	title: string;
-	action: "auto_fix" | "human_required";
-	reason: string;
-	priority?: "P0" | "P1" | "P2";
-};
-
-export type ReviewerVerdict = {
-	readiness: "ready" | "ready_with_corrections" | "not_ready";
-	items: VerdictItem[];
-	summary?: string;
-};
+export type { AuthorStatus, ReviewerVerdict, VerdictItem };
 
 // ---------------------------------------------------------------------------
 // Invoke options

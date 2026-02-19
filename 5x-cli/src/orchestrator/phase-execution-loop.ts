@@ -52,14 +52,18 @@ import type { QualityResult } from "../gates/quality.js";
 import { runQualityGates } from "../gates/quality.js";
 import { getCurrentBranch, getLatestCommit, isBranchRelevant } from "../git.js";
 import { parsePlan } from "../parsers/plan.js";
-import type { VerdictBlock } from "../parsers/signals.js";
-import { parseStatusBlock, parseVerdictBlock } from "../parsers/signals.js";
 import { canonicalizePlanPath } from "../paths.js";
+import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
 import {
 	buildEscalationReason,
 	makeOnEvent,
 } from "../utils/agent-event-helpers.js";
+import {
+	type LegacyVerdict,
+	parseStatusBlock,
+	parseVerdictBlock,
+} from "../utils/legacy-signals.js";
 import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
@@ -406,17 +410,19 @@ export async function runPhaseExecutionLoop(
 					upsertAgentResult(db, {
 						id: executeResultId,
 						run_id: runId,
-						role: "author",
-						template_name: "author-next-phase",
 						phase: phase.number,
 						iteration,
-						exit_code: authorResult.exitCode,
+						role: "author",
+						template: "author-next-phase",
+						result_type: "status",
+						result_json: authorStatus ? JSON.stringify(authorStatus) : "null",
 						duration_ms: authorResult.duration,
+						log_path: executeLogPath,
+						session_id: authorResult.sessionId ?? null,
+						model: config.author.model ?? null,
 						tokens_in: authorResult.tokens?.input ?? null,
 						tokens_out: authorResult.tokens?.output ?? null,
 						cost_usd: authorResult.cost ?? null,
-						signal_type: authorStatus ? "status" : null,
-						signal_data: authorStatus ? JSON.stringify(authorStatus) : null,
 					});
 
 					appendRunEvent(db, {
@@ -486,6 +492,26 @@ export async function runPhaseExecutionLoop(
 						const event: EscalationEvent = {
 							reason:
 								"Author did not produce a 5x:status block. Manual review required.",
+							iteration,
+							logPath: lastAgentLogPath,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					try {
+						assertAuthorStatus(status, "EXECUTE", { requireCommit: true });
+					} catch (err) {
+						const event: EscalationEvent = {
+							reason: err instanceof Error ? err.message : String(err),
 							iteration,
 							logPath: lastAgentLogPath,
 						};
@@ -700,17 +726,19 @@ export async function runPhaseExecutionLoop(
 					upsertAgentResult(db, {
 						id: qrFixResultId,
 						run_id: runId,
-						role: "author",
-						template_name: "author-process-review",
 						phase: phase.number,
 						iteration,
-						exit_code: fixResult.exitCode,
+						role: "author",
+						template: "author-process-review",
+						result_type: "status",
+						result_json: fixStatus ? JSON.stringify(fixStatus) : "null",
 						duration_ms: fixResult.duration,
+						log_path: qrFixLogPath,
+						session_id: fixResult.sessionId ?? null,
+						model: config.author.model ?? null,
 						tokens_in: fixResult.tokens?.input ?? null,
 						tokens_out: fixResult.tokens?.output ?? null,
 						cost_usd: fixResult.cost ?? null,
-						signal_type: fixStatus ? "status" : null,
-						signal_data: fixStatus ? JSON.stringify(fixStatus) : null,
 					});
 
 					appendRunEvent(db, {
@@ -838,7 +866,7 @@ export async function runPhaseExecutionLoop(
 					}
 
 					// Parse verdict from the review file first, then from output
-					let verdict: VerdictBlock | null = null;
+					let verdict: LegacyVerdict | null = null;
 					if (existsSync(resolve(reviewPath))) {
 						const reviewContent = readFileSync(resolve(reviewPath), "utf-8");
 						verdict = parseVerdictBlock(reviewContent);
@@ -850,17 +878,19 @@ export async function runPhaseExecutionLoop(
 					upsertAgentResult(db, {
 						id: reviewResultId,
 						run_id: runId,
-						role: "reviewer",
-						template_name: "reviewer-commit",
 						phase: phase.number,
 						iteration,
-						exit_code: reviewResult.exitCode,
+						role: "reviewer",
+						template: "reviewer-commit",
+						result_type: "verdict",
+						result_json: verdict ? JSON.stringify(verdict) : "null",
 						duration_ms: reviewResult.duration,
+						log_path: reviewLogPath,
+						session_id: reviewResult.sessionId ?? null,
+						model: config.reviewer.model ?? null,
 						tokens_in: reviewResult.tokens?.input ?? null,
 						tokens_out: reviewResult.tokens?.output ?? null,
 						cost_usd: reviewResult.cost ?? null,
-						signal_type: verdict ? "verdict" : null,
-						signal_data: verdict ? JSON.stringify(verdict) : null,
 					});
 
 					appendRunEvent(db, {
@@ -922,6 +952,26 @@ export async function runPhaseExecutionLoop(
 						const event: EscalationEvent = {
 							reason:
 								"Reviewer did not produce a 5x:verdict block. Manual review required.",
+							iteration,
+							logPath: lastAgentLogPath,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: event,
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					try {
+						assertReviewerVerdict(verdict, "REVIEW");
+					} catch (err) {
+						const event: EscalationEvent = {
+							reason: err instanceof Error ? err.message : String(err),
 							iteration,
 							logPath: lastAgentLogPath,
 						};
@@ -1075,17 +1125,19 @@ export async function runPhaseExecutionLoop(
 					upsertAgentResult(db, {
 						id: autoFixResultId,
 						run_id: runId,
-						role: "author",
-						template_name: "author-process-review",
 						phase: phase.number,
 						iteration,
-						exit_code: autoFixResult.exitCode,
+						role: "author",
+						template: "author-process-review",
+						result_type: "status",
+						result_json: fixStatus ? JSON.stringify(fixStatus) : "null",
 						duration_ms: autoFixResult.duration,
+						log_path: autoFixLogPath,
+						session_id: autoFixResult.sessionId ?? null,
+						model: config.author.model ?? null,
 						tokens_in: autoFixResult.tokens?.input ?? null,
 						tokens_out: autoFixResult.tokens?.output ?? null,
 						cost_usd: autoFixResult.cost ?? null,
-						signal_type: fixStatus ? "status" : null,
-						signal_data: fixStatus ? JSON.stringify(fixStatus) : null,
 					});
 
 					appendRunEvent(db, {
@@ -1155,6 +1207,29 @@ export async function runPhaseExecutionLoop(
 							phase: phase.number,
 							iteration,
 							data: { reason: event.reason, trigger: "missing_fix_status" },
+						});
+						state = "ESCALATE";
+						break;
+					}
+
+					try {
+						assertAuthorStatus(fixStatus, "AUTO_FIX");
+					} catch (err) {
+						const event: EscalationEvent = {
+							reason: err instanceof Error ? err.message : String(err),
+							iteration,
+							logPath: lastAgentLogPath,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason: event.reason,
+								trigger: "status_invariant_violation",
+							},
 						});
 						state = "ESCALATE";
 						break;
