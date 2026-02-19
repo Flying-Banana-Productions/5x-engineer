@@ -29,6 +29,11 @@ export async function createAndVerifyAdapter(
 	return adapter;
 }
 
+// Tracks whether signal handlers have already been registered, preventing
+// duplicate SIGINT/SIGTERM handlers if registerAdapterShutdown() is called
+// more than once (e.g., in tests or future multi-adapter scenarios).
+let _signalHandlersRegistered = false;
+
 /**
  * Register adapter cleanup for process exit and signals.
  *
@@ -36,6 +41,10 @@ export async function createAndVerifyAdapter(
  * adapter.close() has a synchronous body (server.close()), so it runs
  * correctly from the synchronous "exit" event handler even though the
  * method signature is async.
+ *
+ * Safe to call multiple times: the "exit" handler is adapter-specific and
+ * registered each time (idempotent via adapter.close()'s own guard), but the
+ * shared SIGINT/SIGTERM handlers are registered only once per process.
  *
  * Commands that also use registerLockCleanup() do not need to worry about
  * handler ordering — both cleanup paths are idempotent.
@@ -48,11 +57,16 @@ export function registerAdapterShutdown(adapter: AgentAdapter): void {
 		adapter.close();
 	};
 	process.on("exit", cleanup);
-	// Ensure signal-triggered exits go through process.exit() (which fires
-	// the "exit" event for cleanup) rather than the default signal handler
-	// (which terminates without firing "exit").
-	process.on("SIGINT", () => process.exit(130));
-	process.on("SIGTERM", () => process.exit(143));
+
+	// Register SIGINT/SIGTERM only once per process. These handlers ensure
+	// signal-triggered exits go through process.exit() (which fires the "exit"
+	// event for cleanup) rather than the default signal handler (which
+	// terminates without firing "exit").
+	if (!_signalHandlersRegistered) {
+		_signalHandlersRegistered = true;
+		process.on("SIGINT", () => process.exit(130));
+		process.on("SIGTERM", () => process.exit(143));
+	}
 }
 
 /**

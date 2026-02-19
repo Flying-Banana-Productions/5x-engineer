@@ -118,9 +118,17 @@ async function writeEventsToLog(
 	opts: { quiet?: boolean },
 ): Promise<void> {
 	// Ensure log directory exists with restricted permissions (logs may contain
-	// sensitive content — P0.2: enforce 0700 so they are not group/world-readable)
+	// sensitive content — enforce 0700 so they are not group/world-readable).
+	// If the directory already exists (e.g. from an older version that used
+	// default umask), best-effort chmod it to 0700 so inherited broad perms
+	// from prior runs are corrected.
 	const logDir = path.dirname(logPath);
 	fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+	try {
+		fs.chmodSync(logDir, 0o700);
+	} catch {
+		// Best-effort — ignore if chmod fails (e.g. foreign ownership)
+	}
 
 	const logStream = fs.createWriteStream(logPath, {
 		flags: "a",
