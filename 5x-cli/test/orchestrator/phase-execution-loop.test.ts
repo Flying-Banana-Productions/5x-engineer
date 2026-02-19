@@ -1054,10 +1054,11 @@ describe("runPhaseExecutionLoop", () => {
 				async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
 					adapter.callCount++;
 					quietPerCall.push(opts.quiet ?? false);
-					const r = responses[idx++]!;
+					const r = responses[idx++];
+					if (!r || r.type !== "status") throw new Error("unexpected mock");
 					return {
 						type: "status",
-						status: (r as any).status,
+						status: r.status,
 						duration: 1000,
 						sessionId: "mock-session",
 					};
@@ -1065,10 +1066,11 @@ describe("runPhaseExecutionLoop", () => {
 				async invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict> {
 					adapter.callCount++;
 					quietPerCall.push(opts.quiet ?? false);
-					const r = responses[idx++]!;
+					const r = responses[idx++];
+					if (!r || r.type !== "verdict") throw new Error("unexpected mock");
 					return {
 						type: "verdict",
-						verdict: (r as any).verdict,
+						verdict: r.verdict,
 						duration: 1000,
 						sessionId: "mock-session",
 					};
