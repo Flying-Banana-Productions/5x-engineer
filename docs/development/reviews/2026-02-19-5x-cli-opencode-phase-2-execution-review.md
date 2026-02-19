@@ -124,3 +124,26 @@ In `QUALITY_RETRY`, status is parsed and persisted but not used for routing (e.g
 
 - **Phase 2 completion:** ✅
 - **Ready for Phase 3:** ✅ — all addendum items resolved; adapter isolation strategy is explicit; legacy PARSE_* paths are correct and tested.
+
+---
+
+## Addendum (2026-02-19) — Closure Verification (aed21c6)
+
+**Reviewed:** `aed21c6d57`
+
+**Local verification:** `bun test` (298 pass, 1 skip)
+
+### What's addressed (✅)
+
+- **Resume into PARSE_* iteration attribution:** `lastInvokeIteration` initialized to `iteration-1` when resuming into PARSE_* states; tests added.
+- **Phase ordering:** `getAgentResults()` now orders by `CAST(phase AS REAL)`; cross-phase ordering test added (includes `-1`, integers, decimals).
+- **QUALITY_RETRY missing status:** now escalates on missing/null status (fail-closed) with a dedicated regression test.
+
+### Remaining concerns
+
+- None required for Phase 2 scope.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅
+- **Ready for Phase 3:** ✅
