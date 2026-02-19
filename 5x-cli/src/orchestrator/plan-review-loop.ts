@@ -343,7 +343,13 @@ export async function runPlanReviewLoop(
 	// Tracks the iteration value at the time of the last agent invocation, so
 	// PARSE_* states attribute escalations to the correct invocation (before
 	// the monotonic iteration counter is incremented for the next state).
-	let lastInvokeIteration = iteration;
+	// On resume into a PARSE_* state, iteration is already "next" (results.length),
+	// so lastInvokeIteration must be iteration-1 to reference the preceding invocation.
+	const isResumedParseState =
+		state === "PARSE_VERDICT" || state === "PARSE_STATUS";
+	let lastInvokeIteration = isResumedParseState
+		? Math.max(0, iteration - 1)
+		: iteration;
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {

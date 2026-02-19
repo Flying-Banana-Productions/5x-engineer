@@ -320,7 +320,7 @@ export function getAgentResults(
 	}
 	return db
 		.query(
-			"SELECT * FROM agent_results WHERE run_id = ?1 ORDER BY CAST(phase AS INTEGER) ASC, iteration ASC",
+			"SELECT * FROM agent_results WHERE run_id = ?1 ORDER BY CAST(phase AS REAL) ASC, iteration ASC",
 		)
 		.all(runId) as AgentResultRow[];
 }

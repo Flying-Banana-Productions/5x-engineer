@@ -15,6 +15,7 @@ import {
 	getLatestRun,
 	getRunEvents,
 	updateRunStatus,
+	upsertAgentResult,
 } from "../../src/db/operations.js";
 import { runMigrations } from "../../src/db/schema.js";
 import {
@@ -967,6 +968,61 @@ describe("runPlanReviewLoop", () => {
 				.all(canonical) as Array<{ id: string; status: string }>;
 			const old = allRuns.find((r) => r.id === "old-run");
 			expect(old?.status).toBe("aborted");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume into PARSE_VERDICT uses correct lastInvokeIteration", async () => {
+		// Simulate: reviewer completed at iteration 0, interrupted at PARSE_VERDICT.
+		// On resume, escalation (missing verdict) should reference iteration 0, not 1.
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const canonical = canonicalizePlanPath(planPath);
+			const runId = "resume-parse-verdict-plan";
+
+			createRun(db, {
+				id: runId,
+				planPath: canonical,
+				command: "plan-review",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "PARSE_VERDICT");
+
+			// Reviewer at iteration 0 but verdict was unparseable
+			upsertAgentResult(db, {
+				id: "ar-reviewer-0",
+				run_id: runId,
+				phase: "-1",
+				iteration: 0,
+				role: "reviewer",
+				template: "reviewer-plan",
+				result_type: "verdict",
+				result_json: "null",
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				mockAdapter("author", []),
+				mockAdapter("reviewer", []),
+				defaultConfig(),
+				{
+					resumeGate: fixedResumeGate("resume"),
+					humanGate: fixedHumanGate("abort"),
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			// Escalation should reference iteration 0 (the reviewer invocation), not 1
+			expect(result.escalations[0]?.iteration).toBe(0);
 		} finally {
 			cleanup();
 		}

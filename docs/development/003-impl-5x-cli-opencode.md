@@ -466,7 +466,7 @@ CREATE TABLE agent_results (
   - [x] Add `getLatestVerdict(db, runId, phase): ReviewerVerdict | null` — queries `agent_results` where `result_type = 'verdict'`, returns parsed `result_json`
   - [x] Add `getLatestStatus(db, runId, phase): AuthorStatus | null` — queries `agent_results` where `result_type = 'status'`, returns parsed `result_json`
   - [x] `hasCompletedStep()` includes `result_type` parameter — matches the composite unique key to make resume/idempotency semantics explicit
-  - [x] `getAgentResults()` orders by `CAST(phase AS INTEGER)` for correct numeric phase ordering
+  - [x] `getAgentResults()` orders by `CAST(phase AS REAL)` for correct numeric phase ordering (handles integer, decimal, and sentinel phases)
   - [x] `AgentResultRow` includes: `id`, `run_id`, `phase`, `iteration`, `role`, `template`, `result_type`, `result_json`, `duration_ms`, `log_path`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `created_at`
   - [x] Update `upsertAgentResult()` input type to match new schema
 

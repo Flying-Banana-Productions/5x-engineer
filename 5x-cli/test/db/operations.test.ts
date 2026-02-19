@@ -437,6 +437,32 @@ describe("agent results", () => {
 		expect(getAgentResults(db, "run1", "2")).toHaveLength(1);
 		expect(getAgentResults(db, "run1")).toHaveLength(3);
 	});
+
+	test("cross-phase ordering handles integer, decimal, and sentinel phases", () => {
+		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		// Insert phases out of numeric order to verify ordering
+		const phases = ["10", "2", "1.1", "-1", "1", "2.3"];
+		for (const phase of phases) {
+			upsertAgentResult(db, {
+				id: `ar-${phase}`,
+				run_id: "run1",
+				phase,
+				iteration: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({ result: "complete" }),
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+		}
+
+		const results = getAgentResults(db, "run1");
+		const orderedPhases = results.map((r) => r.phase);
+		expect(orderedPhases).toEqual(["-1", "1", "1.1", "2", "2.3", "10"]);
+	});
 });
 
 // --- Quality Results ---

@@ -314,7 +314,17 @@ export async function runPhaseExecutionLoop(
 		// Tracks the iteration value at the time of the last agent invocation, so
 		// PARSE_* states attribute escalations to the correct invocation (before
 		// the monotonic iteration counter is incremented for the next state).
-		let lastInvokeIteration = iteration;
+		// On resume into a PARSE_* state, iteration is already max+1 (the next
+		// invocation slot), so lastInvokeIteration must be iteration-1 to
+		// correctly reference the invocation whose result is being parsed.
+		const isParseState =
+			isResumedPhase &&
+			(state === "PARSE_AUTHOR_STATUS" ||
+				state === "PARSE_VERDICT" ||
+				state === "PARSE_FIX_STATUS");
+		let lastInvokeIteration = isParseState
+			? Math.max(0, iteration - 1)
+			: iteration;
 
 		// Clear resume markers after consuming them — only the first phase
 		// in the loop should get the restored state.
@@ -787,12 +797,36 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					// Missing status block — escalate (fail-closed, consistent
+					// with PARSE_AUTHOR_STATUS / PARSE_FIX_STATUS).
+					if (!fixStatus) {
+						const event: EscalationEvent = {
+							reason:
+								"Author did not produce a status block during quality fix. Manual review required.",
+							iteration,
+							logPath: qrFixLogPath,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason: event.reason,
+								trigger: "quality_retry_missing_status",
+							},
+						});
+						iteration++;
+						state = "ESCALATE";
+						break;
+					}
+
 					// Route on author status semantics — escalate if author
 					// explicitly reported needs_human or failed (P1.3 fix).
 					if (
-						fixStatus &&
-						(fixStatus.result === "needs_human" ||
-							fixStatus.result === "failed")
+						fixStatus.result === "needs_human" ||
+						fixStatus.result === "failed"
 					) {
 						const event: EscalationEvent = {
 							reason:

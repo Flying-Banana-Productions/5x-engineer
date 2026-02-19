@@ -585,6 +585,43 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("QUALITY_RETRY missing status block escalates", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const cfg = defaultConfig(tmp);
+			cfg.qualityGates = ["exit 1"]; // will fail, triggering QUALITY_RETRY
+
+			const author = mockAdapter("author", [
+				// EXECUTE: completes with status
+				{
+					output: statusBlock({ result: "completed", commit: "abc", phase: 1 }),
+				},
+				// QUALITY_RETRY: succeeds (exitCode 0) but no status block
+				{ output: "Fixed things but forgot status block" },
+			]);
+			const reviewer = mockAdapter("reviewer", []);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				author,
+				reviewer,
+				cfg,
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			expect(result.escalations[0]?.reason).toContain(
+				"did not produce a status block during quality fix",
+			);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("phase gate with human approval", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
@@ -1510,6 +1547,129 @@ describe("runPhaseExecutionLoop", () => {
 			if (!escalation) throw new Error("Expected at least one escalation");
 			// Author was invoked at iteration 0; escalation should be at iteration 0.
 			expect(escalation.iteration).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume into PARSE_AUTHOR_STATUS uses correct lastInvokeIteration", async () => {
+		// Simulate: author completed at iteration 0, then interrupted at PARSE_AUTHOR_STATUS.
+		// On resume, escalation (missing status) should reference iteration 0, not 1.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const runId = "resume-parse-status-1234";
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "PARSE_AUTHOR_STATUS", "1");
+
+			// Author completed at iteration 0 but status was unparseable
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: runId,
+				phase: "1",
+				iteration: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: "null",
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				mockAdapter("author", []),
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => "resume",
+				},
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			// Escalation should reference iteration 0 (the invocation that produced the result)
+			expect(result.escalations[0]?.iteration).toBe(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resume into PARSE_VERDICT uses correct lastInvokeIteration", async () => {
+		// Simulate: author at iter 0, reviewer at iter 1, interrupted at PARSE_VERDICT.
+		// On resume, escalation should reference iteration 1 (the reviewer invocation).
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const runId = "resume-parse-verdict-1234";
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "PARSE_VERDICT", "1");
+
+			// Author completed at iteration 0
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: runId,
+				phase: "1",
+				iteration: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({ result: "complete", commit: "abc" }),
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+			// Reviewer at iteration 1 but verdict was unparseable
+			upsertAgentResult(db, {
+				id: "ar-reviewer-1",
+				run_id: runId,
+				phase: "1",
+				iteration: 1,
+				role: "reviewer",
+				template: "reviewer-commit",
+				result_type: "verdict",
+				result_json: "null",
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				mockAdapter("author", []),
+				mockAdapter("reviewer", []),
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => "resume",
+				},
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			// Escalation should reference iteration 1 (the reviewer invocation), not 2
+			expect(result.escalations[0]?.iteration).toBe(1);
 		} finally {
 			cleanup();
 		}

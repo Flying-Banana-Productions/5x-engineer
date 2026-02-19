@@ -99,3 +99,28 @@ In `QUALITY_RETRY`, status is parsed and persisted but not used for routing (e.g
 
 - **Phase 2 completion:** ✅ — protocol/types, v2 schema, ops, and tests are landed. All review items addressed.
 - **Ready for Phase 3:** ✅ — P0.1 resolved; adapter isolation strategy documented in implementation plan. P1/P2 code fixes landed.
+
+---
+
+## Addendum (2026-02-19) — Review Feedback Closure (f691fb6)
+
+**Reviewed:** `f691fb69ed`
+
+### What's addressed (✅)
+
+- **P0.1 adapter/interface bridge:** Plan updated to keep factory throwing in Phase 3; wire adapter atomically in Phases 4–5 after legacy casts are removed.
+- **P1.1 hasCompletedStep result_type:** `hasCompletedStep()` now takes `resultType` and queries include `result_type`.
+- **P1.2 PARSE_* iteration attribution:** `lastInvokeIteration` tracks pre-increment iteration; PARSE_* escalations/events use it.
+- **P1.3 QUALITY_RETRY status routing:** quality retry now escalates on `needs_human`/`failed` author status.
+- **P2 hardening/polish:** `CHECK(result_type IN ('status','verdict'))`, numeric-ish ordering in `getAgentResults()`, 64KB YAML parse guard, migration 002 data-loss explicitly documented in plan.
+
+### Remaining concerns / further required changes
+
+- [x] **Resume + PARSE_* still off-by-one:** on resume into a PARSE_* state, `iteration` is restored as "next iteration" (max+1 / results.length), so `lastInvokeIteration` initializes incorrectly. Fix by setting `lastInvokeIteration = iteration - 1` (or deriving from DB) when resuming into `PARSE_AUTHOR_STATUS`/`PARSE_VERDICT`/`PARSE_FIX_STATUS`/`PARSE_STATUS`, and add tests for resuming in those states. — **Fixed:** both orchestrator loops now detect resume into PARSE_* states and set `lastInvokeIteration = Math.max(0, iteration - 1)`. Tests added for resume into `PARSE_AUTHOR_STATUS`, `PARSE_VERDICT` (phase-execution), and `PARSE_VERDICT` (plan-review).
+- [x] **Phase ordering for non-integers:** `CAST(phase AS INTEGER)` truncates values like `"1.1"` → `1` (ties/misorder). If Phase 1.1-style numbering is expected in reporting, switch to `CAST(phase AS REAL)` or a split/normalize ordering function. — **Fixed:** `getAgentResults()` now uses `CAST(phase AS REAL)`. Test added covering integer, decimal, and sentinel phase ordering.
+- [x] **QUALITY_RETRY missing-status semantics:** still proceeds when status block is missing/null; decide whether that's acceptable (then stop parsing/status-routing there) or treat missing status as escalation for consistency. — **Fixed:** QUALITY_RETRY now escalates on missing/null status (fail-closed, consistent with PARSE_AUTHOR_STATUS / PARSE_FIX_STATUS). Test added.
+
+### Updated assessment
+
+- **Phase 2 completion:** ✅
+- **Ready for Phase 3:** ✅ — all addendum items resolved; adapter isolation strategy is explicit; legacy PARSE_* paths are correct and tested.
