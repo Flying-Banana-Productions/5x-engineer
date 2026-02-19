@@ -269,7 +269,7 @@ If OpenCode's structured output validation fails after retries, the SDK returns 
 
 > **Note on interim non-functionality:** This phase deletes the only working agent harness (`claude-code.ts`) before the OpenCode adapter exists. This is intentional for a speed-first, local-branch refactor — `5x plan`, `5x plan-review`, and `5x run` will throw at the factory call until Phase 3 completes. Tests for the deleted code are removed; all remaining tests must pass. Treat this phase as the start of the big-bang window.
 
-**Completion gate:** `bun test` passes. No references to `claude-code` adapter remain in `src/`. `ndjson-formatter.ts` is **renamed** to `sse-formatter.ts` (not deleted) — see 1.1 below.
+**Completion gate:** `bun test` passes. No references to `claude-code` adapter remain in `src/`. `ndjson-formatter.ts` is **renamed** to `sse-formatter.ts` (not deleted) — see 1.1 below. Commands fail with a single, user-facing message (no stack trace) while the adapter is intentionally unimplemented.
 
 ### 1.1 Remove deprecated files / rename formatter
 
@@ -320,7 +320,7 @@ export interface FiveXConfig {
 - [x] Remove `'claude-code'` from adapter enum; the `adapter` field is removed entirely (only one adapter exists)
 - [x] Add `author.model?: string` and `reviewer.model?: string`
 - [x] Update Zod schema and `defineConfig()` JSDoc types
-- [ ] Update `src/commands/init.ts` to generate config with example model strings and a comment noting remote server support is a future feature
+- [x] Update `src/commands/init.ts` to generate config with example model strings and a comment noting remote server support is a future feature
 
 ### 1.4 Stub out new agent interface
 
@@ -377,9 +377,11 @@ export interface AgentAdapter {
 
 `src/utils/agent-event-helpers.ts` currently exports `makeOnEvent()` (Claude Code NDJSON-specific), `outputSnippet()`, and `buildEscalationReason()`. The `makeOnEvent()` helper is deprecated. The other two are partially reusable but will change shape.
 
-- [x] Remove `makeOnEvent()` entirely
+- [ ] Remove `makeOnEvent()` entirely (deferred to Phase 4)
 - [x] Keep `outputSnippet()` and `buildEscalationReason()` as stubs; they will be updated in Phase 4 when the orchestrator is refactored
 - [x] Update test for `agent-event-helpers` if one exists (currently it's tested implicitly via orchestrator tests)
+
+> **Note:** `makeOnEvent()` removal is deferred to Phase 4. Orchestrator loops still call it via `LegacyAgentAdapter.invoke()`; Phase 4 rewrites orchestrators to use `AgentAdapter.invokeForStatus`/`invokeForVerdict` and drops `onEvent` entirely.
 
 ### 1.6 Verify tests pass
 
@@ -775,7 +777,7 @@ New states: `REVIEW, AUTO_FIX, APPROVED, ESCALATE`
 
 ### 4.4 Update `agent-event-helpers.ts`
 
-- [ ] Remove `makeOnEvent()` (deleted in Phase 1 — confirm gone)
+- [ ] Remove `makeOnEvent()` (deferred from Phase 1; delete in Phase 4 once orchestrators no longer pass `onEvent`)
 - [ ] Update `buildEscalationReason()`:
   - No longer takes `AgentResult` (no stdout output)
   - Takes `{ message: string; logPath?: string }` — simpler signature
@@ -905,10 +907,10 @@ Remove all structured signal instructions. Templates become simpler — they des
 
 ### 5.5 Update `commands/init.ts`
 
-- [ ] Remove `adapter` field from generated config (no longer needed)
-- [ ] Include example `author.model` and `reviewer.model` with `// e.g. "anthropic/claude-sonnet-4-6"`
-- [ ] Do **not** include a `server` block in the generated config — remote mode is not supported in v1. Add a comment in the generated config: `// OpenCode server runs locally (same host). Remote server support is a future feature.`
-- [ ] Remove any reference to Claude Code in the generated config or output messages
+- [x] Remove `adapter` field from generated config (no longer needed) (done in Phase 1)
+- [x] Include example `author.model` and `reviewer.model` with `// e.g. "anthropic/claude-sonnet-4-6"` (done in Phase 1)
+- [x] Do **not** include a `server` block in the generated config — remote mode is not supported in v1. Add a comment in the generated config: `// OpenCode server runs locally (same host). Remote server support is a future feature.` (done in Phase 1)
+- [x] Remove any reference to Claude Code in the generated config or output messages (done in Phase 1)
 
 ### 5.6 Update `src/parsers/review.ts`
 
@@ -1039,7 +1041,7 @@ Plumbing exists (DB schema has `auto` flag on runs) but human gate bypass is not
 | `src/commands/plan.ts` | 5 | Async adapter lifecycle |
 | `src/commands/run.ts` | 5 | Async adapter lifecycle; pass reviewer model via `InvokeOptions.model` |
 | `src/commands/plan-review.ts` | 5 | Async adapter lifecycle |
-| `src/commands/init.ts` | 5 | Update generated config; no remote server block |
+| `src/commands/init.ts` | 1 | Update generated config; OpenCode-only, no remote server block |
 
 ### Unchanged files
 

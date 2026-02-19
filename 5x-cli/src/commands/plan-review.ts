@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
-import type { LegacyAgentAdapter } from "../agents/types.js";
+import type { AgentAdapter, LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
@@ -104,8 +104,19 @@ export default defineCommand({
 		console.log(`  Review path: ${reviewPath}`);
 		console.log();
 
-		const authorAdapter = await createAndVerifyAdapter(config.author);
-		const reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
+		let authorAdapter: AgentAdapter;
+		let reviewerAdapter: AgentAdapter;
+		try {
+			authorAdapter = await createAndVerifyAdapter(config.author);
+			reviewerAdapter = await createAndVerifyAdapter(config.reviewer);
+		} catch {
+			console.error(
+				"\n  Error: Agent adapter not yet available. " +
+					"This is expected while 5x is being refactored.",
+			);
+			process.exitCode = 1;
+			return;
+		}
 
 		// Resolve effective quiet mode: explicit flag > TTY detection
 		const effectiveQuiet =

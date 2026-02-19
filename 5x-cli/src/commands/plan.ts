@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { createAndVerifyAdapter } from "../agents/factory.js";
-import type { LegacyAgentAdapter } from "../agents/types.js";
+import type { AgentAdapter, LegacyAgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
@@ -173,7 +173,26 @@ export default defineCommand({
 		});
 
 		// Initialize author adapter
-		const adapter = await createAndVerifyAdapter(config.author);
+		let adapter: AgentAdapter;
+		try {
+			adapter = await createAndVerifyAdapter(config.author);
+		} catch (err) {
+			appendRunEvent(db, {
+				runId,
+				eventType: "error",
+				data: {
+					error:
+						err instanceof Error ? err.message : "Unknown adapter init error",
+				},
+			});
+			updateRunStatus(db, runId, "failed");
+			console.error(
+				"\n  Error: Agent adapter not yet available. " +
+					"This is expected while 5x is being refactored.",
+			);
+			process.exitCode = 1;
+			return;
+		}
 
 		// Render prompt
 		const template = renderTemplate("author-generate-plan", {

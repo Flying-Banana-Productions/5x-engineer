@@ -56,7 +56,8 @@ describe("5x init", () => {
 			const configPath = join(tmp, "5x.config.js");
 			expect(existsSync(configPath)).toBe(true);
 			const configContent = readFileSync(configPath, "utf-8");
-			expect(configContent).toContain("adapter:");
+			expect(configContent).not.toContain("adapter:");
+			expect(configContent).toContain("model:");
 			expect(configContent).toContain("qualityGates");
 			expect(configContent).toContain("@type");
 
@@ -110,7 +111,8 @@ describe("5x init", () => {
 			// Config was overwritten
 			const content = readFileSync(configPath, "utf-8");
 			expect(content).not.toContain("old config");
-			expect(content).toContain("adapter:");
+			expect(content).not.toContain("adapter:");
+			expect(content).toContain("model:");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -228,21 +230,17 @@ describe("ensureGitignore", () => {
 });
 
 describe("generateConfigContent", () => {
-	test("generates valid JS config with specified adapter", async () => {
+	test("generates valid JS config with model examples", async () => {
 		const { generateConfigContent } = await import(
 			"../../src/commands/init.js"
 		);
-		const content = generateConfigContent("claude-code");
-		expect(content).toContain("claude-code");
+		const content = generateConfigContent();
 		expect(content).toContain("@type");
 		expect(content).toContain("export default");
-	});
-
-	test("uses opencode adapter when specified", async () => {
-		const { generateConfigContent } = await import(
-			"../../src/commands/init.js"
-		);
-		const content = generateConfigContent("opencode");
-		expect(content).toContain("opencode");
+		expect(content).toContain("author:");
+		expect(content).toContain("reviewer:");
+		expect(content).toContain("model:");
+		expect(content).not.toContain("adapter:");
+		expect(content).toContain("Remote server support is a future feature");
 	});
 });

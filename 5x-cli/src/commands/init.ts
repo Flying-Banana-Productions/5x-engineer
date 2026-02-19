@@ -3,44 +3,17 @@ import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
 
 /**
- * Detect which agent harnesses are available by checking CLI binaries.
- * Uses spawnSync to avoid nested async subprocess issues.
+ * Generate the 5x.config.js content.
  */
-function detectAdapter(): "claude-code" | "opencode" {
-	try {
-		const result = Bun.spawnSync(["claude", "--version"], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode === 0) return "claude-code";
-	} catch {
-		// claude not found
-	}
-
-	try {
-		const result = Bun.spawnSync(["opencode", "--version"], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode === 0) return "opencode";
-	} catch {
-		// opencode not found
-	}
-
-	return "claude-code"; // default
-}
-
-/**
- * Generate the 5x.config.js content with detected defaults.
- */
-function generateConfigContent(adapter: "claude-code" | "opencode"): string {
+function generateConfigContent(): string {
 	return `/** @type {import('5x-cli').FiveXConfig} */
 export default {
+  // OpenCode server runs locally (same host). Remote server support is a future feature.
   author: {
-    adapter: '${adapter}',
+    // model: "anthropic/claude-sonnet-4-6",
   },
   reviewer: {
-    adapter: '${adapter}',
+    // model: "anthropic/claude-sonnet-4-6",
   },
   qualityGates: [
     // Add your test/lint/build commands here, e.g.:
@@ -106,13 +79,12 @@ export default defineCommand({
 				`  Skipped 5x.config.js (already exists, use --force to overwrite)`,
 			);
 		} else {
-			const adapter = detectAdapter();
-			const configContent = generateConfigContent(adapter);
+			const configContent = generateConfigContent();
 			writeFileSync(configPath, configContent, "utf-8");
 			console.log(
 				configExists && args.force
-					? `  Overwrote 5x.config.js (detected adapter: ${adapter})`
-					: `  Created 5x.config.js (detected adapter: ${adapter})`,
+					? `  Overwrote 5x.config.js`
+					: `  Created 5x.config.js`,
 			);
 		}
 
@@ -138,4 +110,4 @@ export default defineCommand({
 });
 
 // Export helpers for testing
-export { detectAdapter, ensureGitignore, generateConfigContent };
+export { ensureGitignore, generateConfigContent };
