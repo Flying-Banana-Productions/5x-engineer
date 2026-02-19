@@ -1,8 +1,9 @@
 # 5x CLI — TUI Integration
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** February 19, 2026
-**Status:** Draft
+**Updated:** February 19, 2026 — `opencode attach` verified working against a programmatically-started server; design committed
+**Status:** Approved for implementation
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
 
 ---
@@ -71,15 +72,19 @@ highlighting, model switching, and session history for free.
 
 ### Key insight
 
-`opencode attach` connects an OpenCode TUI to an existing server. The TUI
-becomes a pure display client — it renders SSE events the server emits. When
-`client.session.prompt()` is running, the server pushes streaming events to
-both the TUI (for display) and our SSE subscriber (for logging). When the
+`opencode attach <url>` connects an OpenCode TUI to an existing server started
+by `opencode serve` (or `createOpencode()` from the SDK). This has been
+manually verified: a server started programmatically via the SDK accepts a TUI
+attached with `opencode attach http://127.0.0.1:<port>`, and the TUI renders
+session activity correctly.
+
+The TUI becomes a pure display client — it renders SSE events the server emits.
+When `client.session.prompt()` is running, the server pushes streaming events
+to both the TUI (for display) and our SSE subscriber (for logging). When the
 prompt resolves, 5x-cli gets the structured result as today. The TUI has
 already displayed the full conversation in real time.
 
-This means the structured output pipeline requires zero changes. The TUI is
-bolt-on.
+The structured output pipeline requires zero changes. The TUI is bolt-on.
 
 ---
 
@@ -304,7 +309,9 @@ const serverUrl = adapter.serverUrl; // NEW: expose for TUI attach
   no-op controller's methods resolve without side effects
 
 **Completion gate:** `5x run --no-tui plan.md` behaves identically to today.
-`5x run plan.md` in a TTY spawns the TUI and keeps it alive.
+`5x run plan.md` in a TTY spawns the TUI via `opencode attach` and keeps it
+alive. Manual verification confirmed `opencode attach` works against a
+programmatically-started server.
 
 ### Phase 3: TUI session integration
 
@@ -398,12 +405,7 @@ repo shows clean TUI experience across a full multi-phase run.
 
 ## Open Questions
 
-1. **`opencode attach` reliability:** This is a documented but relatively new
-   code path. Validate it works reliably with a programmatically-started server
-   before committing to it. Fallback: use `createOpencodeTui({ session })` if
-   `attach` is unreliable, accepting the port collision tradeoff.
-
-2. **Permission prompts in TUI mode:** When the agent requests a tool
+1. **Permission prompts in TUI mode:** When the agent requests a tool
    permission, the TUI shows a native dialog. In headless mode, 5x-cli would
    need to auto-reply via `client.permission.reply()`. Clarify the expected
    permission model for `5x run` (likely: auto-approve file read/write within
