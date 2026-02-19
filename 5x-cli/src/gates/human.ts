@@ -25,6 +25,12 @@ export interface EscalationEvent {
 	iteration: number;
 	/** Path to the NDJSON agent log file, when the escalation originated from an agent invocation. */
 	logPath?: string;
+	/**
+	 * The state machine state to resume when the user chooses "continue".
+	 * Defaults to "EXECUTE" (re-run author) if not set, but reviewer timeouts
+	 * and other non-author escalations should set this to "REVIEW", "AUTO_FIX", etc.
+	 */
+	retryState?: string;
 }
 
 export type EscalationResponse =

@@ -349,8 +349,13 @@ export async function runPlanReviewLoop(
 		data: { planPath, reviewPath },
 	});
 
+	// Tracks the state before each transition to ESCALATE, so "continue"
+	// resumes the correct state (REVIEW or AUTO_FIX) rather than always REVIEW.
+	let preEscalateState: LoopState = "REVIEW";
+
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
+		if (state !== "ESCALATE") preEscalateState = state;
 		// Guard: max iterations
 		if (iteration >= maxIterations * 2) {
 			// Each "iteration" is one agent call; a review cycle is 2 calls (reviewer + author fix)
@@ -889,7 +894,8 @@ export async function runPlanReviewLoop(
 
 				switch (decision) {
 					case "continue":
-						state = "REVIEW";
+						// Resume the state that triggered the escalation (REVIEW or AUTO_FIX)
+						state = preEscalateState;
 						break;
 					case "approve":
 						state = "APPROVED";

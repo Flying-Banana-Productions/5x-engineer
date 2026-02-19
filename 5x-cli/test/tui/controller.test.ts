@@ -29,7 +29,7 @@ function createMockProcess() {
 
 	return {
 		proc: { exited, kill: killFn },
-		exit: (code?: number) => resolveExited!(code ?? 0),
+		exit: (code?: number) => resolveExited?.(code ?? 0),
 		killFn,
 	};
 }

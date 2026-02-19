@@ -329,6 +329,10 @@ export async function runPhaseExecutionLoop(
 		let qualityResult: QualityResult | undefined;
 		let _phaseAborted = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
+		// Tracks the state that most recently transitioned to ESCALATE, so that
+		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
+		// always re-running the author (EXECUTE).
+		let preEscalateState: PhaseState = "EXECUTE";
 
 		// Clear resume markers after consuming them — only the first phase
 		// in the loop should get the restored state.
@@ -362,6 +366,10 @@ export async function runPhaseExecutionLoop(
 
 		// --- Inner loop: per-phase state machine ---
 		while (state !== "PHASE_COMPLETE" && state !== "ABORTED") {
+			// Capture the state at the top of each iteration. Any transition to
+			// "ESCALATE" within the switch will leave this as the originating state,
+			// allowing the ESCALATE handler to resume the correct state on "continue".
+			if (state !== "ESCALATE") preEscalateState = state;
 			switch (state) {
 				// ───────────────────────────────────────────────────────
 				// EXECUTE: invoke author to implement the phase
@@ -1501,11 +1509,12 @@ export async function runPhaseExecutionLoop(
 
 					switch (response.action) {
 						case "continue":
-							// Re-run author with the same phase; plumb guidance if provided
+							// Resume the state that triggered the escalation (not always
+							// EXECUTE — could be REVIEW, AUTO_FIX, QUALITY_RETRY, etc.)
 							if ("guidance" in response && response.guidance) {
 								userGuidance = response.guidance;
 							}
-							state = "EXECUTE";
+							state = preEscalateState;
 							break;
 						case "approve":
 							state = "PHASE_GATE";
