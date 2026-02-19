@@ -1070,14 +1070,29 @@ describe("P1.2: events without session ID are skipped", () => {
 // ---------------------------------------------------------------------------
 
 describe("factory creates real adapter (Phase 5)", () => {
-	test("createAndVerifyAdapter rejects when server unavailable", async () => {
+	test("createAndVerifyAdapter works or rejects with actionable message", async () => {
 		const { createAndVerifyAdapter } = await import(
 			"../../src/agents/factory.js"
 		);
-		// Without a running OpenCode server, should throw with actionable message
-		await expect(createAndVerifyAdapter({})).rejects.toThrow(
-			/OpenCode server failed to start/,
-		);
+		// Hermetic: passes whether OpenCode server is available or not.
+		// If available, validates the adapter interface; if not, validates
+		// the error is actionable (matches factory.test.ts pattern).
+		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>> | null =
+			null;
+		try {
+			adapter = await createAndVerifyAdapter({});
+			// If we get here, the server started — validate the interface
+			expect(typeof adapter.invokeForStatus).toBe("function");
+			expect(typeof adapter.invokeForVerdict).toBe("function");
+			expect(typeof adapter.verify).toBe("function");
+			expect(typeof adapter.close).toBe("function");
+		} catch (err) {
+			// Server unavailable — validate error is actionable
+			expect(err).toBeInstanceOf(Error);
+			expect((err as Error).message).toMatch(/OpenCode server/);
+		} finally {
+			await adapter?.close();
+		}
 	});
 });
 

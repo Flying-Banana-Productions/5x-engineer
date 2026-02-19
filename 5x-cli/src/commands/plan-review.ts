@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineCommand } from "citty";
-import { createAndVerifyAdapter } from "../agents/factory.js";
+import {
+	createAndVerifyAdapter,
+	registerAdapterShutdown,
+} from "../agents/factory.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
@@ -114,6 +117,8 @@ export default defineCommand({
 			return;
 		}
 
+		registerAdapterShutdown(adapter);
+
 		// Resolve effective quiet mode: explicit flag > TTY detection
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
@@ -156,7 +161,7 @@ export default defineCommand({
 			}
 
 			if (!result.approved) {
-				process.exit(1);
+				process.exitCode = 1;
 			}
 		} finally {
 			await adapter.close();

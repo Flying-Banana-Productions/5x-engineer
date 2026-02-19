@@ -117,9 +117,10 @@ async function writeEventsToLog(
 	abortSignal: AbortSignal,
 	opts: { quiet?: boolean },
 ): Promise<void> {
-	// Ensure log directory exists
+	// Ensure log directory exists with restricted permissions (logs may contain
+	// sensitive content — P0.2: enforce 0700 so they are not group/world-readable)
 	const logDir = path.dirname(logPath);
-	fs.mkdirSync(logDir, { recursive: true });
+	fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
 	const logStream = fs.createWriteStream(logPath, {
 		flags: "a",

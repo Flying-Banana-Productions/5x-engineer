@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { defineCommand } from "citty";
-import { createAndVerifyAdapter } from "../agents/factory.js";
+import {
+	createAndVerifyAdapter,
+	registerAdapterShutdown,
+} from "../agents/factory.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
@@ -250,6 +253,8 @@ export default defineCommand({
 			return;
 		}
 
+		registerAdapterShutdown(adapter);
+
 		try {
 			const result = await runPhaseExecutionLoop(
 				effectivePlanPath,
@@ -291,7 +296,7 @@ export default defineCommand({
 			console.log();
 
 			if (!result.complete) {
-				process.exit(1);
+				process.exitCode = 1;
 			}
 		} finally {
 			await adapter.close();

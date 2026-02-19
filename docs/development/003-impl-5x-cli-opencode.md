@@ -1,8 +1,8 @@
 # 5x CLI — OpenCode-First Refactor
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** February 18, 2026
-**Updated:** February 19, 2026 — Phase 4 review corrections: stable worktree DB identity via `canonicalPlanPath` (P0.2), exact-step resume routing via `getStepResult()` replacing phase-wide `getLatestStatus`/`getLatestVerdict` (P1.1), `log_path` propagated into escalation events from resume paths (P1.1); Phase 5 highlights: adapter lifecycle `close()` in `finally` (P0.1), result semantics and audit growth (P2); prior: Phase 3 review corrections (v1.2)
+**Updated:** February 19, 2026 — **Phase 5 review corrections (v1.4):** no `process.exit()` post-adapter so `finally` always runs (P0.1), log dir permissions `0o700` (P0.2), hermetic factory tests (P1.1), typed `AdapterConfig` parameter (P1.2), adapter-aware signal shutdown via `registerAdapterShutdown()` (P2), model selection semantics documented (P2); prior: Phase 4 review corrections (v1.3), Phase 3 review corrections (v1.2)
 **Status:** Draft
 **Supersedes:** [001-impl-5x-cli.md](./001-impl-5x-cli.md) (phases 6–7 are cancelled; this document governs all remaining work)
 
@@ -881,7 +881,16 @@ Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
 
 > **Phase 4 review P0.1 — Adapter lifecycle (must-fix early in Phase 5):** Once `createAndVerifyAdapter()` is enabled, commands that create an adapter **must** `await adapter.close()` in a `finally`, including error/early-return paths. Without this, the managed OpenCode server and associated resources (ports, child processes, file handles) will leak. This applies to `run.ts`, `plan-review.ts`, and `plan.ts`. The pseudo-code below shows the required pattern. The Phase 4 review flagged this as P0 because it causes non-deterministic teardown on repeated runs and complicates Ctrl-C handling.
 
-**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`. All commands close the adapter in `finally`.
+> **Phase 5 review corrections (v1.4):**
+>
+> - **P0.1 — No `process.exit()` post-adapter:** After the adapter is initialized, commands must not call `process.exit()` because it bypasses async `finally` cleanup and leaks the managed server. All post-adapter `process.exit(1)` calls in `run.ts`, `plan-review.ts`, and `plan.ts` are replaced with `process.exitCode = 1` (+ `return` where needed to skip the success path) so `finally { await adapter.close() }` always runs.
+> - **P0.2 — Log directory permissions `0o700`:** `writeEventsToLog()` in `opencode.ts` now creates log directories with `mode: 0o700` to prevent group/world-readable logs (which may contain sensitive content). This is the single creation site — `plan.ts` computes `logDir` but does not create it.
+> - **P1.1 — Hermetic factory tests:** The factory test in `opencode.test.ts` uses the success-or-actionable-error pattern (try/catch/finally) matching `factory.test.ts`, so it passes regardless of whether OpenCode is installed on the test machine.
+> - **P1.2 — Typed `AdapterConfig` parameter:** `createAndVerifyAdapter()` in `factory.ts` now accepts `AdapterConfig` (from `types.ts`) instead of `Record<string, unknown>`, enabling compile-time validation of the config shape.
+> - **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown()` added to `factory.ts`. Registers a `process.on("exit")` handler that calls `adapter.close()` (whose body is synchronous — `server.close()` runs immediately). Also registers SIGINT/SIGTERM handlers that call `process.exit()` to ensure the "exit" event fires for cleanup, rather than relying on the default signal handler (which terminates without the "exit" event). All three commands call this after adapter creation.
+> - **P2 — Model selection semantics documented:** `createAndVerifyAdapter()` JSDoc documents that `config.model` (typically `config.author`) becomes the adapter's default model. Reviewer model is passed as a per-invocation override via `InvokeOptions.model` at each call site, not baked into the adapter.
+
+**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`. All commands close the adapter in `finally`. No post-adapter `process.exit()` calls remain.
 
 ### 5.1 Update `commands/run.ts`
 
@@ -889,9 +898,11 @@ The run command creates the adapter once and passes it to the orchestrator:
 
 ```typescript
 // Pseudo-code for new run command adapter lifecycle
-const adapter = await createAndVerifyAdapter(config) // single adapter for both roles
+const adapter = await createAndVerifyAdapter(config.author) // single adapter for both roles
+registerAdapterShutdown(adapter)  // P2: cleanup on SIGINT/SIGTERM via "exit" event
 try {
   await runPhaseExecutionLoop({ adapter, ... })
+  if (!result.complete) process.exitCode = 1  // P0.1: never process.exit() post-adapter
 } finally {
   await adapter.close()
 }
@@ -979,6 +990,17 @@ The following items from the Phase 4 review are lower priority and are tracked h
 - **Result semantics:** `PhaseExecutionResult.aborted` currently conflates "not complete" with "aborted" — the `aborted` field is true whenever the run is not fully complete, whether due to user abort, escalation, or partial completion. Consider distinguishing `failed` vs `aborted` explicitly to avoid misleading CLI output (e.g., separate `aborted: boolean` from `failed: boolean`, or use a union status type).
 
 - **Audit record growth:** Structured audit comments (`<!-- 5x:structured:v1 ... -->`) are append-only with no cap. For long-running plans with many iterations, review artifacts can accumulate significant audit data. Consider a cap/rotation strategy or a config flag (`auditRecordLimit?`) if review artifacts become noisy. The DB remains the source of truth, so audit records can be truncated without data loss.
+
+### 5.9 Phase 5 review corrections
+
+The following items from the Phase 5 execution review have been addressed:
+
+- [x] **P0.1 — No `process.exit()` post-adapter:** Replaced `process.exit(1)` with `process.exitCode = 1` (+ `return`) in `run.ts` (1 site), `plan-review.ts` (1 site), `plan.ts` (3 sites) so `finally { await adapter.close() }` always runs
+- [x] **P0.2 — Log directory permissions `0o700`:** `writeEventsToLog()` in `opencode.ts` now passes `mode: 0o700` to `mkdirSync`
+- [x] **P1.1 — Hermetic factory test:** `test/agents/opencode.test.ts` factory test rewritten to try/catch/finally pattern (success-or-actionable-error)
+- [x] **P1.2 — Typed factory config:** `createAndVerifyAdapter()` parameter changed from `Record<string, unknown>` to `AdapterConfig`
+- [x] **P2 — Adapter-aware signal shutdown:** `registerAdapterShutdown(adapter)` added to `factory.ts`; called by all three commands after adapter creation. Registers `process.on("exit")` handler + SIGINT/SIGTERM handlers for correct cleanup
+- [x] **P2 — Model selection semantics:** Documented in `createAndVerifyAdapter()` JSDoc that `config.model` is the adapter default (author model); reviewer model is a per-invocation override via `InvokeOptions.model`
 
 ---
 
@@ -1082,7 +1104,7 @@ Plumbing exists (DB schema has `auto` flag on runs) but human gate bypass is not
 | File | Phase | Change summary |
 |------|-------|----------------|
 | `src/agents/types.ts` | 1 | New `AgentAdapter` interface: `invokeForStatus`, `invokeForVerdict`, `verify`, `close` |
-| `src/agents/factory.ts` | 1, 3 | Async factory, OpenCode only, no role parameter |
+| `src/agents/factory.ts` | 1, 3, 5 | Async factory, OpenCode only, no role parameter; typed `AdapterConfig` (P1.2); `registerAdapterShutdown()` (P2) |
 | `src/config.ts` | 1 | Remove `claude-code` adapter and `server` block; add `model` fields |
 | `src/utils/sse-formatter.ts` | 1, 3 | Renamed from `ndjson-formatter.ts` (Phase 1); internals updated for SSE event shapes (Phase 3) |
 | `test/utils/sse-formatter.test.ts` | 1, 3 | Renamed from `ndjson-formatter.test.ts` (Phase 1); tests updated for SSE (Phase 3) |

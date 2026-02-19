@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { defineCommand } from "citty";
-import { createAndVerifyAdapter } from "../agents/factory.js";
+import {
+	createAndVerifyAdapter,
+	registerAdapterShutdown,
+} from "../agents/factory.js";
 import type { AgentAdapter } from "../agents/types.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -197,6 +200,8 @@ export default defineCommand({
 			return;
 		}
 
+		registerAdapterShutdown(adapter);
+
 		try {
 			// Render prompt
 			const template = renderTemplate("author-generate-plan", {
@@ -271,7 +276,8 @@ export default defineCommand({
 					`  Author needs human input: ${status.reason ?? "no reason given"}`,
 				);
 				console.log();
-				process.exit(1);
+				process.exitCode = 1;
+				return;
 			}
 
 			if (status.result === "failed") {
@@ -284,7 +290,8 @@ export default defineCommand({
 				console.error(
 					`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
 				);
-				process.exit(1);
+				process.exitCode = 1;
+				return;
 			}
 
 			// Verify file was created
@@ -298,7 +305,8 @@ export default defineCommand({
 				console.error(
 					`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
 				);
-				process.exit(1);
+				process.exitCode = 1;
+				return;
 			}
 
 			// Record plan in DB
