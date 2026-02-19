@@ -163,12 +163,9 @@ export function formatSseEvent(event: unknown): string | null {
 
 	// OpenCode SSE events have a properties field
 	if (props) {
-		// Text delta streaming
-		if (type === "message.part.delta") {
-			const delta = props.delta as string | undefined;
-			if (delta) return `  ${delta}`;
-			return null;
-		}
+		// message.part.delta is handled upstream in writeEventsToLog (inline
+		// streaming without newlines). Reaching here would be a bug — suppress.
+		if (type === "message.part.delta") return null;
 
 		// Part updates (tool calls, text, step-finish)
 		if (type === "message.part.updated") {
@@ -184,11 +181,9 @@ export function formatSseEvent(event: unknown): string | null {
 				return formatStepFinish(part);
 			}
 
-			// Text parts: use delta if available
-			if (partType === "text") {
-				const delta = props.delta as string | undefined;
-				if (delta) return `  ${delta}`;
-			}
+			// Text parts: delta is handled inline in writeEventsToLog.
+			// message.part.updated for text has no separate formatted output.
+			if (partType === "text") return null;
 
 			return null;
 		}

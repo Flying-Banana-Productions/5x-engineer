@@ -8,9 +8,11 @@ import { formatSseEvent } from "../../src/utils/sse-formatter.js";
 describe("formatSseEvent — OpenCode SSE events", () => {
 	// -----------------------------------------------------------------------
 	// message.part.delta (text streaming)
+	// Deltas are handled inline in writeEventsToLog — formatSseEvent always
+	// returns null for them so the caller can own newline placement.
 	// -----------------------------------------------------------------------
 
-	test("message.part.delta → indented delta text", () => {
+	test("message.part.delta → null (handled inline upstream)", () => {
 		const event = {
 			type: "message.part.delta",
 			properties: {
@@ -20,7 +22,7 @@ describe("formatSseEvent — OpenCode SSE events", () => {
 				delta: "Hello world",
 			},
 		};
-		expect(formatSseEvent(event)).toBe("  Hello world");
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	test("message.part.delta with empty delta → null", () => {
@@ -40,7 +42,7 @@ describe("formatSseEvent — OpenCode SSE events", () => {
 	// message.part.updated — text parts
 	// -----------------------------------------------------------------------
 
-	test("message.part.updated text with delta → indented delta", () => {
+	test("message.part.updated text with delta → null (delta handled inline upstream)", () => {
 		const event = {
 			type: "message.part.updated",
 			properties: {
@@ -54,7 +56,9 @@ describe("formatSseEvent — OpenCode SSE events", () => {
 				delta: "here",
 			},
 		};
-		expect(formatSseEvent(event)).toBe("  here");
+		// The delta field on part.updated is also suppressed — deltas are
+		// streamed inline via the message.part.delta event path in writeEventsToLog.
+		expect(formatSseEvent(event)).toBeNull();
 	});
 
 	test("message.part.updated text without delta → null", () => {

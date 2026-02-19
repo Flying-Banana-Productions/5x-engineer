@@ -145,6 +145,16 @@ async function writeEventsToLog(
 		const { stream } = await client.event.subscribe(undefined, {
 			signal: abortSignal,
 		});
+
+		// Track which part IDs are text parts so we only stream deltas for text,
+		// not reasoning tokens or other part types (which arrive as delta events
+		// but should not be printed inline).
+		const textPartIds = new Set<string>();
+		// Whether we are currently mid-stream (a delta was written without a
+		// trailing newline yet). Used to terminate the line before the next
+		// formatted event.
+		let streamingLine = false;
+
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
 
@@ -161,11 +171,54 @@ async function writeEventsToLog(
 
 			// Console output (when not quiet)
 			if (!opts.quiet) {
+				const ev = event as Record<string, unknown>;
+				const type = ev.type as string | undefined;
+				const props = ev.properties as Record<string, unknown> | undefined;
+
+				// Register text parts so we know which delta events to stream.
+				if (type === "message.part.updated" && props) {
+					const part = props.part as Record<string, unknown> | undefined;
+					if (part?.type === "text") {
+						const pid = part.id as string | undefined;
+						if (pid) textPartIds.add(pid);
+					}
+				}
+
+				// Delta events: write inline (no newline) to build up a continuous
+				// line of streaming text. Only emit for known text parts — reasoning
+				// tokens and other part types are suppressed.
+				if (type === "message.part.delta" && props) {
+					const partId = props.partID as string | undefined;
+					const delta = props.delta as string | undefined;
+					if (partId && textPartIds.has(partId) && delta) {
+						if (!streamingLine) {
+							// Indent the first token of a new streaming line
+							process.stdout.write("  ");
+						}
+						process.stdout.write(delta);
+						streamingLine = true;
+						continue;
+					}
+					// Non-text delta (reasoning etc.) — suppress, skip formatted path
+					continue;
+				}
+
+				// Any non-delta event: terminate the current streaming line first
+				if (streamingLine) {
+					process.stdout.write("\n");
+					streamingLine = false;
+				}
+
 				const formatted = formatSseEvent(event);
 				if (formatted != null) {
 					process.stdout.write(`${formatted}\n`);
 				}
 			}
+		}
+
+		// Terminate any trailing streaming line
+		if (!opts.quiet && streamingLine) {
+			process.stdout.write("\n");
 		}
 	} catch (err) {
 		// Stream errors are expected on abort — suppress them
