@@ -1,10 +1,385 @@
 import { describe, expect, test } from "bun:test";
 import { formatSseEvent } from "../../src/utils/sse-formatter.js";
 
-describe("formatSseEvent", () => {
-	// ---------------------------------------------------------------------------
+// ===========================================================================
+// OpenCode SSE event shapes (primary — Phase 3+)
+// ===========================================================================
+
+describe("formatSseEvent — OpenCode SSE events", () => {
+	// -----------------------------------------------------------------------
+	// message.part.delta (text streaming)
+	// -----------------------------------------------------------------------
+
+	test("message.part.delta → indented delta text", () => {
+		const event = {
+			type: "message.part.delta",
+			properties: {
+				sessionID: "sess-1",
+				messageID: "msg-1",
+				partID: "part-1",
+				delta: "Hello world",
+			},
+		};
+		expect(formatSseEvent(event)).toBe("  Hello world");
+	});
+
+	test("message.part.delta with empty delta → null", () => {
+		const event = {
+			type: "message.part.delta",
+			properties: {
+				sessionID: "sess-1",
+				messageID: "msg-1",
+				partID: "part-1",
+				delta: "",
+			},
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	// -----------------------------------------------------------------------
+	// message.part.updated — text parts
+	// -----------------------------------------------------------------------
+
+	test("message.part.updated text with delta → indented delta", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "text",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					text: "Full text here",
+				},
+				delta: "here",
+			},
+		};
+		expect(formatSseEvent(event)).toBe("  here");
+	});
+
+	test("message.part.updated text without delta → null", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "text",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					text: "Full text",
+				},
+			},
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	// -----------------------------------------------------------------------
+	// message.part.updated — tool parts
+	// -----------------------------------------------------------------------
+
+	test("tool part running → [tool] with name and input", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					callID: "call-1",
+					tool: "bash",
+					state: {
+						status: "running",
+						input: { command: "ls -la" },
+						time: { start: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toContain("[tool]");
+		expect(result).toContain("bash:");
+		expect(result).toContain("ls -la");
+	});
+
+	test("tool part running with title → uses title as label", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					callID: "call-1",
+					tool: "bash",
+					state: {
+						status: "running",
+						input: { command: "echo hi" },
+						title: "Running command",
+						time: { start: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toContain("[tool] Running command:");
+	});
+
+	test("tool part completed → [result] with output", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					callID: "call-1",
+					tool: "bash",
+					state: {
+						status: "completed",
+						input: { command: "ls" },
+						output: "file1.ts\nfile2.ts",
+						title: "bash",
+						metadata: {},
+						time: { start: Date.now(), end: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toBe("  [result] file1.ts\nfile2.ts");
+	});
+
+	test("tool part completed with long output → truncated", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					callID: "call-1",
+					tool: "bash",
+					state: {
+						status: "completed",
+						input: {},
+						output: "x".repeat(300),
+						title: "bash",
+						metadata: {},
+						time: { start: Date.now(), end: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).not.toBeNull();
+		const content = (result ?? "").replace("  [result] ", "");
+		expect(content.length).toBe(200);
+	});
+
+	test("tool part completed with empty output → null", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					tool: "bash",
+					state: {
+						status: "completed",
+						input: {},
+						output: "",
+						title: "bash",
+						metadata: {},
+						time: { start: Date.now(), end: Date.now() },
+					},
+				},
+			},
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	test("tool part error → [error] with message", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					callID: "call-1",
+					tool: "bash",
+					state: {
+						status: "error",
+						input: { command: "bad-cmd" },
+						error: "command not found",
+						time: { start: Date.now(), end: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toContain("[error] bash:");
+		expect(result).toContain("command not found");
+	});
+
+	test("tool part pending → null", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					tool: "bash",
+					state: {
+						status: "pending",
+						input: {},
+						raw: "{}",
+					},
+				},
+			},
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	test("tool part with large input → bounded key summary", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "tool",
+					tool: "write",
+					state: {
+						status: "running",
+						input: { path: "/tmp/file.ts", content: "x".repeat(200) },
+						time: { start: Date.now() },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).not.toBeNull();
+		expect(result).toContain("[tool]");
+		const inputPart = (result ?? "").replace(/.*: /, "");
+		expect(inputPart.length).toBeLessThanOrEqual(124);
+	});
+
+	// -----------------------------------------------------------------------
+	// message.part.updated — step-finish
+	// -----------------------------------------------------------------------
+
+	test("step-finish → [done] with cost and tokens", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "step-finish",
+					sessionID: "sess-1",
+					messageID: "msg-1",
+					id: "part-1",
+					reason: "endTurn",
+					cost: 0.0312,
+					tokens: {
+						input: 1000,
+						output: 500,
+						reasoning: 0,
+						cache: { read: 0, write: 0 },
+					},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toContain("[done]");
+		expect(result).toContain("endTurn");
+		expect(result).toContain("$0.0312");
+		expect(result).toContain("1000→500");
+	});
+
+	test("step-finish without cost → cost=unknown", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "step-finish",
+					reason: "endTurn",
+					tokens: {},
+				},
+			},
+		};
+		const result = formatSseEvent(event);
+		expect(result).toContain("cost=unknown");
+	});
+
+	// -----------------------------------------------------------------------
+	// session.error
+	// -----------------------------------------------------------------------
+
+	test("session.error → [error] with message", () => {
+		const event = {
+			type: "session.error",
+			properties: {
+				sessionID: "sess-1",
+				error: "Provider connection lost",
+			},
+		};
+		expect(formatSseEvent(event)).toBe("  [error] Provider connection lost");
+	});
+
+	test("session.error without error string → null", () => {
+		const event = {
+			type: "session.error",
+			properties: { sessionID: "sess-1" },
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	// -----------------------------------------------------------------------
+	// Other/unknown OpenCode events → null
+	// -----------------------------------------------------------------------
+
+	test("session.status → null (suppressed)", () => {
+		const event = {
+			type: "session.status",
+			properties: { sessionID: "sess-1", status: { type: "busy" } },
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	test("session.idle → null (suppressed)", () => {
+		const event = {
+			type: "session.idle",
+			properties: { sessionID: "sess-1" },
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	test("message.part.updated with no part → null", () => {
+		const event = {
+			type: "message.part.updated",
+			properties: {},
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+
+	test("unknown event with properties → null", () => {
+		const event = {
+			type: "file.edited",
+			properties: { file: "some-file.ts" },
+		};
+		expect(formatSseEvent(event)).toBeNull();
+	});
+});
+
+// ===========================================================================
+// Legacy NDJSON shapes (Claude Code format — backward compat)
+// ===========================================================================
+
+describe("formatSseEvent — Legacy NDJSON events", () => {
+	// -----------------------------------------------------------------------
 	// system init
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("system init → [session] line with model, suppresses tools", () => {
 		const event = {
@@ -12,7 +387,7 @@ describe("formatSseEvent", () => {
 			subtype: "init",
 			model: "claude-opus-4-6",
 			session_id: "abc123",
-			tools: [{ name: "Bash" }, { name: "Read" }], // should be suppressed
+			tools: [{ name: "Bash" }, { name: "Read" }],
 		};
 		expect(formatSseEvent(event)).toBe("  [session] model=claude-opus-4-6");
 	});
@@ -27,9 +402,9 @@ describe("formatSseEvent", () => {
 		expect(formatSseEvent(event)).toBeNull();
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// assistant messages — text
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("assistant text → indented text", () => {
 		const event = {
@@ -61,9 +436,9 @@ describe("formatSseEvent", () => {
 		expect(formatSseEvent(event)).toBeNull();
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// assistant messages — tool_use
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("assistant tool_use → [tool] line with name and input summary", () => {
 		const event = {
@@ -83,9 +458,7 @@ describe("formatSseEvent", () => {
 		expect(result).toContain("ls -la");
 	});
 
-	test("assistant tool_use with long input → bounded key summary (no large allocation)", () => {
-		// Input whose JSON form exceeds TOOL_INPUT_LIMIT (120 chars).
-		// safeInputSummary produces a key-only summary to avoid retaining huge strings.
+	test("assistant tool_use with long input → bounded key summary", () => {
 		const longInput = { command: "x".repeat(200) };
 		const event = {
 			type: "assistant",
@@ -102,10 +475,8 @@ describe("formatSseEvent", () => {
 		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
 		if (!result) throw new Error("Expected non-null result");
-		// Output must be bounded (well under the 120-char limit for the key summary).
 		const inputPart = result.replace("  [tool] Bash: ", "");
 		expect(inputPart.length).toBeLessThanOrEqual(124);
-		// Key summary shows the object's keys and the serialized size.
 		expect(inputPart).toContain("command");
 		expect(inputPart).toContain("chars");
 	});
@@ -126,9 +497,9 @@ describe("formatSseEvent", () => {
 		expect(result).toContain("[tool] unknown:");
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// assistant messages — multi-part content
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("assistant multi-part content → both text and tool_use rendered", () => {
 		const event = {
@@ -159,9 +530,9 @@ describe("formatSseEvent", () => {
 		expect(formatSseEvent(event)).toBeNull();
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// user messages — tool_result
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("user tool_result with string content → [result] line", () => {
 		const event = {
@@ -240,9 +611,9 @@ describe("formatSseEvent", () => {
 		expect(formatSseEvent(event)).toBeNull();
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// result event
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("result event → [done] line with subtype, cost, duration", () => {
 		const event = {
@@ -267,9 +638,9 @@ describe("formatSseEvent", () => {
 		expect(result).toBe("  [done] unknown | cost=$0.0100 | 1.0s");
 	});
 
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 	// Unknown / invalid event types
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
 
 	test("unknown event type → null (forward-compatible)", () => {
 		const event = { type: "future_event_type", data: "something" };
@@ -285,13 +656,13 @@ describe("formatSseEvent", () => {
 		expect(formatSseEvent(42)).toBeNull();
 	});
 
-	// ---------------------------------------------------------------------------
-	// safeInputSummary edge cases (via formatSseEvent tool_use path)
-	// ---------------------------------------------------------------------------
+	// -----------------------------------------------------------------------
+	// safeInputSummary edge cases (via tool_use path)
+	// -----------------------------------------------------------------------
 
 	test("tool_use with circular-reference input → [unserializable] fallback", () => {
 		const circular: Record<string, unknown> = { a: 1 };
-		circular.self = circular; // creates circular reference
+		circular.self = circular;
 		const event = {
 			type: "assistant",
 			message: {
@@ -300,14 +671,12 @@ describe("formatSseEvent", () => {
 		};
 		const result = formatSseEvent(event);
 		expect(result).not.toBeNull();
-		// Should include the tool name and not throw
 		expect(result).toContain("[tool] Test:");
-		// Should contain unserializable marker or key names
 		const inputPart = (result ?? "").replace("  [tool] Test: ", "");
 		expect(inputPart.length).toBeLessThanOrEqual(124);
 	});
 
-	test("tool_use with small input → exact JSON output (no key-summary)", () => {
+	test("tool_use with small input → exact JSON output", () => {
 		const smallInput = { cmd: "ls" };
 		const event = {
 			type: "assistant",

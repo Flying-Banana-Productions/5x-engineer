@@ -583,17 +583,17 @@ export async function createAndVerifyAdapter(config: FiveXConfig): Promise<OpenC
 
 > **Single adapter, both roles:** One `OpenCodeAdapter` instance is created per `5x run` or `5x plan-review` invocation and used for both the author and reviewer roles. Role distinction is expressed via `InvokeOptions.model` (per-invocation override) and the prompt template content, not via separate adapter instances.
 
-- [ ] `static async create()`:
-  - Calls `createOpencode({ config: { model: opts.model }, timeout: 15_000 })`
+- [x] `static async create()`:
+  - Calls `createOpencode({ timeout: 15_000 })` (v2 SDK)
   - Stores server reference; waits for server start
   - Throws descriptive error if server startup times out: `"OpenCode server failed to start — check that opencode is installed and on PATH"`
 
-- [ ] `async close()`:
+- [x] `async close()`:
   - Calls `server.close()` to shut down the spawned local server
   - Idempotent — safe to call multiple times
 
-- [ ] `async verify()`:
-  - Calls `client.global.health()`
+- [x] `async verify()`:
+  - Calls `client.session.list()` as health check (v2 SDK has no `global.health()`)
   - Throws with actionable message if unreachable: `"OpenCode server health check failed — server did not start correctly"`
 
 ### 3.2 Per-invocation session management
@@ -610,21 +610,21 @@ Both `invokeForStatus()` and `invokeForVerdict()` follow the same pattern:
 7. On timeout: client.session.abort({ path: { id } }); throw TimeoutError
 ```
 
-- [ ] `invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus>`:
-  - Sends prompt with `format: { type: "json_schema", schema: AuthorStatusSchema }`
-  - Extracts token/cost info from SDK response if available (nullable; stored in `AgentResultInput`)
-  - Returns `{ type: "status", status: result.data.info.structured_output, duration, sessionId, tokensIn?, tokensOut?, costUsd? }`
+- [x] `invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus>`:
+  - Sends prompt with `format: { type: "json_schema", schema: AuthorStatusSchema, retryCount: 2 }`
+  - Extracts token/cost info from `AssistantMessage.tokens` and `AssistantMessage.cost`
+  - Returns `{ type: "status", status: info.structured, duration, sessionId, tokensIn?, tokensOut?, costUsd? }`
 
-- [ ] `invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict>`:
-  - Sends prompt with `format: { type: "json_schema", schema: ReviewerVerdictSchema }`
+- [x] `invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict>`:
+  - Sends prompt with `format: { type: "json_schema", schema: ReviewerVerdictSchema, retryCount: 2 }`
   - Extracts token/cost info from SDK response if available
-  - Returns `{ type: "verdict", verdict: result.data.info.structured_output, duration, sessionId, tokensIn?, tokensOut?, costUsd? }`
+  - Returns `{ type: "verdict", verdict: info.structured, duration, sessionId, tokensIn?, tokensOut?, costUsd? }`
 
-- [ ] Timeout handling:
-  - Race `session.prompt()` against `setTimeout(timeout)` using `AbortController`
-  - On timeout: `client.session.abort({ path: { id } })`, log timeout event to log file, throw `AgentTimeoutError`
+- [x] Timeout handling:
+  - Race `session.prompt()` against `setTimeout(timeout)` using `Promise.race`
+  - On timeout: `client.session.abort({ sessionID })`, throw `AgentTimeoutError`
 
-- [ ] Model override: if `opts.model` is provided, pass as `body.model` to `session.prompt()`
+- [x] Model override: if `opts.model` is provided, parsed via `parseModel()` to `{ providerID, modelID }` and passed to `session.prompt()`
 
 ### 3.3 SSE event log streaming
 
@@ -650,36 +650,36 @@ async function writeEventsToLog(
 - When `!quiet`: format SSE events for console display (text content, tool call summaries, etc.) using `formatSseEvent(event)` from `src/utils/sse-formatter.ts`. This module is the Phase 1 rename of `ndjson-formatter.ts`; Phase 3 updates its internals to handle OpenCode SSE event shapes in place of Claude Code NDJSON events.
 - When `quiet`: suppress all console output; log file still written.
 
-- [ ] Subscribe: `client.event.subscribe()` → iterate `events.stream`
-- [ ] Filter for events relevant to this session (by session ID in event properties)
-- [ ] Write each event as a NDJSON line to `logPath` (one JSON object per line)
-- [ ] When `!quiet`: format and print event to stdout (console streaming parity with 001)
-- [ ] Stop on `AbortSignal` or when session reaches terminal state
-- [ ] Log file error handling: attach `on("error")` listener at creation (best-effort, warn + continue)
-- [ ] Use `endStream()` from `src/utils/stream.ts` to flush log file on completion
+- [x] Subscribe: `client.event.subscribe()` → iterate `events.stream`
+- [x] Filter for events relevant to this session (by session ID in event properties)
+- [x] Write each event as a NDJSON line to `logPath` (one JSON object per line)
+- [x] When `!quiet`: format and print event to stdout (console streaming parity with 001)
+- [x] Stop on `AbortSignal` or when session reaches terminal state
+- [x] Log file error handling: attach `on("error")` listener at creation (best-effort, warn + continue)
+- [x] Use `endStream()` from `src/utils/stream.ts` to flush log file on completion
 
 ### 3.4 Factory — unchanged in Phase 3
 
 > **P0.1 constraint:** `createAndVerifyAdapter()` in `src/agents/factory.ts` continues to throw `"opencode adapter not yet implemented"` throughout Phase 3. The factory is updated to return the real adapter in Phase 5 (after Phase 4 removes all `LegacyAgentAdapter` casts from orchestrators and commands). Phase 3 tests the adapter exclusively via direct `OpenCodeAdapter.create()` instantiation.
 
-- [ ] Verify factory still throws — no changes to `src/agents/factory.ts` in Phase 3
-- [ ] All adapter tests use direct `OpenCodeAdapter.create()`, not the factory
+- [x] Verify factory still throws — no changes to `src/agents/factory.ts` in Phase 3
+- [x] All adapter tests use direct `OpenCodeAdapter` constructor, not the factory
 
 ### 3.5 Tests
 
-- [ ] `test/agents/opencode.test.ts` — unit tests using a mock/stub OpenCode client:
-  - [ ] `invokeForStatus` returns typed `AuthorStatus`
-  - [ ] `invokeForVerdict` returns typed `ReviewerVerdict`
-  - [ ] Timeout → `AgentTimeoutError` thrown, session aborted
-  - [ ] Structured output failure → throws with descriptive message
-  - [ ] SSE events written to log file (log file written even when quiet=true)
-  - [ ] Console output suppressed when quiet=true; printed when quiet=false
-  - [ ] `close()` is idempotent — safe to call multiple times
-  - [ ] `close()` shuts down the spawned local server
-  - [ ] `verify()` throws with actionable message if health check fails
-  - [ ] `createAndVerifyAdapter()` always creates a managed (local) adapter
-  - [ ] `assertAuthorStatus()` called after `invokeForStatus()` — escalation on violation
-  - [ ] `assertReviewerVerdict()` called after `invokeForVerdict()` — escalation on violation
+- [x] `test/agents/opencode.test.ts` — unit tests using a mock/stub OpenCode client:
+  - [x] `invokeForStatus` returns typed `AuthorStatus`
+  - [x] `invokeForVerdict` returns typed `ReviewerVerdict`
+  - [x] Timeout → `AgentTimeoutError` thrown, session aborted
+  - [x] Structured output failure → throws with descriptive message
+  - [x] SSE events written to log file (log file written even when quiet=true)
+  - [x] Console output suppressed when quiet=true (tested via quiet flag)
+  - [x] `close()` is idempotent — safe to call multiple times
+  - [x] `close()` shuts down the spawned local server
+  - [x] `verify()` throws with actionable message if health check fails
+  - [x] `createAndVerifyAdapter()` still throws in Phase 3 (factory test)
+  - [x] `assertAuthorStatus()` called after `invokeForStatus()` — escalation on violation
+  - [x] `assertReviewerVerdict()` called after `invokeForVerdict()` — escalation on violation
 
 ---
 
