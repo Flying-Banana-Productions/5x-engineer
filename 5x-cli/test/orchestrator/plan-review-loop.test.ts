@@ -832,4 +832,68 @@ describe("runPlanReviewLoop", () => {
 			cleanup();
 		}
 	});
+
+	test("no stdout writes from plan-review loop when quiet=true (TUI active regression)", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		const origLog = console.log;
+		const logCalls: unknown[][] = [];
+		console.log = (...args: unknown[]) => {
+			logCalls.push(args);
+		};
+		try {
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: fixedHumanGate("abort"),
+					projectRoot: tmp,
+					quiet: true,
+				},
+			);
+
+			expect(logCalls).toEqual([]);
+		} finally {
+			console.log = origLog;
+			cleanup();
+		}
+	});
+
+	test("plan-review loop does produce console.log when quiet=false (regression sanity)", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		const origLog = console.log;
+		const logCalls: unknown[][] = [];
+		console.log = (...args: unknown[]) => {
+			logCalls.push(args);
+		};
+		try {
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: fixedHumanGate("abort"),
+					projectRoot: tmp,
+					quiet: false,
+				},
+			);
+
+			expect(logCalls.length).toBeGreaterThan(0);
+		} finally {
+			console.log = origLog;
+			cleanup();
+		}
+	});
 });

@@ -1110,42 +1110,37 @@ describe("runPhaseExecutionLoop", () => {
 
 	test("no stdout writes from orchestrator when quiet=true (TUI active regression)", async () => {
 		// When quiet is true (TUI active), the orchestrator must not write to
-		// stdout — only to log files and DB. This test intercepts console.log
-		// (not process.stdout.write) because Bun's console.log bypasses
-		// process.stdout.write entirely.
+		// stdout — only to log files and DB. Intercepts console.log directly
+		// (Bun's console.log bypasses process.stdout.write). Safe under Bun's
+		// concurrency model: each test file runs in a separate process, and
+		// tests within a file run sequentially.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
+		const origLog = console.log;
+		const logCalls: unknown[][] = [];
+		console.log = (...args: unknown[]) => {
+			logCalls.push(args);
+		};
 		try {
 			const adapter = createMockAdapter([
 				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			// Intercept console.log during the loop (Bun's console.log does NOT
-			// go through process.stdout.write, so we must patch console.log directly).
-			const origLog = console.log;
-			const logCalls: unknown[][] = [];
-			console.log = (...args: unknown[]) => {
-				logCalls.push(args);
-			};
-
-			try {
-				await runPhaseExecutionLoop(
-					planPath,
-					reviewPath,
-					db,
-					adapter,
-					defaultConfig(tmp),
-					{ workdir: tmp, auto: true, quiet: true },
-				);
-			} finally {
-				console.log = origLog;
-			}
+			await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: true },
+			);
 
 			// No console.log output should have been produced when quiet=true.
 			expect(logCalls).toEqual([]);
 		} finally {
+			console.log = origLog;
 			cleanup();
 		}
 	});
@@ -1157,35 +1152,31 @@ describe("runPhaseExecutionLoop", () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
+		const origLog = console.log;
+		const logCalls: unknown[][] = [];
+		console.log = (...args: unknown[]) => {
+			logCalls.push(args);
+		};
 		try {
 			const adapter = createMockAdapter([
 				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			const origLog = console.log;
-			const logCalls: unknown[][] = [];
-			console.log = (...args: unknown[]) => {
-				logCalls.push(args);
-			};
-
-			try {
-				await runPhaseExecutionLoop(
-					planPath,
-					reviewPath,
-					db,
-					adapter,
-					defaultConfig(tmp),
-					{ workdir: tmp, auto: true, quiet: false },
-				);
-			} finally {
-				console.log = origLog;
-			}
+			await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: false },
+			);
 
 			// When quiet=false, orchestrator MUST produce at least some log output
 			// (phase headers, author status, verdict, etc.).
 			expect(logCalls.length).toBeGreaterThan(0);
 		} finally {
+			console.log = origLog;
 			cleanup();
 		}
 	});
