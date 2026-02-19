@@ -292,7 +292,7 @@ Delete the following files entirely:
 
 - [x] `bun add @opencode-ai/sdk` in `5x-cli/`
 - [x] Verify import resolves: `import { createOpencode } from "@opencode-ai/sdk"`
-- [ ] **Bun/compiled-binary compatibility gate:** verify `@opencode-ai/sdk` imports resolve and a basic object can be constructed under `bun build --compile` (smoke test: import + construct client, assert no bundler errors). Add as an env-gated test similar to `FIVE_X_TEST_LIVE_AGENTS=1` pattern so it is opt-in during CI and can be run locally before broad refactoring.
+- [x] **Bun/compiled-binary compatibility gate:** verify `@opencode-ai/sdk` imports resolve and a basic object can be constructed under `bun build --compile` (smoke test: import + construct client, assert no bundler errors). Add as an env-gated test similar to `FIVE_X_TEST_LIVE_AGENTS=1` pattern so it is opt-in during CI and can be run locally before broad refactoring.
 
 ### 1.3 Update config schema
 
