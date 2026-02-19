@@ -311,6 +311,10 @@ export async function runPhaseExecutionLoop(
 		// Tracks the most recent agent NDJSON log path across state transitions so
 		// PARSE_* states can include it in escalation events without re-derivation.
 		let lastAgentLogPath: string | undefined;
+		// Tracks the iteration value at the time of the last agent invocation, so
+		// PARSE_* states attribute escalations to the correct invocation (before
+		// the monotonic iteration counter is incremented for the next state).
+		let lastInvokeIteration = iteration;
 
 		// Clear resume markers after consuming them — only the first phase
 		// in the loop should get the restored state.
@@ -359,6 +363,7 @@ export async function runPhaseExecutionLoop(
 							phase.number,
 							iteration,
 							"author-next-phase",
+							"status",
 						)
 					) {
 						console.log(
@@ -468,6 +473,7 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					lastInvokeIteration = iteration;
 					iteration++;
 					state = "PARSE_AUTHOR_STATUS";
 					break;
@@ -492,7 +498,7 @@ export async function runPhaseExecutionLoop(
 						const event: EscalationEvent = {
 							reason:
 								"Author did not produce a 5x:status block. Manual review required.",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -500,7 +506,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -512,7 +518,7 @@ export async function runPhaseExecutionLoop(
 					} catch (err) {
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -520,7 +526,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -530,7 +536,7 @@ export async function runPhaseExecutionLoop(
 					if (status.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason: status.reason ?? "Author needs human input",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -538,7 +544,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -548,7 +554,7 @@ export async function runPhaseExecutionLoop(
 					if (status.result === "failed") {
 						const event: EscalationEvent = {
 							reason: status.reason ?? "Author reported failure",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -556,7 +562,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -781,6 +787,37 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					// Route on author status semantics — escalate if author
+					// explicitly reported needs_human or failed (P1.3 fix).
+					if (
+						fixStatus &&
+						(fixStatus.result === "needs_human" ||
+							fixStatus.result === "failed")
+					) {
+						const event: EscalationEvent = {
+							reason:
+								fixStatus.reason ??
+								`Author reported ${fixStatus.result} during quality fix`,
+							iteration,
+							logPath: qrFixLogPath,
+						};
+						escalations.push(event);
+						appendRunEvent(db, {
+							runId,
+							eventType: "escalation",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason: event.reason,
+								trigger: "quality_retry_status",
+								status: fixStatus.result,
+							},
+						});
+						iteration++;
+						state = "ESCALATE";
+						break;
+					}
+
 					iteration++;
 					// Back to quality check
 					state = "QUALITY_CHECK";
@@ -802,6 +839,7 @@ export async function runPhaseExecutionLoop(
 							phase.number,
 							iteration,
 							"reviewer-commit",
+							"verdict",
 						)
 					) {
 						console.log(
@@ -934,6 +972,7 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					lastInvokeIteration = iteration;
 					iteration++;
 					state = "PARSE_VERDICT";
 					break;
@@ -952,7 +991,7 @@ export async function runPhaseExecutionLoop(
 						const event: EscalationEvent = {
 							reason:
 								"Reviewer did not produce a 5x:verdict block. Manual review required.",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -960,7 +999,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -972,7 +1011,7 @@ export async function runPhaseExecutionLoop(
 					} catch (err) {
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -980,7 +1019,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -991,7 +1030,7 @@ export async function runPhaseExecutionLoop(
 						runId,
 						eventType: "verdict",
 						phase: phase.number,
-						iteration,
+						iteration: lastInvokeIteration,
 						data: {
 							readiness: verdict.readiness,
 							itemCount: verdict.items.length,
@@ -1022,7 +1061,7 @@ export async function runPhaseExecutionLoop(
 								title: i.title,
 								reason: i.reason,
 							})),
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -1030,7 +1069,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: event,
 						});
 						state = "ESCALATE";
@@ -1081,6 +1120,7 @@ export async function runPhaseExecutionLoop(
 							phase.number,
 							iteration,
 							"author-process-review",
+							"status",
 						)
 					) {
 						console.log(
@@ -1174,6 +1214,7 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					lastInvokeIteration = iteration;
 					iteration++;
 					state = "PARSE_FIX_STATUS";
 					break;
@@ -1197,7 +1238,7 @@ export async function runPhaseExecutionLoop(
 					if (!fixStatus) {
 						const event: EscalationEvent = {
 							reason: "Author did not produce a 5x:status block after fix.",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -1205,7 +1246,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: { reason: event.reason, trigger: "missing_fix_status" },
 						});
 						state = "ESCALATE";
@@ -1217,7 +1258,7 @@ export async function runPhaseExecutionLoop(
 					} catch (err) {
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -1225,7 +1266,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: {
 								reason: event.reason,
 								trigger: "status_invariant_violation",
@@ -1238,7 +1279,7 @@ export async function runPhaseExecutionLoop(
 					if (fixStatus.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason: fixStatus.reason ?? "Author needs human input during fix",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -1246,7 +1287,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: {
 								reason: event.reason,
 								trigger: "fix_needs_human",
@@ -1260,7 +1301,7 @@ export async function runPhaseExecutionLoop(
 					if (fixStatus.result === "failed") {
 						const event: EscalationEvent = {
 							reason: fixStatus.reason ?? "Author reported failure during fix",
-							iteration,
+							iteration: lastInvokeIteration,
 							logPath: lastAgentLogPath,
 						};
 						escalations.push(event);
@@ -1268,7 +1309,7 @@ export async function runPhaseExecutionLoop(
 							runId,
 							eventType: "escalation",
 							phase: phase.number,
-							iteration,
+							iteration: lastInvokeIteration,
 							data: {
 								reason: event.reason,
 								trigger: "fix_failed",

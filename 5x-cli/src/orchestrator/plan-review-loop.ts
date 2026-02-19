@@ -340,6 +340,10 @@ export async function runPlanReviewLoop(
 	// Tracks the most recent agent NDJSON log path across state transitions so
 	// PARSE_* states can include it in escalation events.
 	let lastAgentLogPath: string | undefined;
+	// Tracks the iteration value at the time of the last agent invocation, so
+	// PARSE_* states attribute escalations to the correct invocation (before
+	// the monotonic iteration counter is incremented for the next state).
+	let lastInvokeIteration = iteration;
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
@@ -374,6 +378,7 @@ export async function runPlanReviewLoop(
 						"-1",
 						iteration,
 						"reviewer-plan",
+						"verdict",
 					)
 				) {
 					console.log(
@@ -486,6 +491,7 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
+				lastInvokeIteration = iteration;
 				iteration++;
 				state = "PARSE_VERDICT";
 				break;
@@ -503,14 +509,14 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason:
 							"Reviewer did not produce a 5x:verdict block. Manual review required.",
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -522,14 +528,14 @@ export async function runPlanReviewLoop(
 				} catch (err) {
 					const event: EscalationEvent = {
 						reason: err instanceof Error ? err.message : String(err),
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -539,7 +545,7 @@ export async function runPlanReviewLoop(
 				appendRunEvent(db, {
 					runId,
 					eventType: "verdict",
-					iteration,
+					iteration: lastInvokeIteration,
 					data: {
 						readiness: verdict.readiness,
 						itemCount: verdict.items.length,
@@ -571,14 +577,14 @@ export async function runPlanReviewLoop(
 							title: i.title,
 							reason: i.reason,
 						})),
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -594,14 +600,14 @@ export async function runPlanReviewLoop(
 							title: i.title,
 							reason: i.reason,
 						})),
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -625,14 +631,14 @@ export async function runPlanReviewLoop(
 					// (covers parser-dropped items, reviewer mistakes, etc.)
 					const event: EscalationEvent = {
 						reason: `Reviewer returned ${readiness} with no auto-fixable items`,
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -643,14 +649,14 @@ export async function runPlanReviewLoop(
 				{
 					const event: EscalationEvent = {
 						reason: `Unexpected readiness value "${readiness}" — escalating for manual review`,
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -670,6 +676,7 @@ export async function runPlanReviewLoop(
 						"-1",
 						iteration,
 						"author-process-review",
+						"status",
 					)
 				) {
 					console.log(
@@ -744,8 +751,9 @@ export async function runPlanReviewLoop(
 					},
 				});
 
-				// Record log path for PARSE_STATUS escalations before incrementing.
+				// Record log path and iteration for PARSE_STATUS escalation attribution.
 				lastAgentLogPath = authorLogPath;
+				lastInvokeIteration = iteration;
 				iteration++;
 				state = "PARSE_STATUS";
 				break;
@@ -763,14 +771,14 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason:
 							"Author did not produce a 5x:status block after fix. Manual review required.",
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -782,14 +790,14 @@ export async function runPlanReviewLoop(
 				} catch (err) {
 					const event: EscalationEvent = {
 						reason: err instanceof Error ? err.message : String(err),
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -800,14 +808,14 @@ export async function runPlanReviewLoop(
 					const event: EscalationEvent = {
 						reason:
 							authorStatus.reason ?? "Author needs human input during fix",
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";
@@ -817,14 +825,14 @@ export async function runPlanReviewLoop(
 				if (authorStatus.result === "failed") {
 					const event: EscalationEvent = {
 						reason: authorStatus.reason ?? "Author reported failure during fix",
-						iteration,
+						iteration: lastInvokeIteration,
 						logPath: lastAgentLogPath,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
 						runId,
 						eventType: "escalation",
-						iteration,
+						iteration: lastInvokeIteration,
 						data: event,
 					});
 					state = "ESCALATE";

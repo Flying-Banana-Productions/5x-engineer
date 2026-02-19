@@ -21,6 +21,10 @@ export type LegacyStatus = AuthorStatus & {
 const VERDICT_RE = /<!--\s*5x:verdict\s*\n([\s\S]*?)-->/g;
 const STATUS_RE = /<!--\s*5x:status\s*\n([\s\S]*?)-->/g;
 
+/** Maximum size of a YAML block to parse (64 KB). Reject oversized blocks
+ *  to bound memory/time when parsing untrusted agent output. */
+const MAX_YAML_BLOCK_BYTES = 64 * 1024;
+
 function extractLastBlock(text: string, regex: RegExp): string | null {
 	let lastMatch: string | null = null;
 	regex.lastIndex = 0;
@@ -35,6 +39,7 @@ function extractLastBlock(text: string, regex: RegExp): string | null {
 export function parseVerdictBlock(text: string): LegacyVerdict | null {
 	const yamlStr = extractLastBlock(text, VERDICT_RE);
 	if (!yamlStr) return null;
+	if (Buffer.byteLength(yamlStr, "utf8") > MAX_YAML_BLOCK_BYTES) return null;
 
 	try {
 		const parsed = parseYaml(yamlStr);
@@ -92,6 +97,7 @@ export function parseVerdictBlock(text: string): LegacyVerdict | null {
 export function parseStatusBlock(text: string): LegacyStatus | null {
 	const yamlStr = extractLastBlock(text, STATUS_RE);
 	if (!yamlStr) return null;
+	if (Buffer.byteLength(yamlStr, "utf8") > MAX_YAML_BLOCK_BYTES) return null;
 
 	try {
 		const parsed = parseYaml(yamlStr);

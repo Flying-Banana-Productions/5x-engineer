@@ -320,7 +320,7 @@ export function getAgentResults(
 	}
 	return db
 		.query(
-			"SELECT * FROM agent_results WHERE run_id = ?1 ORDER BY phase ASC, iteration ASC",
+			"SELECT * FROM agent_results WHERE run_id = ?1 ORDER BY CAST(phase AS INTEGER) ASC, iteration ASC",
 		)
 		.all(runId) as AgentResultRow[];
 }
@@ -417,14 +417,15 @@ export function hasCompletedStep(
 	phase: string,
 	iteration: number,
 	templateName: string,
+	resultType: "status" | "verdict",
 ): boolean {
 	const row = db
 		.query(
 			`SELECT 1 FROM agent_results
-       WHERE run_id = ?1 AND role = ?2 AND phase = ?3 AND iteration = ?4 AND template = ?5
+       WHERE run_id = ?1 AND role = ?2 AND phase = ?3 AND iteration = ?4 AND template = ?5 AND result_type = ?6
        LIMIT 1`,
 		)
-		.get(runId, role, phase, iteration, templateName);
+		.get(runId, role, phase, iteration, templateName, resultType);
 	return row !== null;
 }
 

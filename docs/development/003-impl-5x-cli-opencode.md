@@ -458,14 +458,19 @@ CREATE TABLE agent_results (
 **Other tables** (`plans`, `run_events`, `quality_results`) — unchanged.
 
 - [x] Update `src/db/schema.ts`: add migration 002 that drops and recreates `agent_results` with the new structure (schema version bumps to 2)
+- [x] Migration 002 includes `CHECK(result_type IN ('status', 'verdict'))` to catch DB corruption early
 - [x] Add schema version mismatch error to `runMigrations()` in `src/db/schema.ts`
 - [x] Update `src/db/operations.ts`:
   - [x] Remove `getLatestVerdict()` and `getLatestStatus()` which queried the old `signal_data` column
   - [x] Add `upsertAgentResult(db, input: AgentResultInput): void` — stores structured result; uses `INSERT ... ON CONFLICT(run_id, phase, iteration, role, template, result_type) DO UPDATE`
   - [x] Add `getLatestVerdict(db, runId, phase): ReviewerVerdict | null` — queries `agent_results` where `result_type = 'verdict'`, returns parsed `result_json`
   - [x] Add `getLatestStatus(db, runId, phase): AuthorStatus | null` — queries `agent_results` where `result_type = 'status'`, returns parsed `result_json`
+  - [x] `hasCompletedStep()` includes `result_type` parameter — matches the composite unique key to make resume/idempotency semantics explicit
+  - [x] `getAgentResults()` orders by `CAST(phase AS INTEGER)` for correct numeric phase ordering
   - [x] `AgentResultRow` includes: `id`, `run_id`, `phase`, `iteration`, `role`, `template`, `result_type`, `result_json`, `duration_ms`, `log_path`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `created_at`
   - [x] Update `upsertAgentResult()` input type to match new schema
+
+> **Migration 002 data loss note:** Migration 002 `DROP TABLE IF EXISTS agent_results` destroys all existing agent result data. This is intentionally acceptable for the local-branch refactor — the schema change is not backwards-compatible and this is pre-production code. If migration 002 runs on a non-empty DB, the user loses all agent result history for previous runs. The runs table and other tables are preserved.
 
 ### 2.4 Update tests
 
@@ -540,7 +545,9 @@ export function assertReviewerVerdict(verdict: ReviewerVerdict, context: string)
 
 **Goal:** Implement `src/agents/opencode.ts` — a full OpenCode SDK adapter that manages server lifecycle, creates sessions, sends prompts with structured schemas, streams SSE events to log files, and handles timeout/abort.
 
-**Completion gate:** `bun test` passes including new adapter tests. `createAndVerifyAdapter()` in factory resolves with a working `OpenCodeAdapter`. Adapter unit tests cover status/verdict invocations with mock server.
+> **Adapter isolation (P0.1 resolution):** Phase 3 implements and tests the adapter in isolation. The factory (`createAndVerifyAdapter()`) continues to throw its "not yet implemented" error throughout Phase 3 — commands and orchestrators still use `LegacyAgentAdapter` casts and are never exposed to the new adapter. Wiring the adapter into commands/orchestrators happens atomically in Phases 4–5, which remove all legacy casts before enabling the factory. This avoids dual-interface complexity and prevents the runtime crash that would occur if the factory returned an `AgentAdapter` while commands still cast to `LegacyAgentAdapter`.
+
+**Completion gate:** `bun test` passes including new adapter tests. `OpenCodeAdapter.create()` returns a working adapter (tested via direct instantiation, not via factory). Adapter unit tests cover status/verdict invocations with mock server.
 
 ### 3.1 Server lifecycle
 
@@ -651,22 +658,12 @@ async function writeEventsToLog(
 - [ ] Log file error handling: attach `on("error")` listener at creation (best-effort, warn + continue)
 - [ ] Use `endStream()` from `src/utils/stream.ts` to flush log file on completion
 
-### 3.4 Update factory
+### 3.4 Factory — unchanged in Phase 3
 
-Update `src/agents/factory.ts`:
+> **P0.1 constraint:** `createAndVerifyAdapter()` in `src/agents/factory.ts` continues to throw `"opencode adapter not yet implemented"` throughout Phase 3. The factory is updated to return the real adapter in Phase 5 (after Phase 4 removes all `LegacyAgentAdapter` casts from orchestrators and commands). Phase 3 tests the adapter exclusively via direct `OpenCodeAdapter.create()` instantiation.
 
-```typescript
-/**
- * Create and verify a managed (local) OpenCode adapter.
- * A single adapter instance is used for both author and reviewer roles;
- * per-role model selection is applied via InvokeOptions.model at call sites.
- */
-export async function createAndVerifyAdapter(config: FiveXConfig): Promise<AgentAdapter>
-```
-
-- [ ] Calls `OpenCodeAdapter.create({ model: config.author.model })` — uses author model as the default; reviewer model override happens via `InvokeOptions.model` in the orchestrator
-- [ ] Calls `adapter.verify()`
-- [ ] `createAdapter()` (sync) is removed — adapter creation is now always async (server startup)
+- [ ] Verify factory still throws — no changes to `src/agents/factory.ts` in Phase 3
+- [ ] All adapter tests use direct `OpenCodeAdapter.create()`, not the factory
 
 ### 3.5 Tests
 
@@ -690,7 +687,9 @@ export async function createAndVerifyAdapter(config: FiveXConfig): Promise<Agent
 
 **Goal:** Remove all `PARSE_*` states from both orchestrator state machines. Replace subprocess-based invocation with `adapter.invokeForStatus()` / `adapter.invokeForVerdict()`. Simplify both loops significantly.
 
-**Completion gate:** `bun test` passes including all orchestrator tests. State machines no longer contain `PARSE_AUTHOR_STATUS`, `PARSE_VERDICT`, `PARSE_FIX_STATUS`, `PARSE_STATUS` states. Orchestrators accept `adapter: AgentAdapter` instead of constructing one internally.
+> **P0.1 bridge completion (part 1 of 2):** This phase removes all `LegacyAgentAdapter` imports and casts from the orchestrators. After Phase 4, orchestrators accept the new `AgentAdapter` interface — eliminating the type-lie casts that would crash at runtime if the factory returned a real adapter. Phase 5 completes the bridge by updating commands and enabling the factory.
+
+**Completion gate:** `bun test` passes including all orchestrator tests. State machines no longer contain `PARSE_AUTHOR_STATUS`, `PARSE_VERDICT`, `PARSE_FIX_STATUS`, `PARSE_STATUS` states. Orchestrators accept `adapter: AgentAdapter` instead of constructing one internally. No `LegacyAgentAdapter` references remain in orchestrator code.
 
 ### 4.1 Update orchestrator signatures
 
@@ -839,9 +838,11 @@ Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
 
 ## Phase 5: Command Layer + Template Updates
 
-**Goal:** Update all commands to use the new adapter pattern. Update prompt templates to remove structured signal instructions (no more `<!-- 5x:status -->` or `<!-- 5x:verdict -->` blocks). All end-to-end command tests pass.
+**Goal:** Update all commands to use the new adapter pattern. Update prompt templates to remove structured signal instructions (no more `<!-- 5x:status -->` or `<!-- 5x:verdict -->` blocks). All end-to-end command tests pass. Enable the factory to return a real adapter.
 
-**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly.
+> **P0.1 bridge completion (part 2 of 2):** This phase removes all `LegacyAgentAdapter` casts from commands and enables `createAndVerifyAdapter()` in the factory to return the real `OpenCodeAdapter`. After Phase 5, the entire legacy adapter interface can be deleted — no code references `LegacyAgentAdapter` anywhere.
+
+**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`.
 
 ### 5.1 Update `commands/run.ts`
 
@@ -859,23 +860,27 @@ try {
 
 A single `OpenCodeAdapter` instance serves both author and reviewer roles. The role distinction is expressed through the prompt template content and `InvokeOptions.model` at each call site (e.g., `config.reviewer.model` is passed for reviewer invocations). The adapter itself is model-agnostic.
 
+- [ ] **Enable factory:** Update `createAndVerifyAdapter()` in `src/agents/factory.ts` to call `OpenCodeAdapter.create({ model: config.author.model })` + `adapter.verify()` instead of throwing (deferred from Phase 3 per P0.1 resolution)
+- [ ] Remove all `as unknown as LegacyAgentAdapter` casts from `commands/run.ts`
 - [ ] Update `commands/run.ts` to create adapter before loop, close in `finally`
-- [ ] Remove calls to `createAdapter()` sync factory (it no longer exists)
-- [ ] Pass `adapter` through to orchestrator
+- [ ] Pass single `adapter` through to orchestrator (replaces separate author/reviewer adapters)
 
 ### 5.2 Update `commands/plan-review.ts`
 
 Same adapter lifecycle pattern:
 
-- [ ] Create adapter, pass to `runPlanReviewLoop()`, close in `finally`
+- [ ] Remove all `as unknown as LegacyAgentAdapter` casts
+- [ ] Create single adapter, pass to `runPlanReviewLoop()`, close in `finally`
 
 ### 5.3 Update `commands/plan.ts`
 
 The plan generation command invokes an author agent to create the plan. Update to use `adapter.invokeForStatus()`:
 
-- [ ] Create `OpenCodeAdapter`, call `invokeForStatus()` with `author-generate-plan` template
+- [ ] Remove `as unknown as LegacyAgentAdapter` cast
+- [ ] Create `OpenCodeAdapter` via factory, call `invokeForStatus()` with `author-generate-plan` template
 - [ ] The `result.status.result === "complete"` path means the plan file was written; use `result.status.commit` if a commit was made
 - [ ] Close adapter in `finally`
+- [ ] **Delete `LegacyAgentAdapter`:** After all commands are updated, remove the `LegacyAgentAdapter` interface and all legacy types from `src/agents/types.ts`
 
 ### 5.4 Update prompt templates
 

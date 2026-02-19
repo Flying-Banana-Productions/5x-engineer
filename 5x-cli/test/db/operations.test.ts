@@ -286,13 +286,49 @@ describe("agent results", () => {
 		});
 
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", "2", 1, "reviewer-commit"),
+			hasCompletedStep(
+				db,
+				"run1",
+				"reviewer",
+				"2",
+				1,
+				"reviewer-commit",
+				"verdict",
+			),
 		).toBe(true);
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", "2", 2, "reviewer-commit"),
+			hasCompletedStep(
+				db,
+				"run1",
+				"reviewer",
+				"2",
+				2,
+				"reviewer-commit",
+				"verdict",
+			),
 		).toBe(false);
 		expect(
-			hasCompletedStep(db, "run1", "author", "2", 1, "reviewer-commit"),
+			hasCompletedStep(
+				db,
+				"run1",
+				"author",
+				"2",
+				1,
+				"reviewer-commit",
+				"verdict",
+			),
+		).toBe(false);
+		// Wrong result_type should also return false
+		expect(
+			hasCompletedStep(
+				db,
+				"run1",
+				"reviewer",
+				"2",
+				1,
+				"reviewer-commit",
+				"status",
+			),
 		).toBe(false);
 	});
 
@@ -364,7 +400,15 @@ describe("agent results", () => {
 		});
 
 		expect(
-			hasCompletedStep(db, "run1", "reviewer", "-1", 0, "reviewer-plan"),
+			hasCompletedStep(
+				db,
+				"run1",
+				"reviewer",
+				"-1",
+				0,
+				"reviewer-plan",
+				"verdict",
+			),
 		).toBe(true);
 		const results = getAgentResults(db, "run1", "-1");
 		expect(results).toHaveLength(1);

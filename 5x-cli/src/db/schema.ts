@@ -109,7 +109,7 @@ const migrations: Migration[] = [
           iteration   INTEGER NOT NULL,
           role        TEXT    NOT NULL,
           template    TEXT    NOT NULL,
-          result_type TEXT    NOT NULL,
+          result_type TEXT    NOT NULL CHECK(result_type IN ('status', 'verdict')),
           result_json TEXT    NOT NULL,
           duration_ms INTEGER NOT NULL,
           log_path    TEXT,
