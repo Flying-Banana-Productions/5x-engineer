@@ -1,8 +1,8 @@
 # 5x CLI — TUI Integration
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** February 19, 2026
-**Updated:** February 19, 2026 — v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
+**Updated:** February 19, 2026 — v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
 **Status:** Approved for implementation
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
 
@@ -141,31 +141,55 @@ entirely.
 ## Terminal Output Ownership
 
 Once `opencode attach` takes over the terminal (stdio: `inherit`), any
-parent-process `console.log` / stdout writes corrupt the TUI display. The rule
-is simple:
+parent-process `console.log` / stdout writes corrupt the TUI display.
 
-**After TUI attach: 5x-cli writes nothing to stdout or stderr.**
+**Rule: while `tuiController.active === true`, 5x-cli writes nothing to stdout
+or stderr.** All parent output is routed through the TUI's own APIs (toasts,
+dialogs). Stdout and stderr writes — even to stderr — are gated on
+`!tuiController.active`.
 
-All user-facing messages in TUI mode go through the TUI's own APIs:
+The three windows of the process lifetime:
 
-| Event | TUI mode | Headless mode |
+| Window | Condition | Output target |
 |---|---|---|
-| Run start banner | `client.tui.showToast(...)` (before first session) | `console.log(...)` |
+| Pre-attach | Before `opencode attach` spawns | stderr only (startup message) |
+| TUI active | `tuiController.active === true` | TUI APIs only (toasts/dialogs) |
+| Post-TUI | After TUI exits (or never started) | stdout/stderr as normal |
+
+**Event routing table:**
+
+| Event | While TUI active | While TUI inactive / headless |
+|---|---|---|
+| Run start banner | `client.tui.showToast(...)` (first thing after attach) | `console.log(...)` |
 | Phase start | `client.tui.showToast(...)` | `console.log(...)` |
 | Phase complete | `client.tui.showToast(...)` | `console.log(...)` |
 | Review approved | `client.tui.showToast(...)` | `console.log(...)` |
 | Escalation | `client.tui.showToast(..., { variant: "error" })` | `console.warn(...)` |
-| Final summary | printed to **stderr** after TUI exits | `console.log(...)` |
-| Pre-attach startup message | printed to **stderr** before `opencode attach` spawns | N/A |
+| Final summary | `console.error(...)` — **only after TUI exits** | `console.log(...)` |
+| Pre-attach startup message | `process.stderr.write(...)` — **before spawn** | N/A |
+| TUI exit warning | `process.stderr.write(...)` — **after TUI exits** | N/A |
+
+**Implementation guard:** Every stderr write in TUI-capable code paths must be
+conditioned on `!tuiController.active`:
+
+```typescript
+// Correct: guarded stderr write
+if (!tuiController.active) {
+  process.stderr.write(`Warning: ${msg}\n`);
+} else {
+  tui.showToast(msg, "error").catch(() => {});
+}
+```
 
 **Pre-attach window:** In the brief interval between server start and TUI
 attach, any startup messages (e.g., "Starting OpenCode...") are written to
-stderr only. This avoids interleaving with the TUI, which takes over stdout
-immediately on spawn.
+stderr only. `tuiController.active` is `false` during this window — the guard
+above naturally handles it.
 
-**Post-TUI window:** After the TUI process exits (orchestration complete, user
-closed terminal, or TUI crash), the final run summary is printed to stderr.
-This is safe because the TUI no longer owns the terminal at that point.
+**Post-TUI window:** `tuiController.active` flips to `false` when the TUI
+process exits (normal completion, user close, crash). From that point, all
+output reverts to normal stderr/stdout. The final run summary uses `console.error`
+to stderr, ensuring it is visible even if the process exits quickly.
 
 **Log files:** All SSE event log writes and DB writes are unaffected — they
 never go to stdout/stderr.
@@ -193,8 +217,9 @@ const cancelController = new AbortController();
 
 // Handle TUI early exit (user closed terminal, crash) during orchestration
 tuiController.onExit(() => {
+  // tuiController.active is already false when this fires — safe to write stderr
   process.stderr.write("TUI exited — continuing headless\n");
-  // orchestration continues without TUI; tuiController.active becomes false
+  // orchestration continues without TUI; subsequent tui.* calls are no-ops
   // Note: Ctrl-C is handled separately (see Signal Handling section)
 });
 
@@ -307,10 +332,27 @@ each mode.
 
 | Mode | Permission behavior |
 |---|---|
-| `--auto` (any TTY state) | All tool permissions auto-approved. Pass `dangerouslyAutoApproveEverything: true` to session prompt (or equivalent SDK option). |
-| TUI mode (non-auto) | Permissions handled natively by the TUI. The TUI renders a dialog; the user responds. 5x-cli does not need to reply programmatically. |
-| Headless mode (non-auto, TTY) | Listen for permission requests via `client.permission.*` events; auto-approve file read/write/exec within `opts.workdir`. Require human reply for operations outside workdir. |
-| Non-interactive / CI (non-TTY stdin) | Same as `--auto`: all permissions auto-approved. Non-interactive mode implies unattended execution. |
+| `--auto` flag | All tool permissions auto-approved. Pass `dangerouslyAutoApproveEverything: true` to session prompt (or equivalent SDK option). |
+| `--ci` flag (new) | Same as `--auto` for permissions: all auto-approved. Intended for explicit CI/unattended invocations. |
+| TUI mode (non-auto, non-ci) | Permissions handled natively by the TUI. The TUI renders a dialog; the user responds. 5x-cli does not need to reply programmatically. |
+| Headless interactive TTY (non-auto, non-ci) | Listen for permission requests via `client.permission.*` events; auto-approve file read/write/exec within `opts.workdir`. Require human reply for operations outside workdir. |
+| Non-TTY stdin, no `--auto`/`--ci` | **Fail closed:** emit an actionable error before starting and exit non-zero. Do not auto-approve silently. |
+
+**Non-TTY fail-closed rationale:** Automatically granting all tool permissions
+in non-interactive mode (non-TTY stdin) without an explicit flag is a
+surprising default — the operator may not intend to run unattended. Requiring
+an explicit `--auto` or `--ci` flag makes the intent legible in shell history,
+CI configs, and audit logs, and prevents accidental unrestricted execution when
+a script inadvertently pipes stdin.
+
+The error message for non-TTY without a flag:
+
+```
+Error: 5x is running non-interactively but no permission policy was specified.
+  Use --auto to auto-approve all tool permissions, or
+  use --ci for the same behavior in CI environments.
+  To run interactively, ensure stdin is a TTY.
+```
 
 ### Implementation
 
@@ -320,9 +362,9 @@ of the adapter internals:
 ```typescript
 // src/tui/permissions.ts
 export type PermissionPolicy =
-  | { mode: "auto-approve-all" }            // --auto, CI
-  | { mode: "tui-native" }                  // TUI handles it
-  | { mode: "workdir-scoped"; workdir: string }  // headless, restrict to workdir
+  | { mode: "auto-approve-all" }                 // --auto or --ci
+  | { mode: "tui-native" }                       // TUI handles it
+  | { mode: "workdir-scoped"; workdir: string }  // headless interactive TTY
 
 export function createPermissionHandler(
   client: OpencodeClient,
@@ -334,18 +376,36 @@ The handler is wired after adapter creation, before the orchestration loop
 starts. Policy is resolved in the command layer:
 
 ```typescript
+const isNonInteractive = !process.stdin.isTTY;
+
+if (isNonInteractive && !args.auto && !args.ci) {
+  // Fail closed — non-TTY without explicit flag
+  console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
+  process.exitCode = 1;
+  return;
+}
+
 const permissionPolicy: PermissionPolicy =
-  args.auto || !process.stdin.isTTY ? { mode: "auto-approve-all" } :
-  isTuiMode                         ? { mode: "tui-native" } :
-  /* headless, interactive */         { mode: "workdir-scoped", workdir };
+  args.auto || args.ci ? { mode: "auto-approve-all" } :
+  isTuiMode            ? { mode: "tui-native" } :
+  /* headless TTY */     { mode: "workdir-scoped", workdir };
 ```
+
+> **`--ci` flag:** Add `ci: { type: "boolean", default: false }` to `run`,
+> `plan-review`, and `plan` command args. Semantically: "I know this is
+> unattended, proceed with all permissions approved." Operationally identical
+> to `--auto` for permission resolution; kept separate so `--auto` retains its
+> meaning of "skip human phase gates too," while `--ci` only opts into
+> permission auto-approval without affecting gate behavior.
 
 ### Acceptance criteria
 
-- [ ] `--auto` mode: agent tool calls proceed without permission dialogs in a
-  non-TTY environment (no hang)
-- [ ] Headless non-auto mode: file read/write within workdir is auto-approved;
-  operations outside workdir prompt (or escalate if non-interactive)
+- [ ] `--auto` mode: agent tool calls proceed without permission dialogs (no hang)
+- [ ] `--ci` mode: same permission behavior as `--auto`; phase gates still apply
+- [ ] Non-TTY stdin without `--auto`/`--ci`: exits with code 1 and actionable
+  error message before any adapter is created
+- [ ] Headless interactive TTY (non-auto, non-ci): file read/write within workdir
+  is auto-approved; operations outside workdir prompt
 - [ ] Test that would hang without policy: mock a permission request event with
   no reply handler → assert it is handled within 5s (timeout = test failure)
 
@@ -572,6 +632,31 @@ utility file needed.
 **Goal:** When running in an interactive TTY (both stdin and stdout), spawn
 `opencode attach` and manage its lifecycle.
 
+**SDK surface validation (do first, before writing controller code):**
+Before implementing Phase 2 or 3, verify the following SDK APIs against the
+installed `@opencode-ai/sdk` version:
+
+- `client.tui.showToast(...)` — used in Phases 2, 4
+- `client.tui.selectSession(...)` — used in Phase 4
+- `client.tui.showDialog(...)` or `client.tui.control.*` — used in Phase 5
+- `client.permission.*` subscribe + reply — used in Phase 3
+
+If `client.tui.showDialog()` (or equivalent blocking dialog) does not exist,
+use the documented fallback (see Open Questions §1): create a retained gate
+session, subscribe to the first user message, time out after
+`DEFAULT_GATE_TIMEOUT_MS`. This fallback still satisfies the deterministic
+gate contract — resolution is tied to a specific event (first message), not
+generic `session.idle` inference.
+
+If `client.permission.*` reply API does not exist, consult the SDK docs for
+the correct auto-approval mechanism (e.g., a session-creation flag such as
+`dangerouslyAutoApproveEverything`). The `PermissionPolicy` abstraction layer
+is designed for exactly this swap — policy decisions stay in the command layer
+regardless of which underlying API is used.
+
+Record findings (API names, method signatures, any gaps) in a brief note at
+the top of `src/tui/controller.ts` before submitting Phase 2 for review.
+
 - [ ] Implement `TuiController` in `src/tui/controller.ts`:
   ```typescript
   interface TuiController {
@@ -610,12 +695,22 @@ cancellation in TUI mode.
   - `"auto-approve-all"`: subscribe to permission requests; reply "approve" immediately
   - `"tui-native"`: no-op handler (TUI handles it natively)
   - `"workdir-scoped"`: subscribe; auto-approve paths under workdir; escalate others
+- [ ] Add `--ci` flag to `run`, `plan-review`, `plan` commands:
+  `ci: { type: "boolean", default: false, description: "CI/unattended mode: auto-approve all tool permissions" }`
+- [ ] Fail-closed check in command layer before adapter creation:
+  ```typescript
+  if (!process.stdin.isTTY && !args.auto && !args.ci) {
+    console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
+    process.exitCode = 1;
+    return;
+  }
+  ```
 - [ ] Resolve policy in command layer (run.ts, plan-review.ts, plan.ts):
   ```typescript
   const policy: PermissionPolicy =
-    args.auto || !process.stdin.isTTY ? { mode: "auto-approve-all" } :
-    isTuiMode ? { mode: "tui-native" } :
-    { mode: "workdir-scoped", workdir };
+    args.auto || args.ci ? { mode: "auto-approve-all" } :
+    isTuiMode            ? { mode: "tui-native" } :
+    /* headless TTY */     { mode: "workdir-scoped", workdir };
   ```
 - [ ] Update `registerAdapterShutdown()` in `src/agents/factory.ts` to accept
   optional `{ tuiMode, cancelController }`:
@@ -720,7 +815,7 @@ repo shows clean TUI experience across a full multi-phase run.
 | `src/agents/opencode.ts` | 1 | Use `port: 0`; expose `get serverUrl()` |
 | `src/agents/types.ts` | 1 | Add `readonly serverUrl: string` to `AgentAdapter` interface |
 | `src/tui/controller.ts` | 2 | New: `TuiController` interface + `createTuiController()` |
-| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`; spawn TUI; permission policy; pass gates |
+| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`, `--ci`; spawn TUI; permission policy; fail-closed non-TTY check; pass gates |
 | `src/commands/plan-review.ts` | 2, 3, 4, 5 | Same |
 | `src/commands/plan.ts` | 2, 3, 4 | Same (simpler — no human gates) |
 | `src/agents/factory.ts` | 3 | `registerAdapterShutdown()` accepts TUI mode option |
