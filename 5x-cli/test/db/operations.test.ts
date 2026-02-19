@@ -18,6 +18,7 @@ import {
 	getRunEvents,
 	getRunHistory,
 	getRunMetrics,
+	getStepResult,
 	hasCompletedStep,
 	updateRunStatus,
 	upsertAgentResult,
@@ -330,6 +331,131 @@ describe("agent results", () => {
 				"status",
 			),
 		).toBe(false);
+	});
+
+	test("getStepResult returns exact step by composite key", () => {
+		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		const statusJson = JSON.stringify({
+			result: "complete",
+			commit: "abc123",
+		});
+		upsertAgentResult(db, {
+			id: "ar1",
+			run_id: "run1",
+			phase: "1",
+			iteration: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: statusJson,
+			duration_ms: 5000,
+			log_path: "/logs/agent-ar1.ndjson",
+			tokens_in: null,
+			tokens_out: null,
+			cost_usd: null,
+		});
+
+		// Exact match returns the row
+		const row = getStepResult(
+			db,
+			"run1",
+			"author",
+			"1",
+			0,
+			"author-next-phase",
+			"status",
+		);
+		expect(row).not.toBeNull();
+		expect(row?.result_json).toBe(statusJson);
+		expect(row?.log_path).toBe("/logs/agent-ar1.ndjson");
+
+		// Wrong iteration returns null
+		const miss = getStepResult(
+			db,
+			"run1",
+			"author",
+			"1",
+			1,
+			"author-next-phase",
+			"status",
+		);
+		expect(miss).toBeNull();
+
+		// Wrong role returns null
+		const miss2 = getStepResult(
+			db,
+			"run1",
+			"reviewer",
+			"1",
+			0,
+			"author-next-phase",
+			"status",
+		);
+		expect(miss2).toBeNull();
+	});
+
+	test("getStepResult returns correct step when multiple iterations exist", () => {
+		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+
+		// Iteration 0: author complete
+		upsertAgentResult(db, {
+			id: "ar1",
+			run_id: "run1",
+			phase: "1",
+			iteration: 0,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: JSON.stringify({ result: "complete", commit: "aaa" }),
+			duration_ms: 5000,
+			log_path: "/logs/agent-ar1.ndjson",
+		});
+
+		// Iteration 2: author failed (e.g., quality retry re-invocation)
+		upsertAgentResult(db, {
+			id: "ar2",
+			run_id: "run1",
+			phase: "1",
+			iteration: 2,
+			role: "author",
+			template: "author-next-phase",
+			result_type: "status",
+			result_json: JSON.stringify({ result: "failed", reason: "test broke" }),
+			duration_ms: 3000,
+			log_path: "/logs/agent-ar2.ndjson",
+		});
+
+		// getStepResult for iteration 0 should return "complete", not "failed"
+		const step0 = getStepResult(
+			db,
+			"run1",
+			"author",
+			"1",
+			0,
+			"author-next-phase",
+			"status",
+		);
+		expect(step0).not.toBeNull();
+		expect(JSON.parse(step0?.result_json ?? "{}").result).toBe("complete");
+		expect(step0?.log_path).toBe("/logs/agent-ar1.ndjson");
+
+		// getStepResult for iteration 2 should return "failed"
+		const step2 = getStepResult(
+			db,
+			"run1",
+			"author",
+			"1",
+			2,
+			"author-next-phase",
+			"status",
+		);
+		expect(step2).not.toBeNull();
+		expect(JSON.parse(step2?.result_json ?? "{}").result).toBe("failed");
+
+		// getLatestStatus (phase-wide) would return iteration 2 (the wrong one
+		// if we're trying to route iteration 0)
+		const latest = getLatestStatus(db, "run1", "1");
+		expect(latest?.result).toBe("failed");
 	});
 
 	test("getLatestVerdict returns parsed result JSON", () => {

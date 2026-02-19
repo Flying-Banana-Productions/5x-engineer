@@ -133,6 +133,7 @@ export default defineCommand({
 				allowDirty: args["allow-dirty"],
 				projectRoot,
 				quiet: effectiveQuiet,
+				canonicalPlanPath: canonical,
 			},
 		);
 

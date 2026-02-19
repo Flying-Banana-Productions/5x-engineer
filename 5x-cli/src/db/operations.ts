@@ -429,6 +429,37 @@ export function hasCompletedStep(
 	return row !== null;
 }
 
+/**
+ * Fetch the exact step result by composite key (run_id, role, phase, iteration,
+ * template, result_type). Returns the parsed result_json and log_path, or null
+ * if no matching row exists.
+ *
+ * Unlike getLatestStatus/getLatestVerdict (which return the phase-wide latest),
+ * this fetches the specific step identified by all composite key components.
+ * Used in resume paths to avoid routing on the wrong iteration's result.
+ */
+export function getStepResult(
+	db: Database,
+	runId: string,
+	role: string,
+	phase: string,
+	iteration: number,
+	templateName: string,
+	resultType: "status" | "verdict",
+): { result_json: string; log_path: string | null } | null {
+	const row = db
+		.query(
+			`SELECT result_json, log_path FROM agent_results
+       WHERE run_id = ?1 AND role = ?2 AND phase = ?3 AND iteration = ?4 AND template = ?5 AND result_type = ?6
+       LIMIT 1`,
+		)
+		.get(runId, role, phase, iteration, templateName, resultType) as {
+		result_json: string;
+		log_path: string | null;
+	} | null;
+	return row;
+}
+
 // --- Quality Results ---
 
 /**

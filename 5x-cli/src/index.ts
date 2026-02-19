@@ -50,6 +50,7 @@ export {
 	getRunEvents,
 	getRunHistory,
 	getRunMetrics,
+	getStepResult,
 	hasCompletedStep,
 	updateRunStatus,
 	upsertAgentResult,

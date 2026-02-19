@@ -34,10 +34,10 @@ import {
 	createRun,
 	getActiveRun,
 	getAgentResults,
-	getLatestStatus,
 	getLatestVerdict,
 	getMaxIterationForPhase,
 	getQualityAttemptCount,
+	getStepResult,
 	hasCompletedStep,
 	updateRunStatus,
 	upsertAgentResult,
@@ -79,6 +79,14 @@ export interface PhaseExecutionOptions {
 	startPhase?: string; // phase number to start from (e.g. "3", "1.1")
 	workdir: string; // agent workdir (project root or worktree path)
 	projectRoot?: string; // original project root (for log/DB anchoring when using worktrees)
+	/**
+	 * Stable canonical plan path for DB identity. When running in a worktree,
+	 * the `planPath` parameter points to the worktree copy (for file I/O),
+	 * but DB operations (runs, agent_results, plans) must use the primary
+	 * checkout's canonical path so resume/history continuity is preserved.
+	 * Falls back to `canonicalizePlanPath(planPath)` when not provided.
+	 */
+	canonicalPlanPath?: string;
 	/**
 	 * When true, suppress formatted agent event output to stdout.
 	 * Default: false (show output). Use !process.stdout.isTTY as the default
@@ -152,7 +160,11 @@ export async function runPhaseExecutionLoop(
 	config: FiveXConfig,
 	options: PhaseExecutionOptions,
 ): Promise<PhaseExecutionResult> {
-	const canonical = canonicalizePlanPath(planPath);
+	// DB identity: use the stable canonical path provided by the command layer
+	// (anchored to the primary checkout), or fall back to canonicalizing planPath
+	// (correct for non-worktree runs where planPath is already the primary path).
+	const dbPlanPath =
+		options.canonicalPlanPath ?? canonicalizePlanPath(planPath);
 	const workdir = options.workdir;
 	const quiet = options.quiet ?? false;
 	const escalations: EscalationEvent[] = [];
@@ -171,7 +183,7 @@ export async function runPhaseExecutionLoop(
 	/** True when the resumed state was a legacy PARSE_* state (needs special iteration handling). */
 	let resumedFromLegacyParse = false;
 
-	const activeRun = getActiveRun(db, canonical);
+	const activeRun = getActiveRun(db, dbPlanPath);
 	if (activeRun && activeRun.command === "run") {
 		const resumeGateFn = options.resumeGate ?? defaultResumeGate;
 		const resumeDecision = await resumeGateFn(
@@ -224,7 +236,7 @@ export async function runPhaseExecutionLoop(
 			runId = generateId();
 			createRun(db, {
 				id: runId,
-				planPath: canonical,
+				planPath: dbPlanPath,
 				command: "run",
 				reviewPath,
 			});
@@ -233,14 +245,14 @@ export async function runPhaseExecutionLoop(
 		runId = generateId();
 		createRun(db, {
 			id: runId,
-			planPath: canonical,
+			planPath: dbPlanPath,
 			command: "run",
 			reviewPath,
 		});
 	}
 
-	// Ensure plan is recorded
-	upsertPlan(db, { planPath });
+	// Ensure plan is recorded (use dbPlanPath for stable DB identity)
+	upsertPlan(db, { planPath: dbPlanPath });
 
 	const logDir = join(logBaseDir, runId);
 	if (!existsSync(logDir)) {
@@ -372,13 +384,44 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping author step ${iteration} (already completed)`,
 						);
-						// Route based on stored result
-						const status = getLatestStatus(db, runId, phase.number);
-						if (!status) {
+						// Route based on exact step result (not phase-wide latest)
+						const stepRow = getStepResult(
+							db,
+							runId,
+							"author",
+							phase.number,
+							iteration,
+							"author-next-phase",
+							"status",
+						);
+						if (!stepRow) {
 							const event: EscalationEvent = {
 								reason:
 									"Author result stored but cannot be read. Manual review required.",
 								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						let status: import("../protocol.js").AuthorStatus;
+						try {
+							status = JSON.parse(stepRow.result_json);
+						} catch {
+							const event: EscalationEvent = {
+								reason:
+									"Author result stored but JSON is malformed. Manual review required.",
+								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -401,6 +444,7 @@ export async function runPhaseExecutionLoop(
 							const event: EscalationEvent = {
 								reason: err instanceof Error ? err.message : String(err),
 								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -419,6 +463,7 @@ export async function runPhaseExecutionLoop(
 							const event: EscalationEvent = {
 								reason: status.reason ?? `Author reported ${status.result}`,
 								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -865,13 +910,44 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping reviewer step ${iteration} (already completed)`,
 						);
-						// Route based on stored verdict
-						const verdict = getLatestVerdict(db, runId, phase.number);
-						if (!verdict) {
+						// Route based on exact step result (not phase-wide latest)
+						const stepRow = getStepResult(
+							db,
+							runId,
+							"reviewer",
+							phase.number,
+							iteration,
+							"reviewer-commit",
+							"verdict",
+						);
+						if (!stepRow) {
 							const event: EscalationEvent = {
 								reason:
 									"Reviewer result stored but cannot be read. Manual review required.",
 								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						let verdict: import("../protocol.js").ReviewerVerdict;
+						try {
+							verdict = JSON.parse(stepRow.result_json);
+						} catch {
+							const event: EscalationEvent = {
+								reason:
+									"Reviewer result stored but JSON is malformed. Manual review required.",
+								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -892,6 +968,7 @@ export async function runPhaseExecutionLoop(
 							const event: EscalationEvent = {
 								reason: err instanceof Error ? err.message : String(err),
 								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -910,7 +987,7 @@ export async function runPhaseExecutionLoop(
 						const routeResult = routeVerdict(
 							verdict,
 							iteration,
-							undefined,
+							stepRow.log_path ?? undefined,
 							escalations,
 							db,
 							runId,
@@ -1106,12 +1183,43 @@ export async function runPhaseExecutionLoop(
 						console.log(
 							`  Skipping auto-fix step ${iteration} (already completed)`,
 						);
-						// Route based on stored result
-						const fixStatus = getLatestStatus(db, runId, phase.number);
-						if (!fixStatus) {
+						// Route based on exact step result (not phase-wide latest)
+						const stepRow = getStepResult(
+							db,
+							runId,
+							"author",
+							phase.number,
+							iteration,
+							"author-process-review",
+							"status",
+						);
+						if (!stepRow) {
 							const event: EscalationEvent = {
 								reason: "Author fix result stored but cannot be read.",
 								iteration,
+							};
+							escalations.push(event);
+							appendRunEvent(db, {
+								runId,
+								eventType: "escalation",
+								phase: phase.number,
+								iteration,
+								data: event,
+							});
+							iteration++;
+							state = "ESCALATE";
+							break;
+						}
+
+						let fixStatus: import("../protocol.js").AuthorStatus;
+						try {
+							fixStatus = JSON.parse(stepRow.result_json);
+						} catch {
+							const event: EscalationEvent = {
+								reason:
+									"Author fix result stored but JSON is malformed. Manual review required.",
+								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -1132,6 +1240,7 @@ export async function runPhaseExecutionLoop(
 							const event: EscalationEvent = {
 								reason: err instanceof Error ? err.message : String(err),
 								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {
@@ -1155,6 +1264,7 @@ export async function runPhaseExecutionLoop(
 									fixStatus.reason ??
 									`Author reported ${fixStatus.result} during fix`,
 								iteration,
+								logPath: stepRow.log_path ?? undefined,
 							};
 							escalations.push(event);
 							appendRunEvent(db, {

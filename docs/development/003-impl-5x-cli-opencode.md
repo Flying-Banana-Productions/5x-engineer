@@ -1,8 +1,8 @@
 # 5x CLI — OpenCode-First Refactor
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** February 18, 2026
-**Updated:** February 19, 2026 — Phase 3 review corrections: SSE abort signal passthrough (P0.1), external signal cancellation (P0.2), workdir/directory propagation (P0.3), costUsd zero-value preservation (P1.1), cross-session event filtering (P1.2), quiet-mode warning suppression (P2), formatter perf guardrail (P2), plan doc hygiene (P2)
+**Updated:** February 19, 2026 — Phase 4 review corrections: stable worktree DB identity via `canonicalPlanPath` (P0.2), exact-step resume routing via `getStepResult()` replacing phase-wide `getLatestStatus`/`getLatestVerdict` (P1.1), `log_path` propagated into escalation events from resume paths (P1.1); Phase 5 highlights: adapter lifecycle `close()` in `finally` (P0.1), result semantics and audit growth (P2); prior: Phase 3 review corrections (v1.2)
 **Status:** Draft
 **Supersedes:** [001-impl-5x-cli.md](./001-impl-5x-cli.md) (phases 6–7 are cancelled; this document governs all remaining work)
 
@@ -727,6 +727,17 @@ export interface PhaseExecutionOptions {
   quiet?: boolean
   maxReviewIterations?: number
   maxQualityRetries?: number
+  /**
+   * Stable canonical plan path for DB identity. When running in a worktree,
+   * planPath points to the worktree copy (for file I/O), but DB operations
+   * must use the primary checkout's canonical path so resume/history
+   * continuity is preserved. Falls back to canonicalizePlanPath(planPath)
+   * when not provided (correct for non-worktree runs).
+   *
+   * Phase 4 review correction (P0.2): prevents DB identity split when
+   * effectivePlanPath is a worktree-remapped path.
+   */
+  canonicalPlanPath?: string
 }
 
 // plan-review-loop.ts
@@ -739,8 +750,12 @@ export interface PlanReviewLoopOptions {
   logDir: string
   quiet?: boolean
   maxIterations?: number
+  /** See PhaseExecutionOptions.canonicalPlanPath. */
+  canonicalPlanPath?: string
 }
 ```
+
+> **Phase 4 review correction (P0.2):** Orchestrators derive `dbPlanPath = options.canonicalPlanPath ?? canonicalizePlanPath(planPath)` and use `dbPlanPath` for all DB operations (`getActiveRun`, `createRun`, `upsertPlan`). `planPath` is used only for file I/O (`readFileSync`, `renderTemplate`, etc.). Commands pass the primary checkout's canonical path as `canonicalPlanPath` to prevent the DB identity split described in the Phase 4 review.
 
 ### 4.2 Refactor `phase-execution-loop.ts`
 
@@ -776,6 +791,10 @@ New states: `EXECUTE, QUALITY_CHECK, QUALITY_RETRY, REVIEW, AUTO_FIX, PHASE_GATE
 - [x] Remove iteration off-by-one workaround — structured output is synchronous; `iteration++` happens after the result is stored
 
 - [x] Pass `quiet` flag through to `invokeForStatus`/`invokeForVerdict` so SSE console output is suppressed when `--quiet` is active (log file still written)
+
+> **Phase 4 review correction (P1.1 — resume skip routing):** When `hasCompletedStep()` returns true (resume path), the orchestrator now uses `getStepResult()` to fetch the exact step row by composite key `(runId, role, phase, iteration, template, resultType)` instead of `getLatestStatus()`/`getLatestVerdict()` which returned the phase-wide latest by `iteration DESC`. This prevents routing on the wrong iteration's result when multiple status/verdict rows exist for the same phase (e.g., quality retry re-invocations). The step's `log_path` is also included in escalation events from resume paths.
+>
+> **DB operation added:** `getStepResult(db, runId, role, phase, iteration, template, resultType)` → `{ result_json, log_path } | null` — exact composite key lookup. See `src/db/operations.ts`.
 
 ### 4.3 Refactor `plan-review-loop.ts`
 
@@ -860,7 +879,9 @@ Decoding: `Buffer.from(payload, 'base64url').toString('utf8')`.
 
 > **P0.1 bridge completion (part 2 of 2):** This phase removes all `LegacyAgentAdapter` casts from commands and enables `createAndVerifyAdapter()` in the factory to return the real `OpenCodeAdapter`. After Phase 5, the entire legacy adapter interface can be deleted — no code references `LegacyAgentAdapter` anywhere.
 
-**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`.
+> **Phase 4 review P0.1 — Adapter lifecycle (must-fix early in Phase 5):** Once `createAndVerifyAdapter()` is enabled, commands that create an adapter **must** `await adapter.close()` in a `finally`, including error/early-return paths. Without this, the managed OpenCode server and associated resources (ports, child processes, file handles) will leak. This applies to `run.ts`, `plan-review.ts`, and `plan.ts`. The pseudo-code below shows the required pattern. The Phase 4 review flagged this as P0 because it causes non-deterministic teardown on repeated runs and complicates Ctrl-C handling.
+
+**Completion gate:** `bun test` passes. Templates contain no references to `5x:verdict` or `5x:status` blocks. Commands construct adapters correctly via `createAndVerifyAdapter()`. No `LegacyAgentAdapter` references remain anywhere in `src/`. All commands close the adapter in `finally`.
 
 ### 5.1 Update `commands/run.ts`
 
@@ -947,6 +968,14 @@ The review summary parser reads human-readable review markdown. Verify it has no
 - [ ] Update `test/commands/plan.test.ts` — mock adapter
 - [ ] Update `test/commands/plan-review.test.ts` — mock adapter
 - [ ] Verify `test/commands/init.test.ts` — config output matches new format
+
+### 5.8 Phase 4 review — P2 considerations (deferred)
+
+The following items from the Phase 4 review are lower priority and are tracked here for future consideration:
+
+- **Result semantics:** `PhaseExecutionResult.aborted` currently conflates "not complete" with "aborted" — the `aborted` field is true whenever the run is not fully complete, whether due to user abort, escalation, or partial completion. Consider distinguishing `failed` vs `aborted` explicitly to avoid misleading CLI output (e.g., separate `aborted: boolean` from `failed: boolean`, or use a union status type).
+
+- **Audit record growth:** Structured audit comments (`<!-- 5x:structured:v1 ... -->`) are append-only with no cap. For long-running plans with many iterations, review artifacts can accumulate significant audit data. Consider a cap/rotation strategy or a config flag (`auditRecordLimit?`) if review artifacts become noisy. The DB remains the source of truth, so audit records can be truncated without data loss.
 
 ---
 

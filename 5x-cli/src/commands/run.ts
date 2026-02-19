@@ -267,6 +267,10 @@ export default defineCommand({
 					workdir,
 					projectRoot,
 					quiet: effectiveQuiet,
+					// Stable DB identity anchored to the primary checkout path.
+					// effectivePlanPath may be remapped to a worktree; canonical
+					// stays consistent so resume/history lookups always match.
+					canonicalPlanPath: canonical,
 				},
 			);
 
