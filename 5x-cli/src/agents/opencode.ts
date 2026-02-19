@@ -104,6 +104,11 @@ function getEventSessionId(event: OpenCodeEvent): string | undefined {
 /**
  * Subscribe to SSE events, write them to a log file (NDJSON), and optionally
  * format them for console display. Runs until the abort signal fires.
+ *
+ * P0.1 fix: passes abortSignal to client.event.subscribe() so the underlying
+ * SSE HTTP connection is torn down when the signal fires, preventing hangs.
+ *
+ * P1.2 fix: events without a session ID are skipped (no cross-session leakage).
  */
 async function writeEventsToLog(
 	client: OpencodeClient,
@@ -121,17 +126,25 @@ async function writeEventsToLog(
 		encoding: "utf8",
 	});
 	logStream.on("error", (err) => {
-		console.error(`Warning: log file write error: ${err.message}`);
+		if (!opts.quiet) {
+			console.error(`Warning: log file write error: ${err.message}`);
+		}
 	});
 
 	try {
-		const { stream } = await client.event.subscribe();
+		// P0.1: pass signal to subscribe so the SSE connection terminates on abort
+		const { stream } = await client.event.subscribe(undefined, {
+			signal: abortSignal,
+		});
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
 
-			// Filter for this session's events
+			// P1.2: skip events without a session ID (no cross-session leakage)
 			const eventSessionId = getEventSessionId(event);
-			if (eventSessionId && eventSessionId !== sessionId) continue;
+			if (!eventSessionId) continue;
+
+			// Filter for this session's events
+			if (eventSessionId !== sessionId) continue;
 
 			// Write to log file (NDJSON: one JSON object per line)
 			const line = JSON.stringify(event);
@@ -147,7 +160,7 @@ async function writeEventsToLog(
 		}
 	} catch (err) {
 		// Stream errors are expected on abort — suppress them
-		if (!abortSignal.aborted) {
+		if (!abortSignal.aborted && !opts.quiet) {
 			console.error(
 				`Warning: SSE stream error: ${err instanceof Error ? err.message : String(err)}`,
 			);
@@ -263,9 +276,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 		const start = Date.now();
 
-		// 1. Create session
+		// 1. Create session (P0.3: pass workdir as directory)
 		const sessionResult = await this.client.session.create({
 			title: `5x-${resultType}-${Date.now()}`,
+			...(opts.workdir && { directory: opts.workdir }),
 		});
 		if (sessionResult.error) {
 			throw new Error(
@@ -274,37 +288,64 @@ export class OpenCodeAdapter implements AgentAdapter {
 		}
 		const sessionId = sessionResult.data.id;
 
-		// 2. Start SSE event stream in background
-		const eventController = new AbortController();
+		// 2. Cancellation infrastructure (P0.2: wire opts.signal + timeout)
+		const timeoutController = new AbortController();
+		const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+		if (typeof timeoutId === "object" && "unref" in timeoutId)
+			timeoutId.unref();
+
+		// Combined signal: timeout + external cancellation
+		const cancelSignals: AbortSignal[] = [timeoutController.signal];
+		if (opts.signal) cancelSignals.push(opts.signal);
+		const cancelSignal = AbortSignal.any(cancelSignals);
+
+		// SSE controller: aborted on prompt completion OR on cancellation
+		const sseController = new AbortController();
+		const propagateCancel = () => sseController.abort();
+		cancelSignal.addEventListener("abort", propagateCancel, { once: true });
+
+		// 3. Start SSE event stream in background (P0.1: signal passed through)
 		const streamPromise = writeEventsToLog(
 			this.client,
 			sessionId,
 			opts.logPath,
-			eventController.signal,
+			sseController.signal,
 			{ quiet: opts.quiet },
 		);
 
 		try {
-			// 3. Send prompt with timeout race
-			const promptPromise = this.client.session.prompt({
-				sessionID: sessionId,
-				parts: [{ type: "text", text: opts.prompt }],
-				format,
-				...(modelObj && { model: modelObj }),
+			// 4. Send prompt (P0.2: pass cancelSignal to prompt request)
+			// Belt-and-suspenders: signal tears down the HTTP connection, but
+			// Promise.race ensures deterministic timeout behavior regardless
+			// of SDK signal handling quality.
+			const promptPromise = this.client.session.prompt(
+				{
+					sessionID: sessionId,
+					parts: [{ type: "text", text: opts.prompt }],
+					format,
+					...(modelObj && { model: modelObj }),
+					...(opts.workdir && { directory: opts.workdir }),
+				},
+				{ signal: cancelSignal },
+			);
+
+			const cancelPromise = new Promise<never>((_, reject) => {
+				if (cancelSignal.aborted) {
+					reject(cancelSignal.reason ?? new Error("aborted"));
+					return;
+				}
+				cancelSignal.addEventListener(
+					"abort",
+					() => reject(cancelSignal.reason ?? new Error("aborted")),
+					{ once: true },
+				);
 			});
 
-			const timeoutPromise = new Promise<never>((_, reject) => {
-				const id = setTimeout(() => {
-					reject(new AgentTimeoutError(`Agent timed out after ${timeoutMs}ms`));
-				}, timeoutMs);
-				// Unref so it doesn't keep the process alive
-				if (typeof id === "object" && "unref" in id) id.unref();
-			});
-
-			const result = await Promise.race([promptPromise, timeoutPromise]);
+			const result = await Promise.race([promptPromise, cancelPromise]);
+			clearTimeout(timeoutId);
 			const duration = Date.now() - start;
 
-			// 4. Check for errors
+			// 5. Check for errors
 			if (result.error) {
 				if (isStructuredOutputError(result)) {
 					throw new Error(
@@ -318,7 +359,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 			const info = result.data.info;
 
-			// 5. Extract structured output
+			// 6. Extract structured output
 			const structured = info.structured;
 			if (structured == null) {
 				// Check if there's a structured output error on the message
@@ -333,12 +374,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 				);
 			}
 
-			// 6. Extract token/cost info
+			// 7. Extract token/cost info (P1.1: use ?? to preserve cost=0)
 			const tokensIn = info.tokens?.input;
 			const tokensOut = info.tokens?.output;
-			const costUsd = info.cost || undefined;
+			const costUsd = info.cost ?? undefined;
 
-			// 7. Build and validate result
+			// 8. Build and validate result
 			if (resultType === "status") {
 				const status = structured as AuthorStatus;
 				assertAuthorStatus(status, "invokeForStatus");
@@ -365,18 +406,29 @@ export class OpenCodeAdapter implements AgentAdapter {
 				costUsd,
 			};
 		} catch (err) {
-			// On timeout, abort the session
-			if (err instanceof AgentTimeoutError) {
+			clearTimeout(timeoutId);
+
+			// On timeout or external cancel, abort the session
+			const isTimeout = timeoutController.signal.aborted;
+			const isExternalCancel = opts.signal?.aborted;
+
+			if (isTimeout || isExternalCancel) {
 				try {
 					await this.client.session.abort({ sessionID: sessionId });
 				} catch {
 					// Ignore abort errors
 				}
+				if (isTimeout && !isExternalCancel) {
+					throw new AgentTimeoutError(`Agent timed out after ${timeoutMs}ms`);
+				}
+				throw new Error("Agent invocation cancelled");
 			}
 			throw err;
 		} finally {
-			// 8. Stop SSE stream and flush log
-			eventController.abort();
+			// 9. Stop SSE stream and flush log
+			clearTimeout(timeoutId);
+			sseController.abort();
+			cancelSignal.removeEventListener("abort", propagateCancel);
 			await streamPromise;
 		}
 	}

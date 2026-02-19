@@ -1,8 +1,8 @@
 # 5x CLI — OpenCode-First Refactor
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** February 18, 2026
-**Updated:** February 18, 2026 — addendum corrections: remote mode deferred, step identity fix, invariant validators, log/quiet parity, enum alignment, cost columns, audit trail
+**Updated:** February 19, 2026 — Phase 3 review corrections: SSE abort signal passthrough (P0.1), external signal cancellation (P0.2), workdir/directory propagation (P0.3), costUsd zero-value preservation (P1.1), cross-session event filtering (P1.2), quiet-mode warning suppression (P2), formatter perf guardrail (P2), plan doc hygiene (P2)
 **Status:** Draft
 **Supersedes:** [001-impl-5x-cli.md](./001-impl-5x-cli.md) (phases 6–7 are cancelled; this document governs all remaining work)
 
@@ -330,10 +330,11 @@ Update `src/agents/types.ts` with new `AgentAdapter` interface (implementation c
 export interface InvokeOptions {
   prompt: string
   model?: string       // provider/model override
+  workdir?: string     // working directory for tool execution (worktree-safe); passed to session.create() as directory
   logPath: string      // write SSE events here (always written; independent of quiet)
   quiet?: boolean      // suppress console output; log file still written
   timeout?: number     // ms, default 300_000
-  signal?: AbortSignal
+  signal?: AbortSignal // external cancellation (Ctrl-C, gate aborts, parent timeout)
 }
 
 export type InvokeStatus = {
@@ -601,13 +602,15 @@ export async function createAndVerifyAdapter(config: FiveXConfig): Promise<OpenC
 Both `invokeForStatus()` and `invokeForVerdict()` follow the same pattern:
 
 ```
-1. Create session: client.session.create({ body: { title } })
-2. Start SSE event stream in background: writeEventsToLog(client, logPath)
-3. Send prompt: client.session.prompt({ path: { id }, body: { parts, format, model } })
-4. Stop SSE stream, flush log file
-5. Check for structured output error; if present → throw
-6. Return typed result
-7. On timeout: client.session.abort({ path: { id } }); throw TimeoutError
+1. Create session: client.session.create({ title, directory? })
+2. Build unified cancellation signal: AbortSignal.any([timeoutSignal, opts.signal?])
+3. Start SSE event stream in background: writeEventsToLog(client, logPath, sseSignal)
+4. Send prompt: client.session.prompt({ parts, format, model, directory? }, { signal: cancelSignal })
+5. Race prompt against cancelSignal rejection
+6. Stop SSE stream, flush log file
+7. Check for structured output error; if present → throw
+8. Return typed result
+9. On timeout/cancel: client.session.abort({ sessionID }); throw TimeoutError or cancellation error
 ```
 
 - [x] `invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus>`:
@@ -621,8 +624,16 @@ Both `invokeForStatus()` and `invokeForVerdict()` follow the same pattern:
   - Returns `{ type: "verdict", verdict: info.structured, duration, sessionId, tokensIn?, tokensOut?, costUsd? }`
 
 - [x] Timeout handling:
-  - Race `session.prompt()` against `setTimeout(timeout)` using `Promise.race`
+  - Unified signal via `AbortSignal.any([timeoutController.signal, opts.signal?])` combined with `Promise.race` for deterministic timeout detection
+  - Signal passed to `session.prompt(params, { signal })` for HTTP connection teardown
   - On timeout: `client.session.abort({ sessionID })`, throw `AgentTimeoutError`
+  - On external cancel (`opts.signal` aborted): `client.session.abort({ sessionID })`, throw cancellation error
+
+- [x] External cancellation (P0.2): if `opts.signal` is aborted, prompt + SSE subscription are terminated, session is aborted, and a clear cancellation error is thrown
+
+- [x] Workdir propagation (P0.3): `opts.workdir` is passed as `directory` to both `session.create()` and `session.prompt()` when provided
+
+- [x] Cost extraction (P1.1): `info.cost ?? undefined` (nullish coalescing preserves `cost=0`)
 
 - [x] Model override: if `opts.model` is provided, parsed via `parseModel()` to `{ providerID, modelID }` and passed to `session.prompt()`
 
@@ -650,12 +661,14 @@ async function writeEventsToLog(
 - When `!quiet`: format SSE events for console display (text content, tool call summaries, etc.) using `formatSseEvent(event)` from `src/utils/sse-formatter.ts`. This module is the Phase 1 rename of `ndjson-formatter.ts`; Phase 3 updates its internals to handle OpenCode SSE event shapes in place of Claude Code NDJSON events.
 - When `quiet`: suppress all console output; log file still written.
 
-- [x] Subscribe: `client.event.subscribe()` → iterate `events.stream`
+- [x] Subscribe: `client.event.subscribe(undefined, { signal: abortSignal })` → iterate `events.stream` (P0.1: signal passed to subscribe for reliable connection teardown)
 - [x] Filter for events relevant to this session (by session ID in event properties)
+- [x] Skip events without a session ID — prevents cross-session log pollution from global/system events (P1.2)
 - [x] Write each event as a NDJSON line to `logPath` (one JSON object per line)
 - [x] When `!quiet`: format and print event to stdout (console streaming parity with 001)
 - [x] Stop on `AbortSignal` or when session reaches terminal state
-- [x] Log file error handling: attach `on("error")` listener at creation (best-effort, warn + continue)
+- [x] Log file error handling: attach `on("error")` listener at creation (best-effort, warn + continue; warnings suppressed when `quiet=true` per P2)
+- [x] SSE stream error warnings suppressed when `quiet=true` (P2)
 - [x] Use `endStream()` from `src/utils/stream.ts` to flush log file on completion
 
 ### 3.4 Factory — unchanged in Phase 3
@@ -680,6 +693,11 @@ async function writeEventsToLog(
   - [x] `createAndVerifyAdapter()` still throws in Phase 3 (factory test)
   - [x] `assertAuthorStatus()` called after `invokeForStatus()` — escalation on violation
   - [x] `assertReviewerVerdict()` called after `invokeForVerdict()` — escalation on violation
+  - [x] **P0.1 regression:** never-ending SSE stream (signal-responsive mock) → `invokeForStatus()` completes without hang
+  - [x] **P0.2 regression:** external `AbortController.signal` → cancellation error thrown, `session.abort()` called; timeout distinguished from external cancel
+  - [x] **P0.3 regression:** `workdir` propagated as `directory` to `session.create()` and `session.prompt()`; omitted when not provided
+  - [x] **P1.1 regression:** `cost=0` → `costUsd` is `0` (not `undefined`); `cost=undefined` → `costUsd` is `undefined`
+  - [x] **P1.2 regression:** events without session ID are not written to log file
 
 ---
 

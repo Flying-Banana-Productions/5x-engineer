@@ -14,11 +14,18 @@
 const TOOL_INPUT_LIMIT = 120;
 const TOOL_RESULT_LIMIT = 200;
 
+/** Threshold for pre-scan: skip full JSON.stringify if any string value exceeds this. */
+const LARGE_STRING_THRESHOLD = 1024;
+
 /**
  * Safely stringify a tool input for console display.
  * Non-throwing: handles circular references and other unserializable inputs.
  * When the stringified form exceeds the limit, large objects fall back to a
  * key-only summary to avoid allocating huge intermediate strings.
+ *
+ * P2 perf fix: for objects, pre-scans top-level string properties and skips
+ * full JSON.stringify when any value exceeds LARGE_STRING_THRESHOLD, avoiding
+ * large transient allocations from file contents or verbose tool inputs.
  */
 function safeInputSummary(input: unknown, limit: number): string {
 	if (typeof input !== "object" || input === null) {
@@ -30,10 +37,27 @@ function safeInputSummary(input: unknown, limit: number): string {
 		}
 	}
 	try {
+		const obj = input as Record<string, unknown>;
+		const keys = Object.keys(obj);
+
+		// Pre-scan: if any top-level string value is very large, skip full
+		// JSON.stringify to avoid allocating a huge transient string.
+		const hasLargeString = keys.some(
+			(k) =>
+				typeof obj[k] === "string" &&
+				(obj[k] as string).length > LARGE_STRING_THRESHOLD,
+		);
+		if (hasLargeString) {
+			const summary =
+				keys.length > 0
+					? `{${keys.join(", ")}} [large values]`
+					: "{} [large values]";
+			return summary.length > limit ? `${summary.slice(0, limit)}...` : summary;
+		}
+
 		const s = JSON.stringify(input);
 		if (s.length > limit) {
 			// Avoid retaining the large allocation — use a key summary instead.
-			const keys = Object.keys(input as object);
 			const summary =
 				keys.length > 0
 					? `{${keys.join(", ")}} (${s.length} chars)`

@@ -24,6 +24,9 @@ export interface InvokeOptions {
 	/** Model override — provider/model format (e.g. "anthropic/claude-sonnet-4-6"). */
 	model?: string;
 
+	/** Working directory for tool execution (worktree-safe). Passed to session.create() as directory. */
+	workdir?: string;
+
 	/** Path to write SSE event log (always written; independent of quiet). */
 	logPath: string;
 
@@ -33,7 +36,7 @@ export interface InvokeOptions {
 	/** Timeout in milliseconds. Default: 300_000 (5 min). */
 	timeout?: number;
 
-	/** AbortSignal for cancellation. */
+	/** AbortSignal for external cancellation (Ctrl-C, gate aborts, parent timeout). */
 	signal?: AbortSignal;
 }
 

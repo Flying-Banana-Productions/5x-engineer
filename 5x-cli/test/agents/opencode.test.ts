@@ -16,11 +16,11 @@ import type { InvokeOptions } from "../../src/agents/types.js";
 /** Create a mock OpenCode client with configurable behavior. */
 function createMockClient(
 	overrides: {
-		sessionCreate?: () => Promise<unknown>;
-		sessionPrompt?: () => Promise<unknown>;
-		sessionAbort?: () => Promise<unknown>;
-		sessionList?: () => Promise<unknown>;
-		eventSubscribe?: () => Promise<unknown>;
+		sessionCreate?: (...args: unknown[]) => Promise<unknown>;
+		sessionPrompt?: (...args: unknown[]) => Promise<unknown>;
+		sessionAbort?: (...args: unknown[]) => Promise<unknown>;
+		sessionList?: (...args: unknown[]) => Promise<unknown>;
+		eventSubscribe?: (...args: unknown[]) => Promise<unknown>;
 	} = {},
 ) {
 	const defaultSession = {
@@ -561,8 +561,8 @@ describe("OpenCodeAdapter.invokeForVerdict", () => {
 
 		expect(result.verdict.readiness).toBe("ready_with_corrections");
 		expect(result.verdict.items).toHaveLength(1);
-		expect(result.verdict.items[0]!.id).toBe("P0.1");
-		expect(result.verdict.items[0]!.action).toBe("auto_fix");
+		expect(result.verdict.items[0]?.id).toBe("P0.1");
+		expect(result.verdict.items[0]?.action).toBe("auto_fix");
 	});
 
 	test("escalates on assertReviewerVerdict invariant violation", async () => {
@@ -757,7 +757,310 @@ describe("SSE event log streaming", () => {
 		const lines = logContent.split("\n").filter((l) => l.trim());
 		// Only the own-session event should be logged
 		expect(lines.length).toBe(1);
-		const parsed = JSON.parse(lines[0]!);
+		const parsed = JSON.parse(lines[0] ?? "{}");
+		expect(parsed.properties.delta).toBe("own");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P0.1: SSE subscription abort regression
+// ---------------------------------------------------------------------------
+// P0.1 — SSE subscription abort regression
+// ---------------------------------------------------------------------------
+
+describe("P0.1: SSE subscription is abortable", () => {
+	test("invokeForStatus completes even with a never-ending event stream", async () => {
+		// Regression: if the SSE stream is idle (no events), the adapter must
+		// still return after the prompt resolves — not hang in finally awaiting
+		// streamPromise. The signal passed to subscribe() tears down the
+		// connection; this mock simulates that by resolving when abort fires
+		// (real SDK aborts the underlying fetch, ending the async generator).
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async (...args: unknown[]) => ({
+				stream: (async function* () {
+					// Simulate idle SSE connection that only ends when signal fires
+					// (mirrors real SDK behavior where fetch abort closes the stream)
+					const opts = args[1] as { signal?: AbortSignal } | undefined;
+					const signal = opts?.signal;
+					if (signal) {
+						await new Promise<void>((resolve) => {
+							if (signal.aborted) {
+								resolve();
+								return;
+							}
+							signal.addEventListener("abort", () => resolve(), {
+								once: true,
+							});
+						});
+					}
+				})(),
+			}),
+		});
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({ timeout: 3_000 }),
+		);
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P0.2 — External signal cancellation
+// ---------------------------------------------------------------------------
+
+describe("P0.2: external signal cancellation", () => {
+	test("cancels invocation when opts.signal is aborted", async () => {
+		const controller = new AbortController();
+		let abortCalled = false;
+
+		const { adapter } = createTestAdapter({
+			sessionPrompt: () =>
+				new Promise((resolve) => {
+					// Never resolves naturally — waits for signal
+					setTimeout(resolve, 60_000);
+				}),
+			sessionAbort: async () => {
+				abortCalled = true;
+				return { data: true, error: undefined };
+			},
+		});
+
+		// Abort after 50ms
+		setTimeout(() => controller.abort(), 50);
+
+		await expect(
+			adapter.invokeForStatus(
+				defaultInvokeOpts({ signal: controller.signal, timeout: 10_000 }),
+			),
+		).rejects.toThrow("Agent invocation cancelled");
+
+		await new Promise((r) => setTimeout(r, 20));
+		expect(abortCalled).toBe(true);
+	});
+
+	test("throws AgentTimeoutError (not cancellation) when timeout fires first", async () => {
+		// Ensure timeout is distinguished from external cancel
+		const { adapter } = createTestAdapter({
+			sessionPrompt: () =>
+				new Promise((resolve) => {
+					setTimeout(resolve, 60_000);
+				}),
+		});
+
+		await expect(
+			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 50 })),
+		).rejects.toThrow(AgentTimeoutError);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P0.3 — Workdir/directory propagation
+// ---------------------------------------------------------------------------
+
+describe("P0.3: workdir propagation", () => {
+	test("passes workdir as directory to session.create()", async () => {
+		let capturedCreateParams: unknown;
+		const { adapter } = createTestAdapter({
+			sessionCreate: async (...args: unknown[]) => {
+				capturedCreateParams = args[0];
+				return {
+					data: {
+						id: "sess-test-123",
+						projectID: "proj-1",
+						directory: "/my/worktree",
+						title: "test",
+						version: "1",
+						time: { created: Date.now(), updated: Date.now() },
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({ workdir: "/my/worktree" }),
+		);
+
+		expect(capturedCreateParams).toBeDefined();
+		const params = capturedCreateParams as Record<string, unknown>;
+		expect(params.directory).toBe("/my/worktree");
+	});
+
+	test("passes workdir as directory to session.prompt()", async () => {
+		let capturedPromptParams: unknown;
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async (...args: unknown[]) => {
+				capturedPromptParams = args[0];
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({ workdir: "/my/worktree" }),
+		);
+
+		expect(capturedPromptParams).toBeDefined();
+		const params = capturedPromptParams as Record<string, unknown>;
+		expect(params.directory).toBe("/my/worktree");
+	});
+
+	test("omits directory when workdir is not provided", async () => {
+		let capturedCreateParams: unknown;
+		const { adapter } = createTestAdapter({
+			sessionCreate: async (...args: unknown[]) => {
+				capturedCreateParams = args[0];
+				return {
+					data: {
+						id: "sess-test-123",
+						projectID: "proj-1",
+						directory: "/tmp",
+						title: "test",
+						version: "1",
+						time: { created: Date.now(), updated: Date.now() },
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts());
+
+		const params = capturedCreateParams as Record<string, unknown>;
+		expect(params.directory).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P1.1 — costUsd preserves zero
+// ---------------------------------------------------------------------------
+
+describe("P1.1: costUsd preserves zero", () => {
+	test("costUsd is 0 when SDK reports cost=0 (not undefined)", async () => {
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0,
+						error: undefined,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		const result = await adapter.invokeForStatus(defaultInvokeOpts());
+		expect(result.costUsd).toBe(0);
+	});
+
+	test("costUsd is undefined when SDK reports cost=undefined", async () => {
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: undefined,
+						error: undefined,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		const result = await adapter.invokeForStatus(defaultInvokeOpts());
+		expect(result.costUsd).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P1.2 — Events without session ID are skipped
+// ---------------------------------------------------------------------------
+
+describe("P1.2: events without session ID are skipped", () => {
+	test("events lacking session ID are not written to log", async () => {
+		const logPath = makeTmpLogPath();
+		const ownEvent = {
+			type: "message.part.updated",
+			properties: {
+				part: { type: "text", sessionID: "sess-test-123" },
+				delta: "own",
+			},
+		};
+		const globalEvent = {
+			type: "system.status",
+			properties: {}, // no session ID anywhere
+		};
+
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async () => ({
+				stream: (async function* () {
+					yield globalEvent;
+					yield ownEvent;
+				})(),
+			}),
+			sessionPrompt: async () => {
+				await new Promise((r) => setTimeout(r, 30));
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
+		await new Promise((r) => setTimeout(r, 100));
+
+		const logContent = fs.readFileSync(logPath, "utf8").trim();
+		const lines = logContent.split("\n").filter((l) => l.trim());
+		// Only the own-session event should be logged; global event is skipped
+		expect(lines.length).toBe(1);
+		const parsed = JSON.parse(lines[0] ?? "{}");
 		expect(parsed.properties.delta).toBe("own");
 	});
 });
