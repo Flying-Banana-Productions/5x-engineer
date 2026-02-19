@@ -19,6 +19,8 @@ import { runMigrations } from "../db/schema.js";
 import { parsePlan } from "../parsers/plan.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
+import { createTuiController } from "../tui/controller.js";
+import { shouldEnableTui } from "../tui/detect.js";
 
 /**
  * Compute the next available sequence number from existing plan files.
@@ -105,6 +107,12 @@ export default defineCommand({
 			type: "boolean",
 			description:
 				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written.",
+		},
+		"no-tui": {
+			type: "boolean",
+			description:
+				"Disable TUI mode — use headless output even in an interactive terminal",
+			default: false,
 		},
 	},
 	async run({ args }) {
@@ -201,6 +209,23 @@ export default defineCommand({
 		}
 
 		registerAdapterShutdown(adapter);
+
+		// --- TUI mode detection ---
+		const isTuiMode = shouldEnableTui(args);
+
+		// --- Spawn TUI ---
+		const tui = createTuiController({
+			serverUrl: adapter.serverUrl,
+			workdir: projectRoot,
+			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
+				._clientForTui,
+			enabled: isTuiMode,
+		});
+
+		tui.onExit(() => {
+			if (tui.active) return;
+			process.stderr.write("TUI exited — continuing headless\n");
+		});
 
 		try {
 			// Render prompt
@@ -354,6 +379,7 @@ export default defineCommand({
 			process.exitCode = 1;
 		} finally {
 			await adapter.close();
+			tui.kill();
 		}
 	},
 });

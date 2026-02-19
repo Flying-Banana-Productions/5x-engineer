@@ -282,6 +282,14 @@ export class OpenCodeAdapter implements AgentAdapter {
 	}
 
 	/**
+	 * Expose the SDK client for TUI controller use (selectSession, showToast).
+	 * @internal Used by command layer to pass to createTuiController().
+	 */
+	get _clientForTui(): OpencodeClient {
+		return this.client;
+	}
+
+	/**
 	 * Shut down the spawned local server. Idempotent — safe to call multiple times.
 	 */
 	async close(): Promise<void> {

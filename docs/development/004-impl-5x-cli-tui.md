@@ -657,7 +657,7 @@ regardless of which underlying API is used.
 Record findings (API names, method signatures, any gaps) in a brief note at
 the top of `src/tui/controller.ts` before submitting Phase 2 for review.
 
-- [ ] Implement `TuiController` in `src/tui/controller.ts`:
+- [x] Implement `TuiController` in `src/tui/controller.ts`:
   ```typescript
   interface TuiController {
     active: boolean;
@@ -669,15 +669,15 @@ the top of `src/tui/controller.ts` before submitting Phase 2 for review.
   ```
   - `createTuiController(opts: { serverUrl, workdir, client, enabled })` — spawns
     `opencode attach` if `enabled`, returns no-op controller otherwise
-- [ ] Add `--no-tui` flag to `run`, `plan-review`, `plan` commands
-- [ ] TTY auto-detection: `process.stdin.isTTY && process.stdout.isTTY && !args["no-tui"] && !args.quiet`
-- [ ] Spawn `opencode attach <serverUrl> --dir <workdir>` via `Bun.spawn` with `stdio: "inherit"`
-- [ ] Print `"Starting OpenCode..."` to **stderr** before spawn (pre-attach window)
-- [ ] Handle TUI exit: `tuiController.onExit()` callback sets `tuiController.active = false`;
+- [x] Add `--no-tui` flag to `run`, `plan-review`, `plan` commands
+- [x] TTY auto-detection: `process.stdin.isTTY && process.stdout.isTTY && !args["no-tui"] && !args.quiet`
+- [x] Spawn `opencode attach <serverUrl> --dir <workdir>` via `Bun.spawn` with `stdio: "inherit"`
+- [x] Print `"Starting OpenCode..."` to **stderr** before spawn (pre-attach window)
+- [x] Handle TUI exit: `tuiController.onExit()` callback sets `tuiController.active = false`;
   subsequent `tui.*` calls become no-ops; orchestration continues headless
-- [ ] No-op `TuiController` (when headless) has identical interface — callers
+- [x] No-op `TuiController` (when headless) has identical interface — callers
   don't need `if (tui)` guards everywhere
-- [ ] Tests:
+- [x] Tests:
   - `createTuiController({ enabled: false })` returns no-op controller
   - No-op controller's methods resolve without side effects
   - No-op controller `active === false`

@@ -16,6 +16,8 @@ import {
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
+import { createTuiController } from "../tui/controller.js";
+import { shouldEnableTui } from "../tui/detect.js";
 
 export default defineCommand({
 	meta: {
@@ -43,6 +45,12 @@ export default defineCommand({
 			type: "boolean",
 			description:
 				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written. Logs may contain sensitive data.",
+		},
+		"no-tui": {
+			type: "boolean",
+			description:
+				"Disable TUI mode — use headless output even in an interactive terminal",
+			default: false,
 		},
 	},
 	async run({ args }) {
@@ -123,6 +131,23 @@ export default defineCommand({
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
+		// --- TUI mode detection ---
+		const isTuiMode = shouldEnableTui(args);
+
+		// --- Spawn TUI ---
+		const tui = createTuiController({
+			serverUrl: adapter.serverUrl,
+			workdir: projectRoot,
+			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
+				._clientForTui,
+			enabled: isTuiMode,
+		});
+
+		tui.onExit(() => {
+			if (tui.active) return;
+			process.stderr.write("TUI exited — continuing headless\n");
+		});
+
 		try {
 			// Run the loop
 			const result = await runPlanReviewLoop(
@@ -135,7 +160,7 @@ export default defineCommand({
 					auto: args.auto,
 					allowDirty: args["allow-dirty"],
 					projectRoot,
-					quiet: effectiveQuiet,
+					quiet: effectiveQuiet || tui.active,
 					canonicalPlanPath: canonical,
 				},
 			);
@@ -165,6 +190,7 @@ export default defineCommand({
 			}
 		} finally {
 			await adapter.close();
+			tui.kill();
 		}
 	},
 });

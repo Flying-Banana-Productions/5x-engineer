@@ -16,6 +16,8 @@ import { resolveReviewPath } from "../orchestrator/plan-review-loop.js";
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
+import { createTuiController } from "../tui/controller.js";
+import { shouldEnableTui } from "../tui/detect.js";
 
 export default defineCommand({
 	meta: {
@@ -58,6 +60,12 @@ export default defineCommand({
 			type: "boolean",
 			description:
 				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written. Logs may contain sensitive data.",
+		},
+		"no-tui": {
+			type: "boolean",
+			description:
+				"Disable TUI mode — use headless output even in an interactive terminal",
+			default: false,
 		},
 	},
 	async run({ args }) {
@@ -240,6 +248,9 @@ export default defineCommand({
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
+		// --- TUI mode detection ---
+		const isTuiMode = shouldEnableTui(args);
+
 		// --- Initialize adapter ---
 		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
@@ -255,6 +266,21 @@ export default defineCommand({
 
 		registerAdapterShutdown(adapter);
 
+		// --- Spawn TUI ---
+		const tui = createTuiController({
+			serverUrl: adapter.serverUrl,
+			workdir,
+			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
+				._clientForTui,
+			enabled: isTuiMode,
+		});
+
+		// Handle TUI early exit — continue headless
+		tui.onExit(() => {
+			if (tui.active) return; // only act when actually exited
+			process.stderr.write("TUI exited — continuing headless\n");
+		});
+
 		try {
 			const result = await runPhaseExecutionLoop(
 				effectivePlanPath,
@@ -269,7 +295,7 @@ export default defineCommand({
 					startPhase: args.phase,
 					workdir,
 					projectRoot,
-					quiet: effectiveQuiet,
+					quiet: effectiveQuiet || tui.active,
 					// Stable DB identity anchored to the primary checkout path.
 					// effectivePlanPath may be remapped to a worktree; canonical
 					// stays consistent so resume/history lookups always match.
@@ -300,6 +326,7 @@ export default defineCommand({
 			}
 		} finally {
 			await adapter.close();
+			tui.kill();
 			releaseLock(projectRoot, canonical);
 		}
 	},
