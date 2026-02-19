@@ -1,8 +1,8 @@
 # 5x CLI — TUI Integration
 
-**Version:** 1.4
+**Version:** 1.6
 **Created:** February 19, 2026
-**Updated:** February 19, 2026 — v1.4: Phase 2 implementation review corrections (2026-02-19-004-impl-5x-cli-tui-review.md addendum) — no-op controller `onExit` is now a no-op (was firing immediately, causing false "TUI exited" warning in headless mode; P0.5), `onExit` registration gated on `isTuiMode` in all commands, stdout output in commands guarded on `!tui.active` (P0.6 output ownership), TUI-by-default rollout gate documented (P0.6/P0.7 — gated on Phases 3-5), `quiet` option accepts `boolean | (() => boolean)` in orchestrators for dynamic re-evaluation on TUI exit (P1.4), `createTuiController` falls back to no-op controller when spawn fails (P1.5 / Phase 6 partial), `_spawner` injectable for testability, adapter coupling future-work note added (P2); v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
+**Updated:** February 19, 2026 — v1.6: Orchestrator stdout fully quiet-gated — all `console.log` calls in `phase-execution-loop.ts` and `plan-review-loop.ts` now routed through a `log()` helper that respects `resolveQuiet()`, stdout-silent regression test fixed (intercepts `console.log` directly since Bun's `console.log` bypasses `process.stdout.write`), companion sanity test proves output IS produced when `quiet=false`; v1.5: Phase 2 closure review corrections — `shouldEnableTui()` now requires `--auto` to return true (non-auto flows fail-closed until Phase 5 TUI gates land; `5x plan` exempted as it has no readline gates), `plan.ts invokeForStatus` now includes `tui.active` in quiet (was passing only `effectiveQuiet`), escalation "continue" guidance is only stored when resuming to EXECUTE state (prevents stale guidance leaking to unrelated phases), quiet function re-evaluation test now proves cross-call flipping, stdout-silent regression test added; v1.4: Phase 2 implementation review corrections (2026-02-19-004-impl-5x-cli-tui-review.md addendum) — no-op controller `onExit` is now a no-op (was firing immediately, causing false "TUI exited" warning in headless mode; P0.5), `onExit` registration gated on `isTuiMode` in all commands, stdout output in commands guarded on `!tui.active` (P0.6 output ownership), TUI-by-default rollout gate documented (P0.6/P0.7 — gated on Phases 3-5), `quiet` option accepts `boolean | (() => boolean)` in orchestrators for dynamic re-evaluation on TUI exit (P1.4), `createTuiController` falls back to no-op controller when spawn fails (P1.5 / Phase 6 partial), `_spawner` injectable for testability, adapter coupling future-work note added (P2); v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
 **Status:** Approved for implementation
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
 
@@ -92,11 +92,19 @@ The structured output pipeline requires zero changes. The TUI is bolt-on.
 
 | Condition | Behavior |
 |---|---|
-| `stdin.isTTY && stdout.isTTY`, no `--no-tui`, no `--quiet` | TUI mode (default) |
+| `--auto`, `stdin.isTTY && stdout.isTTY`, no `--no-tui`, no `--quiet` | TUI mode |
+| Non-auto mode (`run`, `plan-review` without `--auto`) | Headless mode (gated until Phase 5) |
+| `5x plan` (no readline gates) | TUI mode if TTY (exempted from `--auto` gate) |
 | `--no-tui` flag | Headless mode (current behavior) |
 | `--quiet` flag | Headless mode, logs only (`--quiet` implies `--no-tui`) |
 | stdout is not a TTY (pipe/CI) | Headless mode (auto-detected) |
 | stdin is not a TTY (pipe/redirected input) | Headless mode (auto-detected) |
+
+**Non-auto gate (v1.5):** TUI mode is currently restricted to `--auto` flows
+(or commands with no human gates, like `5x plan`). Non-auto flows use readline
+gates that conflict with the TUI owning stdin. This restriction will be
+removed when Phase 5 (TUI gates) lands and replaces readline with TUI-native
+dialogs.
 
 **`--quiet` implies `--no-tui`:** `--quiet` is a strong user intent signal to
 suppress all output. Attaching a full TUI contradicts that intent. When
@@ -246,24 +254,26 @@ A warning is written to stderr.
 
 ## TUI Rollout Gate
 
-> **Current status (v1.4):** TUI spawn and lifecycle are implemented (Phase 2
+> **Current status (v1.6):** TUI spawn and lifecycle are implemented (Phase 2
 > complete). However, **TUI-by-default is unsafe until Phases 3–5 land**:
 >
 > - **Phase 3 (permission policy + signal handling):** Without this, non-TTY
 >   runs lack a permission policy and SIGINT bypass `finally` cleanup in TUI mode.
 >   The existing headless `process.exit()` signal behavior is preserved as-is.
-> - **Phase 4 (session integration + output ownership):** Without this, stdout
->   output from 5x-cli is not fully suppressed during TUI mode; the per-command
->   guards added in v1.4 reduce the surface but do not cover SSE event stdout
->   that originates inside the adapter/orchestrator.
+> - **Phase 4 (session integration + output ownership):** Orchestrator stdout
+>   is now fully quiet-gated (v1.6): all `console.log` calls in both loops
+>   route through a `log()` helper that checks `resolveQuiet()`. SSE event
+>   stdout from the adapter was already gated on `quiet` (v1.4). Phase 4 still
+>   needs toast notification integration and session switching.
 > - **Phase 5 (TUI human gates):** Without this, non-auto mode is unusable in
 >   TUI (readline gates conflict with TUI owning stdin). TUI mode in non-auto
 >   flows will hang or be unresponsive.
 >
-> **Interim behavior (v1.4):** TUI mode is available and works correctly for
-> `--auto` mode. Non-auto TUI mode should not be used until Phase 5 is
-> complete. TUI mode in non-auto flows is not explicitly disabled but is
-> unsupported.
+> **Interim behavior (v1.5):** `shouldEnableTui()` requires `--auto` (or
+> equivalent) to return `true`. Non-auto flows are explicitly gated off from
+> TUI mode at the detection layer. `5x plan` (no gates) is exempted — it
+> passes `auto: true` to the detector since it has no readline gate conflict.
+> This gate will be removed when Phase 5 (TUI gates) lands.
 
 ---
 

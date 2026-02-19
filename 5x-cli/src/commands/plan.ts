@@ -211,7 +211,9 @@ export default defineCommand({
 		registerAdapterShutdown(adapter);
 
 		// --- TUI mode detection ---
-		const isTuiMode = shouldEnableTui(args);
+		// plan has no human gates (single invocation), so it is safe to enable
+		// TUI without --auto. Pass auto: true to bypass the non-auto gate.
+		const isTuiMode = shouldEnableTui({ ...args, auto: true });
 
 		// --- Spawn TUI ---
 		const tui = createTuiController({
@@ -256,14 +258,16 @@ export default defineCommand({
 			const agentResultId = generateId();
 			const logPath = join(logDir, `agent-${agentResultId}.ndjson`);
 
-			// Invoke agent with structured output
+			// Invoke agent with structured output.
+			// Must include tui.active so SSE stdout formatting is suppressed
+			// when the TUI owns the terminal (P0.6 output ownership).
 			const result = await adapter.invokeForStatus({
 				prompt: template.prompt,
 				model: config.author.model,
 				timeout: config.author.timeout,
 				workdir: projectRoot,
 				logPath,
-				quiet: effectiveQuiet,
+				quiet: effectiveQuiet || tui.active,
 			});
 
 			if (!tui.active) {

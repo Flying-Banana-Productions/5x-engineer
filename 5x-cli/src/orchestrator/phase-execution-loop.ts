@@ -174,6 +174,10 @@ export async function runPhaseExecutionLoop(
 	const _quietOpt = options.quiet;
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
+	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
+	const log = (...args: unknown[]) => {
+		if (!resolveQuiet()) console.log(...args);
+	};
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;
 	const maxReviewIterations = config.maxReviewIterations;
@@ -234,7 +238,7 @@ export async function runPhaseExecutionLoop(
 			} else if (validStates.includes(rawState as PhaseState)) {
 				resumedState = rawState as PhaseState;
 			}
-			console.log(
+			log(
 				`  Resuming run ${runId.slice(0, 8)} at phase ${startPhaseNumber ?? "next"}, state ${resumedState ?? "EXECUTE"}`,
 			);
 		} else {
@@ -265,7 +269,7 @@ export async function runPhaseExecutionLoop(
 	if (!existsSync(logDir)) {
 		mkdirSync(logDir, { recursive: true, mode: 0o700 });
 	}
-	console.log(`  Logs: ${logDir}`);
+	log(`  Logs: ${logDir}`);
 
 	appendRunEvent(db, {
 		runId,
@@ -303,8 +307,8 @@ export async function runPhaseExecutionLoop(
 
 	// --- Outer loop: iterate through phases ---
 	for (const phase of phases) {
-		console.log();
-		console.log(`  ── Phase ${phase.number}: ${phase.title} ──`);
+		log();
+		log(`  ── Phase ${phase.number}: ${phase.title} ──`);
 
 		// Determine initial state for this phase: if resuming into this exact
 		// phase, restore the recorded state; otherwise start fresh.
@@ -363,7 +367,7 @@ export async function runPhaseExecutionLoop(
 		try {
 			const branch = await getCurrentBranch(workdir);
 			if (!isBranchRelevant(branch, planPath)) {
-				console.log(
+				log(
 					`  Warning: current branch "${branch}" does not appear related to this plan.`,
 				);
 			}
@@ -396,9 +400,7 @@ export async function runPhaseExecutionLoop(
 							"status",
 						)
 					) {
-						console.log(
-							`  Skipping author step ${iteration} (already completed)`,
-						);
+						log(`  Skipping author step ${iteration} (already completed)`);
 						// Route based on exact step result (not phase-wide latest)
 						const stepRow = getStepResult(
 							db,
@@ -502,7 +504,7 @@ export async function runPhaseExecutionLoop(
 								// Not critical
 							}
 						}
-						console.log(
+						log(
 							`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
 						);
 						iteration++;
@@ -518,7 +520,7 @@ export async function runPhaseExecutionLoop(
 					// Clear guidance after use — it applies only to the next invocation
 					userGuidance = undefined;
 
-					console.log(`  Author implementing phase ${phase.number}...`);
+					log(`  Author implementing phase ${phase.number}...`);
 
 					// Compute log path before invocation
 					const executeResultId = generateId();
@@ -679,7 +681,7 @@ export async function runPhaseExecutionLoop(
 						}
 					}
 
-					console.log(
+					log(
 						`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
 					);
 					iteration++;
@@ -694,14 +696,12 @@ export async function runPhaseExecutionLoop(
 					updateRunStatus(db, runId, "active", "QUALITY_CHECK", phase.number);
 
 					if (config.qualityGates.length === 0) {
-						console.log("  No quality gates configured — skipping.");
+						log("  No quality gates configured — skipping.");
 						state = "REVIEW";
 						break;
 					}
 
-					console.log(
-						`  Running quality gates (attempt ${qualityAttempt + 1})...`,
-					);
+					log(`  Running quality gates (attempt ${qualityAttempt + 1})...`);
 
 					qualityResult = await runQualityGates(config.qualityGates, workdir, {
 						runId,
@@ -750,10 +750,10 @@ export async function runPhaseExecutionLoop(
 					});
 
 					if (qualityResult.passed) {
-						console.log("  Quality gates passed.");
+						log("  Quality gates passed.");
 						state = "REVIEW";
 					} else {
-						console.log(
+						log(
 							`  Quality gates failed (${qualityResult.results.filter((r) => !r.passed).length} command(s) failed).`,
 						);
 						if (qualityAttempt < maxQualityRetries) {
@@ -800,7 +800,7 @@ export async function runPhaseExecutionLoop(
 					// Prepend quality failure context
 					const qualityFixPrompt = `Quality gates failed. Fix the following issues and ensure all tests pass:\n\n${failureDetails}\n\n---\n\n${fixPrompt.prompt}`;
 
-					console.log(
+					log(
 						`  Author fixing quality failures (attempt ${qualityAttempt + 1})...`,
 					);
 
@@ -924,9 +924,7 @@ export async function runPhaseExecutionLoop(
 							"verdict",
 						)
 					) {
-						console.log(
-							`  Skipping reviewer step ${iteration} (already completed)`,
-						);
+						log(`  Skipping reviewer step ${iteration} (already completed)`);
 						// Route based on exact step result (not phase-wide latest)
 						const stepRow = getStepResult(
 							db,
@@ -1009,6 +1007,7 @@ export async function runPhaseExecutionLoop(
 							db,
 							runId,
 							phase.number,
+							log,
 						);
 						if (routeResult.increment) iteration++;
 						state = routeResult.nextState;
@@ -1044,7 +1043,7 @@ export async function runPhaseExecutionLoop(
 						plan_path: planPath,
 					});
 
-					console.log(`  Reviewer reviewing phase ${phase.number}...`);
+					log(`  Reviewer reviewing phase ${phase.number}...`);
 
 					const reviewResultId = generateId();
 					const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
@@ -1166,7 +1165,7 @@ export async function runPhaseExecutionLoop(
 						},
 					});
 
-					console.log(`  Verdict: ${reviewResult.verdict.readiness}`);
+					log(`  Verdict: ${reviewResult.verdict.readiness}`);
 
 					// Route verdict
 					const routeResult = routeVerdict(
@@ -1177,6 +1176,7 @@ export async function runPhaseExecutionLoop(
 						db,
 						runId,
 						phase.number,
+						log,
 					);
 					if (routeResult.increment) iteration++;
 					state = routeResult.nextState;
@@ -1200,9 +1200,7 @@ export async function runPhaseExecutionLoop(
 							"status",
 						)
 					) {
-						console.log(
-							`  Skipping auto-fix step ${iteration} (already completed)`,
-						);
+						log(`  Skipping auto-fix step ${iteration} (already completed)`);
 						// Route based on exact step result (not phase-wide latest)
 						const stepRow = getStepResult(
 							db,
@@ -1301,7 +1299,7 @@ export async function runPhaseExecutionLoop(
 
 						if (fixStatus.commit) lastCommit = fixStatus.commit;
 						qualityAttempt = 0;
-						console.log("  Author fix applied. Re-checking...");
+						log("  Author fix applied. Re-checking...");
 						iteration++;
 						state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 						break;
@@ -1470,7 +1468,7 @@ export async function runPhaseExecutionLoop(
 
 					// Back to quality check (or review if skipping quality)
 					qualityAttempt = 0; // reset quality attempts after fix
-					console.log("  Author fix applied. Re-checking...");
+					log("  Author fix applied. Re-checking...");
 					iteration++;
 					state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 					break;
@@ -1490,7 +1488,7 @@ export async function runPhaseExecutionLoop(
 						} satisfies EscalationEvent);
 
 					if (options.auto) {
-						console.log(`  Auto mode: escalation — ${lastEscalation.reason}`);
+						log(`  Auto mode: escalation — ${lastEscalation.reason}`);
 						appendRunEvent(db, {
 							runId,
 							eventType: "auto_escalation_abort",
@@ -1518,8 +1516,16 @@ export async function runPhaseExecutionLoop(
 						case "continue":
 							// Resume the state that triggered the escalation (not always
 							// EXECUTE — could be REVIEW, AUTO_FIX, QUALITY_RETRY, etc.)
+							// Only store guidance when resuming to EXECUTE — that is the
+							// only state that reads userGuidance. Storing it for other
+							// states would cause it to leak into a later EXECUTE invocation
+							// for a different phase (stale guidance bug).
 							if ("guidance" in response && response.guidance) {
-								userGuidance = response.guidance;
+								if (preEscalateState === "EXECUTE") {
+									userGuidance = response.guidance;
+								}
+								// When resuming to non-EXECUTE states, guidance is
+								// intentionally dropped — those states have no slot for it.
 							}
 							state = preEscalateState;
 							break;
@@ -1540,9 +1546,7 @@ export async function runPhaseExecutionLoop(
 					updateRunStatus(db, runId, "active", "PHASE_GATE", phase.number);
 
 					if (options.auto) {
-						console.log(
-							`  Auto mode: phase ${phase.number} complete, proceeding.`,
-						);
+						log(`  Auto mode: phase ${phase.number} complete, proceeding.`);
 						state = "PHASE_COMPLETE";
 						break;
 					}
@@ -1571,7 +1575,7 @@ export async function runPhaseExecutionLoop(
 							state = "PHASE_COMPLETE";
 							break;
 						case "review":
-							console.log(
+							log(
 								"  Please review the changes. Run `5x run` again to continue.",
 							);
 							state = "ABORTED";
@@ -1604,7 +1608,7 @@ export async function runPhaseExecutionLoop(
 			data: { phaseNumber: phase.number, commit: lastCommit },
 		});
 
-		console.log(`  Phase ${phase.number} complete.`);
+		log(`  Phase ${phase.number} complete.`);
 
 		// Re-parse plan for next phase (author may have updated checklist)
 		try {
@@ -1661,6 +1665,7 @@ function routeVerdict(
 	db: Database,
 	runId: string,
 	phase: string,
+	log: (...args: unknown[]) => void = console.log,
 ): VerdictRouteResult {
 	if (verdict.readiness === "ready") {
 		return { nextState: "PHASE_GATE", increment: true };
@@ -1693,7 +1698,7 @@ function routeVerdict(
 	// ready_with_corrections or not_ready with auto_fix items
 	const autoFixItems = verdict.items.filter((i) => i.action === "auto_fix");
 	if (autoFixItems.length > 0) {
-		console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
+		log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
 		return { nextState: "AUTO_FIX", increment: true };
 	}
 

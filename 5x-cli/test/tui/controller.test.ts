@@ -343,15 +343,24 @@ describe("shouldEnableTui", () => {
 	const { shouldEnableTui } = require("../../src/tui/detect.js");
 
 	test("returns false when --quiet is set", () => {
-		expect(shouldEnableTui({ quiet: true })).toBe(false);
+		expect(shouldEnableTui({ quiet: true, auto: true })).toBe(false);
 	});
 
 	test("returns false when --no-tui is set", () => {
-		expect(shouldEnableTui({ "no-tui": true })).toBe(false);
+		expect(shouldEnableTui({ "no-tui": true, auto: true })).toBe(false);
 	});
 
 	test("returns false when --quiet and --no-tui are both set", () => {
-		expect(shouldEnableTui({ quiet: true, "no-tui": true })).toBe(false);
+		expect(shouldEnableTui({ quiet: true, "no-tui": true, auto: true })).toBe(
+			false,
+		);
+	});
+
+	test("returns false when --auto is not set (non-auto gate until Phase 5)", () => {
+		// Non-auto flows use readline gates which conflict with TUI stdin ownership.
+		// TUI is disabled in non-auto mode until Phase 5 (TUI gates) is implemented.
+		expect(shouldEnableTui({})).toBe(false);
+		expect(shouldEnableTui({ auto: false })).toBe(false);
 	});
 
 	// Note: We cannot reliably test TTY detection in a test runner because

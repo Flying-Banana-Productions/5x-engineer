@@ -276,6 +276,10 @@ export async function runPlanReviewLoop(
 	const _quietOpt = options.quiet;
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
+	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
+	const log = (...args: unknown[]) => {
+		if (!resolveQuiet()) console.log(...args);
+	};
 	const workdir = options.projectRoot ?? dirname(resolve(planPath));
 
 	// DB identity: use the stable canonical path provided by the command layer,
@@ -315,7 +319,7 @@ export async function runPlanReviewLoop(
 			// Iteration is tracked via agent_results count
 			const results = getAgentResults(db, runId, "-1");
 			iteration = results.length;
-			console.log(
+			log(
 				`  Resuming run ${runId.slice(0, 8)} at iteration ${iteration}, state ${state}`,
 			);
 		} else {
@@ -347,7 +351,7 @@ export async function runPlanReviewLoop(
 	if (!existsSync(logDir)) {
 		mkdirSync(logDir, { recursive: true, mode: 0o700 });
 	}
-	console.log(`  Logs: ${logDir}`);
+	log(`  Logs: ${logDir}`);
 
 	appendRunEvent(db, {
 		runId,
@@ -397,9 +401,7 @@ export async function runPlanReviewLoop(
 						"verdict",
 					)
 				) {
-					console.log(
-						`  Skipping reviewer step ${iteration} (already completed)`,
-					);
+					log(`  Skipping reviewer step ${iteration} (already completed)`);
 					// Route based on exact step result (not phase-wide latest)
 					const stepRow = getStepResult(
 						db,
@@ -477,7 +479,7 @@ export async function runPlanReviewLoop(
 							itemCount: verdict.items.length,
 						},
 					});
-					console.log(`  Verdict: ${verdict.readiness}`);
+					log(`  Verdict: ${verdict.readiness}`);
 					const routeResult = routePlanVerdict(
 						verdict,
 						iteration,
@@ -486,6 +488,7 @@ export async function runPlanReviewLoop(
 						db,
 						runId,
 						options,
+						log,
 					);
 					if (routeResult.incrementIteration) iteration++;
 					state = routeResult.nextState;
@@ -498,7 +501,7 @@ export async function runPlanReviewLoop(
 					review_path: reviewPath,
 				});
 
-				console.log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
+				log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
 
 				const reviewResultId = generateId();
 				const reviewLogPath = join(logDir, `agent-${reviewResultId}.ndjson`);
@@ -614,7 +617,7 @@ export async function runPlanReviewLoop(
 					},
 				});
 
-				console.log(`  Verdict: ${reviewResult.verdict.readiness}`);
+				log(`  Verdict: ${reviewResult.verdict.readiness}`);
 
 				// Route verdict
 				const routeResult = routePlanVerdict(
@@ -625,6 +628,7 @@ export async function runPlanReviewLoop(
 					db,
 					runId,
 					options,
+					log,
 				);
 				if (routeResult.incrementIteration) iteration++;
 				state = routeResult.nextState;
@@ -646,9 +650,7 @@ export async function runPlanReviewLoop(
 						"status",
 					)
 				) {
-					console.log(
-						`  Skipping author-fix step ${iteration} (already completed)`,
-					);
+					log(`  Skipping author-fix step ${iteration} (already completed)`);
 					// Route based on exact step result (not phase-wide latest)
 					const stepRow = getStepResult(
 						db,
@@ -718,7 +720,7 @@ export async function runPlanReviewLoop(
 						break;
 					}
 
-					console.log("  Author fix applied. Re-reviewing...");
+					log("  Author fix applied. Re-reviewing...");
 					iteration++;
 					state = "REVIEW";
 					break;
@@ -868,7 +870,7 @@ export async function runPlanReviewLoop(
 				}
 
 				// Author completed — back to review
-				console.log("  Author fix applied. Re-reviewing...");
+				log("  Author fix applied. Re-reviewing...");
 				iteration++;
 				state = "REVIEW";
 				break;
@@ -886,7 +888,7 @@ export async function runPlanReviewLoop(
 
 				if (options.auto) {
 					// In auto mode, escalation = abort
-					console.log(`  Auto mode: escalation — ${lastEscalation.reason}`);
+					log(`  Auto mode: escalation — ${lastEscalation.reason}`);
 					state = "ABORTED";
 					break;
 				}
@@ -969,6 +971,7 @@ function routePlanVerdict(
 	db: Database,
 	runId: string,
 	options: PlanReviewLoopOptions,
+	log: (...args: unknown[]) => void = console.log,
 ): PlanVerdictRouteResult {
 	if (verdict.readiness === "ready") {
 		return { nextState: "APPROVED", incrementIteration: true };
@@ -1006,7 +1009,7 @@ function routePlanVerdict(
 	) {
 		const autoFixItems = verdict.items.filter((i) => i.action === "auto_fix");
 		if (autoFixItems.length > 0) {
-			console.log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
+			log(`  Auto-fixing ${autoFixItems.length} item(s)...`);
 			return { nextState: "AUTO_FIX", incrementIteration: true };
 		}
 		// Non-ready with no auto-fixable items — escalate

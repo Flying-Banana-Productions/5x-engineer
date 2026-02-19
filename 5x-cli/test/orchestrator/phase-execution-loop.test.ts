@@ -1033,9 +1033,86 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
-	test("quiet function form is evaluated at each adapter invocation (P1.4)", async () => {
-		// Verify that when quiet is a function, it is resolved fresh at each
-		// adapter call so that TUI exit mid-run affects subsequent invocations.
+	test("quiet function form is re-evaluated at each adapter invocation (P1.4)", async () => {
+		// Verify that the quiet function is resolved fresh at each adapter call.
+		// Flips the return value after the first call to prove re-evaluation
+		// (simulates TUI exiting mid-run).
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			// Record quiet value for every adapter call
+			const quietPerCall: boolean[] = [];
+			const responses: MockResponse[] = [
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			];
+			let idx = 0;
+			const adapter: AgentAdapter & { callCount: number } = {
+				callCount: 0,
+				serverUrl: "http://127.0.0.1:51234",
+				async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
+					adapter.callCount++;
+					quietPerCall.push(opts.quiet ?? false);
+					const r = responses[idx++]!;
+					return {
+						type: "status",
+						status: (r as any).status,
+						duration: 1000,
+						sessionId: "mock-session",
+					};
+				},
+				async invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict> {
+					adapter.callCount++;
+					quietPerCall.push(opts.quiet ?? false);
+					const r = responses[idx++]!;
+					return {
+						type: "verdict",
+						verdict: (r as any).verdict,
+						duration: 1000,
+						sessionId: "mock-session",
+					};
+				},
+				async verify() {},
+				async close() {},
+			};
+
+			// Flip quietValue after the first adapter call (simulates TUI exiting).
+			// The quiet function is called both by the log helper and by adapter
+			// invocations, so we track adapter calls via the adapter's callCount
+			// and flip based on that — not on quiet function call count.
+			let quietValue = true; // author call sees quiet=true (TUI active)
+			await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					quiet: () => {
+						// After the first adapter call completes, flip to false
+						if (adapter.callCount > 0) quietValue = false;
+						return quietValue;
+					},
+				},
+			);
+
+			// Author call received quiet=true, reviewer call received quiet=false
+			expect(quietPerCall.length).toBe(2);
+			expect(quietPerCall[0]).toBe(true); // TUI was still active
+			expect(quietPerCall[1]).toBe(false); // TUI exited before reviewer
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("no stdout writes from orchestrator when quiet=true (TUI active regression)", async () => {
+		// When quiet is true (TUI active), the orchestrator must not write to
+		// stdout — only to log files and DB. This test intercepts console.log
+		// (not process.stdout.write) because Bun's console.log bypasses
+		// process.stdout.write entirely.
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 
@@ -1045,18 +1122,69 @@ describe("runPhaseExecutionLoop", () => {
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			const quietValue = false;
-			await runPhaseExecutionLoop(
-				planPath,
-				reviewPath,
-				db,
-				adapter,
-				defaultConfig(tmp),
-				{ workdir: tmp, auto: true, quiet: () => quietValue },
-			);
+			// Intercept console.log during the loop (Bun's console.log does NOT
+			// go through process.stdout.write, so we must patch console.log directly).
+			const origLog = console.log;
+			const logCalls: unknown[][] = [];
+			console.log = (...args: unknown[]) => {
+				logCalls.push(args);
+			};
 
-			// The adapter received the function's return value (false) at call time
-			expect(adapter.lastOpts?.quiet).toBe(false);
+			try {
+				await runPhaseExecutionLoop(
+					planPath,
+					reviewPath,
+					db,
+					adapter,
+					defaultConfig(tmp),
+					{ workdir: tmp, auto: true, quiet: true },
+				);
+			} finally {
+				console.log = origLog;
+			}
+
+			// No console.log output should have been produced when quiet=true.
+			expect(logCalls).toEqual([]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("orchestrator does produce console.log when quiet=false (regression sanity)", async () => {
+		// Companion to the quiet=true test above: verifies that with quiet=false
+		// the orchestrator DOES produce log output, proving the quiet=true test
+		// isn't passing vacuously.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const origLog = console.log;
+			const logCalls: unknown[][] = [];
+			console.log = (...args: unknown[]) => {
+				logCalls.push(args);
+			};
+
+			try {
+				await runPhaseExecutionLoop(
+					planPath,
+					reviewPath,
+					db,
+					adapter,
+					defaultConfig(tmp),
+					{ workdir: tmp, auto: true, quiet: false },
+				);
+			} finally {
+				console.log = origLog;
+			}
+
+			// When quiet=false, orchestrator MUST produce at least some log output
+			// (phase headers, author status, verdict, etc.).
+			expect(logCalls.length).toBeGreaterThan(0);
 		} finally {
 			cleanup();
 		}
