@@ -104,7 +104,7 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 		"maxAutoIterations",
 		"maxAutoRetries",
 	]);
-	const allowedAgent = new Set(["model"]);
+	const allowedAgent = new Set(["model", "timeout"]);
 	const allowedPaths = new Set(["plans", "reviews", "archive", "templates"]);
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
