@@ -337,7 +337,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 		opts: InvokeOptions,
 		resultType: "status" | "verdict",
 	): Promise<InvokeStatus | InvokeVerdict> {
-		const timeoutMs = opts.timeout ?? 300_000;
+		// Default timeout is 30 min for author invocations (implementation work can
+		// take a long time). Callers that want a shorter bound (e.g. reviewer) pass
+		// an explicit opts.timeout. Users can also configure this in .5x/config.json
+		// via author.timeout / reviewer.timeout.
+		const timeoutMs = opts.timeout ?? 1_800_000;
 		const model = opts.model ?? this.defaultModel;
 		const modelObj = model ? parseModel(model) : undefined;
 		const schema =

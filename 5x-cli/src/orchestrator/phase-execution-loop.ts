@@ -517,6 +517,7 @@ export async function runPhaseExecutionLoop(
 						authorResult = await adapter.invokeForStatus({
 							prompt: authorTemplate.prompt,
 							model: config.author.model,
+							timeout: config.author.timeout,
 							workdir,
 							logPath: executeLogPath,
 							quiet,
@@ -796,6 +797,7 @@ export async function runPhaseExecutionLoop(
 						fixResult = await adapter.invokeForStatus({
 							prompt: qualityFixPrompt,
 							model: config.author.model,
+							timeout: config.author.timeout,
 							workdir,
 							logPath: qrFixLogPath,
 							quiet,
@@ -1037,6 +1039,9 @@ export async function runPhaseExecutionLoop(
 						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
+							// Reviewer timeout defaults to 5 min — reviewing is pure
+							// reasoning, not implementation, so 5 min is generous.
+							timeout: config.reviewer.timeout ?? 300_000,
 							workdir,
 							logPath: reviewLogPath,
 							quiet,
@@ -1303,6 +1308,7 @@ export async function runPhaseExecutionLoop(
 						autoFixResult = await adapter.invokeForStatus({
 							prompt: fixTemplate.prompt,
 							model: config.author.model,
+							timeout: config.author.timeout,
 							workdir,
 							logPath: autoFixLogPath,
 							quiet,
