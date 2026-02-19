@@ -98,3 +98,37 @@ Recommendation: type the parameter as `AdapterConfig` and validate unknown input
 
 - **Phase 5 completion:** ⚠️ — feature-complete, but P0 lifecycle/privacy items must be fixed.
 - **Ready for Phase 6:** ⚠️ — proceed after P0s are addressed.
+
+---
+
+## Addendum (2026-02-19) — Feedback Closure Review
+
+**Reviewed:** `4fa5d32cdc7`
+
+**Local verification:** `bun test --concurrent --dots` in `5x-cli/` (359 pass, 1 skip)
+
+### Updated assessment
+
+- **Correctness:** P0 lifecycle issue is resolved: post-adapter error paths now use `process.exitCode` + `return`, preserving `finally { await adapter.close() }` in `5x-cli/src/commands/run.ts`, `5x-cli/src/commands/plan-review.ts`, `5x-cli/src/commands/plan.ts`.
+- **Tenancy/security:** Log directory creation is now forced to `0700` at the actual creation site used by all commands (`writeEventsToLog()` in `5x-cli/src/agents/opencode.ts`). This closes the “umask could make logs world-readable” gap for new runs.
+- **Architecture:** `createAndVerifyAdapter()` is now typed to `AdapterConfig` (reduces config shape drift). Model override semantics are documented in `5x-cli/src/agents/factory.ts`.
+- **Operability:** Signal-safe cleanup added via `registerAdapterShutdown()` in `5x-cli/src/agents/factory.ts`, used by commands, ensuring managed server teardown on SIGINT/SIGTERM by routing termination through `process.exit()`.
+- **Test strategy:** Factory test made hermetic (success-or-actionable-error) in `5x-cli/test/agents/opencode.test.ts`.
+
+### Items closed
+
+- **P0.1 (`process.exit()` bypasses adapter close):** ✅ closed
+- **P0.2 log perms not consistently `0700`:** ✅ closed for newly-created log dirs
+- **P1.1 environment-dependent factory test:** ✅ closed
+- **P1.2 factory config typing:** ✅ closed
+- **P2 signal shutdown gap:** ✅ closed (new `registerAdapterShutdown()`)
+
+### Remaining concerns / follow-ups
+
+- **P2 log dir hardening for pre-existing directories:** `mkdirSync(..., { mode: 0o700 })` does not change permissions if `.5x/logs` already exists with broader perms from older versions. Consider best-effort `chmod` or a one-time warning if existing perms are not `0700`.
+- **P2 handler idempotency:** `registerAdapterShutdown()` uses `process.on` (not `once`) and does not guard against double-registration. Fine for CLI, but could bite in long-lived embedding/tests.
+
+### Updated readiness
+
+- **Phase 5 completion:** ✅ — review items addressed; safe to treat Phase 5 as complete.
+- **Ready for Phase 6:** ✅
