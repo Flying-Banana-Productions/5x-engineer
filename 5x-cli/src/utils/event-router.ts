@@ -12,12 +12,19 @@ import type { StreamWriter } from "./stream-writer.js";
 export interface EventRouterState {
 	textPartIds: Set<string>;
 	reasoningPartIds: Set<string>;
+	/**
+	 * Part IDs that already streamed deltas via message.part.updated.
+	 * Used to avoid duplicate output when legacy message.part.delta
+	 * events are also emitted for the same part.
+	 */
+	updatedDeltaPartIds: Set<string>;
 }
 
 export function createEventRouterState(): EventRouterState {
 	return {
 		textPartIds: new Set(),
 		reasoningPartIds: new Set(),
+		updatedDeltaPartIds: new Set(),
 	};
 }
 
@@ -38,16 +45,36 @@ export function routeEventToWriter(
 	const type = ev.type as string | undefined;
 	const props = ev.properties as Record<string, unknown> | undefined;
 
-	// Register text and reasoning parts so we know which delta events to route.
+	// Register text/reasoning parts and handle inline deltas carried on
+	// message.part.updated (newer OpenCode event shape).
 	if (type === "message.part.updated" && props) {
 		const part = props.part as Record<string, unknown> | undefined;
-		if (part?.type === "text") {
-			const pid = part.id as string | undefined;
+		const partType = part?.type;
+		const pid = part?.id as string | undefined;
+
+		if (partType === "text") {
 			if (pid) state.textPartIds.add(pid);
 		}
-		if (part?.type === "reasoning") {
-			const pid = part.id as string | undefined;
+		if (partType === "reasoning") {
 			if (pid) state.reasoningPartIds.add(pid);
+		}
+
+		// Newer shape: text/reasoning deltas arrive on message.part.updated
+		// as properties.delta.
+		const delta = props.delta as string | undefined;
+		if (delta) {
+			if (partType === "text") {
+				if (pid) state.updatedDeltaPartIds.add(pid);
+				writer.writeText(delta);
+				return;
+			}
+			if (partType === "reasoning") {
+				if (pid) state.updatedDeltaPartIds.add(pid);
+				if (opts.showReasoning) {
+					writer.writeThinking(delta);
+				}
+				return;
+			}
 		}
 	}
 
@@ -56,6 +83,12 @@ export function routeEventToWriter(
 		const partId = props.partID as string | undefined;
 		const delta = props.delta as string | undefined;
 		if (partId && delta) {
+			// If this part already streamed deltas via message.part.updated,
+			// suppress legacy message.part.delta to avoid duplicate text.
+			if (state.updatedDeltaPartIds.has(partId)) {
+				return;
+			}
+
 			if (state.textPartIds.has(partId)) {
 				writer.writeText(delta);
 				return;

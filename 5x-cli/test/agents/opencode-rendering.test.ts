@@ -66,10 +66,31 @@ function textPartUpdated(id: string) {
 	};
 }
 
+function textPartUpdatedWithDelta(id: string, text: string) {
+	return {
+		type: "message.part.updated",
+		properties: { part: { type: "text", id }, delta: text },
+	};
+}
+
+function textPartUpdatedWithDeltaNoId(text: string) {
+	return {
+		type: "message.part.updated",
+		properties: { part: { type: "text" }, delta: text },
+	};
+}
+
 function reasoningPartUpdated(id: string) {
 	return {
 		type: "message.part.updated",
 		properties: { part: { type: "reasoning", id } },
+	};
+}
+
+function reasoningPartUpdatedWithDelta(id: string, text: string) {
+	return {
+		type: "message.part.updated",
+		properties: { part: { type: "reasoning", id }, delta: text },
 	};
 }
 
@@ -200,6 +221,20 @@ describe("opencode rendering pipeline", () => {
 		expect(out).toContain("  also indented\n");
 	});
 
+	test("text deltas on message.part.updated are streamed", () => {
+		const out = renderEvents([
+			textPartUpdatedWithDelta("t1", "Hello from updated delta"),
+		]);
+		expect(out).toBe("Hello from updated delta\n");
+	});
+
+	test("text deltas on message.part.updated stream even without part id", () => {
+		const out = renderEvents([
+			textPartUpdatedWithDeltaNoId("Hello without id"),
+		]);
+		expect(out).toBe("Hello without id\n");
+	});
+
 	test("fenced code blocks in text deltas are not word-wrapped", () => {
 		const longCode =
 			"const x = someVeryLongFunctionName(parameterOne, parameterTwo, parameterThree);";
@@ -216,6 +251,20 @@ describe("opencode rendering pipeline", () => {
 			{ showReasoning: false },
 		);
 		expect(out).toBe("");
+	});
+
+	test("reasoning deltas on message.part.updated obey showReasoning", () => {
+		const hidden = renderEvents(
+			[reasoningPartUpdatedWithDelta("r1", "thinking inline")],
+			{ showReasoning: false },
+		);
+		expect(hidden).toBe("");
+
+		const shown = renderEvents(
+			[reasoningPartUpdatedWithDelta("r1", "thinking inline")],
+			{ showReasoning: true },
+		);
+		expect(shown).toBe("> thinking inline\n");
 	});
 
 	test("reasoning deltas produce dim output when showReasoning is true", () => {
@@ -241,6 +290,14 @@ describe("opencode rendering pipeline", () => {
 		expect(out).toContain("bash: ls src/\n");
 		expect(out).toContain("index.ts utils.ts\n");
 		expect(out).toContain("Found two files.\n");
+	});
+
+	test("legacy message.part.delta is deduped after updated delta for same part", () => {
+		const out = renderEvents([
+			textPartUpdatedWithDelta("t1", "Hello once"),
+			delta("t1", "Hello once"),
+		]);
+		expect(out).toBe("Hello once\n");
 	});
 
 	test("tool output truncated to width by writeLine", () => {
