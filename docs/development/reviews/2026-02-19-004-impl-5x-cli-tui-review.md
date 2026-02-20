@@ -300,6 +300,97 @@ The command layer computes `quiet: effectiveQuiet || tui.active` once. If the TU
 - **Phase 2 completion:** ⚠️ — the review fixes are real, but default-on TUI is still unsafe in non-auto flows and output ownership is not enforced end-to-end.
 - **Ready for next phase:** ⚠️ — proceed to Phase 3, but treat “TUI opt-in/auto-only gating” and “no stdout while active” as early Phase 3/4 acceptance gates.
 
+---
+
+## Addendum (2026-02-19) — Phase 2 output-ownership closure (stdout quiet-gating)
+
+**Reviewed:** `c8a24ef35`
+
+### What's addressed (✅)
+
+- **P0.6 output ownership**: Orchestrator stdout is now quiet-gated via a local `log()` helper in both loops (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`). This closes the biggest remaining “parent stdout corrupts TUI” risk for auto-mode TUI runs.
+- **P0.6 plan command gap**: `5x-cli/src/commands/plan.ts` now passes `quiet: effectiveQuiet || tui.active` to `invokeForStatus()`, preventing SSE/event formatting from printing while the TUI owns the terminal.
+- **Non-auto TUI fail-closed**: `5x-cli/src/tui/detect.ts` now requires `--auto` to enable TUI (explicitly gates off readline-based flows until Phase 5 TUI gates exist). `5x plan` is correctly exempted since it has no human gates.
+- **State-machine correctness**: Escalation guidance is only stored when resuming to EXECUTE, preventing stale guidance from leaking into later phases.
+- **Tests now actually test stdout silence**: Regression test intercepts `console.log` directly (Bun bypasses `process.stdout.write`), plus a companion sanity test that proves output exists when `quiet=false`.
+
+### Remaining concerns
+
+- **P0.7 still open (signal/cleanup)**: TUI safety is still gated on Phase 3’s cooperative cancellation; `process.exit()`-style signal handlers remain a cleanup risk.
+- **Test isolation risk (P1)**: Overriding global `console.log` in tests can be flaky if the runner executes tests concurrently. Prefer a test framework spy/mock if available, or ensure these tests run serially.
+- **Coverage gap (P1)**: There is a regression test for `runPhaseExecutionLoop` stdout silence; consider adding the same for `runPlanReviewLoop` so both loops are protected.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — TUI is now safe for `--auto` flows from an output-ownership standpoint (stdout quiet-gated + detector fails closed for non-auto).
+- **Ready for next phase:** ⚠️ — proceed to Phase 3; treat signal/cleanup semantics (P0.7) as the next hard production gate.
+
+---
+
+## Addendum (2026-02-19) — Test hardening for quiet-gated stdout (logger DI)
+
+**Reviewed:** `1a7759a35`, `e555d06`
+
+### What's addressed (✅)
+
+- **P1 test isolation risk (global console mutation)**: Closed by adding an injectable `_log` sink to both option types (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`) and updating tests to assert output via DI rather than overriding `console.log`.
+- **Coverage gap**: `5x-cli/test/orchestrator/plan-review-loop.test.ts` now has the same quiet=true/quiet=false regression pair as the phase loop, protecting both loops.
+- **Test correctness/maintainability**: Follow-on cleanup removes non-null assertions / `any` casts in the quiet re-eval test via type narrowing (`5x-cli/test/orchestrator/phase-execution-loop.test.ts`).
+
+### Remaining concerns
+
+- **Auto/TUI resume prompting (P0/P1)**: Both loops can still invoke interactive resume gates even in `--auto` mode when an active run exists (run loop via `../gates/human.js`, plan-review loop via `defaultResumeGate`). In TUI mode this can (a) write to stdout/stderr while the child owns the terminal and (b) block on stdin. Before treating TUI auto mode as robust, auto runs should have a deterministic, non-interactive resume policy (e.g. auto-resume, or auto-start-fresh with explicit audit logging).
+- **P0.7 still open (signal/cleanup)**: unchanged.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — unchanged.
+- **Ready for next phase:** ⚠️ — proceed to Phase 3; include “auto resume policy (no prompts)” alongside cooperative cancellation as early acceptance gates for reliable TUI auto runs.
+
+---
+
+## Addendum (2026-02-19) — Auto-mode resume policy implemented (no interactive gate)
+
+**Reviewed:** `899a4d3`
+
+### What's addressed (✅)
+
+- **Auto/TUI resume prompting (P0/P1)**: Closed. When `auto=true` and no explicit `resumeGate` override is provided, both loops deterministically resume the active run without prompting (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`). This avoids stdout writes + stdin blocking in TUI/CI.
+- **Test coverage**: Adds explicit tests that (a) auto mode resumes without calling a gate and (b) an explicit `resumeGate` override is still honored in auto mode (`5x-cli/test/orchestrator/phase-execution-loop.test.ts`, `5x-cli/test/orchestrator/plan-review-loop.test.ts`).
+
+### Remaining concerns
+
+- **Policy nuance (P1)**: Auto-resume is unconditional for any active run. If a run is “active” but already in a human-required state (e.g. `ESCALATE`), auto-resume will likely just abort again. Consider explicitly documenting/encoding the desired behavior (auto-abort vs auto-start-fresh) to avoid surprising no-progress loops.
+- **P0.7 still open (signal/cleanup)**: unchanged.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — auto-mode TUI flows are now non-interactive end-to-end (no resume prompts, stdout quiet-gated).
+- **Ready for next phase:** ⚠️ — proceed to Phase 3; cooperative cancellation / no-`process.exit()` cleanup remains the next hard production gate.
+
+---
+
+## Addendum (2026-02-19) — Auto-resume terminal-state guard (start fresh + audit)
+
+**Reviewed:** `ef863465c`
+
+### What's addressed (✅)
+
+- **No-progress loop prevention (P1)**: Auto mode no longer blindly resumes runs stuck in `ESCALATE` or `ABORTED`. Instead it deterministically `start-fresh`, preventing repeated immediate aborts (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`).
+- **Operability/audit trail**: Records an `auto_start_fresh` run event on the old run with a reason string, improving postmortem/debuggability.
+- **Tests**: Adds coverage for both loops for ESCALATE and ABORTED cases, including validating the audit event is recorded (`5x-cli/test/orchestrator/phase-execution-loop.test.ts`, `5x-cli/test/orchestrator/plan-review-loop.test.ts`).
+- **Plan alignment**: Implementation plan updated to v1.7 describing this policy (`docs/development/004-impl-5x-cli-tui.md`).
+
+### Remaining concerns
+
+- **Policy completeness (P2)**: Other “bad resume” cases can exist (e.g. active run missing context, or stuck on repeated quality failures). This change covers the terminal auto-mode states; consider whether additional states should trigger start-fresh vs resume.
+- **P0.7 still open (signal/cleanup)**: unchanged.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — unchanged.
+- **Ready for next phase:** ⚠️ — proceed to Phase 3; cooperative cancellation / no-`process.exit()` cleanup remains the next hard production gate.
+
 <!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJzdGF0dXMiLCJwaGFzZSI6IjIiLCJpdGVyYXRpb24iOjAsImRhdGEiOnsicmVzdWx0IjoiY29tcGxldGUiLCJjb21taXQiOiJhZTQzY2IwIiwibm90ZXMiOiJQaGFzZSAyIChUVUkgc3Bhd24gKyBsaWZlY3ljbGUpIGltcGxlbWVudGVkIG9uIGJyYW5jaCBgaW1wbC8wMDQtNXgtY2xpLXR1aWAuXG5cbioqTmV3IGZpbGVzOioqXG4tIGBzcmMvdHVpL2NvbnRyb2xsZXIudHNgIOKAlCBUdWlDb250cm9sbGVyIGludGVyZmFjZSArIGBjcmVhdGVUdWlDb250cm9sbGVyKClgIGZhY3RvcnkuIEFjdGl2ZSBjb250cm9sbGVyIHNwYXducyBgb3BlbmNvZGUgYXR0YWNoIDx1cmw-IC0tZGlyIDx3b3JrZGlyPmAgdmlhIEJ1bi5zcGF3biB3aXRoIHN0ZGlvOiBpbmhlcml0LiBOby1vcCBjb250cm9sbGVyIGZvciBoZWFkbGVzcyBtb2RlIHdpdGggaWRlbnRpY2FsIGludGVyZmFjZS4gU0RLIHN1cmZhY2UgdmFsaWRhdGlvbiBkb2N1bWVudGVkIGF0IGZpbGUgdG9wIHBlciBwbGFuIHJlcXVpcmVtZW50cy5cbi0gYHNyYy90dWkvZGV0ZWN0LnRzYCDigJQgYHNob3VsZEVuYWJsZVR1aSgpYCBpbXBsZW1lbnRpbmcgVFRZIGF1dG8tZGV0ZWN0aW9uIChzdGRpbitzdGRvdXQgVFRZLCAtLW5vLXR1aSwgLS1xdWlldCBmbGFncykuXG4tIGB0ZXN0L3R1aS9jb250cm9sbGVyLnRlc3QudHNgIOKAlCAyNSB0ZXN0cyBjb3ZlcmluZyBuby1vcCBjb250cm9sbGVyIGJlaGF2aW9yLCBhY3RpdmUgY29udHJvbGxlciBsaWZlY3ljbGUgKGFjdGl2ZSBmbGFnLCBzZWxlY3RTZXNzaW9uLCBzaG93VG9hc3QsIG9uRXhpdCBoYW5kbGVycywga2lsbCwgZXJyb3Igc3dhbGxvd2luZykuXG5cbioqTW9kaWZpZWQgZmlsZXM6Kipcbi0gYHNyYy9hZ2VudHMvb3BlbmNvZGUudHNgIOKAlCBBZGRlZCBgX2NsaWVudEZvclR1aWAgZ2V0dGVyIHRvIGV4cG9zZSBTREsgY2xpZW50IGZvciBUVUkgQVBJIGNhbGxzLlxuLSBgc3JjL2NvbW1hbmRzL3J1bi50c2Ag4oCUIEFkZGVkIGAtLW5vLXR1aWAgZmxhZywgVFVJIG1vZGUgZGV0ZWN0aW9uLCBUVUkgc3Bhd24va2lsbCBpbiBsaWZlY3ljbGUuXG4tIGBzcmMvY29tbWFuZHMvcGxhbi1yZXZpZXcudHNgIOKAlCBTYW1lIFRVSSBpbnRlZ3JhdGlvbiBwYXR0ZXJuLlxuLSBgc3JjL2NvbW1hbmRzL3BsYW4udHNgIOKAlCBTYW1lIFRVSSBpbnRlZ3JhdGlvbiBwYXR0ZXJuLlxuLSBgZG9jcy9kZXZlbG9wbWVudC8wMDQtaW1wbC01eC1jbGktdHVpLm1kYCDigJQgQWxsIFBoYXNlIDIgY2hlY2tsaXN0IGl0ZW1zIG1hcmtlZCBbeF0uXG5cbioqU0RLIHZhbGlkYXRpb24gZmluZGluZ3MgKGRvY3VtZW50ZWQgaW4gY29udHJvbGxlci50cyk6Kipcbi0gYGNsaWVudC50dWkuc2hvd1RvYXN0KClgIOKAlCBFWElTVFMsIG1lc3NhZ2UrdmFyaWFudCByZXF1aXJlZFxuLSBgY2xpZW50LnR1aS5zZWxlY3RTZXNzaW9uKClgIOKAlCBFWElTVFMsIHN1cHBvcnRzIGRpcmVjdG9yeSBwYXJhbWV0ZXJcbi0gYGNsaWVudC50dWkuc2hvd0RpYWxvZygpYCDigJQgRE9FUyBOT1QgRVhJU1QgKG5vdGVkIGZvciBQaGFzZSA1IGZhbGxiYWNrKVxuLSBgY2xpZW50LnBlcm1pc3Npb24ucmVwbHkoKWAg4oCUIEVYSVNUUyAocHJlZmVycmVkIG92ZXIgZGVwcmVjYXRlZCAucmVzcG9uZCgpKVxuLSBgY2xpZW50LnR1aS5jb250cm9sLm5leHQoKS8ucmVzcG9uc2UoKWAg4oCUIEVYSVNUUyAoZm9yIFBoYXNlIDUgZ2F0ZSBmYWxsYmFjaylcblxuQWxsIDM4OCB0ZXN0cyBwYXNzICgyNSBuZXcgKyAzNjMgZXhpc3RpbmcpLiBQcmUtY29tbWl0IGhvb2tzIChiaW9tZSBsaW50ICsgdHNjKSBwYXNzZWQuIn19 -->
 
 <!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJ2ZXJkaWN0IiwicGhhc2UiOiIyIiwiaXRlcmF0aW9uIjoxLCJkYXRhIjp7InJlYWRpbmVzcyI6Im5vdF9yZWFkeSIsIml0ZW1zIjpbeyJpZCI6IlAwLjUiLCJ0aXRsZSI6IkhlYWRsZXNzIHJ1bnMgcHJpbnQgZmFsc2UgXCJUVUkgZXhpdGVkXCIgd2FybmluZyIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiTm8tb3AgVHVpQ29udHJvbGxlci5vbkV4aXQgZmlyZXMgaW1tZWRpYXRlbHk7IGNvbW1hbmRzIHJlZ2lzdGVyIGFuIG9uRXhpdCBoYW5kbGVyIHVuY29uZGl0aW9uYWxseSBhbmQgZW1pdCBcIlRVSSBleGl0ZWQg4oCUIGNvbnRpbnVpbmcgaGVhZGxlc3NcIiBldmVuIHdoZW4gVFVJIHdhcyBuZXZlciBzdGFydGVkLiIsInByaW9yaXR5IjoiUDAifSx7ImlkIjoiUDAuNiIsInRpdGxlIjoiVFVJIG1vZGUgY29ycnVwdHMgdGVybWluYWwgKyBicmVha3MgaW50ZXJhY3RpdmUgZ2F0ZXMiLCJhY3Rpb24iOiJodW1hbl9yZXF1aXJlZCIsInJlYXNvbiI6Ik9uY2UgYG9wZW5jb2RlIGF0dGFjaGAgb3ducyB0aGUgdGVybWluYWwgKHN0ZGlvIGluaGVyaXQpLCBjdXJyZW50IG9yY2hlc3RyYXRvciBsb29wcyBhbmQgcGxhbi1yZXZpZXcgZ2F0ZXMgc3RpbGwgd3JpdGUgdG8gc3Rkb3V0IGFuZCB1c2UgcmVhZGxpbmUtc3R5bGUgcHJvbXB0cywgd2hpY2ggd2lsbCBpbnRlcmxlYXZlIHdpdGgvY29ycnVwdCB0aGUgVFVJIGFuZCBjYW4gaGFuZyBub24tYXV0byBmbG93cy4gUmVxdWlyZXMgYSBkZWxpYmVyYXRlIHJvbGxvdXQgZGVjaXNpb246IGRpc2FibGUgVFVJIHVudGlsIFBoYXNlcyAz4oCTNSBsYW5kIHZzIGltcGxlbWVudCBvdXRwdXQgb3duZXJzaGlwICsgVFVJIGdhdGVzIG5vdy4iLCJwcmlvcml0eSI6IlAwIn0seyJpZCI6IlAwLjciLCJ0aXRsZSI6IlNpZ25hbCBoYW5kbGluZyBzdGlsbCB1c2VzIHByb2Nlc3MuZXhpdCAoY2xlYW51cCByZWdyZXNzaW9ucyBpbiBUVUkgbW9kZSkiLCJhY3Rpb24iOiJhdXRvX2ZpeCIsInJlYXNvbiI6IkV4aXN0aW5nIFNJR0lOVC9TSUdURVJNIGhhbmRsZXJzIGNhbGwgYHByb2Nlc3MuZXhpdCguLi4pYCwgYnlwYXNzaW5nIGFzeW5jIGBmaW5hbGx5YCBjbGVhbnVwOyBwbGFuIFBoYXNlIDMgc3BlY2lmaWVzIGNvb3BlcmF0aXZlIGNhbmNlbGxhdGlvbiAoQWJvcnRDb250cm9sbGVyICsgZXhpdENvZGUpIGJ1dCBpdCBpcyBub3QgaW1wbGVtZW50ZWQgd2hpbGUgVFVJIGlzIGVuYWJsZWQuIiwicHJpb3JpdHkiOiJQMCJ9LHsiaWQiOiJQMS40IiwidGl0bGUiOiJcIkNvbnRpbnVlIGhlYWRsZXNzXCIgZG9lcyBub3QgcmVzdG9yZSBoZWFkbGVzcyBvdXRwdXQgYWZ0ZXIgVFVJIGV4aXQiLCJhY3Rpb24iOiJhdXRvX2ZpeCIsInJlYXNvbiI6ImBxdWlldGAgaXMgY29tcHV0ZWQgb25jZSBhcyBgZWZmZWN0aXZlUXVpZXQgfHwgdHVpLmFjdGl2ZWA7IGlmIHRoZSBUVUkgZXhpdHMgZWFybHksIGxvb3BzIHJlbWFpbiBpbiBxdWlldCBtb2RlIGFuZCBtYXkgc3VwcHJlc3MgdGhlIGludGVuZGVkIGhlYWRsZXNzIG91dHB1dCBwYXRoLiIsInByaW9yaXR5IjoiUDEifSx7ImlkIjoiUDEuNSIsInRpdGxlIjoiTm8gZmFsbGJhY2sgaWYgYG9wZW5jb2RlYCBiaW5hcnkgaXMgbWlzc2luZy91bnNwYXduYWJsZSIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiYGNyZWF0ZVR1aUNvbnRyb2xsZXIoKWAgYXNzdW1lcyBgb3BlbmNvZGVgIGlzIG9uIFBBVEggYW5kIGRvZXNu4oCZdCBjYXRjaCBzcGF3biBmYWlsdXJlczsgUGhhc2UgNiBleHBlY3RzIGEgd2Fybi1hbmQtZmFsbGJhY2stdG8taGVhZGxlc3MgYmVoYXZpb3IgaW5zdGVhZCBvZiBoYXJkIGZhaWx1cmUuIiwicHJpb3JpdHkiOiJQMSJ9LHsiaWQiOiJQMi4xIiwidGl0bGUiOiJDb21tYW5kIGxheWVyIGRlcGVuZHMgb24gT3BlbkNvZGVBZGFwdGVyIHByaXZhdGUgY2xpZW50IHN1cmZhY2UiLCJhY3Rpb24iOiJodW1hbl9yZXF1aXJlZCIsInJlYXNvbiI6IkNvbW1hbmRzIGNhc3QgYEFnZW50QWRhcHRlcmAgdG8gYE9wZW5Db2RlQWRhcHRlcmAgdG8gYWNjZXNzIGBfY2xpZW50Rm9yVHVpYDsgaWYgYWRkaXRpb25hbCBhZGFwdGVycyBhcmUgaW50cm9kdWNlZCwgZGVjaWRlIHdoZXRoZXIgdG8gZm9ybWFsaXplIGEgbWluaW1hbCBUVUktY2FwYWJsZSBhZGFwdGVyIGludGVyZmFjZSBvciByZWZhY3RvciB0aGUgZmFjdG9yeSB0byBwcm92aWRlIHRoZSBuZWVkZWQgY2xpZW50IHdpdGhvdXQgY2FzdGluZy4iLCJwcmlvcml0eSI6IlAyIn1dLCJzdW1tYXJ5IjoiUmV2aWV3IHdyaXR0ZW4gdG8gYGRvY3MvZGV2ZWxvcG1lbnQvcmV2aWV3cy8yMDI2LTAyLTE5LTAwNC1pbXBsLTV4LWNsaS10dWktcmV2aWV3Lm1kYCBhcyBhIG5ldyBBZGRlbmR1bSBmb3IgUGhhc2UgMi4gVGhlIFBoYXNlIDIgaW1wbGVtZW50YXRpb24gbWF0Y2hlcyB0aGUgcGxhbuKAmXMgd2lyaW5nLCBidXQgZW5hYmxpbmcgVFVJIGF0IHRoaXMgcG9pbnQgaXMgbm90IHNoaXBwYWJsZSBkdWUgdG8gdGVybWluYWwgb3V0cHV0IGludGVybGVhdmluZywgbWlzc2luZyBUVUkgZ2F0ZSBpbnRlZ3JhdGlvbiwgYW5kIHVuc2FmZSBzaWduYWwvY2xlYW51cCBzZW1hbnRpY3MuIn19 -->

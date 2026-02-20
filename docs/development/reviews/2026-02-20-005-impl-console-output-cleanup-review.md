@@ -126,3 +126,66 @@ Unit tests for writer/formatter are good, but add a small adapter-level test tha
 **P1 recommended**
 - [ ] Reasoning display policy decided (default vs opt-in) and documented
 - [ ] Adapter-level rendering test added to prevent regressions
+
+---
+
+## Addendum (2026-02-20) — Re-review of plan revisions
+
+**Reviewed:** `ad5fc84` (`docs/development/005-impl-console-output-cleanup.md` v1.1)
+
+### What's addressed (✅)
+
+- **P0.1 buildable phases:** Phase 2 now explicitly includes the `opencode.ts` caller update so the formatter return-type change can land without breaking typecheck/build.
+- **P0.2 whitespace + preformatted safety:** StreamWriter spec now preserves whitespace (incl. leading spaces/tabs) and bypasses wrapping inside fenced code blocks.
+- **P0.3 width ownership:** Formatter returns semantic text only; truncation/width math centralized in StreamWriter (`writeLine()` truncation + streaming wrap).
+- **P0.4 ANSI/Unicode policy:** `resolveAnsi()` is pure/testable; NO_COLOR precedence documented; ASCII-only markers (`!`, `...`).
+- **P0.5 bounded tool output work:** Tool output collapsing is slice-then-collapse (bounded scan), not full-output regex.
+- **P1.1 reasoning policy:** Reasoning is opt-in via `--show-reasoning` (default remains suppressed).
+- **P1.2 regression coverage:** Adds an adapter-level rendering test spec (`5x-cli/test/agents/opencode-rendering.test.ts`).
+- **P2 doc clarity:** Adds before/after example + explicit visual layout policy; calls out `SIGWINCH` handling as out of scope.
+
+### Remaining concerns
+
+- **Phase 2 “no visual change” wording is inaccurate:** Phase 2 also changes the rendered strings (brackets removed, step-finish suppressed, tool/result collapsing). If the intent is “no wrapping/styling yet”, update the completion gate text accordingly; otherwise call Phase 2 out as a user-visible formatting change.
+- **Indent/policy mismatch with current orchestrator output:** Plan states orchestrator status lines are unindented and agent output will be flush-left, but today orchestrator status strings are prefixed with two spaces in `phase-execution-loop.ts` / `plan-review-loop.ts`, and the plan also says orchestrator messages are out of scope. Either (a) update the policy table to match reality, or (b) explicitly scope a follow-up to normalize indentation.
+
+### Updated readiness
+
+- **Plan readiness:** Ready with corrections — P0 items are addressed; fix the Phase 2 gate wording + indentation policy mismatch before implementation to avoid confusion/partial-rollout surprises.
+
+---
+
+## Addendum (2026-02-20) — Phase 2 gate wording + indent policy fix
+
+**Reviewed:** `8e74744b1` (`docs/development/005-impl-console-output-cleanup.md` v1.2)
+
+### What's addressed (✅)
+
+- **Phase 2 user-visible change called out:** Completion gate now correctly states Phase 2 changes the rendered strings (brackets removed, step-finish suppressed, tool output collapsed), while Phase 3 brings wrapping/ANSI/reasoning.
+- **Indent/layout policy aligned with reality:** Visual layout policy table now reflects current 2-space orchestrator indent, with an explicit note that indent normalization is a follow-up (not in scope).
+
+### Remaining concerns
+
+- **`FORCE_COLOR=0` semantics inconsistency:** The `resolveAnsi()` pseudo-code currently falls back to `isTTY` when `FORCE_COLOR === "0"`, but the surrounding text + test checklist says it should disable color. Pick one behavior and make the pseudo-code + tests match (recommend: `FORCE_COLOR=0` disables).
+
+### Updated readiness
+
+- **Plan readiness:** Ready — proceed; clean up the `FORCE_COLOR=0` ambiguity before implementation to avoid test/spec drift.
+
+---
+
+## Addendum (2026-02-20) — `FORCE_COLOR=0` ambiguity closed
+
+**Reviewed:** `f82f719f` (`docs/development/005-impl-console-output-cleanup.md` v1.2)
+
+### What's addressed (✅)
+
+- **Spec/test alignment:** `resolveAnsi()` pseudo-code now explicitly treats `FORCE_COLOR=0` as disable (no fallthrough to `isTTY`), matching the checklist and the intended semantics.
+
+### Remaining concerns
+
+- None at the plan level.
+
+### Updated readiness
+
+- **Plan readiness:** Ready to implement.
