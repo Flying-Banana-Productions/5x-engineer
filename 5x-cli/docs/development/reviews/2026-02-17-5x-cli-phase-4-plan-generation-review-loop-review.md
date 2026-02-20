@@ -5,12 +5,12 @@
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `cd 5x-cli && bun test` PASS (229 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
 
-**Implementation plan:** `docs/development/001-impl-5x-cli.md`  \
+**Implementation plan:** `5x-cli/docs/development/001-impl-5x-cli.md`  \
 **Technical design:** N/A
 
 ## Summary
 
-Commit `d9acb009` implements Phase 4 of `docs/development/001-impl-5x-cli.md`: deterministic plan-path generation (`5x plan`) and a DB-backed, resumable plan review loop (`5x plan-review`) with an explicit state machine and strong unit coverage.
+Commit `d9acb009` implements Phase 4 of `5x-cli/docs/development/001-impl-5x-cli.md`: deterministic plan-path generation (`5x plan`) and a DB-backed, resumable plan review loop (`5x plan-review`) with an explicit state machine and strong unit coverage.
 
 Main correctness gap: the plan-review loop can incorrectly treat a non-ready verdict as approved if the verdict items fail parsing (e.g., unknown `action` values get dropped, leaving `items: []` while `readiness != ready`). Also, Phase 4 introduces new places where “project root” is assumed to be `cwd`, which will create confusing behavior when invoked from subdirectories (DB + artifact paths).
 
@@ -55,7 +55,7 @@ Main correctness gap: the plan-review loop can incorrectly treat a non-ready ver
 
 ### P1.1 - Project root is treated as `cwd` (artifact + DB paths become subdir-relative)
 
-`5x-cli/src/commands/plan.ts` and `5x-cli/src/commands/plan-review.ts` use `projectRoot = resolve('.')` then resolve `config.paths.*` and `config.db.path` from that. If invoked from a nested directory, you will create `.5x/` and `docs/development/` under that subdir, splitting state/artifacts across multiple roots.
+`5x-cli/src/commands/plan.ts` and `5x-cli/src/commands/plan-review.ts` use `projectRoot = resolve('.')` then resolve `config.paths.*` and `config.db.path` from that. If invoked from a nested directory, you will create `.5x/` and `5x-cli/docs/development/` under that subdir, splitting state/artifacts across multiple roots.
 
 Recommendation: derive a single "project root" consistently from config discovery (e.g., `configPath ? dirname(configPath) : cwd`, or prefer git root when available) and use it for DB path, artifact roots, and git safety checks.
 
@@ -94,14 +94,14 @@ Recommendation: if reusing an existing path, verify it is under the configured r
 
 ## Readiness assessment vs implementation plan
 
-- **Phase(s) implemented:** Phase 4 in `docs/development/001-impl-5x-cli.md` (Plan Generation + Review Loop).
+- **Phase(s) implemented:** Phase 4 in `5x-cli/docs/development/001-impl-5x-cli.md` (Plan Generation + Review Loop).
 - **Phase 4 completion:** ⚠️ - broadly complete, but P0.1 is a real correctness hole in the safety gate.
 - **Ready for next phase (Phase 5: Phase Execution Loop):** ⚠️ - proceed after P0.1; strongly recommend landing P1.1/P1.2 first since Phase 5 will amplify root/workdir inconsistencies.
 
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-4-plan-generation-review-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-4-plan-generation-review-loop-review.md
 items:
   - id: p0-1
     title: Prevent plan-review from approving non-ready verdicts with no actionable items
@@ -149,6 +149,6 @@ items:
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-4-plan-generation-review-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-4-plan-generation-review-loop-review.md
 items: []
 -->

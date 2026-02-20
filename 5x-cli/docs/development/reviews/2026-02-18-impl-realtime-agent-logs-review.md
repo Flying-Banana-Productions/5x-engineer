@@ -1,12 +1,12 @@
 # Review: Real-time Agent Log Streaming
 
-**Review type:** `docs/development/002-impl-realtime-agent-logs.md` (v1.1)
+**Review type:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md` (v1.1)
 **Scope:** Claude Code adapter streaming (`stream-json` NDJSON), per-invocation log durability, console formatting/default output policy, `--quiet` plumbing, test updates
 **Reviewer:** Staff engineer (reliability, operability, performance, DX)
 **Local verification:** Not run (plan + codebase review)
 
-**Implementation plan:** `docs/development/002-impl-realtime-agent-logs.md`
-**Technical design:** `docs/development/001-impl-5x-cli.md`
+**Implementation plan:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md`
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md`
 
 ## Summary
 
@@ -23,7 +23,7 @@ Main gaps are in the “how” details that prevent new failure modes: the adapt
 - **Uses the right substrate:** `stream-json` provides structured intermediate events + a final `type:"result"` envelope, so routing logic and `AgentResult` shape can stay stable.
 - **NDJSON log artifacts:** one-event-per-line is tool-friendly (`jq`, grep) and supports incremental writes.
 - **Separates concerns:** adapter handles subprocess + parsing; orchestrator owns rendering + CLI UX.
-- **Closes the observability hole:** wiring logs for *all* invocation sites (EXECUTE/QUALITY_RETRY/REVIEW/AUTO_FIX and plan-review loop) aligns with the DB-as-SOT + filesystem-artifacts model in `docs/development/001-impl-5x-cli.md`.
+- **Closes the observability hole:** wiring logs for *all* invocation sites (EXECUTE/QUALITY_RETRY/REVIEW/AUTO_FIX and plan-review loop) aligns with the DB-as-SOT + filesystem-artifacts model in `5x-cli/docs/development/001-impl-5x-cli.md`.
 
 ---
 
@@ -93,7 +93,7 @@ In `--quiet` mode, “first ~500 chars of agent output” should be derived from
 
 - **Formatter hardening:** handle multi-part `content[]` arrays (text + tool_use in one message), unknown event types, and optional suppression rules (e.g., drop `system.init.tools` payloads).
 - **Backpressure:** if log writes are heavy, consider respecting `Writable.write()` backpressure (`drain` event) to avoid buffering large amounts in memory.
-- **Docs:** update `docs/development/001-impl-5x-cli.md` (or CLI README) to mention `.5x/logs/<runId>/` agent NDJSON logs + `--quiet` behavior.
+- **Docs:** update `5x-cli/docs/development/001-impl-5x-cli.md` (or CLI README) to mention `.5x/logs/<runId>/` agent NDJSON logs + `--quiet` behavior.
 
 ---
 
@@ -113,14 +113,14 @@ In `--quiet` mode, “first ~500 chars of agent output” should be derived from
 
 ## Addendum (2026-02-18) — Re-review after plan updates
 
-**Reviewed:** `c1e6eec` (docs) | `docs/development/002-impl-realtime-agent-logs.md` (v1.2)
+**Reviewed:** `c1e6eec` (docs) | `5x-cli/docs/development/002-impl-realtime-agent-logs.md` (v1.2)
 
 ### What's addressed (✅)
 
 - **P0.1 streaming/timeout algorithm:** plan now calls for concurrent stdout draining from spawn time, bounded retention, and timeout drain cancellation.
 - **P0.2 non-fatal + durable logging:** `logStream`/`onEvent` are explicitly try/catch non-fatal; orchestrators required to `await endStream()` in `finally` for all paths.
 - **P0.3 non-TTY default:** explicit `quiet = !process.stdout.isTTY` default with `--quiet`/`--no-quiet` override.
-- **P1.1 NDJSON extension:** agent logs renamed to `agent-<id>.ndjson` and cross-referenced from `docs/development/001-impl-5x-cli.md`.
+- **P1.1 NDJSON extension:** agent logs renamed to `agent-<id>.ndjson` and cross-referenced from `5x-cli/docs/development/001-impl-5x-cli.md`.
 - **P1.2 avoid re-parse:** `onEvent(event, rawLine)` signature added in the plan.
 - **P1.3 escalation context:** quiet-mode snippet explicitly derived from assistant/final result (plus stderr/error context) and log path is always included.
 - **P2 hardening notes:** formatter multi-part handling + unknown types + init-tools suppression; backpressure called out.

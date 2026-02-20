@@ -1,12 +1,12 @@
 # Review: 5x CLI OpenCode Refactor — Phase 4 Execution (Orchestrator Refactor)
 
 **Review type:** `22bece66a3`  \
-**Scope:** Phase 4 of `docs/development/003-impl-5x-cli-opencode.md` (remove `PARSE_*` states; route on typed structured outputs; add structured audit records; update orchestrator + tests; adjust command wiring to single adapter param)  \
+**Scope:** Phase 4 of `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (remove `PARSE_*` states; route on typed structured outputs; add structured audit records; update orchestrator + tests; adjust command wiring to single adapter param)  \
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `bun test` in `5x-cli/` (354 pass, 1 skip)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md` (Phase 4)  \
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Phase 4)  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline)
 
 ## Summary
 
@@ -96,7 +96,7 @@ When `hasCompletedStep()` returns true, the orchestrators route using `getLatest
 
 ## Phase alignment / next-phase readiness
 
-**Implementation plan phase(s):** `docs/development/003-impl-5x-cli-opencode.md` Phase 4
+**Implementation plan phase(s):** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` Phase 4
 
 - **Phase 4 completion:** ✅ — `PARSE_*` states removed from both loops; adapter-direct invocation; legacy resume compat; tests updated; audit trail implemented.
 - **Ready for Phase 5:** ✅ — proceed, but treat P0.1/P0.2 as “early Phase 5” must-fix items before enabling the real adapter/factory.

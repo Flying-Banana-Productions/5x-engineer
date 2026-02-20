@@ -1,12 +1,12 @@
 # Review: 5x CLI OpenCode Refactor — Phase 3 Execution
 
 **Review type:** `98fd17037d`  \
-**Scope:** Phase 3 of `docs/development/003-impl-5x-cli-opencode.md` (OpenCode adapter + SSE log/console streaming + structured output invocation; formatter updates; adapter tests)  \
+**Scope:** Phase 3 of `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (OpenCode adapter + SSE log/console streaming + structured output invocation; formatter updates; adapter tests)  \
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `bun test` (346 pass, 1 skip)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md` (Phase 3)  \
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Phase 3)  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline)
 
 ## Summary
 
@@ -88,7 +88,7 @@ Recommendation: default to `continue` when session ID is absent unless there is 
 
 - **Formatter perf guardrails:** `safeInputSummary()` still calls `JSON.stringify()` on tool inputs; for very large inputs (file contents), this can allocate large transient strings. Consider a bounded summarizer that avoids full serialization for objects with large string fields.
 - **Quiet-mode semantics:** warnings in `writeEventsToLog()` use `console.error()` even when `quiet=true`. Decide whether `--quiet` should suppress non-fatal warnings.
-- **Plan doc hygiene:** `docs/development/003-impl-5x-cli-opencode.md` was modified in this commit but header “Updated” date/version was not bumped (minor, but keeps audit trail honest).
+- **Plan doc hygiene:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` was modified in this commit but header “Updated” date/version was not bumped (minor, but keeps audit trail honest).
 
 ---
 
@@ -107,7 +107,7 @@ Recommendation: default to `continue` when session ID is absent unless there is 
 
 ## Phase alignment / next-phase readiness
 
-**Implementation plan phase(s):** `docs/development/003-impl-5x-cli-opencode.md` Phase 3
+**Implementation plan phase(s):** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` Phase 3
 
 - **Phase 3 completion:** ⚠️ — core adapter + tests landed, but SSE shutdown/cancellation and directory semantics need correction before the adapter is safe to wire into orchestrators.
 - **Ready for Phase 4:** ⚠️ — proceed after P0 fixes; Phase 4 will amplify these issues (hangs/cwd mistakes become end-to-end failures).

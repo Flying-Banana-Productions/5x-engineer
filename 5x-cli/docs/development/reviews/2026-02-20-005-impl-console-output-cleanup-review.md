@@ -1,12 +1,12 @@
 # Review: Console Output Cleanup (005)
 
-**Review type:** `docs/development/005-impl-console-output-cleanup.md`  \
+**Review type:** `5x-cli/docs/development/005-impl-console-output-cleanup.md`  \
 **Scope:** Headless (non-TUI) console rendering for OpenCode SSE streams: word-wrapped streaming text, optional reasoning display, simplified tool/result formatting, step-finish suppression, ANSI dim styling (NO_COLOR/non-TTY aware).  \
 **Reviewer:** Staff engineer (DX/UX, correctness, testability, operability)  \
 **Local verification:** Not run (static review + inspected current log artifacts and formatter/adaptor code)
 
-**Implementation plan:** `docs/development/005-impl-console-output-cleanup.md`  \
-**Technical design / related docs:** `docs/development/004-impl-5x-cli-tui.md`, `docs/development/003-impl-5x-cli-opencode.md`, `docs/development/002-impl-realtime-agent-logs.md`; implementation in `5x-cli/src/agents/opencode.ts`, `5x-cli/src/utils/sse-formatter.ts`.
+**Implementation plan:** `5x-cli/docs/development/005-impl-console-output-cleanup.md`  \
+**Technical design / related docs:** `5x-cli/docs/development/004-impl-5x-cli-tui.md`, `5x-cli/docs/development/003-impl-5x-cli-opencode.md`, `5x-cli/docs/development/002-impl-realtime-agent-logs.md`; implementation in `5x-cli/src/agents/opencode.ts`, `5x-cli/src/utils/sse-formatter.ts`.
 
 ## Summary
 
@@ -110,7 +110,7 @@ Unit tests for writer/formatter are good, but add a small adapter-level test tha
 
 - **Terminal resize:** optional follow-up—consider reacting to `SIGWINCH` (or re-reading `process.stdout.columns`) to avoid wrapping at stale widths for long runs.
 - **Consistency:** ensure orchestrator status messages and agent output share a consistent indent/prefix policy (document it explicitly in the plan).
-- **Docs/examples:** add a before/after snippet in `docs/development/005-impl-console-output-cleanup.md` so reviewers can evaluate UX outcomes without running the CLI.
+- **Docs/examples:** add a before/after snippet in `5x-cli/docs/development/005-impl-console-output-cleanup.md` so reviewers can evaluate UX outcomes without running the CLI.
 
 ---
 
@@ -131,7 +131,7 @@ Unit tests for writer/formatter are good, but add a small adapter-level test tha
 
 ## Addendum (2026-02-20) — Re-review of plan revisions
 
-**Reviewed:** `ad5fc84` (`docs/development/005-impl-console-output-cleanup.md` v1.1)
+**Reviewed:** `ad5fc84` (`5x-cli/docs/development/005-impl-console-output-cleanup.md` v1.1)
 
 ### What's addressed (✅)
 
@@ -157,7 +157,7 @@ Unit tests for writer/formatter are good, but add a small adapter-level test tha
 
 ## Addendum (2026-02-20) — Phase 2 gate wording + indent policy fix
 
-**Reviewed:** `8e74744b1` (`docs/development/005-impl-console-output-cleanup.md` v1.2)
+**Reviewed:** `8e74744b1` (`5x-cli/docs/development/005-impl-console-output-cleanup.md` v1.2)
 
 ### What's addressed (✅)
 
@@ -176,7 +176,7 @@ Unit tests for writer/formatter are good, but add a small adapter-level test tha
 
 ## Addendum (2026-02-20) — `FORCE_COLOR=0` ambiguity closed
 
-**Reviewed:** `f82f719f` (`docs/development/005-impl-console-output-cleanup.md` v1.2)
+**Reviewed:** `f82f719f` (`5x-cli/docs/development/005-impl-console-output-cleanup.md` v1.2)
 
 ### What's addressed (✅)
 

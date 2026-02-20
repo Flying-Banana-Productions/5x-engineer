@@ -5,8 +5,8 @@
 **Reviewer:** Staff engineer (correctness, operability, performance, security/tenancy, test strategy)
 **Local verification:** `cd 5x-cli && bun test` PASS (335 pass, 1 skip)
 
-**Implementation plan:** `docs/development/002-impl-realtime-agent-logs.md`
-**Technical design:** `docs/development/001-impl-5x-cli.md`
+**Implementation plan:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md`
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md`
 
 ## Summary
 

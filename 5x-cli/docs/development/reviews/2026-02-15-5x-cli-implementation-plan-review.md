@@ -1,11 +1,11 @@
 # Review: 5x CLI Implementation Plan
 
-**Review type:** `docs/development/001-impl-5x-cli.md`  
+**Review type:** `5x-cli/docs/development/001-impl-5x-cli.md`  
 **Scope:** `5x` CLI orchestrator + agent adapters + signal protocol + template scaffolding + plan/review/execute loops + quality gates  
 **Reviewer:** Staff engineer (correctness, reliability, operability, UX/safety)  
 **Local verification:** Not run (static review: docs only)
 
-**Implementation plan:** `docs/development/001-impl-5x-cli.md`  
+**Implementation plan:** `5x-cli/docs/development/001-impl-5x-cli.md`  
 **Technical design:** N/A
 
 ## Summary
@@ -153,7 +153,7 @@ Treat `--auto` as “unsafe/experimental” unless you also define hard guardrai
 
 ## Addendum (2026-02-16) — Re-review after plan revisions
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.1)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.1)
 
 ### What's addressed (✅)
 
@@ -181,7 +181,7 @@ Treat `--auto` as “unsafe/experimental” unless you also define hard guardrai
 
 ## Addendum (2026-02-16) — Re-review after follow-up fixes
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.1, updated)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.1, updated)
 
 ### What's addressed (✅)
 
@@ -204,7 +204,7 @@ Treat `--auto` as “unsafe/experimental” unless you also define hard guardrai
 
 ## Addendum (2026-02-16) — Correction: Re-review of latest plan (v1.2)
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.2)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.2)
 
 **Note:** My prior addendums referenced v1.1; the plan is now v1.2. I re-read v1.2 end-to-end and this addendum supersedes the “remaining concerns” status from the earlier addendum(s).
 
@@ -228,7 +228,7 @@ Treat `--auto` as “unsafe/experimental” unless you also define hard guardrai
 
 ## Addendum (2026-02-16) — Re-review after architectural rewrite (new Phase 1.1)
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.2, rewritten post-Phase-1)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.2, rewritten post-Phase-1)
 
 **Scope of this addendum:** Plan-only review of the rewritten architecture/phasing. I am intentionally **not** reviewing the completed Phase 1 implementation/code in `5x-cli/` yet; we’ll review code after the new plan is signed off.
 
@@ -294,7 +294,7 @@ Recommendation: store structured summaries in DB and write full outputs to `.5x/
 
 ## Addendum (2026-02-16) — Re-review after v1.4 hardening (ignore completed Phase 1)
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.4)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.4)
 
 **Scope:** Plan-only review of the revised architecture/phasing. Still intentionally not reviewing the already-implemented Phase 1 code.
 
@@ -338,7 +338,7 @@ Review path uses `<date>-<plan-basename>-review.md`; that creates a new review f
 
 ## Addendum (2026-02-16) — Re-review after v1.5 resume/idempotency fixes (ignore completed Phase 1)
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.5)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.5)
 
 **Scope:** Plan-only review of the revised architecture/phasing. Still intentionally not reviewing the already-implemented Phase 1 code.
 
@@ -373,7 +373,7 @@ Quality retries re-invoke the author in the same phase. If that uses the same `(
 
 ## Addendum (2026-02-16) — Re-review after v1.6 clarifications (ignore completed Phase 1)
 
-**Reviewed:** `docs/development/001-impl-5x-cli.md` (v1.6)
+**Reviewed:** `5x-cli/docs/development/001-impl-5x-cli.md` (v1.6)
 
 ### What's addressed (✅)
 

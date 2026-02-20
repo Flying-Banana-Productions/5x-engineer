@@ -5,8 +5,8 @@
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `cd 5x-cli && bun test` PASS (302 pass, 1 skip)
 
-**Implementation plan:** `docs/development/002-impl-realtime-agent-logs.md`  \
-**Technical design:** `docs/development/001-impl-5x-cli.md`
+**Implementation plan:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md`  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md`
 
 ## Summary
 
@@ -99,7 +99,7 @@ Main remaining risks are around failure modes at scale: a single huge NDJSON lin
 
 ## Addendum (2026-02-18) - Re-review after remediation commit
 
-**Reviewed:** `7d30d62d4c80` | `docs/development/002-impl-realtime-agent-logs.md` v1.3
+**Reviewed:** `7d30d62d4c80` | `5x-cli/docs/development/002-impl-realtime-agent-logs.md` v1.3
 **Local verification:** `cd 5x-cli && bun test` PASS (306 pass, 1 skip)
 
 ### What's addressed (✅)
@@ -121,4 +121,4 @@ Main remaining risks are around failure modes at scale: a single huge NDJSON lin
 - **002 Phase 1 completion:** ✅ - prior P0/P1 items raised in this review are addressed with code + tests.
 - **Ready for Phase 2:** ✅ - proceed with orchestrator wiring; keep backpressure + permissions/docs as primary follow-ups.
 
-Note: Phase 2 execution review moved to `docs/development/reviews/2026-02-18-realtime-agent-logs-phase2-execution-review.md`.
+Note: Phase 2 execution review moved to `5x-cli/docs/development/reviews/2026-02-18-realtime-agent-logs-phase2-execution-review.md`.

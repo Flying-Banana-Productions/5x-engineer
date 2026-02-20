@@ -1,12 +1,12 @@
 # Review: 5x CLI — TUI Integration
 
-**Review type:** `docs/development/004-impl-5x-cli-tui.md` (v1.1)  
+**Review type:** `5x-cli/docs/development/004-impl-5x-cli-tui.md` (v1.1)  
 **Scope:** Add OpenCode TUI as display layer for `5x run` / `5x plan-review` / `5x plan`; randomize OpenCode server port; TUI lifecycle/session focusing; replace readline human gates when TUI owns terminal.  
 **Reviewer:** Staff engineer (reliability, UX/DX, operability)  
 **Local verification:** Static review; additionally verified `opencode attach --help` supports `--dir` and URL attach.
 
-**Implementation plan:** `docs/development/004-impl-5x-cli-tui.md`  
-**Technical design / related docs:** `docs/development/003-impl-5x-cli-opencode.md`, `docs/development/002-impl-realtime-agent-logs.md`; existing code in `5x-cli/src/agents/opencode.ts`, `5x-cli/src/orchestrator/*`, `5x-cli/src/gates/human.ts`.
+**Implementation plan:** `5x-cli/docs/development/004-impl-5x-cli-tui.md`  
+**Technical design / related docs:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md`, `5x-cli/docs/development/002-impl-realtime-agent-logs.md`; existing code in `5x-cli/src/agents/opencode.ts`, `5x-cli/src/orchestrator/*`, `5x-cli/src/gates/human.ts`.
 
 ## Summary
 
@@ -114,7 +114,7 @@ Plan text says `--quiet` is ignored in TUI mode, but the current CLI uses `--qui
 
 ## Addendum (2026-02-19) — Re-review after plan corrections (v1.2)
 
-**Reviewed:** `450964c` (`docs/development/004-impl-5x-cli-tui.md` v1.2)
+**Reviewed:** `450964c` (`5x-cli/docs/development/004-impl-5x-cli-tui.md` v1.2)
 
 ### What's addressed (✅)
 
@@ -142,7 +142,7 @@ Plan text says `--quiet` is ignored in TUI mode, but the current CLI uses `--qui
 
 ## Addendum (2026-02-19) — Remaining concerns addressed (v1.3)
 
-**Reviewed:** `abe12b7` (`docs/development/004-impl-5x-cli-tui.md` v1.3)
+**Reviewed:** `abe12b7` (`5x-cli/docs/development/004-impl-5x-cli-tui.md` v1.3)
 
 ### What's addressed (✅)
 
@@ -174,7 +174,7 @@ Plan text says `--quiet` is ignored in TUI mode, but the current CLI uses `--qui
 - **Port randomization**: `OpenCodeAdapter.create()` now passes `{ hostname: "127.0.0.1", port: 0 }` to `createOpencode()` (OS-assigned ephemeral port; no probe/TOCTOU).
 - **Server URL surface**: `OpenCodeAdapter.serverUrl` returns `server.url`; `AgentAdapter` contract now includes `readonly serverUrl: string`.
 - **Tests**: Adds unit coverage for `serverUrl` shape + non-4096 port assumptions; updates orchestrator mocks for the new adapter interface.
-- **Plan compliance**: Phase 1 checklist in `docs/development/004-impl-5x-cli-tui.md` is marked complete.
+- **Plan compliance**: Phase 1 checklist in `5x-cli/docs/development/004-impl-5x-cli-tui.md` is marked complete.
 
 ### Assessment
 
@@ -280,7 +280,7 @@ The command layer computes `quiet: effectiveQuiet || tui.active` once. If the TU
 - **P0.5 (spurious headless “TUI exited”)**: Fixed by making the no-op controller `onExit` a true no-op and gating handler registration on `isTuiMode` in `5x-cli/src/commands/run.ts`, `5x-cli/src/commands/plan-review.ts`, `5x-cli/src/commands/plan.ts`.
 - **P1.4 (dynamic quiet after TUI exit)**: `quiet` now accepts `boolean | (() => boolean)` in `5x-cli/src/orchestrator/phase-execution-loop.ts` and `5x-cli/src/orchestrator/plan-review-loop.ts`; command layer passes `() => effectiveQuiet || tui.active`.
 - **P1.5 (missing `opencode` binary)**: `createTuiController()` catches spawn errors and falls back to headless with a warning; `_spawner` injection makes it testable (`5x-cli/src/tui/controller.ts`).
-- **P2 (adapter coupling)**: Called out explicitly as future work in `docs/development/004-impl-5x-cli-tui.md` (tracks the risk intentionally).
+- **P2 (adapter coupling)**: Called out explicitly as future work in `5x-cli/docs/development/004-impl-5x-cli-tui.md` (tracks the risk intentionally).
 - **Correctness (escalation continue)**: Escalation “continue” now resumes the originating state instead of hard-resetting to EXECUTE/REVIEW (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`).
 
 ### Remaining concerns
@@ -379,7 +379,7 @@ The command layer computes `quiet: effectiveQuiet || tui.active` once. If the TU
 - **No-progress loop prevention (P1)**: Auto mode no longer blindly resumes runs stuck in `ESCALATE` or `ABORTED`. Instead it deterministically `start-fresh`, preventing repeated immediate aborts (`5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/src/orchestrator/plan-review-loop.ts`).
 - **Operability/audit trail**: Records an `auto_start_fresh` run event on the old run with a reason string, improving postmortem/debuggability.
 - **Tests**: Adds coverage for both loops for ESCALATE and ABORTED cases, including validating the audit event is recorded (`5x-cli/test/orchestrator/phase-execution-loop.test.ts`, `5x-cli/test/orchestrator/plan-review-loop.test.ts`).
-- **Plan alignment**: Implementation plan updated to v1.7 describing this policy (`docs/development/004-impl-5x-cli-tui.md`).
+- **Plan alignment**: Implementation plan updated to v1.7 describing this policy (`5x-cli/docs/development/004-impl-5x-cli-tui.md`).
 
 ### Remaining concerns
 

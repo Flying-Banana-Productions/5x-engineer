@@ -5,7 +5,7 @@
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `bun test` PASS (104 tests); `bun run typecheck` PASS; `bun run lint` FAIL (Biome)
 
-**Implementation plan:** `docs/development/001-impl-5x-cli.md`  \
+**Implementation plan:** `5x-cli/docs/development/001-impl-5x-cli.md`  \
 **Technical design:** N/A
 
 ## Summary

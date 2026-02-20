@@ -5,8 +5,8 @@
 **Reviewer:** Staff engineer (correctness, architecture, tenancy/security, performance, operability, test strategy)  \
 **Local verification:** `bun test --concurrent --dots` (pass: 444, skip: 1, fail: 0)
 
-**Implementation plan:** `docs/development/005-impl-console-output-cleanup.md`  \
-**Technical design / related docs:** `docs/development/002-impl-realtime-agent-logs.md`, `docs/development/003-impl-5x-cli-opencode.md`, `docs/development/004-impl-5x-cli-tui.md`
+**Implementation plan:** `5x-cli/docs/development/005-impl-console-output-cleanup.md`  \
+**Technical design / related docs:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md`, `5x-cli/docs/development/003-impl-5x-cli-opencode.md`, `5x-cli/docs/development/004-impl-5x-cli-tui.md`
 
 ## Summary
 
@@ -111,4 +111,4 @@ Unit tests are strong, but the riskiest behavior is in the adapter loop (interle
 - **Phase 2 completion:** ✅
 - **Ready for Phase 3:** ✅ — proceed; fix the truncation shim floor opportunistically while wiring StreamWriter.
 
-Phase 3 review: `docs/development/reviews/2026-02-20-005-console-output-cleanup-phase-3-implementation-review.md`.
+Phase 3 review: `5x-cli/docs/development/reviews/2026-02-20-005-console-output-cleanup-phase-3-implementation-review.md`.

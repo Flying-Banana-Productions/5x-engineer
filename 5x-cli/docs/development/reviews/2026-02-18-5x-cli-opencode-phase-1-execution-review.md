@@ -1,12 +1,12 @@
 # Review: 5x CLI OpenCode Refactor — Phase 1 Execution
 
 **Review type:** `ce61bca62f`  \
-**Scope:** Phase 1 of `docs/development/003-impl-5x-cli-opencode.md` (Prune Claude Code harness; SDK install; config + type surface prep)  \
+**Scope:** Phase 1 of `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Prune Claude Code harness; SDK install; config + type surface prep)  \
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, operability, test strategy)  \
 **Local verification:** `bun test --concurrent --dots` (301 pass); `bun run typecheck` (pass)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md` (Phase 1)  \
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Phase 1)  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline)
 
 ## Summary
 
@@ -87,7 +87,7 @@ With `createAndVerifyAdapter()` throwing, `5x plan`, `5x plan-review`, and `5x r
 
 - **P0.1 init config correctness:** `5x-cli/src/commands/init.ts` now generates schema-valid config (no adapter fields; model examples + local-only note).
 - **P1.2 CLI adapter init UX:** `5x-cli/src/commands/plan.ts`, `5x-cli/src/commands/plan-review.ts`, and `5x-cli/src/commands/run.ts` catch the expected Phase 1 “adapter unavailable” condition and emit a single user-facing error (no stack trace).
-- **P1.1 plan/implementation alignment:** `docs/development/003-impl-5x-cli-opencode.md` now explicitly defers `makeOnEvent()` removal to Phase 4 (matches the current legacy-orchestrator reality).
+- **P1.1 plan/implementation alignment:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` now explicitly defers `makeOnEvent()` removal to Phase 4 (matches the current legacy-orchestrator reality).
 
 ### Remaining concerns
 

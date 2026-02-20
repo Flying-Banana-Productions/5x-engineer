@@ -384,7 +384,7 @@ export function parseReviewSummary(markdown: string): ReviewSummary { ... }
 ### 1.6 `src/commands/status.ts` — Plan status display
 
 ```
-$ 5x status docs/development/525-impl-onboarding-progress-tracker.md
+$ 5x status 5x-cli/docs/development/525-impl-onboarding-progress-tracker.md
 
   Onboarding Progress Tracker (v1.5)
   Status: Phases 1–4 complete; Phase 5 ready
@@ -670,7 +670,7 @@ export interface FiveXConfig {
 Update `5x status <plan-path>` to show active run information from the database when available.
 
 ```
-$ 5x status docs/development/001-impl-5x-cli.md
+$ 5x status 5x-cli/docs/development/001-impl-5x-cli.md
 
   5x CLI — Automated Author-Review Loop Runner (v1.3)
   Status: Phase 1 complete; Phase 1.1 ready
@@ -697,7 +697,7 @@ $ 5x status docs/development/001-impl-5x-cli.md
 
 ### 1.1.7 Fix failing tests
 
-- [x] Update stale assertions in `test/parsers/plan.test.ts` — tests hardcode expectations against `docs/development/001-impl-5x-cli.md` which has progressed since initial implementation. Either update expected values or use a dedicated test fixture file instead of the live plan.
+- [x] Update stale assertions in `test/parsers/plan.test.ts` — tests hardcode expectations against `5x-cli/docs/development/001-impl-5x-cli.md` which has progressed since initial implementation. Either update expected values or use a dedicated test fixture file instead of the live plan.
 
 ---
 
@@ -990,13 +990,13 @@ The CLI computes a deterministic target plan path before invoking the agent and 
 $ 5x plan docs/workflows/370-court-time-allocation-reporting.md
 
   Generating implementation plan from PRD...
-  Target: docs/development/720-impl-court-time-allocation-reporting.md
+  Target: 5x-cli/docs/development/720-impl-court-time-allocation-reporting.md
   Author (claude-opus-4-6) .............. done (38s)
   
-  Created: docs/development/720-impl-court-time-allocation-reporting.md
+  Created: 5x-cli/docs/development/720-impl-court-time-allocation-reporting.md
   Phases: 5
   
-  Next: 5x plan-review docs/development/720-impl-court-time-allocation-reporting.md
+  Next: 5x plan-review 5x-cli/docs/development/720-impl-court-time-allocation-reporting.md
 ```
 
 Target path computation: `<config.paths.plans>/<next-sequence-number>-impl-<slug-from-prd>.md`. User can override with `--out <path>`. If the computed path already exists (e.g., parallel runs), auto-increment the sequence number until a free path is found. If the slug is empty (e.g., numeric-only filename), falls back to `"plan"`.
@@ -1332,19 +1332,19 @@ export async function escalationGate(event: EscalationEvent): Promise<Escalation
 ### 5.6 `src/commands/worktree.ts` — Worktree management
 
 ```
-$ 5x worktree status docs/development/001-impl-5x-cli.md
+$ 5x worktree status 5x-cli/docs/development/001-impl-5x-cli.md
   Plan: 001-impl-5x-cli
   Worktree: .5x/worktrees/5x/001-impl-5x-cli
   Branch: 5x/001-impl-5x-cli
 
-$ 5x worktree cleanup docs/development/001-impl-5x-cli.md
+$ 5x worktree cleanup 5x-cli/docs/development/001-impl-5x-cli.md
   Checking worktree .5x/worktrees/5x/001-impl-5x-cli...
   Worktree is clean.
   Removing worktree...
   Branch 5x/001-impl-5x-cli retained (use --delete-branch to remove).
   Cleared plan worktree association from DB.
 
-$ 5x worktree cleanup docs/development/001-impl-5x-cli.md --delete-branch
+$ 5x worktree cleanup 5x-cli/docs/development/001-impl-5x-cli.md --delete-branch
   Checking worktree .5x/worktrees/5x/001-impl-5x-cli...
   Worktree is clean.
   Branch 5x/001-impl-5x-cli is fully merged.
@@ -1422,7 +1422,7 @@ $ 5x history
   def456   001-impl-5x-cli          plan-review  completed  8m        —       3
   ghi789   002-impl-metrics         run          aborted    45m       1/4     5
 
-$ 5x history docs/development/001-impl-5x-cli.md
+$ 5x history 5x-cli/docs/development/001-impl-5x-cli.md
   Runs for 001-impl-5x-cli:
 
   Run abc123 (5x run, completed 2h ago):

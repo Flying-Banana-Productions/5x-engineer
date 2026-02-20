@@ -1,12 +1,12 @@
 # Review: 5x CLI OpenCode Refactor — Phase 2 Execution
 
 **Review type:** `9bdd7c2523`  \
-**Scope:** Phase 2 of `docs/development/003-impl-5x-cli-opencode.md` (structured protocol types + invariant validators; DB schema v2 for structured results; legacy signal parser relocation)  \
+**Scope:** Phase 2 of `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (structured protocol types + invariant validators; DB schema v2 for structured results; legacy signal parser relocation)  \
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, operability, test strategy)  \
 **Local verification:** `bun test` (293 pass, 1 skip)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md` (Phase 2)  \
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Phase 2)  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline)
 
 ## Summary
 
@@ -93,7 +93,7 @@ In `QUALITY_RETRY`, status is parsed and persisted but not used for routing (e.g
 
 ## Phase alignment / next-phase readiness
 
-**Implementation plan phase(s):** `docs/development/003-impl-5x-cli-opencode.md` Phase 2
+**Implementation plan phase(s):** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` Phase 2
 
 ### Updated readiness
 

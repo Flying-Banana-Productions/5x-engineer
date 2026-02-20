@@ -1,12 +1,12 @@
 # Review: 5x CLI — OpenCode-First Refactor (Plan)
 
-**Review type:** `docs/development/003-impl-5x-cli-opencode.md`  \
+**Review type:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md`  \
 **Scope:** Remove Claude Code harness; OpenCode SDK adapter; structured output protocol; orchestrator/DB refactor; reporting/polish  \
 **Reviewer:** Staff engineer (correctness, operability, security, incremental delivery)  \
 **Local verification:** Not run (static review: docs + repo code)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md`  \
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline system)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md`  \
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline system)
 
 ## Summary
 
@@ -148,7 +148,7 @@ Recommendation: keep writing a compact, single-line JSON blob in an HTML comment
 
 ## Addendum (2026-02-18) — Re-scope for local-only, speed-first refactor
 
-**Reviewed:** `docs/development/003-impl-5x-cli-opencode.md` (v1.0) with additional context: local-only branch, single contributor, DB can be wiped.
+**Reviewed:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (v1.0) with additional context: local-only branch, single contributor, DB can be wiped.
 
 ### Updates to prior feedback
 
@@ -170,7 +170,7 @@ Recommendation: keep writing a compact, single-line JSON blob in an HTML comment
 
 ## Addendum (2026-02-18) — Re-review after plan updates (v1.1)
 
-**Reviewed:** `docs/development/003-impl-5x-cli-opencode.md` (v1.1)
+**Reviewed:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (v1.1)
 
 ### What's addressed (✅)
 
@@ -197,7 +197,7 @@ Recommendation: keep writing a compact, single-line JSON blob in an HTML comment
 
 ## Addendum (2026-02-18) — Re-review after latest plan updates
 
-**Reviewed:** `docs/development/003-impl-5x-cli-opencode.md` (v1.1, updated)
+**Reviewed:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (v1.1, updated)
 
 ### What's addressed (✅)
 

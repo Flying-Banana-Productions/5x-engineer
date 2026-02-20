@@ -194,7 +194,7 @@ When quiet mode is active (whether by default or flag) and an agent exits non-ze
   - Add `logPath` to `EscalationEvent` type so downstream consumers (human gates, DB events) always have it
 - [x] **P1.3 — Security posture of verbose NDJSON logs:** Document in CLI help/docs that `--verbose` NDJSON logs may contain sensitive data (tool inputs/results including file contents, environment variables, etc.). Ensure `.5x/logs/` directory permissions default to user-only (`0o700`). Add a note to `--quiet` help text: "Log files are always written regardless of quiet mode. Logs may contain sensitive data."
 - [x] Update existing orchestrator tests to account for the new `logStream` and `onEvent` parameters (mock or ignore in `InvokeOptions`)
-- [x] Update `docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
+- [x] Update `5x-cli/docs/development/001-impl-5x-cli.md` to reflect streaming changes: `.ndjson` log extension, `InvokeOptions` extensions, `--quiet` cross-reference, new utility files in Files table
 
 ### Phase 2 Review Corrections (v1.4) ✅
 
@@ -259,7 +259,7 @@ Corrections applied in response to the Phase 2 execution review.
 | `src/orchestrator/plan-review-loop.ts` | Modify | Add log directory, log streams (with finally-block flush) + onEvent at 2 sites, conditional snippets with log path |
 | `src/commands/run.ts` | Modify | Add `--quiet` boolean flag, resolve effective quiet from TTY detection, pass through to orchestrator |
 | `src/commands/plan-review.ts` | Modify | Add `--quiet` boolean flag, resolve effective quiet, pass projectRoot and quiet to loop |
-| `docs/development/001-impl-5x-cli.md` | Modify | Update agent log extension to `.ndjson`, note `InvokeOptions` extensions from 002, add utility files to Files table, `--quiet` cross-reference |
+| `5x-cli/docs/development/001-impl-5x-cli.md` | Modify | Update agent log extension to `.ndjson`, note `InvokeOptions` extensions from 002, add utility files to Files table, `--quiet` cross-reference |
 | `test/agents/claude-code.test.ts` | Modify | NDJSON mock responses, logStream + onEvent tests, non-fatal error tests, bounded memory test, timeout drain cancellation |
 | `test/utils/ndjson-formatter.test.ts` | Create | Formatter unit tests: event type mapping, multi-part content, unknown types, system.init suppression |
 | `test/orchestrator/phase-execution-loop.test.ts` | Modify | Account for logStream in mock adapters, test quiet-mode snippets |

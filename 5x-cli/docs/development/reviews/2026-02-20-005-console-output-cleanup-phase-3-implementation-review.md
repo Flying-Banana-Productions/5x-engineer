@@ -5,8 +5,8 @@
 **Reviewer:** Staff engineer (correctness, architecture, tenancy/security, performance, operability, test strategy)  \
 **Local verification:** `bun test --concurrent --dots`, `bun run lint`, `bun run typecheck` (pass)
 
-**Implementation plan:** `docs/development/005-impl-console-output-cleanup.md`  \
-**Technical design:** `docs/development/002-impl-realtime-agent-logs.md`, `docs/development/003-impl-5x-cli-opencode.md`, `docs/development/004-impl-5x-cli-tui.md`
+**Implementation plan:** `5x-cli/docs/development/005-impl-console-output-cleanup.md`  \
+**Technical design:** `5x-cli/docs/development/002-impl-realtime-agent-logs.md`, `5x-cli/docs/development/003-impl-5x-cli-opencode.md`, `5x-cli/docs/development/004-impl-5x-cli-tui.md`
 
 ## Summary
 
@@ -79,7 +79,7 @@ When `NO_COLOR`/non-TTY, dim sequences are empty strings; enabling `--show-reaso
 
 ## Plan phase mapping + readiness
 
-- **Phase 3 (Integration):** ✅ functionally complete (matches `docs/development/005-impl-console-output-cleanup.md`)
+- **Phase 3 (Integration):** ✅ functionally complete (matches `5x-cli/docs/development/005-impl-console-output-cleanup.md`)
 - **Plan completeness:** No remaining implementation phases; manual smoke test remains the only explicit plan checkbox.
 
 ---

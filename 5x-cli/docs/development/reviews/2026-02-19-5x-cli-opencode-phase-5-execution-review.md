@@ -1,12 +1,12 @@
 # Review: 5x CLI OpenCode Refactor — Phase 5 Execution (Command Layer + Templates)
 
 **Review type:** `e527330c372`  
-**Scope:** Phase 5 of `docs/development/003-impl-5x-cli-opencode.md` (command layer wiring, adapter lifecycle, factory enablement, template protocol updates, legacy type removal)  
+**Scope:** Phase 5 of `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (command layer wiring, adapter lifecycle, factory enablement, template protocol updates, legacy type removal)  
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  
 **Local verification:** `bun test --concurrent --dots` in `5x-cli/` (359 pass, 1 skip)
 
-**Implementation plan:** `docs/development/003-impl-5x-cli-opencode.md` (Phase 5)  
-**Technical design:** `docs/development/001-impl-5x-cli.md` (baseline)
+**Implementation plan:** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` (Phase 5)  
+**Technical design:** `5x-cli/docs/development/001-impl-5x-cli.md` (baseline)
 
 ## Summary
 
@@ -94,7 +94,7 @@ Recommendation: type the parameter as `AdapterConfig` and validate unknown input
 
 ## Phase alignment / next-phase readiness
 
-**Implementation plan phase(s):** `docs/development/003-impl-5x-cli-opencode.md` Phase 5
+**Implementation plan phase(s):** `5x-cli/docs/development/003-impl-5x-cli-opencode.md` Phase 5
 
 - **Phase 5 completion:** ⚠️ — feature-complete, but P0 lifecycle/privacy items must be fixed.
 - **Ready for Phase 6:** ⚠️ — proceed after P0s are addressed.

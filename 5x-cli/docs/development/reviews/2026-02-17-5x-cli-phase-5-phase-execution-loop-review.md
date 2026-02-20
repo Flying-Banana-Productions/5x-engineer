@@ -5,7 +5,7 @@
 **Reviewer:** Staff engineer (correctness, architecture, security/tenancy, performance, operability, test strategy)  \
 **Local verification:** `cd 5x-cli && bun test` PASS (288 pass, 1 skip); `bun run typecheck` PASS; `bun run lint` PASS
 
-**Implementation plan:** `docs/development/001-impl-5x-cli.md`  \
+**Implementation plan:** `5x-cli/docs/development/001-impl-5x-cli.md`  \
 **Technical design:** N/A
 
 ## Summary
@@ -112,14 +112,14 @@ Recommendation: make event logging consistent for every escalation transition; p
 
 ## Readiness assessment vs implementation plan
 
-- **Phase(s) implemented:** Phase 5 in `docs/development/001-impl-5x-cli.md` (Phase Execution Loop).
+- **Phase(s) implemented:** Phase 5 in `5x-cli/docs/development/001-impl-5x-cli.md` (Phase Execution Loop).
 - **Phase 5 completion:** ⚠️ - core loop exists and is tested, but worktree isolation + resume semantics do not meet the phase completion gate.
 - **Ready for next phase (Phase 6: OpenCode Adapter):** ⚠️ - proceed after P0.1/P0.2; Phase 6 will amplify any workdir/path/resume inconsistencies.
 
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
 items:
   - id: p0-1
     title: Map plan/review/log paths into the worktree when --worktree is active
@@ -157,7 +157,7 @@ items:
 - **P1.1 bounded quality output:** quality gates now stream stdout to log files and capture bounded inline output via `BoundedCapture` (prevents stdout OOM in practice) (`5x-cli/src/gates/quality.ts`).
 - **P1.2 phase identity fidelity:** phase columns are now TEXT throughout schema + operations + orchestrators, removing `Number(phase.number)` collisions and preserving labels like `1.10` (`5x-cli/src/db/schema.ts`, `5x-cli/src/db/operations.ts`, `5x-cli/src/orchestrator/*.ts`).
 - **P1.3 operability plumbing:** escalation run_events added for more paths, escalation guidance is plumbed into the next author invocation via `user_notes`, and phase gate summary reads the actual DB verdict (`5x-cli/src/orchestrator/phase-execution-loop.ts`).
-- **P2 polish:** worktree cleanup warns on `--force` data loss; branch relevance warning added at phase start; plan doc updated (`5x-cli/src/commands/worktree.ts`, `5x-cli/src/orchestrator/phase-execution-loop.ts`, `docs/development/001-impl-5x-cli.md`).
+- **P2 polish:** worktree cleanup warns on `--force` data loss; branch relevance warning added at phase start; plan doc updated (`5x-cli/src/commands/worktree.ts`, `5x-cli/src/orchestrator/phase-execution-loop.ts`, `5x-cli/docs/development/001-impl-5x-cli.md`).
 
 ### Remaining concerns
 
@@ -173,7 +173,7 @@ items:
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
 items:
   - id: p1-1
     title: Add a DB migration (or explicit reset detection) for phase columns changing to TEXT
@@ -214,7 +214,7 @@ items:
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready_with_corrections
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
 items:
   - id: p0-1
     title: Await quality gate log stream flush/close before returning to guarantee log artifacts are durable
@@ -250,6 +250,6 @@ items:
 <!-- 5x:verdict
 protocolVersion: 1
 readiness: ready
-reviewPath: docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
+reviewPath: 5x-cli/docs/development/reviews/2026-02-17-5x-cli-phase-5-phase-execution-loop-review.md
 items: []
 -->
