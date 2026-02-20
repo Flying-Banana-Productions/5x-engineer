@@ -96,6 +96,8 @@ export interface PhaseExecutionOptions {
 	 * at the command layer before passing here.
 	 */
 	quiet?: boolean | (() => boolean);
+	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
+	showReasoning?: boolean;
 	/** Override for testing — phase gate prompt. */
 	phaseGate?: (
 		summary: PhaseSummary,
@@ -181,6 +183,7 @@ export async function runPhaseExecutionLoop(
 	const _quietOpt = options.quiet;
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
+	const showReasoning = options.showReasoning ?? false;
 	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
 	const _sink = options._log ?? console.log;
 	const log = (...args: unknown[]) => {
@@ -575,6 +578,7 @@ export async function runPhaseExecutionLoop(
 							workdir,
 							logPath: executeLogPath,
 							quiet: resolveQuiet(),
+							showReasoning,
 						});
 					} catch (err) {
 						// Hard failure: timeout, network, structured output error
@@ -853,6 +857,7 @@ export async function runPhaseExecutionLoop(
 							workdir,
 							logPath: qrFixLogPath,
 							quiet: resolveQuiet(),
+							showReasoning,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1096,6 +1101,7 @@ export async function runPhaseExecutionLoop(
 							workdir,
 							logPath: reviewLogPath,
 							quiet: resolveQuiet(),
+							showReasoning,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1362,6 +1368,7 @@ export async function runPhaseExecutionLoop(
 							workdir,
 							logPath: autoFixLogPath,
 							quiet: resolveQuiet(),
+							showReasoning,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {

@@ -114,6 +114,12 @@ export default defineCommand({
 				"Disable TUI mode — use headless output even in an interactive terminal",
 			default: false,
 		},
+		"show-reasoning": {
+			type: "boolean",
+			description:
+				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
+			default: false,
+		},
 	},
 	async run({ args }) {
 		const prdPath = resolve(args.path);
@@ -268,6 +274,7 @@ export default defineCommand({
 				workdir: projectRoot,
 				logPath,
 				quiet: effectiveQuiet || tui.active,
+				showReasoning: args["show-reasoning"],
 			});
 
 			if (!tui.active) {

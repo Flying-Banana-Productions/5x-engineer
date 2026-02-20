@@ -33,6 +33,9 @@ export interface InvokeOptions {
 	/** Suppress console output; log file still written. */
 	quiet?: boolean;
 
+	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
+	showReasoning?: boolean;
+
 	/** Timeout in milliseconds. Default: 300_000 (5 min). */
 	timeout?: number;
 

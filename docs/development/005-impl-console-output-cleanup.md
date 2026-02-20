@@ -479,7 +479,7 @@ removes it when StreamWriter takes over.
 
 ---
 
-## Phase 3: Integration — wire StreamWriter into the event consumer
+## Phase 3: Integration — wire StreamWriter into the event consumer ✓ COMPLETE
 
 **Completion gate:** All tests pass, `bun run lint` and `bun run typecheck` clean. Running `5x run --auto` in headless mode shows the new output format.
 
@@ -532,15 +532,15 @@ if (formatted != null) {
 writer?.destroy();
 ```
 
-- [ ] Create `StreamWriter` instance when `!quiet`
-- [ ] Track `reasoningPartIds` set (register on `message.part.updated` with `part.type === "reasoning"`)
-- [ ] Route text deltas to `writer.writeText()`
-- [ ] Route reasoning deltas to `writer.writeThinking()` only when `opts.showReasoning` is true
-- [ ] Route formatted events to `writer.writeLine()` with dim flag
-- [ ] Remove `streamingLine` flag (StreamWriter handles this)
-- [ ] Remove temporary 2-space indent from Phase 2 shim
-- [ ] Call `writer.destroy()` in finally block
-- [ ] Suppress reasoning deltas gracefully when `reasoningPartIds` is empty (model doesn't emit reasoning)
+- [x] Create `StreamWriter` instance when `!quiet`
+- [x] Track `reasoningPartIds` set (register on `message.part.updated` with `part.type === "reasoning"`)
+- [x] Route text deltas to `writer.writeText()`
+- [x] Route reasoning deltas to `writer.writeThinking()` only when `opts.showReasoning` is true
+- [x] Route formatted events to `writer.writeLine()` with dim flag
+- [x] Remove `streamingLine` flag (StreamWriter handles this)
+- [x] Remove temporary 2-space indent from Phase 2 shim
+- [x] Call `writer.destroy()` in finally block
+- [x] Suppress reasoning deltas gracefully when `reasoningPartIds` is empty (model doesn't emit reasoning)
 
 ### 3.2 `--show-reasoning` CLI flag
 
@@ -549,9 +549,9 @@ Thread a `showReasoning` boolean through `opts` from the CLI argument parser to
 IDs are still tracked (for future use / log completeness) but deltas for those
 parts are not routed to the writer.
 
-- [ ] Add `--show-reasoning` to CLI argument parser
-- [ ] Thread `showReasoning: boolean` through opts to `writeEventsToLog()`
-- [ ] Default: `false` (reasoning suppressed, matching current behavior)
+- [x] Add `--show-reasoning` to CLI argument parser
+- [x] Thread `showReasoning: boolean` through opts to `writeEventsToLog()`
+- [x] Default: `false` (reasoning suppressed, matching current behavior)
 
 ### 3.3 Tests
 
@@ -561,21 +561,21 @@ Feeds a synthetic SSE event stream through the rendering code path and asserts
 on captured output. Uses injectable writer to capture all output without
 touching real stdout.
 
-- [ ] Step-finish events are suppressed (no output)
-- [ ] Tool running events produce single-line dim output
-- [ ] Tool completed events produce single-line dim output (newlines collapsed)
-- [ ] Tool error events produce single-line non-dim output with `!` prefix
-- [ ] Text deltas are word-wrapped at the configured width
-- [ ] Text deltas preserve leading whitespace and newlines from the model
-- [ ] Fenced code blocks in text deltas are not word-wrapped
-- [ ] Reasoning deltas are suppressed when `showReasoning` is false
-- [ ] Reasoning deltas produce dim output when `showReasoning` is true
+- [x] Step-finish events are suppressed (no output)
+- [x] Tool running events produce single-line dim output
+- [x] Tool completed events produce single-line dim output (newlines collapsed)
+- [x] Tool error events produce single-line non-dim output with `!` prefix
+- [x] Text deltas are word-wrapped at the configured width
+- [x] Text deltas preserve leading whitespace and newlines from the model
+- [x] Fenced code blocks in text deltas are not word-wrapped
+- [x] Reasoning deltas are suppressed when `showReasoning` is false
+- [x] Reasoning deltas produce dim output when `showReasoning` is true
 
 ### 3.4 Verify end-to-end
 
-- [ ] Run `bun test --concurrent --dots` — all tests pass
-- [ ] Run `bun run lint` — no warnings
-- [ ] Run `bun run typecheck` — no errors
+- [x] Run `bun test --concurrent --dots` — all tests pass
+- [x] Run `bun run lint` — no warnings
+- [x] Run `bun run typecheck` — no errors
 - [ ] Manual smoke test: `5x run --auto` on a test plan, verify output format
 
 ---

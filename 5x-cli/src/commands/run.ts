@@ -67,6 +67,12 @@ export default defineCommand({
 				"Disable TUI mode — use headless output even in an interactive terminal",
 			default: false,
 		},
+		"show-reasoning": {
+			type: "boolean",
+			description:
+				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
+			default: false,
+		},
 	},
 	async run({ args }) {
 		const planPath = resolve(args.path);
@@ -304,6 +310,7 @@ export default defineCommand({
 					// effectivePlanPath may be remapped to a worktree; canonical
 					// stays consistent so resume/history lookups always match.
 					canonicalPlanPath: canonical,
+					showReasoning: args["show-reasoning"],
 				},
 			);
 

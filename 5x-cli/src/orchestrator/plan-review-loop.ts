@@ -101,6 +101,8 @@ export interface PlanReviewLoopOptions {
 	 * at the command layer before passing here.
 	 */
 	quiet?: boolean | (() => boolean);
+	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
+	showReasoning?: boolean;
 	/** Override for testing — supply a function that prompts for human decisions. */
 	humanGate?: (
 		event: EscalationEvent,
@@ -281,6 +283,7 @@ export async function runPlanReviewLoop(
 	const _quietOpt = options.quiet;
 	const resolveQuiet: () => boolean =
 		typeof _quietOpt === "function" ? _quietOpt : () => _quietOpt ?? false;
+	const showReasoning = options.showReasoning ?? false;
 	/** Quiet-gated log: suppresses stdout when TUI is active (quiet=true). */
 	const _sink = options._log ?? console.log;
 	const log = (...args: unknown[]) => {
@@ -549,6 +552,7 @@ export async function runPlanReviewLoop(
 						workdir,
 						logPath: reviewLogPath,
 						quiet: resolveQuiet(),
+						showReasoning,
 					});
 				} catch (err) {
 					const event: EscalationEvent = {
@@ -778,6 +782,7 @@ export async function runPlanReviewLoop(
 						workdir,
 						logPath: authorLogPath,
 						quiet: resolveQuiet(),
+						showReasoning,
 					});
 				} catch (err) {
 					const event: EscalationEvent = {

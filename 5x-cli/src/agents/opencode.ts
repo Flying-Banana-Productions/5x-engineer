@@ -27,6 +27,7 @@ import {
 } from "../protocol.js";
 import { formatSseEvent } from "../utils/sse-formatter.js";
 import { endStream } from "../utils/stream.js";
+import { StreamWriter } from "../utils/stream-writer.js";
 import type {
 	AgentAdapter,
 	InvokeOptions,
@@ -115,7 +116,7 @@ async function writeEventsToLog(
 	sessionId: string,
 	logPath: string,
 	abortSignal: AbortSignal,
-	opts: { quiet?: boolean },
+	opts: { quiet?: boolean; showReasoning?: boolean },
 ): Promise<void> {
 	// Ensure log directory exists with restricted permissions (logs may contain
 	// sensitive content — enforce 0700 so they are not group/world-readable).
@@ -140,20 +141,24 @@ async function writeEventsToLog(
 		}
 	});
 
+	// Create StreamWriter for console output when not quiet
+	let writer: StreamWriter | undefined;
+	if (!opts.quiet) {
+		writer = new StreamWriter({
+			width: process.stdout.columns || 80,
+		});
+	}
+
 	try {
 		// P0.1: pass signal to subscribe so the SSE connection terminates on abort
 		const { stream } = await client.event.subscribe(undefined, {
 			signal: abortSignal,
 		});
 
-		// Track which part IDs are text parts so we only stream deltas for text,
-		// not reasoning tokens or other part types (which arrive as delta events
-		// but should not be printed inline).
+		// Track which part IDs are text/reasoning parts so we route deltas
+		// to the correct StreamWriter method.
 		const textPartIds = new Set<string>();
-		// Whether we are currently mid-stream (a delta was written without a
-		// trailing newline yet). Used to terminate the line before the next
-		// formatted event.
-		let streamingLine = false;
+		const reasoningPartIds = new Set<string>();
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
@@ -170,61 +175,49 @@ async function writeEventsToLog(
 			logStream.write(`${line}\n`);
 
 			// Console output (when not quiet)
-			if (!opts.quiet) {
+			if (writer) {
 				const ev = event as Record<string, unknown>;
 				const type = ev.type as string | undefined;
 				const props = ev.properties as Record<string, unknown> | undefined;
 
-				// Register text parts so we know which delta events to stream.
+				// Register text and reasoning parts so we know which delta events to route.
 				if (type === "message.part.updated" && props) {
 					const part = props.part as Record<string, unknown> | undefined;
 					if (part?.type === "text") {
 						const pid = part.id as string | undefined;
 						if (pid) textPartIds.add(pid);
 					}
+					if (part?.type === "reasoning") {
+						const pid = part.id as string | undefined;
+						if (pid) reasoningPartIds.add(pid);
+					}
 				}
 
-				// Delta events: write inline (no newline) to build up a continuous
-				// line of streaming text. Only emit for known text parts — reasoning
-				// tokens and other part types are suppressed.
+				// Delta events: route to StreamWriter for word-wrapped streaming.
 				if (type === "message.part.delta" && props) {
 					const partId = props.partID as string | undefined;
 					const delta = props.delta as string | undefined;
-					if (partId && textPartIds.has(partId) && delta) {
-						if (!streamingLine) {
-							// Indent the first token of a new streaming line
-							process.stdout.write("  ");
+					if (partId && delta) {
+						if (textPartIds.has(partId)) {
+							writer.writeText(delta);
+							continue;
 						}
-						process.stdout.write(delta);
-						streamingLine = true;
-						continue;
+						// Only route reasoning when --show-reasoning is active
+						if (opts.showReasoning && reasoningPartIds.has(partId)) {
+							writer.writeThinking(delta);
+							continue;
+						}
 					}
-					// Non-text delta (reasoning etc.) — suppress, skip formatted path
+					// Non-text/non-reasoning delta — suppress
 					continue;
 				}
 
-				// Any non-delta event: terminate the current streaming line first
-				if (streamingLine) {
-					process.stdout.write("\n");
-					streamingLine = false;
-				}
-
+				// Formatted events: single-line output via writeLine
 				const formatted = formatSseEvent(event);
 				if (formatted != null) {
-					// Temporary truncation shim until Phase 3 wires StreamWriter.writeLine()
-					const maxLen = Math.max(4, (process.stdout.columns || 80) - 2);
-					const text =
-						formatted.text.length > maxLen
-							? `${formatted.text.slice(0, maxLen - 3)}...`
-							: formatted.text;
-					process.stdout.write(`  ${text}\n`);
+					writer.writeLine(formatted.text, { dim: formatted.dim });
 				}
 			}
-		}
-
-		// Terminate any trailing streaming line
-		if (!opts.quiet && streamingLine) {
-			process.stdout.write("\n");
 		}
 	} catch (err) {
 		// Stream errors are expected on abort — suppress them
@@ -234,6 +227,7 @@ async function writeEventsToLog(
 			);
 		}
 	} finally {
+		writer?.destroy();
 		await endStream(logStream);
 	}
 }
@@ -402,7 +396,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			sessionId,
 			opts.logPath,
 			sseController.signal,
-			{ quiet: opts.quiet },
+			{ quiet: opts.quiet, showReasoning: opts.showReasoning },
 		);
 
 		try {
