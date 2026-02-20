@@ -1019,6 +1019,94 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("auto mode starts fresh instead of resuming ESCALATE state", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			// Create an active run stuck at ESCALATE
+			const stuckRunId = "escalate-stuck-1234";
+			createRun(db, {
+				id: stuckRunId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, stuckRunId, "active", "ESCALATE", "1");
+
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc123" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			// auto=true, no resumeGate → should detect ESCALATE and start fresh
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			// Should NOT have resumed the stuck run
+			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.complete).toBe(true);
+
+			// Audit trail: auto_start_fresh event on the old run
+			const events = getRunEvents(db, stuckRunId);
+			const freshEvent = events.find(
+				(e) => e.event_type === "auto_start_fresh",
+			);
+			expect(freshEvent).toBeDefined();
+			const data = JSON.parse(freshEvent?.data as string);
+			expect(data.reason).toContain("ESCALATE");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode starts fresh instead of resuming ABORTED state", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const stuckRunId = "aborted-stuck-5678";
+			createRun(db, {
+				id: stuckRunId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, stuckRunId, "active", "ABORTED", "1");
+
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc123" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.complete).toBe(true);
+
+			const events = getRunEvents(db, stuckRunId);
+			const freshEvent = events.find(
+				(e) => e.event_type === "auto_start_fresh",
+			);
+			expect(freshEvent).toBeDefined();
+			const data = JSON.parse(freshEvent?.data as string);
+			expect(data.reason).toContain("ABORTED");
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("worktree mode: logBaseDir anchored to projectRoot, not planPath", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

@@ -209,10 +209,28 @@ export async function runPhaseExecutionLoop(
 		// with TUI mode (child owns terminal) and unattended CI flows.
 		let resumeDecision: "resume" | "start-fresh" | "abort";
 		if (options.auto && !options.resumeGate) {
-			resumeDecision = "resume";
-			log(
-				`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (phase ${activeRun.current_phase ?? "?"}, state ${activeRun.current_state ?? "EXECUTE"})`,
-			);
+			const savedState = activeRun.current_state ?? "EXECUTE";
+			// ESCALATE and ABORTED are terminal in auto mode — resuming would
+			// immediately re-abort, creating a no-progress loop.  Start fresh.
+			if (savedState === "ESCALATE" || savedState === "ABORTED") {
+				resumeDecision = "start-fresh";
+				log(
+					`  Auto mode: run ${activeRun.id.slice(0, 8)} stuck at ${savedState} — starting fresh`,
+				);
+				appendRunEvent(db, {
+					runId: activeRun.id,
+					eventType: "auto_start_fresh",
+					phase: activeRun.current_phase ?? undefined,
+					data: {
+						reason: `Resumed state ${savedState} is terminal in auto mode`,
+					},
+				});
+			} else {
+				resumeDecision = "resume";
+				log(
+					`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (phase ${activeRun.current_phase ?? "?"}, state ${savedState})`,
+				);
+			}
 		} else {
 			const resumeGateFn = options.resumeGate ?? defaultResumeGate;
 			resumeDecision = await resumeGateFn(

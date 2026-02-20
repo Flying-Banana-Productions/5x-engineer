@@ -306,10 +306,27 @@ export async function runPlanReviewLoop(
 		// with TUI mode (child owns terminal) and unattended CI flows.
 		let resumeDecision: "resume" | "start-fresh" | "abort";
 		if (options.auto && !options.resumeGate) {
-			resumeDecision = "resume";
-			log(
-				`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (iteration ${iteration})`,
-			);
+			const savedState = activeRun.current_state ?? "REVIEW";
+			// ESCALATE and ABORTED are terminal in auto mode — resuming would
+			// immediately re-abort, creating a no-progress loop.  Start fresh.
+			if (savedState === "ESCALATE" || savedState === "ABORTED") {
+				resumeDecision = "start-fresh";
+				log(
+					`  Auto mode: run ${activeRun.id.slice(0, 8)} stuck at ${savedState} — starting fresh`,
+				);
+				appendRunEvent(db, {
+					runId: activeRun.id,
+					eventType: "auto_start_fresh",
+					data: {
+						reason: `Resumed state ${savedState} is terminal in auto mode`,
+					},
+				});
+			} else {
+				resumeDecision = "resume";
+				log(
+					`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (iteration ${iteration})`,
+				);
+			}
 		} else {
 			resumeDecision = await resumeGate(activeRun.id, iteration);
 		}

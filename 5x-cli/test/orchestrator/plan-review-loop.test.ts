@@ -855,6 +855,93 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
+	test("auto mode starts fresh instead of resuming ESCALATE state", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const canonical = canonicalizePlanPath(planPath);
+			const stuckRunId = "escalate-stuck-plan";
+
+			createRun(db, {
+				id: stuckRunId,
+				planPath: canonical,
+				command: "plan-review",
+				reviewPath,
+			});
+			updateRunStatus(db, stuckRunId, "active", "ESCALATE");
+
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			// auto=true, no resumeGate → should detect ESCALATE and start fresh
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{ auto: true, projectRoot: tmp },
+			);
+
+			// Should NOT have resumed the stuck run
+			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.approved).toBe(true);
+
+			// Audit trail: auto_start_fresh event on the old run
+			const events = getRunEvents(db, stuckRunId);
+			const freshEvent = events.find(
+				(e) => e.event_type === "auto_start_fresh",
+			);
+			expect(freshEvent).toBeDefined();
+			const data = JSON.parse(freshEvent?.data as string);
+			expect(data.reason).toContain("ESCALATE");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode starts fresh instead of resuming ABORTED state", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const canonical = canonicalizePlanPath(planPath);
+			const stuckRunId = "aborted-stuck-plan";
+
+			createRun(db, {
+				id: stuckRunId,
+				planPath: canonical,
+				command: "plan-review",
+				reviewPath,
+			});
+			updateRunStatus(db, stuckRunId, "active", "ABORTED");
+
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{ auto: true, projectRoot: tmp },
+			);
+
+			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.approved).toBe(true);
+
+			const events = getRunEvents(db, stuckRunId);
+			const freshEvent = events.find(
+				(e) => e.event_type === "auto_start_fresh",
+			);
+			expect(freshEvent).toBeDefined();
+			const data = JSON.parse(freshEvent?.data as string);
+			expect(data.reason).toContain("ABORTED");
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("resume backward compat: PARSE_VERDICT mapped to REVIEW", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
