@@ -258,3 +258,34 @@ Files: `test/tui/phase4-integration.test.ts` (and new tests in `test/orchestrato
 
 - **Phase 4 completion:** NO
 - **Ready for Phase 5:** NO (Phase 5 UX depends on reliable session focus + notifications)
+
+---
+
+## Addendum (2026-02-20) — Review of Phase 4 fixes (commit ad05511)
+
+**Reviewed:** `ad05511bcf5ae83cf4be8cec8562e826fd6645df` (no follow-on commits)
+
+### Assessment (Staff Eng)
+
+- **Correctness / plan compliance**: The Phase 4 P0 is addressed: session focus can now switch immediately after `session.create()` via `InvokeOptions.onSessionCreated`, and all main call sites pass `sessionTitle` + session-created hook.
+- **Architecture**: The `onSessionCreated` hook is the right adapter-agnostic shape. Remaining coupling smell persists: orchestrators still import `AgentCancellationError` from `src/agents/opencode.ts`.
+- **Operability**: Phase-boundary failure toasts are now emitted on invoke hard-failures; escalation is surfaced in auto mode. Stdout-clean behavior is generally preserved via `quiet` gating.
+- **Test strategy**: Added coverage is directionally good, but the new “Phase 4 integration” tests are mostly contract/simulation and do not assert real call order/arguments through the orchestrators/adapter.
+
+### What’s addressed (✅)
+
+- **P0 session switching timing**: `src/agents/types.ts` adds `onSessionCreated`; `src/agents/opencode.ts` calls it immediately after `session.create()`; `src/orchestrator/phase-execution-loop.ts` and `src/orchestrator/plan-review-loop.ts` pass it to focus the TUI during streaming.
+- **Phase 4 consistency across commands**: `src/commands/plan.ts` now passes `sessionTitle` and focuses the session; plan-review loop now sets session titles and focuses sessions.
+- **Missing failure feedback**: `src/orchestrator/phase-execution-loop.ts` now shows `Phase N failed — <reason>` toasts for author/reviewer/quality-retry/auto-fix invocation failures.
+
+### Remaining concerns
+
+- **P0 cancellation wiring in `plan`**: `src/commands/plan.ts` creates/aborts a `cancelController` on TUI exit, but the `adapter.invokeForStatus()` call does not receive `signal: cancelController.signal`, so the invocation will not cancel. This also makes the “continuing headless” message misleading and can leave the process waiting silently (quiet was computed while TUI was active).
+- **P1 toast boundary + auto-mode approval toast**: `Phase N complete — starting review` currently fires after the phase completes, not at the author→review boundary implied by `docs/development/004-impl-5x-cli-tui.md` Phase 4. Also, auto-mode does not emit an explicit “approved/continuing” toast at `PHASE_GATE` (if that’s still a requirement vs the “complete” toast).
+- **P1 tests don’t lock in behavior**: Add orchestrator-level assertions that `sessionTitle` values are passed into adapter invocations and that `showToast` calls happen at the intended boundaries. Add an adapter unit test with a mocked client proving `onSessionCreated` fires before `session.prompt`.
+- **Best-effort hook semantics**: `src/agents/opencode.ts` currently awaits `opts.onSessionCreated(sessionId)` without a try/catch; if a future callback throws (or is user-supplied), it will fail the entire invocation. This hook should be best-effort.
+
+### Phase readiness
+
+- **Phase 4 completion:** ⚠️ — core session switching + titles + failure toasts are in place; close the `plan` cancellation wiring and harden the Phase 4 tests/toast boundary semantics to fully meet the Phase 4 completion gate.
+- **Ready for Phase 5:** ⚠️ — proceed once Phase 4 is considered complete (Phase 5 UX depends on robust, test-backed TUI orchestration + lifecycle semantics).
