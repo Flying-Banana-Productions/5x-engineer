@@ -49,6 +49,13 @@ export class AgentTimeoutError extends Error {
 	}
 }
 
+export class AgentCancellationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentCancellationError";
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -485,7 +492,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 				if (isTimeout && !isExternalCancel) {
 					throw new AgentTimeoutError(`Agent timed out after ${timeoutMs}ms`);
 				}
-				throw new Error("Agent invocation cancelled");
+				throw new AgentCancellationError("Agent invocation cancelled");
 			}
 			throw err;
 		} finally {

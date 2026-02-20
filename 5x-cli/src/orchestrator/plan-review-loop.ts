@@ -23,6 +23,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
+import { AgentCancellationError } from "../agents/opencode.js";
 import type {
 	AgentAdapter,
 	InvokeStatus,
@@ -568,6 +569,14 @@ export async function runPlanReviewLoop(
 						signal: options.signal,
 					});
 				} catch (err) {
+					// Check for cancellation first
+					if (
+						err instanceof AgentCancellationError ||
+						options.signal?.aborted
+					) {
+						state = "ABORTED";
+						break;
+					}
 					const event: EscalationEvent = {
 						reason: buildEscalationReason(
 							`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -799,6 +808,14 @@ export async function runPlanReviewLoop(
 						signal: options.signal,
 					});
 				} catch (err) {
+					// Check for cancellation first
+					if (
+						err instanceof AgentCancellationError ||
+						options.signal?.aborted
+					) {
+						state = "ABORTED";
+						break;
+					}
 					const event: EscalationEvent = {
 						reason: buildEscalationReason(
 							`Author invocation failed during fix: ${err instanceof Error ? err.message : String(err)}`,

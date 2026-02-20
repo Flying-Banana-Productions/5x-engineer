@@ -33,7 +33,7 @@ export interface PermissionHandler {
 
 export const NON_INTERACTIVE_NO_FLAG_ERROR =
 	"Error: 5x is running non-interactively but no permission policy was specified.\n" +
-	"  Use --auto or --ci to auto-approve all tool permissions, or\n" +
+	"  Use --ci (or --auto where supported) to auto-approve all tool permissions, or\n" +
 	"  ensure stdin is a TTY for interactive mode.";
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { AgentCancellationError } from "../agents/opencode.js";
 import type {
 	AgentAdapter,
 	InvokeStatus,
@@ -594,6 +595,14 @@ export async function runPhaseExecutionLoop(
 							signal: options.signal,
 						});
 					} catch (err) {
+						// Check for cancellation first
+						if (
+							err instanceof AgentCancellationError ||
+							options.signal?.aborted
+						) {
+							state = "ABORTED";
+							break;
+						}
 						// Hard failure: timeout, network, structured output error
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
@@ -874,6 +883,14 @@ export async function runPhaseExecutionLoop(
 							signal: options.signal,
 						});
 					} catch (err) {
+						// Check for cancellation first
+						if (
+							err instanceof AgentCancellationError ||
+							options.signal?.aborted
+						) {
+							state = "ABORTED";
+							break;
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
 								`Author invocation failed during quality fix: ${err instanceof Error ? err.message : String(err)}`,
@@ -1118,6 +1135,14 @@ export async function runPhaseExecutionLoop(
 							signal: options.signal,
 						});
 					} catch (err) {
+						// Check for cancellation first
+						if (
+							err instanceof AgentCancellationError ||
+							options.signal?.aborted
+						) {
+							state = "ABORTED";
+							break;
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
 								`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1386,6 +1411,14 @@ export async function runPhaseExecutionLoop(
 							signal: options.signal,
 						});
 					} catch (err) {
+						// Check for cancellation first
+						if (
+							err instanceof AgentCancellationError ||
+							options.signal?.aborted
+						) {
+							state = "ABORTED";
+							break;
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
 								`Author invocation failed during auto-fix: ${err instanceof Error ? err.message : String(err)}`,
