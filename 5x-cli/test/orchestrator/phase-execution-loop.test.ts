@@ -918,6 +918,107 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("auto mode auto-resumes without calling interactive resume gate", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			// Create an active run at QUALITY_CHECK to trigger resume detection
+			const oldRunId = "auto-resume-test-1234";
+			createRun(db, {
+				id: oldRunId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, oldRunId, "active", "QUALITY_CHECK", "1");
+
+			// Record completed author step (iteration 0)
+			upsertAgentResult(db, {
+				id: "ar-author-0",
+				run_id: oldRunId,
+				phase: "1",
+				iteration: 0,
+				role: "author",
+				template: "author-next-phase",
+				result_type: "status",
+				result_json: JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				}),
+				duration_ms: 1000,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+			});
+
+			// Resume enters QUALITY_CHECK → skips (no gates) → REVIEW → verdict
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			// auto=true, no resumeGate override → should auto-resume (not prompt)
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			// Should have resumed the existing run, not created a new one
+			expect(result.runId).toBe(oldRunId);
+			expect(result.complete).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode still calls explicitly provided resumeGate override", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const oldRunId = "auto-gate-override-1234";
+			createRun(db, {
+				id: oldRunId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, oldRunId, "active", "EXECUTE", "1");
+
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			let resumeGateCalled = false;
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => {
+						resumeGateCalled = true;
+						return "start-fresh";
+					},
+				},
+			);
+
+			// Explicit resumeGate should still be called even in auto mode
+			expect(resumeGateCalled).toBe(true);
+			// start-fresh → new run ID
+			expect(result.runId).not.toBe(oldRunId);
+			expect(result.complete).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("worktree mode: logBaseDir anchored to projectRoot, not planPath", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

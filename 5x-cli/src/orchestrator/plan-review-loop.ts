@@ -301,7 +301,18 @@ export async function runPlanReviewLoop(
 
 	const activeRun = getActiveRun(db, dbPlanPath);
 	if (activeRun && activeRun.command === "plan-review") {
-		const resumeDecision = await resumeGate(activeRun.id, iteration);
+		// In auto mode, deterministically resume without prompting — interactive
+		// resume gates write to stdout and block on stdin, which is incompatible
+		// with TUI mode (child owns terminal) and unattended CI flows.
+		let resumeDecision: "resume" | "start-fresh" | "abort";
+		if (options.auto && !options.resumeGate) {
+			resumeDecision = "resume";
+			log(
+				`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (iteration ${iteration})`,
+			);
+		} else {
+			resumeDecision = await resumeGate(activeRun.id, iteration);
+		}
 
 		if (resumeDecision === "abort") {
 			return {

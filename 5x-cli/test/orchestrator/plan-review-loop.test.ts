@@ -781,6 +781,80 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
+	test("auto mode auto-resumes without calling interactive resume gate", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const canonical = canonicalizePlanPath(planPath);
+
+			createRun(db, {
+				id: "auto-resume-plan",
+				planPath: canonical,
+				command: "plan-review",
+				reviewPath,
+			});
+
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			// auto=true, no resumeGate override → should auto-resume
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{ auto: true, projectRoot: tmp },
+			);
+
+			expect(result.runId).toBe("auto-resume-plan");
+			expect(result.approved).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode still calls explicitly provided resumeGate override", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const canonical = canonicalizePlanPath(planPath);
+
+			createRun(db, {
+				id: "auto-gate-override",
+				planPath: canonical,
+				command: "plan-review",
+				reviewPath,
+			});
+
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			let resumeGateCalled = false;
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					auto: true,
+					projectRoot: tmp,
+					resumeGate: async () => {
+						resumeGateCalled = true;
+						return "start-fresh";
+					},
+				},
+			);
+
+			expect(resumeGateCalled).toBe(true);
+			expect(result.runId).not.toBe("auto-gate-override");
+			expect(result.approved).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("resume backward compat: PARSE_VERDICT mapped to REVIEW", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {

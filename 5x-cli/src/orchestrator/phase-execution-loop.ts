@@ -204,12 +204,23 @@ export async function runPhaseExecutionLoop(
 
 	const activeRun = getActiveRun(db, dbPlanPath);
 	if (activeRun && activeRun.command === "run") {
-		const resumeGateFn = options.resumeGate ?? defaultResumeGate;
-		const resumeDecision = await resumeGateFn(
-			activeRun.id,
-			activeRun.current_phase ?? "0",
-			activeRun.current_state ?? "EXECUTE",
-		);
+		// In auto mode, deterministically resume without prompting — interactive
+		// resume gates write to stdout and block on stdin, which is incompatible
+		// with TUI mode (child owns terminal) and unattended CI flows.
+		let resumeDecision: "resume" | "start-fresh" | "abort";
+		if (options.auto && !options.resumeGate) {
+			resumeDecision = "resume";
+			log(
+				`  Auto mode: resuming interrupted run ${activeRun.id.slice(0, 8)} (phase ${activeRun.current_phase ?? "?"}, state ${activeRun.current_state ?? "EXECUTE"})`,
+			);
+		} else {
+			const resumeGateFn = options.resumeGate ?? defaultResumeGate;
+			resumeDecision = await resumeGateFn(
+				activeRun.id,
+				activeRun.current_phase ?? "0",
+				activeRun.current_state ?? "EXECUTE",
+			);
+		}
 
 		if (resumeDecision === "abort") {
 			return {
