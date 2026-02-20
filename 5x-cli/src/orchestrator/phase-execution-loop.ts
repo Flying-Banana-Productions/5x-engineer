@@ -57,6 +57,7 @@ import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
+import type { TuiController } from "../tui/controller.js";
 import { buildEscalationReason } from "../utils/agent-event-helpers.js";
 import { appendStructuredAuditRecord } from "../utils/audit.js";
 
@@ -124,6 +125,12 @@ export interface PhaseExecutionOptions {
 	 * gracefully, allowing finally blocks to run for cleanup.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * TUI controller for session switching and toast notifications.
+	 * When provided, the orchestrator will call selectSession after each
+	 * session creation and showToast at key phase boundaries.
+	 */
+	tui?: TuiController;
 }
 
 /**
@@ -410,6 +417,14 @@ export async function runPhaseExecutionLoop(
 			data: { phaseNumber: phase.number, phaseTitle: phase.title },
 		});
 
+		// Phase 4: Show toast notification for phase start
+		if (options.tui) {
+			await options.tui.showToast(
+				`Starting Phase ${phase.number} — ${phase.title}`,
+				"info",
+			);
+		}
+
 		// --- Branch relevance warning ---
 		try {
 			const branch = await getCurrentBranch(workdir);
@@ -584,6 +599,8 @@ export async function runPhaseExecutionLoop(
 
 					let authorResult: InvokeStatus;
 					try {
+						// Phase 4: Pass descriptive session title for TUI
+						const sessionTitle = `Phase ${phase.number} — author`;
 						authorResult = await adapter.invokeForStatus({
 							prompt: authorTemplate.prompt,
 							model: config.author.model,
@@ -593,7 +610,12 @@ export async function runPhaseExecutionLoop(
 							quiet: resolveQuiet(),
 							showReasoning,
 							signal: options.signal,
+							sessionTitle,
 						});
+						// Phase 4: Select session in TUI after creation
+						if (options.tui && authorResult.sessionId) {
+							await options.tui.selectSession(authorResult.sessionId, workdir);
+						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -872,6 +894,8 @@ export async function runPhaseExecutionLoop(
 
 					let fixResult: InvokeStatus;
 					try {
+						// Phase 4: Pass descriptive session title for TUI (quality retry)
+						const sessionTitle = `Phase ${phase.number} — revision ${qualityAttempt + 1}`;
 						fixResult = await adapter.invokeForStatus({
 							prompt: qualityFixPrompt,
 							model: config.author.model,
@@ -881,7 +905,12 @@ export async function runPhaseExecutionLoop(
 							quiet: resolveQuiet(),
 							showReasoning,
 							signal: options.signal,
+							sessionTitle,
 						});
+						// Phase 4: Select session in TUI after creation
+						if (options.tui && fixResult.sessionId) {
+							await options.tui.selectSession(fixResult.sessionId, workdir);
+						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -1123,6 +1152,9 @@ export async function runPhaseExecutionLoop(
 
 					let reviewResult: InvokeVerdict;
 					try {
+						// Phase 4: Pass descriptive session title for TUI
+						const reviewIteration = Math.floor(iteration / 2) + 1;
+						const sessionTitle = `Phase ${phase.number} — review ${reviewIteration}`;
 						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
@@ -1133,7 +1165,12 @@ export async function runPhaseExecutionLoop(
 							quiet: resolveQuiet(),
 							showReasoning,
 							signal: options.signal,
+							sessionTitle,
 						});
+						// Phase 4: Select session in TUI after creation
+						if (options.tui && reviewResult.sessionId) {
+							await options.tui.selectSession(reviewResult.sessionId, workdir);
+						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -1400,6 +1437,8 @@ export async function runPhaseExecutionLoop(
 
 					let autoFixResult: InvokeStatus;
 					try {
+						// Phase 4: Pass descriptive session title for TUI (auto-fix)
+						const sessionTitle = `Phase ${phase.number} — revision ${Math.floor(iteration / 2) + 1}`;
 						autoFixResult = await adapter.invokeForStatus({
 							prompt: fixTemplate.prompt,
 							model: config.author.model,
@@ -1409,7 +1448,12 @@ export async function runPhaseExecutionLoop(
 							quiet: resolveQuiet(),
 							showReasoning,
 							signal: options.signal,
+							sessionTitle,
 						});
+						// Phase 4: Select session in TUI after creation
+						if (options.tui && autoFixResult.sessionId) {
+							await options.tui.selectSession(autoFixResult.sessionId, workdir);
+						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -1581,6 +1625,13 @@ export async function runPhaseExecutionLoop(
 
 					if (options.auto) {
 						log(`  Auto mode: escalation — ${lastEscalation.reason}`);
+						// Phase 4: Show toast for escalation
+						if (options.tui) {
+							await options.tui.showToast(
+								`Human required — Phase ${phase.number} escalated`,
+								"error",
+							);
+						}
 						appendRunEvent(db, {
 							runId,
 							eventType: "auto_escalation_abort",
@@ -1664,6 +1715,13 @@ export async function runPhaseExecutionLoop(
 
 					switch (decision) {
 						case "continue":
+							// Phase 4: Show toast for review approved
+							if (options.tui) {
+								await options.tui.showToast(
+									`Phase ${phase.number} approved — continuing`,
+									"success",
+								);
+							}
 							state = "PHASE_COMPLETE";
 							break;
 						case "review":
@@ -1699,6 +1757,14 @@ export async function runPhaseExecutionLoop(
 			iteration,
 			data: { phaseNumber: phase.number, commit: lastCommit },
 		});
+
+		// Phase 4: Show toast for phase complete (auto mode)
+		if (options.tui && options.auto) {
+			await options.tui.showToast(
+				`Phase ${phase.number} complete — starting review`,
+				"success",
+			);
+		}
 
 		log(`  Phase ${phase.number} complete.`);
 

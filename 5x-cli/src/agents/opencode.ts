@@ -336,8 +336,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 		const start = Date.now();
 
 		// 1. Create session (P0.3: pass workdir as directory)
+		// Phase 4: Use descriptive session title if provided, otherwise fallback to generic
+		const sessionTitle = opts.sessionTitle ?? `5x-${resultType}-${Date.now()}`;
 		const sessionResult = await this.client.session.create({
-			title: `5x-${resultType}-${Date.now()}`,
+			title: sessionTitle,
 			...(opts.workdir && { directory: opts.workdir }),
 		});
 		if (sessionResult.error) {

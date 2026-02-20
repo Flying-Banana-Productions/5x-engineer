@@ -782,25 +782,25 @@ prompts. TUI-mode Ctrl-C cancels the orchestrator and runs `finally` cleanup.
 **Goal:** TUI tracks the active session; phase transitions are visible; no
 stdout writes from 5x-cli after TUI attach.
 
-- [ ] Update `OpenCodeAdapter.invokeForStatus()` and `invokeForVerdict()` to
+- [x] Update `OpenCodeAdapter.invokeForStatus()` and `invokeForVerdict()` to
   accept a `sessionTitle?: string` option (forwarded to `session.create()`)
-- [ ] Update all `InvokeOptions` call sites in the orchestrator to pass
+- [x] Update all `InvokeOptions` call sites in the orchestrator to pass
   descriptive titles (see Session Titles table above)
-- [ ] After each `session.create()`, call `tui.selectSession(sessionId, workdir)`
+- [x] After each `session.create()`, call `tui.selectSession(sessionId, workdir)`
   via `TuiController`
-- [ ] Add `tui.showToast()` calls at key orchestrator events (replacing any
+- [x] Add `tui.showToast()` calls at key orchestrator events (replacing any
   `console.log()` calls that would interleave with TUI):
   - Phase start: `"Starting Phase N — <title>"`
   - Phase complete (auto mode): `"Phase N complete — starting review"`
   - Review approved: `"Phase N approved — continuing"`
   - Escalation: `"Human required — Phase N escalated"`
   - Error: `"Phase N failed — <reason>"`
-- [ ] Pass `quiet: () => tuiController.active` to `invokeForStatus`/`invokeForVerdict`
+- [x] Pass `quiet: () => tuiController.active` to `invokeForStatus`/`invokeForVerdict`
   (function form so TUI exit mid-run is reflected; orchestrators already accept
   `boolean | (() => boolean)` as of v1.4)
-- [ ] Verify no `console.log()` / stdout writes from 5x-cli after TUI attach in
+- [x] Verify no `console.log()` / stdout writes from 5x-cli after TUI attach in
   TUI mode (stdout-clean guarantee)
-- [ ] Tests:
+- [x] Tests:
   - Orchestrator passes correct titles to adapter
   - `TuiController.selectSession()` called after each `session.create()`
   - `TuiController.showToast()` called at phase boundaries (mock with recorded calls)

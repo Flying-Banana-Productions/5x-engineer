@@ -45,6 +45,7 @@ import {
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
+import type { TuiController } from "../tui/controller.js";
 import { buildEscalationReason } from "../utils/agent-event-helpers.js";
 import { appendStructuredAuditRecord } from "../utils/audit.js";
 
@@ -124,6 +125,12 @@ export interface PlanReviewLoopOptions {
 	 * gracefully, allowing finally blocks to run for cleanup.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * TUI controller for session switching and toast notifications.
+	 * When provided, the orchestrator will call selectSession after each
+	 * session creation and showToast at key phase boundaries.
+	 */
+	tui?: TuiController;
 }
 
 // ---------------------------------------------------------------------------

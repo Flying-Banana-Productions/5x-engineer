@@ -355,6 +355,8 @@ export default defineCommand({
 					canonicalPlanPath: canonical,
 					showReasoning: args["show-reasoning"],
 					signal: cancelController.signal,
+					// Phase 4: Pass TUI controller for session switching and toasts
+					tui,
 				},
 			);
 
