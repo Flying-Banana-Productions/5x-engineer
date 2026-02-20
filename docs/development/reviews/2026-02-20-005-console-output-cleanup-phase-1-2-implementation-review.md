@@ -110,3 +110,5 @@ Unit tests are strong, but the riskiest behavior is in the adapter loop (interle
 - **Phase 1 completion:** ✅
 - **Phase 2 completion:** ✅
 - **Ready for Phase 3:** ✅ — proceed; fix the truncation shim floor opportunistically while wiring StreamWriter.
+
+Phase 3 review: `docs/development/reviews/2026-02-20-005-console-output-cleanup-phase-3-implementation-review.md`.

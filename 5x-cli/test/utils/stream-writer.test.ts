@@ -323,6 +323,107 @@ describe("StreamWriter — injectable dependencies", () => {
 // Edge cases
 // ---------------------------------------------------------------------------
 
+describe("StreamWriter — width clamping", () => {
+	test("clamps width=0 to MIN_WIDTH", () => {
+		const { writer, output } = capture(0);
+		writer.writeLine("hello world");
+		writer.destroy();
+		// Should not throw; output truncated to MIN_WIDTH (4)
+		expect(output()).toBe("h...\n");
+	});
+
+	test("clamps width=2 to MIN_WIDTH", () => {
+		const { writer, output } = capture(2);
+		writer.writeLine("hello");
+		writer.destroy();
+		expect(output()).toBe("h...\n");
+	});
+
+	test("clamps negative width to MIN_WIDTH", () => {
+		const { writer, output } = capture(-10);
+		writer.writeLine("hello");
+		writer.destroy();
+		expect(output()).toBe("h...\n");
+	});
+
+	test("floors fractional width", () => {
+		const { writer, output } = capture(10.7);
+		writer.writeLine("abcdefghijklmnop");
+		writer.destroy();
+		// width=10 after floor
+		expect(output()).toBe("abcdefg...\n");
+	});
+
+	test("handles NaN width with default 80", () => {
+		const chunks: string[] = [];
+		const writer = new StreamWriter({
+			width: Number.NaN,
+			writer: (s: string) => chunks.push(s),
+			ansi: NO_ANSI,
+		});
+		writer.writeLine("test");
+		writer.destroy();
+		expect(chunks.join("")).toBe("test\n");
+	});
+
+	test("handles Infinity width with default 80", () => {
+		const chunks: string[] = [];
+		const writer = new StreamWriter({
+			width: Number.POSITIVE_INFINITY,
+			writer: (s: string) => chunks.push(s),
+			ansi: NO_ANSI,
+		});
+		writer.writeLine("test");
+		writer.destroy();
+		expect(chunks.join("")).toBe("test\n");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Thinking prefix (no-ANSI fallback)
+// ---------------------------------------------------------------------------
+
+describe("StreamWriter — thinking prefix (no-ANSI)", () => {
+	test("emits > prefix on each reasoning line when color disabled", () => {
+		const { writer, output } = capture(40, NO_ANSI);
+		writer.writeThinking("line one\nline two");
+		writer.destroy();
+		expect(output()).toBe("> line one\n> line two\n");
+	});
+
+	test("no > prefix when color enabled (dim is sufficient)", () => {
+		const { writer, output } = capture(40, DIM_ANSI);
+		writer.writeThinking("thinking");
+		writer.destroy();
+		const out = output();
+		expect(out).not.toContain("> ");
+		expect(out).toContain("thinking");
+	});
+
+	test("> prefix emitted on wrap-inserted newlines", () => {
+		const { writer, output } = capture(20, NO_ANSI);
+		writer.writeThinking("one two three four five six");
+		writer.destroy();
+		const lines = output()
+			.split("\n")
+			.filter((l) => l.length > 0);
+		for (const line of lines) {
+			expect(line.startsWith("> ")).toBe(true);
+		}
+	});
+
+	test("prefix stops after style transitions back to text", () => {
+		const { writer, output } = capture(40, NO_ANSI);
+		writer.writeThinking("reason");
+		writer.writeText("\nnormal text");
+		writer.destroy();
+		const out = output();
+		expect(out).toContain("> reason");
+		expect(out).not.toContain("> normal text");
+		expect(out).toContain("normal text");
+	});
+});
+
 describe("StreamWriter — edge cases", () => {
 	test("empty delta does not produce output", () => {
 		const { writer, output } = capture(40);

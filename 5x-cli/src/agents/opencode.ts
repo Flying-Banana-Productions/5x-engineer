@@ -25,7 +25,10 @@ import {
 	type ReviewerVerdict,
 	ReviewerVerdictSchema,
 } from "../protocol.js";
-import { formatSseEvent } from "../utils/sse-formatter.js";
+import {
+	createEventRouterState,
+	routeEventToWriter,
+} from "../utils/event-router.js";
 import { endStream } from "../utils/stream.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import type {
@@ -155,10 +158,7 @@ async function writeEventsToLog(
 			signal: abortSignal,
 		});
 
-		// Track which part IDs are text/reasoning parts so we route deltas
-		// to the correct StreamWriter method.
-		const textPartIds = new Set<string>();
-		const reasoningPartIds = new Set<string>();
+		const routerState = writer ? createEventRouterState() : undefined;
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
@@ -175,48 +175,10 @@ async function writeEventsToLog(
 			logStream.write(`${line}\n`);
 
 			// Console output (when not quiet)
-			if (writer) {
-				const ev = event as Record<string, unknown>;
-				const type = ev.type as string | undefined;
-				const props = ev.properties as Record<string, unknown> | undefined;
-
-				// Register text and reasoning parts so we know which delta events to route.
-				if (type === "message.part.updated" && props) {
-					const part = props.part as Record<string, unknown> | undefined;
-					if (part?.type === "text") {
-						const pid = part.id as string | undefined;
-						if (pid) textPartIds.add(pid);
-					}
-					if (part?.type === "reasoning") {
-						const pid = part.id as string | undefined;
-						if (pid) reasoningPartIds.add(pid);
-					}
-				}
-
-				// Delta events: route to StreamWriter for word-wrapped streaming.
-				if (type === "message.part.delta" && props) {
-					const partId = props.partID as string | undefined;
-					const delta = props.delta as string | undefined;
-					if (partId && delta) {
-						if (textPartIds.has(partId)) {
-							writer.writeText(delta);
-							continue;
-						}
-						// Only route reasoning when --show-reasoning is active
-						if (opts.showReasoning && reasoningPartIds.has(partId)) {
-							writer.writeThinking(delta);
-							continue;
-						}
-					}
-					// Non-text/non-reasoning delta — suppress
-					continue;
-				}
-
-				// Formatted events: single-line output via writeLine
-				const formatted = formatSseEvent(event);
-				if (formatted != null) {
-					writer.writeLine(formatted.text, { dim: formatted.dim });
-				}
+			if (writer && routerState) {
+				routeEventToWriter(event, writer, routerState, {
+					showReasoning: opts.showReasoning,
+				});
 			}
 		}
 	} catch (err) {

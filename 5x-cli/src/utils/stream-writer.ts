@@ -32,8 +32,14 @@ export class StreamWriter {
 	/** Tracks content of the current line for fence detection on newline. */
 	private lineBuf = "";
 
+	/** Minimum usable width — ensures truncation ("...") and wrap math are well-defined. */
+	static readonly MIN_WIDTH = 4;
+
 	constructor(opts?: StreamWriterOptions) {
-		this.width = opts?.width ?? process.stdout.columns ?? 80;
+		const raw = opts?.width ?? process.stdout.columns ?? 80;
+		this.width = Number.isFinite(raw)
+			? Math.max(StreamWriter.MIN_WIDTH, Math.floor(raw))
+			: 80;
 		this.write = opts?.writer ?? ((s: string) => process.stdout.write(s));
 		this.ansi = opts?.ansi ?? resolveAnsi();
 	}
@@ -44,7 +50,11 @@ export class StreamWriter {
 		this.streamDelta(delta);
 	}
 
-	/** Stream thinking/reasoning text with dim styling and word wrapping. */
+	/**
+	 * Stream thinking/reasoning text with dim styling and word wrapping.
+	 * When ANSI is disabled, emits a `> ` prefix at the start of each line
+	 * so reasoning is visually distinguishable from normal prose.
+	 */
 	writeThinking(delta: string): void {
 		this.setStyle("thinking");
 		this.streamDelta(delta);
@@ -105,6 +115,25 @@ export class StreamWriter {
 		}
 
 		this.style = next;
+
+		// Emit no-ANSI thinking prefix at start of line
+		this.emitThinkingPrefix();
+	}
+
+	/**
+	 * When in thinking style with ANSI disabled, emit `> ` at the start of
+	 * each line so reasoning is visually distinguishable from agent prose.
+	 */
+	private emitThinkingPrefix(): void {
+		if (
+			this.col === 0 &&
+			this.style === "thinking" &&
+			!this.ansi.colorEnabled
+		) {
+			this.write("> ");
+			this.col = 2;
+			this.lineBuf = "> ";
+		}
 	}
 
 	private streamDelta(delta: string): void {
@@ -122,6 +151,7 @@ export class StreamWriter {
 				this.write("\n");
 				this.col = 0;
 				this.lineBuf = "";
+				this.emitThinkingPrefix();
 			} else if (ch === " " || ch === "\t") {
 				this.flushWord();
 				this.spaceBuf += ch;
@@ -173,9 +203,10 @@ export class StreamWriter {
 			this.write("\n");
 			this.col = 0;
 			this.lineBuf = "";
+			this.emitThinkingPrefix();
 			this.write(this.wordBuf);
-			this.col = wordLen;
-			this.lineBuf = this.wordBuf;
+			this.col += wordLen;
+			this.lineBuf += this.wordBuf;
 		} else {
 			// Fits — emit space + word.
 			if (spaceLen > 0) {

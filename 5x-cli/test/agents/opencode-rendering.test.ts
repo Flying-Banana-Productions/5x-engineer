@@ -11,7 +11,10 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AnsiConfig } from "../../src/utils/ansi.js";
-import { formatSseEvent } from "../../src/utils/sse-formatter.js";
+import {
+	createEventRouterState,
+	routeEventToWriter,
+} from "../../src/utils/event-router.js";
 import { StreamWriter } from "../../src/utils/stream-writer.js";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +28,7 @@ const DIM_ANSI: AnsiConfig = {
 	colorEnabled: true,
 };
 
-/** Simulate the rendering pipeline: format event → route through StreamWriter. */
+/** Simulate the rendering pipeline using the shared event router. */
 function renderEvents(
 	events: unknown[],
 	opts: {
@@ -43,49 +46,12 @@ function renderEvents(
 		ansi,
 	});
 
-	const textPartIds = new Set<string>();
-	const reasoningPartIds = new Set<string>();
+	const state = createEventRouterState();
 
 	for (const event of events) {
-		const ev = event as Record<string, unknown>;
-		const type = ev.type as string | undefined;
-		const props = ev.properties as Record<string, unknown> | undefined;
-
-		// Register text and reasoning parts
-		if (type === "message.part.updated" && props) {
-			const part = props.part as Record<string, unknown> | undefined;
-			if (part?.type === "text") {
-				const pid = part.id as string | undefined;
-				if (pid) textPartIds.add(pid);
-			}
-			if (part?.type === "reasoning") {
-				const pid = part.id as string | undefined;
-				if (pid) reasoningPartIds.add(pid);
-			}
-		}
-
-		// Route deltas
-		if (type === "message.part.delta" && props) {
-			const partId = props.partID as string | undefined;
-			const delta = props.delta as string | undefined;
-			if (partId && delta) {
-				if (textPartIds.has(partId)) {
-					writer.writeText(delta);
-					continue;
-				}
-				if (opts.showReasoning && reasoningPartIds.has(partId)) {
-					writer.writeThinking(delta);
-					continue;
-				}
-			}
-			continue;
-		}
-
-		// Route formatted events
-		const formatted = formatSseEvent(event);
-		if (formatted != null) {
-			writer.writeLine(formatted.text, { dim: formatted.dim });
-		}
+		routeEventToWriter(event, writer, state, {
+			showReasoning: opts.showReasoning,
+		});
 	}
 
 	writer.destroy();
