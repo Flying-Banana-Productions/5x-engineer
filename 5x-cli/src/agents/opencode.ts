@@ -211,7 +211,13 @@ async function writeEventsToLog(
 
 				const formatted = formatSseEvent(event);
 				if (formatted != null) {
-					process.stdout.write(`  ${formatted.text}\n`);
+					// Temporary truncation shim until Phase 3 wires StreamWriter.writeLine()
+					const maxLen = (process.stdout.columns || 80) - 2; // 2 for indent
+					const text =
+						formatted.text.length > maxLen
+							? `${formatted.text.slice(0, maxLen - 3)}...`
+							: formatted.text;
+					process.stdout.write(`  ${text}\n`);
 				}
 			}
 		}

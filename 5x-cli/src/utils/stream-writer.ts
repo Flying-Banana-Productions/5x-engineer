@@ -111,7 +111,13 @@ export class StreamWriter {
 		for (const ch of delta) {
 			if (ch === "\n") {
 				this.flushWord();
-				this.spaceBuf = "";
+				// Preserve trailing whitespace before explicit newline
+				if (this.spaceBuf.length > 0) {
+					this.write(this.spaceBuf);
+					this.col += this.spaceBuf.length;
+					this.lineBuf += this.spaceBuf;
+					this.spaceBuf = "";
+				}
 				this.checkFence();
 				this.write("\n");
 				this.col = 0;

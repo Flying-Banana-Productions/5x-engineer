@@ -93,6 +93,27 @@ describe("StreamWriter — whitespace preservation", () => {
 		writer.destroy();
 		expect(output()).toBe("a\tb\tc\n");
 	});
+
+	test("preserves trailing whitespace before explicit newline", () => {
+		const { writer, output } = capture(40);
+		writer.writeText("two-spaces  \nnext line");
+		writer.destroy();
+		expect(output()).toBe("two-spaces  \nnext line\n");
+	});
+
+	test("preserves trailing tabs before explicit newline", () => {
+		const { writer, output } = capture(40);
+		writer.writeText("with-tab\t\nnext");
+		writer.destroy();
+		expect(output()).toBe("with-tab\t\nnext\n");
+	});
+
+	test("preserves markdown hard line break (two trailing spaces)", () => {
+		const { writer, output } = capture(40);
+		writer.writeText("line one  \nline two  \nline three");
+		writer.destroy();
+		expect(output()).toBe("line one  \nline two  \nline three\n");
+	});
 });
 
 // ---------------------------------------------------------------------------
