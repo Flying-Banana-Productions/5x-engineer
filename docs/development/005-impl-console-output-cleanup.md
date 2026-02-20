@@ -205,8 +205,8 @@ export function resolveAnsi(opts?: {
   let enabled: boolean;
   if (env.NO_COLOR !== undefined) {
     enabled = false;                       // NO_COLOR wins unconditionally
-  } else if (env.FORCE_COLOR !== undefined && env.FORCE_COLOR !== "0") {
-    enabled = true;
+  } else if (env.FORCE_COLOR !== undefined) {
+    enabled = env.FORCE_COLOR !== "0";     // FORCE_COLOR=0 disables; any other value enables
   } else {
     enabled = isTTY;
   }
