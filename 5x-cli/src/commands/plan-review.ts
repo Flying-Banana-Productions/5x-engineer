@@ -19,6 +19,10 @@ import { resolveProjectRoot } from "../project-root.js";
 import { createTuiController } from "../tui/controller.js";
 import { shouldEnableTui } from "../tui/detect.js";
 import {
+	createTuiHumanGate,
+	createTuiPlanReviewResumeGate,
+} from "../tui/gates.js";
+import {
 	createPermissionHandler,
 	NON_INTERACTIVE_NO_FLAG_ERROR,
 	type PermissionPolicy,
@@ -199,6 +203,27 @@ export default defineCommand({
 			});
 		}
 
+		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
+		// These replace the readline-based gates from gates/human.ts
+		const tuiHumanGate =
+			isTuiMode && !args.auto
+				? createTuiHumanGate(
+						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
+							._clientForTui,
+						tui,
+						{ signal: cancelController.signal },
+					)
+				: undefined;
+		const tuiResumeGate =
+			isTuiMode && !args.auto
+				? createTuiPlanReviewResumeGate(
+						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
+							._clientForTui,
+						tui,
+						{ signal: cancelController.signal },
+					)
+				: undefined;
+
 		try {
 			// Run the loop
 			const result = await runPlanReviewLoop(
@@ -219,6 +244,9 @@ export default defineCommand({
 					signal: cancelController.signal,
 					// Phase 4: Pass TUI controller for session switching and toasts
 					tui,
+					// Phase 5: Pass TUI-native gates for non-auto mode
+					humanGate: tuiHumanGate,
+					resumeGate: tuiResumeGate,
 				},
 			);
 

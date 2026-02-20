@@ -814,20 +814,20 @@ toast notifications at phase boundaries without any stdout corruption.
 
 **Goal:** Non-auto mode human gates work through the TUI's native dialog API.
 
-- [ ] Implement TUI gate factories in `src/tui/gates.ts`:
+- [x] Implement TUI gate factories in `src/tui/gates.ts`:
   - `createTuiPhaseGate(client, tui, opts)` — returns injectable `phaseGate` function
   - `createTuiEscalationGate(client, tui, opts)` — returns injectable `escalationGate`
   - `createTuiResumeGate(client, tui, opts)` — returns injectable `resumeGate`
-  - All use `client.tui.showDialog()` or `client.tui.control.*` for deterministic
+  - All use `client.session.prompt()` with structured output for deterministic
     user input — no SSE event inference
   - All include timeout semantics (`timeoutMs`, default 30 min → resolves `"abort"`)
   - All respect `cancelController.signal` for prompt abort on Ctrl-C
-- [ ] Wire in `commands/run.ts`: if TUI active, pass TUI gate factories to
+- [x] Wire in `commands/run.ts`: if TUI active, pass TUI gate factories to
   `runPhaseExecutionLoop` options; else pass `undefined` (uses `gates/human.ts`)
-- [ ] Wire in `commands/plan-review.ts`: same pattern with `humanGate` override
-- [ ] Fallback: in headless mode, all gate options are `undefined` →
+- [x] Wire in `commands/plan-review.ts`: same pattern with `humanGate` override
+- [x] Fallback: in headless mode, all gate options are `undefined` →
   orchestrator uses default readline behavior (no changes to `gates/human.ts`)
-- [ ] Tests:
+- [x] Tests:
   - Gate resolves `"continue"` on dialog confirm selection
   - Gate resolves `"abort"` on dialog cancel selection
   - Gate resolves `"abort"` after timeout (fast timeout in test)

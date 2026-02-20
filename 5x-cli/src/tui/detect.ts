@@ -10,12 +10,11 @@
  * TUI requires both stdin and stdout to be TTYs (interactive terminal),
  * and must not be disabled by --no-tui or --quiet flags.
  *
- * **Non-auto gate (until Phase 5):** TUI mode is only enabled in --auto
- * flows. Non-auto flows rely on readline-based human gates that are
- * incompatible with a terminal-owning child process. Once Phase 5 (TUI
- * gates) lands, this restriction will be lifted.
+ * Phase 5: TUI gates are now implemented, so TUI mode works in both auto
+ * and non-auto flows. The TUI-native gates replace readline-based gates
+ * when TUI mode is active.
  *
- * @param args - Command arguments (must include noTui, quiet, and auto flags)
+ * @param args - Command arguments (must include noTui and quiet flags)
  * @returns true if TUI mode should be active
  */
 export function shouldEnableTui(args: {
@@ -28,10 +27,6 @@ export function shouldEnableTui(args: {
 
 	// Explicit opt-out
 	if (args["no-tui"]) return false;
-
-	// Non-auto flows use readline gates which conflict with TUI owning stdin.
-	// Gate TUI on --auto until Phase 5 (TUI gates) is implemented.
-	if (!args.auto) return false;
 
 	// Both stdin and stdout must be TTYs — TUI needs interactive I/O
 	if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
