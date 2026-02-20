@@ -86,3 +86,27 @@ Unit tests are strong, but the riskiest behavior is in the adapter loop (interle
 - **Phase 1 (Foundation):** ✅ complete (matches plan; tests present and passing).
 - **Phase 2 (Formatter + caller update):** ✅ complete (new `FormattedEvent` contract; caller updated; bounded collapse implemented; tests updated).
 - **Ready to start Phase 3 (Integration):** ⚠️ after P0.1 fix; otherwise risk of subtle output corruption on explicit newlines.
+
+---
+
+## Addendum (2026-02-20) — Re-review after `004f9d338` fixes (P0.1, P1.1, P1.2)
+
+**Reviewed:** `004f9d338`  \
+**Local verification:** `bun test --concurrent --dots` (pass: 459, skip: 1, fail: 0)
+
+### What's addressed (✅)
+
+- **P0.1 whitespace loss fixed:** `5x-cli/src/utils/stream-writer.ts` now emits buffered whitespace before explicit `\n` (outside fences too); regression tests added in `5x-cli/test/utils/stream-writer.test.ts`.
+- **P1.1 temporary Phase 2 output bound:** `5x-cli/src/agents/opencode.ts` adds a `(stdout.columns - indent)` truncation shim, reducing console flooding / accidental exposure until Phase 3 wires `StreamWriter.writeLine()`.
+- **P1.2 integration coverage landed:** `5x-cli/test/agents/opencode-rendering.test.ts` exercises the combined `formatSseEvent()` + `StreamWriter` rendering pipeline (deltas, tools, step-finish suppression, fences, reasoning gating, truncation).
+
+### Remaining concerns
+
+- **Truncation shim width edge cases:** `maxLen = (process.stdout.columns || 80) - 2` can go small/negative in odd terminals; add a floor (e.g. `Math.max(4, maxLen)`) to avoid negative slice math.
+- **Integration test is “pipeline”, not “adapter loop”:** it does not validate the real `writeEventsToLog()` newline/indent behavior yet (acceptable, but Phase 3 should still add/keep an adapter-path test if feasible).
+
+### Updated readiness
+
+- **Phase 1 completion:** ✅
+- **Phase 2 completion:** ✅
+- **Ready for Phase 3:** ✅ — proceed; fix the truncation shim floor opportunistically while wiring StreamWriter.
