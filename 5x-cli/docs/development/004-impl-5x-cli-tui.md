@@ -858,29 +858,29 @@ repo shows clean TUI experience across a full multi-phase run.
 
 ## File Map
 
-| File | Phase | Change summary |
-|---|---|---|
-| `src/agents/opencode.ts` | 1 | Use `port: 0`; expose `get serverUrl()` |
-| `src/agents/types.ts` | 1 | Add `readonly serverUrl: string` to `AgentAdapter` interface |
-| `src/tui/controller.ts` | 2 | New: `TuiController` interface + `createTuiController()`; v1.4: no-op `onExit` is a no-op, spawn fallback on error, injectable `_spawner` |
-| `src/commands/run.ts` | 2, 3, 4, 5 | Add `--no-tui`, `--ci`; spawn TUI; permission policy; fail-closed non-TTY check; pass gates; v1.4: `onExit` gated on `isTuiMode`, stdout guards |
-| `src/commands/plan-review.ts` | 2, 3, 4, 5 | Same; v1.4: same P0.5/P0.6 fixes |
-| `src/commands/plan.ts` | 2, 3, 4 | Same (simpler — no human gates); v1.4: same P0.5/P0.6 fixes |
-| `src/orchestrator/phase-execution-loop.ts` | 2 | v1.4: `quiet` option accepts `boolean \| (() => boolean)` |
-| `src/orchestrator/plan-review-loop.ts` | 2 | v1.4: same `quiet` type change |
-| `src/agents/factory.ts` | 3 | `registerAdapterShutdown()` accepts TUI mode option |
-| `src/tui/permissions.ts` | 3 | New: permission policy + handler |
-| `src/orchestrator/phase-execution-loop.ts` | 4 | TUI controller; session titles; toasts; signal option (`quiet` type already updated in v1.4 Phase 2) |
-| `src/orchestrator/plan-review-loop.ts` | 4 | Same |
-| `src/agents/opencode.ts` | 4 | Accept `sessionTitle` in invoke options; pass `quiet` through |
-| `src/agents/types.ts` | 4 | Add `sessionTitle?` to `InvokeOptions` |
-| `src/tui/gates.ts` | 5 | New: TUI gate implementations (dialog-based, not SSE-based) |
-| `src/orchestrator/phase-execution-loop.ts` | 5 | Wire TUI gates for non-auto mode |
-| `test/agents/opencode.test.ts` | 1 | serverUrl exposure test |
-| `test/tui/controller.test.ts` | 2 | TUI controller tests (no-op path); v1.4: no-op `onExit` assertion inverted, spawn-failure fallback test |
-| `test/orchestrator/phase-execution-loop.test.ts` | 2 | v1.4: quiet function form test |
-| `test/tui/permissions.test.ts` | 3 | Permission policy tests (hang-prevention test) |
-| `test/tui/gates.test.ts` | 5 | Gate mechanism tests (timeout, cancel, dialog response) |
+| File                                             | Phase      | Change summary                                                                                                                                  |
+| ------------------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agents/opencode.ts`                         | 1          | Use `port: 0`; expose `get serverUrl()`                                                                                                         |
+| `src/agents/types.ts`                            | 1          | Add `readonly serverUrl: string` to `AgentAdapter` interface                                                                                    |
+| `src/tui/controller.ts`                          | 2          | New: `TuiController` interface + `createTuiController()`; v1.4: no-op `onExit` is a no-op, spawn fallback on error, injectable `_spawner`       |
+| `src/commands/run.ts`                            | 2, 3, 4, 5 | Add `--no-tui`, `--ci`; spawn TUI; permission policy; fail-closed non-TTY check; pass gates; v1.4: `onExit` gated on `isTuiMode`, stdout guards |
+| `src/commands/plan-review.ts`                    | 2, 3, 4, 5 | Same; v1.4: same P0.5/P0.6 fixes                                                                                                                |
+| `src/commands/plan.ts`                           | 2, 3, 4    | Same (simpler — no human gates); v1.4: same P0.5/P0.6 fixes                                                                                     |
+| `src/orchestrator/phase-execution-loop.ts`       | 2          | v1.4: `quiet` option accepts `boolean \| (() => boolean)`                                                                                       |
+| `src/orchestrator/plan-review-loop.ts`           | 2          | v1.4: same `quiet` type change                                                                                                                  |
+| `src/agents/factory.ts`                          | 3          | `registerAdapterShutdown()` accepts TUI mode option                                                                                             |
+| `src/tui/permissions.ts`                         | 3          | New: permission policy + handler                                                                                                                |
+| `src/orchestrator/phase-execution-loop.ts`       | 4          | TUI controller; session titles; toasts; signal option (`quiet` type already updated in v1.4 Phase 2)                                            |
+| `src/orchestrator/plan-review-loop.ts`           | 4          | Same                                                                                                                                            |
+| `src/agents/opencode.ts`                         | 4          | Accept `sessionTitle` in invoke options; pass `quiet` through                                                                                   |
+| `src/agents/types.ts`                            | 4          | Add `sessionTitle?` to `InvokeOptions`                                                                                                          |
+| `src/tui/gates.ts`                               | 5          | New: TUI gate implementations (dialog-based, not SSE-based)                                                                                     |
+| `src/orchestrator/phase-execution-loop.ts`       | 5          | Wire TUI gates for non-auto mode                                                                                                                |
+| `test/agents/opencode.test.ts`                   | 1          | serverUrl exposure test                                                                                                                         |
+| `test/tui/controller.test.ts`                    | 2          | TUI controller tests (no-op path); v1.4: no-op `onExit` assertion inverted, spawn-failure fallback test                                         |
+| `test/orchestrator/phase-execution-loop.test.ts` | 2          | v1.4: quiet function form test                                                                                                                  |
+| `test/tui/permissions.test.ts`                   | 3          | Permission policy tests (hang-prevention test)                                                                                                  |
+| `test/tui/gates.test.ts`                         | 5          | Gate mechanism tests (timeout, cancel, dialog response)                                                                                         |
 
 **Removed from v1.1 file map:**
 - `src/utils/port.ts` — not needed; `port: 0` replaces `findFreePort()`

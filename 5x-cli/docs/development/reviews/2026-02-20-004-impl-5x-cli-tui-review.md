@@ -148,3 +148,21 @@ File: `src/utils/event-router.ts`.
 
 - **Phase 3 completion:** YES (P0 blockers addressed).
 - **Ready for Phase 4:** YES (recommend the small P2 UX fix + a cancellation integration test before calling this production-ready).
+
+---
+
+## Addendum (2026-02-20) — Feedback validation (iteration 3)
+
+**Reviewed:** `1f54815c867034eb2a672e3e8d7e3f864f74967a` (no follow-on commits)
+
+### Assessment (Staff Eng)
+
+- **Correctness**: cancellation now has a first-class error (`AgentCancellationError`) and both loops treat cancellation as `ABORTED` (not `ESCALATE`). The non-interactive error message now correctly reflects `plan` supporting `--ci` but not `--auto`.
+- **Architecture**: cancellation handling is functionally right, but the orchestrators now import an adapter-specific error from `src/agents/opencode.ts` (`AgentCancellationError`). Prefer a shared, adapter-agnostic error contract (e.g. `src/agents/errors.ts`) to keep orchestrators decoupled.
+- **Operability**: plan-review loop finalization already maps any abort to `aborted`. Phase-execution loop will now usually finalize as `aborted` on cancellation because it avoids recording an escalation; edge case remains if prior escalations exist (final status can still become `failed`). Decide whether user/system cancel should always win.
+- **Tests**: commit claims all tests pass; still recommend adding an orchestrator-level cancellation test (mock adapter throws cancellation mid-invoke) to lock in the `ABORTED` behavior and final status.
+
+### Phase readiness
+
+- **Phase 3 completion:** YES.
+- **Ready for Phase 4:** YES.
