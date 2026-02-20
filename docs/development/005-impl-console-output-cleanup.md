@@ -1,8 +1,8 @@
 # Console Output Cleanup
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** February 20, 2026
-**Status:** Revised — addressing review `reviews/2026-02-20-005-impl-console-output-cleanup-review.md`
+**Status:** Revised — addressing review `reviews/2026-02-20-005-impl-console-output-cleanup-review.md` (addendum 2026-02-20)
 
 ---
 
@@ -157,12 +157,19 @@ All console output in headless mode follows a consistent layout:
 
 | Source | Indent | Style | Example |
 |--------|--------|-------|---------|
-| Orchestrator status | none | normal | `Author implementing phase 1...` |
+| Orchestrator status | 2-space | normal | `  Author implementing phase 1...` |
 | Agent text | none | normal | `The entry point delegates to the CLI module.` |
 | Agent reasoning | none | dim | `I should check the imports first...` |
 | Tool running | none | dim | `bash: npm install` |
 | Tool result | none | dim | `src/index.ts src/utils/format.ts ...` |
 | Tool error | none | normal | `! bash: command not found` |
+
+Note: orchestrator status messages (`phase-execution-loop.ts`,
+`plan-review-loop.ts`) currently use 2-space indent. This plan does not change
+orchestrator output (see Not In Scope). Normalizing orchestrator indent to
+match agent output (flush left) is a follow-up concern — the 2-space indent
+gives orchestrator lines slight visual distinction from agent prose, which may
+be desirable.
 
 Dim styling is the sole visual differentiator for tool chatter. On non-TTY or
 `NO_COLOR` terminals, dim sequences are empty strings — tool lines appear at
@@ -323,15 +330,18 @@ Word wrap algorithm:
 ## Phase 2: Formatter + caller update — simplified event formatting
 
 **Completion gate:** `formatSseEvent()` returns new type, `opencode.ts` consumes
-the new type (preserving current visual behavior via direct `process.stdout.write`),
-all formatter tests updated and passing, `bun run typecheck` clean. No
-StreamWriter wired in yet — no visual change to end users.
+the new type via direct `process.stdout.write` (no StreamWriter yet), all
+formatter tests updated and passing, `bun run typecheck` clean. This phase IS a
+user-visible formatting change: bracket prefixes are removed, step-finish lines
+are suppressed, and tool output is collapsed to single lines. What it does NOT
+change: no word wrapping, no ANSI styling, no reasoning display — those arrive
+in Phase 3.
 
 **Why this phase also updates `opencode.ts`:** The return type change from
 `string | null` to `FormattedEvent` would break the only caller if landed
 alone. To keep each phase independently buildable and passing CI, this phase
 updates the caller to unwrap `FormattedEvent` into the existing stdout write
-path. Phase 3 then swaps in StreamWriter for the real visual change.
+path. Phase 3 then adds StreamWriter for wrapping, styling, and reasoning.
 
 ### 2.1 `src/utils/sse-formatter.ts` — return type and format changes
 
@@ -423,10 +433,12 @@ format. `system init` -> `null` (hidden; model info is in log).
 
 **File:** `5x-cli/src/agents/opencode.ts`, changes to the `!opts.quiet` code path
 
-This phase updates the caller to compile against the new `FormattedEvent` type
-but preserves the existing visual behavior (direct `process.stdout.write`, same
-indent, no StreamWriter). This ensures the repo builds and tests pass after
-Phase 2 lands.
+This phase updates the caller to compile against the new `FormattedEvent` type.
+The caller still uses direct `process.stdout.write` with 2-space indent (no
+StreamWriter yet). The formatted text content changes (brackets removed,
+step-finish suppressed, tool output collapsed), but there is no wrapping or
+ANSI styling yet. This ensures the repo builds and tests pass after Phase 2
+lands while delivering the first user-visible formatting improvement.
 
 ```typescript
 // Replace:
@@ -446,7 +458,7 @@ The 2-space indent is preserved temporarily for visual consistency; Phase 3
 removes it when StreamWriter takes over.
 
 - [ ] Consumes `FormattedEvent` type (`.text` access instead of raw string)
-- [ ] Preserves current visual behavior (2-space indent, no ANSI, no wrapping changes)
+- [ ] Preserves 2-space indent and direct stdout write (no ANSI, no wrapping — those come in Phase 3)
 - [ ] Builds and passes typecheck cleanly
 
 ### 2.3 Tests
