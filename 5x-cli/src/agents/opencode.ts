@@ -352,7 +352,15 @@ export class OpenCodeAdapter implements AgentAdapter {
 		// Invoke onSessionCreated callback immediately so TUI can track the session
 		// during streaming (not after the prompt completes).
 		if (opts.onSessionCreated) {
-			await opts.onSessionCreated(sessionId);
+			try {
+				await opts.onSessionCreated(sessionId);
+			} catch (err) {
+				if (!opts.quiet) {
+					console.warn(
+						`Warning: onSessionCreated callback failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
 		}
 
 		// 2. Cancellation infrastructure (P0.2: wire opts.signal + timeout)

@@ -318,6 +318,7 @@ export default defineCommand({
 				logPath,
 				quiet: effectiveQuiet || tui.active,
 				showReasoning: args["show-reasoning"],
+				signal: cancelController.signal,
 				sessionTitle: "Plan generation",
 				onSessionCreated: tui.active
 					? (sessionId) => tui.selectSession(sessionId, projectRoot)

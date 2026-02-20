@@ -481,6 +481,71 @@ describe("OpenCodeAdapter.invokeForStatus", () => {
 			"Agent invocation failed",
 		);
 	});
+
+	test("invokes onSessionCreated before session.prompt", async () => {
+		const calls: string[] = [];
+		const { adapter } = createTestAdapter({
+			sessionCreate: async () => {
+				calls.push("create");
+				return {
+					data: {
+						id: "sess-test-123",
+						projectID: "proj-1",
+						directory: "/tmp",
+						title: "test",
+						version: "1",
+						time: { created: Date.now(), updated: Date.now() },
+					},
+					error: undefined,
+				};
+			},
+			sessionPrompt: async () => {
+				calls.push("prompt");
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc123" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({
+				onSessionCreated: () => {
+					calls.push("hook");
+				},
+			}),
+		);
+
+		expect(calls).toEqual(["create", "hook", "prompt"]);
+	});
+
+	test("onSessionCreated is best-effort and does not fail invocation", async () => {
+		const { adapter } = createTestAdapter();
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({
+				onSessionCreated: () => {
+					throw new Error("callback boom");
+				},
+			}),
+		);
+
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+	});
 });
 
 // ---------------------------------------------------------------------------

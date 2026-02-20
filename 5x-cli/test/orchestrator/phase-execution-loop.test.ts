@@ -35,6 +35,7 @@ import {
 	runPhaseExecutionLoop,
 } from "../../src/orchestrator/phase-execution-loop.js";
 import type { AuthorStatus, ReviewerVerdict } from "../../src/protocol.js";
+import type { TuiController } from "../../src/tui/controller.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1324,6 +1325,80 @@ describe("runPhaseExecutionLoop", () => {
 
 			// The adapter should have received quiet=true
 			expect(adapter.lastOpts?.quiet).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("passes session titles and emits toasts at current phase boundaries", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+
+		try {
+			const callSessionTitles: Array<string | undefined> = [];
+			const selectedSessions: string[] = [];
+			const toasts: Array<{ message: string; variant: string }> = [];
+
+			const adapter: AgentAdapter = {
+				serverUrl: "http://127.0.0.1:51234",
+				async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
+					callSessionTitles.push(opts.sessionTitle);
+					if (opts.onSessionCreated) {
+						await opts.onSessionCreated("sess-author");
+					}
+					return {
+						type: "status",
+						status: { result: "complete", commit: "abc" },
+						duration: 1000,
+						sessionId: "sess-author",
+					};
+				},
+				async invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict> {
+					callSessionTitles.push(opts.sessionTitle);
+					if (opts.onSessionCreated) {
+						await opts.onSessionCreated("sess-review");
+					}
+					return {
+						type: "verdict",
+						verdict: { readiness: "ready", items: [] },
+						duration: 1000,
+						sessionId: "sess-review",
+					};
+				},
+				async verify() {},
+				async close() {},
+			};
+
+			const tui: TuiController = {
+				active: true,
+				selectSession: async (sessionID: string) => {
+					selectedSessions.push(sessionID);
+				},
+				showToast: async (message, variant) => {
+					toasts.push({ message, variant });
+				},
+				onExit: () => {},
+				kill: () => {},
+			};
+
+			await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true, quiet: true, tui },
+			);
+
+			expect(callSessionTitles).toEqual([
+				"Phase 1 — author",
+				"Phase 1 — review 1",
+			]);
+			expect(selectedSessions).toEqual(["sess-author", "sess-review"]);
+			expect(toasts).toEqual([
+				{ message: "Starting Phase 1 — Only Phase", variant: "info" },
+				{ message: "Phase 1 complete — starting review", variant: "success" },
+			]);
 		} finally {
 			cleanup();
 		}
