@@ -24,15 +24,16 @@ export function createEventRouterState(): EventRouterState {
 /**
  * Route a single SSE event to the StreamWriter.
  *
- * Returns true if the event was handled (caller should `continue`),
- * false if the event was not a console-rendering event.
+ * Handles part registration, delta routing, and formatted event output.
+ * Callers invoke this for every event; no return value — all side effects
+ * go through the writer.
  */
 export function routeEventToWriter(
 	event: unknown,
 	writer: StreamWriter,
 	state: EventRouterState,
 	opts: { showReasoning?: boolean },
-): boolean {
+): void {
 	const ev = event as Record<string, unknown>;
 	const type = ev.type as string | undefined;
 	const props = ev.properties as Record<string, unknown> | undefined;
@@ -57,16 +58,16 @@ export function routeEventToWriter(
 		if (partId && delta) {
 			if (state.textPartIds.has(partId)) {
 				writer.writeText(delta);
-				return true;
+				return;
 			}
 			// Only route reasoning when --show-reasoning is active
 			if (opts.showReasoning && state.reasoningPartIds.has(partId)) {
 				writer.writeThinking(delta);
-				return true;
+				return;
 			}
 		}
 		// Non-text/non-reasoning delta — suppress
-		return true;
+		return;
 	}
 
 	// Formatted events: single-line output via writeLine
@@ -74,6 +75,4 @@ export function routeEventToWriter(
 	if (formatted != null) {
 		writer.writeLine(formatted.text, { dim: formatted.dim });
 	}
-
-	return false;
 }

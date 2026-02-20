@@ -81,3 +81,25 @@ When `NO_COLOR`/non-TTY, dim sequences are empty strings; enabling `--show-reaso
 
 - **Phase 3 (Integration):** ✅ functionally complete (matches `docs/development/005-impl-console-output-cleanup.md`)
 - **Plan completeness:** No remaining implementation phases; manual smoke test remains the only explicit plan checkbox.
+
+---
+
+## Addendum (2026-02-20) — Re-review after fixes (`ef967d9cf4a`)
+
+**Reviewed:** `ef967d9cf4a`  \
+**Local verification:** `bun test --concurrent --dots`, `bun run lint`, `bun run typecheck` (pass)
+
+### What's addressed (✅)
+
+- **P0.1 width clamping:** `5x-cli/src/utils/stream-writer.ts` clamps width to `MIN_WIDTH` (4), floors fractional, defaults to 80 for non-finite; adds targeted tests.
+- **P1.1 reasoning distinguishability (no ANSI):** `5x-cli/src/utils/stream-writer.ts` adds `> ` prefix for thinking at start-of-line when color is disabled; tests cover newlines + wrap-inserted breaks.
+- **P1.2 test drift:** shared routing state machine extracted to `5x-cli/src/utils/event-router.ts`; both `5x-cli/src/agents/opencode.ts` and `5x-cli/test/agents/opencode-rendering.test.ts` use `routeEventToWriter()`.
+
+### Remaining concerns
+
+- **Router return value semantics:** `routeEventToWriter()` returns `false` even when it emits formatted lines (only used as a helper today). Consider returning `true` on any emitted output, or dropping the return value to avoid future misuse.
+
+### Updated readiness
+
+- **Phase 3 (Integration) completion:** ✅
+- **Production readiness:** Ready — remaining work is manual smoke (TTY + `NO_COLOR=1`, with and without `--show-reasoning`).
