@@ -737,13 +737,13 @@ See "TUI Rollout Gate" section for non-auto limitations until Phases 3–5.
 **Goal:** Wire permission policy; update signal handling to support cooperative
 cancellation in TUI mode.
 
-- [ ] Implement `createPermissionHandler(client, policy)` in `src/tui/permissions.ts`:
+- [x] Implement `createPermissionHandler(client, policy)` in `src/tui/permissions.ts`:
   - `"auto-approve-all"`: subscribe to permission requests; reply "approve" immediately
   - `"tui-native"`: no-op handler (TUI handles it natively)
   - `"workdir-scoped"`: subscribe; auto-approve paths under workdir; escalate others
-- [ ] Add `--ci` flag to `run`, `plan-review`, `plan` commands:
+- [x] Add `--ci` flag to `run`, `plan-review`, `plan` commands:
   `ci: { type: "boolean", default: false, description: "CI/unattended mode: auto-approve all tool permissions" }`
-- [ ] Fail-closed check in command layer before adapter creation:
+- [x] Fail-closed check in command layer before adapter creation:
   ```typescript
   if (!process.stdin.isTTY && !args.auto && !args.ci) {
     console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
@@ -751,23 +751,23 @@ cancellation in TUI mode.
     return;
   }
   ```
-- [ ] Resolve policy in command layer (run.ts, plan-review.ts, plan.ts):
+- [x] Resolve policy in command layer (run.ts, plan-review.ts, plan.ts):
   ```typescript
   const policy: PermissionPolicy =
     args.auto || args.ci ? { mode: "auto-approve-all" } :
     isTuiMode            ? { mode: "tui-native" } :
     /* headless TTY */     { mode: "workdir-scoped", workdir };
   ```
-- [ ] Update `registerAdapterShutdown()` in `src/agents/factory.ts` to accept
+- [x] Update `registerAdapterShutdown()` in `src/agents/factory.ts` to accept
   optional `{ tuiMode, cancelController }`:
   - TUI mode: registers SIGINT/SIGTERM handlers that call `cancelController.abort()`
     + set `process.exitCode` (no `process.exit()`)
   - Headless mode: existing `process.exit()` behavior (unchanged)
-- [ ] Create a shared `cancelController = new AbortController()` in command handlers;
+- [x] Create a shared `cancelController = new AbortController()` in command handlers;
   pass `cancelController.signal` to orchestrator options (as `signal?: AbortSignal`)
-- [ ] Wire TUI exit → `cancelController.abort()` + `process.exitCode = 1` in the
+- [x] Wire TUI exit → `cancelController.abort()` + `process.exitCode = 1` in the
   `tuiController.onExit()` callback (for Ctrl-C via TUI)
-- [ ] Tests:
+- [x] Tests:
   - `"auto-approve-all"` handler approves a mock permission request immediately
   - Permission handler test that would hang without policy (mock request + assert
     resolved within 1s)

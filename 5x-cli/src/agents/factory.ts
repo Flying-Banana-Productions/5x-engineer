@@ -34,6 +34,13 @@ export async function createAndVerifyAdapter(
 // more than once (e.g., in tests or future multi-adapter scenarios).
 let _signalHandlersRegistered = false;
 
+export interface RegisterAdapterShutdownOptions {
+	/** Whether TUI mode is active (affects signal handling). */
+	tuiMode?: boolean;
+	/** AbortController for cooperative cancellation in TUI mode. */
+	cancelController?: AbortController;
+}
+
 /**
  * Register adapter cleanup for process exit and signals.
  *
@@ -48,8 +55,14 @@ let _signalHandlersRegistered = false;
  *
  * Commands that also use registerLockCleanup() do not need to worry about
  * handler ordering — both cleanup paths are idempotent.
+ *
+ * Phase 3: TUI mode uses cooperative cancellation (no process.exit() in signals)
+ * to allow finally blocks to run. Headless mode preserves existing behavior.
  */
-export function registerAdapterShutdown(adapter: AgentAdapter): void {
+export function registerAdapterShutdown(
+	adapter: AgentAdapter,
+	opts: RegisterAdapterShutdownOptions = {},
+): void {
 	const cleanup = () => {
 		// adapter.close() is async but its body is synchronous —
 		// server.close() executes immediately. The returned Promise
@@ -58,14 +71,26 @@ export function registerAdapterShutdown(adapter: AgentAdapter): void {
 	};
 	process.on("exit", cleanup);
 
-	// Register SIGINT/SIGTERM only once per process. These handlers ensure
-	// signal-triggered exits go through process.exit() (which fires the "exit"
-	// event for cleanup) rather than the default signal handler (which
-	// terminates without firing "exit").
-	if (!_signalHandlersRegistered) {
-		_signalHandlersRegistered = true;
-		process.on("SIGINT", () => process.exit(130));
-		process.on("SIGTERM", () => process.exit(143));
+	if (opts.tuiMode) {
+		// TUI mode: Ctrl-C goes to TUI first; we rely on tuiProcess.exited to
+		// cooperatively cancel. SIGINT/SIGTERM still need handlers to prevent
+		// abrupt termination if somehow delivered to the parent directly.
+		// Use .once() to avoid duplicate handlers if called multiple times.
+		process.once("SIGINT", () => {
+			opts.cancelController?.abort();
+			process.exitCode = 130;
+		});
+		process.once("SIGTERM", () => {
+			opts.cancelController?.abort();
+			process.exitCode = 143;
+		});
+	} else {
+		// Headless mode: convert signal to process.exit() to trigger the "exit" event
+		if (!_signalHandlersRegistered) {
+			_signalHandlersRegistered = true;
+			process.on("SIGINT", () => process.exit(130));
+			process.on("SIGTERM", () => process.exit(143));
+		}
 	}
 }
 

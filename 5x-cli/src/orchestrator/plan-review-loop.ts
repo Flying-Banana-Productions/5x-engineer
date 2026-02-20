@@ -117,6 +117,12 @@ export interface PlanReviewLoopOptions {
 	 * Gated on `quiet` internally. Primarily for test DI.
 	 */
 	_log?: (...args: unknown[]) => void;
+	/**
+	 * AbortSignal for external cancellation (Ctrl-C, TUI exit, parent timeout).
+	 * The orchestrator checks this signal at key await points and aborts
+	 * gracefully, allowing finally blocks to run for cleanup.
+	 */
+	signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------

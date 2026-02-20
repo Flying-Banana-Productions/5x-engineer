@@ -21,6 +21,11 @@ import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
 import { shouldEnableTui } from "../tui/detect.js";
+import {
+	createPermissionHandler,
+	NON_INTERACTIVE_NO_FLAG_ERROR,
+	type PermissionPolicy,
+} from "../tui/permissions.js";
 
 /**
  * Compute the next available sequence number from existing plan files.
@@ -112,6 +117,11 @@ export default defineCommand({
 			type: "boolean",
 			description:
 				"Disable TUI mode — use headless output even in an interactive terminal",
+			default: false,
+		},
+		ci: {
+			type: "boolean",
+			description: "CI/unattended mode: auto-approve all tool permissions",
 			default: false,
 		},
 		"show-reasoning": {
@@ -214,12 +224,33 @@ export default defineCommand({
 			return;
 		}
 
-		registerAdapterShutdown(adapter);
+		// --- Fail-closed check for non-interactive mode ---
+		const isNonInteractive = !process.stdin.isTTY;
+		if (isNonInteractive && !args.ci) {
+			console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
+			process.exitCode = 1;
+			return;
+		}
 
 		// --- TUI mode detection ---
 		// plan has no human gates (single invocation), so it is safe to enable
 		// TUI without --auto. Pass auto: true to bypass the non-auto gate.
 		const isTuiMode = shouldEnableTui({ ...args, auto: true });
+
+		// --- Resolve permission policy ---
+		// Note: plan command doesn't have --auto, only --ci
+		const permissionPolicy: PermissionPolicy = args.ci
+			? { mode: "auto-approve-all" }
+			: isTuiMode
+				? { mode: "tui-native" }
+				: { mode: "workdir-scoped", workdir: projectRoot };
+
+		// --- Register adapter shutdown with TUI mode support ---
+		const cancelController = new AbortController();
+		registerAdapterShutdown(adapter, {
+			tuiMode: isTuiMode,
+			cancelController,
+		});
 
 		// --- Spawn TUI ---
 		const tui = createTuiController({
@@ -230,11 +261,22 @@ export default defineCommand({
 			enabled: isTuiMode,
 		});
 
+		// --- Start permission handler ---
+		const permissionHandler = createPermissionHandler(
+			(adapter as import("../agents/opencode.js").OpenCodeAdapter)
+				._clientForTui,
+			permissionPolicy,
+		);
+		permissionHandler.start();
+
 		// Handle TUI early exit — continue headless.
 		// Only registered when TUI was actually spawned; no-op controller never fires.
 		if (isTuiMode) {
 			tui.onExit(() => {
 				process.stderr.write("TUI exited — continuing headless\n");
+				// Cancel the invocation
+				cancelController.abort();
+				process.exitCode = 1;
 			});
 		}
 
@@ -412,6 +454,7 @@ export default defineCommand({
 			}
 			process.exitCode = 1;
 		} finally {
+			permissionHandler.stop();
 			await adapter.close();
 			tui.kill();
 		}
