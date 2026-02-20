@@ -178,7 +178,7 @@ the same weight as agent text, which is acceptable since the line content itself
 
 ---
 
-## Phase 1: Foundation — ANSI utilities and StreamWriter
+## Phase 1: Foundation — ANSI utilities and StreamWriter ✓ COMPLETE
 
 **Completion gate:** `ansi.ts` and `stream-writer.ts` exist with tests passing. No visual changes yet.
 
@@ -219,11 +219,11 @@ export function resolveAnsi(opts?: {
 }
 ```
 
-- [ ] `NO_COLOR` takes highest priority (disables even if `FORCE_COLOR` is also set)
-- [ ] `FORCE_COLOR` enables (unless `"0"`, which is treated as disable)
-- [ ] Falls back to `isTTY`
-- [ ] Pure function — no module-level state, no import-time side effects
-- [ ] All parameters optional with sensible defaults for production use
+- [x] `NO_COLOR` takes highest priority (disables even if `FORCE_COLOR` is also set)
+- [x] `FORCE_COLOR` enables (unless `"0"`, which is treated as disable)
+- [x] Falls back to `isTTY`
+- [x] Pure function — no module-level state, no import-time side effects
+- [x] All parameters optional with sensible defaults for production use
 
 ### 1.2 `src/utils/stream-writer.ts` — streaming word-wrap writer
 
@@ -279,51 +279,51 @@ Word wrap algorithm:
 3. If `dim` option is set, wrap output in `ansi.dim` / `ansi.reset`.
 4. Write the line followed by a newline.
 
-- [ ] Word wrapping at configurable width
-- [ ] Column tracking across multiple `writeText`/`writeThinking` calls
-- [ ] Whitespace preservation: spaces, tabs, leading whitespace kept exactly
-- [ ] Fenced code block detection: `inFence` toggle on `` ``` `` lines, wrapping bypassed
-- [ ] ANSI dim/reset on thinking<->text transitions
-- [ ] `writeLine()` calls `endBlock()` first, then truncates + writes line
-- [ ] Dim `writeLine` wraps text in `ansi.dim`/`ansi.reset`
-- [ ] `writer` and `ansi` parameters injectable for test assertions
-- [ ] Handles edge cases: empty deltas, deltas with only whitespace, very long words (>width)
-- [ ] No indent applied (all output flush left)
+- [x] Word wrapping at configurable width
+- [x] Column tracking across multiple `writeText`/`writeThinking` calls
+- [x] Whitespace preservation: spaces, tabs, leading whitespace kept exactly
+- [x] Fenced code block detection: `inFence` toggle on `` ``` `` lines, wrapping bypassed
+- [x] ANSI dim/reset on thinking<->text transitions
+- [x] `writeLine()` calls `endBlock()` first, then truncates + writes line
+- [x] Dim `writeLine` wraps text in `ansi.dim`/`ansi.reset`
+- [x] `writer` and `ansi` parameters injectable for test assertions
+- [x] Handles edge cases: empty deltas, deltas with only whitespace, very long words (>width)
+- [x] No indent applied (all output flush left)
 
 ### 1.3 Tests
 
 **File:** `5x-cli/test/utils/ansi.test.ts` (new)
 
-- [ ] `NO_COLOR` set → colorEnabled false, dim/reset are empty strings
-- [ ] `NO_COLOR` set + `FORCE_COLOR` set → colorEnabled false (NO_COLOR wins)
-- [ ] `FORCE_COLOR=1` set → colorEnabled true
-- [ ] `FORCE_COLOR=0` set → colorEnabled false
-- [ ] No env vars, `isTTY=true` → colorEnabled true
-- [ ] No env vars, `isTTY=false` → colorEnabled false
-- [ ] Default parameters (no args) → does not throw
+- [x] `NO_COLOR` set → colorEnabled false, dim/reset are empty strings
+- [x] `NO_COLOR` set + `FORCE_COLOR` set → colorEnabled false (NO_COLOR wins)
+- [x] `FORCE_COLOR=1` set → colorEnabled true
+- [x] `FORCE_COLOR=0` set → colorEnabled false
+- [x] No env vars, `isTTY=true` → colorEnabled true
+- [x] No env vars, `isTTY=false` → colorEnabled false
+- [x] Default parameters (no args) → does not throw
 
 **File:** `5x-cli/test/utils/stream-writer.test.ts` (new)
 
-- [ ] Word wraps at specified width
-- [ ] Handles multiple deltas building up a line
-- [ ] Newlines in delta reset column position
-- [ ] Long word exceeding width is not broken (written as-is, wraps on next word)
-- [ ] Preserves leading whitespace on input lines
-- [ ] Preserves multiple consecutive spaces within a line
-- [ ] Preserves tab characters
-- [ ] Fenced code block: content inside `` ``` `` fences is not word-wrapped
-- [ ] Fenced code block: wrapping resumes after closing fence
-- [ ] Nested/multiple fenced blocks tracked correctly
-- [ ] `writeThinking()` emits dim/reset codes (when color enabled)
-- [ ] `writeThinking()` emits no dim/reset codes (when color disabled)
-- [ ] Style transition text->thinking->text emits proper ANSI sequences
-- [ ] `writeLine()` flushes any in-progress streaming first
-- [ ] `writeLine({ dim: true })` wraps in dim/reset
-- [ ] `writeLine()` truncates long text to width, appends `...`
-- [ ] `endBlock()` is idempotent
-- [ ] `destroy()` flushes and terminates
-- [ ] Injectable writer captures all output for assertions
-- [ ] Injectable ansi config controls ANSI output
+- [x] Word wraps at specified width
+- [x] Handles multiple deltas building up a line
+- [x] Newlines in delta reset column position
+- [x] Long word exceeding width is not broken (written as-is, wraps on next word)
+- [x] Preserves leading whitespace on input lines
+- [x] Preserves multiple consecutive spaces within a line
+- [x] Preserves tab characters
+- [x] Fenced code block: content inside `` ``` `` fences is not word-wrapped
+- [x] Fenced code block: wrapping resumes after closing fence
+- [x] Nested/multiple fenced blocks tracked correctly
+- [x] `writeThinking()` emits dim/reset codes (when color enabled)
+- [x] `writeThinking()` emits no dim/reset codes (when color disabled)
+- [x] Style transition text->thinking->text emits proper ANSI sequences
+- [x] `writeLine()` flushes any in-progress streaming first
+- [x] `writeLine({ dim: true })` wraps in dim/reset
+- [x] `writeLine()` truncates long text to width, appends `...`
+- [x] `endBlock()` is idempotent
+- [x] `destroy()` flushes and terminates
+- [x] Injectable writer captures all output for assertions
+- [x] Injectable ansi config controls ANSI output
 
 ---
 
