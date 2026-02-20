@@ -253,7 +253,8 @@ export default defineCommand({
 		console.log(
 			`  Phases: ${incompletePhases.length} remaining of ${plan.phases.length} total`,
 		);
-		console.log(`  Review: ${reviewPath}`);
+		console.log(`  Review base: ${reviewPath}`);
+		console.log("  Review files: per-phase (-phase-N-review.md)");
 		if (args.phase) {
 			console.log(`  Starting from phase: ${args.phase}`);
 		}

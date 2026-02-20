@@ -47,7 +47,6 @@ import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
 import type { TuiController } from "../tui/controller.js";
 import { buildEscalationReason } from "../utils/agent-event-helpers.js";
-import { appendStructuredAuditRecord } from "../utils/audit.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -635,19 +634,6 @@ export async function runPlanReviewLoop(
 					},
 				});
 
-				// Append audit record
-				try {
-					await appendStructuredAuditRecord(reviewPath, {
-						schema: 1,
-						type: "verdict",
-						phase: "-1",
-						iteration,
-						data: reviewResult.verdict,
-					});
-				} catch {
-					// Best-effort
-				}
-
 				// Validate invariants
 				try {
 					assertReviewerVerdict(reviewResult.verdict, "PLAN_REVIEW/REVIEW");
@@ -873,19 +859,6 @@ export async function runPlanReviewLoop(
 						logPath: authorLogPath,
 					},
 				});
-
-				// Append audit record
-				try {
-					await appendStructuredAuditRecord(reviewPath, {
-						schema: 1,
-						type: "status",
-						phase: "-1",
-						iteration,
-						data: authorResult.status,
-					});
-				} catch {
-					// Best-effort
-				}
 
 				// Validate invariants
 				try {

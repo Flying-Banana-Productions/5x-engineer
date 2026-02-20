@@ -29,7 +29,10 @@ import type {
 	EscalationResponse,
 	PhaseSummary,
 } from "../../src/gates/human.js";
-import { runPhaseExecutionLoop } from "../../src/orchestrator/phase-execution-loop.js";
+import {
+	resolvePhaseReviewPath,
+	runPhaseExecutionLoop,
+} from "../../src/orchestrator/phase-execution-loop.js";
 import type { AuthorStatus, ReviewerVerdict } from "../../src/protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -214,6 +217,33 @@ function fixedEscalationGate(action: "continue" | "approve" | "abort") {
 // ---------------------------------------------------------------------------
 
 describe("runPhaseExecutionLoop", () => {
+	test("resolvePhaseReviewPath defaults to per-phase filenames", () => {
+		const base = "/tmp/reviews/2026-02-20-001-test-plan-review.md";
+		expect(resolvePhaseReviewPath(base, "1")).toBe(
+			"/tmp/reviews/2026-02-20-001-test-plan-phase-1-review.md",
+		);
+		expect(resolvePhaseReviewPath(base, "1.1")).toBe(
+			"/tmp/reviews/2026-02-20-001-test-plan-phase-1.1-review.md",
+		);
+	});
+
+	test("resolvePhaseReviewPath preserves legacy single-file path when it exists", () => {
+		const { reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		try {
+			expect(existsSync(reviewPath)).toBe(true);
+			expect(resolvePhaseReviewPath(reviewPath, "2")).toBe(reviewPath);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("resolvePhaseReviewPath supports {phase} token", () => {
+		const template = "/tmp/reviews/plan-{phase}-review.md";
+		expect(resolvePhaseReviewPath(template, "3")).toBe(
+			"/tmp/reviews/plan-3-review.md",
+		);
+	});
+
 	test("single-phase happy path: author->review->ready->complete", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

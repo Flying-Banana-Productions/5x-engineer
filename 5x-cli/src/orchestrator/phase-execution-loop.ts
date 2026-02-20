@@ -21,7 +21,7 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { AgentCancellationError } from "../agents/opencode.js";
 import type {
 	AgentAdapter,
@@ -59,7 +59,6 @@ import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
 import type { TuiController } from "../tui/controller.js";
 import { buildEscalationReason } from "../utils/agent-event-helpers.js";
-import { appendStructuredAuditRecord } from "../utils/audit.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -166,6 +165,42 @@ const LEGACY_STATE_MAP: Record<string, PhaseState> = {
 
 function generateId(): string {
 	return crypto.randomUUID();
+}
+
+/**
+ * Resolve the review file path for a specific phase.
+ *
+ * Default behavior now uses per-phase review files to prevent one large
+ * append-only document from accumulating all phase addendums.
+ *
+ * Backward compatibility:
+ * - If `reviewPath` includes `{phase}`, that token is replaced.
+ * - If `reviewPath` already exists, keep single-file behavior.
+ */
+export function resolvePhaseReviewPath(
+	reviewPath: string,
+	phaseNumber: string,
+): string {
+	const phaseToken = phaseNumber.replace(/[^0-9A-Za-z._-]/g, "-");
+
+	if (reviewPath.includes("{phase}")) {
+		return reviewPath.replaceAll("{phase}", phaseToken);
+	}
+
+	if (existsSync(reviewPath)) {
+		return reviewPath;
+	}
+
+	const ext = extname(reviewPath);
+	const base = basename(reviewPath, ext);
+	if (base.endsWith("-review")) {
+		return join(
+			dirname(reviewPath),
+			`${base.slice(0, -"-review".length)}-phase-${phaseToken}-review${ext}`,
+		);
+	}
+
+	return join(dirname(reviewPath), `${base}-phase-${phaseToken}${ext}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +398,7 @@ export async function runPhaseExecutionLoop(
 	for (const phase of phases) {
 		log();
 		log(`  ── Phase ${phase.number}: ${phase.title} ──`);
+		const phaseReviewPath = resolvePhaseReviewPath(reviewPath, phase.number);
 
 		// Determine initial state for this phase: if resuming into this exact
 		// phase, restore the recorded state; otherwise start fresh.
@@ -679,19 +715,6 @@ export async function runPhaseExecutionLoop(
 						},
 					});
 
-					// Append audit record
-					try {
-						await appendStructuredAuditRecord(reviewPath, {
-							schema: 1,
-							type: "status",
-							phase: phase.number,
-							iteration,
-							data: authorResult.status,
-						});
-					} catch {
-						// Best-effort — don't fail the run if audit write fails
-					}
-
 					// Validate invariants
 					try {
 						assertAuthorStatus(authorResult.status, "EXECUTE", {
@@ -878,7 +901,7 @@ export async function runPhaseExecutionLoop(
 							.join("\n\n") ?? "Quality gate failed";
 
 					const fixPrompt = renderTemplate("author-process-review", {
-						review_path: reviewPath,
+						review_path: phaseReviewPath,
 						plan_path: planPath,
 					});
 
@@ -1141,7 +1164,7 @@ export async function runPhaseExecutionLoop(
 
 					const reviewerTemplate = renderTemplate("reviewer-commit", {
 						commit_hash: lastCommit ?? "HEAD",
-						review_path: reviewPath,
+						review_path: phaseReviewPath,
 						plan_path: planPath,
 					});
 
@@ -1231,19 +1254,6 @@ export async function runPhaseExecutionLoop(
 							logPath: reviewLogPath,
 						},
 					});
-
-					// Append audit record
-					try {
-						await appendStructuredAuditRecord(reviewPath, {
-							schema: 1,
-							type: "verdict",
-							phase: phase.number,
-							iteration,
-							data: reviewResult.verdict,
-						});
-					} catch {
-						// Best-effort
-					}
 
 					// Validate invariants
 					try {
@@ -1425,7 +1435,7 @@ export async function runPhaseExecutionLoop(
 					}
 
 					const fixTemplate = renderTemplate("author-process-review", {
-						review_path: reviewPath,
+						review_path: phaseReviewPath,
 						plan_path: planPath,
 					});
 
@@ -1508,19 +1518,6 @@ export async function runPhaseExecutionLoop(
 							logPath: autoFixLogPath,
 						},
 					});
-
-					// Append audit record
-					try {
-						await appendStructuredAuditRecord(reviewPath, {
-							schema: 1,
-							type: "status",
-							phase: phase.number,
-							iteration,
-							data: autoFixResult.status,
-						});
-					} catch {
-						// Best-effort
-					}
 
 					// Validate invariants
 					try {
