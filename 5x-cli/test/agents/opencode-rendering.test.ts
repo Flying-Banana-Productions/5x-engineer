@@ -80,6 +80,13 @@ function textPartUpdatedWithDeltaNoId(text: string) {
 	};
 }
 
+function textPartUpdatedWithFullText(id: string, text: string) {
+	return {
+		type: "message.part.updated",
+		properties: { part: { type: "text", id, text } },
+	};
+}
+
 function reasoningPartUpdated(id: string) {
 	return {
 		type: "message.part.updated",
@@ -91,6 +98,13 @@ function reasoningPartUpdatedWithDelta(id: string, text: string) {
 	return {
 		type: "message.part.updated",
 		properties: { part: { type: "reasoning", id }, delta: text },
+	};
+}
+
+function reasoningPartUpdatedWithFullText(id: string, text: string) {
+	return {
+		type: "message.part.updated",
+		properties: { part: { type: "reasoning", id, text } },
 	};
 }
 
@@ -235,6 +249,14 @@ describe("opencode rendering pipeline", () => {
 		expect(out).toBe("Hello without id\n");
 	});
 
+	test("text full-text updates stream incremental append", () => {
+		const out = renderEvents([
+			textPartUpdatedWithFullText("t1", "Hello"),
+			textPartUpdatedWithFullText("t1", "Hello world"),
+		]);
+		expect(out).toBe("Hello world\n");
+	});
+
 	test("fenced code blocks in text deltas are not word-wrapped", () => {
 		const longCode =
 			"const x = someVeryLongFunctionName(parameterOne, parameterTwo, parameterThree);";
@@ -275,6 +297,23 @@ describe("opencode rendering pipeline", () => {
 		expect(out).toContain("\x1b[2m");
 		expect(out).toContain("thinking hard");
 		expect(out).toContain("\x1b[0m");
+	});
+
+	test("reasoning full-text updates obey showReasoning", () => {
+		const hidden = renderEvents([
+			reasoningPartUpdatedWithFullText("r1", "think"),
+			reasoningPartUpdatedWithFullText("r1", "thinking"),
+		]);
+		expect(hidden).toBe("");
+
+		const shown = renderEvents(
+			[
+				reasoningPartUpdatedWithFullText("r1", "think"),
+				reasoningPartUpdatedWithFullText("r1", "thinking"),
+			],
+			{ showReasoning: true },
+		);
+		expect(shown).toBe("> thinking\n");
 	});
 
 	test("interleaved text deltas and tool events render correctly", () => {

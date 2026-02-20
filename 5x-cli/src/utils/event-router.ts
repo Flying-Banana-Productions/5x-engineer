@@ -12,6 +12,8 @@ import type { StreamWriter } from "./stream-writer.js";
 export interface EventRouterState {
 	textPartIds: Set<string>;
 	reasoningPartIds: Set<string>;
+	/** Last seen full text by part id (for full-text update fallback). */
+	partTextById: Map<string, string>;
 	/**
 	 * Part IDs that already streamed deltas via message.part.updated.
 	 * Used to avoid duplicate output when legacy message.part.delta
@@ -24,8 +26,18 @@ export function createEventRouterState(): EventRouterState {
 	return {
 		textPartIds: new Set(),
 		reasoningPartIds: new Set(),
+		partTextById: new Map(),
 		updatedDeltaPartIds: new Set(),
 	};
+}
+
+function incrementalAppend(previous: string, next: string): string {
+	if (next.length === 0) return "";
+	if (previous.length === 0) return next;
+	if (next.startsWith(previous) && next.length > previous.length) {
+		return next.slice(previous.length);
+	}
+	return "";
 }
 
 /**
@@ -59,7 +71,7 @@ export function routeEventToWriter(
 			if (pid) state.reasoningPartIds.add(pid);
 		}
 
-		// Newer shape: text/reasoning deltas arrive on message.part.updated
+		// Preferred shape: text/reasoning deltas arrive on message.part.updated
 		// as properties.delta.
 		const delta = props.delta as string | undefined;
 		if (delta) {
@@ -72,6 +84,30 @@ export function routeEventToWriter(
 				if (pid) state.updatedDeltaPartIds.add(pid);
 				if (opts.showReasoning) {
 					writer.writeThinking(delta);
+				}
+				return;
+			}
+		}
+
+		// Fallback shape: message.part.updated carries full part.text without
+		// properties.delta. Stream only the incremental append to avoid repeats.
+		const partText = part?.text;
+		if (
+			pid &&
+			typeof partText === "string" &&
+			(partType === "text" || partType === "reasoning")
+		) {
+			const previous = state.partTextById.get(pid) ?? "";
+			const append = incrementalAppend(previous, partText);
+			state.partTextById.set(pid, partText);
+			if (append.length > 0) {
+				state.updatedDeltaPartIds.add(pid);
+				if (partType === "text") {
+					writer.writeText(append);
+					return;
+				}
+				if (opts.showReasoning) {
+					writer.writeThinking(append);
 				}
 				return;
 			}
