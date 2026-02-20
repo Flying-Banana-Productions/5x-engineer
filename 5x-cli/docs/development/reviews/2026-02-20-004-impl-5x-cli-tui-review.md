@@ -166,3 +166,95 @@ File: `src/utils/event-router.ts`.
 
 - **Phase 3 completion:** YES.
 - **Ready for Phase 4:** YES.
+
+---
+
+## Addendum (2026-02-20) — Implementation review (Phase 4)
+
+**Reviewed:** `ddbaef18d1980b06787753d410bfb7348647989b` (no follow-on commits)
+
+### What shipped
+
+- **Session titles**: `InvokeOptions.sessionTitle` added and forwarded to `session.create()`.
+- **Orchestrator wiring**: `tui?: TuiController` added to loop option types; `run` and `plan-review` commands pass the controller.
+- **Phase loop UX**: `src/orchestrator/phase-execution-loop.ts` adds phase-boundary toasts and attempts session switching after each agent invocation.
+- **Docs/tests**: Phase 4 checklist marked complete; new `test/tui/phase4-integration.test.ts` added.
+
+### Assessment (Staff Eng)
+
+- **Correctness**: toast calls are best-effort (controller swallows disconnect errors), good. Session switching does not occur “after `session.create()`”; it happens only after `invokeFor*()` resolves, which is typically after the prompt completes. The TUI therefore won’t reliably track the active session while the agent streams.
+- **Architecture**: plumbing `tui` through command → loop options matches Phases 2/3. But `src/orchestrator/plan-review-loop.ts` accepts `tui` and never uses it, and `src/commands/plan.ts` remains un-integrated. Phase 4 behavior is uneven across commands.
+- **Security**: no new material concerns introduced in this commit.
+- **Operability**: the plan’s “Phase N failed — <reason>” toast is not implemented; “review approved” toast only happens in interactive mode (`PHASE_GATE` continue) and not in auto mode.
+- **Test strategy**: `test/tui/phase4-integration.test.ts` is mostly interface/type assertions; it does not validate Phase 4 behavioral requirements (titles, session switching timing, toast boundaries, stdout-clean).
+
+### Issues
+
+#### P0 — Session switching happens after the work (not after `session.create()`)
+
+Phase 4’s goal is “TUI tracks the active session.” Current `selectSession()` calls occur only after `adapter.invokeForStatus()` / `invokeForVerdict()` returns, which is too late to focus the TUI during streaming.
+
+This likely requires an API change (e.g. `onSessionCreated(sessionId)` callback or a minimal TUI hook in `InvokeOptions`) so the adapter can notify immediately after `session.create()`.
+
+Files: `src/agents/opencode.ts`, `src/agents/types.ts`, `src/orchestrator/phase-execution-loop.ts`.
+
+#### P0 — Plan-review loop has no Phase 4 integration
+
+`src/commands/plan-review.ts` passes `tui`, but `src/orchestrator/plan-review-loop.ts` never uses it (no session titles, no session switching, no toasts). In TUI mode (`--auto`), plan-review won’t show the intended session focus behavior.
+
+File: `src/orchestrator/plan-review-loop.ts`.
+
+#### P1 — Plan command does not set a session title or switch sessions
+
+`src/commands/plan.ts` invokes the agent without `sessionTitle` and never calls `tui.selectSession()` using the returned `sessionId`. This is explicitly called out in Phase 4’s “Session Titles” table and user-facing goal.
+
+File: `src/commands/plan.ts`.
+
+#### P1 — Missing “Phase N failed — <reason>” toast and auto-mode “approved” toast
+
+The plan specifies error toasts and “review approved” feedback. Current implementation covers phase start, auto escalation, auto phase complete (start review), and interactive continue; it does not toast on hard failures, and it does not toast “approved” in auto mode.
+
+File: `src/orchestrator/phase-execution-loop.ts` (and likely `src/orchestrator/plan-review-loop.ts`).
+
+#### P1 — Phase 4 tests do not validate Phase 4 requirements
+
+Tests should assert behavior, not just interface shape:
+- session titles passed for each invocation (including plan-review + plan)
+- session switching occurs at session creation time (see P0)
+- toast calls at specified boundaries
+- stdout-clean guarantee when `tui.active === true`
+
+Files: `test/tui/phase4-integration.test.ts` (and new tests in `test/orchestrator/*`).
+
+### Local verification
+
+- `bun test`: 488 pass, 6 skip, 0 fail
+
+### Phase readiness
+
+- **Phase 4 completion:** ❌ — P0 session switching timing + missing plan/plan-review integration + behavioral tests.
+- **Ready for Phase 5:** ⚠️ — recommended to close Phase 4 P0s first; Phase 5 UX depends on reliable session focus + notifications.
+
+---
+
+## Addendum (2026-02-20) — Staff Engineer review (Phase 4, commit ddbaef1)
+
+**Reviewed:** `ddbaef18d1980b06787753d410bfb7348647989b` (no follow-on commits)
+
+### Assessment (Staff Eng)
+
+- **Correctness / plan compliance**: Phase 4 is marked complete in `docs/development/004-impl-5x-cli-tui.md`, but key behaviors are either missing (plan-review/plan) or implemented too late (session switching after invoke). This does not meet the stated goal (“TUI tracks the active session”).
+- **Architecture**: Passing `tui?: TuiController` through command → orchestrator options is consistent with earlier phases. The missing integration in `src/orchestrator/plan-review-loop.ts` indicates the contract is only partially adopted.
+- **Operability**: Toasts cover some boundaries, but the plan-required failure toast is not implemented; “approved — continuing” feedback is absent in auto mode because interactive PHASE_GATE is skipped.
+- **Tests**: Phase 4 tests are type-level; they do not protect the behavioral requirements (session selection timing, toast boundaries, stdout-clean).
+
+### Recommended fixes
+
+1. **Select the session at creation time**: needs an adapter-level hook (e.g. `InvokeOptions.onSessionCreated(sessionId)` or `InvokeOptions.tui?: Pick<TuiController, "selectSession">`) so `OpenCodeAdapter` can call it immediately after `session.create()`.
+2. **Implement Phase 4 consistently**: add session titles + toasts + session selection in `src/orchestrator/plan-review-loop.ts` and ensure `src/commands/plan.ts` passes a descriptive `sessionTitle` and focuses the session.
+3. **Add behavioral tests**: mock adapter/TUI to assert call order and expected toast calls; add a stdout-clean regression test under `tui.active === true`.
+
+### Phase readiness
+
+- **Phase 4 completion:** NO
+- **Ready for Phase 5:** NO (Phase 5 UX depends on reliable session focus + notifications)

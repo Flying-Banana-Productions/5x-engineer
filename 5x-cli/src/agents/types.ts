@@ -44,6 +44,14 @@ export interface InvokeOptions {
 
 	/** Optional session title for TUI display. Passed to session.create(). */
 	sessionTitle?: string;
+
+	/**
+	 * Optional callback invoked immediately after session creation.
+	 * Used by TUI controller to switch focus to the new session.
+	 * This fires before the prompt is sent, allowing the TUI to track
+	 * the active session during streaming.
+	 */
+	onSessionCreated?: (sessionId: string) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

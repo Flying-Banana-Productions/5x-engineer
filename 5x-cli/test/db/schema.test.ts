@@ -24,7 +24,7 @@ describe("runMigrations", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(2);
+			expect(getSchemaVersion(db)).toBe(3);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -36,7 +36,7 @@ describe("runMigrations", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(2);
+			expect(getSchemaVersion(db)).toBe(3);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -61,6 +61,7 @@ describe("runMigrations", () => {
 			expect(names).toContain("run_events");
 			expect(names).toContain("agent_results");
 			expect(names).toContain("quality_results");
+			expect(names).toContain("phase_progress");
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -146,7 +147,7 @@ describe("runMigrations", () => {
       `);
 
 			expect(() => runMigrations(db)).toThrow(
-				"DB schema version v999 is newer than this CLI's maximum known version v2",
+				"DB schema version v999 is newer than this CLI's maximum known version v3",
 			);
 		} finally {
 			rmSync(tmp, { recursive: true });
@@ -165,7 +166,7 @@ describe("runMigrations", () => {
 			expect(getSchemaVersion(db)).toBe(1);
 
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(2);
+			expect(getSchemaVersion(db)).toBe(3);
 
 			const columns = db
 				.query("PRAGMA table_info(agent_results)")

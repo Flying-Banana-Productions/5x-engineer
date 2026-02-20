@@ -309,6 +309,7 @@ export default defineCommand({
 			// Invoke agent with structured output.
 			// Must include tui.active so SSE stdout formatting is suppressed
 			// when the TUI owns the terminal (P0.6 output ownership).
+			// Phase 4: Pass session title and onSessionCreated callback for TUI
 			const result = await adapter.invokeForStatus({
 				prompt: template.prompt,
 				model: config.author.model,
@@ -317,6 +318,10 @@ export default defineCommand({
 				logPath,
 				quiet: effectiveQuiet || tui.active,
 				showReasoning: args["show-reasoning"],
+				sessionTitle: "Plan generation",
+				onSessionCreated: tui.active
+					? (sessionId) => tui.selectSession(sessionId, projectRoot)
+					: undefined,
 			});
 
 			if (!tui.active) {

@@ -349,6 +349,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 		}
 		const sessionId = sessionResult.data.id;
 
+		// Invoke onSessionCreated callback immediately so TUI can track the session
+		// during streaming (not after the prompt completes).
+		if (opts.onSessionCreated) {
+			await opts.onSessionCreated(sessionId);
+		}
+
 		// 2. Cancellation infrastructure (P0.2: wire opts.signal + timeout)
 		// Inactivity timeout: resets whenever new SSE events are received
 		const timeoutController = new AbortController();

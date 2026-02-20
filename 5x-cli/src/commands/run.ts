@@ -7,7 +7,11 @@ import {
 } from "../agents/factory.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
-import { getPlan, upsertPlan } from "../db/operations.js";
+import {
+	getApprovedPhaseNumbers,
+	getPlan,
+	upsertPlan,
+} from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
 import { branchNameFromPlan, checkGitSafety, createWorktree } from "../git.js";
 import { acquireLock, registerLockCleanup, releaseLock } from "../lock.js";
@@ -111,15 +115,6 @@ export default defineCommand({
 			process.exit(1);
 		}
 
-		// Check for incomplete phases
-		const incompletePhases = plan.phases.filter((p) => !p.isComplete);
-		if (incompletePhases.length === 0) {
-			console.log();
-			console.log("  All phases are already complete. Nothing to run.");
-			console.log();
-			process.exit(0);
-		}
-
 		// Derive project root
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
@@ -127,6 +122,17 @@ export default defineCommand({
 		// Initialize DB
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
+
+		const approvedPhases = new Set(getApprovedPhaseNumbers(db, canonical));
+		const incompletePhases = plan.phases.filter(
+			(p) => !approvedPhases.has(p.number),
+		);
+		if (incompletePhases.length === 0) {
+			console.log();
+			console.log("  All phases are review-approved. Nothing to run.");
+			console.log();
+			process.exit(0);
+		}
 
 		// --- Resolve workdir ---
 		let workdir = projectRoot;

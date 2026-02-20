@@ -12,6 +12,17 @@ export interface PlanRow {
 	updated_at: string;
 }
 
+export interface PhaseProgressRow {
+	plan_path: string;
+	phase: string;
+	implementation_done: number; // 0 or 1
+	latest_review_readiness: ReviewerVerdict["readiness"] | null;
+	review_approved: number; // 0 or 1
+	blocked_reason: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface RunRow {
 	id: string;
 	plan_path: string;
@@ -170,6 +181,112 @@ export function getPlan(db: Database, planPath: string): PlanRow | null {
 	return db
 		.query("SELECT * FROM plans WHERE plan_path = ?1")
 		.get(planPath) as PlanRow | null;
+}
+
+function ensurePhaseProgressRow(
+	db: Database,
+	planPath: string,
+	phase: string,
+): void {
+	const canonical = canonicalizePlanPath(planPath);
+	upsertPlan(db, { planPath: canonical });
+	db.query(
+		`INSERT INTO phase_progress (plan_path, phase)
+     VALUES (?1, ?2)
+     ON CONFLICT(plan_path, phase) DO NOTHING`,
+	).run(canonical, phase);
+}
+
+export function markPhaseImplementationDone(
+	db: Database,
+	planPath: string,
+	phase: string,
+	done: boolean,
+): void {
+	const canonical = canonicalizePlanPath(planPath);
+	ensurePhaseProgressRow(db, canonical, phase);
+	db.query(
+		`UPDATE phase_progress
+     SET implementation_done = ?3,
+         updated_at = datetime('now')
+     WHERE plan_path = ?1 AND phase = ?2`,
+	).run(canonical, phase, done ? 1 : 0);
+}
+
+export function setPhaseReviewOutcome(
+	db: Database,
+	planPath: string,
+	phase: string,
+	readiness: ReviewerVerdict["readiness"],
+	reviewApproved: boolean,
+	blockedReason: string | null = null,
+): void {
+	const canonical = canonicalizePlanPath(planPath);
+	ensurePhaseProgressRow(db, canonical, phase);
+	db.query(
+		`UPDATE phase_progress
+     SET latest_review_readiness = ?3,
+         review_approved = ?4,
+         blocked_reason = ?5,
+         updated_at = datetime('now')
+     WHERE plan_path = ?1 AND phase = ?2`,
+	).run(canonical, phase, readiness, reviewApproved ? 1 : 0, blockedReason);
+}
+
+export function setPhaseReviewApproved(
+	db: Database,
+	planPath: string,
+	phase: string,
+	approved: boolean,
+	blockedReason: string | null = null,
+): void {
+	const canonical = canonicalizePlanPath(planPath);
+	ensurePhaseProgressRow(db, canonical, phase);
+	db.query(
+		`UPDATE phase_progress
+     SET review_approved = ?3,
+         blocked_reason = ?4,
+         updated_at = datetime('now')
+     WHERE plan_path = ?1 AND phase = ?2`,
+	).run(canonical, phase, approved ? 1 : 0, blockedReason);
+}
+
+export function getApprovedPhaseNumbers(
+	db: Database,
+	planPath: string,
+): string[] {
+	const canonical = canonicalizePlanPath(planPath);
+	const rows = db
+		.query(
+			`SELECT phase FROM phase_progress
+       WHERE plan_path = ?1 AND review_approved = 1
+       ORDER BY CAST(phase AS REAL) ASC`,
+		)
+		.all(canonical) as Array<{ phase: string }>;
+	return rows.map((r) => r.phase);
+}
+
+export function getPhaseProgress(
+	db: Database,
+	planPath: string,
+	phase: string,
+): PhaseProgressRow | null {
+	const canonical = canonicalizePlanPath(planPath);
+	return db
+		.query("SELECT * FROM phase_progress WHERE plan_path = ?1 AND phase = ?2")
+		.get(canonical, phase) as PhaseProgressRow | null;
+}
+
+export function listPhaseProgress(
+	db: Database,
+	planPath: string,
+): PhaseProgressRow[] {
+	const canonical = canonicalizePlanPath(planPath);
+	return db
+		.query(
+			"SELECT * FROM phase_progress WHERE plan_path = ?1 ORDER BY CAST(phase AS REAL) ASC",
+		)
+		.all(canonical) as PhaseProgressRow[];
 }
 
 // --- Runs ---

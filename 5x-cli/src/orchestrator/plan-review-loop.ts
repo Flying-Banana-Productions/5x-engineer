@@ -204,8 +204,8 @@ async function defaultHumanGate(
 	}
 	console.log();
 	console.log("  Options:");
-	console.log("    c = continue (provide guidance and re-review)");
-	console.log("    a = approve (accept current state)");
+	console.log("    f = fix and re-review");
+	console.log("    o = override and move on (force approve)");
 	console.log("    q = abort (stop the review loop)");
 	console.log();
 
@@ -215,11 +215,13 @@ async function defaultHumanGate(
 		return "abort";
 	}
 
-	process.stdout.write("  Choice [c/a/q]: ");
+	process.stdout.write("  Choice [f/o/q]: ");
 	const input = await readLine();
 	const choice = input.trim().toLowerCase();
-	if (choice === "c" || choice === "continue") return "continue";
-	if (choice === "a" || choice === "approve") return "approve";
+	if (choice === "f" || choice === "fix" || choice === "continue")
+		return "continue";
+	if (choice === "o" || choice === "override" || choice === "approve")
+		return "approve";
 	return "abort";
 }
 
@@ -564,6 +566,9 @@ export async function runPlanReviewLoop(
 
 				let reviewResult: InvokeVerdict;
 				try {
+					// Phase 4: Pass descriptive session title for TUI
+					const reviewIteration = Math.floor(iteration / 2) + 1;
+					const sessionTitle = `Plan review — iteration ${reviewIteration}`;
 					reviewResult = await adapter.invokeForVerdict({
 						prompt: reviewerTemplate.prompt,
 						model: config.reviewer.model,
@@ -573,6 +578,11 @@ export async function runPlanReviewLoop(
 						quiet: resolveQuiet(),
 						showReasoning,
 						signal: options.signal,
+						sessionTitle,
+						// Phase 4: Select session immediately after creation
+						onSessionCreated: options.tui
+							? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+							: undefined,
 					});
 				} catch (err) {
 					// Check for cancellation first
@@ -783,6 +793,7 @@ export async function runPlanReviewLoop(
 				const authorTemplate = renderTemplate("author-process-review", {
 					review_path: reviewPath,
 					plan_path: planPath,
+					user_notes: "(No additional notes)",
 				});
 
 				const authorResultId = generateId();
@@ -790,6 +801,9 @@ export async function runPlanReviewLoop(
 
 				let authorResult: InvokeStatus;
 				try {
+					// Phase 4: Pass descriptive session title for TUI
+					const fixIteration = Math.floor(iteration / 2) + 1;
+					const sessionTitle = `Plan revision — iteration ${fixIteration}`;
 					authorResult = await adapter.invokeForStatus({
 						prompt: authorTemplate.prompt,
 						model: config.author.model,
@@ -799,6 +813,11 @@ export async function runPlanReviewLoop(
 						quiet: resolveQuiet(),
 						showReasoning,
 						signal: options.signal,
+						sessionTitle,
+						// Phase 4: Select session immediately after creation
+						onSessionCreated: options.tui
+							? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+							: undefined,
 					});
 				} catch (err) {
 					// Check for cancellation first
@@ -953,8 +972,11 @@ export async function runPlanReviewLoop(
 
 				switch (decision) {
 					case "continue":
-						// Resume the state that triggered the escalation (REVIEW or AUTO_FIX)
-						state = preEscalateState;
+						// Resume explicit retry state when present; otherwise return to the
+						// state that triggered escalation.
+						state =
+							(lastEscalation.retryState as LoopState | undefined) ??
+							preEscalateState;
 						break;
 					case "approve":
 						state = "APPROVED";
@@ -1034,6 +1056,7 @@ function routePlanVerdict(
 			reason: options.auto
 				? `${humanItems.length} item(s) require human review (auto mode cannot resolve)`
 				: `${humanItems.length} item(s) require human review`,
+			retryState: "AUTO_FIX",
 			items: humanItems.map((i) => ({
 				id: i.id,
 				title: i.title,

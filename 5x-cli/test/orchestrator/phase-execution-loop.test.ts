@@ -20,6 +20,7 @@ import {
 	createRun,
 	getAgentResults,
 	getRunEvents,
+	setPhaseReviewApproved,
 	updateRunStatus,
 	upsertAgentResult,
 } from "../../src/db/operations.js";
@@ -244,6 +245,37 @@ describe("runPhaseExecutionLoop", () => {
 		);
 	});
 
+	test("phase execution does not rely on checklist completion for gating", async () => {
+		const checkedPlan = `# Simple Plan
+
+## Phase 1: Only Phase
+
+- [x] Do the thing
+`;
+		const { tmp, db, reviewPath, planPath, cleanup } =
+			createTestEnv(checkedPlan);
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(adapter.callCount).toBe(2);
+			expect(result.complete).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("single-phase happy path: author->review->ready->complete", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
@@ -412,6 +444,54 @@ describe("runPhaseExecutionLoop", () => {
 			expect(result.aborted).toBe(true);
 			expect(result.escalations.length).toBeGreaterThan(0);
 			expect(result.escalations[0]?.reason).toContain("human review");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("human_required review escalation continue routes to AUTO_FIX", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Needs architecture decision",
+								action: "human_required",
+								reason: "Pick callback shape",
+							},
+						],
+					},
+				},
+				// Continue from escalation should invoke author fix next (AUTO_FIX)
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => ({
+						action: "continue",
+						guidance: "Use onSessionCreated callback",
+					}),
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(adapter.callCount).toBe(4);
 		} finally {
 			cleanup();
 		}
@@ -720,13 +800,10 @@ describe("runPhaseExecutionLoop", () => {
 	});
 
 	test("starts from specified phase", async () => {
-		const planWithP1Complete = PLAN_CONTENT.replace(
-			"- [ ] Set up project\n- [ ] Add config",
-			"- [x] Set up project\n- [x] Add config",
-		);
-		const { tmp, db, reviewPath, planPath, cleanup } =
-			createTestEnv(planWithP1Complete);
+		const { tmp, db, reviewPath, planPath, cleanup } = createTestEnv();
 		try {
+			setPhaseReviewApproved(db, planPath, "1", true);
+
 			const adapter = createMockAdapter([
 				// Phase 2
 				{ type: "status", status: { result: "complete", commit: "bbb" } },

@@ -35,11 +35,15 @@ import {
 	createRun,
 	getActiveRun,
 	getAgentResults,
+	getApprovedPhaseNumbers,
 	getLatestVerdict,
 	getMaxIterationForPhase,
 	getQualityAttemptCount,
 	getStepResult,
 	hasCompletedStep,
+	markPhaseImplementationDone,
+	setPhaseReviewApproved,
+	setPhaseReviewOutcome,
 	updateRunStatus,
 	upsertAgentResult,
 	upsertPlan,
@@ -382,8 +386,9 @@ export async function runPhaseExecutionLoop(
 		};
 	}
 
-	// Determine which phases to execute
-	let phases = plan.phases.filter((p) => !p.isComplete);
+	// Determine which phases to execute from DB-backed review approval state.
+	const approvedPhaseSet = new Set(getApprovedPhaseNumbers(db, dbPlanPath));
+	let phases = plan.phases.filter((p) => !approvedPhaseSet.has(p.number));
 	if (startPhaseNumber) {
 		const startIdx = phases.findIndex((p) => p.number === startPhaseNumber);
 		if (startIdx >= 0) {
@@ -391,7 +396,7 @@ export async function runPhaseExecutionLoop(
 		}
 	}
 
-	let phasesCompleted = plan.phases.filter((p) => p.isComplete).length;
+	let phasesCompleted = approvedPhaseSet.size;
 	const totalPhases = plan.phases.length;
 
 	// --- Outer loop: iterate through phases ---
@@ -611,6 +616,7 @@ export async function runPhaseExecutionLoop(
 						log(
 							`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
 						);
+						markPhaseImplementationDone(db, dbPlanPath, phase.number, true);
 						iteration++;
 						state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 						break;
@@ -647,11 +653,11 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							// Phase 4: Select session immediately after creation (not after invoke)
+							onSessionCreated: options.tui
+								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+								: undefined,
 						});
-						// Phase 4: Select session in TUI after creation
-						if (options.tui && authorResult.sessionId) {
-							await options.tui.selectSession(authorResult.sessionId, workdir);
-						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -662,9 +668,18 @@ export async function runPhaseExecutionLoop(
 							break;
 						}
 						// Hard failure: timeout, network, structured output error
+						const errorMessage =
+							err instanceof Error ? err.message : String(err);
+						// Phase 4: Show toast for phase failure
+						if (options.tui) {
+							await options.tui.showToast(
+								`Phase ${phase.number} failed — ${errorMessage}`,
+								"error",
+							);
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Author invocation failed: ${err instanceof Error ? err.message : String(err)}`,
+								`Author invocation failed: ${errorMessage}`,
 								executeLogPath,
 							),
 							iteration,
@@ -792,6 +807,7 @@ export async function runPhaseExecutionLoop(
 					log(
 						`  Author completed. Commit: ${lastCommit?.slice(0, 8) ?? "unknown"}`,
 					);
+					markPhaseImplementationDone(db, dbPlanPath, phase.number, true);
 					iteration++;
 					state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
 					break;
@@ -903,7 +919,9 @@ export async function runPhaseExecutionLoop(
 					const fixPrompt = renderTemplate("author-process-review", {
 						review_path: phaseReviewPath,
 						plan_path: planPath,
+						user_notes: userGuidance ?? "(No additional notes)",
 					});
+					userGuidance = undefined;
 
 					// Prepend quality failure context
 					const qualityFixPrompt = `Quality gates failed. Fix the following issues and ensure all tests pass:\n\n${failureDetails}\n\n---\n\n${fixPrompt.prompt}`;
@@ -929,11 +947,11 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							// Phase 4: Select session immediately after creation (not after invoke)
+							onSessionCreated: options.tui
+								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+								: undefined,
 						});
-						// Phase 4: Select session in TUI after creation
-						if (options.tui && fixResult.sessionId) {
-							await options.tui.selectSession(fixResult.sessionId, workdir);
-						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -943,9 +961,18 @@ export async function runPhaseExecutionLoop(
 							state = "ABORTED";
 							break;
 						}
+						const errorMessage =
+							err instanceof Error ? err.message : String(err);
+						// Phase 4: Show toast for phase failure
+						if (options.tui) {
+							await options.tui.showToast(
+								`Phase ${phase.number} failed — ${errorMessage}`,
+								"error",
+							);
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Author invocation failed during quality fix: ${err instanceof Error ? err.message : String(err)}`,
+								`Author invocation failed during quality fix: ${errorMessage}`,
 								qrFixLogPath,
 							),
 							iteration,
@@ -1124,6 +1151,19 @@ export async function runPhaseExecutionLoop(
 						}
 
 						// Route verdict (shared routing logic)
+						const humanRequiredCount = verdict.items.filter(
+							(i) => i.action === "human_required",
+						).length;
+						setPhaseReviewOutcome(
+							db,
+							dbPlanPath,
+							phase.number,
+							verdict.readiness,
+							verdict.readiness === "ready",
+							humanRequiredCount > 0
+								? `${humanRequiredCount} item(s) require human review`
+								: null,
+						);
 						const routeResult = routeVerdict(
 							verdict,
 							iteration,
@@ -1189,11 +1229,11 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							// Phase 4: Select session immediately after creation (not after invoke)
+							onSessionCreated: options.tui
+								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+								: undefined,
 						});
-						// Phase 4: Select session in TUI after creation
-						if (options.tui && reviewResult.sessionId) {
-							await options.tui.selectSession(reviewResult.sessionId, workdir);
-						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -1203,9 +1243,18 @@ export async function runPhaseExecutionLoop(
 							state = "ABORTED";
 							break;
 						}
+						const errorMessage =
+							err instanceof Error ? err.message : String(err);
+						// Phase 4: Show toast for phase failure
+						if (options.tui) {
+							await options.tui.showToast(
+								`Phase ${phase.number} failed — ${errorMessage}`,
+								"error",
+							);
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
+								`Reviewer invocation failed: ${errorMessage}`,
 								reviewLogPath,
 							),
 							iteration,
@@ -1296,6 +1345,20 @@ export async function runPhaseExecutionLoop(
 
 					log(`  Verdict: ${reviewResult.verdict.readiness}`);
 
+					const humanRequiredCount = reviewResult.verdict.items.filter(
+						(i) => i.action === "human_required",
+					).length;
+					setPhaseReviewOutcome(
+						db,
+						dbPlanPath,
+						phase.number,
+						reviewResult.verdict.readiness,
+						reviewResult.verdict.readiness === "ready",
+						humanRequiredCount > 0
+							? `${humanRequiredCount} item(s) require human review`
+							: null,
+					);
+
 					// Route verdict
 					const routeResult = routeVerdict(
 						reviewResult.verdict,
@@ -1329,6 +1392,7 @@ export async function runPhaseExecutionLoop(
 							"status",
 						)
 					) {
+						userGuidance = undefined;
 						log(`  Skipping auto-fix step ${iteration} (already completed)`);
 						// Route based on exact step result (not phase-wide latest)
 						const stepRow = getStepResult(
@@ -1437,7 +1501,9 @@ export async function runPhaseExecutionLoop(
 					const fixTemplate = renderTemplate("author-process-review", {
 						review_path: phaseReviewPath,
 						plan_path: planPath,
+						user_notes: userGuidance ?? "(No additional notes)",
 					});
+					userGuidance = undefined;
 
 					const autoFixResultId = generateId();
 					const autoFixLogPath = join(
@@ -1459,11 +1525,11 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							// Phase 4: Select session immediately after creation (not after invoke)
+							onSessionCreated: options.tui
+								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
+								: undefined,
 						});
-						// Phase 4: Select session in TUI after creation
-						if (options.tui && autoFixResult.sessionId) {
-							await options.tui.selectSession(autoFixResult.sessionId, workdir);
-						}
 					} catch (err) {
 						// Check for cancellation first
 						if (
@@ -1473,9 +1539,18 @@ export async function runPhaseExecutionLoop(
 							state = "ABORTED";
 							break;
 						}
+						const errorMessage =
+							err instanceof Error ? err.message : String(err);
+						// Phase 4: Show toast for phase failure
+						if (options.tui) {
+							await options.tui.showToast(
+								`Phase ${phase.number} failed — ${errorMessage}`,
+								"error",
+							);
+						}
 						const event: EscalationEvent = {
 							reason: buildEscalationReason(
-								`Author invocation failed during auto-fix: ${err instanceof Error ? err.message : String(err)}`,
+								`Author invocation failed during auto-fix: ${errorMessage}`,
 								autoFixLogPath,
 							),
 							iteration,
@@ -1598,6 +1673,7 @@ export async function runPhaseExecutionLoop(
 					if (autoFixResult.status.commit) {
 						lastCommit = autoFixResult.status.commit;
 					}
+					markPhaseImplementationDone(db, dbPlanPath, phase.number, true);
 
 					// Back to quality check (or review if skipping quality)
 					qualityAttempt = 0; // reset quality attempts after fix
@@ -1653,24 +1729,37 @@ export async function runPhaseExecutionLoop(
 					});
 
 					switch (response.action) {
-						case "continue":
-							// Resume the state that triggered the escalation (not always
-							// EXECUTE — could be REVIEW, AUTO_FIX, QUALITY_RETRY, etc.)
-							// Only store guidance when resuming to EXECUTE — that is the
-							// only state that reads userGuidance. Storing it for other
-							// states would cause it to leak into a later EXECUTE invocation
-							// for a different phase (stale guidance bug).
+						case "continue": {
+							// Resume the explicit retry state when set (e.g. review
+							// escalation with human_required should route to AUTO_FIX),
+							// otherwise resume the state that triggered escalation.
+							const resumeState =
+								(lastEscalation.retryState as PhaseState | undefined) ??
+								preEscalateState;
+							// Guidance can be consumed by EXECUTE, AUTO_FIX, and QUALITY_RETRY
+							// prompts via template user_notes.
 							if ("guidance" in response && response.guidance) {
-								if (preEscalateState === "EXECUTE") {
+								if (
+									resumeState === "EXECUTE" ||
+									resumeState === "AUTO_FIX" ||
+									resumeState === "QUALITY_RETRY"
+								) {
 									userGuidance = response.guidance;
 								}
-								// When resuming to non-EXECUTE states, guidance is
-								// intentionally dropped — those states have no slot for it.
 							}
-							state = preEscalateState;
+							state = resumeState;
 							break;
+						}
 						case "approve":
-							state = "PHASE_GATE";
+							setPhaseReviewApproved(db, dbPlanPath, phase.number, true, null);
+							appendRunEvent(db, {
+								runId,
+								eventType: "phase_force_approved",
+								phase: phase.number,
+								iteration,
+								data: { reason: lastEscalation.reason },
+							});
+							state = "PHASE_COMPLETE";
 							break;
 						case "abort":
 							state = "ABORTED";
@@ -1746,6 +1835,7 @@ export async function runPhaseExecutionLoop(
 		}
 
 		// Phase complete
+		setPhaseReviewApproved(db, dbPlanPath, phase.number, true, null);
 		phasesCompleted++;
 		appendRunEvent(db, {
 			runId,
@@ -1831,6 +1921,7 @@ function routeVerdict(
 	if (humanItems.length > 0) {
 		const event: EscalationEvent = {
 			reason: `${humanItems.length} item(s) require human review`,
+			retryState: "AUTO_FIX",
 			items: humanItems.map((i) => ({
 				id: i.id,
 				title: i.title,

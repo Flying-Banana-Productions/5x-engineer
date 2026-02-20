@@ -1,7 +1,7 @@
 ---
 name: author-process-review
 version: 1
-variables: [review_path, plan_path]
+variables: [review_path, plan_path, user_notes]
 ---
 
 You are addressing review feedback for the implementation plan at `{{plan_path}}`.
@@ -32,6 +32,10 @@ You are addressing review feedback for the implementation plan at `{{plan_path}}
 - Re-read the review document after making changes to verify all concerns are addressed.
 - If code was changed, run all tests and ensure they pass.
 - Commit your changes with a message referencing the review document and (if applicable) which addendum was addressed.
+
+## User Notes
+
+{{user_notes}}
 
 ## Completion
 

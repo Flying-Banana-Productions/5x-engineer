@@ -382,7 +382,7 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("escalation: human continues → re-review", async () => {
+	test("escalation: human continues → author fix then re-review", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
 			let humanCalls = 0;
@@ -402,6 +402,8 @@ describe("runPlanReviewLoop", () => {
 						],
 					},
 				},
+				// Author fix after human guidance
+				{ type: "status", status: { result: "complete" } },
 				// Second review after human continues: approved
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);

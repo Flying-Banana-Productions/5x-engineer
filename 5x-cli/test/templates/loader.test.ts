@@ -142,6 +142,7 @@ describe("author-process-review template", () => {
 	const vars = {
 		review_path: "docs/development/reviews/2026-02-15-cli-review.md",
 		plan_path: "docs/development/001-impl-cli.md",
+		user_notes: "(No additional notes)",
 	};
 
 	test("renders with valid variables", () => {

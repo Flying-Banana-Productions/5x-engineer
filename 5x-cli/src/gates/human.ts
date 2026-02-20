@@ -142,10 +142,16 @@ export async function escalationGate(
 		}
 	}
 
+	if (event.retryState) {
+		console.log(`  Next step on fix: ${event.retryState}`);
+	}
+
 	console.log();
 	console.log("  Options:");
-	console.log("    c = continue (agent retries with your guidance)");
-	console.log("    a = approve (accept current state, move on)");
+	console.log(
+		"    f = fix with guidance (agent addresses issues, then re-review)",
+	);
+	console.log("    o = override and move on (force approve this phase)");
 	console.log("    q = abort (stop execution)");
 	console.log();
 
@@ -154,15 +160,15 @@ export async function escalationGate(
 		return { action: "abort" };
 	}
 
-	process.stdout.write("  Choice [c/a/q]: ");
+	process.stdout.write("  Choice [f/o/q]: ");
 	const input = await readLine();
 	const choice = input.trim().toLowerCase();
 
-	if (choice === "a" || choice === "approve") {
+	if (choice === "o" || choice === "override" || choice === "approve") {
 		return { action: "approve" };
 	}
 
-	if (choice === "c" || choice === "continue") {
+	if (choice === "f" || choice === "fix" || choice === "continue") {
 		process.stdout.write("  Guidance (optional, press Enter to skip): ");
 		const guidance = await readLine();
 		return {
