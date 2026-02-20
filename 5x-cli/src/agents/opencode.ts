@@ -211,7 +211,7 @@ async function writeEventsToLog(
 
 				const formatted = formatSseEvent(event);
 				if (formatted != null) {
-					process.stdout.write(`${formatted}\n`);
+					process.stdout.write(`  ${formatted.text}\n`);
 				}
 			}
 		}

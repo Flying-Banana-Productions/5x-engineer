@@ -2,30 +2,83 @@
  * SSE event formatter for real-time console output.
  *
  * Accepts an OpenCode SSE event object (from event.subscribe() stream) and
- * returns a formatted display string, or null to suppress the event silently.
+ * returns a FormattedEvent ({ text, dim }) or null to suppress the event.
  *
  * Design:
  * - Unknown event types return null (forward-compatible with future event types).
- * - All output lines are indented with two spaces to align with orchestrator
- *   status messages.
+ * - No indent, no ANSI codes — caller (StreamWriter) handles presentation.
+ * - No width/truncation — formatter returns semantic text only.
  * - Verbose events (permission, file-watcher, etc.) are suppressed.
  */
-
-const TOOL_INPUT_LIMIT = 120;
-const TOOL_RESULT_LIMIT = 200;
 
 /** Threshold for pre-scan: skip full JSON.stringify if any string value exceeds this. */
 const LARGE_STRING_THRESHOLD = 1024;
 
+/** Max slice of tool output scanned before whitespace collapse. */
+const TOOL_OUTPUT_MAX_SLICE = 500;
+
+/** Limit for legacy safeInputSummary fallback. */
+const SAFE_INPUT_LIMIT = 120;
+
+export type FormattedEvent = { text: string; dim: boolean } | null;
+
+// ---------------------------------------------------------------------------
+// Tool-aware input summaries
+// ---------------------------------------------------------------------------
+
+/**
+ * Return a human-friendly summary of tool input.
+ * Known tools extract the most useful field; unknown tools show key names.
+ */
+function toolInputSummary(tool: string, input: unknown): string {
+	if (typeof input !== "object" || input === null) return "";
+	const obj = input as Record<string, unknown>;
+	switch (tool) {
+		case "bash":
+			return typeof obj.command === "string" ? obj.command : "";
+		case "file_edit":
+		case "write":
+			return typeof obj.filePath === "string"
+				? (obj.filePath as string)
+				: typeof obj.path === "string"
+					? (obj.path as string)
+					: "";
+		case "read":
+			return typeof obj.filePath === "string"
+				? (obj.filePath as string)
+				: typeof obj.path === "string"
+					? (obj.path as string)
+					: "";
+		case "glob":
+		case "grep":
+			return typeof obj.pattern === "string" ? obj.pattern : "";
+		default: {
+			const keys = Object.keys(obj);
+			return keys.length > 0 ? `{${keys.join(", ")}}` : "";
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool output collapsing (bounded)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collapse whitespace in a bounded slice of tool output.
+ * O(k) in maxSlice, not O(n) in output.length.
+ */
+function collapseToolOutput(output: string, maxSlice: number): string {
+	const slice = output.slice(0, maxSlice);
+	return slice.replace(/\s+/g, " ").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Legacy safeInputSummary — retained for backward compat legacy events
+// ---------------------------------------------------------------------------
+
 /**
  * Safely stringify a tool input for console display.
  * Non-throwing: handles circular references and other unserializable inputs.
- * When the stringified form exceeds the limit, large objects fall back to a
- * key-only summary to avoid allocating huge intermediate strings.
- *
- * P2 perf fix: for objects, pre-scans top-level string properties and skips
- * full JSON.stringify when any value exceeds LARGE_STRING_THRESHOLD, avoiding
- * large transient allocations from file contents or verbose tool inputs.
  */
 function safeInputSummary(input: unknown, limit: number): string {
 	if (typeof input !== "object" || input === null) {
@@ -40,8 +93,6 @@ function safeInputSummary(input: unknown, limit: number): string {
 		const obj = input as Record<string, unknown>;
 		const keys = Object.keys(obj);
 
-		// Pre-scan: if any top-level string value is very large, skip full
-		// JSON.stringify to avoid allocating a huge transient string.
 		const hasLargeString = keys.some(
 			(k) =>
 				typeof obj[k] === "string" &&
@@ -57,7 +108,6 @@ function safeInputSummary(input: unknown, limit: number): string {
 
 		const s = JSON.stringify(input);
 		if (s.length > limit) {
-			// Avoid retaining the large allocation — use a key summary instead.
 			const summary =
 				keys.length > 0
 					? `{${keys.join(", ")}} (${s.length} chars)`
@@ -66,7 +116,6 @@ function safeInputSummary(input: unknown, limit: number): string {
 		}
 		return s;
 	} catch {
-		// Circular reference or other unserializable input — show key names only.
 		try {
 			const keys = Object.keys(input as object);
 			const summary =
@@ -80,11 +129,11 @@ function safeInputSummary(input: unknown, limit: number): string {
 	}
 }
 
-/**
- * Format a tool part for console display.
- * Shows tool name + input when running, output when completed, error on failure.
- */
-function formatToolPart(part: Record<string, unknown>): string | null {
+// ---------------------------------------------------------------------------
+// Tool part formatting (OpenCode SSE)
+// ---------------------------------------------------------------------------
+
+function formatToolPart(part: Record<string, unknown>): FormattedEvent {
 	const tool = (part.tool as string | undefined) ?? "unknown";
 	const state = part.state as Record<string, unknown> | undefined;
 	if (!state) return null;
@@ -95,17 +144,20 @@ function formatToolPart(part: Record<string, unknown>): string | null {
 		const input = state.input;
 		const title = state.title as string | undefined;
 		const label = title ?? tool;
-		if (input != null) {
-			const inputStr = safeInputSummary(input, TOOL_INPUT_LIMIT);
-			return `  [tool] ${label}: ${inputStr}`;
+		const summary = toolInputSummary(tool, input);
+		if (summary) {
+			return { text: `${label}: ${summary}`, dim: true };
 		}
-		return `  [tool] ${label}`;
+		return { text: label, dim: true };
 	}
 
 	if (status === "completed") {
 		const output = state.output;
 		if (typeof output === "string" && output.length > 0) {
-			return `  [result] ${output.slice(0, TOOL_RESULT_LIMIT)}`;
+			const collapsed = collapseToolOutput(output, TOOL_OUTPUT_MAX_SLICE);
+			if (collapsed.length > 0) {
+				return { text: collapsed, dim: true };
+			}
 		}
 		return null;
 	}
@@ -113,7 +165,7 @@ function formatToolPart(part: Record<string, unknown>): string | null {
 	if (status === "error") {
 		const error = state.error;
 		if (typeof error === "string") {
-			return `  [error] ${tool}: ${error.slice(0, TOOL_RESULT_LIMIT)}`;
+			return { text: `! ${tool}: ${error}`, dim: false };
 		}
 		return null;
 	}
@@ -121,39 +173,14 @@ function formatToolPart(part: Record<string, unknown>): string | null {
 	return null;
 }
 
-/**
- * Format a step-finish part for console display.
- * Shows cost and token info.
- */
-function formatStepFinish(part: Record<string, unknown>): string | null {
-	const cost = part.cost as number | undefined;
-	const tokens = part.tokens as Record<string, unknown> | undefined;
-	const reason = (part.reason as string | undefined) ?? "done";
-
-	const costStr =
-		cost != null && cost > 0 ? `cost=$${cost.toFixed(4)}` : "cost=unknown";
-
-	let tokenStr = "";
-	if (tokens) {
-		const input = tokens.input as number | undefined;
-		const output = tokens.output as number | undefined;
-		if (input != null || output != null) {
-			tokenStr = ` | tokens=${input ?? "?"}→${output ?? "?"}`;
-		}
-	}
-
-	return `  [done] ${reason} | ${costStr}${tokenStr}`;
-}
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
 
 /**
  * Format a parsed SSE event for console display. Returns null to suppress.
- *
- * Handles OpenCode SSE event shapes from event.subscribe():
- * - message.part.updated (text, tool, step-finish parts)
- * - message.part.delta (text streaming)
- * - session.error
  */
-export function formatSseEvent(event: unknown): string | null {
+export function formatSseEvent(event: unknown): FormattedEvent {
 	if (typeof event !== "object" || event === null) return null;
 	const ev = event as Record<string, unknown>;
 	const type = ev.type as string | undefined;
@@ -163,8 +190,7 @@ export function formatSseEvent(event: unknown): string | null {
 
 	// OpenCode SSE events have a properties field
 	if (props) {
-		// message.part.delta is handled upstream in writeEventsToLog (inline
-		// streaming without newlines). Reaching here would be a bug — suppress.
+		// message.part.delta — handled upstream (inline streaming)
 		if (type === "message.part.delta") return null;
 
 		// Part updates (tool calls, text, step-finish)
@@ -177,13 +203,12 @@ export function formatSseEvent(event: unknown): string | null {
 				return formatToolPart(part);
 			}
 
-			if (partType === "step-finish") {
-				return formatStepFinish(part);
-			}
+			// Step-finish → hidden (cost/token info remains in log files)
+			if (partType === "step-finish") return null;
 
-			// Text parts: delta is handled inline in writeEventsToLog.
-			// message.part.updated for text has no separate formatted output.
+			// Text / reasoning parts → handled as deltas upstream
 			if (partType === "text") return null;
+			if (partType === "reasoning") return null;
 
 			return null;
 		}
@@ -191,24 +216,20 @@ export function formatSseEvent(event: unknown): string | null {
 		// Session errors
 		if (type === "session.error") {
 			const error = props.error as string | undefined;
-			if (error) return `  [error] ${error}`;
+			if (error) return { text: `! ${error}`, dim: false };
 			return null;
 		}
 
-		// All other event types with properties → suppress (forward-compatible)
+		// All other event types with properties → suppress
 		return null;
 	}
 
-	// -----------------------------------------------------------------------
-	// Legacy NDJSON shapes (Claude Code format — kept for backward compat
-	// with existing tests and any NDJSON log replay)
-	// -----------------------------------------------------------------------
+	// -------------------------------------------------------------------
+	// Legacy NDJSON shapes (Claude Code format — backward compat)
+	// -------------------------------------------------------------------
 
-	// system init — show model, suppress verbose tools array
-	if (type === "system" && ev.subtype === "init") {
-		const model = (ev.model as string | undefined) ?? "unknown";
-		return `  [session] model=${model}`;
-	}
+	// system init → hidden (model info is in log)
+	if (type === "system" && ev.subtype === "init") return null;
 
 	// assistant message — text and tool_use blocks
 	if (type === "assistant") {
@@ -223,18 +244,16 @@ export function formatSseEvent(event: unknown): string | null {
 		for (const part of content) {
 			if (part.type === "text") {
 				const text = part.text as string | undefined;
-				if (text) {
-					for (const line of text.split("\n")) {
-						lines.push(`  ${line}`);
-					}
-				}
+				if (text) lines.push(text);
 			} else if (part.type === "tool_use") {
 				const name = (part.name as string | undefined) ?? "unknown";
-				const inputStr = safeInputSummary(part.input, TOOL_INPUT_LIMIT);
-				lines.push(`  [tool] ${name}: ${inputStr}`);
+				const inputStr = safeInputSummary(part.input, SAFE_INPUT_LIMIT);
+				lines.push(`${name}: ${inputStr}`);
 			}
 		}
-		return lines.length > 0 ? lines.join("\n") : null;
+		if (lines.length === 0) return null;
+		// Legacy events are not individually dim/non-dim — treat as normal text
+		return { text: lines.join("\n"), dim: false };
 	}
 
 	// user message — tool_result blocks
@@ -258,24 +277,20 @@ export function formatSseEvent(event: unknown): string | null {
 					text = (first.text as string | undefined) ?? "";
 				}
 				if (text) {
-					lines.push(`  [result] ${text.slice(0, TOOL_RESULT_LIMIT)}`);
+					const collapsed = collapseToolOutput(text, TOOL_OUTPUT_MAX_SLICE);
+					if (collapsed.length > 0) {
+						lines.push(collapsed);
+					}
 				}
 			}
 		}
-		return lines.length > 0 ? lines.join("\n") : null;
+		if (lines.length === 0) return null;
+		return { text: lines.join("\n"), dim: true };
 	}
 
-	// result — completion summary
-	if (type === "result") {
-		const subtype = (ev.subtype as string | undefined) ?? "unknown";
-		const cost = ev.total_cost_usd as number | undefined;
-		const duration = ev.duration_ms as number | undefined;
-		const costStr = cost !== undefined ? `$${cost.toFixed(4)}` : "unknown";
-		const durationStr =
-			duration !== undefined ? `${(duration / 1000).toFixed(1)}s` : "unknown";
-		return `  [done] ${subtype} | cost=${costStr} | ${durationStr}`;
-	}
+	// result → hidden (same rationale as step-finish)
+	if (type === "result") return null;
 
-	// Unknown event type — skip silently (forward-compatible)
+	// Unknown event type — skip silently
 	return null;
 }

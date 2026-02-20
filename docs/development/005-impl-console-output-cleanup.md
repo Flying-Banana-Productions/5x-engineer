@@ -327,7 +327,7 @@ Word wrap algorithm:
 
 ---
 
-## Phase 2: Formatter + caller update — simplified event formatting
+## Phase 2: Formatter + caller update — simplified event formatting ✓ COMPLETE
 
 **Completion gate:** `formatSseEvent()` returns new type, `opencode.ts` consumes
 the new type via direct `process.stdout.write` (no StreamWriter yet), all
@@ -420,14 +420,14 @@ format. `system init` -> `null` (hidden; model info is in log).
 **`safeInputSummary()`** retained as fallback for the `default` case in
 `toolInputSummary()` and for legacy events.
 
-- [ ] Return type is `FormattedEvent` (`{ text, dim } | null`)
-- [ ] No width/truncation parameter — formatter returns semantic text only
-- [ ] Tool-specific input summaries for bash, file_edit, write, read, glob, grep
-- [ ] Tool results: bounded slice then whitespace collapse (O(k) in display width, not O(n) in output size)
-- [ ] Step-finish returns `null`
-- [ ] Error lines use ASCII `!` marker (no Unicode glyphs)
-- [ ] No indent or ANSI codes in returned text (caller handles those)
-- [ ] Legacy NDJSON events updated to match
+- [x] Return type is `FormattedEvent` (`{ text, dim } | null`)
+- [x] No width/truncation parameter — formatter returns semantic text only
+- [x] Tool-specific input summaries for bash, file_edit, write, read, glob, grep
+- [x] Tool results: bounded slice then whitespace collapse (O(k) in display width, not O(n) in output size)
+- [x] Step-finish returns `null`
+- [x] Error lines use ASCII `!` marker (no Unicode glyphs)
+- [x] No indent or ANSI codes in returned text (caller handles those)
+- [x] Legacy NDJSON events updated to match
 
 ### 2.2 `src/agents/opencode.ts` — consume new return type (preserve current visuals)
 
@@ -457,25 +457,25 @@ The `formatted.dim` flag is ignored in this phase (no ANSI styling yet).
 The 2-space indent is preserved temporarily for visual consistency; Phase 3
 removes it when StreamWriter takes over.
 
-- [ ] Consumes `FormattedEvent` type (`.text` access instead of raw string)
-- [ ] Preserves 2-space indent and direct stdout write (no ANSI, no wrapping — those come in Phase 3)
-- [ ] Builds and passes typecheck cleanly
+- [x] Consumes `FormattedEvent` type (`.text` access instead of raw string)
+- [x] Preserves 2-space indent and direct stdout write (no ANSI, no wrapping — those come in Phase 3)
+- [x] Builds and passes typecheck cleanly
 
 ### 2.3 Tests
 
 **File:** `5x-cli/test/utils/sse-formatter.test.ts` (update all ~50 assertions)
 
-- [ ] Tool running -> `{ text: "bash: npm install", dim: true }`
-- [ ] Tool running with title -> uses title as label
-- [ ] Tool completed -> `{ text: "file1.ts file2.ts", dim: true }` (newlines collapsed)
-- [ ] Tool completed with huge output -> only slices first N chars before collapsing
-- [ ] Tool completed empty -> `null`
-- [ ] Tool error -> `{ text: "! bash: command not found", dim: false }`
-- [ ] Step-finish -> `null`
-- [ ] Session error -> `{ text: "! Provider connection lost", dim: false }`
-- [ ] Tool-specific input: bash shows command, file_edit shows path, grep shows pattern
-- [ ] Unknown tool shows key names
-- [ ] Legacy events updated to new return type
+- [x] Tool running -> `{ text: "bash: npm install", dim: true }`
+- [x] Tool running with title -> uses title as label
+- [x] Tool completed -> `{ text: "file1.ts file2.ts", dim: true }` (newlines collapsed)
+- [x] Tool completed with huge output -> only slices first N chars before collapsing
+- [x] Tool completed empty -> `null`
+- [x] Tool error -> `{ text: "! bash: command not found", dim: false }`
+- [x] Step-finish -> `null`
+- [x] Session error -> `{ text: "! Provider connection lost", dim: false }`
+- [x] Tool-specific input: bash shows command, file_edit shows path, grep shows pattern
+- [x] Unknown tool shows key names
+- [x] Legacy events updated to new return type
 
 ---
 
