@@ -127,7 +127,7 @@ function defaultInvokeOpts(
 		prompt: "Test prompt",
 		logPath: makeTmpLogPath(),
 		quiet: true,
-		timeout: 5_000,
+		timeout: 5, // 5 seconds
 		...overrides,
 	};
 }
@@ -603,25 +603,20 @@ describe("OpenCodeAdapter.invokeForVerdict", () => {
 describe("timeout handling", () => {
 	test("throws AgentTimeoutError on timeout", async () => {
 		const { adapter } = createTestAdapter({
-			sessionPrompt: () =>
-				new Promise((resolve) => {
-					// Never resolves — simulates a hung agent
-					setTimeout(resolve, 60_000);
-				}),
+			// Never resolves — simulates a hung agent
+			sessionPrompt: () => new Promise(() => {}),
 		});
 
 		await expect(
-			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 50 })),
+			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 0.001 })), // 1ms
 		).rejects.toThrow(AgentTimeoutError);
 	});
 
 	test("aborts session on timeout", async () => {
 		let abortCalled = false;
 		const { adapter } = createTestAdapter({
-			sessionPrompt: () =>
-				new Promise((resolve) => {
-					setTimeout(resolve, 60_000);
-				}),
+			// Never resolves — simulates a hung agent
+			sessionPrompt: () => new Promise(() => {}),
 			sessionAbort: async () => {
 				abortCalled = true;
 				return { data: true, error: undefined };
@@ -629,13 +624,13 @@ describe("timeout handling", () => {
 		});
 
 		try {
-			await adapter.invokeForStatus(defaultInvokeOpts({ timeout: 50 }));
+			await adapter.invokeForStatus(defaultInvokeOpts({ timeout: 0.001 })); // 1ms
 		} catch {
 			// Expected
 		}
 
 		// Give abort a tick to fire
-		await new Promise((r) => setTimeout(r, 20));
+		await new Promise((r) => setTimeout(r, 0));
 		expect(abortCalled).toBe(true);
 	});
 });
@@ -665,9 +660,9 @@ describe("SSE event log streaming", () => {
 					yield testEvent;
 				})(),
 			}),
-			// Small delay lets the event stream process before prompt resolves
+			// Yield to event loop to let stream process before resolving
 			sessionPrompt: async () => {
-				await new Promise((r) => setTimeout(r, 30));
+				await new Promise((r) => setTimeout(r, 0));
 				return {
 					data: {
 						info: {
@@ -690,8 +685,8 @@ describe("SSE event log streaming", () => {
 
 		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
 
-		// Give log file a moment to flush
-		await new Promise((r) => setTimeout(r, 100));
+		// Yield to let log file flush
+		await new Promise((r) => setTimeout(r, 0));
 
 		const logContent = fs.readFileSync(logPath, "utf8");
 		expect(logContent.length).toBeGreaterThan(0);
@@ -727,9 +722,9 @@ describe("SSE event log streaming", () => {
 					yield otherEvent;
 				})(),
 			}),
-			// Small delay lets the event stream process before prompt resolves
+			// Yield to event loop to let stream process before resolving
 			sessionPrompt: async () => {
-				await new Promise((r) => setTimeout(r, 30));
+				await new Promise((r) => setTimeout(r, 0));
 				return {
 					data: {
 						info: {
@@ -751,7 +746,7 @@ describe("SSE event log streaming", () => {
 		});
 
 		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 0));
 
 		const logContent = fs.readFileSync(logPath, "utf8").trim();
 		const lines = logContent.split("\n").filter((l) => l.trim());
@@ -798,7 +793,7 @@ describe("P0.1: SSE subscription is abortable", () => {
 		});
 
 		const result = await adapter.invokeForStatus(
-			defaultInvokeOpts({ timeout: 3_000 }),
+			defaultInvokeOpts({ timeout: 3 }), // 3 seconds
 		);
 		expect(result.type).toBe("status");
 		expect(result.status.result).toBe("complete");
@@ -815,41 +810,39 @@ describe("P0.2: external signal cancellation", () => {
 		let abortCalled = false;
 
 		const { adapter } = createTestAdapter({
-			sessionPrompt: () =>
-				new Promise((resolve) => {
-					// Never resolves naturally — waits for signal
-					setTimeout(resolve, 60_000);
-				}),
+			sessionPrompt: async () => {
+				// Never resolves naturally — waits for signal
+				await new Promise(() => {});
+				return { data: { info: {} }, error: undefined };
+			},
 			sessionAbort: async () => {
 				abortCalled = true;
 				return { data: true, error: undefined };
 			},
 		});
 
-		// Abort after 50ms
-		setTimeout(() => controller.abort(), 50);
+		// Start the invocation
+		const invokePromise = adapter.invokeForStatus(
+			defaultInvokeOpts({ signal: controller.signal, timeout: 60 }), // 60 seconds - long enough that signal aborts first
+		);
 
-		await expect(
-			adapter.invokeForStatus(
-				defaultInvokeOpts({ signal: controller.signal, timeout: 10_000 }),
-			),
-		).rejects.toThrow("Agent invocation cancelled");
+		// Yield to let prompt start, then abort
+		await new Promise((r) => setTimeout(r, 0));
+		controller.abort();
 
-		await new Promise((r) => setTimeout(r, 20));
+		await expect(invokePromise).rejects.toThrow("Agent invocation cancelled");
 		expect(abortCalled).toBe(true);
 	});
 
 	test("throws AgentTimeoutError (not cancellation) when timeout fires first", async () => {
 		// Ensure timeout is distinguished from external cancel
 		const { adapter } = createTestAdapter({
-			sessionPrompt: () =>
-				new Promise((resolve) => {
-					setTimeout(resolve, 60_000);
-				}),
+			// Never resolves — simulates a hung agent
+			sessionPrompt: () => new Promise(() => {}),
 		});
 
 		await expect(
-			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 50 })),
+			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 0.001 })), // 1ms
 		).rejects.toThrow(AgentTimeoutError);
 	});
 });
@@ -1032,7 +1025,7 @@ describe("P1.2: events without session ID are skipped", () => {
 				})(),
 			}),
 			sessionPrompt: async () => {
-				await new Promise((r) => setTimeout(r, 30));
+				await new Promise((r) => setTimeout(r, 0));
 				return {
 					data: {
 						info: {
@@ -1054,7 +1047,7 @@ describe("P1.2: events without session ID are skipped", () => {
 		});
 
 		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 0));
 
 		const logContent = fs.readFileSync(logPath, "utf8").trim();
 		const lines = logContent.split("\n").filter((l) => l.trim());

@@ -13,10 +13,6 @@ import { createRun } from "../../src/db/operations.js";
 import { runMigrations } from "../../src/db/schema.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
-const PLAN_PATH = resolve(
-	import.meta.dir,
-	"../../../docs/development/001-impl-5x-cli.md",
-);
 
 async function runStatus(
 	args: string[],
@@ -37,12 +33,38 @@ afterEach(() => {
 });
 
 describe("5x status", () => {
-	test("displays plan progress for real plan", async () => {
-		const { stdout, exitCode } = await runStatus([PLAN_PATH]);
-		expect(exitCode).toBe(0);
-		expect(stdout).toContain("5x CLI");
-		expect(stdout).toContain("Phase 1");
-		expect(stdout).toContain("Overall:");
+	test("displays plan progress for fixture with mixed completion", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-status-mixed-"));
+		const fixture = join(tmp, "plan.md");
+		writeFileSync(
+			fixture,
+			`# Test Implementation Plan
+
+**Version:** 1.0
+
+## Phase 1: Foundation
+
+- [x] Completed task
+- [ ] Pending task
+
+## Phase 2: Implementation
+
+- [x] Another completed task
+- [x] All done here
+
+Overall: 60% (3/5 tasks)
+`,
+		);
+		try {
+			const { stdout, exitCode } = await runStatus([fixture]);
+			expect(exitCode).toBe(0);
+			expect(stdout).toContain("Test Implementation Plan");
+			expect(stdout).toContain("Phase 1");
+			expect(stdout).toContain("Phase 2");
+			expect(stdout).toContain("Overall:");
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
 	});
 
 	test("shows 0% for fixture with all-unchecked items", async () => {

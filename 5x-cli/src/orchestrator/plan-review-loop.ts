@@ -548,7 +548,7 @@ export async function runPlanReviewLoop(
 					reviewResult = await adapter.invokeForVerdict({
 						prompt: reviewerTemplate.prompt,
 						model: config.reviewer.model,
-						timeout: config.reviewer.timeout ?? 300_000,
+						timeout: config.reviewer.timeout ?? 120,
 						workdir,
 						logPath: reviewLogPath,
 						quiet: resolveQuiet(),

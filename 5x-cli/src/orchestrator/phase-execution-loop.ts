@@ -1095,9 +1095,8 @@ export async function runPhaseExecutionLoop(
 						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
-							// Reviewer timeout defaults to 5 min — reviewing is pure
-							// reasoning, not implementation, so 5 min is generous.
-							timeout: config.reviewer.timeout ?? 300_000,
+							// Reviewer timeout defaults to 120 seconds (2 min).
+							timeout: config.reviewer.timeout ?? 120,
 							workdir,
 							logPath: reviewLogPath,
 							quiet: resolveQuiet(),

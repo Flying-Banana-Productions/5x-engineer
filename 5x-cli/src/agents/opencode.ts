@@ -120,6 +120,7 @@ async function writeEventsToLog(
 	logPath: string,
 	abortSignal: AbortSignal,
 	opts: { quiet?: boolean; showReasoning?: boolean },
+	onActivity?: () => void,
 ): Promise<void> {
 	// Ensure log directory exists with restricted permissions (logs may contain
 	// sensitive content — enforce 0700 so they are not group/world-readable).
@@ -162,6 +163,9 @@ async function writeEventsToLog(
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
+
+			// Reset inactivity timeout on every event received
+			onActivity?.();
 
 			// P1.2: skip events without a session ID (no cross-session leakage)
 			const eventSessionId = getEventSessionId(event);
@@ -307,11 +311,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 		opts: InvokeOptions,
 		resultType: "status" | "verdict",
 	): Promise<InvokeStatus | InvokeVerdict> {
-		// Default timeout is 30 min for author invocations (implementation work can
-		// take a long time). Callers that want a shorter bound (e.g. reviewer) pass
-		// an explicit opts.timeout. Users can also configure this in .5x/config.json
-		// via author.timeout / reviewer.timeout.
-		const timeoutMs = opts.timeout ?? 1_800_000;
+		// Default timeout is 120 seconds (2 min). Callers can pass an explicit
+		// opts.timeout (in seconds) to override. Configured via author.timeout /
+		// reviewer.timeout in 5x.config.js (values in seconds).
+		const timeoutSeconds = opts.timeout ?? 120;
+		const timeoutMs = timeoutSeconds * 1000;
 		const model = opts.model ?? this.defaultModel;
 		const modelObj = model ? parseModel(model) : undefined;
 		const schema =
@@ -337,9 +341,19 @@ export class OpenCodeAdapter implements AgentAdapter {
 		const sessionId = sessionResult.data.id;
 
 		// 2. Cancellation infrastructure (P0.2: wire opts.signal + timeout)
+		// Inactivity timeout: resets whenever new SSE events are received
 		const timeoutController = new AbortController();
-		const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
-		if (typeof timeoutId === "object" && "unref" in timeoutId)
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		const resetInactivityTimeout = () => {
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+			timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+		};
+		resetInactivityTimeout();
+		if (
+			timeoutId !== undefined &&
+			typeof timeoutId === "object" &&
+			"unref" in timeoutId
+		)
 			timeoutId.unref();
 
 		// Combined signal: timeout + external cancellation
@@ -353,12 +367,14 @@ export class OpenCodeAdapter implements AgentAdapter {
 		cancelSignal.addEventListener("abort", propagateCancel, { once: true });
 
 		// 3. Start SSE event stream in background (P0.1: signal passed through)
+		// Pass resetInactivityTimeout to reset timeout on every event
 		const streamPromise = writeEventsToLog(
 			this.client,
 			sessionId,
 			opts.logPath,
 			sseController.signal,
 			{ quiet: opts.quiet, showReasoning: opts.showReasoning },
+			resetInactivityTimeout,
 		);
 
 		try {
@@ -390,7 +406,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			});
 
 			const result = await Promise.race([promptPromise, cancelPromise]);
-			clearTimeout(timeoutId);
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			const duration = Date.now() - start;
 
 			// 5. Check for errors
@@ -454,7 +470,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 				costUsd,
 			};
 		} catch (err) {
-			clearTimeout(timeoutId);
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
 
 			// On timeout or external cancel, abort the session
 			const isTimeout = timeoutController.signal.aborted;
@@ -474,7 +490,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			throw err;
 		} finally {
 			// 9. Stop SSE stream and flush log
-			clearTimeout(timeoutId);
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			sseController.abort();
 			cancelSignal.removeEventListener("abort", propagateCancel);
 			await streamPromise;
