@@ -409,6 +409,12 @@ export async function runPlanReviewLoop(
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
+		// Check for external cancellation (Ctrl-C, TUI exit, parent timeout)
+		if (options.signal?.aborted) {
+			state = "ABORTED";
+			break;
+		}
+
 		if (state !== "ESCALATE") preEscalateState = state;
 		// Guard: max iterations
 		if (iteration >= maxIterations * 2) {
@@ -559,6 +565,7 @@ export async function runPlanReviewLoop(
 						logPath: reviewLogPath,
 						quiet: resolveQuiet(),
 						showReasoning,
+						signal: options.signal,
 					});
 				} catch (err) {
 					const event: EscalationEvent = {
@@ -789,6 +796,7 @@ export async function runPlanReviewLoop(
 						logPath: authorLogPath,
 						quiet: resolveQuiet(),
 						showReasoning,
+						signal: options.signal,
 					});
 				} catch (err) {
 					const event: EscalationEvent = {

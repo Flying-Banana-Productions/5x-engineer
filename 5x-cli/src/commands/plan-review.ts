@@ -124,6 +124,14 @@ export default defineCommand({
 		const reviewsDir = resolve(projectRoot, config.paths.reviews);
 		const reviewPath = resolveReviewPath(db, canonical, reviewsDir);
 
+		// --- Fail-closed check for non-interactive mode (before adapter creation) ---
+		const isNonInteractive = !process.stdin.isTTY;
+		if (isNonInteractive && !args.auto && !args.ci) {
+			console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
+			process.exitCode = 1;
+			return;
+		}
+
 		// Initialize adapters
 		console.log();
 		console.log(`  Plan: ${plan.title}`);
@@ -144,14 +152,6 @@ export default defineCommand({
 		// Resolve effective quiet mode: explicit flag > TTY detection
 		const effectiveQuiet =
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
-
-		// --- Fail-closed check for non-interactive mode ---
-		const isNonInteractive = !process.stdin.isTTY;
-		if (isNonInteractive && !args.auto && !args.ci) {
-			console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
-			process.exitCode = 1;
-			return;
-		}
 
 		// --- TUI mode detection ---
 		const isTuiMode = shouldEnableTui(args);

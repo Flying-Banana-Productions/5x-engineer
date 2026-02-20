@@ -423,6 +423,12 @@ export async function runPhaseExecutionLoop(
 
 		// --- Inner loop: per-phase state machine ---
 		while (state !== "PHASE_COMPLETE" && state !== "ABORTED") {
+			// Check for external cancellation (Ctrl-C, TUI exit, parent timeout)
+			if (options.signal?.aborted) {
+				state = "ABORTED";
+				break;
+			}
+
 			// Capture the state at the top of each iteration. Any transition to
 			// "ESCALATE" within the switch will leave this as the originating state,
 			// allowing the ESCALATE handler to resume the correct state on "continue".
@@ -585,6 +591,7 @@ export async function runPhaseExecutionLoop(
 							logPath: executeLogPath,
 							quiet: resolveQuiet(),
 							showReasoning,
+							signal: options.signal,
 						});
 					} catch (err) {
 						// Hard failure: timeout, network, structured output error
@@ -864,6 +871,7 @@ export async function runPhaseExecutionLoop(
 							logPath: qrFixLogPath,
 							quiet: resolveQuiet(),
 							showReasoning,
+							signal: options.signal,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1107,6 +1115,7 @@ export async function runPhaseExecutionLoop(
 							logPath: reviewLogPath,
 							quiet: resolveQuiet(),
 							showReasoning,
+							signal: options.signal,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {
@@ -1374,6 +1383,7 @@ export async function runPhaseExecutionLoop(
 							logPath: autoFixLogPath,
 							quiet: resolveQuiet(),
 							showReasoning,
+							signal: options.signal,
 						});
 					} catch (err) {
 						const event: EscalationEvent = {

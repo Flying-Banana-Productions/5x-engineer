@@ -4,6 +4,7 @@
  * Phase 3 of 004-impl-5x-cli-tui.
  */
 
+import { resolve } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 
 // ---------------------------------------------------------------------------
@@ -32,9 +33,8 @@ export interface PermissionHandler {
 
 export const NON_INTERACTIVE_NO_FLAG_ERROR =
 	"Error: 5x is running non-interactively but no permission policy was specified.\n" +
-	"  Use --auto to auto-approve all tool permissions, or\n" +
-	"  use --ci for the same behavior in CI environments.\n" +
-	"  To run interactively, ensure stdin is a TTY.";
+	"  Use --auto or --ci to auto-approve all tool permissions, or\n" +
+	"  ensure stdin is a TTY for interactive mode.";
 
 // ---------------------------------------------------------------------------
 // Policy implementation helpers
@@ -43,23 +43,27 @@ export const NON_INTERACTIVE_NO_FLAG_ERROR =
 /**
  * Check if a path is within the workdir scope.
  * Handles relative paths, absolute paths, and path traversal.
+ *
+ * Security: Resolves all paths to absolute paths and normalizes them
+ * to prevent path traversal attacks (e.g., "../..", "/project/../etc/passwd").
  */
 function isPathInWorkdir(path: string, workdir: string): boolean {
-	// Normalize paths for comparison
-	const normalizedPath = path.replace(/\\/g, "/").replace(/\/+/g, "/");
-	const normalizedWorkdir = workdir.replace(/\\/g, "/").replace(/\/+/g, "/");
+	// Resolve both paths to absolute paths to handle relative paths and ".." segments
+	const resolvedPath = resolve(workdir, path);
+	const resolvedWorkdir = resolve(workdir);
+
+	// Normalize paths for comparison (handle backslashes on Windows)
+	const normalizedPath = resolvedPath.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const normalizedWorkdir = resolvedWorkdir
+		.replace(/\\/g, "/")
+		.replace(/\/+/g, "/");
 
 	// Remove trailing slash from workdir for comparison
 	const workdirBase = normalizedWorkdir.endsWith("/")
 		? normalizedWorkdir.slice(0, -1)
 		: normalizedWorkdir;
 
-	// If path is relative, assume it's relative to workdir
-	if (!normalizedPath.startsWith("/")) {
-		return true;
-	}
-
-	// Check if absolute path is under workdir
+	// Check if resolved path is within workdir
 	return (
 		normalizedPath === workdirBase ||
 		normalizedPath.startsWith(`${workdirBase}/`)

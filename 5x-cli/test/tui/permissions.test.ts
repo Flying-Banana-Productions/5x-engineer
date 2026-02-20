@@ -384,6 +384,113 @@ describe("createPermissionHandler", () => {
 
 			handler.stop();
 		});
+
+		describe("path traversal protection", () => {
+			it("should NOT auto-approve relative paths that escape workdir (../..)", async () => {
+				const client = createMockClient();
+				const workdir = "/project";
+				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
+
+				const mockStream = createMockStream([
+					{
+						type: "permission.asked",
+						properties: {
+							id: "req-1",
+							tool: "fs_read",
+							arguments: { path: "../../etc/passwd" },
+						},
+					},
+				]);
+
+				client.event.subscribe.mockResolvedValue({
+					stream: mockStream,
+				});
+
+				const handler = createPermissionHandler(
+					client as unknown as import("@opencode-ai/sdk/v2").OpencodeClient,
+					policy,
+				);
+
+				handler.start();
+				await new Promise((resolve) => setTimeout(resolve, 50));
+
+				// Should NOT have called permission.reply for path traversal
+				expect(client.permission.reply).not.toHaveBeenCalled();
+
+				handler.stop();
+			});
+
+			it("should NOT auto-approve absolute paths with .. segments that escape workdir", async () => {
+				const client = createMockClient();
+				const workdir = "/project";
+				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
+
+				const mockStream = createMockStream([
+					{
+						type: "permission.asked",
+						properties: {
+							id: "req-1",
+							tool: "fs_read",
+							arguments: { path: "/project/../etc/passwd" },
+						},
+					},
+				]);
+
+				client.event.subscribe.mockResolvedValue({
+					stream: mockStream,
+				});
+
+				const handler = createPermissionHandler(
+					client as unknown as import("@opencode-ai/sdk/v2").OpencodeClient,
+					policy,
+				);
+
+				handler.start();
+				await new Promise((resolve) => setTimeout(resolve, 50));
+
+				// Should NOT have called permission.reply for path traversal
+				expect(client.permission.reply).not.toHaveBeenCalled();
+
+				handler.stop();
+			});
+
+			it("should auto-approve relative paths that stay within workdir", async () => {
+				const client = createMockClient();
+				const workdir = "/project";
+				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
+
+				const mockStream = createMockStream([
+					{
+						type: "permission.asked",
+						properties: {
+							id: "req-1",
+							tool: "fs_read",
+							arguments: { path: "src/../lib/file.ts" },
+						},
+					},
+				]);
+
+				client.event.subscribe.mockResolvedValue({
+					stream: mockStream,
+				});
+
+				const handler = createPermissionHandler(
+					client as unknown as import("@opencode-ai/sdk/v2").OpencodeClient,
+					policy,
+				);
+
+				handler.start();
+				await new Promise((resolve) => setTimeout(resolve, 50));
+
+				// Should auto-approve since resolved path is within workdir
+				expect(client.permission.reply).toHaveBeenCalledWith({
+					requestID: "req-1",
+					reply: "once",
+				});
+
+				handler.stop();
+			});
+		});
 	});
 
 	describe("NON_INTERACTIVE_NO_FLAG_ERROR", () => {

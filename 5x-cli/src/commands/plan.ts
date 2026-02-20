@@ -203,6 +203,14 @@ export default defineCommand({
 			data: { prdPath, planPath },
 		});
 
+		// --- Fail-closed check for non-interactive mode (before adapter creation) ---
+		const isNonInteractive = !process.stdin.isTTY;
+		if (isNonInteractive && !args.ci) {
+			console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
+			process.exitCode = 1;
+			return;
+		}
+
 		// Initialize author adapter
 		let adapter: AgentAdapter;
 		try {
@@ -220,14 +228,6 @@ export default defineCommand({
 			updateRunStatus(db, runId, "failed");
 			console.error(`\n  Error: Failed to initialize agent adapter.`);
 			if (message) console.error(`  Cause: ${message}`);
-			process.exitCode = 1;
-			return;
-		}
-
-		// --- Fail-closed check for non-interactive mode ---
-		const isNonInteractive = !process.stdin.isTTY;
-		if (isNonInteractive && !args.ci) {
-			console.error(NON_INTERACTIVE_NO_FLAG_ERROR);
 			process.exitCode = 1;
 			return;
 		}

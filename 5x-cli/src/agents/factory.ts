@@ -75,15 +75,18 @@ export function registerAdapterShutdown(
 		// TUI mode: Ctrl-C goes to TUI first; we rely on tuiProcess.exited to
 		// cooperatively cancel. SIGINT/SIGTERM still need handlers to prevent
 		// abrupt termination if somehow delivered to the parent directly.
-		// Use .once() to avoid duplicate handlers if called multiple times.
-		process.once("SIGINT", () => {
-			opts.cancelController?.abort();
-			process.exitCode = 130;
-		});
-		process.once("SIGTERM", () => {
-			opts.cancelController?.abort();
-			process.exitCode = 143;
-		});
+		// Guard with _signalHandlersRegistered to prevent duplicate handlers.
+		if (!_signalHandlersRegistered) {
+			_signalHandlersRegistered = true;
+			process.once("SIGINT", () => {
+				opts.cancelController?.abort();
+				process.exitCode = 130;
+			});
+			process.once("SIGTERM", () => {
+				opts.cancelController?.abort();
+				process.exitCode = 143;
+			});
+		}
 	} else {
 		// Headless mode: convert signal to process.exit() to trigger the "exit" event
 		if (!_signalHandlersRegistered) {
