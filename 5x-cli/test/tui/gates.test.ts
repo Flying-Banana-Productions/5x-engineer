@@ -188,7 +188,7 @@ describe("createTuiPhaseGate", () => {
 		expect(client.session.delete).toHaveBeenCalled();
 	});
 
-	test("gate rejects when TUI exits", async () => {
+	test("gate resolves 'abort' when TUI exits", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();
 		const gate = createTuiPhaseGate(client, tui);
@@ -202,10 +202,12 @@ describe("createTuiPhaseGate", () => {
 			qualityPassed: true,
 		};
 
-		await expect(gate(summary)).rejects.toThrow("TUI exited");
+		// TUI exit should resolve with "abort", not reject
+		const result = await gate(summary);
+		expect(result).toBe("abort");
 	});
 
-	test("gate rejects on abort signal", async () => {
+	test("gate resolves 'abort' on abort signal", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();
 		const controller = new AbortController();
@@ -220,10 +222,12 @@ describe("createTuiPhaseGate", () => {
 		// Abort immediately
 		controller.abort();
 
-		await expect(gate(summary)).rejects.toThrow("aborted");
+		// Abort signal should resolve with "abort", not reject
+		const result = await gate(summary);
+		expect(result).toBe("abort");
 	});
 
-	test("gate respects custom timeout", async () => {
+	test("gate resolves 'abort' on timeout", async () => {
 		const client = createMockClient();
 		// Make prompt hang
 		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
@@ -238,7 +242,9 @@ describe("createTuiPhaseGate", () => {
 			qualityPassed: true,
 		};
 
-		await expect(gate(summary)).rejects.toThrow("timed out");
+		// Timeout should resolve with "abort", not reject
+		const result = await gate(summary);
+		expect(result).toBe("abort");
 	});
 });
 

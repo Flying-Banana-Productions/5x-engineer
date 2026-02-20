@@ -53,12 +53,16 @@ export interface TuiGateOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a promise that rejects after a timeout.
+ * Create a promise that resolves with "abort" after a timeout.
+ * Generic to allow proper typing in Promise.race with different gate return types.
  */
-function createTimeoutPromise(ms: number, label: string): Promise<never> {
-	return new Promise((_, reject) => {
+function createTimeoutPromise<T>(
+	ms: number,
+	_label: string,
+): Promise<T | "abort"> {
+	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
-			reject(new Error(`${label} timed out after ${ms}ms`));
+			resolve("abort");
 		}, ms);
 		// Clean up timer if promise is garbage collected (not strictly necessary but good practice)
 		timer.unref?.();
@@ -66,29 +70,35 @@ function createTimeoutPromise(ms: number, label: string): Promise<never> {
 }
 
 /**
- * Create a promise that rejects when the signal is aborted.
+ * Create a promise that resolves with "abort" when the signal is aborted.
+ * Generic to allow proper typing in Promise.race with different gate return types.
  */
-function createAbortPromise(signal: AbortSignal): Promise<never> {
-	return new Promise((_, reject) => {
+function createAbortPromise<T>(signal: AbortSignal): Promise<T | "abort"> {
+	return new Promise((resolve) => {
 		if (signal.aborted) {
-			reject(new Error("Gate aborted by signal"));
+			resolve("abort");
 			return;
 		}
-		signal.addEventListener("abort", () => {
-			reject(new Error("Gate aborted by signal"));
-		});
+		signal.addEventListener(
+			"abort",
+			() => {
+				resolve("abort");
+			},
+			{ once: true },
+		);
 	});
 }
 
 /**
- * Check if TUI is still active; if not, return a rejecting promise.
+ * Check if TUI is still active; if not, return a promise that resolves to "abort".
+ * Generic to allow proper typing based on the expected return type of the gate.
  */
-function checkTuiActive(
+function checkTuiActive<T>(
 	tui: TuiController,
-	label: string,
-): Promise<never> | null {
+	_label: string,
+): Promise<T | "abort"> | null {
 	if (!tui.active) {
-		return Promise.reject(new Error(`${label}: TUI exited`));
+		return Promise.resolve("abort" as T | "abort");
 	}
 	return null;
 }
@@ -110,16 +120,26 @@ export function createTuiPhaseGate(
 ): (summary: PhaseSummary) => Promise<"continue" | "review" | "abort"> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 
-	return async (summary) => {
+	return async (summary): Promise<"continue" | "review" | "abort"> => {
 		// Check TUI is still active
-		const tuiCheck = checkTuiActive(tui, "Phase gate");
-		if (tuiCheck) return tuiCheck;
-
-		// Show toast notification
-		await tui.showToast(
-			`Phase ${summary.phaseNumber} complete — awaiting decision`,
-			"info",
+		const tuiCheck = checkTuiActive<"continue" | "review" | "abort">(
+			tui,
+			"Phase gate",
 		);
+		if (tuiCheck) {
+			const result = await tuiCheck;
+			return result;
+		}
+
+		// Show toast notification (best-effort)
+		try {
+			await tui.showToast(
+				`Phase ${summary.phaseNumber} complete — awaiting decision`,
+				"info",
+			);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Create a gate session for the decision
 		const gateSession = await client.session.create({
@@ -132,26 +152,35 @@ export function createTuiPhaseGate(
 			);
 		}
 
-		// Select the session in TUI
-		await tui.selectSession(gateSession.data.id);
+		// Select the session in TUI (best-effort)
+		try {
+			await tui.selectSession(gateSession.data.id);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Build the prompt asking for a decision
 		const promptText = buildPhaseGatePrompt(summary);
 
 		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const result = await Promise.race([
+			const result = await Promise.race<"continue" | "review" | "abort">([
 				promptForDecision(client, gateSession.data.id, promptText, [
 					"continue",
 					"review",
 					"abort",
-				]),
-				createTimeoutPromise(timeoutMs, "Phase gate"),
-				opts.signal ? createAbortPromise(opts.signal) : new Promise(() => {}),
+				] as const),
+				createTimeoutPromise<"continue" | "review" | "abort">(
+					timeoutMs,
+					"Phase gate",
+				),
+				opts.signal
+					? createAbortPromise<"continue" | "review" | "abort">(opts.signal)
+					: new Promise<"continue" | "review" | "abort">(() => {}),
 				watchTuiExit(tui),
 			]);
 
-			return result as "continue" | "review" | "abort";
+			return result;
 		} finally {
 			// Clean up the gate session
 			try {
@@ -218,12 +247,21 @@ export function createTuiEscalationGate(
 
 	return async (event: EscalationEvent): Promise<EscalationResponse> => {
 		// Check TUI is still active
-		if (!tui.active) {
-			throw new Error("Escalation gate: TUI exited");
+		const tuiCheck = checkTuiActive<EscalationResponse>(tui, "Escalation gate");
+		if (tuiCheck) {
+			const result = await tuiCheck;
+			// Return abort action if TUI exited
+			if (result === "abort") {
+				return { action: "abort" };
+			}
 		}
 
-		// Show toast notification
-		await tui.showToast(`Escalation: ${event.reason}`, "error");
+		// Show toast notification (best-effort)
+		try {
+			await tui.showToast(`Escalation: ${event.reason}`, "error");
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Create a gate session for the decision
 		const gateSession = await client.session.create({
@@ -236,20 +274,31 @@ export function createTuiEscalationGate(
 			);
 		}
 
-		// Select the session in TUI
-		await tui.selectSession(gateSession.data.id);
+		// Select the session in TUI (best-effort)
+		try {
+			await tui.selectSession(gateSession.data.id);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Build the prompt
 		const promptText = buildEscalationPrompt(event);
 
 		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const decision = await Promise.race<EscalationResponse>([
+			const decision = await Promise.race<EscalationResponse | "abort">([
 				promptForEscalationDecision(client, gateSession.data.id, promptText),
-				createTimeoutPromise(timeoutMs, "Escalation gate"),
-				opts.signal ? createAbortPromise(opts.signal) : new Promise(() => {}),
+				createTimeoutPromise<EscalationResponse>(timeoutMs, "Escalation gate"),
+				opts.signal
+					? createAbortPromise<EscalationResponse>(opts.signal)
+					: new Promise(() => {}),
 				watchTuiExit(tui),
 			]);
+
+			// If timeout, abort signal, or TUI exit fired, return abort action
+			if (decision === "abort") {
+				return { action: "abort" };
+			}
 
 			return decision;
 		} finally {
@@ -405,16 +454,30 @@ export function createTuiResumeGate(
 ) => Promise<"resume" | "start-fresh" | "abort"> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 
-	return async (runId, phase, state) => {
+	return async (
+		runId,
+		phase,
+		state,
+	): Promise<"resume" | "start-fresh" | "abort"> => {
 		// Check TUI is still active
-		const tuiCheck = checkTuiActive(tui, "Resume gate");
-		if (tuiCheck) return tuiCheck;
-
-		// Show toast notification
-		await tui.showToast(
-			`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
-			"info",
+		const tuiCheck = checkTuiActive<"resume" | "start-fresh" | "abort">(
+			tui,
+			"Resume gate",
 		);
+		if (tuiCheck) {
+			const result = await tuiCheck;
+			return result;
+		}
+
+		// Show toast notification (best-effort)
+		try {
+			await tui.showToast(
+				`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
+				"info",
+			);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Create a gate session for the decision
 		const gateSession = await client.session.create({
@@ -427,26 +490,35 @@ export function createTuiResumeGate(
 			);
 		}
 
-		// Select the session in TUI
-		await tui.selectSession(gateSession.data.id);
+		// Select the session in TUI (best-effort)
+		try {
+			await tui.selectSession(gateSession.data.id);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Build the prompt
 		const promptText = buildResumePrompt(runId, phase, state);
 
 		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const result = await Promise.race([
+			const result = await Promise.race<"resume" | "start-fresh" | "abort">([
 				promptForDecision(client, gateSession.data.id, promptText, [
 					"resume",
 					"start-fresh",
 					"abort",
-				]),
-				createTimeoutPromise(timeoutMs, "Resume gate"),
-				opts.signal ? createAbortPromise(opts.signal) : new Promise(() => {}),
+				] as const),
+				createTimeoutPromise<"resume" | "start-fresh" | "abort">(
+					timeoutMs,
+					"Resume gate",
+				),
+				opts.signal
+					? createAbortPromise<"resume" | "start-fresh" | "abort">(opts.signal)
+					: new Promise<"resume" | "start-fresh" | "abort">(() => {}),
 				watchTuiExit(tui),
 			]);
 
-			return result as "resume" | "start-fresh" | "abort";
+			return result;
 		} finally {
 			// Clean up the gate session
 			try {
@@ -491,13 +563,23 @@ export function createTuiHumanGate(
 ): (event: EscalationEvent) => Promise<"continue" | "approve" | "abort"> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 
-	return async (event) => {
+	return async (event): Promise<"continue" | "approve" | "abort"> => {
 		// Check TUI is still active
-		const tuiCheck = checkTuiActive(tui, "Human gate");
-		if (tuiCheck) return tuiCheck;
+		const tuiCheck = checkTuiActive<"continue" | "approve" | "abort">(
+			tui,
+			"Human gate",
+		);
+		if (tuiCheck) {
+			const result = await tuiCheck;
+			return result;
+		}
 
-		// Show toast notification
-		await tui.showToast(`Human review required: ${event.reason}`, "error");
+		// Show toast notification (best-effort)
+		try {
+			await tui.showToast(`Human review required: ${event.reason}`, "error");
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Create a gate session for the decision
 		const gateSession = await client.session.create({
@@ -510,26 +592,35 @@ export function createTuiHumanGate(
 			);
 		}
 
-		// Select the session in TUI
-		await tui.selectSession(gateSession.data.id);
+		// Select the session in TUI (best-effort)
+		try {
+			await tui.selectSession(gateSession.data.id);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Build the prompt
 		const promptText = buildHumanGatePrompt(event);
 
 		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const result = await Promise.race([
+			const result = await Promise.race<"continue" | "approve" | "abort">([
 				promptForDecision(client, gateSession.data.id, promptText, [
 					"continue",
 					"approve",
 					"abort",
-				]),
-				createTimeoutPromise(timeoutMs, "Human gate"),
-				opts.signal ? createAbortPromise(opts.signal) : new Promise(() => {}),
+				] as const),
+				createTimeoutPromise<"continue" | "approve" | "abort">(
+					timeoutMs,
+					"Human gate",
+				),
+				opts.signal
+					? createAbortPromise<"continue" | "approve" | "abort">(opts.signal)
+					: new Promise<"continue" | "approve" | "abort">(() => {}),
 				watchTuiExit(tui),
 			]);
 
-			return result as "continue" | "approve" | "abort";
+			return result;
 		} finally {
 			// Clean up the gate session
 			try {
@@ -583,16 +674,29 @@ export function createTuiPlanReviewResumeGate(
 ) => Promise<"resume" | "start-fresh" | "abort"> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 
-	return async (runId, iteration) => {
+	return async (
+		runId,
+		iteration,
+	): Promise<"resume" | "start-fresh" | "abort"> => {
 		// Check TUI is still active
-		const tuiCheck = checkTuiActive(tui, "Resume gate");
-		if (tuiCheck) return tuiCheck;
-
-		// Show toast notification
-		await tui.showToast(
-			`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
-			"info",
+		const tuiCheck = checkTuiActive<"resume" | "start-fresh" | "abort">(
+			tui,
+			"Resume gate",
 		);
+		if (tuiCheck) {
+			const result = await tuiCheck;
+			return result;
+		}
+
+		// Show toast notification (best-effort)
+		try {
+			await tui.showToast(
+				`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
+				"info",
+			);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Create a gate session for the decision
 		const gateSession = await client.session.create({
@@ -605,8 +709,12 @@ export function createTuiPlanReviewResumeGate(
 			);
 		}
 
-		// Select the session in TUI
-		await tui.selectSession(gateSession.data.id);
+		// Select the session in TUI (best-effort)
+		try {
+			await tui.selectSession(gateSession.data.id);
+		} catch {
+			// Ignore TUI errors
+		}
 
 		// Build the prompt
 		const promptText = [
@@ -622,18 +730,23 @@ export function createTuiPlanReviewResumeGate(
 
 		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const result = await Promise.race([
+			const result = await Promise.race<"resume" | "start-fresh" | "abort">([
 				promptForDecision(client, gateSession.data.id, promptText, [
 					"resume",
 					"start-fresh",
 					"abort",
-				]),
-				createTimeoutPromise(timeoutMs, "Resume gate"),
-				opts.signal ? createAbortPromise(opts.signal) : new Promise(() => {}),
+				] as const),
+				createTimeoutPromise<"resume" | "start-fresh" | "abort">(
+					timeoutMs,
+					"Resume gate",
+				),
+				opts.signal
+					? createAbortPromise<"resume" | "start-fresh" | "abort">(opts.signal)
+					: new Promise<"resume" | "start-fresh" | "abort">(() => {}),
 				watchTuiExit(tui),
 			]);
 
-			return result as "resume" | "start-fresh" | "abort";
+			return result;
 		} finally {
 			// Clean up the gate session
 			try {
@@ -651,13 +764,14 @@ export function createTuiPlanReviewResumeGate(
 
 /**
  * Prompt the user for a decision using structured output.
+ * Generic to allow proper return type inference based on choices.
  */
-async function promptForDecision(
+async function promptForDecision<T extends string>(
 	client: OpencodeClient,
 	sessionId: string,
 	promptText: string,
-	choices: string[],
-): Promise<string> {
+	choices: readonly T[],
+): Promise<T> {
 	const schema = {
 		type: "object" as const,
 		properties: {
@@ -685,17 +799,22 @@ async function promptForDecision(
 		);
 	}
 
-	const decision = result.data.info.structured as { action: string };
+	const decision = result.data.info.structured as { action: T };
 	return decision.action;
 }
 
 /**
- * Watch for TUI exit and reject when it happens.
+ * Watch for TUI exit and resolve with "abort" when it happens.
+ * Uses { once: true } to avoid listener accumulation.
  */
-function watchTuiExit(tui: TuiController): Promise<never> {
-	return new Promise((_, reject) => {
+function watchTuiExit(tui: TuiController): Promise<"abort"> {
+	return new Promise((resolve) => {
+		if (!tui.active) {
+			resolve("abort");
+			return;
+		}
 		tui.onExit(() => {
-			reject(new Error("TUI exited during gate"));
+			resolve("abort");
 		});
 	});
 }
