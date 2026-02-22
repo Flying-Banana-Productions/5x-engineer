@@ -331,7 +331,7 @@ export default defineCommand({
 				timeout: config.author.timeout,
 				workdir: projectRoot,
 				logPath,
-				quiet: effectiveQuiet || tui.active,
+				quiet: () => effectiveQuiet || tui.active,
 				showReasoning: args["show-reasoning"],
 				signal: cancelController.signal,
 				sessionTitle: "Plan generation",

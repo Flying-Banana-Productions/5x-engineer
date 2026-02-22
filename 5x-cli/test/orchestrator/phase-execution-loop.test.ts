@@ -204,6 +204,11 @@ function createMockAdapter(
 	return adapter;
 }
 
+function resolveQuietOpt(quiet: InvokeOptions["quiet"]): boolean {
+	if (typeof quiet === "function") return quiet();
+	return quiet ?? false;
+}
+
 function fixedPhaseGate(decision: "continue" | "review" | "abort") {
 	return async (_summary: PhaseSummary) => decision;
 }
@@ -1324,7 +1329,7 @@ describe("runPhaseExecutionLoop", () => {
 			);
 
 			// The adapter should have received quiet=true
-			expect(adapter.lastOpts?.quiet).toBe(true);
+			expect(resolveQuietOpt(adapter.lastOpts?.quiet)).toBe(true);
 		} finally {
 			cleanup();
 		}
@@ -1419,13 +1424,15 @@ describe("runPhaseExecutionLoop", () => {
 				{ type: "status", status: { result: "complete", commit: "abc" } },
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			];
+			let quietValue = true;
 			let idx = 0;
 			const adapter: AgentAdapter & { callCount: number } = {
 				callCount: 0,
 				serverUrl: "http://127.0.0.1:51234",
 				async invokeForStatus(opts: InvokeOptions): Promise<InvokeStatus> {
 					adapter.callCount++;
-					quietPerCall.push(opts.quiet ?? false);
+					quietPerCall.push(resolveQuietOpt(opts.quiet));
+					quietValue = false;
 					const r = responses[idx++];
 					if (!r || r.type !== "status") throw new Error("unexpected mock");
 					return {
@@ -1437,7 +1444,7 @@ describe("runPhaseExecutionLoop", () => {
 				},
 				async invokeForVerdict(opts: InvokeOptions): Promise<InvokeVerdict> {
 					adapter.callCount++;
-					quietPerCall.push(opts.quiet ?? false);
+					quietPerCall.push(resolveQuietOpt(opts.quiet));
 					const r = responses[idx++];
 					if (!r || r.type !== "verdict") throw new Error("unexpected mock");
 					return {
@@ -1452,10 +1459,6 @@ describe("runPhaseExecutionLoop", () => {
 			};
 
 			// Flip quietValue after the first adapter call (simulates TUI exiting).
-			// The quiet function is called both by the log helper and by adapter
-			// invocations, so we track adapter calls via the adapter's callCount
-			// and flip based on that — not on quiet function call count.
-			let quietValue = true; // author call sees quiet=true (TUI active)
 			await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
@@ -1465,11 +1468,7 @@ describe("runPhaseExecutionLoop", () => {
 				{
 					workdir: tmp,
 					auto: true,
-					quiet: () => {
-						// After the first adapter call completes, flip to false
-						if (adapter.callCount > 0) quietValue = false;
-						return quietValue;
-					},
+					quiet: () => quietValue,
 				},
 			);
 

@@ -30,8 +30,12 @@ export interface InvokeOptions {
 	/** Path to write SSE event log (always written; independent of quiet). */
 	logPath: string;
 
-	/** Suppress console output; log file still written. */
-	quiet?: boolean;
+	/**
+	 * Suppress console output; log file still written.
+	 * Can be a function so callers can toggle visibility mid-invocation
+	 * (for example when TUI exits and headless output should resume).
+	 */
+	quiet?: boolean | (() => boolean);
 
 	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
 	showReasoning?: boolean;

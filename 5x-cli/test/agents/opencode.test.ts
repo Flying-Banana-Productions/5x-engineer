@@ -820,6 +820,64 @@ describe("SSE event log streaming", () => {
 		const parsed = JSON.parse(lines[0] ?? "{}");
 		expect(parsed.properties.delta).toBe("own");
 	});
+
+	test("re-evaluates quiet function while streaming events", async () => {
+		const logPath = makeTmpLogPath();
+		let quietChecks = 0;
+
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async () => ({
+				stream: (async function* () {
+					yield {
+						type: "session.status",
+						properties: {
+							sessionID: "sess-test-123",
+							status: { type: "busy" },
+						},
+					};
+					yield {
+						type: "session.status",
+						properties: {
+							sessionID: "sess-test-123",
+							status: { type: "idle" },
+						},
+					};
+				})(),
+			}),
+			sessionPrompt: async () => {
+				await new Promise((r) => setTimeout(r, 0));
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({
+				logPath,
+				quiet: () => {
+					quietChecks += 1;
+					return quietChecks < 2;
+				},
+			}),
+		);
+
+		expect(quietChecks).toBeGreaterThanOrEqual(2);
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -238,6 +238,27 @@ describe("active TuiController", () => {
 		await controller.selectSession("sess-abc");
 	});
 
+	test("selectSession retries when initial attach race fails", async () => {
+		const { proc } = createMockProcess();
+		const client = createMockClient();
+		let attempts = 0;
+		(client.tui.selectSession as ReturnType<typeof mock>).mockImplementation(
+			async () => {
+				attempts += 1;
+				if (attempts < 3) throw new Error("TUI not ready");
+				return { data: true, error: undefined };
+			},
+		);
+		const controller = _createActiveControllerForTest(proc, client);
+
+		await controller.selectSession("sess-abc", "/workdir");
+		expect(attempts).toBe(3);
+		expect(client.tui.selectSession).toHaveBeenLastCalledWith({
+			sessionID: "sess-abc",
+			directory: "/workdir",
+		});
+	});
+
 	test("onExit handler fires when process exits", async () => {
 		const { proc, exit } = createMockProcess();
 		const client = createMockClient();

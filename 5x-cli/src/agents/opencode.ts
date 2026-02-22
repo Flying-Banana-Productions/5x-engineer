@@ -42,6 +42,11 @@ import type {
 	InvokeVerdict,
 } from "./types.js";
 
+function resolveQuiet(quiet: InvokeOptions["quiet"] | undefined): boolean {
+	if (typeof quiet === "function") return quiet();
+	return quiet ?? false;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -112,7 +117,7 @@ async function writeEventsToLog(
 	sessionId: string,
 	logPath: string,
 	abortSignal: AbortSignal,
-	opts: { quiet?: boolean; showReasoning?: boolean },
+	opts: { quiet?: InvokeOptions["quiet"]; showReasoning?: boolean },
 	onActivity?: () => void,
 ): Promise<void> {
 	// Ensure log directory exists with restricted permissions (logs may contain
@@ -133,17 +138,22 @@ async function writeEventsToLog(
 		encoding: "utf8",
 	});
 	logStream.on("error", (err) => {
-		if (!opts.quiet) {
+		if (!resolveQuiet(opts.quiet)) {
 			console.error(`Warning: log file write error: ${err.message}`);
 		}
 	});
 
-	// Create StreamWriter for console output when not quiet
+	// Create StreamWriter lazily so quiet can flip mid-invocation.
 	let writer: StreamWriter | undefined;
-	if (!opts.quiet) {
+	const ensureWriter = () => {
+		if (writer) return writer;
 		writer = new StreamWriter({
 			width: process.stdout.columns || 80,
 		});
+		return writer;
+	};
+	if (!resolveQuiet(opts.quiet)) {
+		ensureWriter();
 	}
 
 	try {
@@ -152,7 +162,7 @@ async function writeEventsToLog(
 			signal: abortSignal,
 		});
 
-		const routerState = writer ? createEventRouterState() : undefined;
+		const routerState = createEventRouterState();
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
@@ -171,16 +181,17 @@ async function writeEventsToLog(
 			const line = JSON.stringify(event);
 			logStream.write(`${line}\n`);
 
-			// Console output (when not quiet)
-			if (writer && routerState) {
-				routeEventToWriter(event, writer, routerState, {
+			// Console output (quiet can toggle mid-invocation)
+			if (!resolveQuiet(opts.quiet)) {
+				const streamWriter = ensureWriter();
+				routeEventToWriter(event, streamWriter, routerState, {
 					showReasoning: opts.showReasoning,
 				});
 			}
 		}
 	} catch (err) {
 		// Stream errors are expected on abort — suppress them
-		if (!abortSignal.aborted && !opts.quiet) {
+		if (!abortSignal.aborted && !resolveQuiet(opts.quiet)) {
 			console.error(
 				`Warning: SSE stream error: ${err instanceof Error ? err.message : String(err)}`,
 			);
@@ -341,7 +352,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			try {
 				await opts.onSessionCreated(sessionId);
 			} catch (err) {
-				if (!opts.quiet) {
+				if (!resolveQuiet(opts.quiet)) {
 					console.warn(
 						`Warning: onSessionCreated callback failed: ${err instanceof Error ? err.message : String(err)}`,
 					);

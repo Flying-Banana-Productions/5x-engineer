@@ -35,6 +35,12 @@
 
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 
+const SELECT_SESSION_RETRY_DELAYS_MS = [0, 40, 120, 300];
+
+async function sleep(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
@@ -180,14 +186,36 @@ function createActiveController(
 
 		async selectSession(sessionID: string, directory?: string) {
 			if (!_active) return;
-			try {
-				await client.tui.selectSession({
-					sessionID,
-					...(directory && { directory }),
-				});
-			} catch {
-				// TUI may have disconnected — ignore
+
+			const withDirectory = {
+				sessionID,
+				...(directory && { directory }),
+			};
+			const withoutDirectory = { sessionID };
+
+			for (const delayMs of SELECT_SESSION_RETRY_DELAYS_MS) {
+				if (!_active) return;
+				if (delayMs > 0) {
+					await sleep(delayMs);
+					if (!_active) return;
+				}
+
+				try {
+					await client.tui.selectSession(withDirectory);
+					return;
+				} catch {
+					if (directory) {
+						try {
+							await client.tui.selectSession(withoutDirectory);
+							return;
+						} catch {
+							// Retry below.
+						}
+					}
+				}
 			}
+
+			// Best-effort only: if TUI is not ready/disconnected, continue silently.
 		},
 
 		async showToast(
