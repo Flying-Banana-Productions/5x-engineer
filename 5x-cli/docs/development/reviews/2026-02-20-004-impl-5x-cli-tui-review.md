@@ -334,3 +334,59 @@ File: `test/tui/gates.test.ts`.
 ### Phase readiness
 
 - **Phase 5 completion:** ⚠️ — functionally improved, but not “plan complete” until the cancel/TUI-exit contract is reconciled (and ideally listener cleanup is hardened).
+
+---
+
+## Addendum (2026-02-22) — Closure validation (post re-review)
+
+**Reviewed:** `2cb8be295fac665198aa81a03fecd97d8db0bffb` (no follow-on commits)
+
+**Related (reference):** `docs/development/reviews/2026-02-21-004-impl-5x-cli-tui-rereview.md`
+
+**Local verification:** `bun test` PASS (509 pass, 6 skip); `bun run typecheck` PASS
+
+### What this addendum covers
+
+This closes out any still-open items from the Phase 4/5 review chain in this document, based on the fixes implemented in `2cb8be2` and the detailed re-review in the related doc above.
+
+### Issue closure (from this review doc)
+
+- **Phase 4 remaining concern — plan cancellation wiring:** ✅ Closed. `src/commands/plan.ts` now passes `signal: cancelController.signal` into `adapter.invokeForStatus()`, so TUI cancel propagates to the SDK invocation and cleanup can run.
+- **Phase 4 remaining concern — best-effort `onSessionCreated`:** ✅ Closed. `src/agents/opencode.ts` wraps `onSessionCreated` in try/catch (and has unit tests asserting call order + best-effort behavior).
+- **Phase 5 issue — spec mismatch (cancel/TUI-exit resolve vs reject):** ✅ Closed. `docs/development/004-impl-5x-cli-tui.md` was updated to match the implemented contract (resolve to `"abort"`), and gate implementations/tests are aligned.
+- **Phase 5 issue — listener accumulation:** ✅ Closed. `TuiController.onExit()` returns an unsubscribe and `src/tui/gates.ts` cleans up timeout + abort + exit subscriptions per gate invocation.
+
+### Items from this doc that still appear active
+
+Note: the items below were closed in `dcdc366fba` (see addendum at the end of this document).
+
+- **Toast wording/boundary semantics (P1):** `Phase N complete — starting review` is emitted after the phase finishes (including review) in auto mode (`src/orchestrator/phase-execution-loop.ts`). If the intent is “author done, starting review”, this toast should either move to the author→review transition or be renamed to reflect the actual boundary.
+- **Gate termination-path test coverage (P2):** `test/tui/gates.test.ts` has explicit timeout/abort coverage for `createTuiPhaseGate`, but equivalent termination-path tests are still missing for escalation/resume/human/wrapper gates.
+- **Event-router boundedness (P2):** `src/utils/event-router.ts`’s `updatedDeltaPartIds` is not cleared; it is per-invocation state (so bounded to session lifetime), but can still grow with very large sessions.
+
+### Phase readiness (for this document)
+
+- **Phase 4 completion:** ✅ (with the caveats above around toast semantics/tests)
+- **Phase 5 completion:** ✅ (core correctness/semantics now match the plan)
+
+---
+
+## Addendum (2026-02-22) — Follow-up item closure (toast/tests/boundedness)
+
+**Reviewed:** `dcdc366fba479add4ba1ecc9e30a704e37162c38` (no follow-on commits)
+
+**Local verification:** `bun test` PASS (518 pass, 6 skip); `bun run typecheck` PASS
+
+### Updated assessment
+
+The remaining items called out in the prior addendum are addressed cleanly and with appropriate regression coverage.
+
+### Closure of previously-active items
+
+- **Toast wording/boundary semantics (P1):** ✅ Closed. Auto-mode toast now reads `Phase N complete — continuing` (`src/orchestrator/phase-execution-loop.ts`), matching the actual boundary (review already completed by the time the toast is emitted).
+- **Gate termination-path test coverage (P2):** ✅ Closed. `test/tui/gates.test.ts` adds timeout/abort/TUI-exit coverage across escalation/resume/human/wrapper gates (not just the phase gate).
+- **Event-router boundedness (P2):** ✅ Closed. `src/utils/event-router.ts` bounds `updatedDeltaPartIds` via `MAX_TRACKED_DELTA_PART_IDS` with an insertion-order eviction strategy, and `test/agents/opencode-rendering.test.ts` asserts the set stays bounded.
+
+### Further feedback
+
+- **Bounded dedupe trade-off:** evicting old part IDs means very old parts could theoretically re-emit duplicate legacy deltas later. This is a reasonable trade for long-session safety; if this shows up in practice, consider clearing on a “part complete” event (if the SSE stream exposes one) or using a per-message eviction heuristic.

@@ -118,3 +118,39 @@ Decide the intended contract and update either docs or implementation so future 
 - **Phase 4:** ✅ core session titles + focus hook are present; toast coverage is reasonable for `run`
 - **Phase 5:** ❌ as implemented today it does not satisfy “human gate” semantics in TUI mode (P0.1)
 - **Phase 6:** Blocked on P0.2/P0.4; remaining polish items are mostly P2
+
+---
+
+## Addendum (2026-02-22) — Fix validation / closure review
+
+**Reviewed:** `2cb8be295fac665198aa81a03fecd97d8db0bffb` (no follow-on commits)
+
+**Local verification:** `bun test` PASS (509 pass, 6 skip); `bun run typecheck` PASS
+
+### Assessment (Staff Eng)
+
+- **Correctness:** The P0 behavior bugs called out in this re-review are addressed: TUI gates are human-driven (no model prompt path), headless permissions no longer hang on out-of-scope requests, and TUI early-exit semantics now split cancel vs close/crash.
+- **Architecture:** Runtime behavior now keys off effective TUI state (`tui.active`) instead of intent/detection. Orchestrators depend on shared `src/agents/errors.ts` for cancellation, reducing adapter coupling.
+- **Tenancy/security:** `workdir-scoped` policy now resolves traversal and (best-effort) symlink escape via realpath. Remaining risk: “human gate” decisions trust `role === "user"` events; if the local OpenCode server is reachable by other local processes, a malicious local client could potentially inject user-role messages and bypass gates (threat model should be made explicit or mitigated with auth/binding).
+- **Performance:** Gate subscriptions are per-gate and short-lived; listener cleanup is explicit (`onExit` unsubscribe, `{ once: true }` abort listeners). `realpathSync`/`existsSync` in permission checks adds some overhead but only on permission events.
+- **Operability:** Spawn failure cleanly falls back to headless; post-exit behavior is consistent with messaging (continue headless on non-cancel exits, abort on cancel). Permission policy is switched from `tui-native` to headless on TUI exit.
+- **Test strategy:** Added/updated unit tests cover the core regressions: gates resolve from explicit user message events and never call `session.prompt`; permission scoping rejects traversal and symlink escape; controller `onExit` unsubscribe semantics are covered. Remaining gap: no live-SDK/integration test that validates the exact `permission.*` event payload shape used for `requestID` extraction.
+
+### Re-review issue closure
+
+- **P0.1 (human gates model-driven):** ✅ Fixed. `src/tui/gates.ts` consumes user-authored message events; tests assert `client.session.prompt()` is not used.
+- **P0.2 (spawn failure fallback / effective mode):** ✅ Fixed. Commands derive policy + gates from `tui.active` post-spawn; spawn failure yields no-op controller and headless behavior.
+- **P0.3 (headless permissions can hang):** ✅ Fixed. Out-of-scope/unknown requests are deterministically rejected with actionable guidance.
+- **P0.4 (cancel vs continue headless):** ✅ Fixed. `TuiController` classifies cancellation by exit code; commands abort only on user cancellation, otherwise continue headless.
+- **P1.1 (listener accumulation):** ✅ Fixed. `TuiController.onExit()` returns unsubscribe; gates unsubscribe and clear timers/listeners.
+- **P1.2 (adapter-specific cancellation coupling):** ✅ Fixed. Orchestrators import `AgentCancellationError` from `src/agents/errors.ts`.
+- **P1.3 (spec drift):** ✅ Addressed. `docs/development/004-impl-5x-cli-tui.md` updated to match the implemented Phase 5/6 contracts.
+
+### Readiness vs implementation plan
+
+- **Phase 1:** ✅
+- **Phase 2:** ✅
+- **Phase 3:** ✅
+- **Phase 4:** ✅
+- **Phase 5:** ✅
+- **Phase 6:** ⚠️ Functionally unblocked for the re-review items (exit semantics + fallback are correct). Remaining Phase 6 items are primarily polish and/or documentation; recommend adding at least one integration test exercising real permission events to reduce regression risk before calling this fully production-ready.
