@@ -4,7 +4,8 @@
  * Phase 3 of 004-impl-5x-cli-tui.
  */
 
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 
 // ---------------------------------------------------------------------------
@@ -48,9 +49,31 @@ export const NON_INTERACTIVE_NO_FLAG_ERROR =
  * to prevent path traversal attacks (e.g., "../..", "/project/../etc/passwd").
  */
 function isPathInWorkdir(path: string, workdir: string): boolean {
-	// Resolve both paths to absolute paths to handle relative paths and ".." segments
-	const resolvedPath = resolve(workdir, path);
-	const resolvedWorkdir = resolve(workdir);
+	const resolveWithFilesystemLinks = (inputPath: string): string => {
+		const absolute = resolve(inputPath);
+
+		let probe = absolute;
+		const tail: string[] = [];
+		while (!existsSync(probe)) {
+			const parent = dirname(probe);
+			if (parent === probe) break;
+			tail.unshift(probe.slice(parent.length + 1));
+			probe = parent;
+		}
+
+		let base = probe;
+		try {
+			base = realpathSync(probe);
+		} catch {
+			// Fall back to unresolved absolute path
+		}
+
+		return tail.length > 0 ? resolve(base, ...tail) : base;
+	};
+
+	// Resolve path segments and symlinks to prevent symlink escapes.
+	const resolvedPath = resolveWithFilesystemLinks(resolve(workdir, path));
+	const resolvedWorkdir = resolveWithFilesystemLinks(resolve(workdir));
 
 	// Normalize paths for comparison (handle backslashes on Windows)
 	const normalizedPath = resolvedPath.replace(/\\/g, "/").replace(/\/+/g, "/");
@@ -91,6 +114,22 @@ function extractPathFromArgs(
 	}
 }
 
+function isPermissionRequestEvent(event: {
+	type?: string;
+	properties?: Record<string, unknown>;
+}): boolean {
+	return (
+		event.type === "permission.asked" || event.type === "permission.updated"
+	);
+}
+
+function getPermissionRequestId(event: {
+	properties?: Record<string, unknown>;
+}): string | undefined {
+	const id = (event.properties as Record<string, unknown> | undefined)?.id;
+	return typeof id === "string" ? id : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Handler implementations
 // ---------------------------------------------------------------------------
@@ -115,11 +154,12 @@ function createAutoApproveHandler(client: OpencodeClient): PermissionHandler {
 						if (abortController.signal.aborted) break;
 
 						// Check if this is a permission request event
-						if (event.type === "permission.asked" && event.properties?.id) {
+						const requestId = getPermissionRequestId(event);
+						if (isPermissionRequestEvent(event) && requestId) {
 							// Auto-approve the permission
 							try {
 								await client.permission.reply({
-									requestID: event.properties.id,
+									requestID: requestId,
 									reply: "once",
 								});
 							} catch {
@@ -160,8 +200,7 @@ function createTuiNativeHandler(): PermissionHandler {
 
 /**
  * Create a handler that auto-approves file operations within workdir,
- * but leaves others for human decision (in headless TTY mode, this
- * would require additional handling — for now we escalate by not responding).
+ * and deterministically rejects out-of-scope or unknown requests.
  */
 function createWorkdirScopedHandler(
 	client: OpencodeClient,
@@ -181,7 +220,8 @@ function createWorkdirScopedHandler(
 					for await (const event of stream) {
 						if (abortController.signal.aborted) break;
 
-						if (event.type === "permission.asked" && event.properties?.id) {
+						const requestId = getPermissionRequestId(event);
+						if (isPermissionRequestEvent(event) && requestId) {
 							// Access properties dynamically since SDK types may not include all fields
 							const props = event.properties as Record<string, unknown>;
 							const tool = props.tool as string | undefined;
@@ -194,15 +234,27 @@ function createWorkdirScopedHandler(
 							if (path && isPathInWorkdir(path, workdir)) {
 								try {
 									await client.permission.reply({
-										requestID: props.id as string,
+										requestID: requestId,
 										reply: "once",
 									});
 								} catch {
 									// Ignore errors
 								}
+								continue;
 							}
-							// If path is outside workdir or unknown, don't respond
-							// — this leaves the permission pending for human decision
+
+							const rejectMessage = path
+								? `Rejected permission outside workdir scope: ${path}`
+								: "Rejected permission requiring explicit approval in headless mode";
+							try {
+								await client.permission.reply({
+									requestID: requestId,
+									reply: "reject",
+									message: `${rejectMessage}. Re-run with TUI enabled or --auto/--ci if appropriate.`,
+								});
+							} catch {
+								// Ignore errors
+							}
 						}
 					}
 				} catch {

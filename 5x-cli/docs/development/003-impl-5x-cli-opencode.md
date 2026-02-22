@@ -632,7 +632,10 @@ Both `invokeForStatus()` and `invokeForVerdict()` follow the same pattern:
   - Unified signal via `AbortSignal.any([timeoutController.signal, opts.signal?])` combined with `Promise.race` for deterministic timeout detection
   - Signal passed to `session.prompt(params, { signal })` for HTTP connection teardown
   - On timeout: `client.session.abort({ sessionID })`, throw `AgentTimeoutError`
-  - On external cancel (`opts.signal` aborted): `client.session.abort({ sessionID })`, throw cancellation error
+  - On external cancel (`opts.signal` aborted): `client.session.abort({ sessionID })`, throw `AgentCancellationError`
+
+> **Error contract note:** Adapter errors now live in `src/agents/errors.ts` and
+> are shared across orchestrators to keep orchestration logic adapter-agnostic.
 
 - [x] External cancellation (P0.2): if `opts.signal` is aborted, prompt + SSE subscription are terminated, session is aborted, and a clear cancellation error is thrown
 

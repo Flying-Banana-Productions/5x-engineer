@@ -158,34 +158,35 @@ export default defineCommand({
 			args.quiet !== undefined ? args.quiet : !process.stdout.isTTY;
 
 		// --- TUI mode detection ---
-		const isTuiMode = shouldEnableTui(args);
-
-		// --- Resolve permission policy ---
-		const permissionPolicy: PermissionPolicy =
-			args.auto || args.ci
-				? { mode: "auto-approve-all" }
-				: isTuiMode
-					? { mode: "tui-native" }
-					: { mode: "workdir-scoped", workdir: projectRoot };
+		const isTuiRequested = shouldEnableTui(args);
 
 		// --- Register adapter shutdown with TUI mode support ---
 		const cancelController = new AbortController();
-		registerAdapterShutdown(adapter, {
-			tuiMode: isTuiMode,
-			cancelController,
-		});
-
 		// --- Spawn TUI ---
 		const tui = createTuiController({
 			serverUrl: adapter.serverUrl,
 			workdir: projectRoot,
 			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
-			enabled: isTuiMode,
+			enabled: isTuiRequested,
+		});
+		const effectiveTuiMode = tui.active;
+
+		registerAdapterShutdown(adapter, {
+			tuiMode: effectiveTuiMode,
+			cancelController,
 		});
 
+		// --- Resolve permission policy ---
+		const permissionPolicy: PermissionPolicy =
+			args.auto || args.ci
+				? { mode: "auto-approve-all" }
+				: effectiveTuiMode
+					? { mode: "tui-native" }
+					: { mode: "workdir-scoped", workdir: projectRoot };
+
 		// --- Start permission handler ---
-		const permissionHandler = createPermissionHandler(
+		let permissionHandler = createPermissionHandler(
 			(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			permissionPolicy,
@@ -194,19 +195,33 @@ export default defineCommand({
 
 		// Handle TUI early exit — continue headless.
 		// Only registered when TUI was actually spawned; no-op controller never fires.
-		if (isTuiMode) {
-			tui.onExit(() => {
+		if (effectiveTuiMode) {
+			tui.onExit((info) => {
+				if (info.isUserCancellation) {
+					process.stderr.write("TUI interrupted — cancelling run\n");
+					cancelController.abort();
+					process.exitCode = info.code ?? 130;
+					return;
+				}
+
 				process.stderr.write("TUI exited — continuing headless\n");
-				// Cancel the orchestration loop
-				cancelController.abort();
-				process.exitCode = 1;
+
+				if (permissionPolicy.mode === "tui-native") {
+					permissionHandler.stop();
+					permissionHandler = createPermissionHandler(
+						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
+							._clientForTui,
+						{ mode: "workdir-scoped", workdir: projectRoot },
+					);
+					permissionHandler.start();
+				}
 			});
 		}
 
 		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
 		// These replace the readline-based gates from gates/human.ts
 		const tuiHumanGate =
-			isTuiMode && !args.auto
+			effectiveTuiMode && !args.auto
 				? createTuiHumanGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
@@ -215,7 +230,7 @@ export default defineCommand({
 					)
 				: undefined;
 		const tuiResumeGate =
-			isTuiMode && !args.auto
+			effectiveTuiMode && !args.auto
 				? createTuiPlanReviewResumeGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,

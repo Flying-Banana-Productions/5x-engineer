@@ -22,7 +22,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { AgentCancellationError } from "../agents/opencode.js";
+import { AgentCancellationError } from "../agents/errors.js";
 import type {
 	AgentAdapter,
 	InvokeStatus,

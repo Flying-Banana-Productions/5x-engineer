@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { TuiController } from "../../src/tui/controller.js";
+import type { TuiController, TuiExitInfo } from "../../src/tui/controller.js";
 
 // ---------------------------------------------------------------------------
 // Phase 4 TUI Integration Tests
@@ -10,6 +10,7 @@ describe("Phase 4: TUI Session Integration", () => {
 		// Verify the interface contract
 		const mockTui: TuiController = {
 			active: true,
+			attached: true,
 			selectSession: async (_sessionID: string, _directory?: string) => {
 				// No-op for test
 			},
@@ -19,8 +20,9 @@ describe("Phase 4: TUI Session Integration", () => {
 			) => {
 				// No-op for test
 			},
-			onExit: (_handler: () => void) => {
+			onExit: (_handler: (_info: TuiExitInfo) => void) => {
 				// No-op for test
+				return () => {};
 			},
 			kill: () => {
 				// No-op for test
@@ -35,12 +37,13 @@ describe("Phase 4: TUI Session Integration", () => {
 	test("TuiController interface accepts showToast with message and variant", async () => {
 		const mockTui: TuiController = {
 			active: true,
+			attached: true,
 			selectSession: async () => {},
 			showToast: async (
 				_message: string,
 				_variant: "info" | "success" | "warning" | "error",
 			) => {},
-			onExit: () => {},
+			onExit: () => () => {},
 			kill: () => {},
 		};
 
@@ -81,9 +84,10 @@ describe("Phase 4: TUI Session Integration", () => {
 		// Verify the interface contract
 		const mockTui: TuiController = {
 			active: true,
+			attached: true,
 			selectSession: async () => {},
 			showToast: async () => {},
-			onExit: () => {},
+			onExit: () => () => {},
 			kill: () => {},
 		};
 
@@ -141,6 +145,7 @@ describe("Phase 4: Behavioral Requirements", () => {
 
 		const mockTui: TuiController = {
 			active: true,
+			attached: true,
 			selectSession: async () => {},
 			showToast: async (
 				message: string,
@@ -148,7 +153,7 @@ describe("Phase 4: Behavioral Requirements", () => {
 			) => {
 				toasts.push({ message, variant });
 			},
-			onExit: () => {},
+			onExit: () => () => {},
 			kill: () => {},
 		};
 
@@ -191,9 +196,10 @@ describe("Phase 4: Behavioral Requirements", () => {
 		// calls should be made when TUI is active
 		const mockTui: TuiController = {
 			active: true,
+			attached: true,
 			selectSession: async () => {},
 			showToast: async () => {},
-			onExit: () => {},
+			onExit: () => () => {},
 			kill: () => {},
 		};
 

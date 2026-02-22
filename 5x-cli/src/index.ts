@@ -1,7 +1,8 @@
 // Public API exports
 
+export { AgentCancellationError, AgentTimeoutError } from "./agents/errors.js";
 export { createAndVerifyAdapter } from "./agents/factory.js";
-export { AgentTimeoutError, OpenCodeAdapter } from "./agents/opencode.js";
+export { OpenCodeAdapter } from "./agents/opencode.js";
 // Agents
 export type {
 	AdapterConfig,

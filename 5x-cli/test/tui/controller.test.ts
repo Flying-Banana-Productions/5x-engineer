@@ -48,11 +48,13 @@ describe("no-op TuiController (headless)", () => {
 		});
 
 		expect(controller.active).toBe(false);
+		expect(controller.attached).toBe(false);
 	});
 
 	test("no-op controller active is always false", () => {
 		const controller = _createNoopControllerForTest();
 		expect(controller.active).toBe(false);
+		expect(controller.attached).toBe(false);
 	});
 
 	test("no-op controller selectSession resolves without side effects", async () => {
@@ -132,6 +134,7 @@ describe("active TuiController", () => {
 		const controller = _createActiveControllerForTest(proc, client);
 
 		expect(controller.active).toBe(true);
+		expect(controller.attached).toBe(true);
 	});
 
 	test("active becomes false after process exits", async () => {
@@ -240,7 +243,7 @@ describe("active TuiController", () => {
 		const client = createMockClient();
 		const controller = _createActiveControllerForTest(proc, client);
 
-		const handler = mock(() => {});
+		const handler = mock((_info?: unknown) => {});
 		controller.onExit(handler);
 
 		expect(handler).not.toHaveBeenCalled();
@@ -257,7 +260,7 @@ describe("active TuiController", () => {
 		exit(0);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		const handler = mock(() => {});
+		const handler = mock((_info?: unknown) => {});
 		controller.onExit(handler);
 		expect(handler).toHaveBeenCalledTimes(1);
 	});
@@ -267,8 +270,8 @@ describe("active TuiController", () => {
 		const client = createMockClient();
 		const controller = _createActiveControllerForTest(proc, client);
 
-		const handler1 = mock(() => {});
-		const handler2 = mock(() => {});
+		const handler1 = mock((_info?: unknown) => {});
+		const handler2 = mock((_info?: unknown) => {});
 		controller.onExit(handler1);
 		controller.onExit(handler2);
 
@@ -287,7 +290,7 @@ describe("active TuiController", () => {
 		const handler1 = mock(() => {
 			throw new Error("handler crash");
 		});
-		const handler2 = mock(() => {});
+		const handler2 = mock((_info?: unknown) => {});
 		controller.onExit(handler1);
 		controller.onExit(handler2);
 
@@ -297,6 +300,20 @@ describe("active TuiController", () => {
 		// handler2 should still fire despite handler1 throwing
 		expect(handler1).toHaveBeenCalledTimes(1);
 		expect(handler2).toHaveBeenCalledTimes(1);
+	});
+
+	test("onExit unsubscribe prevents callback", async () => {
+		const { proc, exit } = createMockProcess();
+		const client = createMockClient();
+		const controller = _createActiveControllerForTest(proc, client);
+
+		const handler = mock((_info?: unknown) => {});
+		const unsubscribe = controller.onExit(handler);
+		unsubscribe();
+
+		exit(0);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(handler).not.toHaveBeenCalled();
 	});
 
 	test("kill calls process kill", () => {
@@ -356,11 +373,10 @@ describe("shouldEnableTui", () => {
 		);
 	});
 
-	test("returns false when --auto is not set (non-auto gate until Phase 5)", () => {
-		// Non-auto flows use readline gates which conflict with TUI stdin ownership.
-		// TUI is disabled in non-auto mode until Phase 5 (TUI gates) is implemented.
-		expect(shouldEnableTui({})).toBe(false);
-		expect(shouldEnableTui({ auto: false })).toBe(false);
+	test("depends only on tty/flag state (auto no longer required)", () => {
+		const expected = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+		expect(shouldEnableTui({})).toBe(expected);
+		expect(shouldEnableTui({ auto: false })).toBe(expected);
 	});
 
 	// Note: We cannot reliably test TTY detection in a test runner because

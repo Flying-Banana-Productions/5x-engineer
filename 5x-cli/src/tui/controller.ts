@@ -50,6 +50,12 @@ export interface TuiController {
 	readonly active: boolean;
 
 	/**
+	 * True when `opencode attach` was successfully spawned.
+	 * False for headless/no-op fallback controllers.
+	 */
+	readonly attached: boolean;
+
+	/**
 	 * Focus the TUI on a specific session.
 	 * No-op when TUI is not active.
 	 */
@@ -67,6 +73,7 @@ export interface TuiController {
 	/**
 	 * Register a callback for when the TUI process exits.
 	 * The callback fires once when the TUI process exits.
+	 * Returns an unsubscribe function.
 	 *
 	 * In headless mode (no-op controller), this is a no-op — the handler is
 	 * never called, because no TUI was ever started and therefore no exit event
@@ -75,12 +82,17 @@ export interface TuiController {
 	 *
 	 * In active mode, fires immediately if the TUI has already exited.
 	 */
-	onExit(handler: () => void): void;
+	onExit(handler: (info: TuiExitInfo) => void): () => void;
 
 	/**
 	 * Kill the TUI process. Idempotent — safe to call multiple times.
 	 */
 	kill(): void;
+}
+
+export interface TuiExitInfo {
+	code: number | undefined;
+	isUserCancellation: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,12 +125,16 @@ function createNoopController(): TuiController {
 		get active() {
 			return false;
 		},
+		get attached() {
+			return false;
+		},
 		async selectSession() {},
 		async showToast() {},
 		onExit(_handler) {
 			// TUI never started — no exit event will fire; handler is not called.
 			// Callers should gate onExit registration on isTuiMode so that
 			// headless code paths do not receive spurious "TUI exited" callbacks.
+			return () => {};
 		},
 		kill() {},
 	};
@@ -133,24 +149,33 @@ function createActiveController(
 	client: OpencodeClient,
 ): TuiController {
 	let _active = true;
-	const exitHandlers: Array<() => void> = [];
+	let _exitInfo: TuiExitInfo | undefined;
+	const exitHandlers = new Set<(info: TuiExitInfo) => void>();
 
 	// Monitor process exit
-	proc.exited.then(() => {
+	proc.exited.then((code) => {
 		_active = false;
+		_exitInfo = {
+			code,
+			isUserCancellation: code === 130 || code === 143,
+		};
 		for (const handler of exitHandlers) {
 			try {
-				handler();
+				handler(_exitInfo);
 			} catch {
 				// Swallow errors in exit handlers
 			}
 		}
-		exitHandlers.length = 0;
+		exitHandlers.clear();
 	});
 
 	return {
 		get active() {
 			return _active;
+		},
+
+		get attached() {
+			return true;
 		},
 
 		async selectSession(sessionID: string, directory?: string) {
@@ -177,13 +202,21 @@ function createActiveController(
 			}
 		},
 
-		onExit(handler: () => void) {
+		onExit(handler: (info: TuiExitInfo) => void) {
 			if (!_active) {
 				// Already exited — fire immediately
-				handler();
-				return;
+				handler(
+					_exitInfo ?? {
+						code: undefined,
+						isUserCancellation: false,
+					},
+				);
+				return () => {};
 			}
-			exitHandlers.push(handler);
+			exitHandlers.add(handler);
+			return () => {
+				exitHandlers.delete(handler);
+			};
 		},
 
 		kill() {

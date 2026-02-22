@@ -5,6 +5,9 @@
  */
 
 import { describe, expect, it, jest } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	createPermissionHandler,
 	NON_INTERACTIVE_NO_FLAG_ERROR,
@@ -248,7 +251,7 @@ describe("createPermissionHandler", () => {
 			handler.stop();
 		});
 
-		it("should NOT auto-approve file operations outside workdir", async () => {
+		it("should reject file operations outside workdir", async () => {
 			const client = createMockClient();
 			const workdir = "/project";
 			const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
@@ -276,8 +279,11 @@ describe("createPermissionHandler", () => {
 			handler.start();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			// Should NOT have called permission.reply
-			expect(client.permission.reply).not.toHaveBeenCalled();
+			expect(client.permission.reply).toHaveBeenCalledWith({
+				requestID: "req-1",
+				reply: "reject",
+				message: expect.stringContaining("outside workdir scope"),
+			});
 
 			handler.stop();
 		});
@@ -351,7 +357,7 @@ describe("createPermissionHandler", () => {
 			handler.stop();
 		});
 
-		it("should not auto-approve bash commands (cannot extract path)", async () => {
+		it("should reject bash commands (cannot scope safely)", async () => {
 			const client = createMockClient();
 			const workdir = "/project";
 			const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
@@ -379,14 +385,17 @@ describe("createPermissionHandler", () => {
 			handler.start();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
-			// Should NOT have called permission.reply for bash
-			expect(client.permission.reply).not.toHaveBeenCalled();
+			expect(client.permission.reply).toHaveBeenCalledWith({
+				requestID: "req-1",
+				reply: "reject",
+				message: expect.stringContaining("explicit approval"),
+			});
 
 			handler.stop();
 		});
 
 		describe("path traversal protection", () => {
-			it("should NOT auto-approve relative paths that escape workdir (../..)", async () => {
+			it("should reject relative paths that escape workdir (../..)", async () => {
 				const client = createMockClient();
 				const workdir = "/project";
 				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
@@ -414,13 +423,16 @@ describe("createPermissionHandler", () => {
 				handler.start();
 				await new Promise((resolve) => setTimeout(resolve, 50));
 
-				// Should NOT have called permission.reply for path traversal
-				expect(client.permission.reply).not.toHaveBeenCalled();
+				expect(client.permission.reply).toHaveBeenCalledWith({
+					requestID: "req-1",
+					reply: "reject",
+					message: expect.stringContaining("outside workdir scope"),
+				});
 
 				handler.stop();
 			});
 
-			it("should NOT auto-approve absolute paths with .. segments that escape workdir", async () => {
+			it("should reject absolute paths with .. segments that escape workdir", async () => {
 				const client = createMockClient();
 				const workdir = "/project";
 				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
@@ -448,8 +460,11 @@ describe("createPermissionHandler", () => {
 				handler.start();
 				await new Promise((resolve) => setTimeout(resolve, 50));
 
-				// Should NOT have called permission.reply for path traversal
-				expect(client.permission.reply).not.toHaveBeenCalled();
+				expect(client.permission.reply).toHaveBeenCalledWith({
+					requestID: "req-1",
+					reply: "reject",
+					message: expect.stringContaining("outside workdir scope"),
+				});
 
 				handler.stop();
 			});
@@ -489,6 +504,51 @@ describe("createPermissionHandler", () => {
 				});
 
 				handler.stop();
+			});
+
+			it("should reject paths that escape via symlink", async () => {
+				const client = createMockClient();
+
+				const root = mkdtempSync(join(tmpdir(), "5x-perm-"));
+				const workdir = join(root, "workdir");
+				const outside = join(root, "outside");
+				mkdirSync(workdir, { recursive: true });
+				mkdirSync(outside, { recursive: true });
+				symlinkSync(outside, join(workdir, "link"), "dir");
+
+				const policy: PermissionPolicy = { mode: "workdir-scoped", workdir };
+
+				const mockStream = createMockStream([
+					{
+						type: "permission.asked",
+						properties: {
+							id: "req-1",
+							tool: "fs_write",
+							arguments: { path: join(workdir, "link", "escape.txt") },
+						},
+					},
+				]);
+
+				client.event.subscribe.mockResolvedValue({
+					stream: mockStream,
+				});
+
+				const handler = createPermissionHandler(
+					client as unknown as import("@opencode-ai/sdk/v2").OpencodeClient,
+					policy,
+				);
+
+				handler.start();
+				await new Promise((resolve) => setTimeout(resolve, 50));
+
+				expect(client.permission.reply).toHaveBeenCalledWith({
+					requestID: "req-1",
+					reply: "reject",
+					message: expect.stringContaining("outside workdir scope"),
+				});
+
+				handler.stop();
+				rmSync(root, { recursive: true, force: true });
 			});
 		});
 	});

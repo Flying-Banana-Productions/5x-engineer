@@ -23,7 +23,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
-import { AgentCancellationError } from "../agents/opencode.js";
+import { AgentCancellationError } from "../agents/errors.js";
 import type {
 	AgentAdapter,
 	InvokeStatus,

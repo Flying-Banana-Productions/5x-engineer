@@ -16,6 +16,10 @@ import {
 	type OpencodeClient,
 	type OutputFormat,
 } from "@opencode-ai/sdk/v2";
+import { AgentCancellationError, AgentTimeoutError } from "./errors.js";
+
+export { AgentCancellationError, AgentTimeoutError } from "./errors.js";
+
 import {
 	type AuthorStatus,
 	AuthorStatusSchema,
@@ -37,24 +41,6 @@ import type {
 	InvokeStatus,
 	InvokeVerdict,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Error types
-// ---------------------------------------------------------------------------
-
-export class AgentTimeoutError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "AgentTimeoutError";
-	}
-}
-
-export class AgentCancellationError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "AgentCancellationError";
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Helpers

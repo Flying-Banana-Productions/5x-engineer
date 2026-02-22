@@ -10,204 +10,212 @@ import {
 	DEFAULT_GATE_TIMEOUT_MS,
 } from "../../src/tui/gates.js";
 
-// ---------------------------------------------------------------------------
-// Mock helpers
-// ---------------------------------------------------------------------------
+type StreamEvent = {
+	type: string;
+	properties?: Record<string, unknown>;
+};
 
-/** Create a mock OpenCode client with session methods. */
-function createMockClient() {
-	let sessionIdCounter = 0;
-	const sessions = new Map<string, { id: string; title: string }>();
+function abortError(): Error {
+	const err = new Error("aborted");
+	err.name = "AbortError";
+	return err;
+}
 
+function createSignalAwareStream(
+	events: StreamEvent[],
+	signal?: AbortSignal,
+): AsyncIterable<StreamEvent> {
+	return {
+		[Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+			let index = 0;
+			return {
+				async next() {
+					if (signal?.aborted) throw abortError();
+
+					if (index < events.length) {
+						const value = events[index] as StreamEvent;
+						index += 1;
+						return { value, done: false };
+					}
+
+					await new Promise((_resolve, reject) => {
+						if (!signal) return;
+						if (signal.aborted) {
+							reject(abortError());
+							return;
+						}
+						signal.addEventListener("abort", () => reject(abortError()), {
+							once: true,
+						});
+					});
+
+					throw abortError();
+				},
+			};
+		},
+	};
+}
+
+function createDecisionEvents(
+	sessionId: string,
+	messageId: string,
+	text: string,
+): StreamEvent[] {
+	return [
+		{
+			type: "message.updated",
+			properties: {
+				info: { id: messageId, sessionID: sessionId, role: "user" },
+			},
+		},
+		{
+			type: "message.part.updated",
+			properties: {
+				part: {
+					type: "text",
+					sessionID: sessionId,
+					messageID: messageId,
+					text,
+				},
+			},
+		},
+	];
+}
+
+function createMockClient(
+	streamEvents: StreamEvent[] = [],
+	streamFactory?: (signal?: AbortSignal) => AsyncIterable<StreamEvent>,
+) {
+	const sessionId = "sess-1";
 	return {
 		session: {
-			create: mock(async (opts: { title?: string }) => {
-				const id = `sess-${++sessionIdCounter}`;
-				sessions.set(id, { id, title: opts.title ?? "Untitled" });
-				return { data: { id }, error: undefined };
-			}),
-			delete: mock(async (_opts: { sessionID: string }) => {
-				return { data: true, error: undefined };
-			}),
-			prompt: mock(async (_opts: { sessionID: string }) => {
-				// Default mock returns "continue" - tests can override
-				return {
-					data: {
-						info: {
-							structured: { action: "continue" },
-						},
-					},
-					error: undefined,
-				};
-			}),
+			create: mock(async () => ({ data: { id: sessionId }, error: undefined })),
+			delete: mock(async () => ({ data: true, error: undefined })),
+			prompt: mock(async () => ({ data: {}, error: undefined })),
 		},
-		tui: {
-			selectSession: mock(async () => ({ data: true, error: undefined })),
-			showToast: mock(async () => ({ data: true, error: undefined })),
+		event: {
+			subscribe: mock(
+				async (_opts?: unknown, req?: { signal?: AbortSignal }) => ({
+					stream: streamFactory
+						? streamFactory(req?.signal)
+						: createSignalAwareStream(streamEvents, req?.signal),
+				}),
+			),
 		},
 	} as unknown as import("@opencode-ai/sdk/v2").OpencodeClient;
 }
 
-/** Create a mock TUI controller. */
-function createMockTuiController(active = true): TuiController {
-	const exitHandlers: Array<() => void> = [];
+function createMockTuiController(active = true): TuiController & {
+	_simulateExit: (code?: number, isUserCancellation?: boolean) => void;
+} {
+	const exitHandlers = new Set<
+		(info: { code: number | undefined; isUserCancellation: boolean }) => void
+	>();
 	let _active = active;
 
 	return {
 		get active() {
 			return _active;
 		},
-		set active(value: boolean) {
-			_active = value;
+		get attached() {
+			return active;
 		},
 		selectSession: mock(async () => {}),
 		showToast: mock(async () => {}),
-		onExit: (handler: () => void) => {
+		onExit(handler) {
 			if (!_active) {
-				handler();
-				return;
+				handler({ code: 0, isUserCancellation: false });
+				return () => {};
 			}
-			exitHandlers.push(handler);
+			exitHandlers.add(handler);
+			return () => exitHandlers.delete(handler);
 		},
 		kill: mock(() => {}),
-		// Test helper to simulate exit
-		_simulateExit() {
+		_simulateExit(code = 0, isUserCancellation = false) {
 			_active = false;
 			for (const handler of exitHandlers) {
-				try {
-					handler();
-				} catch {
-					// Swallow errors
-				}
+				handler({ code, isUserCancellation });
 			}
+			exitHandlers.clear();
 		},
-	} as unknown as TuiController & { _simulateExit: () => void };
+	};
 }
 
-// ---------------------------------------------------------------------------
-// Phase Gate Tests
-// ---------------------------------------------------------------------------
-
 describe("createTuiPhaseGate", () => {
-	test("returns gate function", () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui);
-		expect(typeof gate).toBe("function");
-	});
-
-	test("gate resolves 'continue' when user selects continue", async () => {
-		const client = createMockClient();
+	test("resolves continue from explicit user message", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "continue"),
+		);
 		const tui = createMockTuiController();
 		const gate = createTuiPhaseGate(client, tui);
 
 		const summary: PhaseSummary = {
 			phaseNumber: "3",
-			phaseTitle: "Test Phase",
+			phaseTitle: "Test",
 			qualityPassed: true,
 		};
 
 		const result = await gate(summary);
 		expect(result).toBe("continue");
+		expect(client.session.create).toHaveBeenCalledTimes(1);
+		expect(client.session.delete).toHaveBeenCalledTimes(1);
+		expect(client.session.prompt).not.toHaveBeenCalled();
 	});
 
-	test("gate resolves 'review' when user selects review", async () => {
-		const client = createMockClient();
-		// Override prompt to return "review"
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "review" } } },
-				error: undefined,
-			}),
-		);
+	test("blocks until a user message arrives", async () => {
+		const delayedStream = async function* (signal?: AbortSignal) {
+			yield {
+				type: "message.updated",
+				properties: {
+					info: { id: "assistant-1", sessionID: "sess-1", role: "assistant" },
+				},
+			} satisfies StreamEvent;
+
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			if (signal?.aborted) throw abortError();
+
+			yield createDecisionEvents(
+				"sess-1",
+				"msg-2",
+				"continue",
+			)[0] as StreamEvent;
+			yield createDecisionEvents(
+				"sess-1",
+				"msg-2",
+				"continue",
+			)[1] as StreamEvent;
+		};
+
+		const client = createMockClient([], delayedStream);
 		const tui = createMockTuiController();
 		const gate = createTuiPhaseGate(client, tui);
 
 		const summary: PhaseSummary = {
-			phaseNumber: "3",
-			phaseTitle: "Test Phase",
+			phaseNumber: "1",
+			phaseTitle: "Block test",
 			qualityPassed: true,
 		};
 
-		const result = await gate(summary);
-		expect(result).toBe("review");
+		const startedAt = Date.now();
+		await expect(gate(summary)).resolves.toBe("continue");
+		expect(Date.now() - startedAt).toBeGreaterThanOrEqual(25);
 	});
 
-	test("gate resolves 'abort' when user selects abort", async () => {
+	test("times out to abort", async () => {
 		const client = createMockClient();
-		// Override prompt to return "abort"
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "abort" } } },
-				error: undefined,
-			}),
-		);
 		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui);
+		const gate = createTuiPhaseGate(client, tui, { timeoutMs: 20 });
 
 		const summary: PhaseSummary = {
 			phaseNumber: "3",
-			phaseTitle: "Test Phase",
+			phaseTitle: "Timeout",
 			qualityPassed: true,
 		};
 
-		const result = await gate(summary);
-		expect(result).toBe("abort");
+		await expect(gate(summary)).resolves.toBe("abort");
 	});
 
-	test("gate shows toast notification", async () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui);
-
-		const summary: PhaseSummary = {
-			phaseNumber: "3",
-			phaseTitle: "Test Phase",
-			qualityPassed: true,
-		};
-
-		await gate(summary);
-		expect(tui.showToast).toHaveBeenCalled();
-		const mockCalls = (tui.showToast as ReturnType<typeof mock>).mock.calls;
-		expect(mockCalls[0]?.[0]).toContain("Phase 3 complete");
-	});
-
-	test("gate creates and cleans up session", async () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui);
-
-		const summary: PhaseSummary = {
-			phaseNumber: "3",
-			phaseTitle: "Test Phase",
-			qualityPassed: true,
-		};
-
-		await gate(summary);
-		expect(client.session.create).toHaveBeenCalled();
-		expect(client.session.delete).toHaveBeenCalled();
-	});
-
-	test("gate resolves 'abort' when TUI exits", async () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui);
-
-		// Simulate TUI exit before gate is called
-		(tui as unknown as { _simulateExit: () => void })._simulateExit();
-
-		const summary: PhaseSummary = {
-			phaseNumber: "3",
-			phaseTitle: "Test Phase",
-			qualityPassed: true,
-		};
-
-		// TUI exit should resolve with "abort", not reject
-		const result = await gate(summary);
-		expect(result).toBe("abort");
-	});
-
-	test("gate resolves 'abort' on abort signal", async () => {
+	test("aborts when signal is aborted", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();
 		const controller = new AbortController();
@@ -215,344 +223,83 @@ describe("createTuiPhaseGate", () => {
 
 		const summary: PhaseSummary = {
 			phaseNumber: "3",
-			phaseTitle: "Test Phase",
+			phaseTitle: "Abort",
 			qualityPassed: true,
 		};
 
-		// Abort immediately
+		const pending = gate(summary);
 		controller.abort();
-
-		// Abort signal should resolve with "abort", not reject
-		const result = await gate(summary);
-		expect(result).toBe("abort");
-	});
-
-	test("gate resolves 'abort' on timeout", async () => {
-		const client = createMockClient();
-		// Make prompt hang
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			() => new Promise(() => {}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiPhaseGate(client, tui, { timeoutMs: 50 });
-
-		const summary: PhaseSummary = {
-			phaseNumber: "3",
-			phaseTitle: "Test Phase",
-			qualityPassed: true,
-		};
-
-		// Timeout should resolve with "abort", not reject
-		const result = await gate(summary);
-		expect(result).toBe("abort");
+		await expect(pending).resolves.toBe("abort");
 	});
 });
-
-// ---------------------------------------------------------------------------
-// Escalation Gate Tests
-// ---------------------------------------------------------------------------
 
 describe("createTuiEscalationGate", () => {
-	test("returns gate function", () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiEscalationGate(client, tui);
-		expect(typeof gate).toBe("function");
-	});
-
-	test("gate resolves with 'continue' action", async () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiEscalationGate(client, tui);
-
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
-		expect(result.action).toBe("continue");
-	});
-
-	test("gate resolves with 'approve' action", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "approve" } } },
-				error: undefined,
-			}),
+	test("resolves continue with guidance from user text", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "continue: fix tests first"),
 		);
 		const tui = createMockTuiController();
 		const gate = createTuiEscalationGate(client, tui);
 
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
+		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
 		const result = await gate(event);
-		expect(result.action).toBe("approve");
-	});
 
-	test("gate resolves with 'abort' action", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "abort" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiEscalationGate(client, tui);
-
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
-		expect(result.action).toBe("abort");
-	});
-
-	test("gate includes guidance when continuing", async () => {
-		const client = createMockClient();
-		let callCount = 0;
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => {
-				callCount++;
-				if (callCount === 1) {
-					return {
-						data: { info: { structured: { action: "continue" } } },
-						error: undefined,
-					};
-				}
-				return {
-					data: { info: { structured: { guidance: "Fix the tests" } } },
-					error: undefined,
-				};
-			},
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiEscalationGate(client, tui);
-
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
 		expect(result.action).toBe("continue");
 		expect("guidance" in result ? result.guidance : undefined).toBe(
-			"Fix the tests",
+			"fix tests first",
 		);
+		expect(client.session.prompt).not.toHaveBeenCalled();
 	});
 
-	test("gate shows error toast", async () => {
-		const client = createMockClient();
+	test("resolves approve from user text", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "approve"),
+		);
 		const tui = createMockTuiController();
 		const gate = createTuiEscalationGate(client, tui);
 
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		await gate(event);
-		expect(tui.showToast).toHaveBeenCalled();
-		const mockCalls = (tui.showToast as ReturnType<typeof mock>).mock.calls;
-		expect(mockCalls[0]?.[1]).toBe("error");
+		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
+		await expect(gate(event)).resolves.toEqual({ action: "approve" });
 	});
 });
-
-// ---------------------------------------------------------------------------
-// Resume Gate Tests
-// ---------------------------------------------------------------------------
 
 describe("createTuiResumeGate", () => {
-	test("returns gate function", () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiResumeGate(client, tui);
-		expect(typeof gate).toBe("function");
-	});
-
-	test("gate resolves 'resume' when user selects resume", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "resume" } } },
-				error: undefined,
-			}),
+	test("resolves start-fresh from user text", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "start fresh"),
 		);
 		const tui = createMockTuiController();
 		const gate = createTuiResumeGate(client, tui);
 
-		const result = await gate("run-123", "3", "EXECUTE");
-		expect(result).toBe("resume");
-	});
-
-	test("gate resolves 'start-fresh' when user selects start-fresh", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "start-fresh" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiResumeGate(client, tui);
-
-		const result = await gate("run-123", "3", "EXECUTE");
-		expect(result).toBe("start-fresh");
-	});
-
-	test("gate resolves 'abort' when user selects abort", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "abort" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiResumeGate(client, tui);
-
-		const result = await gate("run-123", "3", "EXECUTE");
-		expect(result).toBe("abort");
+		await expect(gate("run-1", "3", "EXECUTE")).resolves.toBe("start-fresh");
 	});
 });
 
-// ---------------------------------------------------------------------------
-// Human Gate Tests (Plan Review)
-// ---------------------------------------------------------------------------
-
-describe("createTuiHumanGate", () => {
-	test("returns gate function", () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiHumanGate(client, tui);
-		expect(typeof gate).toBe("function");
-	});
-
-	test("gate resolves 'continue' when user selects continue", async () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiHumanGate(client, tui);
-
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
-		expect(result).toBe("continue");
-	});
-
-	test("gate resolves 'approve' when user selects approve", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "approve" } } },
-				error: undefined,
-			}),
+describe("plan-review gate wrappers", () => {
+	test("human gate maps escalation response to action", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "approve"),
 		);
 		const tui = createMockTuiController();
 		const gate = createTuiHumanGate(client, tui);
 
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
-		expect(result).toBe("approve");
+		const event: EscalationEvent = { reason: "review", iteration: 1 };
+		await expect(gate(event)).resolves.toBe("approve");
 	});
 
-	test("gate resolves 'abort' when user selects abort", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "abort" } } },
-				error: undefined,
-			}),
+	test("plan-review resume gate delegates to resume parser", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "resume"),
 		);
 		const tui = createMockTuiController();
-		const gate = createTuiHumanGate(client, tui);
+		const gate = createTuiPlanReviewResumeGate(client, tui);
 
-		const event: EscalationEvent = {
-			reason: "Test escalation",
-			iteration: 1,
-		};
-
-		const result = await gate(event);
-		expect(result).toBe("abort");
+		await expect(gate("run-1", 5)).resolves.toBe("resume");
 	});
 });
-
-// ---------------------------------------------------------------------------
-// Plan Review Resume Gate Tests
-// ---------------------------------------------------------------------------
-
-describe("createTuiPlanReviewResumeGate", () => {
-	test("returns gate function", () => {
-		const client = createMockClient();
-		const tui = createMockTuiController();
-		const gate = createTuiPlanReviewResumeGate(client, tui);
-		expect(typeof gate).toBe("function");
-	});
-
-	test("gate resolves 'resume' when user selects resume", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "resume" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiPlanReviewResumeGate(client, tui);
-
-		const result = await gate("run-123", 5);
-		expect(result).toBe("resume");
-	});
-
-	test("gate resolves 'start-fresh' when user selects start-fresh", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "start-fresh" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiPlanReviewResumeGate(client, tui);
-
-		const result = await gate("run-123", 5);
-		expect(result).toBe("start-fresh");
-	});
-
-	test("gate resolves 'abort' when user selects abort", async () => {
-		const client = createMockClient();
-		(client.session.prompt as ReturnType<typeof mock>).mockImplementation(
-			async () => ({
-				data: { info: { structured: { action: "abort" } } },
-				error: undefined,
-			}),
-		);
-		const tui = createMockTuiController();
-		const gate = createTuiPlanReviewResumeGate(client, tui);
-
-		const result = await gate("run-123", 5);
-		expect(result).toBe("abort");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 describe("DEFAULT_GATE_TIMEOUT_MS", () => {
-	test("default timeout is 30 minutes", () => {
+	test("is 30 minutes", () => {
 		expect(DEFAULT_GATE_TIMEOUT_MS).toBe(30 * 60 * 1000);
 	});
 });

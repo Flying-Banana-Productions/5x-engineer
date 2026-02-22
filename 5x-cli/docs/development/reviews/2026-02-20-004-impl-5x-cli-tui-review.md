@@ -121,8 +121,6 @@ File: `src/utils/event-router.ts`.
 - **Phase 3 completion:** ❌ (P0 cancellation + P0 permission scoping + P0 fail-closed ordering)
 - **Ready for Phase 4:** ❌ (Phase 4 assumes stable TUI lifecycle + reliable cancellation; current behavior can leak work/locks and auto-approve unsafe paths)
 
-<!-- 5x:structured:v1 eyJzY2hlbWEiOjEsInR5cGUiOiJ2ZXJkaWN0IiwicGhhc2UiOiIzIiwiaXRlcmF0aW9uIjoyLCJkYXRhIjp7InJlYWRpbmVzcyI6Im5vdF9yZWFkeSIsIml0ZW1zIjpbeyJpZCI6IlAwLjEiLCJ0aXRsZSI6IkFib3J0U2lnbmFsIHBsdW1iZWQgYnV0IGlnbm9yZWQ7IG5vIHJlYWwgY2FuY2VsbGF0aW9uIiwiYWN0aW9uIjoiYXV0b19maXgiLCJyZWFzb24iOiJgc2lnbmFsPzogQWJvcnRTaWduYWxgIGlzIGFkZGVkIHRvIG9yY2hlc3RyYXRvciBvcHRpb24gdHlwZXMgYW5kIGNvbW1hbmRzIHBhc3MgYGNhbmNlbENvbnRyb2xsZXIuc2lnbmFsYCwgYnV0IGBzcmMvb3JjaGVzdHJhdG9yL3BoYXNlLWV4ZWN1dGlvbi1sb29wLnRzYCBhbmQgYHNyYy9vcmNoZXN0cmF0b3IvcGxhbi1yZXZpZXctbG9vcC50c2AgbmV2ZXIgY2hlY2sgaXQsIGFuZCBhZGFwdGVyIGludm9jYXRpb25zIGRvbuKAmXQgcmVjZWl2ZSBhIHNpZ25hbC4gVFVJIGV4aXQgLyBTSUdJTlQgaW4gVFVJIG1vZGUgdGhlcmVmb3JlIHdvbuKAmXQgcmVsaWFibHkgc3RvcCBpbi1mbGlnaHQgd29yayBvciByZWFjaCBjbGVhbnVwIGRldGVybWluaXN0aWNhbGx5LiIsInByaW9yaXR5IjoiUDAifSx7ImlkIjoiUDAuMiIsInRpdGxlIjoid29ya2Rpci1zY29wZWQgcGVybWlzc2lvbiBhdXRvLWFwcHJvdmFsIGlzIHRyYXZlcnNhbC1wcm9uZSIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiYHNyYy90dWkvcGVybWlzc2lvbnMudHNgIGBpc1BhdGhJbldvcmtkaXIoKWAgcmV0dXJucyB0cnVlIGZvciBhbGwgcmVsYXRpdmUgcGF0aHMgKGluY2x1ZGluZyBgLi4vLi5gKSBhbmQgdXNlcyBwcmVmaXggY2hlY2tzIHdpdGhvdXQgcmVzb2x2aW5nIGAuLmAgc2VnbWVudHMgZm9yIGFic29sdXRlIHBhdGhzIChlLmcuIGAvcHJvamVjdC8uLi9ldGMvcGFzc3dkYCksIGFsbG93aW5nIG91dC1vZi13b3JrZGlyIGZpbGUgb3BlcmF0aW9ucyB0byBiZSBhdXRvLWFwcHJvdmVkLiIsInByaW9yaXR5IjoiUDAifSx7ImlkIjoiUDAuMyIsInRpdGxlIjoiTm9uLWludGVyYWN0aXZlIGZhaWwtY2xvc2VkIGNoZWNrIHJ1bnMgYWZ0ZXIgYWRhcHRlciBjcmVhdGlvbiIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiSW4gYHNyYy9jb21tYW5kcy9wbGFuLXJldmlldy50c2AgYW5kIGBzcmMvY29tbWFuZHMvcGxhbi50c2AsIHRoZSBgIXByb2Nlc3Muc3RkaW4uaXNUVFlgIGZhaWwtY2xvc2VkIGNoZWNrIGhhcHBlbnMgYWZ0ZXIgYGNyZWF0ZUFuZFZlcmlmeUFkYXB0ZXIoKWAsIGNvbnRyYXJ5IHRvIHRoZSBwbGFu4oCZcyByZXF1aXJlbWVudCB0byBmYWlsIGJlZm9yZSBhZGFwdGVyIGNyZWF0aW9uIHRvIGF2b2lkIHNpZGUgZWZmZWN0cyAoc3RhcnRpbmcgYSBzZXJ2ZXIvcHJvY2VzcykgaW4gZGlzYWxsb3dlZCBtb2Rlcy4iLCJwcmlvcml0eSI6IlAwIn0seyJpZCI6IlAxLjEiLCJ0aXRsZSI6IlRVSS1tb2RlIHNpZ25hbCBoYW5kbGVycyBjYW4gYmUgcmVnaXN0ZXJlZCBtdWx0aXBsZSB0aW1lcyIsImFjdGlvbiI6ImF1dG9fZml4IiwicmVhc29uIjoiYHJlZ2lzdGVyQWRhcHRlclNodXRkb3duKC4uLiwgeyB0dWlNb2RlOiB0cnVlIH0pYCB1c2VzIGBwcm9jZXNzLm9uY2VgIGJ1dCBkb2VzIG5vdCBndWFyZCB3aXRoIGBfc2lnbmFsSGFuZGxlcnNSZWdpc3RlcmVkYDsgcmVwZWF0ZWQgY2FsbHMgcmVnaXN0ZXIgbXVsdGlwbGUgU0lHSU5UL1NJR1RFUk0gaGFuZGxlcnMgKGVhY2ggZmlyZXMgb25jZSksIGluY3JlYXNpbmcgcmlzayBvZiBkdXBsaWNhdGVkIGFib3J0L2V4aXRDb2RlIGJlaGF2aW9yLiIsInByaW9yaXR5IjoiUDEifSx7ImlkIjoiUDEuMiIsInRpdGxlIjoiUGVybWlzc2lvbiBwb2xpY3kgZm9yIGV4ZWMvYmFzaCBkZXZpYXRlcyBmcm9tIHBsYW47IGRlY2lkZSArIGRvY3VtZW50IiwiYWN0aW9uIjoiaHVtYW5fcmVxdWlyZWQiLCJyZWFzb24iOiJUaGUgcGxhbiBjYWxscyBmb3IgYXV0by1hcHByb3Zpbmcg4oCcZXhlYyB3aXRoaW4gd29ya2RpcuKAnSBpbiBoZWFkbGVzcyBpbnRlcmFjdGl2ZSBtb2RlLCBidXQgYHNyYy90dWkvcGVybWlzc2lvbnMudHNgIGludGVudGlvbmFsbHkgZG9lcyBub3QgYXV0by1hcHByb3ZlIGBiYXNoYCAobm8gcGF0aCBleHRyYWN0aW9uKS4gVGhpcyBpcyBhIHNlY3VyaXR5L1VYIHBvbGljeSBjaG9pY2UgdGhhdCBzaG91bGQgYmUgZXhwbGljaXRseSBkZWNpZGVkIChrZWVwIHNhZmVyIGRlZmF1bHQgYW5kIHVwZGF0ZSBwbGFuL2RvY3MsIG9yIGltcGxlbWVudCBhIHNhZmUgZXhlYy1zY29waW5nIG1lY2hhbmlzbSkuIiwicHJpb3JpdHkiOiJQMSJ9LHsiaWQiOiJQMi4xIiwidGl0bGUiOiJldmVudC1yb3V0ZXIgZGVkdXBlIHNldCBjYW4gZ3JvdyB1bmJvdW5kZWQiLCJhY3Rpb24iOiJhdXRvX2ZpeCIsInJlYXNvbiI6ImBzcmMvdXRpbHMvZXZlbnQtcm91dGVyLnRzYCB0cmFja3MgYHVwZGF0ZWREZWx0YVBhcnRJZHNgIGluZGVmaW5pdGVseTsgZm9yIGxvbmcgc2Vzc2lvbnMgd2l0aCBtYW55IHBhcnRzIHRoaXMgY2FuIGFjY3VtdWxhdGUuIENvbnNpZGVyIGNsZWFyaW5nIElEcyBvbiBhIHBhcnQtY29tcGxldGUgZXZlbnQgaWYgYXZhaWxhYmxlLCBvciBib3VuZGluZyBzdGF0ZS4iLCJwcmlvcml0eSI6IlAyIn1dLCJzdW1tYXJ5IjoiUmV2aWV3IHdyaXR0ZW4gdG8gYGRvY3MvZGV2ZWxvcG1lbnQvcmV2aWV3cy8yMDI2LTAyLTIwLTAwNC1pbXBsLTV4LWNsaS10dWktcmV2aWV3Lm1kYCB3aXRoIGEgbmV3IGFkZGVuZHVtIGNvdmVyaW5nIGA3YzZiZTQzLi4uYCBhbmQgZm9sbG93LW9uIGA5NTg5NTcwLi4uYC4gRm9sbG93LW9uIGhlYWRsZXNzIFNTRSBkZWx0YSBoYW5kbGluZyBsb29rcyBnb29kLCBidXQgUGhhc2UgMyBpcyBub3QgY29tcGxldGUgZHVlIHRvIG1pc3NpbmcgZW5kLXRvLWVuZCBjb29wZXJhdGl2ZSBjYW5jZWxsYXRpb24sIHVuc2FmZSB3b3JrZGlyLXNjb3BlZCBwYXRoIGNoZWNrcywgYW5kIGZhaWwtY2xvc2VkIG9yZGVyaW5nOyBvbmUgb3BlbiBwb2xpY3kgZGVjaXNpb24gcmVtYWlucyBhcm91bmQgZXhlYyBwZXJtaXNzaW9ucy4ifX0 -->
-
 ---
 
 ## Addendum (2026-02-20) — Fix validation (004 Phase 3)
@@ -185,9 +183,8 @@ File: `src/utils/event-router.ts`.
 - **Correctness**: toast calls are best-effort (controller swallows disconnect errors), good. Session switching does not occur “after `session.create()`”; it happens only after `invokeFor*()` resolves, which is typically after the prompt completes. The TUI therefore won’t reliably track the active session while the agent streams.
 - **Architecture**: plumbing `tui` through command → loop options matches Phases 2/3. But `src/orchestrator/plan-review-loop.ts` accepts `tui` and never uses it, and `src/commands/plan.ts` remains un-integrated. Phase 4 behavior is uneven across commands.
 - **Security**: no new material concerns introduced in this commit.
-- **Operability**: the plan’s “Phase N failed — <reason>” toast is not implemented; “review approved” toast only happens in interactive mode (`PHASE_GATE` continue) and not in auto mode.
+- **Operability**: the plan’s "Phase N failed — [reason]" toast is not implemented; review "approved" toast only happens in interactive mode (PHASE_GATE continue) and not in auto mode.
 - **Test strategy**: `test/tui/phase4-integration.test.ts` is mostly interface/type assertions; it does not validate Phase 4 behavioral requirements (titles, session switching timing, toast boundaries, stdout-clean).
-
 ### Issues
 
 #### P0 — Session switching happens after the work (not after `session.create()`)
@@ -210,7 +207,7 @@ File: `src/orchestrator/plan-review-loop.ts`.
 
 File: `src/commands/plan.ts`.
 
-#### P1 — Missing “Phase N failed — <reason>” toast and auto-mode “approved” toast
+#### P1 — Missing “Phase N failed — [reason]” toast and auto-mode “approved” toast
 
 The plan specifies error toasts and “review approved” feedback. Current implementation covers phase start, auto escalation, auto phase complete (start review), and interactive continue; it does not toast on hard failures, and it does not toast “approved” in auto mode.
 
@@ -289,3 +286,51 @@ Files: `test/tui/phase4-integration.test.ts` (and new tests in `test/orchestrato
 
 - **Phase 4 completion:** ⚠️ — core session switching + titles + failure toasts are in place; close the `plan` cancellation wiring and harden the Phase 4 tests/toast boundary semantics to fully meet the Phase 4 completion gate.
 - **Ready for Phase 5:** ⚠️ — proceed once Phase 4 is considered complete (Phase 5 UX depends on robust, test-backed TUI orchestration + lifecycle semantics).
+
+---
+
+## Addendum (2026-02-20) — Implementation review (Phase 5 gate fixes)
+
+**Reviewed:** `ae6e28362163b77b4076cd43d82e02f6bf83ac25` (no follow-on commits)
+
+### What changed since the prior addendum
+
+- **Gate termination semantics**: timeout / abort signal / TUI exit now resolve to `"abort"` instead of rejecting.
+- **Best-effort UX**: `tui.showToast()` and `tui.selectSession()` are wrapped in `try/catch` so gate logic continues on TUI/API failures.
+- **Event listener hygiene (partial)**: `AbortSignal` listeners use `{ once: true }`.
+
+### Assessment (Staff Eng)
+
+- **Correctness**: this addresses the core failure mode where gate rejection bubbles out of orchestration loops; timeouts now end gates predictably.
+- **Plan compliance**: the plan text + Phase 5 checklist explicitly say cancel/TUI-exit should *reject* (not resolve `"abort"`). Implementation is probably the better contract for orchestration, but it’s now a spec mismatch that should be resolved explicitly (code vs plan).
+- **Operability**: best-effort toast/session focus is correct and avoids turning UX/API flakiness into run failures.
+
+### Issues
+
+#### P1 — Phase 5 spec mismatch on cancel/TUI-exit semantics (resolve vs reject)
+
+`docs/development/004-impl-5x-cli-tui.md` describes cancel + TUI exit as rejection paths; `src/tui/gates.ts` now resolves `"abort"` for both. Decide the intended contract and update either the plan (preferred if this is the new contract) or the implementation/tests.
+
+Files: `docs/development/004-impl-5x-cli-tui.md`, `src/tui/gates.ts`, `test/tui/gates.test.ts`.
+
+#### P1 — Listener accumulation still possible (TUI exit + abort signal)
+
+`watchTuiExit()` registers an `onExit` handler per gate call and never unregisters; if the TUI never exits, these handlers accumulate. Similarly, `{ once: true }` on `AbortSignal` prevents repeat firing but does not remove listeners unless abort happens; repeated gates on a long-lived `AbortController.signal` will accumulate listeners until abort.
+
+This is likely fine for short runs, but it’s a real leak in long-lived processes / repeated commands.
+
+File: `src/tui/gates.ts`.
+
+#### P2 — Tests cover the phase gate only for abort/timeout/TUI-exit
+
+The updated assertions exist for `createTuiPhaseGate`, but equivalent termination-path tests are missing for `createTuiEscalationGate`, `createTuiResumeGate`, `createTuiHumanGate`, and `createTuiPlanReviewResumeGate`.
+
+File: `test/tui/gates.test.ts`.
+
+### Local verification
+
+- `bun test`: 525 pass, 6 skip, 0 fail
+
+### Phase readiness
+
+- **Phase 5 completion:** ⚠️ — functionally improved, but not “plan complete” until the cancel/TUI-exit contract is reconciled (and ideally listener cleanup is hardened).

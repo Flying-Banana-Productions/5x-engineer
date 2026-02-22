@@ -1371,13 +1371,14 @@ describe("runPhaseExecutionLoop", () => {
 
 			const tui: TuiController = {
 				active: true,
+				attached: true,
 				selectSession: async (sessionID: string) => {
 					selectedSessions.push(sessionID);
 				},
 				showToast: async (message, variant) => {
 					toasts.push({ message, variant });
 				},
-				onExit: () => {},
+				onExit: () => () => {},
 				kill: () => {},
 			};
 

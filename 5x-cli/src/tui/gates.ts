@@ -1,448 +1,342 @@
-/**
- * TUI-native gate implementations for human interaction in non-auto mode.
- *
- * Phase 5 of 004-impl-5x-cli-tui.
- *
- * These gates use the TUI's control channel (`client.tui.*` APIs) to display
- * blocking dialogs for human decisions. They replace the readline-based gates
- * in `gates/human.ts` when running in TUI mode.
- *
- * ## Implementation notes:
- *
- * The OpenCode SDK does not provide a native `showDialog()` API for blocking
- * user input. Instead, we use a "gate session" pattern:
- * 1. Create a dedicated session for the gate (title reflects the decision needed)
- * 2. Show a toast notification to inform the user
- * 3. Use `client.session.prompt()` with a structured output format to get the decision
- * 4. The prompt asks the user to respond with a specific format
- * 5. Timeout after DEFAULT_GATE_TIMEOUT_MS (30 minutes) to prevent indefinite hangs
- * 6. Respect cancelController.signal for immediate abort on Ctrl-C
- *
- * This approach is deterministic: the gate resolves on a specific event
- * (the structured output response), not on generic SSE inference.
- */
-
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
-import type {
-	EscalationEvent,
-	EscalationResponse,
-	PhaseSummary,
+import {
+	type EscalationEvent,
+	type EscalationResponse,
+	escalationGate as headlessEscalationGate,
+	phaseGate as headlessPhaseGate,
+	resumeGate as headlessResumeGate,
+	type PhaseSummary,
 } from "../gates/human.js";
 import type { TuiController } from "./controller.js";
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-/** Default gate timeout: 30 minutes (in milliseconds). */
 export const DEFAULT_GATE_TIMEOUT_MS = 30 * 60 * 1000;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface TuiGateOptions {
-	/** Timeout in milliseconds before gate auto-aborts. Default: 30 minutes. */
 	timeoutMs?: number;
-	/** AbortSignal for immediate cancellation (e.g., Ctrl-C, TUI exit). */
 	signal?: AbortSignal;
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-/**
- * Create a promise that resolves with "abort" after a timeout.
- * Generic to allow proper typing in Promise.race with different gate return types.
- */
-function createTimeoutPromise<T>(
-	ms: number,
-	_label: string,
-): Promise<T | "abort"> {
-	return new Promise((resolve) => {
-		const timer = setTimeout(() => {
-			resolve("abort");
-		}, ms);
-		// Clean up timer if promise is garbage collected (not strictly necessary but good practice)
-		timer.unref?.();
-	});
+function normalize(text: string): string {
+	return text.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-/**
- * Create a promise that resolves with "abort" when the signal is aborted.
- * Generic to allow proper typing in Promise.race with different gate return types.
- */
-function createAbortPromise<T>(signal: AbortSignal): Promise<T | "abort"> {
-	return new Promise((resolve) => {
-		if (signal.aborted) {
-			resolve("abort");
-			return;
-		}
-		signal.addEventListener(
-			"abort",
-			() => {
-				resolve("abort");
-			},
-			{ once: true },
-		);
-	});
-}
-
-/**
- * Check if TUI is still active; if not, return a promise that resolves to "abort".
- * Generic to allow proper typing based on the expected return type of the gate.
- */
-function checkTuiActive<T>(
-	tui: TuiController,
-	_label: string,
-): Promise<T | "abort"> | null {
-	if (!tui.active) {
-		return Promise.resolve("abort" as T | "abort");
-	}
+function parsePhaseDecision(
+	text: string,
+): "continue" | "review" | "abort" | null {
+	const value = normalize(text);
+	if (value === "c" || value === "continue") return "continue";
+	if (value === "r" || value === "review") return "review";
+	if (value === "q" || value === "abort") return "abort";
 	return null;
 }
 
-// ---------------------------------------------------------------------------
-// Phase Gate
-// ---------------------------------------------------------------------------
+function parseEscalationDecision(
+	text: string,
+):
+	| { action: "continue"; guidance?: string }
+	| { action: "approve" | "abort" }
+	| null {
+	const trimmed = text.trim();
+	const value = normalize(trimmed);
 
-/**
- * Create a TUI-native phase gate.
- *
- * Displays a blocking dialog in the TUI asking the user whether to continue,
- * review, or abort after a phase completes.
- */
+	if (value === "o" || value === "approve" || value === "override") {
+		return { action: "approve" };
+	}
+	if (value === "q" || value === "abort") {
+		return { action: "abort" };
+	}
+	if (value === "f" || value === "fix" || value === "continue") {
+		return { action: "continue" };
+	}
+
+	const continueMatch = trimmed.match(/^continue\s*[:-]?\s*(.+)$/i);
+	if (continueMatch) {
+		const guidance = continueMatch[1]?.trim();
+		return { action: "continue", guidance: guidance || undefined };
+	}
+
+	const fixMatch = trimmed.match(/^fix\s*[:-]?\s*(.+)$/i);
+	if (fixMatch) {
+		const guidance = fixMatch[1]?.trim();
+		return { action: "continue", guidance: guidance || undefined };
+	}
+
+	return null;
+}
+
+function parseResumeDecision(
+	text: string,
+): "resume" | "start-fresh" | "abort" | null {
+	const value = normalize(text).replace("start fresh", "start-fresh");
+	if (value === "r" || value === "resume") return "resume";
+	if (value === "n" || value === "new" || value === "start-fresh") {
+		return "start-fresh";
+	}
+	if (value === "q" || value === "abort") return "abort";
+	return null;
+}
+
+async function createGateSession(
+	client: OpencodeClient,
+	tui: TuiController,
+	title: string,
+): Promise<string> {
+	const created = await client.session.create({ title });
+	if (created.error || !created.data?.id) {
+		throw new Error(
+			`Failed to create gate session: ${created.error ? JSON.stringify(created.error) : "no data"}`,
+		);
+	}
+
+	try {
+		await tui.selectSession(created.data.id);
+	} catch {
+		// Best effort only.
+	}
+
+	return created.data.id;
+}
+
+async function deleteGateSession(
+	client: OpencodeClient,
+	sessionId: string,
+): Promise<void> {
+	try {
+		await client.session.delete({ sessionID: sessionId });
+	} catch {
+		// Best effort only.
+	}
+}
+
+function isAbortError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	return err.name === "AbortError" || /abort/i.test(err.message);
+}
+
+async function waitForParsedUserDecision<T>(
+	client: OpencodeClient,
+	sessionId: string,
+	signal: AbortSignal,
+	parse: (text: string) => T | null,
+	onInvalid: (text: string) => Promise<void>,
+): Promise<T> {
+	const api = client as unknown as {
+		event: {
+			subscribe: (
+				options?: unknown,
+				req?: { signal?: AbortSignal },
+			) => Promise<{ stream: AsyncIterable<unknown> }>;
+		};
+	};
+
+	const { stream } = await api.event.subscribe(undefined, { signal });
+	const textByMessage = new Map<string, string>();
+	const roleByMessage = new Map<string, string>();
+
+	for await (const raw of stream) {
+		if (signal.aborted) throw new Error("aborted");
+
+		const event = raw as {
+			type?: string;
+			properties?: Record<string, unknown>;
+		};
+
+		if (event.type === "message.updated") {
+			const info = event.properties?.info as
+				| { id?: string; sessionID?: string; role?: string }
+				| undefined;
+			if (!info || info.sessionID !== sessionId || !info.id || !info.role) {
+				continue;
+			}
+
+			roleByMessage.set(info.id, info.role);
+			if (info.role !== "user") continue;
+
+			const text = textByMessage.get(info.id);
+			if (!text) continue;
+
+			const parsed = parse(text);
+			if (parsed !== null) return parsed;
+			await onInvalid(text);
+			continue;
+		}
+
+		if (event.type !== "message.part.updated") continue;
+
+		const part = event.properties?.part as
+			| { type?: string; sessionID?: string; messageID?: string; text?: string }
+			| undefined;
+
+		if (
+			!part ||
+			part.type !== "text" ||
+			part.sessionID !== sessionId ||
+			!part.messageID
+		) {
+			continue;
+		}
+
+		const delta =
+			typeof event.properties?.delta === "string"
+				? event.properties.delta
+				: undefined;
+		const previous = textByMessage.get(part.messageID) ?? "";
+		const next =
+			typeof part.text === "string"
+				? part.text
+				: delta
+					? `${previous}${delta}`
+					: previous;
+
+		textByMessage.set(part.messageID, next);
+
+		if (roleByMessage.get(part.messageID) !== "user") continue;
+
+		const parsed = parse(next);
+		if (parsed !== null) return parsed;
+		await onInvalid(next);
+	}
+
+	throw new Error("Gate event stream ended unexpectedly");
+}
+
+async function runWithGateLifecycle<T>(
+	tui: TuiController,
+	opts: TuiGateOptions,
+	run: (signal: AbortSignal) => Promise<T>,
+): Promise<T | "abort"> {
+	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+	const gateAbort = new AbortController();
+
+	const onOuterAbort = () => gateAbort.abort();
+	if (opts.signal) {
+		if (opts.signal.aborted) gateAbort.abort();
+		else opts.signal.addEventListener("abort", onOuterAbort, { once: true });
+	}
+
+	const timeout = setTimeout(() => gateAbort.abort(), timeoutMs);
+	timeout.unref?.();
+	const unsubscribeExit = tui.onExit(() => gateAbort.abort());
+
+	try {
+		return await run(gateAbort.signal);
+	} catch (err) {
+		if (gateAbort.signal.aborted || isAbortError(err)) return "abort";
+		throw err;
+	} finally {
+		clearTimeout(timeout);
+		unsubscribeExit();
+		if (opts.signal) {
+			opts.signal.removeEventListener("abort", onOuterAbort);
+		}
+	}
+}
+
 export function createTuiPhaseGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
 ): (summary: PhaseSummary) => Promise<"continue" | "review" | "abort"> {
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
-
 	return async (summary): Promise<"continue" | "review" | "abort"> => {
-		// Check TUI is still active
-		const tuiCheck = checkTuiActive<"continue" | "review" | "abort">(
-			tui,
-			"Phase gate",
-		);
-		if (tuiCheck) {
-			const result = await tuiCheck;
-			return result;
-		}
+		if (!tui.active) return headlessPhaseGate(summary);
 
-		// Show toast notification (best-effort)
+		const sessionId = await createGateSession(
+			client,
+			tui,
+			`Gate: Phase ${summary.phaseNumber} — ${summary.phaseTitle}`,
+		);
+
 		try {
 			await tui.showToast(
-				`Phase ${summary.phaseNumber} complete — awaiting decision`,
+				`Phase ${summary.phaseNumber} complete. Reply with continue, review, or abort.`,
 				"info",
 			);
 		} catch {
-			// Ignore TUI errors
+			// Best effort only.
 		}
 
-		// Create a gate session for the decision
-		const gateSession = await client.session.create({
-			title: `Gate: Phase ${summary.phaseNumber} — ${summary.phaseTitle}`,
-		});
-
-		if (gateSession.error || !gateSession.data) {
-			throw new Error(
-				`Failed to create gate session: ${gateSession.error ? JSON.stringify(gateSession.error) : "no data"}`,
-			);
-		}
-
-		// Select the session in TUI (best-effort)
 		try {
-			await tui.selectSession(gateSession.data.id);
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Build the prompt asking for a decision
-		const promptText = buildPhaseGatePrompt(summary);
-
-		// Race between: user response, timeout, abort signal, TUI exit
-		try {
-			const result = await Promise.race<"continue" | "review" | "abort">([
-				promptForDecision(client, gateSession.data.id, promptText, [
-					"continue",
-					"review",
-					"abort",
-				] as const),
-				createTimeoutPromise<"continue" | "review" | "abort">(
-					timeoutMs,
-					"Phase gate",
+			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+				waitForParsedUserDecision(
+					client,
+					sessionId,
+					signal,
+					parsePhaseDecision,
+					async (text) => {
+						try {
+							await tui.showToast(
+								`Invalid input: "${text.trim()}". Use continue, review, or abort.`,
+								"warning",
+							);
+						} catch {
+							// Best effort only.
+						}
+					},
 				),
-				opts.signal
-					? createAbortPromise<"continue" | "review" | "abort">(opts.signal)
-					: new Promise<"continue" | "review" | "abort">(() => {}),
-				watchTuiExit(tui),
-			]);
+			);
 
-			return result;
+			return decision === "abort" ? "abort" : decision;
 		} finally {
-			// Clean up the gate session
-			try {
-				await client.session.delete({ sessionID: gateSession.data.id });
-			} catch {
-				// Ignore cleanup errors
-			}
+			await deleteGateSession(client, sessionId);
 		}
 	};
 }
 
-function buildPhaseGatePrompt(summary: PhaseSummary): string {
-	const lines = [
-		`Phase ${summary.phaseNumber}: ${summary.phaseTitle} — Complete`,
-		"",
-	];
-
-	if (summary.commit) {
-		lines.push(`Commit: ${summary.commit.slice(0, 8)}`);
-	}
-	lines.push(`Quality gates: ${summary.qualityPassed ? "PASSED" : "FAILED"}`);
-	if (summary.reviewVerdict) {
-		lines.push(`Review verdict: ${summary.reviewVerdict}`);
-	}
-	if (summary.filesChanged !== undefined) {
-		lines.push(`Files changed: ${summary.filesChanged}`);
-	}
-	if (summary.duration !== undefined) {
-		const secs = Math.round(summary.duration / 1000);
-		const mins = Math.floor(secs / 60);
-		const display = mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
-		lines.push(`Duration: ${display}`);
-	}
-
-	lines.push(
-		"",
-		"Please choose an action:",
-		'- Type "continue" to proceed to the next phase',
-		'- Type "review" to pause and inspect changes before continuing',
-		'- Type "abort" to stop execution',
-		"",
-		"What would you like to do? (continue/review/abort)",
-	);
-
-	return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Escalation Gate
-// ---------------------------------------------------------------------------
-
-/**
- * Create a TUI-native escalation gate.
- *
- * Displays a blocking dialog when human intervention is required,
- * offering options to continue with guidance, approve/override, or abort.
- */
 export function createTuiEscalationGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
 ): (event: EscalationEvent) => Promise<EscalationResponse> {
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+	return async (event): Promise<EscalationResponse> => {
+		if (!tui.active) return headlessEscalationGate(event);
 
-	return async (event: EscalationEvent): Promise<EscalationResponse> => {
-		// Check TUI is still active
-		const tuiCheck = checkTuiActive<EscalationResponse>(tui, "Escalation gate");
-		if (tuiCheck) {
-			const result = await tuiCheck;
-			// Return abort action if TUI exited
-			if (result === "abort") {
-				return { action: "abort" };
-			}
-		}
+		const shortReason =
+			event.reason.length > 60
+				? `${event.reason.slice(0, 60)}...`
+				: event.reason;
+		const sessionId = await createGateSession(
+			client,
+			tui,
+			`Escalation: ${shortReason}`,
+		);
 
-		// Show toast notification (best-effort)
 		try {
-			await tui.showToast(`Escalation: ${event.reason}`, "error");
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Create a gate session for the decision
-		const gateSession = await client.session.create({
-			title: `Escalation: ${event.reason.slice(0, 50)}...`,
-		});
-
-		if (gateSession.error || !gateSession.data) {
-			throw new Error(
-				`Failed to create gate session: ${gateSession.error ? JSON.stringify(gateSession.error) : "no data"}`,
+			await tui.showToast(
+				"Escalation requires input. Reply with approve, abort, or continue[: guidance].",
+				"error",
 			);
-		}
-
-		// Select the session in TUI (best-effort)
-		try {
-			await tui.selectSession(gateSession.data.id);
 		} catch {
-			// Ignore TUI errors
+			// Best effort only.
 		}
 
-		// Build the prompt
-		const promptText = buildEscalationPrompt(event);
-
-		// Race between: user response, timeout, abort signal, TUI exit
 		try {
-			const decision = await Promise.race<EscalationResponse | "abort">([
-				promptForEscalationDecision(client, gateSession.data.id, promptText),
-				createTimeoutPromise<EscalationResponse>(timeoutMs, "Escalation gate"),
-				opts.signal
-					? createAbortPromise<EscalationResponse>(opts.signal)
-					: new Promise(() => {}),
-				watchTuiExit(tui),
-			]);
+			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+				waitForParsedUserDecision(
+					client,
+					sessionId,
+					signal,
+					parseEscalationDecision,
+					async (text) => {
+						try {
+							await tui.showToast(
+								`Invalid input: "${text.trim()}". Use approve, abort, or continue[: guidance].`,
+								"warning",
+							);
+						} catch {
+							// Best effort only.
+						}
+					},
+				),
+			);
 
-			// If timeout, abort signal, or TUI exit fired, return abort action
-			if (decision === "abort") {
-				return { action: "abort" };
-			}
-
+			if (decision === "abort") return { action: "abort" };
 			return decision;
 		} finally {
-			// Clean up the gate session
-			try {
-				await client.session.delete({ sessionID: gateSession.data.id });
-			} catch {
-				// Ignore cleanup errors
-			}
+			await deleteGateSession(client, sessionId);
 		}
 	};
 }
 
-function buildEscalationPrompt(event: EscalationEvent): string {
-	const lines = [
-		"=== Escalation: Human Review Required ===",
-		`Reason: ${event.reason}`,
-		"",
-	];
-
-	if (event.items && event.items.length > 0) {
-		lines.push("Items requiring attention:");
-		for (const item of event.items) {
-			lines.push(`  - [${item.id}] ${item.title}: ${item.reason}`);
-		}
-		lines.push("");
-	}
-
-	if (event.retryState) {
-		lines.push(`Next step on fix: ${event.retryState}`);
-		lines.push("");
-	}
-
-	lines.push(
-		"Please choose an action:",
-		'- Type "continue" to provide guidance and retry',
-		'- Type "approve" to override and move on (force approve)',
-		'- Type "abort" to stop execution',
-		"",
-		'If you choose "continue", you will be prompted for optional guidance.',
-		"",
-		"What would you like to do? (continue/approve/abort)",
-	);
-
-	return lines.join("\n");
-}
-
-async function promptForEscalationDecision(
-	client: OpencodeClient,
-	sessionId: string,
-	promptText: string,
-): Promise<EscalationResponse> {
-	// First, get the main decision
-	const decisionSchema = {
-		type: "object" as const,
-		properties: {
-			action: {
-				type: "string" as const,
-				enum: ["continue", "approve", "abort"],
-				description: "The user's chosen action",
-			},
-		},
-		required: ["action"],
-	};
-
-	const result = await client.session.prompt({
-		sessionID: sessionId,
-		parts: [{ type: "text", text: promptText }],
-		format: {
-			type: "json_schema",
-			schema: decisionSchema,
-		},
-	});
-
-	if (result.error || !result.data) {
-		throw new Error(
-			`Failed to get decision: ${result.error ? JSON.stringify(result.error) : "no data"}`,
-		);
-	}
-
-	const info = result.data.info;
-	const decision = info.structured as {
-		action: "continue" | "approve" | "abort";
-	};
-
-	if (decision.action === "approve") {
-		return { action: "approve" };
-	}
-
-	if (decision.action === "abort") {
-		return { action: "abort" };
-	}
-
-	// For "continue", ask for optional guidance
-	const guidancePrompt = [
-		"You chose to continue with guidance.",
-		"",
-		"Please provide guidance for the agent (or type 'skip' to continue without guidance):",
-	].join("\n");
-
-	const guidanceSchema = {
-		type: "object" as const,
-		properties: {
-			guidance: {
-				type: "string" as const,
-				description: "Optional guidance for the agent, or 'skip' for none",
-			},
-		},
-		required: ["guidance"],
-	};
-
-	const guidanceResult = await client.session.prompt({
-		sessionID: sessionId,
-		parts: [{ type: "text", text: guidancePrompt }],
-		format: {
-			type: "json_schema",
-			schema: guidanceSchema,
-		},
-	});
-
-	if (guidanceResult.error || !guidanceResult.data) {
-		// If guidance fails, continue without it
-		return { action: "continue" };
-	}
-
-	const guidanceOutput = guidanceResult.data.info.structured as {
-		guidance: string;
-	};
-	const guidance =
-		guidanceOutput.guidance === "skip" ? undefined : guidanceOutput.guidance;
-
-	return { action: "continue", guidance };
-}
-
-// ---------------------------------------------------------------------------
-// Resume Gate
-// ---------------------------------------------------------------------------
-
-/**
- * Create a TUI-native resume gate.
- *
- * Displays a blocking dialog when resuming an interrupted run,
- * offering options to resume, start fresh, or abort.
- */
 export function createTuiResumeGate(
 	client: OpencodeClient,
 	tui: TuiController,
@@ -452,218 +346,67 @@ export function createTuiResumeGate(
 	phase: string,
 	state: string,
 ) => Promise<"resume" | "start-fresh" | "abort"> {
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
-
 	return async (
 		runId,
 		phase,
 		state,
 	): Promise<"resume" | "start-fresh" | "abort"> => {
-		// Check TUI is still active
-		const tuiCheck = checkTuiActive<"resume" | "start-fresh" | "abort">(
-			tui,
-			"Resume gate",
-		);
-		if (tuiCheck) {
-			const result = await tuiCheck;
-			return result;
-		}
+		if (!tui.active) return headlessResumeGate(runId, phase, state);
 
-		// Show toast notification (best-effort)
+		const sessionId = await createGateSession(
+			client,
+			tui,
+			`Resume: Run ${runId.slice(0, 8)}`,
+		);
+
 		try {
 			await tui.showToast(
-				`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
+				`Interrupted run at ${phase}/${state}. Reply with resume, start-fresh, or abort.`,
 				"info",
 			);
 		} catch {
-			// Ignore TUI errors
+			// Best effort only.
 		}
 
-		// Create a gate session for the decision
-		const gateSession = await client.session.create({
-			title: `Resume: Run ${runId.slice(0, 8)}`,
-		});
-
-		if (gateSession.error || !gateSession.data) {
-			throw new Error(
-				`Failed to create gate session: ${gateSession.error ? JSON.stringify(gateSession.error) : "no data"}`,
-			);
-		}
-
-		// Select the session in TUI (best-effort)
 		try {
-			await tui.selectSession(gateSession.data.id);
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Build the prompt
-		const promptText = buildResumePrompt(runId, phase, state);
-
-		// Race between: user response, timeout, abort signal, TUI exit
-		try {
-			const result = await Promise.race<"resume" | "start-fresh" | "abort">([
-				promptForDecision(client, gateSession.data.id, promptText, [
-					"resume",
-					"start-fresh",
-					"abort",
-				] as const),
-				createTimeoutPromise<"resume" | "start-fresh" | "abort">(
-					timeoutMs,
-					"Resume gate",
+			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+				waitForParsedUserDecision(
+					client,
+					sessionId,
+					signal,
+					parseResumeDecision,
+					async (text) => {
+						try {
+							await tui.showToast(
+								`Invalid input: "${text.trim()}". Use resume, start-fresh, or abort.`,
+								"warning",
+							);
+						} catch {
+							// Best effort only.
+						}
+					},
 				),
-				opts.signal
-					? createAbortPromise<"resume" | "start-fresh" | "abort">(opts.signal)
-					: new Promise<"resume" | "start-fresh" | "abort">(() => {}),
-				watchTuiExit(tui),
-			]);
+			);
 
-			return result;
+			return decision === "abort" ? "abort" : decision;
 		} finally {
-			// Clean up the gate session
-			try {
-				await client.session.delete({ sessionID: gateSession.data.id });
-			} catch {
-				// Ignore cleanup errors
-			}
+			await deleteGateSession(client, sessionId);
 		}
 	};
 }
 
-function buildResumePrompt(
-	runId: string,
-	phase: string,
-	state: string,
-): string {
-	return [
-		`Found interrupted run ${runId.slice(0, 8)} at phase ${phase}, state ${state}.`,
-		"",
-		"Please choose an action:",
-		'- Type "resume" to continue from where it left off',
-		'- Type "start-fresh" to abandon the old run and start new',
-		'- Type "abort" to stop execution',
-		"",
-		"What would you like to do? (resume/start-fresh/abort)",
-	].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Plan Review Human Gate (for plan-review-loop.ts)
-// ---------------------------------------------------------------------------
-
-/**
- * Create a TUI-native human gate for plan review escalation.
- *
- * Similar to escalation gate but with a simpler return type for plan-review.
- */
 export function createTuiHumanGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
 ): (event: EscalationEvent) => Promise<"continue" | "approve" | "abort"> {
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
-
-	return async (event): Promise<"continue" | "approve" | "abort"> => {
-		// Check TUI is still active
-		const tuiCheck = checkTuiActive<"continue" | "approve" | "abort">(
-			tui,
-			"Human gate",
-		);
-		if (tuiCheck) {
-			const result = await tuiCheck;
-			return result;
-		}
-
-		// Show toast notification (best-effort)
-		try {
-			await tui.showToast(`Human review required: ${event.reason}`, "error");
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Create a gate session for the decision
-		const gateSession = await client.session.create({
-			title: `Review: ${event.reason.slice(0, 50)}...`,
-		});
-
-		if (gateSession.error || !gateSession.data) {
-			throw new Error(
-				`Failed to create gate session: ${gateSession.error ? JSON.stringify(gateSession.error) : "no data"}`,
-			);
-		}
-
-		// Select the session in TUI (best-effort)
-		try {
-			await tui.selectSession(gateSession.data.id);
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Build the prompt
-		const promptText = buildHumanGatePrompt(event);
-
-		// Race between: user response, timeout, abort signal, TUI exit
-		try {
-			const result = await Promise.race<"continue" | "approve" | "abort">([
-				promptForDecision(client, gateSession.data.id, promptText, [
-					"continue",
-					"approve",
-					"abort",
-				] as const),
-				createTimeoutPromise<"continue" | "approve" | "abort">(
-					timeoutMs,
-					"Human gate",
-				),
-				opts.signal
-					? createAbortPromise<"continue" | "approve" | "abort">(opts.signal)
-					: new Promise<"continue" | "approve" | "abort">(() => {}),
-				watchTuiExit(tui),
-			]);
-
-			return result;
-		} finally {
-			// Clean up the gate session
-			try {
-				await client.session.delete({ sessionID: gateSession.data.id });
-			} catch {
-				// Ignore cleanup errors
-			}
-		}
+	const escalationGate = createTuiEscalationGate(client, tui, opts);
+	return async (event) => {
+		const decision = await escalationGate(event);
+		return decision.action;
 	};
 }
 
-function buildHumanGatePrompt(event: EscalationEvent): string {
-	const lines = [
-		"=== Human Review Required ===",
-		`Reason: ${event.reason}`,
-		"",
-	];
-
-	if (event.items && event.items.length > 0) {
-		lines.push("Items requiring human review:");
-		for (const item of event.items) {
-			lines.push(`  - [${item.id}] ${item.title}: ${item.reason}`);
-		}
-		lines.push("");
-	}
-
-	lines.push(
-		"Please choose an action:",
-		'- Type "continue" to fix and re-review',
-		'- Type "approve" to override and move on (force approve)',
-		'- Type "abort" to stop the review loop',
-		"",
-		"What would you like to do? (continue/approve/abort)",
-	);
-
-	return lines.join("\n");
-}
-
-/**
- * Create a TUI-native resume gate for plan review.
- *
- * Simplified version for plan-review-loop.ts that only takes runId and iteration.
- */
 export function createTuiPlanReviewResumeGate(
 	client: OpencodeClient,
 	tui: TuiController,
@@ -672,149 +415,7 @@ export function createTuiPlanReviewResumeGate(
 	runId: string,
 	iteration: number,
 ) => Promise<"resume" | "start-fresh" | "abort"> {
-	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
-
-	return async (
-		runId,
-		iteration,
-	): Promise<"resume" | "start-fresh" | "abort"> => {
-		// Check TUI is still active
-		const tuiCheck = checkTuiActive<"resume" | "start-fresh" | "abort">(
-			tui,
-			"Resume gate",
-		);
-		if (tuiCheck) {
-			const result = await tuiCheck;
-			return result;
-		}
-
-		// Show toast notification (best-effort)
-		try {
-			await tui.showToast(
-				`Found interrupted run ${runId.slice(0, 8)} — awaiting decision`,
-				"info",
-			);
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Create a gate session for the decision
-		const gateSession = await client.session.create({
-			title: `Resume: Run ${runId.slice(0, 8)}`,
-		});
-
-		if (gateSession.error || !gateSession.data) {
-			throw new Error(
-				`Failed to create gate session: ${gateSession.error ? JSON.stringify(gateSession.error) : "no data"}`,
-			);
-		}
-
-		// Select the session in TUI (best-effort)
-		try {
-			await tui.selectSession(gateSession.data.id);
-		} catch {
-			// Ignore TUI errors
-		}
-
-		// Build the prompt
-		const promptText = [
-			`Found interrupted run ${runId.slice(0, 8)} at iteration ${iteration}.`,
-			"",
-			"Please choose an action:",
-			'- Type "resume" to continue from where it left off',
-			'- Type "start-fresh" to abandon the old run and start new',
-			'- Type "abort" to stop execution',
-			"",
-			"What would you like to do? (resume/start-fresh/abort)",
-		].join("\n");
-
-		// Race between: user response, timeout, abort signal, TUI exit
-		try {
-			const result = await Promise.race<"resume" | "start-fresh" | "abort">([
-				promptForDecision(client, gateSession.data.id, promptText, [
-					"resume",
-					"start-fresh",
-					"abort",
-				] as const),
-				createTimeoutPromise<"resume" | "start-fresh" | "abort">(
-					timeoutMs,
-					"Resume gate",
-				),
-				opts.signal
-					? createAbortPromise<"resume" | "start-fresh" | "abort">(opts.signal)
-					: new Promise<"resume" | "start-fresh" | "abort">(() => {}),
-				watchTuiExit(tui),
-			]);
-
-			return result;
-		} finally {
-			// Clean up the gate session
-			try {
-				await client.session.delete({ sessionID: gateSession.data.id });
-			} catch {
-				// Ignore cleanup errors
-			}
-		}
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Prompt the user for a decision using structured output.
- * Generic to allow proper return type inference based on choices.
- */
-async function promptForDecision<T extends string>(
-	client: OpencodeClient,
-	sessionId: string,
-	promptText: string,
-	choices: readonly T[],
-): Promise<T> {
-	const schema = {
-		type: "object" as const,
-		properties: {
-			action: {
-				type: "string" as const,
-				enum: choices,
-				description: "The user's chosen action",
-			},
-		},
-		required: ["action"],
-	};
-
-	const result = await client.session.prompt({
-		sessionID: sessionId,
-		parts: [{ type: "text", text: promptText }],
-		format: {
-			type: "json_schema",
-			schema,
-		},
-	});
-
-	if (result.error || !result.data) {
-		throw new Error(
-			`Failed to get decision: ${result.error ? JSON.stringify(result.error) : "no data"}`,
-		);
-	}
-
-	const decision = result.data.info.structured as { action: T };
-	return decision.action;
-}
-
-/**
- * Watch for TUI exit and resolve with "abort" when it happens.
- * Uses { once: true } to avoid listener accumulation.
- */
-function watchTuiExit(tui: TuiController): Promise<"abort"> {
-	return new Promise((resolve) => {
-		if (!tui.active) {
-			resolve("abort");
-			return;
-		}
-		tui.onExit(() => {
-			resolve("abort");
-		});
-	});
+	const resumeGate = createTuiResumeGate(client, tui, opts);
+	return (runId, iteration) =>
+		resumeGate(runId, `iteration-${iteration}`, "REVIEW");
 }

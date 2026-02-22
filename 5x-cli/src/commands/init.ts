@@ -106,6 +106,9 @@ export default defineCommand({
 		} else {
 			console.log("  Skipped .gitignore (.5x/ already present)");
 		}
+
+		console.log("  TUI mode is enabled by default in interactive terminals");
+		console.log("  Use --no-tui on run/plan-review/plan for headless mode");
 	},
 });
 
