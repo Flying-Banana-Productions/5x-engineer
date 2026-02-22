@@ -204,9 +204,12 @@ async function runWithGateLifecycle<T>(
 	tui: TuiController,
 	opts: TuiGateOptions,
 	run: (signal: AbortSignal) => Promise<T>,
-): Promise<T | "abort"> {
+): Promise<
+	{ type: "ok"; value: T } | { type: "abort" } | { type: "tui-exit" }
+> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 	const gateAbort = new AbortController();
+	let abortedByTuiExit = false;
 
 	const onOuterAbort = () => gateAbort.abort();
 	if (opts.signal) {
@@ -216,12 +219,20 @@ async function runWithGateLifecycle<T>(
 
 	const timeout = setTimeout(() => gateAbort.abort(), timeoutMs);
 	timeout.unref?.();
-	const unsubscribeExit = tui.onExit(() => gateAbort.abort());
+	const unsubscribeExit = tui.onExit(() => {
+		abortedByTuiExit = true;
+		gateAbort.abort();
+	});
 
 	try {
-		return await run(gateAbort.signal);
+		return { type: "ok", value: await run(gateAbort.signal) };
 	} catch (err) {
-		if (gateAbort.signal.aborted || isAbortError(err)) return "abort";
+		if (gateAbort.signal.aborted || isAbortError(err)) {
+			if (abortedByTuiExit && !opts.signal?.aborted) {
+				return { type: "tui-exit" };
+			}
+			return { type: "abort" };
+		}
 		throw err;
 	} finally {
 		clearTimeout(timeout);
@@ -256,7 +267,7 @@ export function createTuiPhaseGate(
 		}
 
 		try {
-			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+			const lifecycle = await runWithGateLifecycle(tui, opts, (signal) =>
 				waitForParsedUserDecision(
 					client,
 					sessionId,
@@ -274,6 +285,15 @@ export function createTuiPhaseGate(
 					},
 				),
 			);
+
+			if (lifecycle.type === "tui-exit") {
+				return headlessPhaseGate(summary);
+			}
+			if (lifecycle.type === "abort") {
+				return "abort";
+			}
+
+			const decision = lifecycle.value;
 
 			return decision === "abort" ? "abort" : decision;
 		} finally {
@@ -310,7 +330,7 @@ export function createTuiEscalationGate(
 		}
 
 		try {
-			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+			const lifecycle = await runWithGateLifecycle(tui, opts, (signal) =>
 				waitForParsedUserDecision(
 					client,
 					sessionId,
@@ -329,7 +349,14 @@ export function createTuiEscalationGate(
 				),
 			);
 
-			if (decision === "abort") return { action: "abort" };
+			if (lifecycle.type === "tui-exit") {
+				return headlessEscalationGate(event);
+			}
+			if (lifecycle.type === "abort") {
+				return { action: "abort" };
+			}
+
+			const decision = lifecycle.value;
 			return decision;
 		} finally {
 			await deleteGateSession(client, sessionId);
@@ -369,7 +396,7 @@ export function createTuiResumeGate(
 		}
 
 		try {
-			const decision = await runWithGateLifecycle(tui, opts, (signal) =>
+			const lifecycle = await runWithGateLifecycle(tui, opts, (signal) =>
 				waitForParsedUserDecision(
 					client,
 					sessionId,
@@ -387,6 +414,15 @@ export function createTuiResumeGate(
 					},
 				),
 			);
+
+			if (lifecycle.type === "tui-exit") {
+				return headlessResumeGate(runId, phase, state);
+			}
+			if (lifecycle.type === "abort") {
+				return "abort";
+			}
+
+			const decision = lifecycle.value;
 
 			return decision === "abort" ? "abort" : decision;
 		} finally {

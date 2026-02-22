@@ -141,6 +141,19 @@ function createMockTuiController(active = true): TuiController & {
 	};
 }
 
+function captureConsoleLogs(run: () => Promise<void>): Promise<string[]> {
+	const logs: string[] = [];
+	const originalLog = console.log;
+	console.log = (...args: unknown[]) => {
+		logs.push(args.map((arg) => String(arg)).join(" "));
+	};
+	return run()
+		.finally(() => {
+			console.log = originalLog;
+		})
+		.then(() => logs);
+}
+
 describe("createTuiPhaseGate", () => {
 	test("resolves continue from explicit user message", async () => {
 		const client = createMockClient(
@@ -231,6 +244,26 @@ describe("createTuiPhaseGate", () => {
 		controller.abort();
 		await expect(pending).resolves.toBe("abort");
 	});
+
+	test("falls back to headless gate when TUI exits mid-wait", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiPhaseGate(client, tui);
+
+		const summary: PhaseSummary = {
+			phaseNumber: "3",
+			phaseTitle: "Exit fallback",
+			qualityPassed: true,
+		};
+
+		const logs = await captureConsoleLogs(async () => {
+			const pending = gate(summary);
+			setTimeout(() => tui._simulateExit(1, false), 0);
+			await expect(pending).resolves.toBe("abort");
+		});
+
+		expect(logs.some((line) => line.includes("Phase 3"))).toBe(true);
+	});
 });
 
 describe("createTuiEscalationGate", () => {
@@ -285,16 +318,19 @@ describe("createTuiEscalationGate", () => {
 		await expect(pending).resolves.toEqual({ action: "abort" });
 	});
 
-	test("aborts when TUI exits mid-wait", async () => {
+	test("falls back to headless gate when TUI exits mid-wait", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();
 		const gate = createTuiEscalationGate(client, tui);
 
 		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
-		const pending = gate(event);
-		setTimeout(() => tui._simulateExit(1, false), 0);
+		const logs = await captureConsoleLogs(async () => {
+			const pending = gate(event);
+			setTimeout(() => tui._simulateExit(1, false), 0);
+			await expect(pending).resolves.toEqual({ action: "abort" });
+		});
 
-		await expect(pending).resolves.toEqual({ action: "abort" });
+		expect(logs.some((line) => line.includes("Escalation"))).toBe(true);
 	});
 });
 
@@ -330,15 +366,20 @@ describe("createTuiResumeGate", () => {
 		await expect(pending).resolves.toBe("abort");
 	});
 
-	test("aborts when TUI exits mid-wait", async () => {
+	test("falls back to headless gate when TUI exits mid-wait", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();
 		const gate = createTuiResumeGate(client, tui);
 
-		const pending = gate("run-1", "3", "EXECUTE");
-		setTimeout(() => tui._simulateExit(1, false), 0);
+		const logs = await captureConsoleLogs(async () => {
+			const pending = gate("run-1", "3", "EXECUTE");
+			setTimeout(() => tui._simulateExit(1, false), 0);
+			await expect(pending).resolves.toBe("abort");
+		});
 
-		await expect(pending).resolves.toBe("abort");
+		expect(logs.some((line) => line.includes("Found interrupted run"))).toBe(
+			true,
+		);
 	});
 });
 
