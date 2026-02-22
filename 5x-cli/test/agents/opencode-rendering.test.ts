@@ -129,6 +129,34 @@ function toolRunning(tool: string, input: unknown) {
 	};
 }
 
+function toolRunningWithId(id: string, tool: string, input: unknown) {
+	return {
+		type: "message.part.updated",
+		properties: {
+			part: {
+				id,
+				type: "tool",
+				tool,
+				state: { status: "running", input },
+			},
+		},
+	};
+}
+
+function toolCompletedWithId(id: string, tool: string, output: string) {
+	return {
+		type: "message.part.updated",
+		properties: {
+			part: {
+				id,
+				type: "tool",
+				tool,
+				state: { status: "completed", output },
+			},
+		},
+	};
+}
+
 function toolCompleted(tool: string, output: string) {
 	return {
 		type: "message.part.updated",
@@ -372,5 +400,25 @@ describe("opencode rendering pipeline", () => {
 		const line = out.trimEnd();
 		expect(line.length).toBeLessThanOrEqual(40);
 		expect(line).toContain("...");
+	});
+
+	test("dedupes repeated identical running tool updates for same part", () => {
+		const out = renderEvents([
+			toolRunningWithId("tool-1", "bash", { command: "npm test 2>&1" }),
+			toolRunningWithId("tool-1", "bash", { command: "npm test 2>&1" }),
+			toolRunningWithId("tool-1", "bash", { command: "npm test 2>&1" }),
+		]);
+		expect(out).toBe("bash: npm test 2>&1\n");
+	});
+
+	test("allows new running output after tool completion", () => {
+		const out = renderEvents([
+			toolRunningWithId("tool-1", "bash", { command: "npm test" }),
+			toolCompletedWithId("tool-1", "bash", "done"),
+			toolRunningWithId("tool-1", "bash", { command: "npm test" }),
+		]);
+		expect(out).toContain("bash: npm test\n");
+		expect(out).toContain("done\n");
+		expect(out.endsWith("bash: npm test\n")).toBe(true);
 	});
 });

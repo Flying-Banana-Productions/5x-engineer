@@ -20,6 +20,12 @@ export interface EventRouterState {
 	 * events are also emitted for the same part.
 	 */
 	updatedDeltaPartIds: Set<string>;
+	/**
+	 * Last seen running tool signature by part/call id.
+	 * Suppresses repeated identical `status=running` updates that only differ
+	 * by transient metadata/output snapshots.
+	 */
+	runningToolSignatureById: Map<string, string>;
 }
 
 /**
@@ -52,7 +58,24 @@ export function createEventRouterState(): EventRouterState {
 		reasoningPartIds: new Set(),
 		partTextById: new Map(),
 		updatedDeltaPartIds: new Set(),
+		runningToolSignatureById: new Map(),
 	};
+}
+
+function toolDedupKey(part: Record<string, unknown>): string | undefined {
+	const id = part.id;
+	if (typeof id === "string" && id.length > 0) return id;
+	const callID = part.callID;
+	if (typeof callID === "string" && callID.length > 0) return callID;
+	return undefined;
+}
+
+function stableToolSignature(part: Record<string, unknown>): string {
+	const tool = typeof part.tool === "string" ? part.tool : "unknown";
+	const state = (part.state as Record<string, unknown> | undefined) ?? {};
+	const status = typeof state.status === "string" ? state.status : "";
+	const input = state.input;
+	return `${tool}:${status}:${JSON.stringify(input)}`;
 }
 
 function incrementalAppend(previous: string, next: string): string {
@@ -87,6 +110,27 @@ export function routeEventToWriter(
 		const part = props.part as Record<string, unknown> | undefined;
 		const partType = part?.type;
 		const pid = part?.id as string | undefined;
+
+		if (partType === "tool" && part) {
+			const key = toolDedupKey(part);
+			const status =
+				typeof (part.state as Record<string, unknown> | undefined)?.status ===
+				"string"
+					? ((part.state as Record<string, unknown>).status as string)
+					: undefined;
+
+			if (key && status === "running") {
+				const signature = stableToolSignature(part);
+				if (state.runningToolSignatureById.get(key) === signature) {
+					return;
+				}
+				state.runningToolSignatureById.set(key, signature);
+			}
+
+			if (key && (status === "completed" || status === "error")) {
+				state.runningToolSignatureById.delete(key);
+			}
+		}
 
 		if (partType === "text") {
 			if (pid) state.textPartIds.add(pid);

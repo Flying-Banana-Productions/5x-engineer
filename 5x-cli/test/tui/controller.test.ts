@@ -86,7 +86,7 @@ describe("no-op TuiController (headless)", () => {
 		controller.kill();
 	});
 
-	test("createTuiController falls back to no-op when spawn throws (P1.5)", () => {
+	test("createTuiController falls back to no-op when auto-attach spawn throws", () => {
 		// If the opencode binary is not on PATH, Bun.spawn throws. The controller
 		// must return a no-op controller and write a warning to stderr rather than
 		// propagating the error.
@@ -107,6 +107,7 @@ describe("no-op TuiController (headless)", () => {
 					workdir: "/tmp",
 					client: createMockClient(),
 					enabled: true,
+					autoAttach: true,
 				},
 				throwingSpawner,
 			);
@@ -120,6 +121,77 @@ describe("no-op TuiController (headless)", () => {
 		} finally {
 			process.stderr.write = origWrite;
 		}
+	});
+});
+
+describe("external TUI mode", () => {
+	test("enabled without autoAttach prints attach instructions", () => {
+		const origWrite = process.stderr.write.bind(process.stderr);
+		const stderrLines: string[] = [];
+		process.stderr.write = (chunk: string | Uint8Array) => {
+			stderrLines.push(typeof chunk === "string" ? chunk : String(chunk));
+			return true;
+		};
+
+		try {
+			const controller = createTuiController({
+				serverUrl: "http://127.0.0.1:12345",
+				workdir: "/tmp/workdir",
+				client: createMockClient(),
+				enabled: true,
+			});
+
+			expect(controller.active).toBe(false);
+			expect(controller.attached).toBe(false);
+			const allOutput = stderrLines.join("");
+			expect(allOutput).toContain("OpenCode server: http://127.0.0.1:12345");
+			expect(allOutput).toContain("opencode attach http://127.0.0.1:12345");
+		} finally {
+			process.stderr.write = origWrite;
+		}
+	});
+
+	test("external mode becomes active after successful selectSession", async () => {
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = () => true;
+		const controller = createTuiController({
+			serverUrl: "http://127.0.0.1:12345",
+			workdir: "/tmp",
+			client: createMockClient(),
+			enabled: true,
+		});
+		process.stderr.write = origWrite;
+
+		expect(controller.active).toBe(false);
+		await controller.selectSession("sess-ext", "/tmp");
+		expect(controller.active).toBe(true);
+	});
+
+	test("external mode emits onExit when connection is lost", async () => {
+		const client = createMockClient();
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = () => true;
+		const controller = createTuiController({
+			serverUrl: "http://127.0.0.1:12345",
+			workdir: "/tmp",
+			client,
+			enabled: true,
+		});
+		process.stderr.write = origWrite;
+
+		await controller.selectSession("sess-ext", "/tmp");
+		expect(controller.active).toBe(true);
+
+		const handler = mock((_info?: unknown) => {});
+		controller.onExit(handler);
+
+		(client.tui.showToast as ReturnType<typeof mock>).mockImplementation(
+			async () => ({ data: false, error: undefined }),
+		);
+		await controller.showToast("ping", "info");
+
+		expect(controller.active).toBe(false);
+		expect(handler).toHaveBeenCalledTimes(1);
 	});
 });
 

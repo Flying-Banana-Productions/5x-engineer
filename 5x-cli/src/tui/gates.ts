@@ -14,6 +14,7 @@ export const DEFAULT_GATE_TIMEOUT_MS = 30 * 60 * 1000;
 export interface TuiGateOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	directory?: string;
 }
 
 function normalize(text: string): string {
@@ -80,8 +81,12 @@ async function createGateSession(
 	client: OpencodeClient,
 	tui: TuiController,
 	title: string,
+	directory?: string,
 ): Promise<string> {
-	const created = await client.session.create({ title });
+	const created = await client.session.create({
+		title,
+		...(directory ? { directory } : {}),
+	});
 	if (created.error || !created.data?.id) {
 		throw new Error(
 			`Failed to create gate session: ${created.error ? JSON.stringify(created.error) : "no data"}`,
@@ -89,7 +94,7 @@ async function createGateSession(
 	}
 
 	try {
-		await tui.selectSession(created.data.id);
+		await tui.selectSession(created.data.id, directory);
 	} catch {
 		// Best effort only.
 	}
@@ -255,6 +260,7 @@ export function createTuiPhaseGate(
 			client,
 			tui,
 			`Gate: Phase ${summary.phaseNumber} — ${summary.phaseTitle}`,
+			opts.directory,
 		);
 
 		try {
@@ -318,6 +324,7 @@ export function createTuiEscalationGate(
 			client,
 			tui,
 			`Escalation: ${shortReason}`,
+			opts.directory,
 		);
 
 		try {
@@ -384,6 +391,7 @@ export function createTuiResumeGate(
 			client,
 			tui,
 			`Resume: Run ${runId.slice(0, 8)}`,
+			opts.directory,
 		);
 
 		try {

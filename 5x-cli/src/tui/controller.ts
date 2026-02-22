@@ -35,7 +35,9 @@
 
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 
-const SELECT_SESSION_RETRY_DELAYS_MS = [0, 40, 120, 300];
+// Attach startup can be slow enough that immediate focus attempts fail.
+// Retry for several seconds so early gate/session switches are visible.
+const SELECT_SESSION_RETRY_DELAYS_MS = [0, 80, 160, 320, 500, 800, 1200];
 
 async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,17 +48,17 @@ async function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Controller for the TUI process lifecycle.
+ * Controller for TUI ownership lifecycle.
  *
  * Callers interact with a single interface regardless of whether TUI mode
  * is active or headless. When headless, all methods are no-ops.
  */
 export interface TuiController {
-	/** Whether the TUI process is currently alive and owning the terminal. */
+	/** Whether a TUI is currently connected and owning output. */
 	readonly active: boolean;
 
 	/**
-	 * True when `opencode attach` was successfully spawned.
+	 * True when `opencode attach` was spawned by this process.
 	 * False for headless/no-op fallback controllers.
 	 */
 	readonly attached: boolean;
@@ -116,6 +118,13 @@ export interface CreateTuiControllerOptions {
 	client: OpencodeClient;
 
 	/**
+	 * Auto-attach TUI from this process (legacy behavior).
+	 * When false, run in external-TUI mode: print attach command and continue
+	 * headless until a user-attached TUI is detected.
+	 */
+	autoAttach?: boolean;
+
+	/**
 	 * Whether TUI mode is enabled. When false, returns a no-op controller.
 	 * Determined by the command layer's TTY detection + flag logic.
 	 */
@@ -143,6 +152,141 @@ function createNoopController(): TuiController {
 			return () => {};
 		},
 		kill() {},
+	};
+}
+
+type TuiApiResponse = { data?: boolean; error?: unknown } | undefined;
+
+function apiCallSucceeded(result: TuiApiResponse): boolean {
+	return result?.data === true;
+}
+
+function createExternalController(
+	client: OpencodeClient,
+	serverUrl: string,
+	workdir: string,
+): TuiController {
+	let _active = false;
+	let _killed = false;
+	let _lastSessionId: string | undefined;
+	let _lastDirectory: string | undefined;
+	let reconnectTimer: ReturnType<typeof setInterval> | undefined;
+	let reconnectInFlight = false;
+	const exitHandlers = new Set<(info: TuiExitInfo) => void>();
+
+	const emitExit = () => {
+		for (const handler of exitHandlers) {
+			try {
+				handler({ code: undefined, isUserCancellation: false });
+			} catch {
+				// Swallow handler errors.
+			}
+		}
+	};
+
+	const setActive = (next: boolean) => {
+		if (_active === next) return;
+		_active = next;
+		if (!_active) emitExit();
+	};
+
+	const stopReconnectLoop = () => {
+		if (!reconnectTimer) return;
+		clearInterval(reconnectTimer);
+		reconnectTimer = undefined;
+	};
+
+	const startReconnectLoop = () => {
+		if (_killed || reconnectTimer || !_lastSessionId) return;
+		reconnectTimer = setInterval(async () => {
+			if (_killed || reconnectInFlight || !_lastSessionId) return;
+			reconnectInFlight = true;
+			try {
+				const result = await client.tui.selectSession({
+					sessionID: _lastSessionId,
+					...(_lastDirectory && { directory: _lastDirectory }),
+				});
+				if (apiCallSucceeded(result)) {
+					setActive(true);
+					stopReconnectLoop();
+				}
+			} catch {
+				// Continue retrying.
+			} finally {
+				reconnectInFlight = false;
+			}
+		}, 1000);
+		reconnectTimer.unref?.();
+	};
+
+	process.stderr.write(`OpenCode server: ${serverUrl}\n`);
+	process.stderr.write(
+		`Attach TUI in another terminal: opencode attach ${serverUrl} --dir ${JSON.stringify(workdir)}\n`,
+	);
+
+	return {
+		get active() {
+			return _active;
+		},
+		get attached() {
+			return false;
+		},
+		async selectSession(sessionID: string, directory?: string) {
+			if (_killed) return;
+			_lastSessionId = sessionID;
+			_lastDirectory = directory;
+
+			for (const delayMs of SELECT_SESSION_RETRY_DELAYS_MS) {
+				if (_killed) return;
+				if (delayMs > 0) await sleep(delayMs);
+				if (_killed) return;
+
+				try {
+					const result = await client.tui.selectSession({
+						sessionID,
+						...(directory && { directory }),
+					});
+					if (apiCallSucceeded(result)) {
+						setActive(true);
+						stopReconnectLoop();
+						return;
+					}
+				} catch {
+					// Retry below.
+				}
+			}
+
+			if (_active) setActive(false);
+			startReconnectLoop();
+		},
+		async showToast(
+			message: string,
+			variant: "info" | "success" | "warning" | "error",
+		) {
+			if (_killed) return;
+			try {
+				const result = await client.tui.showToast({ message, variant });
+				if (apiCallSucceeded(result)) {
+					setActive(true);
+					return;
+				}
+			} catch {
+				// Ignore below.
+			}
+
+			if (_active) setActive(false);
+			startReconnectLoop();
+		},
+		onExit(handler: (info: TuiExitInfo) => void) {
+			exitHandlers.add(handler);
+			return () => {
+				exitHandlers.delete(handler);
+			};
+		},
+		kill() {
+			_killed = true;
+			stopReconnectLoop();
+		},
 	};
 }
 
@@ -201,16 +345,19 @@ function createActiveController(
 				}
 
 				try {
-					await client.tui.selectSession(withDirectory);
-					return;
+					const withDirResult = await client.tui.selectSession(withDirectory);
+					if (apiCallSucceeded(withDirResult)) return;
 				} catch {
-					if (directory) {
-						try {
+					// Fallback to session-only below.
+				}
+
+				if (directory) {
+					try {
+						const withoutDirResult =
 							await client.tui.selectSession(withoutDirectory);
-							return;
-						} catch {
-							// Retry below.
-						}
+						if (apiCallSucceeded(withoutDirResult)) return;
+					} catch {
+						// Retry below.
 					}
 				}
 			}
@@ -224,7 +371,8 @@ function createActiveController(
 		) {
 			if (!_active) return;
 			try {
-				await client.tui.showToast({ message, variant });
+				const result = await client.tui.showToast({ message, variant });
+				if (apiCallSucceeded(result)) return;
 			} catch {
 				// TUI may have disconnected — ignore
 			}
@@ -281,12 +429,13 @@ function defaultSpawner(serverUrl: string, workdir: string): SpawnResult {
 }
 
 /**
- * Create a TUI controller. When `enabled` is true, spawns `opencode attach`
- * with the terminal inherited (stdio: "inherit"). When false, returns a no-op
- * controller with an identical interface.
+ * Create a TUI controller.
  *
- * The TUI process takes over stdin/stdout from the point of spawn. After spawn,
- * 5x-cli must not write to stdout/stderr while `controller.active === true`.
+ * - enabled=false: no-op controller
+ * - enabled=true + autoAttach=true: spawn `opencode attach` in this terminal
+ * - enabled=true + autoAttach=false: external attach mode (print URL/command)
+ *
+ * In all modes, `controller.active` means a TUI currently owns output.
  */
 export function createTuiController(
 	opts: CreateTuiControllerOptions,
@@ -294,6 +443,10 @@ export function createTuiController(
 ): TuiController {
 	if (!opts.enabled) {
 		return createNoopController();
+	}
+
+	if (!opts.autoAttach) {
+		return createExternalController(opts.client, opts.serverUrl, opts.workdir);
 	}
 
 	// Pre-attach startup message (written BEFORE TUI takes over)

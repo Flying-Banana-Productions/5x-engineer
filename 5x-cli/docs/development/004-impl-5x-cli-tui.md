@@ -781,13 +781,15 @@ phase boundaries and resumes only after explicit user message input.
   headless with a warning on stderr, not a fatal error
   *(implemented in Phase 2 v1.4 — `createTuiController` catches spawn errors)*
 - [x] Handle TUI crash / early exit gracefully (continue headless on non-cancel exits)
-- [ ] `plan` command: TUI lifecycle is shorter (single invocation); ensure
+- [x] `plan` command: TUI lifecycle is shorter (single invocation); ensure
   TUI exits cleanly when plan generation completes
-- [ ] `--quiet` in TUI mode: document that `--quiet` always implies `--no-tui`
+  *(TUI killed in finally block after single invoke, same pattern as run/plan-review)*
+- [x] `--quiet` in TUI mode: document that `--quiet` always implies `--no-tui`
   (no warning needed — it is consistent by definition)
+  *(implemented in `shouldEnableTui()`: returns false when `args.quiet` is true)*
 - [x] Update `5x init` output to mention TUI mode and `--no-tui`
-- [ ] TUI cold-start delay: print `"Starting OpenCode..."` to stderr before
-  TUI attach (already in Phase 2 — verify it works end-to-end)
+- [x] TUI cold-start delay: print `"Starting OpenCode..."` to stderr before
+  TUI attach (already in Phase 2 — verified working end-to-end)
 
 **Completion gate:** All integration tests pass. Manual test on `player_desk`
 repo shows clean TUI experience across a full multi-phase run.

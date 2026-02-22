@@ -61,6 +61,12 @@ export default defineCommand({
 				"Disable TUI mode — use headless output even in an interactive terminal",
 			default: false,
 		},
+		"attach-tui": {
+			type: "boolean",
+			description:
+				"Auto-launch TUI in this terminal (default is external attach mode)",
+			default: false,
+		},
 		ci: {
 			type: "boolean",
 			description: "CI/unattended mode: auto-approve all tool permissions",
@@ -169,8 +175,9 @@ export default defineCommand({
 			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			enabled: isTuiRequested,
+			autoAttach: Boolean(args["attach-tui"]),
 		});
-		const effectiveTuiMode = tui.active;
+		const effectiveTuiMode = tui.attached;
 
 		registerAdapterShutdown(adapter, {
 			tuiMode: effectiveTuiMode,
@@ -195,7 +202,7 @@ export default defineCommand({
 
 		// Handle TUI early exit — continue headless.
 		// Only registered when TUI was actually spawned; no-op controller never fires.
-		if (effectiveTuiMode) {
+		if (isTuiRequested) {
 			tui.onExit((info) => {
 				if (info.isUserCancellation) {
 					process.stderr.write("TUI interrupted — cancelling run\n");
@@ -221,21 +228,21 @@ export default defineCommand({
 		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
 		// These replace the readline-based gates from gates/human.ts
 		const tuiHumanGate =
-			effectiveTuiMode && !args.auto
+			isTuiRequested && !args.auto
 				? createTuiHumanGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
 						tui,
-						{ signal: cancelController.signal },
+						{ signal: cancelController.signal, directory: projectRoot },
 					)
 				: undefined;
 		const tuiResumeGate =
-			effectiveTuiMode && !args.auto
+			isTuiRequested && !args.auto
 				? createTuiPlanReviewResumeGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
 						tui,
-						{ signal: cancelController.signal },
+						{ signal: cancelController.signal, directory: projectRoot },
 					)
 				: undefined;
 

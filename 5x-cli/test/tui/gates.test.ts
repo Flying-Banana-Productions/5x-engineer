@@ -345,6 +345,21 @@ describe("createTuiResumeGate", () => {
 		await expect(gate("run-1", "3", "EXECUTE")).resolves.toBe("start-fresh");
 	});
 
+	test("creates/selects gate session with configured directory", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "resume"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiResumeGate(client, tui, { directory: "/repo" });
+
+		await expect(gate("run-1234", "3", "EXECUTE")).resolves.toBe("resume");
+		expect(client.session.create).toHaveBeenCalledWith({
+			title: "Resume: Run run-1234",
+			directory: "/repo",
+		});
+		expect(tui.selectSession).toHaveBeenCalledWith("sess-1", "/repo");
+	});
+
 	test("times out to abort", async () => {
 		const client = createMockClient();
 		const tui = createMockTuiController();

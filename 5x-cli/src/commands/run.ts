@@ -8,11 +8,13 @@ import {
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
+	getActiveRun,
 	getApprovedPhaseNumbers,
 	getPlan,
 	upsertPlan,
 } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
+import { resumeGate as headlessResumeGate } from "../gates/human.js";
 import { branchNameFromPlan, checkGitSafety, createWorktree } from "../git.js";
 import { acquireLock, registerLockCleanup, releaseLock } from "../lock.js";
 import { runPhaseExecutionLoop } from "../orchestrator/phase-execution-loop.js";
@@ -79,6 +81,12 @@ export default defineCommand({
 			type: "boolean",
 			description:
 				"Disable TUI mode — use headless output even in an interactive terminal",
+			default: false,
+		},
+		"attach-tui": {
+			type: "boolean",
+			description:
+				"Auto-launch TUI in this terminal (default is external attach mode)",
 			default: false,
 		},
 		ci: {
@@ -288,6 +296,31 @@ export default defineCommand({
 		// --- TUI mode detection ---
 		const isTuiRequested = shouldEnableTui(args);
 
+		// If an interrupted run exists and TUI was requested, ask the resume
+		// question before spawning TUI so the prompt is always visible.
+		let pendingResumeDecision: "resume" | "start-fresh" | "abort" | undefined;
+		if (isTuiRequested && !args.auto) {
+			const activeRun = getActiveRun(db, canonical);
+			if (activeRun && activeRun.command === "run") {
+				pendingResumeDecision = await headlessResumeGate(
+					activeRun.id,
+					activeRun.current_phase ?? "0",
+					activeRun.current_state ?? "EXECUTE",
+				);
+
+				if (pendingResumeDecision === "abort") {
+					console.log();
+					console.log("  Run: ABORTED");
+					console.log("  Phases completed: 0/0");
+					console.log(`  Run ID: ${activeRun.id.slice(0, 8)}`);
+					console.log();
+					releaseLock(projectRoot, canonical);
+					process.exitCode = 1;
+					return;
+				}
+			}
+		}
+
 		// --- Initialize adapter ---
 		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
@@ -310,8 +343,9 @@ export default defineCommand({
 			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			enabled: isTuiRequested,
+			autoAttach: Boolean(args["attach-tui"]),
 		});
-		const effectiveTuiMode = tui.active;
+		const effectiveTuiMode = tui.attached;
 
 		registerAdapterShutdown(adapter, {
 			tuiMode: effectiveTuiMode,
@@ -336,7 +370,7 @@ export default defineCommand({
 
 		// Handle TUI early exit — continue headless.
 		// Only registered when TUI was actually spawned; no-op controller never fires.
-		if (effectiveTuiMode) {
+		if (isTuiRequested) {
 			tui.onExit((info) => {
 				if (info.isUserCancellation) {
 					process.stderr.write("TUI interrupted — cancelling run\n");
@@ -362,32 +396,38 @@ export default defineCommand({
 		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
 		// These replace the readline-based gates from gates/human.ts
 		const tuiPhaseGate =
-			effectiveTuiMode && !args.auto
+			isTuiRequested && !args.auto
 				? createTuiPhaseGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
 						tui,
-						{ signal: cancelController.signal },
+						{ signal: cancelController.signal, directory: workdir },
 					)
 				: undefined;
 		const tuiEscalationGate =
-			effectiveTuiMode && !args.auto
+			isTuiRequested && !args.auto
 				? createTuiEscalationGate(
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
 						tui,
-						{ signal: cancelController.signal },
+						{ signal: cancelController.signal, directory: workdir },
 					)
 				: undefined;
 		const tuiResumeGate =
-			effectiveTuiMode && !args.auto
-				? createTuiResumeGate(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						tui,
-						{ signal: cancelController.signal },
-					)
-				: undefined;
+			pendingResumeDecision !== undefined
+				? async () => {
+						const decision = pendingResumeDecision ?? "abort";
+						pendingResumeDecision = undefined;
+						return decision;
+					}
+				: isTuiRequested && !args.auto
+					? createTuiResumeGate(
+							(adapter as import("../agents/opencode.js").OpenCodeAdapter)
+								._clientForTui,
+							tui,
+							{ signal: cancelController.signal, directory: workdir },
+						)
+					: undefined;
 
 		try {
 			const result = await runPhaseExecutionLoop(
