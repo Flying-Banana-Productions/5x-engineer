@@ -1848,7 +1848,7 @@ export async function runPhaseExecutionLoop(
 		// Phase 4: Show toast for phase complete (auto mode)
 		if (options.tui && options.auto) {
 			await options.tui.showToast(
-				`Phase ${phase.number} complete — starting review`,
+				`Phase ${phase.number} complete — continuing`,
 				"success",
 			);
 		}

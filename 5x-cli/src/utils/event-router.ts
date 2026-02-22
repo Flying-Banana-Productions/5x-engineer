@@ -22,6 +22,30 @@ export interface EventRouterState {
 	updatedDeltaPartIds: Set<string>;
 }
 
+/**
+ * Bound per-invocation dedupe state so very long sessions do not grow
+ * `updatedDeltaPartIds` without limit.
+ */
+export const MAX_TRACKED_DELTA_PART_IDS = 4096;
+
+function trackUpdatedDeltaPartId(
+	set: Set<string>,
+	partId: string,
+	maxSize: number = MAX_TRACKED_DELTA_PART_IDS,
+): void {
+	if (set.has(partId)) {
+		set.delete(partId);
+	}
+	set.add(partId);
+
+	if (set.size <= maxSize) return;
+
+	const oldest = set.values().next().value as string | undefined;
+	if (oldest) {
+		set.delete(oldest);
+	}
+}
+
 export function createEventRouterState(): EventRouterState {
 	return {
 		textPartIds: new Set(),
@@ -76,12 +100,12 @@ export function routeEventToWriter(
 		const delta = props.delta as string | undefined;
 		if (delta) {
 			if (partType === "text") {
-				if (pid) state.updatedDeltaPartIds.add(pid);
+				if (pid) trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
 				writer.writeText(delta);
 				return;
 			}
 			if (partType === "reasoning") {
-				if (pid) state.updatedDeltaPartIds.add(pid);
+				if (pid) trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
 				if (opts.showReasoning) {
 					writer.writeThinking(delta);
 				}
@@ -101,7 +125,7 @@ export function routeEventToWriter(
 			const append = incrementalAppend(previous, partText);
 			state.partTextById.set(pid, partText);
 			if (append.length > 0) {
-				state.updatedDeltaPartIds.add(pid);
+				trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
 				if (partType === "text") {
 					writer.writeText(append);
 					return;

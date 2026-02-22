@@ -261,6 +261,41 @@ describe("createTuiEscalationGate", () => {
 		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
 		await expect(gate(event)).resolves.toEqual({ action: "approve" });
 	});
+
+	test("times out to abort", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui, { timeoutMs: 20 });
+
+		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
+		await expect(gate(event)).resolves.toEqual({ action: "abort" });
+	});
+
+	test("aborts when signal is aborted", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const controller = new AbortController();
+		const gate = createTuiEscalationGate(client, tui, {
+			signal: controller.signal,
+		});
+
+		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
+		const pending = gate(event);
+		controller.abort();
+		await expect(pending).resolves.toEqual({ action: "abort" });
+	});
+
+	test("aborts when TUI exits mid-wait", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = { reason: "Needs human", iteration: 1 };
+		const pending = gate(event);
+		setTimeout(() => tui._simulateExit(1, false), 0);
+
+		await expect(pending).resolves.toEqual({ action: "abort" });
+	});
 });
 
 describe("createTuiResumeGate", () => {
@@ -272,6 +307,38 @@ describe("createTuiResumeGate", () => {
 		const gate = createTuiResumeGate(client, tui);
 
 		await expect(gate("run-1", "3", "EXECUTE")).resolves.toBe("start-fresh");
+	});
+
+	test("times out to abort", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiResumeGate(client, tui, { timeoutMs: 20 });
+
+		await expect(gate("run-1", "3", "EXECUTE")).resolves.toBe("abort");
+	});
+
+	test("aborts when signal is aborted", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const controller = new AbortController();
+		const gate = createTuiResumeGate(client, tui, {
+			signal: controller.signal,
+		});
+
+		const pending = gate("run-1", "3", "EXECUTE");
+		controller.abort();
+		await expect(pending).resolves.toBe("abort");
+	});
+
+	test("aborts when TUI exits mid-wait", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiResumeGate(client, tui);
+
+		const pending = gate("run-1", "3", "EXECUTE");
+		setTimeout(() => tui._simulateExit(1, false), 0);
+
+		await expect(pending).resolves.toBe("abort");
 	});
 });
 
@@ -295,6 +362,23 @@ describe("plan-review gate wrappers", () => {
 		const gate = createTuiPlanReviewResumeGate(client, tui);
 
 		await expect(gate("run-1", 5)).resolves.toBe("resume");
+	});
+
+	test("human gate timeout resolves abort", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiHumanGate(client, tui, { timeoutMs: 20 });
+
+		const event: EscalationEvent = { reason: "review", iteration: 1 };
+		await expect(gate(event)).resolves.toBe("abort");
+	});
+
+	test("plan-review resume gate timeout resolves abort", async () => {
+		const client = createMockClient();
+		const tui = createMockTuiController();
+		const gate = createTuiPlanReviewResumeGate(client, tui, { timeoutMs: 20 });
+
+		await expect(gate("run-1", 5)).resolves.toBe("abort");
 	});
 });
 

@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import type { AnsiConfig } from "../../src/utils/ansi.js";
 import {
 	createEventRouterState,
+	MAX_TRACKED_DELTA_PART_IDS,
 	routeEventToWriter,
 } from "../../src/utils/event-router.js";
 import { StreamWriter } from "../../src/utils/stream-writer.js";
@@ -337,6 +338,30 @@ describe("opencode rendering pipeline", () => {
 			delta("t1", "Hello once"),
 		]);
 		expect(out).toBe("Hello once\n");
+	});
+
+	test("updatedDeltaPartIds stays bounded for large sessions", () => {
+		const state = createEventRouterState();
+		const writer = new StreamWriter({
+			width: 80,
+			writer: () => {},
+			ansi: NO_ANSI,
+		});
+
+		for (let i = 0; i < MAX_TRACKED_DELTA_PART_IDS + 200; i++) {
+			routeEventToWriter(
+				textPartUpdatedWithDelta(`t${i}`, "x"),
+				writer,
+				state,
+				{},
+			);
+		}
+
+		writer.destroy();
+		expect(state.updatedDeltaPartIds.size).toBeLessThanOrEqual(
+			MAX_TRACKED_DELTA_PART_IDS,
+		);
+		expect(state.updatedDeltaPartIds.has("t0")).toBe(false);
 	});
 
 	test("tool output truncated to width by writeLine", () => {

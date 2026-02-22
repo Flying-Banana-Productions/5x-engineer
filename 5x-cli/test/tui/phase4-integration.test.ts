@@ -160,7 +160,7 @@ describe("Phase 4: Behavioral Requirements", () => {
 		// Simulate phase start toast
 		await mockTui.showToast("Starting Phase 3 — author", "info");
 		// Simulate phase complete toast (auto mode)
-		await mockTui.showToast("Phase 3 complete — starting review", "success");
+		await mockTui.showToast("Phase 3 complete — continuing", "success");
 		// Simulate review approved toast
 		await mockTui.showToast("Phase 3 approved — continuing", "success");
 		// Simulate escalation toast
@@ -174,7 +174,7 @@ describe("Phase 4: Behavioral Requirements", () => {
 			variant: "info",
 		});
 		expect(toasts[1]).toEqual({
-			message: "Phase 3 complete — starting review",
+			message: "Phase 3 complete — continuing",
 			variant: "success",
 		});
 		expect(toasts[2]).toEqual({

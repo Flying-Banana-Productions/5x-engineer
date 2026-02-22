@@ -1398,7 +1398,7 @@ describe("runPhaseExecutionLoop", () => {
 			expect(selectedSessions).toEqual(["sess-author", "sess-review"]);
 			expect(toasts).toEqual([
 				{ message: "Starting Phase 1 — Only Phase", variant: "info" },
-				{ message: "Phase 1 complete — starting review", variant: "success" },
+				{ message: "Phase 1 complete — continuing", variant: "success" },
 			]);
 		} finally {
 			cleanup();
