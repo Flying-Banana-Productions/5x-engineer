@@ -255,6 +255,7 @@ export default defineCommand({
 			autoAttach: Boolean(args["attach-tui"]),
 		});
 		const effectiveTuiMode = tui.attached;
+		const tuiOwnsTerminal = () => tui.attached && tui.active;
 
 		registerAdapterShutdown(adapter, {
 			tuiMode: effectiveTuiMode,
@@ -311,7 +312,7 @@ export default defineCommand({
 			});
 
 			// Guard stdout writes: TUI owns the terminal while active (P0.6).
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				console.log();
 				console.log("  Generating implementation plan from PRD...");
 				console.log(`  Target: ${planPath}`);
@@ -338,7 +339,7 @@ export default defineCommand({
 				timeout: config.author.timeout,
 				workdir: projectRoot,
 				logPath,
-				quiet: () => effectiveQuiet || tui.active,
+				quiet: () => effectiveQuiet || tuiOwnsTerminal(),
 				showReasoning: args["show-reasoning"],
 				signal: cancelController.signal,
 				sessionTitle: "Plan generation",
@@ -347,7 +348,7 @@ export default defineCommand({
 					: undefined,
 			});
 
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				const durationStr =
 					result.duration < 60_000
 						? `${Math.round(result.duration / 1000)}s`
@@ -387,7 +388,7 @@ export default defineCommand({
 				});
 				updateRunStatus(db, runId, "active", "NEEDS_HUMAN");
 				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tui.active) {
+				if (!tuiOwnsTerminal()) {
 					console.log();
 					console.log(
 						`  Author needs human input: ${status.reason ?? "no reason given"}`,
@@ -406,7 +407,7 @@ export default defineCommand({
 				});
 				updateRunStatus(db, runId, "failed");
 				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tui.active) {
+				if (!tuiOwnsTerminal()) {
 					console.error(
 						`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
 					);
@@ -424,7 +425,7 @@ export default defineCommand({
 				});
 				updateRunStatus(db, runId, "failed");
 				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tui.active) {
+				if (!tuiOwnsTerminal()) {
 					console.error(
 						`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
 					);
@@ -444,7 +445,7 @@ export default defineCommand({
 
 			// Display result — guard on !tui.active (TUI may still own terminal
 			// here; it is killed in finally below). P0.6 output ownership rule.
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				let phaseCount = 0;
 				try {
 					const planContent = readFileSync(planPath, "utf-8");
@@ -476,7 +477,7 @@ export default defineCommand({
 			});
 			updateRunStatus(db, runId, "failed");
 			// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				console.error(`\n  Error: Agent invocation failed.`);
 				if (message) console.error(`  Cause: ${message}`);
 			}

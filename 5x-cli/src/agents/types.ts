@@ -46,6 +46,9 @@ export interface InvokeOptions {
 	/** AbortSignal for external cancellation (Ctrl-C, gate aborts, parent timeout). */
 	signal?: AbortSignal;
 
+	/** Optional debug trace sink for invocation lifecycle diagnostics. */
+	trace?: (event: string, data?: unknown) => void;
+
 	/** Optional session title for TUI display. Passed to session.create(). */
 	sessionTitle?: string;
 

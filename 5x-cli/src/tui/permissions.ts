@@ -28,6 +28,18 @@ export interface PermissionHandler {
 	stop(): void;
 }
 
+function tracePermission(
+	trace: ((event: string, data?: unknown) => void) | undefined,
+	event: string,
+	data?: unknown,
+): void {
+	try {
+		trace?.(`permission.${event}`, data);
+	} catch {
+		// Never fail permission handling due to debug tracing.
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error message for non-interactive mode without explicit flag
 // ---------------------------------------------------------------------------
@@ -126,8 +138,28 @@ function isPermissionRequestEvent(event: {
 function getPermissionRequestId(event: {
 	properties?: Record<string, unknown>;
 }): string | undefined {
-	const id = (event.properties as Record<string, unknown> | undefined)?.id;
+	const props = event.properties as Record<string, unknown> | undefined;
+	const id = props?.id ?? props?.requestID ?? props?.requestId;
 	return typeof id === "string" ? id : undefined;
+}
+
+function getPermissionPatterns(event: {
+	properties?: Record<string, unknown>;
+}): string[] {
+	const patterns = (event.properties as Record<string, unknown> | undefined)
+		?.patterns;
+	if (!Array.isArray(patterns)) return [];
+	return patterns.filter((value): value is string => typeof value === "string");
+}
+
+function isScopedFilePermission(permission: string | undefined): boolean {
+	return (
+		permission === "read" ||
+		permission === "edit" ||
+		permission === "glob" ||
+		permission === "grep" ||
+		permission === "list"
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,11 +169,15 @@ function getPermissionRequestId(event: {
 /**
  * Create a handler that auto-approves all permission requests immediately.
  */
-function createAutoApproveHandler(client: OpencodeClient): PermissionHandler {
+function createAutoApproveHandler(
+	client: OpencodeClient,
+	trace?: (event: string, data?: unknown) => void,
+): PermissionHandler {
 	let unsubscribe: (() => void) | undefined;
 
 	return {
 		start() {
+			tracePermission(trace, "auto.start");
 			// Subscribe to permission requests and auto-approve them
 			const abortController = new AbortController();
 
@@ -156,10 +192,15 @@ function createAutoApproveHandler(client: OpencodeClient): PermissionHandler {
 						// Check if this is a permission request event
 						const requestId = getPermissionRequestId(event);
 						if (isPermissionRequestEvent(event) && requestId) {
+							tracePermission(trace, "auto.request", { requestId });
 							// Auto-approve the permission
 							try {
 								await client.permission.reply({
 									requestID: requestId,
+									reply: "once",
+								});
+								tracePermission(trace, "auto.reply", {
+									requestId,
 									reply: "once",
 								});
 							} catch {
@@ -173,6 +214,7 @@ function createAutoApproveHandler(client: OpencodeClient): PermissionHandler {
 			})();
 
 			unsubscribe = () => {
+				tracePermission(trace, "auto.stop");
 				abortController.abort();
 			};
 		},
@@ -187,12 +229,16 @@ function createAutoApproveHandler(client: OpencodeClient): PermissionHandler {
  * Create a no-op handler for TUI-native mode.
  * The TUI handles permissions natively; we don't need to do anything.
  */
-function createTuiNativeHandler(): PermissionHandler {
+function createTuiNativeHandler(
+	trace?: (event: string, data?: unknown) => void,
+): PermissionHandler {
 	return {
 		start() {
+			tracePermission(trace, "tui_native.start");
 			// No-op: TUI handles permissions natively
 		},
 		stop() {
+			tracePermission(trace, "tui_native.stop");
 			// No-op
 		},
 	};
@@ -205,11 +251,13 @@ function createTuiNativeHandler(): PermissionHandler {
 function createWorkdirScopedHandler(
 	client: OpencodeClient,
 	workdir: string,
+	trace?: (event: string, data?: unknown) => void,
 ): PermissionHandler {
 	let unsubscribe: (() => void) | undefined;
 
 	return {
 		start() {
+			tracePermission(trace, "workdir.start", { workdir });
 			const abortController = new AbortController();
 
 			(async () => {
@@ -224,18 +272,46 @@ function createWorkdirScopedHandler(
 						if (isPermissionRequestEvent(event) && requestId) {
 							// Access properties dynamically since SDK types may not include all fields
 							const props = event.properties as Record<string, unknown>;
+							const permission =
+								typeof props.permission === "string"
+									? props.permission
+									: undefined;
+							const patterns = getPermissionPatterns(event);
 							const tool = props.tool as string | undefined;
 							const args = (props.arguments as Record<string, unknown>) ?? {};
 
 							// Extract path from args if possible
 							const path = tool ? extractPathFromArgs(tool, args) : undefined;
 
+							const allPatternsInWorkdir =
+								patterns.length > 0 &&
+								patterns.every((pattern) => isPathInWorkdir(pattern, workdir));
+
+							const shouldApproveScopedPermission =
+								isScopedFilePermission(permission) && allPatternsInWorkdir;
+
+							tracePermission(trace, "workdir.request", {
+								requestId,
+								permission,
+								tool,
+								path,
+								patterns,
+							});
+
 							// Auto-approve if path is within workdir
-							if (path && isPathInWorkdir(path, workdir)) {
+							if (
+								(path && isPathInWorkdir(path, workdir)) ||
+								shouldApproveScopedPermission
+							) {
 								try {
 									await client.permission.reply({
 										requestID: requestId,
 										reply: "once",
+									});
+									tracePermission(trace, "workdir.reply", {
+										requestId,
+										reply: "once",
+										reason: "in_scope",
 									});
 								} catch {
 									// Ignore errors
@@ -245,12 +321,19 @@ function createWorkdirScopedHandler(
 
 							const rejectMessage = path
 								? `Rejected permission outside workdir scope: ${path}`
-								: "Rejected permission requiring explicit approval in headless mode";
+								: patterns.length > 0
+									? `Rejected permission outside workdir scope: ${patterns.join(", ")}`
+									: "Rejected permission requiring explicit approval in headless mode";
 							try {
 								await client.permission.reply({
 									requestID: requestId,
 									reply: "reject",
 									message: `${rejectMessage}. Re-run with TUI enabled or --auto/--ci if appropriate.`,
+								});
+								tracePermission(trace, "workdir.reply", {
+									requestId,
+									reply: "reject",
+									reason: rejectMessage,
 								});
 							} catch {
 								// Ignore errors
@@ -263,6 +346,7 @@ function createWorkdirScopedHandler(
 			})();
 
 			unsubscribe = () => {
+				tracePermission(trace, "workdir.stop");
 				abortController.abort();
 			};
 		},
@@ -289,14 +373,15 @@ function createWorkdirScopedHandler(
 export function createPermissionHandler(
 	client: OpencodeClient,
 	policy: PermissionPolicy,
+	trace?: (event: string, data?: unknown) => void,
 ): PermissionHandler {
 	switch (policy.mode) {
 		case "auto-approve-all":
-			return createAutoApproveHandler(client);
+			return createAutoApproveHandler(client, trace);
 		case "tui-native":
-			return createTuiNativeHandler();
+			return createTuiNativeHandler(trace);
 		case "workdir-scoped":
-			return createWorkdirScopedHandler(client, policy.workdir);
+			return createWorkdirScopedHandler(client, policy.workdir, trace);
 		default:
 			// Exhaustive check — should never reach here
 			return createTuiNativeHandler();

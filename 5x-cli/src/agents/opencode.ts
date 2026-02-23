@@ -47,6 +47,18 @@ function resolveQuiet(quiet: InvokeOptions["quiet"] | undefined): boolean {
 	return quiet ?? false;
 }
 
+function traceInvoke(
+	trace: InvokeOptions["trace"] | undefined,
+	event: string,
+	data?: unknown,
+): void {
+	try {
+		trace?.(event, data);
+	} catch {
+		// Never break invocation on debug tracing errors.
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -119,6 +131,7 @@ async function writeEventsToLog(
 	abortSignal: AbortSignal,
 	opts: { quiet?: InvokeOptions["quiet"]; showReasoning?: boolean },
 	onActivity?: () => void,
+	onTrace?: InvokeOptions["trace"],
 ): Promise<void> {
 	// Ensure log directory exists with restricted permissions (logs may contain
 	// sensitive content — enforce 0700 so they are not group/world-readable).
@@ -137,7 +150,9 @@ async function writeEventsToLog(
 		flags: "a",
 		encoding: "utf8",
 	});
+	traceInvoke(onTrace, "sse.log.open", { logPath, sessionId });
 	logStream.on("error", (err) => {
+		traceInvoke(onTrace, "sse.log.error", { message: err.message });
 		if (!resolveQuiet(opts.quiet)) {
 			console.error(`Warning: log file write error: ${err.message}`);
 		}
@@ -158,17 +173,18 @@ async function writeEventsToLog(
 
 	try {
 		// P0.1: pass signal to subscribe so the SSE connection terminates on abort
+		traceInvoke(onTrace, "sse.subscribe.start", { sessionId });
 		const { stream } = await client.event.subscribe(undefined, {
 			signal: abortSignal,
 		});
+		traceInvoke(onTrace, "sse.subscribe.ok", { sessionId });
 
 		const routerState = createEventRouterState();
+		let eventCount = 0;
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
-
-			// Reset inactivity timeout on every event received
-			onActivity?.();
+			eventCount += 1;
 
 			// P1.2: skip events without a session ID (no cross-session leakage)
 			const eventSessionId = getEventSessionId(event);
@@ -176,6 +192,17 @@ async function writeEventsToLog(
 
 			// Filter for this session's events
 			if (eventSessionId !== sessionId) continue;
+
+			// Reset inactivity timeout only for this session's events.
+			// Unrelated traffic must not mask a stalled invocation.
+			onActivity?.();
+
+			if (eventCount <= 20 || eventCount % 100 === 0) {
+				traceInvoke(onTrace, "sse.event", {
+					eventCount,
+					type: (event as { type?: string }).type,
+				});
+			}
 
 			// Write to log file (NDJSON: one JSON object per line)
 			const line = JSON.stringify(event);
@@ -189,7 +216,12 @@ async function writeEventsToLog(
 				});
 			}
 		}
+		traceInvoke(onTrace, "sse.stream.end", { eventCount, sessionId });
 	} catch (err) {
+		traceInvoke(onTrace, "sse.stream.error", {
+			aborted: abortSignal.aborted,
+			error: err instanceof Error ? err.message : String(err),
+		});
 		// Stream errors are expected on abort — suppress them
 		if (!abortSignal.aborted && !resolveQuiet(opts.quiet)) {
 			console.error(
@@ -199,6 +231,7 @@ async function writeEventsToLog(
 	} finally {
 		writer?.destroy();
 		await endStream(logStream);
+		traceInvoke(onTrace, "sse.log.closed", { logPath, sessionId });
 	}
 }
 
@@ -331,27 +364,48 @@ export class OpenCodeAdapter implements AgentAdapter {
 		};
 
 		const start = Date.now();
+		traceInvoke(opts.trace, "invoke.start", {
+			resultType,
+			workdir: opts.workdir,
+			model,
+			logPath: opts.logPath,
+			timeoutMs,
+		});
 
 		// 1. Create session (P0.3: pass workdir as directory)
 		// Phase 4: Use descriptive session title if provided, otherwise fallback to generic
 		const sessionTitle = opts.sessionTitle ?? `5x-${resultType}-${Date.now()}`;
+		traceInvoke(opts.trace, "session.create.start", {
+			title: sessionTitle,
+			directory: opts.workdir,
+		});
 		const sessionResult = await this.client.session.create({
 			title: sessionTitle,
 			...(opts.workdir && { directory: opts.workdir }),
 		});
 		if (sessionResult.error) {
+			traceInvoke(opts.trace, "session.create.error", {
+				error: JSON.stringify(sessionResult.error),
+			});
 			throw new Error(
 				`Failed to create session: ${JSON.stringify(sessionResult.error)}`,
 			);
 		}
 		const sessionId = sessionResult.data.id;
+		traceInvoke(opts.trace, "session.create.ok", { sessionId });
 
 		// Invoke onSessionCreated callback immediately so TUI can track the session
 		// during streaming (not after the prompt completes).
 		if (opts.onSessionCreated) {
 			try {
+				traceInvoke(opts.trace, "session.on_created.start", { sessionId });
 				await opts.onSessionCreated(sessionId);
+				traceInvoke(opts.trace, "session.on_created.ok", { sessionId });
 			} catch (err) {
+				traceInvoke(opts.trace, "session.on_created.error", {
+					sessionId,
+					error: err instanceof Error ? err.message : String(err),
+				});
 				if (!resolveQuiet(opts.quiet)) {
 					console.warn(
 						`Warning: onSessionCreated callback failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -395,6 +449,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			sseController.signal,
 			{ quiet: opts.quiet, showReasoning: opts.showReasoning },
 			resetInactivityTimeout,
+			opts.trace,
 		);
 
 		try {
@@ -402,6 +457,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 			// Belt-and-suspenders: signal tears down the HTTP connection, but
 			// Promise.race ensures deterministic timeout behavior regardless
 			// of SDK signal handling quality.
+			traceInvoke(opts.trace, "prompt.start", {
+				sessionId,
+				resultType,
+				directory: opts.workdir,
+			});
 			const promptPromise = this.client.session.prompt(
 				{
 					sessionID: sessionId,
@@ -428,6 +488,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 			const result = await Promise.race([promptPromise, cancelPromise]);
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			const duration = Date.now() - start;
+			traceInvoke(opts.trace, "prompt.done", {
+				sessionId,
+				durationMs: duration,
+				hasError: Boolean(result.error),
+			});
 
 			// 5. Check for errors
 			if (result.error) {
@@ -467,6 +532,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 			if (resultType === "status") {
 				const status = structured as AuthorStatus;
 				assertAuthorStatus(status, "invokeForStatus");
+				traceInvoke(opts.trace, "invoke.result.status", {
+					sessionId,
+					statusResult: status.result,
+					durationMs: duration,
+				});
 				return {
 					type: "status",
 					status,
@@ -480,6 +550,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 			const verdict = structured as ReviewerVerdict;
 			assertReviewerVerdict(verdict, "invokeForVerdict");
+			traceInvoke(opts.trace, "invoke.result.verdict", {
+				sessionId,
+				readiness: verdict.readiness,
+				durationMs: duration,
+			});
 			return {
 				type: "verdict",
 				verdict,
@@ -490,6 +565,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 				costUsd,
 			};
 		} catch (err) {
+			traceInvoke(opts.trace, "invoke.error", {
+				sessionId,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 
 			// On timeout or external cancel, abort the session
@@ -498,8 +577,15 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 			if (isTimeout || isExternalCancel) {
 				try {
+					traceInvoke(opts.trace, "session.abort.start", {
+						sessionId,
+						isTimeout,
+						isExternalCancel,
+					});
 					await this.client.session.abort({ sessionID: sessionId });
+					traceInvoke(opts.trace, "session.abort.ok", { sessionId });
 				} catch {
+					traceInvoke(opts.trace, "session.abort.error", { sessionId });
 					// Ignore abort errors
 				}
 				if (isTimeout && !isExternalCancel) {
@@ -510,10 +596,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 			throw err;
 		} finally {
 			// 9. Stop SSE stream and flush log
+			traceInvoke(opts.trace, "invoke.finally", { sessionId });
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			sseController.abort();
 			cancelSignal.removeEventListener("abort", propagateCancel);
 			await streamPromise;
+			traceInvoke(opts.trace, "invoke.end", { sessionId });
 		}
 	}
 }

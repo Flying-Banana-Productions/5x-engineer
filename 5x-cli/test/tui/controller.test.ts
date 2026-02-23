@@ -151,7 +151,7 @@ describe("external TUI mode", () => {
 		}
 	});
 
-	test("external mode becomes active after successful selectSession", async () => {
+	test("external mode remains inactive after successful selectSession", async () => {
 		const origWrite = process.stderr.write.bind(process.stderr);
 		process.stderr.write = () => true;
 		const controller = createTuiController({
@@ -164,10 +164,11 @@ describe("external TUI mode", () => {
 
 		expect(controller.active).toBe(false);
 		await controller.selectSession("sess-ext", "/tmp");
-		expect(controller.active).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(controller.active).toBe(false);
 	});
 
-	test("external mode emits onExit when connection is lost", async () => {
+	test("external mode onExit is a no-op", async () => {
 		const client = createMockClient();
 		const origWrite = process.stderr.write.bind(process.stderr);
 		process.stderr.write = () => true;
@@ -180,7 +181,8 @@ describe("external TUI mode", () => {
 		process.stderr.write = origWrite;
 
 		await controller.selectSession("sess-ext", "/tmp");
-		expect(controller.active).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(controller.active).toBe(false);
 
 		const handler = mock((_info?: unknown) => {});
 		controller.onExit(handler);
@@ -189,9 +191,10 @@ describe("external TUI mode", () => {
 			async () => ({ data: false, error: undefined }),
 		);
 		await controller.showToast("ping", "info");
+		await new Promise((resolve) => setTimeout(resolve, 20));
 
 		expect(controller.active).toBe(false);
-		expect(handler).toHaveBeenCalledTimes(1);
+		expect(handler).not.toHaveBeenCalled();
 	});
 });
 

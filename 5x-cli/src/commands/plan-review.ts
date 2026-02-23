@@ -178,6 +178,7 @@ export default defineCommand({
 			autoAttach: Boolean(args["attach-tui"]),
 		});
 		const effectiveTuiMode = tui.attached;
+		const tuiOwnsTerminal = () => tui.attached && tui.active;
 
 		registerAdapterShutdown(adapter, {
 			tuiMode: effectiveTuiMode,
@@ -260,7 +261,7 @@ export default defineCommand({
 					projectRoot,
 					// Function form: re-evaluated at each adapter call so TUI exit
 					// mid-run is reflected in subsequent invocations (P1.4).
-					quiet: () => effectiveQuiet || tui.active,
+					quiet: () => effectiveQuiet || tuiOwnsTerminal(),
 					canonicalPlanPath: canonical,
 					showReasoning: args["show-reasoning"],
 					signal: cancelController.signal,
@@ -276,7 +277,7 @@ export default defineCommand({
 			// Guard on !tui.active: TUI may still own the terminal here (killed
 			// in finally below). Writing to stdout while TUI is active corrupts
 			// the display (P0.6 output ownership rule).
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				console.log();
 				if (result.approved) {
 					console.log("  Plan review: APPROVED");

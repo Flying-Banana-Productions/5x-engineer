@@ -14,6 +14,7 @@ import {
 	upsertPlan,
 } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
+import { createDebugTraceLogger } from "../debug/trace.js";
 import { resumeGate as headlessResumeGate } from "../gates/human.js";
 import { branchNameFromPlan, checkGitSafety, createWorktree } from "../git.js";
 import { acquireLock, registerLockCleanup, releaseLock } from "../lock.js";
@@ -100,6 +101,12 @@ export default defineCommand({
 				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
 			default: false,
 		},
+		"debug-trace": {
+			type: "boolean",
+			description:
+				"Write detailed lifecycle trace logs to .5x/debug for hang diagnosis",
+			default: false,
+		},
 	},
 	async run({ args }) {
 		const planPath = resolve(args.path);
@@ -131,6 +138,23 @@ export default defineCommand({
 		// Derive project root
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
+		const traceLogger = createDebugTraceLogger({
+			enabled: Boolean(args["debug-trace"] || process.env.FIVEX_DEBUG_TRACE),
+			projectRoot,
+			command: "run",
+		});
+		const trace = traceLogger.trace;
+		if (traceLogger.enabled && traceLogger.filePath) {
+			console.log(`  Debug trace: ${traceLogger.filePath}`);
+		}
+		trace("run.command.start", {
+			planPath: canonical,
+			auto: args.auto,
+			phase: args.phase,
+			worktree: args.worktree,
+			noTui: args["no-tui"],
+			attachTui: args["attach-tui"],
+		});
 
 		// Initialize DB
 		const db = getDb(projectRoot, config.db.path);
@@ -295,6 +319,11 @@ export default defineCommand({
 
 		// --- TUI mode detection ---
 		const isTuiRequested = shouldEnableTui(args);
+		trace("run.tui.detected", {
+			isTuiRequested,
+			stdinTTY: Boolean(process.stdin.isTTY),
+			stdoutTTY: Boolean(process.stdout.isTTY),
+		});
 
 		// If an interrupted run exists and TUI was requested, ask the resume
 		// question before spawning TUI so the prompt is always visible.
@@ -302,6 +331,11 @@ export default defineCommand({
 		if (isTuiRequested && !args.auto) {
 			const activeRun = getActiveRun(db, canonical);
 			if (activeRun && activeRun.command === "run") {
+				trace("run.resume.pre_tui.prompt", {
+					runId: activeRun.id,
+					phase: activeRun.current_phase,
+					state: activeRun.current_state,
+				});
 				pendingResumeDecision = await headlessResumeGate(
 					activeRun.id,
 					activeRun.current_phase ?? "0",
@@ -309,6 +343,7 @@ export default defineCommand({
 				);
 
 				if (pendingResumeDecision === "abort") {
+					trace("run.resume.pre_tui.abort", { runId: activeRun.id });
 					console.log();
 					console.log("  Run: ABORTED");
 					console.log("  Phases completed: 0/0");
@@ -318,14 +353,23 @@ export default defineCommand({
 					process.exitCode = 1;
 					return;
 				}
+				trace("run.resume.pre_tui.decision", {
+					runId: activeRun.id,
+					decision: pendingResumeDecision,
+				});
 			}
 		}
 
 		// --- Initialize adapter ---
 		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
+			trace("run.adapter.create.start");
 			adapter = await createAndVerifyAdapter(config.author);
+			trace("run.adapter.create.ok", { serverUrl: adapter.serverUrl });
 		} catch (err) {
+			trace("run.adapter.create.error", {
+				error: err instanceof Error ? err.message : String(err),
+			});
 			const message = err instanceof Error ? err.message : String(err);
 			console.error(`\n  Error: Failed to initialize agent adapter.`);
 			if (message) console.error(`  Cause: ${message}`);
@@ -344,13 +388,21 @@ export default defineCommand({
 				._clientForTui,
 			enabled: isTuiRequested,
 			autoAttach: Boolean(args["attach-tui"]),
+			trace,
 		});
 		const effectiveTuiMode = tui.attached;
+		const tuiOwnsTerminal = () => tui.attached && tui.active;
+		trace("run.tui.controller.ready", {
+			active: tui.active,
+			attached: tui.attached,
+			effectiveTuiMode,
+		});
 
 		registerAdapterShutdown(adapter, {
 			tuiMode: effectiveTuiMode,
 			cancelController,
 		});
+		trace("run.adapter.shutdown_registered", { tuiMode: effectiveTuiMode });
 
 		// --- Resolve permission policy ---
 		const permissionPolicy: PermissionPolicy =
@@ -365,13 +417,16 @@ export default defineCommand({
 			(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			permissionPolicy,
+			trace,
 		);
 		permissionHandler.start();
+		trace("run.permission.handler_started", { mode: permissionPolicy.mode });
 
 		// Handle TUI early exit — continue headless.
 		// Only registered when TUI was actually spawned; no-op controller never fires.
 		if (isTuiRequested) {
 			tui.onExit((info) => {
+				trace("run.tui.exit", info);
 				if (info.isUserCancellation) {
 					process.stderr.write("TUI interrupted — cancelling run\n");
 					cancelController.abort();
@@ -387,8 +442,10 @@ export default defineCommand({
 						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 							._clientForTui,
 						{ mode: "workdir-scoped", workdir },
+						trace,
 					);
 					permissionHandler.start();
+					trace("run.permission.handler_switched", { mode: "workdir-scoped" });
 				}
 			});
 		}
@@ -430,6 +487,11 @@ export default defineCommand({
 					: undefined;
 
 		try {
+			trace("run.loop.start", {
+				effectivePlanPath,
+				reviewPath,
+				workdir,
+			});
 			const result = await runPhaseExecutionLoop(
 				effectivePlanPath,
 				reviewPath,
@@ -445,7 +507,7 @@ export default defineCommand({
 					projectRoot,
 					// Function form: re-evaluated at each adapter call so TUI exit
 					// mid-run is reflected in subsequent invocations (P1.4).
-					quiet: () => effectiveQuiet || tui.active,
+					quiet: () => effectiveQuiet || tuiOwnsTerminal(),
 					// Stable DB identity anchored to the primary checkout path.
 					// effectivePlanPath may be remapped to a worktree; canonical
 					// stays consistent so resume/history lookups always match.
@@ -458,14 +520,22 @@ export default defineCommand({
 					phaseGate: tuiPhaseGate,
 					escalationGate: tuiEscalationGate,
 					resumeGate: tuiResumeGate,
+					trace,
 				},
 			);
+			trace("run.loop.done", {
+				runId: result.runId,
+				complete: result.complete,
+				aborted: result.aborted,
+				phasesCompleted: result.phasesCompleted,
+				totalPhases: result.totalPhases,
+			});
 
 			// --- Display final result ---
 			// Guard on !tui.active: TUI may still own the terminal here (it is
 			// killed in the finally block below). Writing to stdout/stderr while
 			// the TUI is active corrupts the display (P0.6 output ownership rule).
-			if (!tui.active) {
+			if (!tuiOwnsTerminal()) {
 				console.log();
 				if (result.complete) {
 					console.log("  Run: COMPLETE");
@@ -488,10 +558,13 @@ export default defineCommand({
 				process.exitCode = 1;
 			}
 		} finally {
+			trace("run.cleanup.start");
 			permissionHandler.stop();
 			await adapter.close();
 			tui.kill();
+			trace("run.cleanup.done");
 			releaseLock(projectRoot, canonical);
+			trace("run.command.end", { exitCode: process.exitCode ?? 0 });
 		}
 	},
 });

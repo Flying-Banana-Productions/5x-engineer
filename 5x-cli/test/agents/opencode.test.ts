@@ -698,6 +698,33 @@ describe("timeout handling", () => {
 		await new Promise((r) => setTimeout(r, 0));
 		expect(abortCalled).toBe(true);
 	});
+
+	test("other-session events do not reset inactivity timeout", async () => {
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async (...args: unknown[]) => ({
+				stream: (async function* () {
+					const opts = args[1] as { signal?: AbortSignal } | undefined;
+					const signal = opts?.signal;
+					while (!signal?.aborted) {
+						yield {
+							type: "session.status",
+							properties: {
+								sessionID: "sess-other-456",
+								status: { type: "busy" },
+							},
+						};
+						await new Promise((resolve) => setTimeout(resolve, 1));
+					}
+				})(),
+			}),
+			// Never resolves — rely on inactivity timeout to cancel
+			sessionPrompt: () => new Promise(() => {}),
+		});
+
+		await expect(
+			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 0.02 })),
+		).rejects.toThrow(AgentTimeoutError);
+	});
 });
 
 // ---------------------------------------------------------------------------

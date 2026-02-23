@@ -115,6 +115,8 @@ export interface PhaseExecutionOptions {
 		phase: string,
 		state: string,
 	) => Promise<"resume" | "start-fresh" | "abort">;
+	/** Optional debug trace sink for lifecycle diagnostics. */
+	trace?: (event: string, data?: unknown) => void;
 	/**
 	 * Injectable logger for status messages. Defaults to `console.log`.
 	 * The orchestrator gates this on `quiet` internally — callers should
@@ -249,6 +251,13 @@ export async function runPhaseExecutionLoop(
 	// logs stay in one predictable location even when running in a worktree.
 	const logRoot = options.projectRoot ?? dirname(resolve(planPath));
 	const logBaseDir = join(logRoot, ".5x", "logs");
+	const trace = options.trace ?? (() => {});
+	trace("loop.start", {
+		planPath,
+		reviewPath,
+		workdir,
+		auto: options.auto,
+	});
 
 	// --- Resume detection ---
 	let runId: string;
@@ -260,6 +269,11 @@ export async function runPhaseExecutionLoop(
 
 	const activeRun = getActiveRun(db, dbPlanPath);
 	if (activeRun && activeRun.command === "run") {
+		trace("loop.resume.detected", {
+			runId: activeRun.id,
+			state: activeRun.current_state,
+			phase: activeRun.current_phase,
+		});
 		// In auto mode, deterministically resume without prompting — interactive
 		// resume gates write to stdout and block on stdin, which is incompatible
 		// with TUI mode (child owns terminal) and unattended CI flows.
@@ -297,6 +311,7 @@ export async function runPhaseExecutionLoop(
 		}
 
 		if (resumeDecision === "abort") {
+			trace("loop.resume.abort", { runId: activeRun.id });
 			return {
 				phasesCompleted: 0,
 				totalPhases: 0,
@@ -334,6 +349,11 @@ export async function runPhaseExecutionLoop(
 			log(
 				`  Resuming run ${runId.slice(0, 8)} at phase ${startPhaseNumber ?? "next"}, state ${resumedState ?? "EXECUTE"}`,
 			);
+			trace("loop.resume.accepted", {
+				runId,
+				startPhaseNumber,
+				resumedState,
+			});
 		} else {
 			// start-fresh
 			updateRunStatus(db, activeRun.id, "aborted");
@@ -354,6 +374,7 @@ export async function runPhaseExecutionLoop(
 			reviewPath,
 		});
 	}
+	trace("loop.run_id.ready", { runId });
 
 	// Ensure plan is recorded (use dbPlanPath for stable DB identity)
 	upsertPlan(db, { planPath: dbPlanPath });
@@ -369,6 +390,7 @@ export async function runPhaseExecutionLoop(
 		eventType: "run_start",
 		data: { planPath, reviewPath, workdir, auto: options.auto },
 	});
+	trace("loop.run_start.event_written", { runId, logDir });
 
 	// --- Parse plan to get phases ---
 	let planContent = readFileSync(resolve(planPath), "utf-8");
@@ -401,6 +423,7 @@ export async function runPhaseExecutionLoop(
 
 	// --- Outer loop: iterate through phases ---
 	for (const phase of phases) {
+		trace("phase.start", { runId, phase: phase.number, title: phase.title });
 		log();
 		log(`  ── Phase ${phase.number}: ${phase.title} ──`);
 		const phaseReviewPath = resolvePhaseReviewPath(reviewPath, phase.number);
@@ -480,6 +503,12 @@ export async function runPhaseExecutionLoop(
 
 		// --- Inner loop: per-phase state machine ---
 		while (state !== "PHASE_COMPLETE" && state !== "ABORTED") {
+			trace("phase.state.enter", {
+				runId,
+				phase: phase.number,
+				state,
+				iteration,
+			});
 			// Check for external cancellation (Ctrl-C, TUI exit, parent timeout)
 			if (options.signal?.aborted) {
 				state = "ABORTED";
@@ -643,6 +672,12 @@ export async function runPhaseExecutionLoop(
 					try {
 						// Phase 4: Pass descriptive session title for TUI
 						const sessionTitle = `Phase ${phase.number} — author`;
+						trace("phase.execute.invoke.start", {
+							runId,
+							phase: phase.number,
+							iteration,
+							logPath: executeLogPath,
+						});
 						authorResult = await adapter.invokeForStatus({
 							prompt: authorTemplate.prompt,
 							model: config.author.model,
@@ -657,6 +692,19 @@ export async function runPhaseExecutionLoop(
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
 								: undefined,
+							trace: (event, data) =>
+								trace(`phase.execute.adapter.${event}`, {
+									runId,
+									phase: phase.number,
+									iteration,
+									...(data ?? {}),
+								}),
+						});
+						trace("phase.execute.invoke.done", {
+							runId,
+							phase: phase.number,
+							iteration,
+							result: authorResult.status.result,
 						});
 					} catch (err) {
 						// Check for cancellation first
@@ -826,12 +874,24 @@ export async function runPhaseExecutionLoop(
 					}
 
 					log(`  Running quality gates (attempt ${qualityAttempt + 1})...`);
+					trace("phase.quality.start", {
+						runId,
+						phase: phase.number,
+						attempt: qualityAttempt,
+					});
 
 					qualityResult = await runQualityGates(config.qualityGates, workdir, {
 						runId,
 						logDir,
 						phase: phase.number,
 						attempt: qualityAttempt,
+					});
+					trace("phase.quality.done", {
+						runId,
+						phase: phase.number,
+						attempt: qualityAttempt,
+						passed: qualityResult.passed,
+						failedCount: qualityResult.results.filter((r) => !r.passed).length,
 					});
 
 					// Store in DB
@@ -937,6 +997,13 @@ export async function runPhaseExecutionLoop(
 					try {
 						// Phase 4: Pass descriptive session title for TUI (quality retry)
 						const sessionTitle = `Phase ${phase.number} — revision ${qualityAttempt + 1}`;
+						trace("phase.quality_retry.invoke.start", {
+							runId,
+							phase: phase.number,
+							iteration,
+							attempt: qualityAttempt,
+							logPath: qrFixLogPath,
+						});
 						fixResult = await adapter.invokeForStatus({
 							prompt: qualityFixPrompt,
 							model: config.author.model,
@@ -951,6 +1018,21 @@ export async function runPhaseExecutionLoop(
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
 								: undefined,
+							trace: (event, data) =>
+								trace(`phase.quality_retry.adapter.${event}`, {
+									runId,
+									phase: phase.number,
+									iteration,
+									attempt: qualityAttempt,
+									...(data ?? {}),
+								}),
+						});
+						trace("phase.quality_retry.invoke.done", {
+							runId,
+							phase: phase.number,
+							iteration,
+							attempt: qualityAttempt,
+							result: fixResult.status.result,
 						});
 					} catch (err) {
 						// Check for cancellation first
@@ -1218,6 +1300,12 @@ export async function runPhaseExecutionLoop(
 						// Phase 4: Pass descriptive session title for TUI
 						const reviewIteration = Math.floor(iteration / 2) + 1;
 						const sessionTitle = `Phase ${phase.number} — review ${reviewIteration}`;
+						trace("phase.review.invoke.start", {
+							runId,
+							phase: phase.number,
+							iteration,
+							logPath: reviewLogPath,
+						});
 						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
@@ -1233,6 +1321,19 @@ export async function runPhaseExecutionLoop(
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
 								: undefined,
+							trace: (event, data) =>
+								trace(`phase.review.adapter.${event}`, {
+									runId,
+									phase: phase.number,
+									iteration,
+									...(data ?? {}),
+								}),
+						});
+						trace("phase.review.invoke.done", {
+							runId,
+							phase: phase.number,
+							iteration,
+							readiness: reviewResult.verdict.readiness,
 						});
 					} catch (err) {
 						// Check for cancellation first
@@ -1515,6 +1616,12 @@ export async function runPhaseExecutionLoop(
 					try {
 						// Phase 4: Pass descriptive session title for TUI (auto-fix)
 						const sessionTitle = `Phase ${phase.number} — revision ${Math.floor(iteration / 2) + 1}`;
+						trace("phase.autofix.invoke.start", {
+							runId,
+							phase: phase.number,
+							iteration,
+							logPath: autoFixLogPath,
+						});
 						autoFixResult = await adapter.invokeForStatus({
 							prompt: fixTemplate.prompt,
 							model: config.author.model,
@@ -1529,6 +1636,19 @@ export async function runPhaseExecutionLoop(
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
 								: undefined,
+							trace: (event, data) =>
+								trace(`phase.autofix.adapter.${event}`, {
+									runId,
+									phase: phase.number,
+									iteration,
+									...(data ?? {}),
+								}),
+						});
+						trace("phase.autofix.invoke.done", {
+							runId,
+							phase: phase.number,
+							iteration,
+							result: autoFixResult.status.result,
 						});
 					} catch (err) {
 						// Check for cancellation first
@@ -1718,7 +1838,19 @@ export async function runPhaseExecutionLoop(
 
 					const escalationGateFn =
 						options.escalationGate ?? defaultEscalationGate;
+					trace("phase.escalate.prompt", {
+						runId,
+						phase: phase.number,
+						iteration,
+						reason: lastEscalation.reason,
+					});
 					const response = await escalationGateFn(lastEscalation);
+					trace("phase.escalate.response", {
+						runId,
+						phase: phase.number,
+						iteration,
+						action: response.action,
+					});
 
 					appendRunEvent(db, {
 						runId,
@@ -1791,6 +1923,12 @@ export async function runPhaseExecutionLoop(
 					};
 
 					const decision = await phaseGateFn(summary);
+					trace("phase.gate.response", {
+						runId,
+						phase: phase.number,
+						iteration,
+						decision,
+					});
 					appendRunEvent(db, {
 						runId,
 						eventType: "human_decision",
@@ -1830,6 +1968,12 @@ export async function runPhaseExecutionLoop(
 		}
 
 		if (state === "ABORTED") {
+			trace("phase.end", {
+				runId,
+				phase: phase.number,
+				outcome: "aborted",
+				iteration,
+			});
 			_phaseAborted = true;
 			break;
 		}
@@ -1843,6 +1987,12 @@ export async function runPhaseExecutionLoop(
 			phase: phase.number,
 			iteration,
 			data: { phaseNumber: phase.number, commit: lastCommit },
+		});
+		trace("phase.end", {
+			runId,
+			phase: phase.number,
+			outcome: "complete",
+			iteration,
 		});
 
 		// Phase 4: Show toast for phase complete (auto mode)
@@ -1881,6 +2031,14 @@ export async function runPhaseExecutionLoop(
 			totalPhases,
 			escalationCount: escalations.length,
 		},
+	});
+	trace("loop.end", {
+		runId,
+		allComplete,
+		phasesCompleted,
+		totalPhases,
+		escalationCount: escalations.length,
+		finalStatus,
 	});
 
 	return {
