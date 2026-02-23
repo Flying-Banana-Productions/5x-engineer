@@ -152,12 +152,13 @@ describe("external TUI mode", () => {
 	});
 
 	test("external mode remains inactive after successful selectSession", async () => {
+		const client = createMockClient();
 		const origWrite = process.stderr.write.bind(process.stderr);
 		process.stderr.write = () => true;
 		const controller = createTuiController({
 			serverUrl: "http://127.0.0.1:12345",
 			workdir: "/tmp",
-			client: createMockClient(),
+			client,
 			enabled: true,
 		});
 		process.stderr.write = origWrite;
@@ -166,6 +167,28 @@ describe("external TUI mode", () => {
 		await controller.selectSession("sess-ext", "/tmp");
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(controller.active).toBe(false);
+	});
+
+	test("external mode keeps syncing latest session for late attach", async () => {
+		const client = createMockClient();
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = () => true;
+		const controller = createTuiController({
+			serverUrl: "http://127.0.0.1:12345",
+			workdir: "/tmp",
+			client,
+			enabled: true,
+		});
+		process.stderr.write = origWrite;
+
+		await controller.selectSession("sess-ext", "/tmp");
+		await new Promise((resolve) => setTimeout(resolve, 650));
+		controller.kill();
+
+		expect(client.tui.selectSession).toHaveBeenCalled();
+		expect(
+			(client.tui.selectSession as ReturnType<typeof mock>).mock.calls.length,
+		).toBeGreaterThan(1);
 	});
 
 	test("external mode onExit is a no-op", async () => {

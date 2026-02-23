@@ -39,6 +39,7 @@ import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 // Retry for several seconds so early gate/session switches are visible.
 const SELECT_SESSION_RETRY_DELAYS_MS = [0, 80, 160, 320, 500, 800, 1200];
 const EXTERNAL_TUI_API_TIMEOUT_MS = 250;
+const EXTERNAL_TUI_SYNC_INTERVAL_MS = 500;
 
 async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
@@ -188,8 +189,8 @@ function createExternalController(
 	let _killed = false;
 	let _lastSessionId: string | undefined;
 	let _lastDirectory: string | undefined;
-	let reconnectTimer: ReturnType<typeof setInterval> | undefined;
-	let reconnectInFlight = false;
+	let syncTimer: ReturnType<typeof setInterval> | undefined;
+	let syncInFlight = false;
 
 	const setReachable = (next: boolean) => {
 		if (_reachable === next) return;
@@ -199,49 +200,52 @@ function createExternalController(
 		});
 	};
 
-	const stopReconnectLoop = () => {
-		if (!reconnectTimer) return;
-		clearInterval(reconnectTimer);
-		reconnectTimer = undefined;
+	const stopSyncLoop = () => {
+		if (!syncTimer) return;
+		clearInterval(syncTimer);
+		syncTimer = undefined;
 	};
 
-	const startReconnectLoop = () => {
-		if (_killed || reconnectTimer || !_lastSessionId) return;
-		traceController(trace, "external.reconnect_loop.start", {
+	const syncCurrentSession = async (): Promise<void> => {
+		if (_killed || syncInFlight || !_lastSessionId) return;
+		const sessionID = _lastSessionId;
+		if (!sessionID) return;
+		syncInFlight = true;
+		try {
+			traceController(trace, "external.sync.probe", {
+				sessionID,
+				directory: _lastDirectory,
+			});
+			const result = await callTuiApiWithTimeout((signal) =>
+				(
+					client.tui.selectSession as unknown as (
+						payload: { sessionID: string; directory?: string },
+						req?: { signal?: AbortSignal },
+					) => Promise<TuiApiResponse>
+				)(
+					{
+						sessionID,
+						...(_lastDirectory && { directory: _lastDirectory }),
+					},
+					{ signal },
+				),
+			);
+			setReachable(apiCallSucceeded(result));
+		} finally {
+			syncInFlight = false;
+		}
+	};
+
+	const startSyncLoop = () => {
+		if (_killed || syncTimer || !_lastSessionId) return;
+		traceController(trace, "external.sync_loop.start", {
 			sessionId: _lastSessionId,
 			directory: _lastDirectory,
 		});
-		reconnectTimer = setInterval(async () => {
-			if (_killed || reconnectInFlight || !_lastSessionId) return;
-			const sessionID = _lastSessionId;
-			if (!sessionID) return;
-			reconnectInFlight = true;
-			try {
-				traceController(trace, "external.reconnect.probe", { sessionID });
-				const result = await callTuiApiWithTimeout((signal) =>
-					(
-						client.tui.selectSession as unknown as (
-							payload: { sessionID: string; directory?: string },
-							req?: { signal?: AbortSignal },
-						) => Promise<TuiApiResponse>
-					)(
-						{
-							sessionID,
-							...(_lastDirectory && { directory: _lastDirectory }),
-						},
-						{ signal },
-					),
-				);
-				if (apiCallSucceeded(result)) {
-					traceController(trace, "external.reconnect.connected", { sessionID });
-					setReachable(true);
-					stopReconnectLoop();
-				}
-			} finally {
-				reconnectInFlight = false;
-			}
-		}, 1000);
-		reconnectTimer.unref?.();
+		syncTimer = setInterval(() => {
+			void syncCurrentSession();
+		}, EXTERNAL_TUI_SYNC_INTERVAL_MS);
+		syncTimer.unref?.();
 	};
 
 	const probeSession = async (
@@ -305,16 +309,10 @@ function createExternalController(
 			});
 			_lastSessionId = sessionID;
 			_lastDirectory = directory;
+			startSyncLoop();
 
 			void (async () => {
-				if (await probeSession(sessionID, directory)) {
-					setReachable(true);
-					stopReconnectLoop();
-					return;
-				}
-
-				setReachable(false);
-				startReconnectLoop();
+				setReachable(await probeSession(sessionID, directory));
 			})();
 		},
 		async showToast(
@@ -343,7 +341,7 @@ function createExternalController(
 				}
 
 				setReachable(false);
-				startReconnectLoop();
+				startSyncLoop();
 			})();
 		},
 		onExit(_handler: (info: TuiExitInfo) => void) {
@@ -352,7 +350,7 @@ function createExternalController(
 		kill() {
 			_killed = true;
 			traceController(trace, "external.kill");
-			stopReconnectLoop();
+			stopSyncLoop();
 		},
 	};
 }
