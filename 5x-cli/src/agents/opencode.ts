@@ -172,6 +172,40 @@ function resolveSessionIdWithContext(
 	return undefined;
 }
 
+function isAbortLikeError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	if (err.name === "AbortError") return true;
+	return err.message.toLowerCase().includes("aborted");
+}
+
+async function sleepWithSignal(
+	ms: number,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (!signal) {
+		await new Promise((resolve) => setTimeout(resolve, ms));
+		return;
+	}
+
+	if (signal.aborted)
+		throw new AgentCancellationError("Agent invocation cancelled");
+
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		timer.unref?.();
+
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(new AgentCancellationError("Agent invocation cancelled"));
+		};
+
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 // ---------------------------------------------------------------------------
 // SSE event log streaming
 // ---------------------------------------------------------------------------
@@ -391,6 +425,62 @@ export class OpenCodeAdapter implements AgentAdapter {
 		}
 	}
 
+	private async waitForRecoveredPromptResult(
+		sessionId: string,
+		workdir: string | undefined,
+		signal: AbortSignal | undefined,
+		trace: InvokeOptions["trace"],
+	): Promise<{
+		data: { info: Record<string, unknown>; parts: Array<unknown> };
+		error: undefined;
+	}> {
+		while (true) {
+			if (signal?.aborted) {
+				throw new AgentCancellationError("Agent invocation cancelled");
+			}
+
+			const messages = await this.client.session.messages(
+				{
+					sessionID: sessionId,
+					...(workdir && { directory: workdir }),
+					limit: 50,
+				},
+				signal ? { signal } : undefined,
+			);
+
+			if (!messages.error && Array.isArray(messages.data)) {
+				const latestFirst = [...messages.data].reverse();
+				for (const row of latestFirst) {
+					const rowObj = row as Record<string, unknown>;
+					const info = rowObj.info as Record<string, unknown> | undefined;
+					if (!info || info.role !== "assistant") continue;
+
+					const time = info.time as Record<string, unknown> | undefined;
+					const completed = typeof time?.completed === "number";
+					if (!completed) continue;
+
+					traceInvoke(trace, "prompt.recover.completed_message", {
+						sessionId,
+						messageId:
+							typeof info.id === "string" ? (info.id as string) : undefined,
+					});
+
+					return {
+						data: {
+							info,
+							parts: Array.isArray(rowObj.parts)
+								? (rowObj.parts as Array<unknown>)
+								: [],
+						},
+						error: undefined,
+					};
+				}
+			}
+
+			await sleepWithSignal(500, signal);
+		}
+	}
+
 	/**
 	 * Invoke agent with AuthorStatus structured output.
 	 */
@@ -544,22 +634,50 @@ export class OpenCodeAdapter implements AgentAdapter {
 				cancelSignal ? { signal: cancelSignal } : undefined,
 			);
 
-			const result = cancelSignal
-				? await Promise.race([
-						promptPromise,
-						new Promise<never>((_, reject) => {
-							if (cancelSignal.aborted) {
-								reject(cancelSignal.reason ?? new Error("aborted"));
-								return;
-							}
-							cancelSignal.addEventListener(
-								"abort",
-								() => reject(cancelSignal.reason ?? new Error("aborted")),
-								{ once: true },
-							);
-						}),
-					])
-				: await promptPromise;
+			let result: Awaited<typeof promptPromise> | undefined;
+
+			try {
+				result =
+					cancelSignal !== undefined
+						? await Promise.race([
+								promptPromise,
+								new Promise<never>((_, reject) => {
+									if (cancelSignal.aborted) {
+										reject(cancelSignal.reason ?? new Error("aborted"));
+										return;
+									}
+									cancelSignal.addEventListener(
+										"abort",
+										() => reject(cancelSignal.reason ?? new Error("aborted")),
+										{ once: true },
+									);
+								}),
+							])
+						: await promptPromise;
+			} catch (err) {
+				const isTimeout = timeoutController?.signal.aborted === true;
+				const isExternalCancel = opts.signal?.aborted === true;
+
+				if (!isTimeout && !isExternalCancel && isAbortLikeError(err)) {
+					traceInvoke(opts.trace, "prompt.recover.start", {
+						sessionId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					result = (await this.waitForRecoveredPromptResult(
+						sessionId,
+						opts.workdir,
+						opts.signal,
+						opts.trace,
+					)) as Awaited<typeof promptPromise>;
+					traceInvoke(opts.trace, "prompt.recover.done", { sessionId });
+				} else {
+					throw err;
+				}
+			}
+
+			if (!result) {
+				throw new Error("Prompt result missing after recovery");
+			}
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			const duration = Date.now() - start;
 			traceInvoke(opts.trace, "prompt.done", {

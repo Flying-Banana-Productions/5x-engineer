@@ -20,6 +20,8 @@ function createMockClient(
 		sessionPrompt?: (...args: unknown[]) => Promise<unknown>;
 		sessionAbort?: (...args: unknown[]) => Promise<unknown>;
 		sessionList?: (...args: unknown[]) => Promise<unknown>;
+		sessionStatus?: (...args: unknown[]) => Promise<unknown>;
+		sessionMessages?: (...args: unknown[]) => Promise<unknown>;
 		eventSubscribe?: (...args: unknown[]) => Promise<unknown>;
 	} = {},
 ) {
@@ -71,6 +73,18 @@ function createMockClient(
 				})),
 			list:
 				overrides.sessionList ??
+				(async () => ({
+					data: [],
+					error: undefined,
+				})),
+			status:
+				overrides.sessionStatus ??
+				(async () => ({
+					data: { "sess-test-123": { type: "idle" } },
+					error: undefined,
+				})),
+			messages:
+				overrides.sessionMessages ??
 				(async () => ({
 					data: [],
 					error: undefined,
@@ -1054,6 +1068,74 @@ describe("P0.2: external signal cancellation", () => {
 		await expect(
 			adapter.invokeForStatus(defaultInvokeOpts({ timeout: 0.001 })), // 1ms
 		).rejects.toThrow(AgentTimeoutError);
+	});
+});
+
+describe("prompt abort recovery", () => {
+	test("keeps waiting when prompt request is aborted but session completes", async () => {
+		let abortCalled = false;
+		let messagesCalls = 0;
+
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => {
+				throw new Error("The operation was aborted.");
+			},
+			sessionMessages: async () => {
+				messagesCalls += 1;
+				if (messagesCalls < 2) {
+					return {
+						data: [
+							{
+								info: {
+									id: "msg-1",
+									sessionID: "sess-test-123",
+									role: "assistant",
+									time: { created: Date.now() },
+								},
+								parts: [],
+							},
+						],
+						error: undefined,
+					};
+				}
+
+				return {
+					data: [
+						{
+							info: {
+								id: "msg-1",
+								sessionID: "sess-test-123",
+								role: "assistant",
+								time: { created: Date.now(), completed: Date.now() },
+								structured: { result: "complete", commit: "abc123" },
+								tokens: {
+									input: 12,
+									output: 8,
+									reasoning: 0,
+									cache: { read: 0, write: 0 },
+								},
+								cost: 0.001,
+							},
+							parts: [],
+						},
+					],
+					error: undefined,
+				};
+			},
+			sessionAbort: async () => {
+				abortCalled = true;
+				return { data: true, error: undefined };
+			},
+		});
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({ timeout: undefined }),
+		);
+
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+		expect(messagesCalls).toBeGreaterThanOrEqual(2);
+		expect(abortCalled).toBe(false);
 	});
 });
 
