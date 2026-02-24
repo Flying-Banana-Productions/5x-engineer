@@ -35,9 +35,9 @@ export async function createAndVerifyAdapter(
 let _signalHandlersRegistered = false;
 
 export interface RegisterAdapterShutdownOptions {
-	/** Whether TUI mode is active (affects signal handling). */
+	/** Whether TUI mode is active (affects comments/legacy behavior). */
 	tuiMode?: boolean;
-	/** AbortController for cooperative cancellation in TUI mode. */
+	/** AbortController for cooperative cancellation on SIGINT/SIGTERM. */
 	cancelController?: AbortController;
 }
 
@@ -71,11 +71,9 @@ export function registerAdapterShutdown(
 	};
 	process.on("exit", cleanup);
 
-	if (opts.tuiMode) {
-		// TUI mode: Ctrl-C goes to TUI first; we rely on tuiProcess.exited to
-		// cooperatively cancel. SIGINT/SIGTERM still need handlers to prevent
-		// abrupt termination if somehow delivered to the parent directly.
-		// Guard with _signalHandlersRegistered to prevent duplicate handlers.
+	if (opts.cancelController) {
+		// Cooperative mode: signal abort to in-flight orchestration/invocations
+		// and let command code exit cleanly from normal control flow.
 		if (!_signalHandlersRegistered) {
 			_signalHandlersRegistered = true;
 			process.once("SIGINT", () => {
@@ -88,7 +86,7 @@ export function registerAdapterShutdown(
 			});
 		}
 	} else {
-		// Headless mode: convert signal to process.exit() to trigger the "exit" event
+		// Legacy hard-exit mode when no cooperative cancel controller is provided.
 		if (!_signalHandlersRegistered) {
 			_signalHandlersRegistered = true;
 			process.on("SIGINT", () => process.exit(130));

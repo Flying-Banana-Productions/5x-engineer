@@ -21,13 +21,19 @@ function normalize(text: string): string {
 	return text.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function parsePhaseDecision(
-	text: string,
-): "continue" | "review" | "abort" | null {
+function parsePhaseDecision(text: string): "continue" | "exit" | null {
 	const value = normalize(text);
 	if (value === "c" || value === "continue") return "continue";
-	if (value === "r" || value === "review") return "review";
-	if (value === "q" || value === "abort") return "abort";
+	if (
+		value === "x" ||
+		value === "exit" ||
+		value === "r" ||
+		value === "review" ||
+		value === "q" ||
+		value === "abort"
+	) {
+		return "exit";
+	}
 	return null;
 }
 
@@ -252,8 +258,8 @@ export function createTuiPhaseGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
-): (summary: PhaseSummary) => Promise<"continue" | "review" | "abort"> {
-	return async (summary): Promise<"continue" | "review" | "abort"> => {
+): (summary: PhaseSummary) => Promise<"continue" | "exit" | "abort"> {
+	return async (summary): Promise<"continue" | "exit" | "abort"> => {
 		if (!tui.active) return headlessPhaseGate(summary);
 
 		const sessionId = await createGateSession(
@@ -265,7 +271,7 @@ export function createTuiPhaseGate(
 
 		try {
 			await tui.showToast(
-				`Phase ${summary.phaseNumber} complete. Reply with continue, review, or abort.`,
+				`Phase ${summary.phaseNumber} complete. Reply with continue or exit.`,
 				"info",
 			);
 		} catch {
@@ -282,7 +288,7 @@ export function createTuiPhaseGate(
 					async (text) => {
 						try {
 							await tui.showToast(
-								`Invalid input: "${text.trim()}". Use continue, review, or abort.`,
+								`Invalid input: "${text.trim()}". Use continue or exit.`,
 								"warning",
 							);
 						} catch {
@@ -300,8 +306,7 @@ export function createTuiPhaseGate(
 			}
 
 			const decision = lifecycle.value;
-
-			return decision === "abort" ? "abort" : decision;
+			return decision;
 		} finally {
 			await deleteGateSession(client, sessionId);
 		}

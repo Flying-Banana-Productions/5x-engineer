@@ -259,7 +259,7 @@ describe("createTuiPhaseGate", () => {
 		const logs = await captureConsoleLogs(async () => {
 			const pending = gate(summary);
 			setTimeout(() => tui._simulateExit(1, false), 0);
-			await expect(pending).resolves.toBe("abort");
+			await expect(pending).resolves.toBe("exit");
 		});
 
 		expect(logs.some((line) => line.includes("Phase 3"))).toBe(true);

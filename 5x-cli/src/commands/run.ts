@@ -527,6 +527,7 @@ export default defineCommand({
 				runId: result.runId,
 				complete: result.complete,
 				aborted: result.aborted,
+				paused: result.paused,
 				phasesCompleted: result.phasesCompleted,
 				totalPhases: result.totalPhases,
 			});
@@ -539,6 +540,8 @@ export default defineCommand({
 				console.log();
 				if (result.complete) {
 					console.log("  Run: COMPLETE");
+				} else if (result.paused) {
+					console.log("  Run: PAUSED");
 				} else if (result.aborted) {
 					console.log("  Run: ABORTED");
 				} else {
@@ -554,8 +557,10 @@ export default defineCommand({
 				console.log();
 			}
 
-			if (!result.complete) {
-				process.exitCode = 1;
+			if (!result.complete && !result.paused) {
+				process.exitCode = process.exitCode ?? 1;
+			} else if (result.paused) {
+				process.exitCode = 0;
 			}
 		} finally {
 			trace("run.cleanup.start");

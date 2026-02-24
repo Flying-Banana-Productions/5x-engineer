@@ -209,7 +209,7 @@ function resolveQuietOpt(quiet: InvokeOptions["quiet"]): boolean {
 	return quiet ?? false;
 }
 
-function fixedPhaseGate(decision: "continue" | "review" | "abort") {
+function fixedPhaseGate(decision: "continue" | "exit" | "abort") {
 	return async (_summary: PhaseSummary) => decision;
 }
 
@@ -681,6 +681,40 @@ describe("runPhaseExecutionLoop", () => {
 
 			expect(result.complete).toBe(false);
 			expect(result.aborted).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("phase gate exit pauses run at checkpoint", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, phaseGate: fixedPhaseGate("exit") },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.aborted).toBe(false);
+			expect(result.paused).toBe(true);
+
+			const run = db
+				.query("SELECT status, current_state FROM runs WHERE id = ? LIMIT 1")
+				.get(result.runId) as
+				| { status: string; current_state: string | null }
+				| undefined;
+			expect(run?.status).toBe("active");
+			expect(run?.current_state).toBe("PHASE_GATE");
 		} finally {
 			cleanup();
 		}

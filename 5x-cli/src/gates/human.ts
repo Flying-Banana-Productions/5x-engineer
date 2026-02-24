@@ -46,17 +46,27 @@ export type EscalationResponse =
 function readLine(): Promise<string> {
 	return new Promise((resolve) => {
 		const chunks: Buffer[] = [];
+		const cleanup = () => {
+			process.stdin.removeListener("data", onData);
+			process.removeListener("SIGINT", onSigint);
+			process.stdin.pause();
+		};
+
 		const onData = (chunk: Buffer) => {
 			chunks.push(chunk);
 			const text = Buffer.concat(chunks).toString();
 			if (text.includes("\n")) {
-				process.stdin.removeListener("data", onData);
-				process.stdin.pause();
+				cleanup();
 				resolve(text.split("\n")[0] ?? "");
 			}
 		};
+		const onSigint = () => {
+			cleanup();
+			resolve("__SIGINT__");
+		};
 		process.stdin.resume();
 		process.stdin.on("data", onData);
+		process.once("SIGINT", onSigint);
 	});
 }
 
@@ -70,11 +80,11 @@ function isInteractive(): boolean {
 
 /**
  * Display a phase completion summary and prompt the human to continue,
- * review, or abort.
+ * or exit at this checkpoint.
  */
 export async function phaseGate(
 	summary: PhaseSummary,
-): Promise<"continue" | "review" | "abort"> {
+): Promise<"continue" | "exit"> {
 	console.log();
 	console.log("  ──────────────────────────────────────");
 	console.log(
@@ -104,21 +114,30 @@ export async function phaseGate(
 	console.log();
 	console.log("  Options:");
 	console.log("    c = continue to next phase");
-	console.log("    r = review (inspect changes before continuing)");
-	console.log("    q = abort");
+	console.log("    x = exit now (resume from this checkpoint later)");
 	console.log();
 
 	if (!isInteractive()) {
-		console.log("  Non-interactive mode detected — aborting.");
-		return "abort";
+		console.log("  Non-interactive mode detected — exiting at checkpoint.");
+		return "exit";
 	}
 
-	process.stdout.write("  Choice [c/r/q]: ");
+	process.stdout.write("  Choice [c/x]: ");
 	const input = await readLine();
 	const choice = input.trim().toLowerCase();
 	if (choice === "c" || choice === "continue") return "continue";
-	if (choice === "r" || choice === "review") return "review";
-	return "abort";
+	if (
+		choice === "x" ||
+		choice === "exit" ||
+		choice === "review" ||
+		choice === "r" ||
+		choice === "abort" ||
+		choice === "q" ||
+		choice === "__sigint__"
+	) {
+		return "exit";
+	}
+	return "exit";
 }
 
 // ---------------------------------------------------------------------------

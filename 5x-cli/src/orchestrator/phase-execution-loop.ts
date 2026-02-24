@@ -74,6 +74,7 @@ export interface PhaseExecutionResult {
 	totalPhases: number;
 	complete: boolean;
 	aborted: boolean;
+	paused: boolean;
 	escalations: EscalationEvent[];
 	runId: string;
 }
@@ -105,9 +106,7 @@ export interface PhaseExecutionOptions {
 	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
 	showReasoning?: boolean;
 	/** Override for testing — phase gate prompt. */
-	phaseGate?: (
-		summary: PhaseSummary,
-	) => Promise<"continue" | "review" | "abort">;
+	phaseGate?: (summary: PhaseSummary) => Promise<"continue" | "exit" | "abort">;
 	/** Override for testing — escalation gate prompt. */
 	escalationGate?: (event: EscalationEvent) => Promise<EscalationResponse>;
 	/** Override for testing — resume gate prompt. */
@@ -318,6 +317,7 @@ export async function runPhaseExecutionLoop(
 				totalPhases: 0,
 				complete: false,
 				aborted: true,
+				paused: false,
 				escalations: [],
 				runId: activeRun.id,
 			};
@@ -404,6 +404,7 @@ export async function runPhaseExecutionLoop(
 			totalPhases: 0,
 			complete: false,
 			aborted: false,
+			paused: false,
 			escalations: [],
 			runId,
 		};
@@ -421,6 +422,7 @@ export async function runPhaseExecutionLoop(
 
 	let phasesCompleted = approvedPhaseSet.size;
 	const totalPhases = plan.phases.length;
+	let pausedAtPhaseGate = false;
 
 	// --- Outer loop: iterate through phases ---
 	for (const phase of phases) {
@@ -458,6 +460,7 @@ export async function runPhaseExecutionLoop(
 		let lastCommit: string | undefined;
 		let qualityResult: QualityResult | undefined;
 		let _phaseAborted = false;
+		let _phasePaused = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
 		// Tracks the state that most recently transitioned to ESCALATE, so that
 		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
@@ -1999,11 +2002,12 @@ export async function runPhaseExecutionLoop(
 							}
 							state = "PHASE_COMPLETE";
 							break;
-						case "review":
+						case "exit":
 							log(
-								"  Please review the changes. Run `5x run` again to continue.",
+								"  Exiting at phase checkpoint. Run `5x run` again to continue.",
 							);
-							state = "ABORTED";
+							pausedAtPhaseGate = true;
+							_phasePaused = true;
 							break;
 						case "abort":
 							state = "ABORTED";
@@ -2016,6 +2020,20 @@ export async function runPhaseExecutionLoop(
 					state = "ABORTED";
 					break;
 			}
+
+			if (_phasePaused) {
+				break;
+			}
+		}
+
+		if (_phasePaused) {
+			trace("phase.end", {
+				runId,
+				phase: phase.number,
+				outcome: "paused",
+				iteration,
+			});
+			break;
 		}
 
 		if (state === "ABORTED") {
@@ -2065,6 +2083,33 @@ export async function runPhaseExecutionLoop(
 		}
 	}
 
+	if (pausedAtPhaseGate) {
+		appendRunEvent(db, {
+			runId,
+			eventType: "run_paused",
+			data: {
+				phasesCompleted,
+				totalPhases,
+				reason: "phase_gate_exit",
+			},
+		});
+		trace("loop.paused", {
+			runId,
+			phasesCompleted,
+			totalPhases,
+		});
+
+		return {
+			phasesCompleted,
+			totalPhases,
+			complete: false,
+			aborted: false,
+			paused: true,
+			escalations,
+			runId,
+		};
+	}
+
 	// --- Finalize ---
 	const allComplete = phasesCompleted === totalPhases;
 	const finalStatus = allComplete
@@ -2097,6 +2142,7 @@ export async function runPhaseExecutionLoop(
 		totalPhases,
 		complete: allComplete,
 		aborted: !allComplete,
+		paused: false,
 		escalations,
 		runId,
 	};
@@ -2180,7 +2226,7 @@ function routeVerdict(
 
 async function defaultPhaseGate(
 	summary: PhaseSummary,
-): Promise<"continue" | "review" | "abort"> {
+): Promise<"continue" | "exit" | "abort"> {
 	// Import at call time to avoid circular dependency
 	const { phaseGate } = await import("../gates/human.js");
 	return phaseGate(summary);
