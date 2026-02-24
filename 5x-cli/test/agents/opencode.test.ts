@@ -1139,6 +1139,94 @@ describe("prompt abort recovery", () => {
 	});
 });
 
+describe("missing structured output recovery", () => {
+	test("keeps waiting when initial assistant message is unstructured", async () => {
+		let messagesCalls = 0;
+
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						id: "msg-partial",
+						sessionID: "sess-test-123",
+						role: "assistant",
+						structured: null,
+						tokens: {
+							input: 5,
+							output: 3,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0.001,
+						time: { created: Date.now(), completed: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+			sessionMessages: async () => {
+				messagesCalls += 1;
+				if (messagesCalls === 1) {
+					return {
+						data: [
+							{
+								info: {
+									id: "msg-final",
+									sessionID: "sess-test-123",
+									role: "assistant",
+									time: { created: Date.now() },
+								},
+								parts: [],
+							},
+							{
+								info: {
+									id: "msg-partial",
+									sessionID: "sess-test-123",
+									role: "assistant",
+									time: { created: Date.now(), completed: Date.now() },
+								},
+								parts: [],
+							},
+						],
+						error: undefined,
+					};
+				}
+
+				return {
+					data: [
+						{
+							info: {
+								id: "msg-final",
+								sessionID: "sess-test-123",
+								role: "assistant",
+								time: { created: Date.now(), completed: Date.now() },
+								structured: { result: "complete", commit: "abc123" },
+								tokens: {
+									input: 10,
+									output: 6,
+									reasoning: 0,
+									cache: { read: 0, write: 0 },
+								},
+								cost: 0.001,
+							},
+							parts: [],
+						},
+					],
+					error: undefined,
+				};
+			},
+		});
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({ timeout: undefined }),
+		);
+
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+		expect(messagesCalls).toBeGreaterThanOrEqual(2);
+	});
+});
+
 // ---------------------------------------------------------------------------
 // P0.3 — Workdir/directory propagation
 // ---------------------------------------------------------------------------

@@ -434,6 +434,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 		data: { info: Record<string, unknown>; parts: Array<unknown> };
 		error: undefined;
 	}> {
+		let lastUnstructuredCompletedId: string | undefined;
+		let repeatedUnstructuredCompletions = 0;
+		let stalledPolls = 0;
+
 		while (true) {
 			if (signal?.aborted) {
 				throw new AgentCancellationError("Agent invocation cancelled");
@@ -450,6 +454,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 			if (!messages.error && Array.isArray(messages.data)) {
 				const latestFirst = [...messages.data].reverse();
+				let latestCompletedAssistant:
+					| { info: Record<string, unknown>; parts: Array<unknown> }
+					| undefined;
+				let hasInFlightAssistant = false;
+
 				for (const row of latestFirst) {
 					const rowObj = row as Record<string, unknown>;
 					const info = rowObj.info as Record<string, unknown> | undefined;
@@ -457,7 +466,44 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 					const time = info.time as Record<string, unknown> | undefined;
 					const completed = typeof time?.completed === "number";
-					if (!completed) continue;
+					if (!completed) {
+						hasInFlightAssistant = true;
+						continue;
+					}
+
+					const structured = info.structured;
+					if (structured == null) {
+						if (!latestCompletedAssistant) {
+							latestCompletedAssistant = {
+								info,
+								parts: Array.isArray(rowObj.parts)
+									? (rowObj.parts as Array<unknown>)
+									: [],
+							};
+						}
+
+						const infoError = info.error;
+						if (
+							infoError &&
+							isStructuredOutputError({ error: infoError as unknown })
+						) {
+							traceInvoke(trace, "prompt.recover.structured_error", {
+								sessionId,
+								messageId:
+									typeof info.id === "string" ? (info.id as string) : undefined,
+							});
+							return {
+								data: {
+									info,
+									parts: Array.isArray(rowObj.parts)
+										? (rowObj.parts as Array<unknown>)
+										: [],
+								},
+								error: undefined,
+							};
+						}
+						continue;
+					}
 
 					traceInvoke(trace, "prompt.recover.completed_message", {
 						sessionId,
@@ -474,6 +520,37 @@ export class OpenCodeAdapter implements AgentAdapter {
 						},
 						error: undefined,
 					};
+				}
+
+				if (latestCompletedAssistant && !hasInFlightAssistant) {
+					const messageIdRaw = latestCompletedAssistant.info.id;
+					const messageId =
+						typeof messageIdRaw === "string" ? messageIdRaw : undefined;
+
+					if (messageId && messageId === lastUnstructuredCompletedId) {
+						repeatedUnstructuredCompletions += 1;
+					} else {
+						lastUnstructuredCompletedId = messageId;
+						repeatedUnstructuredCompletions = 1;
+					}
+
+					if (repeatedUnstructuredCompletions >= 3) {
+						throw new Error(
+							"Agent did not return structured output — expected JSON schema response. This may indicate the model does not support structured output.",
+						);
+					}
+					stalledPolls += 1;
+				} else if (!hasInFlightAssistant) {
+					stalledPolls += 1;
+					if (stalledPolls >= 3) {
+						throw new Error(
+							"Agent did not return structured output — expected JSON schema response. This may indicate the model does not support structured output.",
+						);
+					}
+				} else {
+					lastUnstructuredCompletedId = undefined;
+					repeatedUnstructuredCompletions = 0;
+					stalledPolls = 0;
 				}
 			}
 
@@ -698,10 +775,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 				);
 			}
 
-			const info = result.data.info;
+			let info = result.data.info;
 
 			// 6. Extract structured output
-			const structured = info.structured;
+			let structured = info.structured;
 			if (structured == null) {
 				// Check if there's a structured output error on the message
 				if (info.error && isStructuredOutputError({ error: info.error })) {
@@ -709,10 +786,37 @@ export class OpenCodeAdapter implements AgentAdapter {
 						`Structured output validation failed after retries: ${JSON.stringify(info.error)}`,
 					);
 				}
-				throw new Error(
-					"Agent did not return structured output — expected JSON schema response. " +
-						"This may indicate the model does not support structured output.",
+
+				traceInvoke(opts.trace, "prompt.recover.start", {
+					sessionId,
+					reason: "missing_structured_output",
+				});
+
+				const recovered = await this.waitForRecoveredPromptResult(
+					sessionId,
+					opts.workdir,
+					opts.signal,
+					opts.trace,
 				);
+				info = recovered.data.info as typeof info;
+				structured = info.structured;
+
+				traceInvoke(opts.trace, "prompt.recover.done", {
+					sessionId,
+					reason: "missing_structured_output",
+				});
+
+				if (structured == null) {
+					if (info.error && isStructuredOutputError({ error: info.error })) {
+						throw new Error(
+							`Structured output validation failed after retries: ${JSON.stringify(info.error)}`,
+						);
+					}
+					throw new Error(
+						"Agent did not return structured output — expected JSON schema response. " +
+							"This may indicate the model does not support structured output.",
+					);
+				}
 			}
 
 			// 7. Extract token/cost info (P1.1: use ?? to preserve cost=0)
