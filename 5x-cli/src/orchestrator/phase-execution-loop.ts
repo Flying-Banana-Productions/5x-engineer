@@ -918,6 +918,27 @@ export async function runPhaseExecutionLoop(
 						logDir,
 						phase: phase.number,
 						attempt: qualityAttempt,
+						onCommandStart: ({ index, total, command }) => {
+							log(`    [${index + 1}/${total}] ${command}`);
+							if (options.tui) {
+								const short =
+									command.length > 60 ? `${command.slice(0, 57)}...` : command;
+								void options.tui.showToast(
+									`Quality ${index + 1}/${total}: ${short}`,
+									"info",
+								);
+							}
+						},
+						onCommandComplete: ({ index, total, result }) => {
+							const durationSec = (result.duration / 1000).toFixed(1);
+							const status = result.passed ? "PASS" : "FAIL";
+							log(
+								`    [${index + 1}/${total}] ${status} ${result.command} (${durationSec}s)`,
+							);
+							if (!result.passed && result.outputPath) {
+								log(`      Log: ${result.outputPath}`);
+							}
+						},
 					});
 					trace("phase.quality.done", {
 						runId,

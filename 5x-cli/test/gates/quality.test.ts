@@ -215,4 +215,30 @@ describe("runQualityGates", () => {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
+
+	test("invokes progress hooks for each command", async () => {
+		const tmp = makeTmp();
+		try {
+			const started: string[] = [];
+			const completed: string[] = [];
+			const result = await runQualityGates(
+				["echo one", "echo two"],
+				tmp,
+				makeOpts(tmp, {
+					onCommandStart: ({ index, total, command }) => {
+						started.push(`${index + 1}/${total}:${command}`);
+					},
+					onCommandComplete: ({ index, total, result }) => {
+						completed.push(`${index + 1}/${total}:${result.command}`);
+					},
+				}),
+			);
+
+			expect(result.passed).toBe(true);
+			expect(started).toEqual(["1/2:echo one", "2/2:echo two"]);
+			expect(completed).toEqual(["1/2:echo one", "2/2:echo two"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });

@@ -30,6 +30,27 @@ export interface QualityGateOptions {
 	phase: string;
 	attempt: number;
 	timeout?: number; // per-command timeout in ms, default 300_000
+	onCommandStart?: (info: {
+		index: number;
+		total: number;
+		command: string;
+	}) => void | Promise<void>;
+	onCommandComplete?: (info: {
+		index: number;
+		total: number;
+		result: QualityCommandResult;
+	}) => void | Promise<void>;
+}
+
+async function invokeHook(
+	hook: (() => void | Promise<void>) | undefined,
+): Promise<void> {
+	if (!hook) return;
+	try {
+		await hook();
+	} catch {
+		// Best-effort progress hooks; never fail gate execution.
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -135,9 +156,25 @@ export async function runQualityGates(
 		mkdirSync(opts.logDir, { recursive: true, mode: 0o700 });
 	}
 
-	for (const command of commands) {
+	for (const [idx, command] of commands.entries()) {
+		await invokeHook(() =>
+			opts.onCommandStart?.({
+				index: idx,
+				total: commands.length,
+				command,
+			}),
+		);
+
 		const result = await runSingleCommand(command, workdir, opts);
 		results.push(result);
+
+		await invokeHook(() =>
+			opts.onCommandComplete?.({
+				index: idx,
+				total: commands.length,
+				result,
+			}),
+		);
 		if (!result.passed) {
 			allPassed = false;
 		}
