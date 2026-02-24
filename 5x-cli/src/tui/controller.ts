@@ -41,6 +41,8 @@ const SELECT_SESSION_RETRY_DELAYS_MS = [0, 80, 160, 320, 500, 800, 1200];
 const EXTERNAL_TUI_API_TIMEOUT_MS = 250;
 const EXTERNAL_TUI_SYNC_INTERVAL_MS = 500;
 
+type ExternalEvent = { type?: string; properties?: Record<string, unknown> };
+
 async function sleep(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -191,6 +193,8 @@ function createExternalController(
 	let _lastDirectory: string | undefined;
 	let syncTimer: ReturnType<typeof setInterval> | undefined;
 	let syncInFlight = false;
+	let syncSuppressedByUserControl = false;
+	const eventWatcherAbort = new AbortController();
 
 	const setReachable = (next: boolean) => {
 		if (_reachable === next) return;
@@ -206,8 +210,60 @@ function createExternalController(
 		syncTimer = undefined;
 	};
 
+	const startEventWatcher = () => {
+		const subscribe = (
+			client as unknown as {
+				event?: {
+					subscribe?: (
+						filter?: unknown,
+						req?: { signal?: AbortSignal },
+					) => Promise<{ stream: AsyncIterable<ExternalEvent> }>;
+				};
+			}
+		).event?.subscribe;
+		if (!subscribe) return;
+
+		void (async () => {
+			try {
+				const { stream } = await subscribe(undefined, {
+					signal: eventWatcherAbort.signal,
+				});
+
+				for await (const event of stream) {
+					if (_killed) return;
+					const type = event?.type;
+					if (typeof type !== "string") continue;
+
+					if (type.startsWith("tui.")) {
+						setReachable(true);
+					}
+
+					if (type === "tui.command.execute" || type === "tui.session.select") {
+						if (!syncSuppressedByUserControl) {
+							syncSuppressedByUserControl = true;
+							traceController(trace, "external.sync.suppressed_by_user", {
+								type,
+							});
+							stopSyncLoop();
+						}
+					}
+				}
+			} catch {
+				if (!_killed && !eventWatcherAbort.signal.aborted) {
+					traceController(trace, "external.event_watcher.error");
+				}
+			}
+		})();
+	};
+
 	const syncCurrentSession = async (): Promise<void> => {
-		if (_killed || syncInFlight || !_lastSessionId) return;
+		if (
+			_killed ||
+			syncInFlight ||
+			!_lastSessionId ||
+			syncSuppressedByUserControl
+		)
+			return;
 		const sessionID = _lastSessionId;
 		if (!sessionID) return;
 		syncInFlight = true;
@@ -237,7 +293,8 @@ function createExternalController(
 	};
 
 	const startSyncLoop = () => {
-		if (_killed || syncTimer || !_lastSessionId) return;
+		if (_killed || syncTimer || !_lastSessionId || syncSuppressedByUserControl)
+			return;
 		traceController(trace, "external.sync_loop.start", {
 			sessionId: _lastSessionId,
 			directory: _lastDirectory,
@@ -293,6 +350,7 @@ function createExternalController(
 		serverUrl,
 		workdir,
 	});
+	startEventWatcher();
 
 	return {
 		get active() {
@@ -307,8 +365,16 @@ function createExternalController(
 				sessionID,
 				directory,
 			});
+			const targetChanged =
+				sessionID !== _lastSessionId || directory !== _lastDirectory;
 			_lastSessionId = sessionID;
 			_lastDirectory = directory;
+			if (targetChanged || syncSuppressedByUserControl) {
+				syncSuppressedByUserControl = false;
+				traceController(trace, "external.sync.resumed", {
+					reason: targetChanged ? "target_changed" : "manual_select",
+				});
+			}
 			startSyncLoop();
 
 			void (async () => {
@@ -341,6 +407,10 @@ function createExternalController(
 				}
 
 				setReachable(false);
+				syncSuppressedByUserControl = false;
+				traceController(trace, "external.sync.resumed", {
+					reason: "toast_failed",
+				});
 				startSyncLoop();
 			})();
 		},
@@ -350,6 +420,7 @@ function createExternalController(
 		kill() {
 			_killed = true;
 			traceController(trace, "external.kill");
+			eventWatcherAbort.abort();
 			stopSyncLoop();
 		},
 	};

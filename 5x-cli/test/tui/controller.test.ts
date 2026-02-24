@@ -10,11 +10,28 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Create a mock OpenCode client with TUI methods. */
-function createMockClient() {
+function createMockClient(options?: {
+	eventStream?: AsyncIterable<{
+		type: string;
+		properties?: Record<string, unknown>;
+	}>;
+}) {
+	const defaultStream: AsyncIterable<{
+		type: string;
+		properties?: Record<string, unknown>;
+	}> = {
+		async *[Symbol.asyncIterator]() {},
+	};
+
 	return {
 		tui: {
 			selectSession: mock(async () => ({ data: true, error: undefined })),
 			showToast: mock(async () => ({ data: true, error: undefined })),
+		},
+		event: {
+			subscribe: mock(async () => ({
+				stream: options?.eventStream ?? defaultStream,
+			})),
 		},
 	} as unknown as import("@opencode-ai/sdk/v2").OpencodeClient;
 }
@@ -189,6 +206,36 @@ describe("external TUI mode", () => {
 		expect(
 			(client.tui.selectSession as ReturnType<typeof mock>).mock.calls.length,
 		).toBeGreaterThan(1);
+	});
+
+	test("external mode stops sync loop after TUI user command", async () => {
+		const eventStream: AsyncIterable<{
+			type: string;
+			properties?: Record<string, unknown>;
+		}> = {
+			async *[Symbol.asyncIterator]() {
+				yield { type: "tui.command.execute", properties: { command: "noop" } };
+			},
+		};
+
+		const client = createMockClient({ eventStream });
+		const origWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = () => true;
+		const controller = createTuiController({
+			serverUrl: "http://127.0.0.1:12345",
+			workdir: "/tmp",
+			client,
+			enabled: true,
+		});
+		process.stderr.write = origWrite;
+
+		await controller.selectSession("sess-ext", "/tmp");
+		await new Promise((resolve) => setTimeout(resolve, 900));
+		controller.kill();
+
+		expect(
+			(client.tui.selectSession as ReturnType<typeof mock>).mock.calls.length,
+		).toBeLessThanOrEqual(2);
 	});
 
 	test("external mode onExit is a no-op", async () => {
