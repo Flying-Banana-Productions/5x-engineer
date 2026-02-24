@@ -22,6 +22,10 @@ export interface WorktreeInfo {
 	branch: string;
 }
 
+export interface GitCommitResult {
+	commit: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -148,6 +152,57 @@ export async function getLatestCommit(workdir: string): Promise<string> {
 export async function hasUncommittedChanges(workdir: string): Promise<boolean> {
 	const result = await run(["status", "--porcelain"], workdir);
 	return result.stdout.length > 0;
+}
+
+/**
+ * List changed file paths (staged, unstaged, and untracked), relative to workdir.
+ */
+export async function listChangedFiles(workdir: string): Promise<string[]> {
+	const [unstaged, staged, untracked] = await Promise.all([
+		run(["diff", "--name-only"], workdir),
+		run(["diff", "--cached", "--name-only"], workdir),
+		run(["ls-files", "--others", "--exclude-standard"], workdir),
+	]);
+
+	const toLines = (value: string): string[] =>
+		value
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean);
+
+	const files = new Set<string>([
+		...toLines(unstaged.stdout),
+		...toLines(staged.stdout),
+		...toLines(untracked.stdout),
+	]);
+
+	return [...files];
+}
+
+/**
+ * Commit specific files (relative paths) with a fixed message.
+ */
+export async function commitFiles(
+	workdir: string,
+	files: string[],
+	message: string,
+): Promise<GitCommitResult> {
+	if (files.length === 0) {
+		throw new Error("No files provided for commit");
+	}
+
+	const addResult = await run(["add", "--", ...files], workdir);
+	if (addResult.exitCode !== 0) {
+		throw new Error(`Failed to stage files: ${addResult.stderr}`);
+	}
+
+	const commitResult = await run(["commit", "-m", message], workdir);
+	if (commitResult.exitCode !== 0) {
+		throw new Error(`Failed to create commit: ${commitResult.stderr}`);
+	}
+
+	const commit = await getLatestCommit(workdir);
+	return { commit };
 }
 
 /** Check if a branch exists locally. */

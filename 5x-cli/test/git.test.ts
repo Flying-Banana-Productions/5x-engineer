@@ -6,6 +6,7 @@ import {
 	branchExists,
 	branchNameFromPlan,
 	checkGitSafety,
+	commitFiles,
 	createBranch,
 	createWorktree,
 	getBranchCommits,
@@ -14,6 +15,7 @@ import {
 	hasUncommittedChanges,
 	isBranchMerged,
 	isBranchRelevant,
+	listChangedFiles,
 	listWorktrees,
 	removeWorktree,
 } from "../src/git.js";
@@ -170,6 +172,41 @@ describe("hasUncommittedChanges", () => {
 		try {
 			sh("echo x >> README.md", r);
 			expect(await hasUncommittedChanges(r)).toBe(true);
+		} finally {
+			cleanup(r);
+		}
+	});
+});
+
+describe("listChangedFiles", () => {
+	test("returns staged, unstaged, and untracked files", async () => {
+		const r = initRepo();
+		try {
+			sh(
+				"echo x >> README.md && echo staged > staged.txt && git add staged.txt && echo u > untracked.txt",
+				r,
+			);
+			const files = await listChangedFiles(r);
+			expect(files).toContain("README.md");
+			expect(files).toContain("staged.txt");
+			expect(files).toContain("untracked.txt");
+		} finally {
+			cleanup(r);
+		}
+	});
+});
+
+describe("commitFiles", () => {
+	test("commits only specified files", async () => {
+		const r = initRepo();
+		try {
+			sh("echo review > review.md && echo notes > notes.txt", r);
+			const result = await commitFiles(r, ["review.md"], "docs: add review");
+			expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+
+			const files = await listChangedFiles(r);
+			expect(files).toContain("notes.txt");
+			expect(files).not.toContain("review.md");
 		} finally {
 			cleanup(r);
 		}

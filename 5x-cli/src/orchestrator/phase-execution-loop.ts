@@ -21,7 +21,7 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { AgentCancellationError } from "../agents/errors.js";
 import type {
 	AgentAdapter,
@@ -57,7 +57,13 @@ import type {
 } from "../gates/human.js";
 import type { QualityResult } from "../gates/quality.js";
 import { runQualityGates } from "../gates/quality.js";
-import { getCurrentBranch, getLatestCommit, isBranchRelevant } from "../git.js";
+import {
+	commitFiles,
+	getCurrentBranch,
+	getLatestCommit,
+	isBranchRelevant,
+	listChangedFiles,
+} from "../git.js";
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
@@ -207,6 +213,87 @@ export function resolvePhaseReviewPath(
 	}
 
 	return join(dirname(reviewPath), `${base}-phase-${phaseToken}${ext}`);
+}
+
+function normalizeGitPath(pathValue: string): string {
+	return pathValue.replace(/\\/g, "/");
+}
+
+async function ensurePhaseCheckpointClean(opts: {
+	workdir: string;
+	phaseReviewPath: string;
+	phaseNumber: string;
+	runId: string;
+	iteration: number;
+	db: Database;
+	log: (...args: unknown[]) => void;
+	trace: (event: string, data?: unknown) => void;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+	let changedFiles: string[];
+	try {
+		changedFiles = (await listChangedFiles(opts.workdir)).map(normalizeGitPath);
+	} catch (err) {
+		opts.trace("phase.gate.clean_check.skipped", {
+			reason: err instanceof Error ? err.message : String(err),
+		});
+		return { ok: true };
+	}
+
+	if (changedFiles.length === 0) {
+		return { ok: true };
+	}
+
+	const reviewRel = normalizeGitPath(
+		relative(opts.workdir, resolve(opts.phaseReviewPath)),
+	);
+	if (!reviewRel || reviewRel.startsWith("..")) {
+		return {
+			ok: false,
+			reason: `Phase review path is outside workdir: ${opts.phaseReviewPath}`,
+		};
+	}
+
+	const disallowed = changedFiles.filter((file) => file !== reviewRel);
+	if (disallowed.length > 0) {
+		const preview = disallowed.slice(0, 5).join(", ");
+		return {
+			ok: false,
+			reason:
+				disallowed.length > 5
+					? `${preview}, +${disallowed.length - 5} more`
+					: preview,
+		};
+	}
+
+	try {
+		const commitMessage = `docs(review): finalize phase ${opts.phaseNumber} checkpoint`;
+		const { commit } = await commitFiles(
+			opts.workdir,
+			[reviewRel],
+			commitMessage,
+		);
+		opts.log(
+			`  Committed phase review notes: ${reviewRel} (${commit.slice(0, 8)})`,
+		);
+		appendRunEvent(opts.db, {
+			runId: opts.runId,
+			eventType: "phase_review_committed",
+			phase: opts.phaseNumber,
+			iteration: opts.iteration,
+			data: { path: reviewRel, commit },
+		});
+		opts.trace("phase.gate.review_commit", {
+			phase: opts.phaseNumber,
+			path: reviewRel,
+			commit,
+		});
+		return { ok: true };
+	} catch (err) {
+		return {
+			ok: false,
+			reason: err instanceof Error ? err.message : String(err),
+		};
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1961,6 +2048,22 @@ export async function runPhaseExecutionLoop(
 					updateRunStatus(db, runId, "active", "PHASE_GATE", phase.number);
 
 					if (options.auto) {
+						const clean = await ensurePhaseCheckpointClean({
+							workdir,
+							phaseReviewPath,
+							phaseNumber: phase.number,
+							runId,
+							iteration,
+							db,
+							log,
+							trace,
+						});
+						if (!clean.ok) {
+							log(`  Auto mode blocked at phase checkpoint: ${clean.reason}`);
+							state = "ABORTED";
+							break;
+						}
+
 						log(`  Auto mode: phase ${phase.number} complete, proceeding.`);
 						state = "PHASE_COMPLETE";
 						break;
@@ -1993,6 +2096,28 @@ export async function runPhaseExecutionLoop(
 
 					switch (decision) {
 						case "continue":
+							{
+								const clean = await ensurePhaseCheckpointClean({
+									workdir,
+									phaseReviewPath,
+									phaseNumber: phase.number,
+									runId,
+									iteration,
+									db,
+									log,
+									trace,
+								});
+								if (!clean.ok) {
+									log(
+										"  Checkpoint not clean; exiting so you can review/commit manually.",
+									);
+									log(`  Reason: ${clean.reason}`);
+									pausedAtPhaseGate = true;
+									_phasePaused = true;
+									break;
+								}
+							}
+
 							// Phase 4: Show toast for review approved
 							if (options.tui) {
 								await options.tui.showToast(
