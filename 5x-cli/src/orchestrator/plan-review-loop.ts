@@ -572,7 +572,6 @@ export async function runPlanReviewLoop(
 					reviewResult = await adapter.invokeForVerdict({
 						prompt: reviewerTemplate.prompt,
 						model: config.reviewer.model,
-						timeout: config.reviewer.timeout ?? 120,
 						workdir,
 						logPath: reviewLogPath,
 						quiet: resolveQuiet,
@@ -807,7 +806,6 @@ export async function runPlanReviewLoop(
 					authorResult = await adapter.invokeForStatus({
 						prompt: authorTemplate.prompt,
 						model: config.author.model,
-						timeout: config.author.timeout,
 						workdir,
 						logPath: authorLogPath,
 						quiet: resolveQuiet,

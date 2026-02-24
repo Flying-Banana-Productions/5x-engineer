@@ -38,6 +38,7 @@ import {
 	getApprovedPhaseNumbers,
 	getLatestVerdict,
 	getMaxIterationForPhase,
+	getPhaseProgress,
 	getQualityAttemptCount,
 	getStepResult,
 	hasCompletedStep,
@@ -651,6 +652,39 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					const phaseProgress = getPhaseProgress(db, dbPlanPath, phase.number);
+					if (
+						isResumedPhase &&
+						iteration === 0 &&
+						phase.isComplete &&
+						!phaseProgress?.implementation_done
+					) {
+						log(
+							`  Phase ${phase.number} checklist already complete; skipping authoring and validating existing work.`,
+						);
+						appendRunEvent(db, {
+							runId,
+							eventType: "phase_execute_skipped_plan_complete",
+							phase: phase.number,
+							iteration,
+							data: {
+								reason:
+									"Plan checklist indicates completion before author execute step",
+							},
+						});
+						markPhaseImplementationDone(db, dbPlanPath, phase.number, true);
+						if (!lastCommit) {
+							try {
+								lastCommit = await getLatestCommit(workdir);
+							} catch {
+								// Best-effort only
+							}
+						}
+						iteration++;
+						state = options.skipQuality ? "REVIEW" : "QUALITY_CHECK";
+						break;
+					}
+
 					const authorTemplate = renderTemplate("author-next-phase", {
 						plan_path: planPath,
 						phase_number: phase.number,
@@ -681,7 +715,6 @@ export async function runPhaseExecutionLoop(
 						authorResult = await adapter.invokeForStatus({
 							prompt: authorTemplate.prompt,
 							model: config.author.model,
-							timeout: config.author.timeout,
 							workdir,
 							logPath: executeLogPath,
 							quiet: resolveQuiet,
@@ -1007,7 +1040,6 @@ export async function runPhaseExecutionLoop(
 						fixResult = await adapter.invokeForStatus({
 							prompt: qualityFixPrompt,
 							model: config.author.model,
-							timeout: config.author.timeout,
 							workdir,
 							logPath: qrFixLogPath,
 							quiet: resolveQuiet,
@@ -1310,7 +1342,6 @@ export async function runPhaseExecutionLoop(
 							prompt: reviewerTemplate.prompt,
 							model: config.reviewer.model,
 							// Reviewer timeout defaults to 120 seconds (2 min).
-							timeout: config.reviewer.timeout ?? 120,
 							workdir,
 							logPath: reviewLogPath,
 							quiet: resolveQuiet,
@@ -1625,7 +1656,6 @@ export async function runPhaseExecutionLoop(
 						autoFixResult = await adapter.invokeForStatus({
 							prompt: fixTemplate.prompt,
 							model: config.author.model,
-							timeout: config.author.timeout,
 							workdir,
 							logPath: autoFixLogPath,
 							quiet: resolveQuiet,

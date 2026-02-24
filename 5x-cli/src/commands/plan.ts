@@ -336,7 +336,6 @@ export default defineCommand({
 			const result = await adapter.invokeForStatus({
 				prompt: template.prompt,
 				model: config.author.model,
-				timeout: config.author.timeout,
 				workdir: projectRoot,
 				logPath,
 				quiet: () => effectiveQuiet || tuiOwnsTerminal(),

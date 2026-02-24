@@ -111,6 +111,67 @@ function getEventSessionId(event: OpenCodeEvent): string | undefined {
 	return undefined;
 }
 
+function getStringProp(
+	obj: Record<string, unknown> | undefined,
+	key: string,
+): string | undefined {
+	const value = obj?.[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function resolveSessionIdWithContext(
+	event: OpenCodeEvent,
+	ctx: {
+		partToSession: Map<string, string>;
+		messageToSession: Map<string, string>;
+	},
+): string | undefined {
+	const direct = getEventSessionId(event);
+	const ev = event as Record<string, unknown>;
+	const type = ev.type as string | undefined;
+	const props = ev.properties as Record<string, unknown> | undefined;
+	const info = props?.info as Record<string, unknown> | undefined;
+	const part = props?.part as Record<string, unknown> | undefined;
+
+	if (direct) {
+		const messageId =
+			getStringProp(info, "id") ?? getStringProp(part, "messageID");
+		if (messageId) ctx.messageToSession.set(messageId, direct);
+
+		const partId = getStringProp(part, "id");
+		if (partId) ctx.partToSession.set(partId, direct);
+		return direct;
+	}
+
+	if (type === "message.part.delta" && props) {
+		const partId = getStringProp(props, "partID");
+		if (partId) {
+			const fromPart = ctx.partToSession.get(partId);
+			if (fromPart) return fromPart;
+		}
+
+		const messageId = getStringProp(props, "messageID");
+		if (messageId) {
+			const fromMessage = ctx.messageToSession.get(messageId);
+			if (fromMessage) return fromMessage;
+		}
+	}
+
+	if (type === "message.part.updated" && part) {
+		const messageId = getStringProp(part, "messageID");
+		if (messageId) {
+			const fromMessage = ctx.messageToSession.get(messageId);
+			if (fromMessage) {
+				const partId = getStringProp(part, "id");
+				if (partId) ctx.partToSession.set(partId, fromMessage);
+				return fromMessage;
+			}
+		}
+	}
+
+	return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // SSE event log streaming
 // ---------------------------------------------------------------------------
@@ -180,6 +241,10 @@ async function writeEventsToLog(
 		traceInvoke(onTrace, "sse.subscribe.ok", { sessionId });
 
 		const routerState = createEventRouterState();
+		const eventCtx = {
+			partToSession: new Map<string, string>(),
+			messageToSession: new Map<string, string>(),
+		};
 		let eventCount = 0;
 
 		for await (const event of stream) {
@@ -187,7 +252,7 @@ async function writeEventsToLog(
 			eventCount += 1;
 
 			// P1.2: skip events without a session ID (no cross-session leakage)
-			const eventSessionId = getEventSessionId(event);
+			const eventSessionId = resolveSessionIdWithContext(event, eventCtx);
 			if (!eventSessionId) continue;
 
 			// Filter for this session's events
@@ -348,11 +413,11 @@ export class OpenCodeAdapter implements AgentAdapter {
 		opts: InvokeOptions,
 		resultType: "status" | "verdict",
 	): Promise<InvokeStatus | InvokeVerdict> {
-		// Default timeout is 120 seconds (2 min). Callers can pass an explicit
-		// opts.timeout (in seconds) to override. Configured via author.timeout /
-		// reviewer.timeout in 5x.config.js (values in seconds).
-		const timeoutSeconds = opts.timeout ?? 120;
-		const timeoutMs = timeoutSeconds * 1000;
+		// Timeouts are opt-in only. If opts.timeout is omitted, invocation runs
+		// until completion or explicit cancellation.
+		const timeoutSeconds = opts.timeout;
+		const timeoutMs =
+			timeoutSeconds !== undefined ? timeoutSeconds * 1000 : undefined;
 		const model = opts.model ?? this.defaultModel;
 		const modelObj = model ? parseModel(model) : undefined;
 		const schema =
@@ -369,7 +434,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			workdir: opts.workdir,
 			model,
 			logPath: opts.logPath,
-			timeoutMs,
+			timeoutMs: timeoutMs ?? null,
 		});
 
 		// 1. Create session (P0.3: pass workdir as directory)
@@ -416,13 +481,17 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 		// 2. Cancellation infrastructure (P0.2: wire opts.signal + timeout)
 		// Inactivity timeout: resets whenever new SSE events are received
-		const timeoutController = new AbortController();
+		const timeoutController =
+			timeoutMs !== undefined ? new AbortController() : undefined;
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		const resetInactivityTimeout = () => {
+			if (!timeoutController || timeoutMs === undefined) return;
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
 		};
-		resetInactivityTimeout();
+		if (timeoutController && timeoutMs !== undefined) {
+			resetInactivityTimeout();
+		}
 		if (
 			timeoutId !== undefined &&
 			typeof timeoutId === "object" &&
@@ -431,14 +500,16 @@ export class OpenCodeAdapter implements AgentAdapter {
 			timeoutId.unref();
 
 		// Combined signal: timeout + external cancellation
-		const cancelSignals: AbortSignal[] = [timeoutController.signal];
+		const cancelSignals: AbortSignal[] = [];
+		if (timeoutController) cancelSignals.push(timeoutController.signal);
 		if (opts.signal) cancelSignals.push(opts.signal);
-		const cancelSignal = AbortSignal.any(cancelSignals);
+		const cancelSignal =
+			cancelSignals.length > 0 ? AbortSignal.any(cancelSignals) : undefined;
 
 		// SSE controller: aborted on prompt completion OR on cancellation
 		const sseController = new AbortController();
 		const propagateCancel = () => sseController.abort();
-		cancelSignal.addEventListener("abort", propagateCancel, { once: true });
+		cancelSignal?.addEventListener("abort", propagateCancel, { once: true });
 
 		// 3. Start SSE event stream in background (P0.1: signal passed through)
 		// Pass resetInactivityTimeout to reset timeout on every event
@@ -470,22 +541,25 @@ export class OpenCodeAdapter implements AgentAdapter {
 					...(modelObj && { model: modelObj }),
 					...(opts.workdir && { directory: opts.workdir }),
 				},
-				{ signal: cancelSignal },
+				cancelSignal ? { signal: cancelSignal } : undefined,
 			);
 
-			const cancelPromise = new Promise<never>((_, reject) => {
-				if (cancelSignal.aborted) {
-					reject(cancelSignal.reason ?? new Error("aborted"));
-					return;
-				}
-				cancelSignal.addEventListener(
-					"abort",
-					() => reject(cancelSignal.reason ?? new Error("aborted")),
-					{ once: true },
-				);
-			});
-
-			const result = await Promise.race([promptPromise, cancelPromise]);
+			const result = cancelSignal
+				? await Promise.race([
+						promptPromise,
+						new Promise<never>((_, reject) => {
+							if (cancelSignal.aborted) {
+								reject(cancelSignal.reason ?? new Error("aborted"));
+								return;
+							}
+							cancelSignal.addEventListener(
+								"abort",
+								() => reject(cancelSignal.reason ?? new Error("aborted")),
+								{ once: true },
+							);
+						}),
+					])
+				: await promptPromise;
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			const duration = Date.now() - start;
 			traceInvoke(opts.trace, "prompt.done", {
@@ -572,7 +646,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 
 			// On timeout or external cancel, abort the session
-			const isTimeout = timeoutController.signal.aborted;
+			const isTimeout = timeoutController?.signal.aborted === true;
 			const isExternalCancel = opts.signal?.aborted;
 
 			if (isTimeout || isExternalCancel) {
@@ -599,7 +673,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 			traceInvoke(opts.trace, "invoke.finally", { sessionId });
 			if (timeoutId !== undefined) clearTimeout(timeoutId);
 			sseController.abort();
-			cancelSignal.removeEventListener("abort", propagateCancel);
+			cancelSignal?.removeEventListener("abort", propagateCancel);
 			await streamPromise;
 			traceInvoke(opts.trace, "invoke.end", { sessionId });
 		}

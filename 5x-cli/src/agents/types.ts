@@ -40,7 +40,7 @@ export interface InvokeOptions {
 	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
 	showReasoning?: boolean;
 
-	/** Timeout in seconds. Default: 120 (2 min). */
+	/** Optional timeout in seconds. Omit to disable timeouts. */
 	timeout?: number;
 
 	/** AbortSignal for external cancellation (Ctrl-C, gate aborts, parent timeout). */

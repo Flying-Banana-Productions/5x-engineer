@@ -4,7 +4,7 @@ import { z } from "zod";
 
 const AgentConfigSchema = z.object({
 	model: z.string().optional(),
-	/** Per-invocation timeout in seconds. Default: 120 (2 min). */
+	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
 	timeout: z.number().int().positive().optional(),
 });
 

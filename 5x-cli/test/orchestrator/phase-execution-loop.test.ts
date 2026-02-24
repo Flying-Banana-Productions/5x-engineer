@@ -893,6 +893,51 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("resume at EXECUTE skips re-author when checklist already complete", async () => {
+		const checkedPlan = `# Simple Plan
+
+## Phase 1: Only Phase
+
+- [x] Do the thing
+`;
+		const { tmp, db, reviewPath, planPath, cleanup } =
+			createTestEnv(checkedPlan);
+		try {
+			const runId = "resume-execute-complete-1234";
+			createRun(db, {
+				id: runId,
+				planPath,
+				command: "run",
+				reviewPath,
+			});
+			updateRunStatus(db, runId, "active", "EXECUTE", "1");
+
+			// Reviewer should be called directly after EXECUTE is skipped.
+			const adapter = createMockAdapter([
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					auto: true,
+					resumeGate: async () => "resume",
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(result.runId).toBe(runId);
+			expect(adapter.callCount).toBe(1);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("resume from PHASE_GATE enters gate directly", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

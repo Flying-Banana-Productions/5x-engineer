@@ -848,6 +848,66 @@ describe("SSE event log streaming", () => {
 		expect(parsed.properties.delta).toBe("own");
 	});
 
+	test("resolves session for delta events via message/part context", async () => {
+		const logPath = makeTmpLogPath();
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async () => ({
+				stream: (async function* () {
+					yield {
+						type: "message.updated",
+						properties: {
+							info: {
+								id: "msg-ctx-1",
+								sessionID: "sess-test-123",
+							},
+						},
+					};
+					yield {
+						type: "message.part.delta",
+						properties: {
+							messageID: "msg-ctx-1",
+							partID: "prt-ctx-1",
+							delta: "hello",
+							field: "text",
+						},
+					};
+				})(),
+			}),
+			sessionPrompt: async () => {
+				await new Promise((r) => setTimeout(r, 0));
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
+		await new Promise((r) => setTimeout(r, 0));
+
+		const lines = fs
+			.readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.filter((line) => line.trim().length > 0);
+		expect(lines.length).toBe(2);
+		const parsed = lines.map((line) => JSON.parse(line));
+		expect(parsed[1]?.type).toBe("message.part.delta");
+	});
+
 	test("re-evaluates quiet function while streaming events", async () => {
 		const logPath = makeTmpLogPath();
 		let quietChecks = 0;
