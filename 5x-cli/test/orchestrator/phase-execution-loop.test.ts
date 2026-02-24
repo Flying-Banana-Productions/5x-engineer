@@ -115,6 +115,7 @@ function defaultConfig(tmp: string): FiveXConfig {
 		author: {},
 		reviewer: {},
 		qualityGates: [],
+		worktree: {},
 		paths: {
 			plans: "docs/development",
 			reviews: join(tmp, "docs", "development", "reviews"),

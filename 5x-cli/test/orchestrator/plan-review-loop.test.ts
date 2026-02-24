@@ -46,6 +46,7 @@ function defaultConfig(): FiveXConfig {
 		author: {},
 		reviewer: {},
 		qualityGates: [],
+		worktree: {},
 		paths: {
 			plans: "docs/development",
 			reviews: "docs/development/reviews",

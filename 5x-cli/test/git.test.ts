@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
 	listChangedFiles,
 	listWorktrees,
 	removeWorktree,
+	runWorktreeSetupCommand,
 } from "../src/git.js";
 
 // ---------------------------------------------------------------------------
@@ -207,6 +208,29 @@ describe("commitFiles", () => {
 			const files = await listChangedFiles(r);
 			expect(files).toContain("notes.txt");
 			expect(files).not.toContain("review.md");
+		} finally {
+			cleanup(r);
+		}
+	});
+});
+
+describe("runWorktreeSetupCommand", () => {
+	test("runs setup command in workdir", async () => {
+		const r = initRepo();
+		try {
+			await runWorktreeSetupCommand(r, "touch .worktree-ready");
+			expect(existsSync(join(r, ".worktree-ready"))).toBe(true);
+		} finally {
+			cleanup(r);
+		}
+	});
+
+	test("throws when setup command exits non-zero", async () => {
+		const r = initRepo();
+		try {
+			await expect(runWorktreeSetupCommand(r, "exit 7")).rejects.toThrow(
+				"Worktree setup command failed",
+			);
 		} finally {
 			cleanup(r);
 		}

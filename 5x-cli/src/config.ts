@@ -26,10 +26,16 @@ const DbSchema = z.object({
 	path: z.string().default(".5x/5x.db"),
 });
 
+const WorktreeSchema = z.object({
+	/** Optional shell command to run after creating a new worktree. */
+	postCreate: z.string().min(1).optional(),
+});
+
 const FiveXConfigSchema = z.object({
 	author: AgentConfigSchema.default({}),
 	reviewer: AgentConfigSchema.default({}),
 	qualityGates: z.array(z.string()).default([]),
+	worktree: WorktreeSchema.default({}),
 	paths: PathsSchema.default({}),
 	db: DbSchema.default({}),
 	maxReviewIterations: z.number().int().positive().default(5),
@@ -97,6 +103,7 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 		"author",
 		"reviewer",
 		"qualityGates",
+		"worktree",
 		"paths",
 		"db",
 		"maxReviewIterations",
@@ -105,6 +112,7 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 		"maxAutoRetries",
 	]);
 	const allowedAgent = new Set(["model", "timeout"]);
+	const allowedWorktree = new Set(["postCreate"]);
 	const allowedPaths = new Set(["plans", "reviews", "archive", "templates"]);
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
@@ -133,6 +141,8 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 			const nextPrefix = prefix ? `${prefix}.${key}` : key;
 			if (key === "author" || key === "reviewer") {
 				collect(value, allowedAgent, nextPrefix);
+			} else if (key === "worktree") {
+				collect(value, allowedWorktree, nextPrefix);
 			} else if (key === "paths") {
 				collect(value, allowedPaths, nextPrefix);
 				const templates = value.templates;

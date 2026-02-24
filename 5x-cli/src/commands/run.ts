@@ -16,7 +16,12 @@ import {
 import { runMigrations } from "../db/schema.js";
 import { createDebugTraceLogger } from "../debug/trace.js";
 import { resumeGate as headlessResumeGate } from "../gates/human.js";
-import { branchNameFromPlan, checkGitSafety, createWorktree } from "../git.js";
+import {
+	branchNameFromPlan,
+	checkGitSafety,
+	createWorktree,
+	runWorktreeSetupCommand,
+} from "../git.js";
 import { acquireLock, registerLockCleanup, releaseLock } from "../lock.js";
 import { runPhaseExecutionLoop } from "../orchestrator/phase-execution-loop.js";
 import { resolveReviewPath } from "../orchestrator/plan-review-loop.js";
@@ -173,6 +178,7 @@ export default defineCommand({
 
 		// --- Resolve workdir ---
 		let workdir = projectRoot;
+		let createdWorktree = false;
 
 		// Check DB for existing worktree association
 		const planRecord = getPlan(db, canonical);
@@ -196,6 +202,7 @@ export default defineCommand({
 			try {
 				const info = await createWorktree(projectRoot, branch, wtPath);
 				workdir = info.path;
+				createdWorktree = true;
 				upsertPlan(db, {
 					planPath: canonical,
 					worktreePath: info.path,
@@ -207,6 +214,28 @@ export default defineCommand({
 			} catch (err) {
 				console.error(
 					`Error: Failed to create worktree: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				process.exit(1);
+			}
+		}
+
+		if (createdWorktree && config.worktree.postCreate) {
+			console.log(`  Running worktree setup: ${config.worktree.postCreate}`);
+			trace("run.worktree.post_create.start", {
+				workdir,
+				command: config.worktree.postCreate,
+			});
+			try {
+				await runWorktreeSetupCommand(workdir, config.worktree.postCreate);
+				trace("run.worktree.post_create.done", { workdir });
+				console.log("  Worktree setup complete.");
+			} catch (err) {
+				trace("run.worktree.post_create.error", {
+					workdir,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				console.error(
+					`Error: Worktree setup failed: ${err instanceof Error ? err.message : String(err)}`,
 				);
 				process.exit(1);
 			}

@@ -85,6 +85,7 @@ export {
 	isBranchRelevant,
 	listWorktrees,
 	removeWorktree,
+	runWorktreeSetupCommand,
 } from "./git.js";
 export type { LockInfo, LockResult } from "./lock.js";
 // Lock

@@ -205,6 +205,29 @@ export async function commitFiles(
 	return { commit };
 }
 
+/**
+ * Run a shell command in a worktree after creation.
+ * Stdout/stderr are inherited so setup progress is visible to users.
+ */
+export async function runWorktreeSetupCommand(
+	workdir: string,
+	command: string,
+): Promise<void> {
+	const proc = Bun.spawn(["sh", "-c", command], {
+		cwd: workdir,
+		stdin: "inherit",
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+
+	const exitCode = await proc.exited;
+	if (exitCode !== 0) {
+		throw new Error(
+			`Worktree setup command failed (exit ${exitCode}): ${command}`,
+		);
+	}
+}
+
 /** Check if a branch exists locally. */
 export async function branchExists(
 	name: string,

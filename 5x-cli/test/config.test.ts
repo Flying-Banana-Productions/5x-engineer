@@ -23,9 +23,24 @@ describe("config", () => {
 			expect(config.author.model).toBeUndefined();
 			expect(config.reviewer.model).toBeUndefined();
 			expect(config.qualityGates).toEqual([]);
+			expect(config.worktree.postCreate).toBeUndefined();
 			expect(config.maxReviewIterations).toBe(5);
 			expect(config.maxAutoIterations).toBe(10);
 			expect(config.paths.plans).toBe("docs/development");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("worktree postCreate command is supported", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { worktree: { postCreate: "bun run setup:worktree" } };`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.worktree.postCreate).toBe("bun run setup:worktree");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
