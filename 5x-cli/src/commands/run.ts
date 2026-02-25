@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { defineCommand } from "citty";
 import {
 	createAndVerifyAdapter,
@@ -41,6 +41,63 @@ import {
 	NON_INTERACTIVE_NO_FLAG_ERROR,
 	type PermissionPolicy,
 } from "../tui/permissions.js";
+
+export interface WorktreeTemplateSyncResult {
+	copied: string[];
+	skipped: string[];
+	missingSource: string[];
+	unmappableAbsolute: string[];
+}
+
+function isPathInside(parent: string, child: string): boolean {
+	const rel = relative(parent, child);
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+export function syncWorktreeTemplates(opts: {
+	projectRoot: string;
+	workdir: string;
+	templatePaths: string[];
+}): WorktreeTemplateSyncResult {
+	const copied: string[] = [];
+	const skipped: string[] = [];
+	const missingSource: string[] = [];
+	const unmappableAbsolute: string[] = [];
+
+	for (const configuredPath of opts.templatePaths) {
+		const sourcePath = isAbsolute(configuredPath)
+			? configuredPath
+			: resolve(opts.projectRoot, configuredPath);
+
+		let targetPath: string;
+		if (isAbsolute(configuredPath)) {
+			if (!isPathInside(opts.projectRoot, configuredPath)) {
+				unmappableAbsolute.push(configuredPath);
+				continue;
+			}
+			const rel = relative(opts.projectRoot, configuredPath);
+			targetPath = resolve(opts.workdir, rel);
+		} else {
+			targetPath = resolve(opts.workdir, configuredPath);
+		}
+
+		if (!existsSync(sourcePath)) {
+			missingSource.push(sourcePath);
+			continue;
+		}
+
+		if (existsSync(targetPath)) {
+			skipped.push(targetPath);
+			continue;
+		}
+
+		mkdirSync(dirname(targetPath), { recursive: true });
+		copyFileSync(sourcePath, targetPath);
+		copied.push(targetPath);
+	}
+
+	return { copied, skipped, missingSource, unmappableAbsolute };
+}
 
 export default defineCommand({
 	meta: {
@@ -212,6 +269,42 @@ export default defineCommand({
 				);
 				process.exit(1);
 			}
+		}
+
+		if (workdir !== projectRoot) {
+			const templateSync = syncWorktreeTemplates({
+				projectRoot,
+				workdir,
+				templatePaths: [
+					config.paths.templates.plan,
+					config.paths.templates.review,
+				],
+			});
+
+			for (const path of templateSync.copied) {
+				console.log(
+					`  Copied template into worktree: ${relative(workdir, path)}`,
+				);
+			}
+			for (const sourcePath of templateSync.missingSource) {
+				console.log(
+					`  Warning: Template source not found for worktree sync: ${sourcePath}`,
+				);
+			}
+			for (const configuredPath of templateSync.unmappableAbsolute) {
+				console.log(
+					"  Warning: Absolute template path is outside project root and " +
+						`cannot be mirrored into worktree: ${configuredPath}`,
+				);
+			}
+
+			trace("run.worktree.template_sync", {
+				workdir,
+				copied: templateSync.copied,
+				skipped: templateSync.skipped,
+				missingSource: templateSync.missingSource,
+				unmappableAbsolute: templateSync.unmappableAbsolute,
+			});
 		}
 
 		// --- Git safety check ---

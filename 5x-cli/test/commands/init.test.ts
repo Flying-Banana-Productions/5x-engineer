@@ -64,12 +64,26 @@ describe("5x init", () => {
 			expect(configContent).toContain("worktree:");
 			expect(configContent).toContain("postCreate:");
 			expect(configContent).toContain("paths:");
+			expect(configContent).toContain(
+				'plan: ".5x/templates/implementation-plan-template.md"',
+			);
+			expect(configContent).toContain(
+				'review: ".5x/templates/review-template.md"',
+			);
 			expect(configContent).toContain("db:");
 			expect(configContent).toContain("maxReviewIterations");
 			expect(configContent).toContain("@type");
 
 			// .5x/ directory exists
 			expect(existsSync(join(tmp, ".5x"))).toBe(true);
+			expect(
+				existsSync(
+					join(tmp, ".5x", "templates", "implementation-plan-template.md"),
+				),
+			).toBe(true);
+			expect(
+				existsSync(join(tmp, ".5x", "templates", "review-template.md")),
+			).toBe(true);
 
 			// .gitignore contains .5x/
 			const gitignorePath = join(tmp, ".gitignore");
@@ -251,9 +265,54 @@ describe("generateConfigContent", () => {
 		expect(content).toContain("worktree:");
 		expect(content).toContain("postCreate:");
 		expect(content).toContain("paths:");
+		expect(content).toContain(
+			'plan: ".5x/templates/implementation-plan-template.md"',
+		);
+		expect(content).toContain('review: ".5x/templates/review-template.md"');
 		expect(content).toContain("db:");
 		expect(content).toContain("maxAutoRetries");
 		expect(content).not.toContain("adapter:");
 		expect(content).toContain("Remote server support is a future feature");
+	});
+});
+
+describe("ensureTemplateFiles", () => {
+	test("creates both default template files", async () => {
+		const { ensureTemplateFiles } = await import("../../src/commands/init.js");
+		const tmp = makeTmpDir();
+		try {
+			const result = ensureTemplateFiles(tmp, false);
+			expect(result.created).toContain("implementation-plan-template.md");
+			expect(result.created).toContain("review-template.md");
+			expect(result.skipped).toHaveLength(0);
+			expect(result.overwritten).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("does not overwrite existing templates unless forced", async () => {
+		const { ensureTemplateFiles } = await import("../../src/commands/init.js");
+		const tmp = makeTmpDir();
+		const planPath = join(
+			tmp,
+			".5x",
+			"templates",
+			"implementation-plan-template.md",
+		);
+		try {
+			mkdirSync(join(tmp, ".5x", "templates"), { recursive: true });
+			writeFileSync(planPath, "CUSTOM", "utf-8");
+
+			const first = ensureTemplateFiles(tmp, false);
+			expect(first.skipped).toContain("implementation-plan-template.md");
+			expect(readFileSync(planPath, "utf-8")).toBe("CUSTOM");
+
+			const second = ensureTemplateFiles(tmp, true);
+			expect(second.overwritten).toContain("implementation-plan-template.md");
+			expect(readFileSync(planPath, "utf-8")).not.toBe("CUSTOM");
+		} finally {
+			cleanupDir(tmp);
+		}
 	});
 });

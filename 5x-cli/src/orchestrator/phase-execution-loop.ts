@@ -1474,6 +1474,10 @@ export async function runPhaseExecutionLoop(
 						commit_hash: lastCommit ?? "HEAD",
 						review_path: phaseReviewPath,
 						plan_path: planPath,
+						review_template_path: resolve(
+							workdir,
+							config.paths.templates.review,
+						),
 					});
 
 					log(`  Reviewer reviewing phase ${phase.number}...`);

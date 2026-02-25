@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
+import {
+	DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
+	DEFAULT_REVIEW_TEMPLATE,
+} from "../templates/default-artifacts.js";
 
 /**
  * Generate the 5x.config.js content.
@@ -38,8 +42,8 @@ export default {
 		reviews: "docs/development/reviews",
 		archive: "docs/archive",
 		templates: {
-			plan: "docs/_implementation_plan_template.md",
-			review: "docs/development/reviews/_review_template.md",
+			plan: ".5x/templates/implementation-plan-template.md",
+			review: ".5x/templates/review-template.md",
 		},
 	},
 
@@ -55,6 +59,48 @@ export default {
 	maxAutoRetries: 3,
 };
 `;
+}
+
+function ensureTemplateFiles(
+	projectRoot: string,
+	force: boolean,
+): {
+	created: string[];
+	overwritten: string[];
+	skipped: string[];
+} {
+	const templatesDir = join(projectRoot, ".5x", "templates");
+	mkdirSync(templatesDir, { recursive: true });
+
+	const targets = [
+		{
+			name: "implementation-plan-template.md",
+			path: join(templatesDir, "implementation-plan-template.md"),
+			content: DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
+		},
+		{
+			name: "review-template.md",
+			path: join(templatesDir, "review-template.md"),
+			content: DEFAULT_REVIEW_TEMPLATE,
+		},
+	] as const;
+
+	const created: string[] = [];
+	const overwritten: string[] = [];
+	const skipped: string[] = [];
+
+	for (const target of targets) {
+		const exists = existsSync(target.path);
+		if (exists && !force) {
+			skipped.push(target.name);
+			continue;
+		}
+		writeFileSync(target.path, target.content, "utf-8");
+		if (exists) overwritten.push(target.name);
+		else created.push(target.name);
+	}
+
+	return { created, overwritten, skipped };
 }
 
 /**
@@ -129,6 +175,20 @@ export default defineCommand({
 			console.log("  Skipped .5x/ directory (already exists)");
 		}
 
+		const templateResult = ensureTemplateFiles(
+			projectRoot,
+			Boolean(args.force),
+		);
+		for (const name of templateResult.created) {
+			console.log(`  Created .5x/templates/${name}`);
+		}
+		for (const name of templateResult.overwritten) {
+			console.log(`  Overwrote .5x/templates/${name}`);
+		}
+		for (const name of templateResult.skipped) {
+			console.log(`  Skipped .5x/templates/${name} (already exists)`);
+		}
+
 		// 3. Update .gitignore
 		const gitignoreResult = ensureGitignore(projectRoot);
 		if (gitignoreResult.created) {
@@ -145,4 +205,4 @@ export default defineCommand({
 });
 
 // Export helpers for testing
-export { ensureGitignore, generateConfigContent };
+export { ensureGitignore, ensureTemplateFiles, generateConfigContent };

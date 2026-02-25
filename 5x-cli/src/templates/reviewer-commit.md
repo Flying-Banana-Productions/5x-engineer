@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 version: 1
-variables: [commit_hash, review_path, plan_path]
+variables: [commit_hash, review_path, plan_path, review_template_path]
 ---
 
 You are a Staff Engineer reviewing the implementation work at commit `{{commit_hash}}` and any follow-on commits.
@@ -11,6 +11,7 @@ You are a Staff Engineer reviewing the implementation work at commit `{{commit_h
 - Commit to review: {{commit_hash}}
 - Review output path: {{review_path}}
 - Implementation plan: {{plan_path}}
+- Review template path: {{review_template_path}}
 
 ## Instructions
 
@@ -41,7 +42,7 @@ If the commit references an existing review document, validate that the commit(s
 
 If `{{review_path}}` already exists (prior review), append your assessment as a new **Addendum** section following the existing review template conventions. Do not modify the existing review content.
 
-If `{{review_path}}` does not exist, create a new review document. Look for a review template at `docs/development/reviews/_review_template.md` and follow its structure.
+If `{{review_path}}` does not exist, create a new review document. Look for a review template at `{{review_template_path}}` and follow its structure.
 
 ### Issue Classification
 

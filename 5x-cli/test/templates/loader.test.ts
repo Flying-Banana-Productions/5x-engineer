@@ -173,12 +173,14 @@ describe("reviewer-plan template", () => {
 	const vars = {
 		plan_path: "docs/development/001-impl-cli.md",
 		review_path: "docs/development/reviews/2026-02-15-cli-review.md",
+		review_template_path: ".5x/templates/review-template.md",
 	};
 
 	test("renders with valid variables", () => {
 		const result = renderTemplate("reviewer-plan", vars);
 		expect(result.prompt).toContain("001-impl-cli.md");
 		expect(result.prompt).toContain("2026-02-15-cli-review.md");
+		expect(result.prompt).toContain(".5x/templates/review-template.md");
 	});
 
 	test("includes completion section (no signal blocks)", () => {
@@ -214,6 +216,7 @@ describe("reviewer-commit template", () => {
 		commit_hash: "abc123def",
 		review_path: "docs/development/reviews/2026-02-15-cli-review.md",
 		plan_path: "docs/development/001-impl-cli.md",
+		review_template_path: ".5x/templates/review-template.md",
 	};
 
 	test("renders with valid variables", () => {
@@ -221,6 +224,7 @@ describe("reviewer-commit template", () => {
 		expect(result.prompt).toContain("abc123def");
 		expect(result.prompt).toContain("2026-02-15-cli-review.md");
 		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.prompt).toContain(".5x/templates/review-template.md");
 	});
 
 	test("includes completion section (no signal blocks)", () => {

@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 version: 1
-variables: [plan_path, review_path]
+variables: [plan_path, review_path, review_template_path]
 ---
 
 You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
@@ -10,6 +10,7 @@ You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
 
 - Implementation plan: {{plan_path}}
 - Review output path: {{review_path}}
+- Review template path: {{review_template_path}}
 
 ## Instructions
 
@@ -34,7 +35,7 @@ Evaluate the plan across these dimensions:
 
 If `{{review_path}}` already exists (prior review), append your assessment as a new **Addendum** section following the existing review template conventions. Do not modify the existing review content.
 
-If `{{review_path}}` does not exist, create a new review document. Look for a review template at `docs/development/reviews/_review_template.md` and follow its structure. If no template exists, use a clear structured format with Summary, Strengths, and prioritized issues (P0/P1/P2).
+If `{{review_path}}` does not exist, create a new review document. Look for a review template at `{{review_template_path}}` and follow its structure. If no template exists, use a clear structured format with Summary, Strengths, and prioritized issues (P0/P1/P2).
 
 ### Issue Classification
 

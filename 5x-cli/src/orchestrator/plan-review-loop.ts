@@ -577,6 +577,7 @@ export async function runPlanReviewLoop(
 				const reviewerTemplate = renderTemplate("reviewer-plan", {
 					plan_path: planPath,
 					review_path: reviewPath,
+					review_template_path: resolve(workdir, config.paths.templates.review),
 				});
 
 				log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
