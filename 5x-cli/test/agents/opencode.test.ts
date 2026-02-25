@@ -286,6 +286,47 @@ describe("OpenCodeAdapter.invokeForStatus", () => {
 		expect(result.duration).toBeGreaterThanOrEqual(0);
 	});
 
+	test("runs execution prompt first, then schema summary prompt", async () => {
+		const promptParams: Array<Record<string, unknown>> = [];
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async (...args: unknown[]) => {
+				promptParams.push(args[0] as Record<string, unknown>);
+				return {
+					data: {
+						info: {
+							id: `msg-${promptParams.length}`,
+							sessionID: "sess-test-123",
+							role: "assistant",
+							structured: { result: "complete", commit: "abc123" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							error: undefined,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts());
+
+		expect(promptParams.length).toBe(2);
+		expect(promptParams[0]?.format).toBeUndefined();
+		expect((promptParams[1]?.format as Record<string, unknown>)?.type).toBe(
+			"json_schema",
+		);
+		expect(promptParams[0]?.parts).toEqual([
+			{ type: "text", text: "Test prompt" },
+		]);
+	});
+
 	test("returns needs_human status with reason", async () => {
 		const { adapter } = createTestAdapter({
 			sessionPrompt: async () => ({
@@ -543,7 +584,7 @@ describe("OpenCodeAdapter.invokeForStatus", () => {
 			}),
 		);
 
-		expect(calls).toEqual(["create", "hook", "prompt"]);
+		expect(calls).toEqual(["create", "hook", "prompt", "prompt"]);
 	});
 
 	test("onSessionCreated is best-effort and does not fail invocation", async () => {
@@ -922,6 +963,59 @@ describe("SSE event log streaming", () => {
 		expect(parsed[1]?.type).toBe("message.part.delta");
 	});
 
+	test("accepts camelCase sessionId fields", async () => {
+		const logPath = makeTmpLogPath();
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async () => ({
+				stream: (async function* () {
+					yield {
+						type: "message.part.updated",
+						properties: {
+							part: {
+								type: "text",
+								sessionId: "sess-test-123",
+								messageId: "msg-1",
+								id: "part-1",
+								text: "hello",
+							},
+						},
+					};
+				})(),
+			}),
+			sessionPrompt: async () => {
+				await new Promise((r) => setTimeout(r, 0));
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts({ logPath, quiet: true }));
+		await new Promise((r) => setTimeout(r, 0));
+
+		const lines = fs
+			.readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.filter((line) => line.trim().length > 0);
+		expect(lines.length).toBe(1);
+		expect(JSON.parse(lines[0] ?? "{}").type).toBe("message.part.updated");
+	});
+
 	test("re-evaluates quiet function while streaming events", async () => {
 		const logPath = makeTmpLogPath();
 		let quietChecks = 0;
@@ -1292,6 +1386,26 @@ describe("P0.3: workdir propagation", () => {
 		expect(capturedPromptParams).toBeDefined();
 		const params = capturedPromptParams as Record<string, unknown>;
 		expect(params.directory).toBe("/my/worktree");
+	});
+
+	test("passes workdir as directory to event.subscribe()", async () => {
+		let capturedSubscribeParams: unknown;
+		const { adapter } = createTestAdapter({
+			eventSubscribe: async (...args: unknown[]) => {
+				capturedSubscribeParams = args[0];
+				return {
+					stream: (async function* () {
+						// empty stream
+					})(),
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({ workdir: "/my/worktree" }),
+		);
+
+		expect(capturedSubscribeParams).toEqual({ directory: "/my/worktree" });
 	});
 
 	test("omits directory when workdir is not provided", async () => {

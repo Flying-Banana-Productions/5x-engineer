@@ -2,7 +2,7 @@
  * OpenCode SDK adapter — managed (local) mode only.
  *
  * Spawns a local OpenCode server, creates per-invocation sessions,
- * sends prompts with structured output schemas, streams SSE events
+ * sends execution prompts, then structured summary prompts, streams SSE events
  * to log files, and handles timeout/abort.
  *
  * Phase 3 of 003-impl-5x-cli-opencode.
@@ -59,6 +59,25 @@ function traceInvoke(
 	}
 }
 
+function buildStructuredSummaryPrompt(
+	resultType: "status" | "verdict",
+): string {
+	if (resultType === "status") {
+		return [
+			"Summarize the current session outcome using the required JSON schema.",
+			"Do not call tools. Base your answer only on work already completed in this session.",
+			"If result is complete, include commit when known.",
+			"If result is needs_human or failed, include a concise reason.",
+		].join("\n");
+	}
+
+	return [
+		"Summarize the current review outcome using the required JSON schema.",
+		"Do not call tools. Base your answer only on evidence already gathered in this session.",
+		"If readiness is not_ready or ready_with_corrections, include concrete items.",
+	].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -88,25 +107,36 @@ export function parseModel(model: string): {
  * Returns undefined if the event doesn't carry session info.
  */
 function getEventSessionId(event: OpenCodeEvent): string | undefined {
+	const ev = event as Record<string, unknown>;
+	const type = typeof ev.type === "string" ? ev.type : undefined;
+
 	// Access properties generically — event is a discriminated union
-	const props = (event as Record<string, unknown>).properties as
-		| Record<string, unknown>
-		| undefined;
+	const props = ev.properties as Record<string, unknown> | undefined;
 	if (!props) return undefined;
 
 	// Direct sessionID on properties (session.status, session.idle, message.part.delta, etc.)
 	if (typeof props.sessionID === "string") return props.sessionID;
+	if (typeof props.sessionId === "string") return props.sessionId;
 
 	// Message events: properties.info.sessionID
 	const info = props.info as Record<string, unknown> | undefined;
 	if (info && typeof info.sessionID === "string") return info.sessionID;
+	if (info && typeof info.sessionId === "string") return info.sessionId;
 
-	// Session events: properties.info.id (Session objects use 'id', not 'sessionID')
-	if (info && typeof info.id === "string") return info.id;
+	// Session events: properties.info.id (Session objects use 'id', not 'sessionID').
+	// Guard by event type so message IDs are never mistaken for session IDs.
+	if (type?.startsWith("session.") && info && typeof info.id === "string") {
+		return info.id;
+	}
 
 	// Part events: properties.part.sessionID
 	const part = props.part as Record<string, unknown> | undefined;
 	if (part && typeof part.sessionID === "string") return part.sessionID;
+	if (part && typeof part.sessionId === "string") return part.sessionId;
+
+	// Defensive fallback for unknown/wrapped event shapes.
+	const deepSessionId = findSessionIdDeep(props);
+	if (deepSessionId) return deepSessionId;
 
 	return undefined;
 }
@@ -117,6 +147,46 @@ function getStringProp(
 ): string | undefined {
 	const value = obj?.[key];
 	return typeof value === "string" ? value : undefined;
+}
+
+function getStringPropAny(
+	obj: Record<string, unknown> | undefined,
+	keys: readonly string[],
+): string | undefined {
+	for (const key of keys) {
+		const value = getStringProp(obj, key);
+		if (value) return value;
+	}
+	return undefined;
+}
+
+function findSessionIdDeep(
+	value: unknown,
+	depth = 0,
+	seen = new Set<unknown>(),
+): string | undefined {
+	if (depth > 4 || value == null || typeof value !== "object") return undefined;
+	if (seen.has(value)) return undefined;
+	seen.add(value);
+
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = findSessionIdDeep(item, depth + 1, seen);
+			if (found) return found;
+		}
+		return undefined;
+	}
+
+	const obj = value as Record<string, unknown>;
+	const direct = getStringPropAny(obj, ["sessionID", "sessionId"]);
+	if (direct) return direct;
+
+	for (const nested of Object.values(obj)) {
+		const found = findSessionIdDeep(nested, depth + 1, seen);
+		if (found) return found;
+	}
+
+	return undefined;
 }
 
 function resolveSessionIdWithContext(
@@ -135,7 +205,8 @@ function resolveSessionIdWithContext(
 
 	if (direct) {
 		const messageId =
-			getStringProp(info, "id") ?? getStringProp(part, "messageID");
+			getStringProp(info, "id") ??
+			getStringPropAny(part, ["messageID", "messageId"]);
 		if (messageId) ctx.messageToSession.set(messageId, direct);
 
 		const partId = getStringProp(part, "id");
@@ -144,13 +215,13 @@ function resolveSessionIdWithContext(
 	}
 
 	if (type === "message.part.delta" && props) {
-		const partId = getStringProp(props, "partID");
+		const partId = getStringPropAny(props, ["partID", "partId"]);
 		if (partId) {
 			const fromPart = ctx.partToSession.get(partId);
 			if (fromPart) return fromPart;
 		}
 
-		const messageId = getStringProp(props, "messageID");
+		const messageId = getStringPropAny(props, ["messageID", "messageId"]);
 		if (messageId) {
 			const fromMessage = ctx.messageToSession.get(messageId);
 			if (fromMessage) return fromMessage;
@@ -158,7 +229,7 @@ function resolveSessionIdWithContext(
 	}
 
 	if (type === "message.part.updated" && part) {
-		const messageId = getStringProp(part, "messageID");
+		const messageId = getStringPropAny(part, ["messageID", "messageId"]);
 		if (messageId) {
 			const fromMessage = ctx.messageToSession.get(messageId);
 			if (fromMessage) {
@@ -224,7 +295,11 @@ async function writeEventsToLog(
 	sessionId: string,
 	logPath: string,
 	abortSignal: AbortSignal,
-	opts: { quiet?: InvokeOptions["quiet"]; showReasoning?: boolean },
+	opts: {
+		quiet?: InvokeOptions["quiet"];
+		showReasoning?: boolean;
+		directory?: string;
+	},
 	onActivity?: () => void,
 	onTrace?: InvokeOptions["trace"],
 ): Promise<void> {
@@ -268,38 +343,91 @@ async function writeEventsToLog(
 
 	try {
 		// P0.1: pass signal to subscribe so the SSE connection terminates on abort
-		traceInvoke(onTrace, "sse.subscribe.start", { sessionId });
-		const { stream } = await client.event.subscribe(undefined, {
+		const subscribeParams = opts.directory
+			? { directory: opts.directory }
+			: undefined;
+		traceInvoke(onTrace, "sse.subscribe.start", {
+			sessionId,
+			directory: opts.directory,
+		});
+		const { stream } = await client.event.subscribe(subscribeParams, {
 			signal: abortSignal,
 		});
 		traceInvoke(onTrace, "sse.subscribe.ok", { sessionId });
+
+		const countByType = new Map<string, number>();
+		const acceptedByType = new Map<string, number>();
+		const droppedNoSessionByType = new Map<string, number>();
+		const droppedOtherSessionByType = new Map<string, number>();
+		const bump = (map: Map<string, number>, key: string) => {
+			map.set(key, (map.get(key) ?? 0) + 1);
+		};
+		const topCounts = (map: Map<string, number>) =>
+			Array.from(map.entries())
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, 8)
+				.map(([type, count]) => ({ type, count }));
 
 		const routerState = createEventRouterState();
 		const eventCtx = {
 			partToSession: new Map<string, string>(),
 			messageToSession: new Map<string, string>(),
 		};
-		let eventCount = 0;
+		let totalEventCount = 0;
+		let acceptedCount = 0;
+		let droppedNoSessionCount = 0;
+		let droppedOtherSessionCount = 0;
 
 		for await (const event of stream) {
 			if (abortSignal.aborted) break;
-			eventCount += 1;
+			totalEventCount += 1;
+			const type = (event as { type?: string }).type ?? "unknown";
+			bump(countByType, type);
 
 			// P1.2: skip events without a session ID (no cross-session leakage)
 			const eventSessionId = resolveSessionIdWithContext(event, eventCtx);
-			if (!eventSessionId) continue;
+			if (!eventSessionId) {
+				droppedNoSessionCount += 1;
+				bump(droppedNoSessionByType, type);
+				if (droppedNoSessionCount <= 5) {
+					const ev = event as Record<string, unknown>;
+					const props = ev.properties as Record<string, unknown> | undefined;
+					traceInvoke(onTrace, "sse.drop.no_session", {
+						totalEventCount,
+						type,
+						propertyKeys: props ? Object.keys(props).slice(0, 10) : [],
+					});
+				}
+				continue;
+			}
 
 			// Filter for this session's events
-			if (eventSessionId !== sessionId) continue;
+			if (eventSessionId !== sessionId) {
+				droppedOtherSessionCount += 1;
+				bump(droppedOtherSessionByType, type);
+				if (droppedOtherSessionCount <= 5) {
+					traceInvoke(onTrace, "sse.drop.other_session", {
+						totalEventCount,
+						type,
+						eventSessionId,
+						sessionId,
+					});
+				}
+				continue;
+			}
+
+			acceptedCount += 1;
+			bump(acceptedByType, type);
 
 			// Reset inactivity timeout only for this session's events.
 			// Unrelated traffic must not mask a stalled invocation.
 			onActivity?.();
 
-			if (eventCount <= 20 || eventCount % 100 === 0) {
+			if (acceptedCount <= 20 || acceptedCount % 100 === 0) {
 				traceInvoke(onTrace, "sse.event", {
-					eventCount,
-					type: (event as { type?: string }).type,
+					acceptedCount,
+					totalEventCount,
+					type,
 				});
 			}
 
@@ -315,7 +443,17 @@ async function writeEventsToLog(
 				});
 			}
 		}
-		traceInvoke(onTrace, "sse.stream.end", { eventCount, sessionId });
+		traceInvoke(onTrace, "sse.stream.end", {
+			totalEventCount,
+			acceptedCount,
+			droppedNoSessionCount,
+			droppedOtherSessionCount,
+			sessionId,
+			acceptedTypes: topCounts(acceptedByType),
+			droppedNoSessionTypes: topCounts(droppedNoSessionByType),
+			droppedOtherSessionTypes: topCounts(droppedOtherSessionByType),
+			totalTypes: topCounts(countByType),
+		});
 	} catch (err) {
 		traceInvoke(onTrace, "sse.stream.error", {
 			aborted: abortSignal.aborted,
@@ -430,10 +568,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 		workdir: string | undefined,
 		signal: AbortSignal | undefined,
 		trace: InvokeOptions["trace"],
+		recoverOpts?: { requireStructured?: boolean },
 	): Promise<{
 		data: { info: Record<string, unknown>; parts: Array<unknown> };
 		error: undefined;
 	}> {
+		const requireStructured = recoverOpts?.requireStructured ?? true;
 		let lastUnstructuredCompletedId: string | undefined;
 		let repeatedUnstructuredCompletions = 0;
 		let stalledPolls = 0;
@@ -472,6 +612,23 @@ export class OpenCodeAdapter implements AgentAdapter {
 					}
 
 					const structured = info.structured;
+					if (!requireStructured) {
+						traceInvoke(trace, "prompt.recover.completed_message", {
+							sessionId,
+							messageId:
+								typeof info.id === "string" ? (info.id as string) : undefined,
+						});
+						return {
+							data: {
+								info,
+								parts: Array.isArray(rowObj.parts)
+									? (rowObj.parts as Array<unknown>)
+									: [],
+							},
+							error: undefined,
+						};
+					}
+
 					if (structured == null) {
 						if (!latestCompletedAssistant) {
 							latestCompletedAssistant = {
@@ -522,7 +679,14 @@ export class OpenCodeAdapter implements AgentAdapter {
 					};
 				}
 
-				if (latestCompletedAssistant && !hasInFlightAssistant) {
+				if (!requireStructured && !hasInFlightAssistant) {
+					stalledPolls += 1;
+					if (stalledPolls >= 3) {
+						throw new Error(
+							"Agent did not return a completed assistant message while recovering prompt result.",
+						);
+					}
+				} else if (latestCompletedAssistant && !hasInFlightAssistant) {
 					const messageIdRaw = latestCompletedAssistant.info.id;
 					const messageId =
 						typeof messageIdRaw === "string" ? messageIdRaw : undefined;
@@ -589,7 +753,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 		const modelObj = model ? parseModel(model) : undefined;
 		const schema =
 			resultType === "status" ? AuthorStatusSchema : ReviewerVerdictSchema;
-		const format: OutputFormat = {
+		const summaryFormat: OutputFormat = {
 			type: "json_schema",
 			schema: schema as Record<string, unknown>,
 			retryCount: 2,
@@ -685,109 +849,139 @@ export class OpenCodeAdapter implements AgentAdapter {
 			sessionId,
 			opts.logPath,
 			sseController.signal,
-			{ quiet: opts.quiet, showReasoning: opts.showReasoning },
+			{
+				quiet: opts.quiet,
+				showReasoning: opts.showReasoning,
+				directory: opts.workdir,
+			},
 			resetInactivityTimeout,
 			opts.trace,
 		);
 
 		try {
-			// 4. Send prompt (P0.2: pass cancelSignal to prompt request)
-			// Belt-and-suspenders: signal tears down the HTTP connection, but
-			// Promise.race ensures deterministic timeout behavior regardless
-			// of SDK signal handling quality.
-			traceInvoke(opts.trace, "prompt.start", {
-				sessionId,
-				resultType,
-				directory: opts.workdir,
-			});
-			const promptPromise = this.client.session.prompt(
-				{
-					sessionID: sessionId,
-					parts: [{ type: "text", text: opts.prompt }],
-					format,
-					...(modelObj && { model: modelObj }),
-					...(opts.workdir && { directory: opts.workdir }),
-				},
-				cancelSignal ? { signal: cancelSignal } : undefined,
-			);
+			const runPrompt = async ({
+				phase,
+				promptText,
+				format,
+				recoverRequireStructured,
+			}: {
+				phase: "prompt.execute" | "prompt.summary";
+				promptText: string;
+				format?: OutputFormat;
+				recoverRequireStructured: boolean;
+			}) => {
+				const phaseStart = Date.now();
+				traceInvoke(opts.trace, `${phase}.start`, {
+					sessionId,
+					resultType,
+					directory: opts.workdir,
+				});
 
-			let result: Awaited<typeof promptPromise> | undefined;
+				const promptPromise = this.client.session.prompt(
+					{
+						sessionID: sessionId,
+						parts: [{ type: "text", text: promptText }],
+						...(format && { format }),
+						...(modelObj && { model: modelObj }),
+						...(opts.workdir && { directory: opts.workdir }),
+					},
+					cancelSignal ? { signal: cancelSignal } : undefined,
+				);
 
-			try {
-				result =
-					cancelSignal !== undefined
-						? await Promise.race([
-								promptPromise,
-								new Promise<never>((_, reject) => {
-									if (cancelSignal.aborted) {
-										reject(cancelSignal.reason ?? new Error("aborted"));
-										return;
-									}
-									cancelSignal.addEventListener(
-										"abort",
-										() => reject(cancelSignal.reason ?? new Error("aborted")),
-										{ once: true },
-									);
-								}),
-							])
-						: await promptPromise;
-			} catch (err) {
-				const isTimeout = timeoutController?.signal.aborted === true;
-				const isExternalCancel = opts.signal?.aborted === true;
+				let result: Awaited<typeof promptPromise> | undefined;
 
-				if (!isTimeout && !isExternalCancel && isAbortLikeError(err)) {
-					traceInvoke(opts.trace, "prompt.recover.start", {
-						sessionId,
-						error: err instanceof Error ? err.message : String(err),
-					});
-					result = (await this.waitForRecoveredPromptResult(
-						sessionId,
-						opts.workdir,
-						opts.signal,
-						opts.trace,
-					)) as Awaited<typeof promptPromise>;
-					traceInvoke(opts.trace, "prompt.recover.done", { sessionId });
-				} else {
-					throw err;
+				try {
+					result =
+						cancelSignal !== undefined
+							? await Promise.race([
+									promptPromise,
+									new Promise<never>((_, reject) => {
+										if (cancelSignal.aborted) {
+											reject(cancelSignal.reason ?? new Error("aborted"));
+											return;
+										}
+										cancelSignal.addEventListener(
+											"abort",
+											() => reject(cancelSignal.reason ?? new Error("aborted")),
+											{ once: true },
+										);
+									}),
+								])
+							: await promptPromise;
+				} catch (err) {
+					const isTimeout = timeoutController?.signal.aborted === true;
+					const isExternalCancel = opts.signal?.aborted === true;
+
+					if (!isTimeout && !isExternalCancel && isAbortLikeError(err)) {
+						traceInvoke(opts.trace, `${phase}.recover.start`, {
+							sessionId,
+							error: err instanceof Error ? err.message : String(err),
+						});
+						result = (await this.waitForRecoveredPromptResult(
+							sessionId,
+							opts.workdir,
+							opts.signal,
+							opts.trace,
+							{ requireStructured: recoverRequireStructured },
+						)) as Awaited<typeof promptPromise>;
+						traceInvoke(opts.trace, `${phase}.recover.done`, { sessionId });
+					} else {
+						throw err;
+					}
 				}
-			}
 
-			if (!result) {
-				throw new Error("Prompt result missing after recovery");
-			}
-			if (timeoutId !== undefined) clearTimeout(timeoutId);
-			const duration = Date.now() - start;
-			traceInvoke(opts.trace, "prompt.done", {
-				sessionId,
-				durationMs: duration,
-				hasError: Boolean(result.error),
-			});
+				if (!result) {
+					throw new Error("Prompt result missing after recovery");
+				}
 
-			// 5. Check for errors
-			if (result.error) {
-				if (isStructuredOutputError(result)) {
+				traceInvoke(opts.trace, `${phase}.done`, {
+					sessionId,
+					durationMs: Date.now() - phaseStart,
+					hasError: Boolean(result.error),
+				});
+
+				if (result.error) {
+					if (isStructuredOutputError(result)) {
+						throw new Error(
+							`Structured output validation failed: ${JSON.stringify(result.error)}`,
+						);
+					}
 					throw new Error(
-						`Structured output validation failed: ${JSON.stringify(result.error)}`,
+						`Agent invocation failed: ${JSON.stringify(result.error)}`,
 					);
 				}
-				throw new Error(
-					`Agent invocation failed: ${JSON.stringify(result.error)}`,
-				);
-			}
 
-			let info = result.data.info;
+				return result;
+			};
 
-			// 6. Extract structured output
+			await runPrompt({
+				phase: "prompt.execute",
+				promptText: opts.prompt,
+				recoverRequireStructured: false,
+			});
+
+			const summaryResult = await runPrompt({
+				phase: "prompt.summary",
+				promptText: buildStructuredSummaryPrompt(resultType),
+				format: summaryFormat,
+				recoverRequireStructured: true,
+			});
+
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+			const duration = Date.now() - start;
+
+			let info = summaryResult.data.info;
+
+			// 5. Extract structured output from summary prompt
 			let structured = info.structured;
 			if (structured == null) {
-				// Check if there's a structured output error on the message
 				if (info.error && isStructuredOutputError({ error: info.error })) {
 					throw new Error(
 						`Structured output validation failed after retries: ${JSON.stringify(info.error)}`,
 					);
 				}
 
-				traceInvoke(opts.trace, "prompt.recover.start", {
+				traceInvoke(opts.trace, "prompt.summary.recover.start", {
 					sessionId,
 					reason: "missing_structured_output",
 				});
@@ -797,11 +991,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 					opts.workdir,
 					opts.signal,
 					opts.trace,
+					{ requireStructured: true },
 				);
 				info = recovered.data.info as typeof info;
 				structured = info.structured;
 
-				traceInvoke(opts.trace, "prompt.recover.done", {
+				traceInvoke(opts.trace, "prompt.summary.recover.done", {
 					sessionId,
 					reason: "missing_structured_output",
 				});
@@ -819,12 +1014,12 @@ export class OpenCodeAdapter implements AgentAdapter {
 				}
 			}
 
-			// 7. Extract token/cost info (P1.1: use ?? to preserve cost=0)
+			// 6. Extract token/cost info from structured summary prompt
 			const tokensIn = info.tokens?.input;
 			const tokensOut = info.tokens?.output;
 			const costUsd = info.cost ?? undefined;
 
-			// 8. Build and validate result
+			// 7. Build and validate result
 			if (resultType === "status") {
 				const status = structured as AuthorStatus;
 				assertAuthorStatus(status, "invokeForStatus");

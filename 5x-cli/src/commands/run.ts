@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { defineCommand } from "citty";
 import {
 	createAndVerifyAdapter,
@@ -15,6 +15,7 @@ import {
 } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
 import { createDebugTraceLogger } from "../debug/trace.js";
+import { overlayEnvFromDirectory } from "../env.js";
 import { resumeGate as headlessResumeGate } from "../gates/human.js";
 import {
 	branchNameFromPlan,
@@ -177,6 +178,7 @@ export default defineCommand({
 		}
 
 		// --- Resolve workdir ---
+		const originalCwd = process.cwd();
 		let workdir = projectRoot;
 		let createdWorktree = false;
 
@@ -285,7 +287,20 @@ export default defineCommand({
 
 		// --- Resolve review path ---
 		const reviewsDir = resolve(projectRoot, config.paths.reviews);
-		let reviewPath = resolveReviewPath(db, canonical, reviewsDir);
+		const additionalReviewDirs: string[] = [];
+		if (workdir !== projectRoot) {
+			const reviewsRel = relative(projectRoot, reviewsDir);
+			if (
+				reviewsRel !== "" &&
+				!reviewsRel.startsWith("..") &&
+				!isAbsolute(reviewsRel)
+			) {
+				additionalReviewDirs.push(resolve(workdir, reviewsRel));
+			}
+		}
+		let reviewPath = resolveReviewPath(db, canonical, reviewsDir, {
+			additionalReviewDirs,
+		});
 
 		// --- Remap paths for worktree isolation ---
 		// When workdir is a worktree, plan/review paths must resolve inside
@@ -304,18 +319,29 @@ export default defineCommand({
 			effectivePlanPath = resolve(workdir, planRel);
 
 			const reviewRel = relative(projectRoot, reviewPath);
-			if (!reviewRel.startsWith("..")) {
+			const reviewUnderProjectRoot =
+				reviewRel !== "" &&
+				!reviewRel.startsWith("..") &&
+				!isAbsolute(reviewRel);
+			if (reviewUnderProjectRoot) {
 				reviewPath = resolve(workdir, reviewRel);
 			} else {
-				console.error(
-					"Warning: Review path is outside the project root and cannot be " +
-						"remapped into the worktree. Agents will read/write reviews in the " +
-						"primary checkout, breaking worktree isolation.",
-				);
-				console.error(`  Review path: ${reviewPath}`);
-				console.error(
-					"  Fix: set paths.reviews to a path within the project root.",
-				);
+				const reviewRelFromWorkdir = relative(workdir, reviewPath);
+				const reviewUnderWorkdir =
+					reviewRelFromWorkdir !== "" &&
+					!reviewRelFromWorkdir.startsWith("..") &&
+					!isAbsolute(reviewRelFromWorkdir);
+				if (!reviewUnderWorkdir) {
+					console.error(
+						"Warning: Review path is outside the project root and cannot be " +
+							"remapped into the worktree. Agents will read/write reviews in the " +
+							"primary checkout, breaking worktree isolation.",
+					);
+					console.error(`  Review path: ${reviewPath}`);
+					console.error(
+						"  Fix: set paths.reviews to a path within the project root.",
+					);
+				}
 			}
 		}
 
@@ -331,6 +357,34 @@ export default defineCommand({
 			console.log(`  Starting from phase: ${args.phase}`);
 		}
 		console.log();
+
+		// Ensure both 5x process context and spawned OpenCode server inherit
+		// the worktree as cwd for this run.
+		if (originalCwd !== workdir) {
+			try {
+				process.chdir(workdir);
+				trace("run.cwd.changed", { from: originalCwd, to: workdir });
+			} catch (err) {
+				console.error(
+					`Error: Failed to switch cwd to workdir: ${err instanceof Error ? err.message : String(err)}`,
+				);
+				releaseLock(projectRoot, canonical);
+				process.exitCode = 1;
+				return;
+			}
+		}
+
+		// Bun loads .env before command execution (from initial cwd). In worktree
+		// runs we must overlay env from the resolved workdir so subprocesses and
+		// tool execution use the worktree-specific values.
+		const workdirEnv = overlayEnvFromDirectory(workdir, process.env);
+		if (workdirEnv.keyCount > 0) {
+			trace("run.env.overlay", {
+				workdir,
+				loadedFiles: workdirEnv.loadedFiles,
+				keyCount: workdirEnv.keyCount,
+			});
+		}
 
 		// --- Run the loop ---
 		// Resolve effective quiet mode: explicit flag > TTY detection
@@ -596,6 +650,14 @@ export default defineCommand({
 			permissionHandler.stop();
 			await adapter.close();
 			tui.kill();
+			if (process.cwd() !== originalCwd) {
+				try {
+					process.chdir(originalCwd);
+					trace("run.cwd.restored", { to: originalCwd });
+				} catch {
+					// Best-effort restore only; process is exiting soon.
+				}
+			}
 			trace("run.cleanup.done");
 			releaseLock(projectRoot, canonical);
 			trace("run.command.end", { exitCode: process.exitCode ?? 0 });

@@ -8,6 +8,7 @@ import {
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
+import { overlayEnvFromDirectory } from "../env.js";
 import { checkGitSafety } from "../git.js";
 import {
 	resolveReviewPath,
@@ -108,6 +109,7 @@ export default defineCommand({
 
 		// Derive project root consistently (config file > git root > cwd)
 		const projectRoot = resolveProjectRoot();
+		overlayEnvFromDirectory(projectRoot, process.env);
 		const { config } = await loadConfig(projectRoot);
 
 		// Git safety check

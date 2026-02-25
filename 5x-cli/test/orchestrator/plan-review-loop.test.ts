@@ -229,6 +229,40 @@ describe("resolveReviewPath", () => {
 			cleanup();
 		}
 	});
+
+	test("accepts DB review path under additional worktree review dir", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const canonicalPath = canonicalizePlanPath(planPath);
+			const reviewsDir = join(tmp, "docs/development/reviews");
+			const worktreeReviewsDir = join(
+				tmp,
+				".5x/worktrees/feature/docs/development/reviews",
+			);
+			const priorReviewPath = join(
+				worktreeReviewsDir,
+				"2026-01-01-prior-review.md",
+			);
+			const warns: string[] = [];
+			createRun(db, {
+				id: "prior-run",
+				planPath: canonicalPath,
+				command: "plan-review",
+				reviewPath: priorReviewPath,
+			});
+			updateRunStatus(db, "prior-run", "completed");
+
+			const path = resolveReviewPath(db, planPath, reviewsDir, {
+				additionalReviewDirs: [worktreeReviewsDir],
+				warn: (message) => warns.push(message),
+			});
+
+			expect(path).toBe(priorReviewPath);
+			expect(warns).toHaveLength(0);
+		} finally {
+			cleanup();
+		}
+	});
 });
 
 describe("runPlanReviewLoop", () => {

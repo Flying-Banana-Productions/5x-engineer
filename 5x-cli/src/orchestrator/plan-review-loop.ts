@@ -66,6 +66,13 @@ export interface PlanReviewResult {
 	escalations: EscalationEvent[];
 }
 
+export interface ResolveReviewPathOptions {
+	/** Additional directories that are valid review roots (e.g. worktree mirror dir). */
+	additionalReviewDirs?: string[];
+	/** Optional warning sink for testability. */
+	warn?: (message: string) => void;
+}
+
 /**
  * State machine states for the plan-review loop.
  *
@@ -150,15 +157,32 @@ export function resolveReviewPath(
 	db: Database,
 	planPath: string,
 	reviewsDir: string,
+	options: ResolveReviewPathOptions = {},
 ): string {
 	const canonical = canonicalizePlanPath(planPath);
 	const resolvedReviewsDir = resolve(reviewsDir);
+	const resolvedAdditionalDirs = (options.additionalReviewDirs ?? []).map(
+		(dir) => resolve(dir),
+	);
+	const allowedReviewDirs = [resolvedReviewsDir, ...resolvedAdditionalDirs];
+	const warnedPaths = new Set<string>();
+	const warn = options.warn ?? console.warn;
+	const warnOutsideConfiguredDir = (reviewPath: string) => {
+		if (warnedPaths.has(reviewPath)) return;
+		warnedPaths.add(reviewPath);
+		warn(
+			`  Warning: DB review path "${reviewPath}" is outside configured reviews dir. Computing fresh path.`,
+		);
+	};
 
-	/** True when `filePath` resolves to somewhere strictly inside `reviewsDir`. */
+	/** True when `filePath` resolves to somewhere strictly inside any allowed review dir. */
 	const isUnderReviewsDir = (filePath: string): boolean => {
-		const rel = relative(resolvedReviewsDir, resolve(filePath));
-		// Outside if empty (same dir), starts with "..", or is absolute (Windows cross-drive)
-		return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+		const resolvedFile = resolve(filePath);
+		return allowedReviewDirs.some((reviewRoot) => {
+			const rel = relative(reviewRoot, resolvedFile);
+			// Outside if empty (same dir), starts with "..", or is absolute (Windows cross-drive)
+			return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+		});
 	};
 
 	// Check DB for existing review path — validate it's under the reviews dir
@@ -167,9 +191,7 @@ export function resolveReviewPath(
 		if (isUnderReviewsDir(latestRun.review_path)) {
 			return latestRun.review_path;
 		}
-		console.warn(
-			`  Warning: DB review path "${latestRun.review_path}" is outside configured reviews dir. Computing fresh path.`,
-		);
+		warnOutsideConfiguredDir(latestRun.review_path);
 	}
 
 	// Also check non-canonical path
@@ -178,9 +200,7 @@ export function resolveReviewPath(
 		if (isUnderReviewsDir(latestRunAlt.review_path)) {
 			return latestRunAlt.review_path;
 		}
-		console.warn(
-			`  Warning: DB review path "${latestRunAlt.review_path}" is outside configured reviews dir. Computing fresh path.`,
-		);
+		warnOutsideConfiguredDir(latestRunAlt.review_path);
 	}
 
 	// Compute fresh path

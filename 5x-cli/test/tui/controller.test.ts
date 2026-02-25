@@ -15,6 +15,7 @@ function createMockClient(options?: {
 		type: string;
 		properties?: Record<string, unknown>;
 	}>;
+	selectSessionImpl?: () => Promise<{ data?: boolean; error?: unknown }>;
 }) {
 	const defaultStream: AsyncIterable<{
 		type: string;
@@ -25,7 +26,10 @@ function createMockClient(options?: {
 
 	return {
 		tui: {
-			selectSession: mock(async () => ({ data: true, error: undefined })),
+			selectSession: mock(
+				options?.selectSessionImpl ??
+					(async () => ({ data: true, error: undefined })),
+			),
 			showToast: mock(async () => ({ data: true, error: undefined })),
 		},
 		event: {
@@ -186,8 +190,15 @@ describe("external TUI mode", () => {
 		expect(controller.active).toBe(false);
 	});
 
-	test("external mode keeps syncing latest session for late attach", async () => {
-		const client = createMockClient();
+	test("external mode keeps syncing after first success for late attach", async () => {
+		let attempt = 0;
+		const client = createMockClient({
+			selectSessionImpl: async () => {
+				attempt += 1;
+				if (attempt < 2) return { data: false, error: undefined };
+				return { data: true, error: undefined };
+			},
+		});
 		const origWrite = process.stderr.write.bind(process.stderr);
 		process.stderr.write = () => true;
 		const controller = createTuiController({
@@ -199,13 +210,13 @@ describe("external TUI mode", () => {
 		process.stderr.write = origWrite;
 
 		await controller.selectSession("sess-ext", "/tmp");
-		await new Promise((resolve) => setTimeout(resolve, 650));
+		await new Promise((resolve) => setTimeout(resolve, 1300));
 		controller.kill();
 
 		expect(client.tui.selectSession).toHaveBeenCalled();
 		expect(
 			(client.tui.selectSession as ReturnType<typeof mock>).mock.calls.length,
-		).toBeGreaterThan(1);
+		).toBeGreaterThan(2);
 	});
 
 	test("external mode stops sync loop after TUI user command", async () => {

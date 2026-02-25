@@ -286,7 +286,8 @@ function createExternalController(
 					{ signal },
 				),
 			);
-			setReachable(apiCallSucceeded(result));
+			const ok = apiCallSucceeded(result);
+			setReachable(ok);
 		} finally {
 			syncInFlight = false;
 		}
