@@ -64,7 +64,7 @@ import {
 	isBranchRelevant,
 	listChangedFiles,
 } from "../git.js";
-import { parsePlan } from "../parsers/plan.js";
+import { type ParsedPlan, type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { assertAuthorStatus, assertReviewerVerdict } from "../protocol.js";
 import { renderTemplate } from "../templates/loader.js";
@@ -213,6 +213,50 @@ export function resolvePhaseReviewPath(
 	}
 
 	return join(dirname(reviewPath), `${base}-phase-${phaseToken}${ext}`);
+}
+
+function getPendingPhases(
+	plan: ParsedPlan,
+	approved: Set<string>,
+	startPhaseNumber?: string,
+): Phase[] {
+	const pending = plan.phases.filter((phase) => !approved.has(phase.number));
+	if (!startPhaseNumber) return pending;
+	const startIdx = pending.findIndex(
+		(phase) => phase.number === startPhaseNumber,
+	);
+	if (startIdx < 0) return pending;
+	return pending.slice(startIdx);
+}
+
+function validatePhaseIdStability(
+	previousPlan: ParsedPlan,
+	nextPlan: ParsedPlan,
+): { ok: true } | { ok: false; reason: string } {
+	const previous = previousPlan.phases.map((phase) => phase.number);
+	const next = nextPlan.phases.map((phase) => phase.number);
+
+	if (next.length < previous.length) {
+		return {
+			ok: false,
+			reason:
+				"Plan phase IDs changed while run was active: existing phases were removed. " +
+				"Restart after reconciling plan changes.",
+		};
+	}
+
+	for (let i = 0; i < previous.length; i++) {
+		if (previous[i] !== next[i]) {
+			return {
+				ok: false,
+				reason:
+					"Plan phase IDs changed while run was active (renumber/reorder detected). " +
+					"Restart after reconciling plan changes.",
+			};
+		}
+	}
+
+	return { ok: true };
 }
 
 function normalizeGitPath(pathValue: string): string {
@@ -498,21 +542,20 @@ export async function runPhaseExecutionLoop(
 	}
 
 	// Determine which phases to execute from DB-backed review approval state.
-	const approvedPhaseSet = new Set(getApprovedPhaseNumbers(db, dbPlanPath));
-	let phases = plan.phases.filter((p) => !approvedPhaseSet.has(p.number));
-	if (startPhaseNumber) {
-		const startIdx = phases.findIndex((p) => p.number === startPhaseNumber);
-		if (startIdx >= 0) {
-			phases = phases.slice(startIdx);
-		}
-	}
+	const initialApproved = new Set(getApprovedPhaseNumbers(db, dbPlanPath));
+	let phases = getPendingPhases(plan, initialApproved, startPhaseNumber);
+	startPhaseNumber = undefined;
 
-	let phasesCompleted = approvedPhaseSet.size;
-	const totalPhases = plan.phases.length;
+	let phasesCompleted = plan.phases.filter((p) =>
+		initialApproved.has(p.number),
+	).length;
+	let totalPhases = plan.phases.length;
 	let pausedAtPhaseGate = false;
 
 	// --- Outer loop: iterate through phases ---
-	for (const phase of phases) {
+	for (let phaseIdx = 0; phaseIdx < phases.length; phaseIdx++) {
+		const phase = phases[phaseIdx];
+		if (!phase) break;
 		trace("phase.start", { runId, phase: phase.number, title: phase.title });
 		log();
 		log(`  ── Phase ${phase.number}: ${phase.title} ──`);
@@ -2199,12 +2242,54 @@ export async function runPhaseExecutionLoop(
 
 		log(`  Phase ${phase.number} complete.`);
 
-		// Re-parse plan for next phase (author may have updated checklist)
+		// Re-parse plan at phase boundary and recompute pending phases. The plan
+		// may gain new phases mid-run, but existing phase IDs must remain stable.
 		try {
-			planContent = readFileSync(resolve(planPath), "utf-8");
-			plan = parsePlan(planContent);
-		} catch {
-			// Non-critical — continue with existing plan data
+			const refreshedContent = readFileSync(resolve(planPath), "utf-8");
+			const refreshedPlan = parsePlan(refreshedContent);
+			const stability = validatePhaseIdStability(plan, refreshedPlan);
+			if (!stability.ok) {
+				const reason = stability.reason;
+				log(`  ${reason}`);
+				const event: EscalationEvent = {
+					reason,
+					iteration,
+				};
+				escalations.push(event);
+				appendRunEvent(db, {
+					runId,
+					eventType: "escalation",
+					phase: phase.number,
+					iteration,
+					data: event,
+				});
+				trace("loop.plan_phase_id_change", {
+					runId,
+					phase: phase.number,
+					reason,
+				});
+				_phaseAborted = true;
+				break;
+			}
+
+			planContent = refreshedContent;
+			plan = refreshedPlan;
+			totalPhases = plan.phases.length;
+
+			const approvedNow = new Set(getApprovedPhaseNumbers(db, dbPlanPath));
+			phasesCompleted = plan.phases.filter((p) =>
+				approvedNow.has(p.number),
+			).length;
+			phases = getPendingPhases(plan, approvedNow);
+			phaseIdx = -1;
+		} catch (err) {
+			trace("loop.plan_reparse.skipped", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+
+		if (_phaseAborted) {
+			break;
 		}
 	}
 

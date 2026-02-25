@@ -345,6 +345,104 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("recomputes pending phases after plan grows mid-run", async () => {
+		const { tmp, db, reviewPath, planPath, cleanup } =
+			createTestEnv(PLAN_ONE_PHASE);
+		const expandedPlan = `# Simple Plan
+
+**Version:** 1.0
+**Status:** Draft
+
+## Phase 1: Only Phase
+
+- [x] Do the thing
+
+## Phase 2: Follow-up
+
+- [ ] Add follow-up work
+`;
+		try {
+			const adapter = createMockAdapter([
+				{
+					type: "status",
+					status: { result: "complete", commit: "abc123" },
+					writeFile: { path: planPath, content: expandedPlan },
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				{ type: "status", status: { result: "complete", commit: "def456" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(result.phasesCompleted).toBe(2);
+			expect(result.totalPhases).toBe(2);
+			expect(adapter.callCount).toBe(4);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("aborts when plan phase IDs are renumbered mid-run", async () => {
+		const initialPlan = `# Plan
+
+## Phase 1: First
+
+- [ ] Do one
+
+## Phase 2: Second
+
+- [ ] Do two
+`;
+		const renumberedPlan = `# Plan
+
+## Phase 1: First
+
+- [x] Do one
+
+## Phase 20: Second
+
+- [ ] Do two
+`;
+		const { tmp, db, reviewPath, planPath, cleanup } =
+			createTestEnv(initialPlan);
+		try {
+			const adapter = createMockAdapter([
+				{
+					type: "status",
+					status: { result: "complete", commit: "abc123" },
+					writeFile: { path: planPath, content: renumberedPlan },
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.aborted).toBe(true);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			expect(result.escalations[0]?.reason).toContain("Plan phase IDs changed");
+			expect(adapter.callCount).toBe(2);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("quality gate with passing command succeeds", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

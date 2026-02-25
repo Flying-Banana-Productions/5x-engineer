@@ -124,23 +124,6 @@ export default defineCommand({
 			process.exit(1);
 		}
 
-		let planContent: string;
-		try {
-			planContent = readFileSync(canonical, "utf-8");
-		} catch {
-			console.error(`Error: Could not read plan file: ${canonical}`);
-			process.exit(1);
-		}
-
-		// Verify it's parseable as a plan
-		const plan = parsePlan(planContent);
-		if (plan.phases.length === 0) {
-			console.error(
-				"Error: No phases found in plan file. Is this a valid implementation plan?",
-			);
-			process.exit(1);
-		}
-
 		// Derive project root
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
@@ -166,19 +149,7 @@ export default defineCommand({
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
 
-		const approvedPhases = new Set(getApprovedPhaseNumbers(db, canonical));
-		const incompletePhases = plan.phases.filter(
-			(p) => !approvedPhases.has(p.number),
-		);
-		if (incompletePhases.length === 0) {
-			console.log();
-			console.log("  All phases are review-approved. Nothing to run.");
-			console.log();
-			process.exit(0);
-		}
-
 		// --- Resolve workdir ---
-		const originalCwd = process.cwd();
 		let workdir = projectRoot;
 		let createdWorktree = false;
 
@@ -345,6 +316,46 @@ export default defineCommand({
 			}
 		}
 
+		if (!existsSync(effectivePlanPath)) {
+			console.error(`Error: Plan file not found: ${effectivePlanPath}`);
+			releaseLock(projectRoot, canonical);
+			process.exitCode = 1;
+			return;
+		}
+
+		let planContent: string;
+		try {
+			planContent = readFileSync(effectivePlanPath, "utf-8");
+		} catch {
+			console.error(`Error: Could not read plan file: ${effectivePlanPath}`);
+			releaseLock(projectRoot, canonical);
+			process.exitCode = 1;
+			return;
+		}
+
+		const plan = parsePlan(planContent);
+		if (plan.phases.length === 0) {
+			console.error(
+				"Error: No phases found in plan file. Is this a valid implementation plan?",
+			);
+			releaseLock(projectRoot, canonical);
+			process.exitCode = 1;
+			return;
+		}
+
+		const approvedPhases = new Set(getApprovedPhaseNumbers(db, canonical));
+		const incompletePhases = plan.phases.filter(
+			(phase) => !approvedPhases.has(phase.number),
+		);
+		if (incompletePhases.length === 0) {
+			console.log();
+			console.log("  All phases are review-approved. Nothing to run.");
+			console.log();
+			releaseLock(projectRoot, canonical);
+			process.exitCode = 0;
+			return;
+		}
+
 		// --- Display header ---
 		console.log();
 		console.log(`  Plan: ${plan.title}`);
@@ -357,22 +368,6 @@ export default defineCommand({
 			console.log(`  Starting from phase: ${args.phase}`);
 		}
 		console.log();
-
-		// Ensure both 5x process context and spawned OpenCode server inherit
-		// the worktree as cwd for this run.
-		if (originalCwd !== workdir) {
-			try {
-				process.chdir(workdir);
-				trace("run.cwd.changed", { from: originalCwd, to: workdir });
-			} catch (err) {
-				console.error(
-					`Error: Failed to switch cwd to workdir: ${err instanceof Error ? err.message : String(err)}`,
-				);
-				releaseLock(projectRoot, canonical);
-				process.exitCode = 1;
-				return;
-			}
-		}
 
 		// Bun loads .env before command execution (from initial cwd). In worktree
 		// runs we must overlay env from the resolved workdir so subprocesses and
@@ -650,14 +645,6 @@ export default defineCommand({
 			permissionHandler.stop();
 			await adapter.close();
 			tui.kill();
-			if (process.cwd() !== originalCwd) {
-				try {
-					process.chdir(originalCwd);
-					trace("run.cwd.restored", { to: originalCwd });
-				} catch {
-					// Best-effort restore only; process is exiting soon.
-				}
-			}
 			trace("run.cleanup.done");
 			releaseLock(projectRoot, canonical);
 			trace("run.command.end", { exitCode: process.exitCode ?? 0 });
