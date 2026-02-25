@@ -9,7 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { syncWorktreeTemplates } from "../../src/commands/run.js";
+import {
+	remapReviewPathForWorktree,
+	syncWorktreeTemplates,
+} from "../../src/commands/run.js";
 
 function makeTmpDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "5x-run-template-sync-"));
@@ -112,5 +115,51 @@ describe("syncWorktreeTemplates", () => {
 			rmSync(root, { recursive: true, force: true });
 			rmSync(outside, { force: true });
 		}
+	});
+});
+
+describe("remapReviewPathForWorktree", () => {
+	test("keeps review path unchanged when already under worktree", () => {
+		const projectRoot = "/repo";
+		const workdir = "/repo/.5x/worktrees/wt-1";
+		const reviewPath =
+			"/repo/.5x/worktrees/wt-1/docs/development/reviews/2026-02-26-review.md";
+
+		const result = remapReviewPathForWorktree({
+			projectRoot,
+			workdir,
+			reviewPath,
+		});
+
+		expect(result.reviewPath).toBe(reviewPath);
+		expect(result.warning).toBeUndefined();
+	});
+
+	test("remaps project-root review path into worktree", () => {
+		const projectRoot = "/repo";
+		const workdir = "/repo/.5x/worktrees/wt-1";
+		const reviewPath = "/repo/docs/development/reviews/2026-02-26-review.md";
+
+		const result = remapReviewPathForWorktree({
+			projectRoot,
+			workdir,
+			reviewPath,
+		});
+
+		expect(result.reviewPath).toBe(
+			"/repo/.5x/worktrees/wt-1/docs/development/reviews/2026-02-26-review.md",
+		);
+		expect(result.warning).toBeUndefined();
+	});
+
+	test("returns warning for review paths outside project and worktree", () => {
+		const result = remapReviewPathForWorktree({
+			projectRoot: "/repo",
+			workdir: "/repo/.5x/worktrees/wt-1",
+			reviewPath: "/tmp/review.md",
+		});
+
+		expect(result.reviewPath).toBe("/tmp/review.md");
+		expect(result.warning).toBeTruthy();
 	});
 });

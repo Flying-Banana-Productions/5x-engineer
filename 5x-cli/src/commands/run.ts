@@ -49,9 +49,43 @@ export interface WorktreeTemplateSyncResult {
 	unmappableAbsolute: string[];
 }
 
+export interface WorktreeReviewPathResult {
+	reviewPath: string;
+	warning?: string;
+}
+
 function isPathInside(parent: string, child: string): boolean {
 	const rel = relative(parent, child);
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+export function remapReviewPathForWorktree(opts: {
+	projectRoot: string;
+	workdir: string;
+	reviewPath: string;
+}): WorktreeReviewPathResult {
+	if (opts.workdir === opts.projectRoot) {
+		return { reviewPath: opts.reviewPath };
+	}
+
+	if (isPathInside(opts.workdir, opts.reviewPath)) {
+		return { reviewPath: opts.reviewPath };
+	}
+
+	const reviewRel = relative(opts.projectRoot, opts.reviewPath);
+	const reviewUnderProjectRoot =
+		reviewRel !== "" && !reviewRel.startsWith("..") && !isAbsolute(reviewRel);
+	if (reviewUnderProjectRoot) {
+		return {
+			reviewPath: resolve(opts.workdir, reviewRel),
+		};
+	}
+
+	return {
+		reviewPath: opts.reviewPath,
+		warning:
+			"Review path is outside the project root and worktree; cannot remap for worktree isolation.",
+	};
 }
 
 export function syncWorktreeTemplates(opts: {
@@ -382,30 +416,22 @@ export default defineCommand({
 			}
 			effectivePlanPath = resolve(workdir, planRel);
 
-			const reviewRel = relative(projectRoot, reviewPath);
-			const reviewUnderProjectRoot =
-				reviewRel !== "" &&
-				!reviewRel.startsWith("..") &&
-				!isAbsolute(reviewRel);
-			if (reviewUnderProjectRoot) {
-				reviewPath = resolve(workdir, reviewRel);
-			} else {
-				const reviewRelFromWorkdir = relative(workdir, reviewPath);
-				const reviewUnderWorkdir =
-					reviewRelFromWorkdir !== "" &&
-					!reviewRelFromWorkdir.startsWith("..") &&
-					!isAbsolute(reviewRelFromWorkdir);
-				if (!reviewUnderWorkdir) {
-					console.error(
-						"Warning: Review path is outside the project root and cannot be " +
-							"remapped into the worktree. Agents will read/write reviews in the " +
-							"primary checkout, breaking worktree isolation.",
-					);
-					console.error(`  Review path: ${reviewPath}`);
-					console.error(
-						"  Fix: set paths.reviews to a path within the project root.",
-					);
-				}
+			const remappedReview = remapReviewPathForWorktree({
+				projectRoot,
+				workdir,
+				reviewPath,
+			});
+			reviewPath = remappedReview.reviewPath;
+			if (remappedReview.warning) {
+				console.error(
+					"Warning: Review path is outside the project root and cannot be " +
+						"remapped into the worktree. Agents will read/write reviews in the " +
+						"primary checkout, breaking worktree isolation.",
+				);
+				console.error(`  Review path: ${reviewPath}`);
+				console.error(
+					"  Fix: set paths.reviews to a path within the project root.",
+				);
 			}
 		}
 
