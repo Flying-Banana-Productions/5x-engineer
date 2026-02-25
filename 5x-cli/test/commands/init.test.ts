@@ -59,7 +59,13 @@ describe("5x init", () => {
 			const configContent = readFileSync(configPath, "utf-8");
 			expect(configContent).not.toContain("adapter:");
 			expect(configContent).toContain("model:");
+			expect(configContent).toContain("timeout:");
 			expect(configContent).toContain("qualityGates");
+			expect(configContent).toContain("worktree:");
+			expect(configContent).toContain("postCreate:");
+			expect(configContent).toContain("paths:");
+			expect(configContent).toContain("db:");
+			expect(configContent).toContain("maxReviewIterations");
 			expect(configContent).toContain("@type");
 
 			// .5x/ directory exists
@@ -241,6 +247,12 @@ describe("generateConfigContent", () => {
 		expect(content).toContain("author:");
 		expect(content).toContain("reviewer:");
 		expect(content).toContain("model:");
+		expect(content).toContain("timeout:");
+		expect(content).toContain("worktree:");
+		expect(content).toContain("postCreate:");
+		expect(content).toContain("paths:");
+		expect(content).toContain("db:");
+		expect(content).toContain("maxAutoRetries");
 		expect(content).not.toContain("adapter:");
 		expect(content).toContain("Remote server support is a future feature");
 	});

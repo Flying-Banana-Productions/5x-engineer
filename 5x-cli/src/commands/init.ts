@@ -8,19 +8,51 @@ import { defineCommand } from "citty";
 function generateConfigContent(): string {
 	return `/** @type {import('5x-cli').FiveXConfig} */
 export default {
-  // OpenCode server runs locally (same host). Remote server support is a future feature.
-  author: {
-    // model: "anthropic/claude-sonnet-4-6",
-  },
-  reviewer: {
-    // model: "anthropic/claude-sonnet-4-6",
-  },
-  qualityGates: [
-    // Add your test/lint/build commands here, e.g.:
-    // 'bun test',
-    // 'bun run lint',
-    // 'bun run build',
-  ],
+	// OpenCode server runs locally (same host). Remote server support is a future feature.
+	// Configure model/timeouts independently for author and reviewer invocations.
+	author: {
+		// model: "anthropic/claude-sonnet-4-6",
+		// timeout: 900, // seconds; omit to disable timeout
+	},
+	reviewer: {
+		// model: "openai/gpt-5.2",
+		// timeout: 900, // seconds; omit to disable timeout
+	},
+
+	// Commands run after author implementation and before reviewer pass.
+	// Any failing command triggers quality-retry behavior.
+	qualityGates: [
+		// "bun test",
+		// "bun run lint",
+		// "bun run build",
+	],
+
+	// Optional hook for \`5x run --worktree\` after a new worktree is created.
+	worktree: {
+		// postCreate: "bun install",
+	},
+
+	// Paths are relative to repository root unless absolute.
+	paths: {
+		plans: "docs/development",
+		reviews: "docs/development/reviews",
+		archive: "docs/archive",
+		templates: {
+			plan: "docs/_implementation_plan_template.md",
+			review: "docs/development/reviews/_review_template.md",
+		},
+	},
+
+	// SQLite database location for run history and state.
+	db: {
+		path: ".5x/5x.db",
+	},
+
+	// Loop guardrails and retry limits.
+	maxReviewIterations: 5,
+	maxQualityRetries: 3,
+	maxAutoIterations: 10,
+	maxAutoRetries: 3,
 };
 `;
 }
