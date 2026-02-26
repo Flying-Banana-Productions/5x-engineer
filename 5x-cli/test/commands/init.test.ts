@@ -51,7 +51,7 @@ describe("5x init", () => {
 			expect(stdout).toContain("Created 5x.config.js");
 			expect(stdout).toContain("Created .5x/ directory");
 			expect(stdout).toContain(".gitignore");
-			expect(stdout).toContain("--no-tui");
+			expect(stdout).toContain("--tui-listen");
 
 			// Config file exists and is valid JS
 			const configPath = join(tmp, "5x.config.js");

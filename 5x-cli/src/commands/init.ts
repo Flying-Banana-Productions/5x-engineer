@@ -199,8 +199,8 @@ export default defineCommand({
 			console.log("  Skipped .gitignore (.5x/ already present)");
 		}
 
-		console.log("  TUI mode is enabled by default in interactive terminals");
-		console.log("  Use --no-tui on run/plan-review/plan for headless mode");
+		console.log("  External TUI is opt-in: use --tui-listen");
+		console.log("  Default is headless terminal mode");
 	},
 });
 

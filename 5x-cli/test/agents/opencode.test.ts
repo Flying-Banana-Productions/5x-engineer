@@ -601,6 +601,19 @@ describe("OpenCodeAdapter.invokeForStatus", () => {
 		expect(result.type).toBe("status");
 		expect(result.status.result).toBe("complete");
 	});
+
+	test("onSessionCreated does not block invocation when callback hangs", async () => {
+		const { adapter } = createTestAdapter();
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({
+				onSessionCreated: () => new Promise<void>(() => {}),
+			}),
+		);
+
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+	});
 });
 
 // ---------------------------------------------------------------------------

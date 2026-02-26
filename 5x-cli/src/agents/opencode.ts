@@ -792,12 +792,13 @@ export class OpenCodeAdapter implements AgentAdapter {
 
 		// Invoke onSessionCreated callback immediately so TUI can track the session
 		// during streaming (not after the prompt completes).
+		//
+		// Important: do NOT await this callback. TUI/session-focus APIs are
+		// best-effort and may block/hang transiently. Invocation must continue
+		// even if callback work is slow or stuck.
 		if (opts.onSessionCreated) {
-			try {
-				traceInvoke(opts.trace, "session.on_created.start", { sessionId });
-				await opts.onSessionCreated(sessionId);
-				traceInvoke(opts.trace, "session.on_created.ok", { sessionId });
-			} catch (err) {
+			traceInvoke(opts.trace, "session.on_created.start", { sessionId });
+			const onCallbackError = (err: unknown) => {
 				traceInvoke(opts.trace, "session.on_created.error", {
 					sessionId,
 					error: err instanceof Error ? err.message : String(err),
@@ -807,6 +808,24 @@ export class OpenCodeAdapter implements AgentAdapter {
 						`Warning: onSessionCreated callback failed: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				}
+			};
+
+			try {
+				const callbackResult = opts.onSessionCreated(sessionId);
+				if (
+					callbackResult &&
+					typeof (callbackResult as Promise<void>).then === "function"
+				) {
+					void (callbackResult as Promise<void>)
+						.then(() => {
+							traceInvoke(opts.trace, "session.on_created.ok", { sessionId });
+						})
+						.catch(onCallbackError);
+				} else {
+					traceInvoke(opts.trace, "session.on_created.ok", { sessionId });
+				}
+			} catch (err) {
+				onCallbackError(err);
 			}
 		}
 

@@ -1,5 +1,5 @@
 /**
- * TUI controller — manages the `opencode attach` TUI process lifecycle.
+ * TUI controller — manages external `opencode attach` integration.
  *
  * Phase 2 of 004-impl-5x-cli-tui.
  *
@@ -25,11 +25,6 @@
  * - `client.permission.respond(...)` — EXISTS but deprecated.
  * - `client.permission.list()` — EXISTS. Returns `PermissionRequest[]`.
  *
- * - `createOpencodeTui({ project?, model?, session?, agent?, signal?, config? })`
- *   — EXISTS. Spawns `opencode` with `stdio: "inherit"`. Returns `{ close() }`.
- *   Does NOT accept a URL parameter — it starts its own TUI, not attaching to
- *   an existing server. We use `Bun.spawn(["opencode", "attach", url, ...])` instead.
- *
  * - `opencode attach <url> --dir <workdir>` — CLI supports `--dir` flag.
  */
 
@@ -38,6 +33,8 @@ import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 // Attach startup can be slow enough that immediate focus attempts fail.
 // Retry for several seconds so early gate/session switches are visible.
 const SELECT_SESSION_RETRY_DELAYS_MS = [0, 80, 160, 320, 500, 800, 1200];
+const ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS = 1000;
+const ATTACHED_TUI_API_TIMEOUT_MS = 750;
 const EXTERNAL_TUI_API_TIMEOUT_MS = 250;
 const EXTERNAL_TUI_SYNC_INTERVAL_MS = 500;
 
@@ -59,14 +56,17 @@ async function sleep(ms: number): Promise<void> {
  */
 export interface TuiController {
 	/**
-	 * Whether this process currently owns terminal I/O via a spawned
-	 * `opencode attach` process.
+	 * Whether a TUI is currently reachable for API operations
+	 * (session select, toasts, TUI-native gates).
+	 *
+	 * This is true in external mode once a user-attached TUI becomes reachable.
+	 * This is false for headless mode and for external mode before attach.
 	 */
 	readonly active: boolean;
 
 	/**
-	 * True when `opencode attach` was spawned by this process.
-	 * False for headless/no-op fallback controllers.
+	 * Reserved for compatibility with older internals.
+	 * Runtime controllers returned by createTuiController() always report false.
 	 */
 	readonly attached: boolean;
 
@@ -86,14 +86,10 @@ export interface TuiController {
 	): Promise<void>;
 
 	/**
-	 * Register a callback for when the spawned TUI process exits.
-	 * The callback fires once when the attached TUI child exits.
+	 * Register a callback for when a spawned TUI process exits.
 	 * Returns an unsubscribe function.
 	 *
-	 * In headless/no-op and external-TUI modes, this is a no-op — no child TUI
-	 * process exists, so no exit event is emitted.
-	 *
-	 * In active mode, fires immediately if the TUI has already exited.
+	 * In headless/no-op and external-TUI modes, this is a no-op.
 	 */
 	onExit(handler: (info: TuiExitInfo) => void): () => void;
 
@@ -124,13 +120,6 @@ export interface CreateTuiControllerOptions {
 
 	/** Optional debug trace sink. */
 	trace?: (event: string, data?: unknown) => void;
-
-	/**
-	 * Auto-attach TUI from this process (legacy behavior).
-	 * When false, run in external-TUI mode: print attach command and continue
-	 * headless until a user-attached TUI is detected.
-	 */
-	autoAttach?: boolean;
 
 	/**
 	 * Whether TUI mode is enabled. When false, returns a no-op controller.
@@ -355,7 +344,7 @@ function createExternalController(
 
 	return {
 		get active() {
-			return false;
+			return _reachable;
 		},
 		get attached() {
 			return false;
@@ -420,6 +409,7 @@ function createExternalController(
 		},
 		kill() {
 			_killed = true;
+			setReachable(false);
 			traceController(trace, "external.kill");
 			eventWatcherAbort.abort();
 			stopSyncLoop();
@@ -431,32 +421,159 @@ function createExternalController(
 // Active TUI controller
 // ---------------------------------------------------------------------------
 
+type SpawnResult = {
+	exited: Promise<number | undefined>;
+	kill(): void;
+};
+
 function createActiveController(
-	proc: { exited: Promise<number | undefined>; kill(): void },
+	initialProc: { exited: Promise<number | undefined>; kill(): void },
 	client: OpencodeClient,
+	respawn?: (sessionID: string, directory?: string) => SpawnResult,
 	trace?: (event: string, data?: unknown) => void,
 ): TuiController {
+	let proc = initialProc;
 	let _active = true;
 	let _exitInfo: TuiExitInfo | undefined;
 	const exitHandlers = new Set<(info: TuiExitInfo) => void>();
+	let requestedSessionId: string | undefined;
+	let requestedDirectory: string | undefined;
+	let selectLoopRunning = false;
+	let hasRespawnedForSession = false;
+	let attachGeneration = 0;
 
-	// Monitor process exit
-	proc.exited.then((code) => {
-		_active = false;
-		_exitInfo = {
-			code,
-			isUserCancellation: code === 130 || code === 143,
+	const isCurrentTarget = (sessionID: string, directory?: string): boolean =>
+		sessionID === requestedSessionId && directory === requestedDirectory;
+
+	const callAttachedTuiApiWithTimeout = async (
+		call: () => Promise<TuiApiResponse>,
+	): Promise<TuiApiResponse> => {
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const timeoutResult = new Promise<TuiApiResponse>((resolve) => {
+				timeoutId = setTimeout(
+					() => resolve(undefined),
+					ATTACHED_TUI_API_TIMEOUT_MS,
+				);
+				timeoutId.unref?.();
+			});
+
+			return await Promise.race([call().catch(() => undefined), timeoutResult]);
+		} finally {
+			if (timeoutId) clearTimeout(timeoutId);
+		}
+	};
+
+	const trySelectSessionWithRetries = async (
+		sessionID: string,
+		directory?: string,
+	): Promise<boolean> => {
+		const withDirectory = {
+			sessionID,
+			...(directory && { directory }),
 		};
-		traceController(trace, "attached.exit", _exitInfo);
-		for (const handler of exitHandlers) {
+		const withoutDirectory = { sessionID };
+
+		for (const delayMs of SELECT_SESSION_RETRY_DELAYS_MS) {
+			if (!_active || !isCurrentTarget(sessionID, directory)) return false;
+			if (delayMs > 0) {
+				await sleep(delayMs);
+				if (!_active || !isCurrentTarget(sessionID, directory)) return false;
+			}
+
 			try {
-				handler(_exitInfo);
+				const withDirResult = await callAttachedTuiApiWithTimeout(() =>
+					client.tui.selectSession(withDirectory),
+				);
+				if (apiCallSucceeded(withDirResult)) {
+					traceController(trace, "attached.select_session.ok", {
+						sessionID,
+						withDirectory: true,
+					});
+					return true;
+				}
 			} catch {
-				// Swallow errors in exit handlers
+				// Fallback to session-only below.
+			}
+
+			if (directory) {
+				try {
+					const withoutDirResult = await callAttachedTuiApiWithTimeout(() =>
+						client.tui.selectSession(withoutDirectory),
+					);
+					if (apiCallSucceeded(withoutDirResult)) {
+						traceController(trace, "attached.select_session.ok", {
+							sessionID,
+							withDirectory: false,
+						});
+						return true;
+					}
+				} catch {
+					// Retry below.
+				}
 			}
 		}
-		exitHandlers.clear();
-	});
+
+		return false;
+	};
+
+	const runSelectLoop = async (): Promise<void> => {
+		if (selectLoopRunning) return;
+		selectLoopRunning = true;
+		try {
+			while (_active && requestedSessionId) {
+				const sessionID = requestedSessionId;
+				const directory = requestedDirectory;
+				const ok = await trySelectSessionWithRetries(sessionID, directory);
+
+				if (!_active) return;
+
+				if (!isCurrentTarget(sessionID, directory)) {
+					continue;
+				}
+
+				if (ok) {
+					return;
+				}
+
+				traceController(trace, "attached.select_session.retry_later", {
+					sessionID,
+					directory,
+				});
+				await sleep(ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS);
+			}
+		} finally {
+			selectLoopRunning = false;
+		}
+	};
+
+	const monitorProc = (
+		trackedProc: { exited: Promise<number | undefined>; kill(): void },
+		generation: number,
+	) => {
+		trackedProc.exited.then((code) => {
+			if (generation !== attachGeneration) return;
+
+			_active = false;
+			requestedSessionId = undefined;
+			requestedDirectory = undefined;
+			_exitInfo = {
+				code,
+				isUserCancellation: code === 130 || code === 143,
+			};
+			traceController(trace, "attached.exit", _exitInfo);
+			for (const handler of exitHandlers) {
+				try {
+					handler(_exitInfo);
+				} catch {
+					// Swallow errors in exit handlers
+				}
+			}
+			exitHandlers.clear();
+		});
+	};
+
+	monitorProc(proc, attachGeneration);
 
 	return {
 		get active() {
@@ -469,57 +586,46 @@ function createActiveController(
 
 		async selectSession(sessionID: string, directory?: string) {
 			if (!_active) return;
+
+			if (respawn && !hasRespawnedForSession) {
+				try {
+					traceController(trace, "attached.respawn.start", {
+						sessionID,
+						directory,
+					});
+					const previousProc = proc;
+					try {
+						previousProc.kill();
+					} catch {
+						// ignore
+					}
+					await Promise.race([previousProc.exited, sleep(300)]);
+
+					const nextProc = respawn(sessionID, directory);
+					proc = nextProc;
+					attachGeneration += 1;
+					hasRespawnedForSession = true;
+					monitorProc(proc, attachGeneration);
+					traceController(trace, "attached.respawn.ok", {
+						sessionID,
+						directory,
+					});
+				} catch (err) {
+					traceController(trace, "attached.respawn.error", {
+						sessionID,
+						directory,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+
+			requestedSessionId = sessionID;
+			requestedDirectory = directory;
 			traceController(trace, "attached.select_session.start", {
 				sessionID,
 				directory,
 			});
-
-			const withDirectory = {
-				sessionID,
-				...(directory && { directory }),
-			};
-			const withoutDirectory = { sessionID };
-
-			for (const delayMs of SELECT_SESSION_RETRY_DELAYS_MS) {
-				if (!_active) return;
-				if (delayMs > 0) {
-					await sleep(delayMs);
-					if (!_active) return;
-				}
-
-				try {
-					const withDirResult = await client.tui.selectSession(withDirectory);
-					if (apiCallSucceeded(withDirResult)) {
-						traceController(trace, "attached.select_session.ok", {
-							withDirectory: true,
-						});
-						return;
-					}
-				} catch {
-					// Fallback to session-only below.
-				}
-
-				if (directory) {
-					try {
-						const withoutDirResult =
-							await client.tui.selectSession(withoutDirectory);
-						if (apiCallSucceeded(withoutDirResult)) {
-							traceController(trace, "attached.select_session.ok", {
-								withDirectory: false,
-							});
-							return;
-						}
-					} catch {
-						// Retry below.
-					}
-				}
-			}
-
-			// Best-effort only: if TUI is not ready/disconnected, continue silently.
-			traceController(trace, "attached.select_session.give_up", {
-				sessionID,
-				directory,
-			});
+			void runSelectLoop();
 		},
 
 		async showToast(
@@ -528,7 +634,9 @@ function createActiveController(
 		) {
 			if (!_active) return;
 			try {
-				const result = await client.tui.showToast({ message, variant });
+				const result = await callAttachedTuiApiWithTimeout(() =>
+					client.tui.showToast({ message, variant }),
+				);
 				if (apiCallSucceeded(result)) {
 					traceController(trace, "attached.show_toast.ok", { variant });
 					return;
@@ -572,80 +680,32 @@ function createActiveController(
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Minimal spawn result used internally and in tests. */
-export type SpawnResult = {
-	exited: Promise<number | undefined>;
-	kill(): void;
-};
-
-/**
- * Default spawner: calls Bun.spawn to start `opencode attach`.
- * Extracted so tests can inject a throwing spawner to exercise the fallback.
- */
-function defaultSpawner(serverUrl: string, workdir: string): SpawnResult {
-	const spawned = Bun.spawn(
-		["opencode", "attach", serverUrl, "--dir", workdir],
-		{ stdio: ["inherit", "inherit", "inherit"] },
-	);
-	return { exited: spawned.exited, kill: () => spawned.kill() };
-}
-
 /**
  * Create a TUI controller.
  *
  * - enabled=false: no-op controller
- * - enabled=true + autoAttach=true: spawn `opencode attach` in this terminal
- * - enabled=true + autoAttach=false: external attach mode (print URL/command)
+ * - enabled=true: external attach mode (print URL/command)
  *
- * In all modes, `controller.active` means a TUI currently owns output.
+ * In all modes, `controller.active` means TUI APIs are currently reachable.
+ * Terminal ownership is indicated by `controller.attached`.
  */
 export function createTuiController(
 	opts: CreateTuiControllerOptions,
-	_spawner?: (serverUrl: string, workdir: string) => SpawnResult,
 ): TuiController {
 	if (!opts.enabled) {
 		traceController(opts.trace, "mode.noop", { reason: "disabled" });
 		return createNoopController();
 	}
-
-	if (!opts.autoAttach) {
-		traceController(opts.trace, "mode.external", {
-			serverUrl: opts.serverUrl,
-			workdir: opts.workdir,
-		});
-		return createExternalController(
-			opts.client,
-			opts.serverUrl,
-			opts.workdir,
-			opts.trace,
-		);
-	}
-
-	// Pre-attach startup message (written BEFORE TUI takes over)
-	process.stderr.write("Starting OpenCode...\n");
-	traceController(opts.trace, "mode.attached.spawn_start", {
+	traceController(opts.trace, "mode.external", {
 		serverUrl: opts.serverUrl,
 		workdir: opts.workdir,
 	});
-
-	// Spawn the TUI process. If the `opencode` binary is not on PATH (or spawn
-	// otherwise fails), fall back to headless with a warning rather than a hard
-	// crash (Phase 6 fallback, partially implemented here per P1.5).
-	const spawner = _spawner ?? defaultSpawner;
-	let proc: SpawnResult;
-	try {
-		proc = spawner(opts.serverUrl, opts.workdir);
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		process.stderr.write(
-			`Warning: Failed to spawn opencode TUI — continuing headless. (${reason})\n`,
-		);
-		traceController(opts.trace, "mode.attached.spawn_failed", { reason });
-		return createNoopController();
-	}
-
-	traceController(opts.trace, "mode.attached.spawn_ok");
-	return createActiveController(proc, opts.client, opts.trace);
+	return createExternalController(
+		opts.client,
+		opts.serverUrl,
+		opts.workdir,
+		opts.trace,
+	);
 }
 
 // ---------------------------------------------------------------------------

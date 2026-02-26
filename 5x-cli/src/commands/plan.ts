@@ -20,7 +20,7 @@ import { parsePlan } from "../parsers/plan.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { renderTemplate } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
-import { shouldEnableTui } from "../tui/detect.js";
+import { resolveTuiListen } from "../tui/detect.js";
 import {
 	createPermissionHandler,
 	NON_INTERACTIVE_NO_FLAG_ERROR,
@@ -113,16 +113,10 @@ export default defineCommand({
 			description:
 				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written.",
 		},
-		"no-tui": {
+		"tui-listen": {
 			type: "boolean",
 			description:
-				"Disable TUI mode — use headless output even in an interactive terminal",
-			default: false,
-		},
-		"attach-tui": {
-			type: "boolean",
-			description:
-				"Auto-launch TUI in this terminal (default is external attach mode)",
+				"Enable external TUI attach listening (default: off; attach manually in another terminal)",
 			default: false,
 		},
 		ci: {
@@ -239,9 +233,8 @@ export default defineCommand({
 		}
 
 		// --- TUI mode detection ---
-		// plan has no human gates (single invocation), so it is safe to enable
-		// TUI without --auto. Pass auto: true to bypass the non-auto gate.
-		const isTuiRequested = shouldEnableTui({ ...args, auto: true });
+		const tuiMode = resolveTuiListen(args);
+		const isTuiRequested = tuiMode.enabled;
 
 		// --- Register adapter shutdown with TUI mode support ---
 		const cancelController = new AbortController();
@@ -252,13 +245,10 @@ export default defineCommand({
 			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			enabled: isTuiRequested,
-			autoAttach: Boolean(args["attach-tui"]),
 		});
-		const effectiveTuiMode = tui.attached;
-		const tuiOwnsTerminal = () => tui.attached && tui.active;
 
 		registerAdapterShutdown(adapter, {
-			tuiMode: effectiveTuiMode,
+			tuiMode: false,
 			cancelController,
 		});
 
@@ -266,42 +256,15 @@ export default defineCommand({
 		// Note: plan command doesn't have --auto, only --ci
 		const permissionPolicy: PermissionPolicy = args.ci
 			? { mode: "auto-approve-all" }
-			: effectiveTuiMode
-				? { mode: "tui-native" }
-				: { mode: "workdir-scoped", workdir: projectRoot };
+			: { mode: "workdir-scoped", workdir: projectRoot };
 
 		// --- Start permission handler ---
-		let permissionHandler = createPermissionHandler(
+		const permissionHandler = createPermissionHandler(
 			(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			permissionPolicy,
 		);
 		permissionHandler.start();
-
-		// Handle TUI early exit — continue headless.
-		// Only registered when TUI was actually spawned; no-op controller never fires.
-		if (isTuiRequested) {
-			tui.onExit((info) => {
-				if (info.isUserCancellation) {
-					process.stderr.write("TUI interrupted — cancelling run\n");
-					cancelController.abort();
-					process.exitCode = info.code ?? 130;
-					return;
-				}
-
-				process.stderr.write("TUI exited — continuing headless\n");
-
-				if (permissionPolicy.mode === "tui-native") {
-					permissionHandler.stop();
-					permissionHandler = createPermissionHandler(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						{ mode: "workdir-scoped", workdir: projectRoot },
-					);
-					permissionHandler.start();
-				}
-			});
-		}
 
 		try {
 			// Render prompt
@@ -311,14 +274,11 @@ export default defineCommand({
 				plan_template_path: planTemplatePath,
 			});
 
-			// Guard stdout writes: TUI owns the terminal while active (P0.6).
-			if (!tuiOwnsTerminal()) {
-				console.log();
-				console.log("  Generating implementation plan from PRD...");
-				console.log(`  Target: ${planPath}`);
-				const modelName = config.author.model ?? "default";
-				process.stdout.write(`  Author (${modelName}) `);
-			}
+			console.log();
+			console.log("  Generating implementation plan from PRD...");
+			console.log(`  Target: ${planPath}`);
+			const modelName = config.author.model ?? "default";
+			process.stdout.write(`  Author (${modelName}) `);
 
 			// Resolve effective quiet mode: explicit flag > TTY detection
 			const effectiveQuiet =
@@ -330,15 +290,12 @@ export default defineCommand({
 			const logPath = join(logDir, `agent-${agentResultId}.ndjson`);
 
 			// Invoke agent with structured output.
-			// Must include tui.active so SSE stdout formatting is suppressed
-			// when the TUI owns the terminal (P0.6 output ownership).
-			// Phase 4: Pass session title and onSessionCreated callback for TUI
 			const result = await adapter.invokeForStatus({
 				prompt: template.prompt,
 				model: config.author.model,
 				workdir: projectRoot,
 				logPath,
-				quiet: () => effectiveQuiet || tuiOwnsTerminal(),
+				quiet: () => effectiveQuiet,
 				showReasoning: args["show-reasoning"],
 				signal: cancelController.signal,
 				sessionTitle: "Plan generation",
@@ -347,13 +304,11 @@ export default defineCommand({
 					: undefined,
 			});
 
-			if (!tuiOwnsTerminal()) {
-				const durationStr =
-					result.duration < 60_000
-						? `${Math.round(result.duration / 1000)}s`
-						: `${Math.round(result.duration / 60_000)}m ${Math.round((result.duration % 60_000) / 1000)}s`;
-				console.log(`done (${durationStr})`);
-			}
+			const durationStr =
+				result.duration < 60_000
+					? `${Math.round(result.duration / 1000)}s`
+					: `${Math.round(result.duration / 60_000)}m ${Math.round((result.duration % 60_000) / 1000)}s`;
+			console.log(`done (${durationStr})`);
 
 			// Store agent result
 			upsertAgentResult(db, {
@@ -386,14 +341,11 @@ export default defineCommand({
 					},
 				});
 				updateRunStatus(db, runId, "active", "NEEDS_HUMAN");
-				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tuiOwnsTerminal()) {
-					console.log();
-					console.log(
-						`  Author needs human input: ${status.reason ?? "no reason given"}`,
-					);
-					console.log();
-				}
+				console.log();
+				console.log(
+					`  Author needs human input: ${status.reason ?? "no reason given"}`,
+				);
+				console.log();
 				process.exitCode = 1;
 				return;
 			}
@@ -405,12 +357,9 @@ export default defineCommand({
 					data: { reason: status.reason },
 				});
 				updateRunStatus(db, runId, "failed");
-				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tuiOwnsTerminal()) {
-					console.error(
-						`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
-					);
-				}
+				console.error(
+					`\n  Error: Author reported failure: ${status.reason ?? "no reason given"}`,
+				);
 				process.exitCode = 1;
 				return;
 			}
@@ -423,12 +372,9 @@ export default defineCommand({
 					data: { reason: "Plan file not found after author completion" },
 				});
 				updateRunStatus(db, runId, "failed");
-				// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-				if (!tuiOwnsTerminal()) {
-					console.error(
-						`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
-					);
-				}
+				console.error(
+					`\n  Error: Plan file not found at ${planPath} after author reported completion.`,
+				);
 				process.exitCode = 1;
 				return;
 			}
@@ -442,30 +388,26 @@ export default defineCommand({
 			});
 			updateRunStatus(db, runId, "completed");
 
-			// Display result — guard on !tui.active (TUI may still own terminal
-			// here; it is killed in finally below). P0.6 output ownership rule.
-			if (!tuiOwnsTerminal()) {
-				let phaseCount = 0;
-				try {
-					const planContent = readFileSync(planPath, "utf-8");
-					const parsed = parsePlan(planContent);
-					phaseCount = parsed.phases.length;
-				} catch {
-					// Non-critical — just for display
-				}
-
-				console.log();
-				console.log(`  Created: ${planPath}`);
-				if (phaseCount > 0) {
-					console.log(`  Phases: ${phaseCount}`);
-				}
-				if (status.notes) {
-					console.log(`  Summary: ${status.notes}`);
-				}
-				console.log();
-				console.log(`  Next: 5x plan-review ${planPath}`);
-				console.log();
+			let phaseCount = 0;
+			try {
+				const planContent = readFileSync(planPath, "utf-8");
+				const parsed = parsePlan(planContent);
+				phaseCount = parsed.phases.length;
+			} catch {
+				// Non-critical — just for display
 			}
+
+			console.log();
+			console.log(`  Created: ${planPath}`);
+			if (phaseCount > 0) {
+				console.log(`  Phases: ${phaseCount}`);
+			}
+			if (status.notes) {
+				console.log(`  Summary: ${status.notes}`);
+			}
+			console.log();
+			console.log(`  Next: 5x plan-review ${planPath}`);
+			console.log();
 		} catch (err) {
 			// Handle adapter invocation errors (timeout, network, etc.)
 			const message = err instanceof Error ? err.message : String(err);
@@ -475,11 +417,8 @@ export default defineCommand({
 				data: { error: message },
 			});
 			updateRunStatus(db, runId, "failed");
-			// Guard: TUI owns terminal while active (P0.6 output ownership rule)
-			if (!tuiOwnsTerminal()) {
-				console.error(`\n  Error: Agent invocation failed.`);
-				if (message) console.error(`  Cause: ${message}`);
-			}
+			console.error(`\n  Error: Agent invocation failed.`);
+			if (message) console.error(`  Cause: ${message}`);
 			process.exitCode = 1;
 		} finally {
 			permissionHandler.stop();

@@ -137,6 +137,8 @@ export interface PlanReviewLoopOptions {
 	 * session creation and showToast at key phase boundaries.
 	 */
 	tui?: TuiController;
+	/** Optional debug trace sink for lifecycle diagnostics. */
+	trace?: (event: string, data?: unknown) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +312,7 @@ export async function runPlanReviewLoop(
 	config: FiveXConfig,
 	options: PlanReviewLoopOptions = {},
 ): Promise<PlanReviewResult> {
+	const trace = options.trace ?? (() => {});
 	const humanGate = options.humanGate ?? defaultHumanGate;
 	const resumeGate = options.resumeGate ?? defaultResumeGate;
 	const maxIterations = config.maxReviewIterations;
@@ -598,6 +601,7 @@ export async function runPlanReviewLoop(
 						quiet: resolveQuiet,
 						showReasoning,
 						signal: options.signal,
+						trace,
 						sessionTitle,
 						// Phase 4: Select session immediately after creation
 						onSessionCreated: options.tui
@@ -832,6 +836,7 @@ export async function runPlanReviewLoop(
 						quiet: resolveQuiet,
 						showReasoning,
 						signal: options.signal,
+						trace,
 						sessionTitle,
 						// Phase 4: Select session immediately after creation
 						onSessionCreated: options.tui

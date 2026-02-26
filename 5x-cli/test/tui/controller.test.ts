@@ -106,47 +106,10 @@ describe("no-op TuiController (headless)", () => {
 		// Should not throw
 		controller.kill();
 	});
-
-	test("createTuiController falls back to no-op when auto-attach spawn throws", () => {
-		// If the opencode binary is not on PATH, Bun.spawn throws. The controller
-		// must return a no-op controller and write a warning to stderr rather than
-		// propagating the error.
-		const throwingSpawner = (): never => {
-			throw new Error("spawn ENOENT: opencode not found");
-		};
-		// Suppress stderr for this test
-		const origWrite = process.stderr.write.bind(process.stderr);
-		const stderrLines: string[] = [];
-		process.stderr.write = (chunk: string | Uint8Array) => {
-			stderrLines.push(typeof chunk === "string" ? chunk : String(chunk));
-			return true;
-		};
-		try {
-			const controller = createTuiController(
-				{
-					serverUrl: "http://127.0.0.1:12345",
-					workdir: "/tmp",
-					client: createMockClient(),
-					enabled: true,
-					autoAttach: true,
-				},
-				throwingSpawner,
-			);
-
-			// Should have fallen back to headless no-op controller
-			expect(controller.active).toBe(false);
-			// Should have written a warning to stderr
-			const allOutput = stderrLines.join("");
-			expect(allOutput).toContain("Warning: Failed to spawn opencode TUI");
-			expect(allOutput).toContain("spawn ENOENT");
-		} finally {
-			process.stderr.write = origWrite;
-		}
-	});
 });
 
 describe("external TUI mode", () => {
-	test("enabled without autoAttach prints attach instructions", () => {
+	test("enabled mode prints attach instructions", () => {
 		const origWrite = process.stderr.write.bind(process.stderr);
 		const stderrLines: string[] = [];
 		process.stderr.write = (chunk: string | Uint8Array) => {
@@ -172,7 +135,7 @@ describe("external TUI mode", () => {
 		}
 	});
 
-	test("external mode remains inactive after successful selectSession", async () => {
+	test("external mode becomes active after successful selectSession", async () => {
 		const client = createMockClient();
 		const origWrite = process.stderr.write.bind(process.stderr);
 		process.stderr.write = () => true;
@@ -187,7 +150,7 @@ describe("external TUI mode", () => {
 		expect(controller.active).toBe(false);
 		await controller.selectSession("sess-ext", "/tmp");
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(controller.active).toBe(false);
+		expect(controller.active).toBe(true);
 	});
 
 	test("external mode keeps syncing after first success for late attach", async () => {
@@ -263,7 +226,7 @@ describe("external TUI mode", () => {
 
 		await controller.selectSession("sess-ext", "/tmp");
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(controller.active).toBe(false);
+		expect(controller.active).toBe(true);
 
 		const handler = mock((_info?: unknown) => {});
 		controller.onExit(handler);
@@ -408,11 +371,30 @@ describe("active TuiController", () => {
 		const controller = _createActiveControllerForTest(proc, client);
 
 		await controller.selectSession("sess-abc", "/workdir");
+		await new Promise((resolve) => setTimeout(resolve, 400));
 		expect(attempts).toBe(3);
 		expect(client.tui.selectSession).toHaveBeenLastCalledWith({
 			sessionID: "sess-abc",
 			directory: "/workdir",
 		});
+	});
+
+	test("selectSession retries after hung selectSession API calls", async () => {
+		const { proc } = createMockProcess();
+		let attempts = 0;
+		const client = createMockClient({
+			selectSessionImpl: async () => {
+				attempts += 1;
+				if (attempts === 1) return await new Promise(() => {});
+				return { data: true, error: undefined };
+			},
+		});
+		const controller = _createActiveControllerForTest(proc, client);
+
+		await controller.selectSession("sess-hang", "/workdir");
+		await new Promise((resolve) => setTimeout(resolve, 1400));
+
+		expect(attempts).toBeGreaterThan(1);
 	});
 
 	test("onExit handler fires when process exits", async () => {
@@ -529,35 +511,29 @@ describe("active TuiController", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TUI detection / shouldEnableTui
+// TUI detection / resolveTuiListen
 // ---------------------------------------------------------------------------
 
-describe("shouldEnableTui", () => {
+describe("resolveTuiListen", () => {
 	// Import dynamically to avoid side effects
-	const { shouldEnableTui } = require("../../src/tui/detect.js");
+	const { resolveTuiListen } = require("../../src/tui/detect.js");
 
-	test("returns false when --quiet is set", () => {
-		expect(shouldEnableTui({ quiet: true, auto: true })).toBe(false);
+	test("defaults to disabled when flag not set", () => {
+		const resolved = resolveTuiListen({});
+		expect(resolved.enabled).toBe(false);
+		expect(resolved.reason).toBe("flag_off");
 	});
 
-	test("returns false when --no-tui is set", () => {
-		expect(shouldEnableTui({ "no-tui": true, auto: true })).toBe(false);
+	test("forces off when --quiet is set", () => {
+		const resolved = resolveTuiListen({ "tui-listen": true, quiet: true });
+		expect(resolved.enabled).toBe(false);
+		expect(resolved.reason).toBe("quiet");
 	});
 
-	test("returns false when --quiet and --no-tui are both set", () => {
-		expect(shouldEnableTui({ quiet: true, "no-tui": true, auto: true })).toBe(
-			false,
-		);
+	test("resolves enabled mode from --tui-listen", () => {
+		const resolved = resolveTuiListen({ "tui-listen": true });
+		const ttyReady = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+		expect(resolved.enabled).toBe(ttyReady);
+		expect(resolved.reason).toBe(ttyReady ? "enabled" : "non_tty");
 	});
-
-	test("depends only on tty/flag state (auto no longer required)", () => {
-		const expected = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-		expect(shouldEnableTui({})).toBe(expected);
-		expect(shouldEnableTui({ auto: false })).toBe(expected);
-	});
-
-	// Note: We cannot reliably test TTY detection in a test runner because
-	// process.stdin.isTTY and process.stdout.isTTY depend on the test
-	// runner's environment. The function is simple enough that the flag
-	// tests above + code review of the TTY check suffice.
 });

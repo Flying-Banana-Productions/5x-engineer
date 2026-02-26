@@ -1,35 +1,37 @@
-/**
- * TUI mode detection — determines whether to spawn the TUI.
- *
- * Phase 2 of 004-impl-5x-cli-tui.
- */
+/** Resolve external TUI-listen mode. */
 
-/**
- * Determine whether TUI mode should be enabled.
- *
- * TUI requires both stdin and stdout to be TTYs (interactive terminal),
- * and must not be disabled by --no-tui or --quiet flags.
- *
- * Phase 5: TUI gates are now implemented, so TUI mode works in both auto
- * and non-auto flows. The TUI-native gates replace readline-based gates
- * when TUI mode is active.
- *
- * @param args - Command arguments (must include noTui and quiet flags)
- * @returns true if TUI mode should be active
- */
-export function shouldEnableTui(args: {
-	"no-tui"?: boolean;
+export interface ResolvedTuiListen {
+	enabled: boolean;
+	reason: "flag_off" | "quiet" | "non_tty" | "enabled";
+}
+
+export function resolveTuiListen(args: {
+	"tui-listen"?: boolean;
 	quiet?: boolean;
-	auto?: boolean;
-}): boolean {
-	// --quiet implies --no-tui (strong user intent to suppress all output)
-	if (args.quiet) return false;
+}): ResolvedTuiListen {
+	if (args.quiet) {
+		return {
+			enabled: false,
+			reason: "quiet",
+		};
+	}
 
-	// Explicit opt-out
-	if (args["no-tui"]) return false;
+	if (!args["tui-listen"]) {
+		return {
+			enabled: false,
+			reason: "flag_off",
+		};
+	}
 
-	// Both stdin and stdout must be TTYs — TUI needs interactive I/O
-	if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+	if (!process.stdin.isTTY || !process.stdout.isTTY) {
+		return {
+			enabled: false,
+			reason: "non_tty",
+		};
+	}
 
-	return true;
+	return {
+		enabled: true,
+		reason: "enabled",
+	};
 }

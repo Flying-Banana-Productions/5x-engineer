@@ -30,7 +30,7 @@ import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { createTuiController } from "../tui/controller.js";
-import { shouldEnableTui } from "../tui/detect.js";
+import { resolveTuiListen } from "../tui/detect.js";
 import {
 	createTuiEscalationGate,
 	createTuiPhaseGate,
@@ -175,16 +175,10 @@ export default defineCommand({
 			description:
 				"Suppress formatted agent output (default: auto, quiet when stdout is not a TTY). Log files are always written. Logs may contain sensitive data.",
 		},
-		"no-tui": {
+		"tui-listen": {
 			type: "boolean",
 			description:
-				"Disable TUI mode — use headless output even in an interactive terminal",
-			default: false,
-		},
-		"attach-tui": {
-			type: "boolean",
-			description:
-				"Auto-launch TUI in this terminal (default is external attach mode)",
+				"Enable external TUI attach listening (default: off; attach manually in another terminal)",
 			default: false,
 		},
 		ci: {
@@ -232,8 +226,7 @@ export default defineCommand({
 			auto: args.auto,
 			phase: args.phase,
 			worktree: args.worktree,
-			noTui: args["no-tui"],
-			attachTui: args["attach-tui"],
+			tuiListen: args["tui-listen"],
 		});
 
 		// Initialize DB
@@ -515,8 +508,10 @@ export default defineCommand({
 		}
 
 		// --- TUI mode detection ---
-		const isTuiRequested = shouldEnableTui(args);
+		const tuiMode = resolveTuiListen(args);
+		const isTuiRequested = tuiMode.enabled;
 		trace("run.tui.detected", {
+			reason: tuiMode.reason,
 			isTuiRequested,
 			stdinTTY: Boolean(process.stdin.isTTY),
 			stdoutTTY: Boolean(process.stdout.isTTY),
@@ -584,33 +579,29 @@ export default defineCommand({
 			client: (adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			enabled: isTuiRequested,
-			autoAttach: Boolean(args["attach-tui"]),
 			trace,
 		});
-		const effectiveTuiMode = tui.attached;
-		const tuiOwnsTerminal = () => tui.attached && tui.active;
+		const tuiOwnsTerminal = () => false;
 		trace("run.tui.controller.ready", {
 			active: tui.active,
-			attached: tui.attached,
-			effectiveTuiMode,
+			attached: false,
+			effectiveTuiMode: false,
 		});
 
 		registerAdapterShutdown(adapter, {
-			tuiMode: effectiveTuiMode,
+			tuiMode: false,
 			cancelController,
 		});
-		trace("run.adapter.shutdown_registered", { tuiMode: effectiveTuiMode });
+		trace("run.adapter.shutdown_registered", { tuiMode: false });
 
 		// --- Resolve permission policy ---
 		const permissionPolicy: PermissionPolicy =
 			args.auto || args.ci
 				? { mode: "auto-approve-all" }
-				: effectiveTuiMode
-					? { mode: "tui-native" }
-					: { mode: "workdir-scoped", workdir };
+				: { mode: "workdir-scoped", workdir };
 
 		// --- Start permission handler ---
-		let permissionHandler = createPermissionHandler(
+		const permissionHandler = createPermissionHandler(
 			(adapter as import("../agents/opencode.js").OpenCodeAdapter)
 				._clientForTui,
 			permissionPolicy,
@@ -618,34 +609,6 @@ export default defineCommand({
 		);
 		permissionHandler.start();
 		trace("run.permission.handler_started", { mode: permissionPolicy.mode });
-
-		// Handle TUI early exit — continue headless.
-		// Only registered when TUI was actually spawned; no-op controller never fires.
-		if (isTuiRequested) {
-			tui.onExit((info) => {
-				trace("run.tui.exit", info);
-				if (info.isUserCancellation) {
-					process.stderr.write("TUI interrupted — cancelling run\n");
-					cancelController.abort();
-					process.exitCode = info.code ?? 130;
-					return;
-				}
-
-				process.stderr.write("TUI exited — continuing headless\n");
-
-				if (permissionPolicy.mode === "tui-native") {
-					permissionHandler.stop();
-					permissionHandler = createPermissionHandler(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						{ mode: "workdir-scoped", workdir },
-						trace,
-					);
-					permissionHandler.start();
-					trace("run.permission.handler_switched", { mode: "workdir-scoped" });
-				}
-			});
-		}
 
 		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
 		// These replace the readline-based gates from gates/human.ts
