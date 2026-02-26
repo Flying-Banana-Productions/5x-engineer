@@ -4,8 +4,21 @@
 **Created:** February 19, 2026
 **Updated (latest):** February 21, 2026 — v1.8 re-review closure: human-driven TUI gates via explicit user messages (no model-decided gate path), effective runtime TUI mode for permission/gate selection, deterministic headless rejection for out-of-scope permissions, and TUI early-exit split between cancel (abort) vs close/crash (continue headless).
 **Updated:** February 19, 2026 — v1.7: Auto-resume policy for terminal states — auto mode now starts fresh instead of resuming runs stuck at ESCALATE or ABORTED (prevents no-progress loop), with `auto_start_fresh` audit event; v1.6: Orchestrator stdout fully quiet-gated — all `console.log` calls in `phase-execution-loop.ts` and `plan-review-loop.ts` now routed through a `log()` helper that respects `resolveQuiet()`, stdout-silent regression test fixed (intercepts `console.log` directly since Bun's `console.log` bypasses `process.stdout.write`), companion sanity test proves output IS produced when `quiet=false`; v1.5: Phase 2 closure review corrections — `shouldEnableTui()` now requires `--auto` to return true (non-auto flows fail-closed until Phase 5 TUI gates land; `5x plan` exempted as it has no readline gates), `plan.ts invokeForStatus` now includes `tui.active` in quiet (was passing only `effectiveQuiet`), escalation "continue" guidance is only stored when resuming to EXECUTE state (prevents stale guidance leaking to unrelated phases), quiet function re-evaluation test now proves cross-call flipping, stdout-silent regression test added; v1.4: Phase 2 implementation review corrections (2026-02-19-004-impl-5x-cli-tui-review.md addendum) — no-op controller `onExit` is now a no-op (was firing immediately, causing false "TUI exited" warning in headless mode; P0.5), `onExit` registration gated on `isTuiMode` in all commands, stdout output in commands guarded on `!tui.active` (P0.6 output ownership), TUI-by-default rollout gate documented (P0.6/P0.7 — gated on Phases 3-5), `quiet` option accepts `boolean | (() => boolean)` in orchestrators for dynamic re-evaluation on TUI exit (P1.4), `createTuiController` falls back to no-op controller when spawn fails (P1.5 / Phase 6 partial), `_spawner` injectable for testability, adapter coupling future-work note added (P2); v1.3: remaining review concerns — SDK surface validation step at start of Phase 2 with documented fallback protocol for missing APIs, fail-closed non-TTY permission policy (require `--auto`/`--ci` explicitly; non-TTY without either → actionable error), output-ownership wording scoped to `tuiController.active` with explicit stderr guard; v1.2: review corrections (2026-02-19-004-impl-5x-cli-tui-review.md) — deterministic gate protocol via injectable overrides (P0.1), permission policy specified for TUI/headless/CI (P0.2), terminal output ownership rules (P0.3), cooperative Ctrl-C cancellation / guaranteed cleanup (P0.4), `port: 0` instead of `findFreePort()` (P1.1), stdin+stdout TTY detection (P1.2), `--quiet` implies `--no-tui` (P1.3), session focus directory for worktrees and gate session audit retention (P2); v1.1: `opencode attach` verified working against a programmatically-started server
-**Status:** Approved for implementation
+**Status:** Implemented (external TUI attach listen) - Deprecated as a design doc (historical only)
 **Supersedes:** Nothing — additive to `003-impl-5x-cli-opencode.md`
+
+---
+
+## Current state (2026-02-26)
+
+This document reflects an earlier implementation plan + iterations. The current implementation has converged on a simpler, CLI-driven model:
+
+- **TUI is external attach listen:** enable via `--tui-listen`; 5x prints attach instructions and uses the TUI APIs only when reachable (`src/tui/detect.ts`, `src/tui/controller.ts`). 5x does not spawn `opencode attach` or hand over terminal ownership.
+- **All user input is via CLI:** phase/escalation/resume prompts are answered via the CLI gate functions (`src/gates/human.ts`) and orchestrator gate injection points. There is no TUI-backed gate input wired from commands today.
+- **`src/tui/gates.ts` is legacy/unwired:** the TUI gate session approach exists but is not imported/used by `src/commands/run.ts`, `src/commands/plan-review.ts`, or `src/commands/plan.ts`.
+- **Permissions are CLI-handled:** commands start `createPermissionHandler()` with `auto-approve-all` for `--auto/--ci`, otherwise `workdir-scoped` (`src/tui/permissions.ts`).
+
+Maintained source of truth going forward: code + `docs/development/006-technical-design-5x-cli.md`.
 
 ---
 
