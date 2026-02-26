@@ -91,9 +91,9 @@ describe("runSingleCommand", () => {
 		const tmp = makeTmp();
 		try {
 			const result = await runSingleCommand(
-				"sleep 60",
+				"while :; do :; done",
 				tmp,
-				makeOpts(tmp, { timeout: 0 }),
+				makeOpts(tmp, { timeout: 25 }),
 			);
 			expect(result.passed).toBe(false);
 			expect(result.output).toContain("TIMEOUT");
