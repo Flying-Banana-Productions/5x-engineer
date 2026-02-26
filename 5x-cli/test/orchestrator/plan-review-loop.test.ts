@@ -526,7 +526,7 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("auto mode: human_required escalates and aborts", async () => {
+	test("auto mode: human_required escalates and best-judgment fixes", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
 			const adapter = createMockAdapter([
@@ -544,6 +544,8 @@ describe("runPlanReviewLoop", () => {
 						],
 					},
 				},
+				{ type: "status", status: { result: "complete" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPlanReviewLoop(
@@ -555,8 +557,54 @@ describe("runPlanReviewLoop", () => {
 				{ auto: true, projectRoot: tmp },
 			);
 
+			expect(result.approved).toBe(true);
+			expect(result.escalations).toHaveLength(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode: aborts after max auto escalation retries", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const adapter = createMockAdapter([
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Architecture",
+								action: "human_required",
+								reason: "Needs decision",
+							},
+						],
+					},
+				},
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "Still ambiguous" },
+				},
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "Still ambiguous" },
+				},
+			]);
+
+			const config = defaultConfig();
+			config.maxAutoRetries = 2;
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				config,
+				{ auto: true, projectRoot: tmp },
+			);
+
 			expect(result.approved).toBe(false);
-			expect(result.escalations.length).toBeGreaterThan(0);
+			expect(result.escalations.length).toBeGreaterThanOrEqual(3);
 		} finally {
 			cleanup();
 		}
@@ -892,7 +940,7 @@ describe("runPlanReviewLoop", () => {
 		}
 	});
 
-	test("auto mode starts fresh instead of resuming ESCALATE state", async () => {
+	test("auto mode auto-resumes ESCALATE state", async () => {
 		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
 		try {
 			const canonical = canonicalizePlanPath(planPath);
@@ -910,7 +958,7 @@ describe("runPlanReviewLoop", () => {
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			// auto=true, no resumeGate → should detect ESCALATE and start fresh
+			// auto=true, no resumeGate → should resume ESCALATE run
 			const result = await runPlanReviewLoop(
 				planPath,
 				reviewPath,
@@ -920,18 +968,8 @@ describe("runPlanReviewLoop", () => {
 				{ auto: true, projectRoot: tmp },
 			);
 
-			// Should NOT have resumed the stuck run
-			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.runId).toBe(stuckRunId);
 			expect(result.approved).toBe(true);
-
-			// Audit trail: auto_start_fresh event on the old run
-			const events = getRunEvents(db, stuckRunId);
-			const freshEvent = events.find(
-				(e) => e.event_type === "auto_start_fresh",
-			);
-			expect(freshEvent).toBeDefined();
-			const data = JSON.parse(freshEvent?.data as string);
-			expect(data.reason).toContain("ESCALATE");
 		} finally {
 			cleanup();
 		}

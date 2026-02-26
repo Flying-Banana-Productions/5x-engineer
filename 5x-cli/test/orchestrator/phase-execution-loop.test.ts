@@ -534,6 +534,8 @@ describe("runPhaseExecutionLoop", () => {
 						],
 					},
 				},
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
 			const result = await runPhaseExecutionLoop(
@@ -545,10 +547,59 @@ describe("runPhaseExecutionLoop", () => {
 				{ workdir: tmp, auto: true },
 			);
 
-			expect(result.complete).toBe(false);
-			expect(result.aborted).toBe(true);
+			expect(result.complete).toBe(true);
+			expect(result.aborted).toBe(false);
 			expect(result.escalations.length).toBeGreaterThan(0);
 			expect(result.escalations[0]?.reason).toContain("human review");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("auto mode aborts when escalation retries are exhausted", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Architecture",
+								action: "human_required",
+								reason: "Needs decision",
+							},
+						],
+					},
+				},
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "Still ambiguous" },
+				},
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "Still ambiguous" },
+				},
+			]);
+
+			const cfg = defaultConfig(tmp);
+			cfg.maxAutoRetries = 2;
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				cfg,
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.aborted).toBe(true);
+			expect(result.escalations.length).toBeGreaterThanOrEqual(3);
 		} finally {
 			cleanup();
 		}
@@ -1310,7 +1361,7 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
-	test("auto mode starts fresh instead of resuming ESCALATE state", async () => {
+	test("auto mode auto-resumes ESCALATE state", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
 		try {
@@ -1329,7 +1380,7 @@ describe("runPhaseExecutionLoop", () => {
 				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
 			]);
 
-			// auto=true, no resumeGate → should detect ESCALATE and start fresh
+			// auto=true, no resumeGate → should resume ESCALATE run
 			const result = await runPhaseExecutionLoop(
 				planPath,
 				reviewPath,
@@ -1339,18 +1390,8 @@ describe("runPhaseExecutionLoop", () => {
 				{ workdir: tmp, auto: true },
 			);
 
-			// Should NOT have resumed the stuck run
-			expect(result.runId).not.toBe(stuckRunId);
+			expect(result.runId).toBe(stuckRunId);
 			expect(result.complete).toBe(true);
-
-			// Audit trail: auto_start_fresh event on the old run
-			const events = getRunEvents(db, stuckRunId);
-			const freshEvent = events.find(
-				(e) => e.event_type === "auto_start_fresh",
-			);
-			expect(freshEvent).toBeDefined();
-			const data = JSON.parse(freshEvent?.data as string);
-			expect(data.reason).toContain("ESCALATE");
 		} finally {
 			cleanup();
 		}
