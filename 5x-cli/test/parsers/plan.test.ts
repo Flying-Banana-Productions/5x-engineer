@@ -255,36 +255,32 @@ Just some text, no phases.
 
 const REAL_PLAN_PATH = resolve(
 	import.meta.dir,
-	"../../../docs/development/001-impl-5x-cli.md",
+	"../../docs/development/001-impl-5x-cli.md",
 );
 
 describe("parsePlan — real plan smoke test", () => {
-	const skip = !existsSync(REAL_PLAN_PATH);
+	test("parses without errors and returns plausible structure", () => {
+		expect(existsSync(REAL_PLAN_PATH)).toBe(true);
+		const content = readFileSync(REAL_PLAN_PATH, "utf-8");
+		const plan = parsePlan(content);
 
-	test.skipIf(skip)(
-		"parses without errors and returns plausible structure",
-		() => {
-			const content = readFileSync(REAL_PLAN_PATH, "utf-8");
-			const plan = parsePlan(content);
+		// Loose structural assertions — don't pin exact values
+		expect(plan.title.length).toBeGreaterThan(0);
+		expect(plan.version.length).toBeGreaterThan(0);
+		expect(plan.status.length).toBeGreaterThan(0);
+		expect(plan.phases.length).toBeGreaterThanOrEqual(7);
+		expect(plan.completionPercentage).toBeGreaterThanOrEqual(0);
+		expect(plan.completionPercentage).toBeLessThanOrEqual(100);
 
-			// Loose structural assertions — don't pin exact values
-			expect(plan.title.length).toBeGreaterThan(0);
-			expect(plan.version.length).toBeGreaterThan(0);
-			expect(plan.status.length).toBeGreaterThan(0);
-			expect(plan.phases.length).toBeGreaterThanOrEqual(7);
-			expect(plan.completionPercentage).toBeGreaterThanOrEqual(0);
-			expect(plan.completionPercentage).toBeLessThanOrEqual(100);
+		// Every phase should have a number, title, and a line reference
+		for (const phase of plan.phases) {
+			expect(phase.number.length).toBeGreaterThan(0);
+			expect(phase.title.length).toBeGreaterThan(0);
+			expect(phase.line).toBeGreaterThan(0);
+		}
 
-			// Every phase should have a number, title, and a line reference
-			for (const phase of plan.phases) {
-				expect(phase.number.length).toBeGreaterThan(0);
-				expect(phase.title.length).toBeGreaterThan(0);
-				expect(phase.line).toBeGreaterThan(0);
-			}
-
-			// Most phases should have checklist items
-			const phasesWithItems = plan.phases.filter((p) => p.items.length > 0);
-			expect(phasesWithItems.length).toBeGreaterThan(plan.phases.length / 2);
-		},
-	);
+		// Most phases should have checklist items
+		const phasesWithItems = plan.phases.filter((p) => p.items.length > 0);
+		expect(phasesWithItems.length).toBeGreaterThan(plan.phases.length / 2);
+	});
 });

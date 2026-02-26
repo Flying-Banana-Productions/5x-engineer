@@ -1,13 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PROJECT_ROOT = join(import.meta.dir, "..", "..");
-const runLiveAgentTests = process.env.FIVE_X_TEST_LIVE_AGENTS === "1";
-const liveTest = runLiveAgentTests ? test : test.skip;
 
-describe("OpenCode SDK compile smoke (env-gated)", () => {
+describe("OpenCode SDK compile smoke", () => {
 	let tempDir: string | null = null;
 
 	afterEach(() => {
@@ -17,8 +14,8 @@ describe("OpenCode SDK compile smoke (env-gated)", () => {
 		}
 	});
 
-	liveTest("imports SDK and constructs client in compiled binary", () => {
-		tempDir = mkdtempSync(join(tmpdir(), "5x-opencode-compile-"));
+	test("imports SDK and constructs client in compiled binary", () => {
+		tempDir = mkdtempSync(join(PROJECT_ROOT, ".tmp-5x-opencode-compile-"));
 		const entryPath = join(tempDir, "smoke.ts");
 		const outputPath = join(tempDir, "smoke-bin");
 

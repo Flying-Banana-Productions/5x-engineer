@@ -5,32 +5,32 @@ import { parseReviewSummary } from "../../src/parsers/review.js";
 
 const REAL_REVIEW_PATH = resolve(
 	import.meta.dir,
-	"../../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md",
+	"../../docs/development/reviews/2026-02-15-5x-cli-implementation-plan-review.md",
 );
-const hasRealReview = existsSync(REAL_REVIEW_PATH);
-const REAL_REVIEW = hasRealReview
+const REAL_REVIEW = existsSync(REAL_REVIEW_PATH)
 	? readFileSync(REAL_REVIEW_PATH, "utf-8")
 	: "";
 
 describe("parseReviewSummary", () => {
 	// Smoke tests against real review file — loose structural assertions only
-	test.skipIf(!hasRealReview)("extracts subject from real review", () => {
+	test("extracts subject from real review", () => {
+		expect(existsSync(REAL_REVIEW_PATH)).toBe(true);
 		const summary = parseReviewSummary(REAL_REVIEW);
 		expect(summary.subject).toContain("5x CLI");
 	});
 
-	test.skipIf(!hasRealReview)("extracts readiness from real review", () => {
+	test("extracts readiness from real review", () => {
 		const summary = parseReviewSummary(REAL_REVIEW);
 		// Readiness changes across addendums; just assert it's non-empty
 		expect(summary.readiness.length).toBeGreaterThan(0);
 	});
 
-	test.skipIf(!hasRealReview)("counts P0 items from real review", () => {
+	test("counts P0 items from real review", () => {
 		const summary = parseReviewSummary(REAL_REVIEW);
 		expect(summary.p0Count).toBeGreaterThan(0);
 	});
 
-	test.skipIf(!hasRealReview)("counts P1 items from real review", () => {
+	test("counts P1 items from real review", () => {
 		const summary = parseReviewSummary(REAL_REVIEW);
 		expect(summary.p1Count).toBeGreaterThan(0);
 	});

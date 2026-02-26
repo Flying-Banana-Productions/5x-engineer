@@ -71,6 +71,9 @@ function readLine(): Promise<string> {
 }
 
 function isInteractive(): boolean {
+	// Bun test sets NODE_ENV=test even when stdin is a TTY. Disable interactive
+	// prompts in test runs to avoid hanging suites on readline gates.
+	if (process.env.NODE_ENV === "test") return false;
 	return !!process.stdin.isTTY;
 }
 
