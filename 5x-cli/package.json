@@ -1,6 +1,6 @@
 {
   "name": "@5x-ai/5x-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-assisted author/reviewer workflow CLI for implementation plans",
   "license": "MIT",
   "author": "Flying Banana Productions",
