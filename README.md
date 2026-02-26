@@ -114,6 +114,12 @@ sequenceDiagram
 
 ## Resources
 
+### Tooling
+
+| Module | Purpose |
+|---|---|
+| [5x CLI](5x-cli/README.md) | Bun-based workflow CLI for plan generation, review loops, phase execution, status, and worktree management |
+
 ### Commands
 
 Workflow commands for the author and reviewer agents. Formatted for [OpenCode](https://github.com/opencode-ai/opencode); can also be placed in `.claude/commands/` for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).

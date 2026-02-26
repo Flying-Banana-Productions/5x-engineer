@@ -1,0 +1,58 @@
+{
+  "name": "5x-cli",
+  "version": "0.1.0",
+  "description": "AI-assisted author/reviewer workflow CLI for implementation plans",
+  "license": "MIT",
+  "author": "Flying Banana Productions",
+  "homepage": "https://github.com/Flying-Banana-Productions/5x-engineer/tree/main/5x-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Flying-Banana-Productions/5x-engineer.git",
+    "directory": "5x-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Flying-Banana-Productions/5x-engineer/issues"
+  },
+  "keywords": [
+    "5x",
+    "cli",
+    "ai",
+    "automation",
+    "opencode",
+    "planning",
+    "review"
+  ],
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "types": "./src/index.ts",
+  "bin": {
+    "5x": "src/bin.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/bin.ts",
+    "test": "bun test --concurrent --dots",
+    "build": "bun build --compile src/bin.ts --outfile dist/5x",
+    "lint": "bunx --bun @biomejs/biome check src/ test/",
+    "typecheck": "bunx --bun tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun run test"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.2.6",
+    "citty": "^0.1.6",
+    "dotenv": "^16.6.1",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.0"
+  }
+}
