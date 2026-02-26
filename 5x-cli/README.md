@@ -171,7 +171,7 @@ export default {
 Precedence:
 
 - `--quiet` overrides TUI listening (forces headless output behavior).
-- `--auto` (`run` / `plan-review`) changes loop control with or without TUI listening: skips normal human gates, still escalates `human_required`, and aborts on escalation states instead of prompting.
+- `--auto` (`run` / `plan-review`) changes loop control with or without TUI listening: skips normal human gates, still escalates `human_required`, and auto-continues escalations with no guidance (best judgment) up to retry limits before aborting.
 
 ## Runtime Artifacts
 

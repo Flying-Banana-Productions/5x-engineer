@@ -378,6 +378,7 @@ export async function runPhaseExecutionLoop(
 	const escalations: EscalationEvent[] = [];
 	const maxQualityRetries = config.maxQualityRetries;
 	const maxReviewIterations = config.maxReviewIterations;
+	const maxAutoRetries = config.maxAutoRetries;
 	// Anchor logs to the project root (not the plan path directory), so
 	// logs stay in one predictable location even when running in a worktree.
 	const logRoot = options.projectRoot ?? dirname(resolve(planPath));
@@ -411,9 +412,8 @@ export async function runPhaseExecutionLoop(
 		let resumeDecision: "resume" | "start-fresh" | "abort";
 		if (options.auto && !options.resumeGate) {
 			const savedState = activeRun.current_state ?? "EXECUTE";
-			// ESCALATE and ABORTED are terminal in auto mode — resuming would
-			// immediately re-abort, creating a no-progress loop.  Start fresh.
-			if (savedState === "ESCALATE" || savedState === "ABORTED") {
+			// ABORTED is terminal in auto mode. Start fresh.
+			if (savedState === "ABORTED") {
 				resumeDecision = "start-fresh";
 				log(
 					`  Auto mode: run ${activeRun.id.slice(0, 8)} stuck at ${savedState} — starting fresh`,
@@ -592,6 +592,7 @@ export async function runPhaseExecutionLoop(
 		let _phaseAborted = false;
 		let _phasePaused = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
+		let autoEscalationAttempts = 0;
 		// Tracks the state that most recently transitioned to ESCALATE, so that
 		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
 		// always re-running the author (EXECUTE).
@@ -2005,11 +2006,43 @@ export async function runPhaseExecutionLoop(
 						} satisfies EscalationEvent);
 
 					if (options.auto) {
-						log(`  Auto mode: escalation — ${lastEscalation.reason}`);
-						// Phase 4: Show toast for escalation
+						autoEscalationAttempts += 1;
+						const resumeState =
+							(lastEscalation.retryState as PhaseState | undefined) ??
+							preEscalateState;
+
+						if (autoEscalationAttempts <= maxAutoRetries) {
+							log(
+								`  Auto mode: escalation — continuing without guidance (${autoEscalationAttempts}/${maxAutoRetries})`,
+							);
+							if (options.tui) {
+								await options.tui.showToast(
+									`Auto escalation continue ${autoEscalationAttempts}/${maxAutoRetries} — Phase ${phase.number}`,
+									"warning",
+								);
+							}
+							appendRunEvent(db, {
+								runId,
+								eventType: "auto_escalation_continue",
+								phase: phase.number,
+								iteration,
+								data: {
+									reason: lastEscalation.reason,
+									attempt: autoEscalationAttempts,
+									maxAttempts: maxAutoRetries,
+									resumeState,
+								},
+							});
+							state = resumeState;
+							break;
+						}
+
+						log(
+							`  Auto mode: escalation persisted after ${maxAutoRetries} attempt(s) — aborting.`,
+						);
 						if (options.tui) {
 							await options.tui.showToast(
-								`Human required — Phase ${phase.number} escalated`,
+								`Auto escalation retries exhausted — Phase ${phase.number} aborted`,
 								"error",
 							);
 						}
@@ -2018,7 +2051,11 @@ export async function runPhaseExecutionLoop(
 							eventType: "auto_escalation_abort",
 							phase: phase.number,
 							iteration,
-							data: { reason: lastEscalation.reason },
+							data: {
+								reason: lastEscalation.reason,
+								attempt: autoEscalationAttempts,
+								maxAttempts: maxAutoRetries,
+							},
 						});
 						state = "ABORTED";
 						break;

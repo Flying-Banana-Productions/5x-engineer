@@ -316,6 +316,7 @@ export async function runPlanReviewLoop(
 	const humanGate = options.humanGate ?? defaultHumanGate;
 	const resumeGate = options.resumeGate ?? defaultResumeGate;
 	const maxIterations = config.maxReviewIterations;
+	const maxAutoRetries = config.maxAutoRetries;
 	// Resolve quiet: accepts boolean or function (function form re-evaluated at
 	// each adapter call so TUI exit mid-run affects subsequent invocations).
 	const _quietOpt = options.quiet;
@@ -348,9 +349,8 @@ export async function runPlanReviewLoop(
 		let resumeDecision: "resume" | "start-fresh" | "abort";
 		if (options.auto && !options.resumeGate) {
 			const savedState = activeRun.current_state ?? "REVIEW";
-			// ESCALATE and ABORTED are terminal in auto mode — resuming would
-			// immediately re-abort, creating a no-progress loop.  Start fresh.
-			if (savedState === "ESCALATE" || savedState === "ABORTED") {
+			// ABORTED is terminal in auto mode. Start fresh.
+			if (savedState === "ABORTED") {
 				resumeDecision = "start-fresh";
 				log(
 					`  Auto mode: run ${activeRun.id.slice(0, 8)} stuck at ${savedState} — starting fresh`,
@@ -438,6 +438,7 @@ export async function runPlanReviewLoop(
 	// Tracks the state before each transition to ESCALATE, so "continue"
 	// resumes the correct state (REVIEW or AUTO_FIX) rather than always REVIEW.
 	let preEscalateState: LoopState = "REVIEW";
+	let autoEscalationAttempts = 0;
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
@@ -980,8 +981,43 @@ export async function runPlanReviewLoop(
 					} satisfies EscalationEvent);
 
 				if (options.auto) {
-					// In auto mode, escalation = abort
-					log(`  Auto mode: escalation — ${lastEscalation.reason}`);
+					autoEscalationAttempts += 1;
+					const resumeState =
+						(lastEscalation.retryState as LoopState | undefined) ??
+						preEscalateState;
+
+					if (autoEscalationAttempts <= maxAutoRetries) {
+						log(
+							`  Auto mode: escalation — continuing without guidance (${autoEscalationAttempts}/${maxAutoRetries})`,
+						);
+						appendRunEvent(db, {
+							runId,
+							eventType: "auto_escalation_continue",
+							iteration,
+							data: {
+								reason: lastEscalation.reason,
+								attempt: autoEscalationAttempts,
+								maxAttempts: maxAutoRetries,
+								resumeState,
+							},
+						});
+						state = resumeState;
+						break;
+					}
+
+					log(
+						`  Auto mode: escalation persisted after ${maxAutoRetries} attempt(s) — aborting.`,
+					);
+					appendRunEvent(db, {
+						runId,
+						eventType: "auto_escalation_abort",
+						iteration,
+						data: {
+							reason: lastEscalation.reason,
+							attempt: autoEscalationAttempts,
+							maxAttempts: maxAutoRetries,
+						},
+					});
 					state = "ABORTED";
 					break;
 				}
@@ -1078,7 +1114,7 @@ function routePlanVerdict(
 	if (humanItems.length > 0) {
 		const event: EscalationEvent = {
 			reason: options.auto
-				? `${humanItems.length} item(s) require human review (auto mode cannot resolve)`
+				? `${humanItems.length} item(s) require human review (auto mode will attempt best-judgment fixes)`
 				: `${humanItems.length} item(s) require human review`,
 			retryState: "AUTO_FIX",
 			items: humanItems.map((i) => ({
