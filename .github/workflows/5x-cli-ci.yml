@@ -1,0 +1,61 @@
+name: 5x-cli CI
+
+on:
+  pull_request:
+    paths:
+      - "5x-cli/**"
+      - ".github/workflows/5x-cli-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "5x-cli/**"
+      - ".github/workflows/5x-cli-ci.yml"
+
+concurrency:
+  group: 5x-cli-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 5x-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 5x-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Test
+        run: bun run test
+
+  package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 5x-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build binary
+        run: bun run build
+      - name: Check npm package contents
+        run: npm pack --dry-run
