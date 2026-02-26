@@ -8,7 +8,6 @@ import {
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
-	getActiveRun,
 	getApprovedPhaseNumbers,
 	getPlan,
 	upsertPlan,
@@ -16,7 +15,6 @@ import {
 import { runMigrations } from "../db/schema.js";
 import { createDebugTraceLogger } from "../debug/trace.js";
 import { overlayEnvFromDirectory } from "../env.js";
-import { resumeGate as headlessResumeGate } from "../gates/human.js";
 import {
 	branchNameFromPlan,
 	checkGitSafety,
@@ -31,11 +29,6 @@ import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
-import {
-	createTuiEscalationGate,
-	createTuiPhaseGate,
-	createTuiResumeGate,
-} from "../tui/gates.js";
 import {
 	createPermissionHandler,
 	NON_INTERACTIVE_NO_FLAG_ERROR,
@@ -517,41 +510,6 @@ export default defineCommand({
 			stdoutTTY: Boolean(process.stdout.isTTY),
 		});
 
-		// If an interrupted run exists and TUI was requested, ask the resume
-		// question before spawning TUI so the prompt is always visible.
-		let pendingResumeDecision: "resume" | "start-fresh" | "abort" | undefined;
-		if (isTuiRequested && !args.auto) {
-			const activeRun = getActiveRun(db, canonical);
-			if (activeRun && activeRun.command === "run") {
-				trace("run.resume.pre_tui.prompt", {
-					runId: activeRun.id,
-					phase: activeRun.current_phase,
-					state: activeRun.current_state,
-				});
-				pendingResumeDecision = await headlessResumeGate(
-					activeRun.id,
-					activeRun.current_phase ?? "0",
-					activeRun.current_state ?? "EXECUTE",
-				);
-
-				if (pendingResumeDecision === "abort") {
-					trace("run.resume.pre_tui.abort", { runId: activeRun.id });
-					console.log();
-					console.log("  Run: ABORTED");
-					console.log("  Phases completed: 0/0");
-					console.log(`  Run ID: ${activeRun.id.slice(0, 8)}`);
-					console.log();
-					releaseLock(projectRoot, canonical);
-					process.exitCode = 1;
-					return;
-				}
-				trace("run.resume.pre_tui.decision", {
-					runId: activeRun.id,
-					decision: pendingResumeDecision,
-				});
-			}
-		}
-
 		// --- Initialize adapter ---
 		let adapter: Awaited<ReturnType<typeof createAndVerifyAdapter>>;
 		try {
@@ -581,7 +539,6 @@ export default defineCommand({
 			enabled: isTuiRequested,
 			trace,
 		});
-		const tuiOwnsTerminal = () => false;
 		trace("run.tui.controller.ready", {
 			active: tui.active,
 			attached: false,
@@ -610,42 +567,6 @@ export default defineCommand({
 		permissionHandler.start();
 		trace("run.permission.handler_started", { mode: permissionPolicy.mode });
 
-		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
-		// These replace the readline-based gates from gates/human.ts
-		const tuiPhaseGate =
-			isTuiRequested && !args.auto
-				? createTuiPhaseGate(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						tui,
-						{ signal: cancelController.signal, directory: workdir },
-					)
-				: undefined;
-		const tuiEscalationGate =
-			isTuiRequested && !args.auto
-				? createTuiEscalationGate(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						tui,
-						{ signal: cancelController.signal, directory: workdir },
-					)
-				: undefined;
-		const tuiResumeGate =
-			pendingResumeDecision !== undefined
-				? async () => {
-						const decision = pendingResumeDecision ?? "abort";
-						pendingResumeDecision = undefined;
-						return decision;
-					}
-				: isTuiRequested && !args.auto
-					? createTuiResumeGate(
-							(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-								._clientForTui,
-							tui,
-							{ signal: cancelController.signal, directory: workdir },
-						)
-					: undefined;
-
 		try {
 			trace("run.loop.start", {
 				effectivePlanPath,
@@ -665,21 +586,15 @@ export default defineCommand({
 					startPhase: args.phase,
 					workdir,
 					projectRoot,
-					// Function form: re-evaluated at each adapter call so TUI exit
-					// mid-run is reflected in subsequent invocations (P1.4).
-					quiet: () => effectiveQuiet || tuiOwnsTerminal(),
+					quiet: () => effectiveQuiet,
 					// Stable DB identity anchored to the primary checkout path.
 					// effectivePlanPath may be remapped to a worktree; canonical
 					// stays consistent so resume/history lookups always match.
 					canonicalPlanPath: canonical,
 					showReasoning: args["show-reasoning"],
 					signal: cancelController.signal,
-					// Phase 4: Pass TUI controller for session switching and toasts
+					// TUI listen mode is observability-only; gates remain CLI-driven.
 					tui,
-					// Phase 5: Pass TUI-native gates for non-auto mode
-					phaseGate: tuiPhaseGate,
-					escalationGate: tuiEscalationGate,
-					resumeGate: tuiResumeGate,
 					trace,
 				},
 			);
@@ -693,29 +608,24 @@ export default defineCommand({
 			});
 
 			// --- Display final result ---
-			// Guard on !tui.active: TUI may still own the terminal here (it is
-			// killed in the finally block below). Writing to stdout/stderr while
-			// the TUI is active corrupts the display (P0.6 output ownership rule).
-			if (!tuiOwnsTerminal()) {
-				console.log();
-				if (result.complete) {
-					console.log("  Run: COMPLETE");
-				} else if (result.paused) {
-					console.log("  Run: PAUSED");
-				} else if (result.aborted) {
-					console.log("  Run: ABORTED");
-				} else {
-					console.log("  Run: INCOMPLETE");
-				}
-				console.log(
-					`  Phases completed: ${result.phasesCompleted}/${result.totalPhases}`,
-				);
-				console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
-				if (result.escalations.length > 0) {
-					console.log(`  Escalations: ${result.escalations.length}`);
-				}
-				console.log();
+			console.log();
+			if (result.complete) {
+				console.log("  Run: COMPLETE");
+			} else if (result.paused) {
+				console.log("  Run: PAUSED");
+			} else if (result.aborted) {
+				console.log("  Run: ABORTED");
+			} else {
+				console.log("  Run: INCOMPLETE");
 			}
+			console.log(
+				`  Phases completed: ${result.phasesCompleted}/${result.totalPhases}`,
+			);
+			console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
+			if (result.escalations.length > 0) {
+				console.log(`  Escalations: ${result.escalations.length}`);
+			}
+			console.log();
 
 			if (!result.complete && !result.paused) {
 				process.exitCode = process.exitCode ?? 1;

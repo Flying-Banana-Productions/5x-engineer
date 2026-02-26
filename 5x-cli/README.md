@@ -164,7 +164,9 @@ export default {
 | `--tui-listen` | Where prompts/gates run | CLI stream output | `--show-reasoning` effect |
 | --- | --- | --- | --- |
 | disabled (default) | CLI terminal | Normal headless output | Visible in CLI output |
-| enabled | TUI (when attached/reachable), else CLI fallback | CLI output still active | Visible in CLI output |
+| enabled | CLI terminal | CLI output still active | Visible in CLI output |
+
+`--tui-listen` is observability-only (session focus + notifications). Human decisions are always entered in the CLI terminal.
 
 Precedence:
 

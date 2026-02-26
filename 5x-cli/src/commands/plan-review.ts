@@ -7,11 +7,9 @@ import {
 } from "../agents/factory.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
-import { getActiveRun, getAgentResults } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
 import { createDebugTraceLogger } from "../debug/trace.js";
 import { overlayEnvFromDirectory } from "../env.js";
-import { resumeGate as headlessResumeGate } from "../gates/human.js";
 import { checkGitSafety } from "../git.js";
 import {
 	resolveReviewPath,
@@ -22,10 +20,6 @@ import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
-import {
-	createTuiHumanGate,
-	createTuiPlanReviewResumeGate,
-} from "../tui/gates.js";
 import {
 	createPermissionHandler,
 	NON_INTERACTIVE_NO_FLAG_ERROR,
@@ -207,40 +201,6 @@ export default defineCommand({
 			enabled: isTuiRequested,
 		});
 
-		// If an interrupted plan-review run exists and TUI is requested, ask the
-		// resume question before spawning TUI so the prompt is always visible.
-		let pendingResumeDecision: "resume" | "start-fresh" | "abort" | undefined;
-		if (isTuiRequested && !args.auto) {
-			const activeRun = getActiveRun(db, canonical);
-			if (activeRun && activeRun.command === "plan-review") {
-				const iteration = getAgentResults(db, activeRun.id, "-1").length;
-				trace("plan_review.resume.pre_tui.prompt", {
-					runId: activeRun.id,
-					iteration,
-				});
-				pendingResumeDecision = await headlessResumeGate(
-					activeRun.id,
-					`iteration-${iteration}`,
-					"REVIEW",
-				);
-
-				if (pendingResumeDecision === "abort") {
-					trace("plan_review.resume.pre_tui.abort", { runId: activeRun.id });
-					console.log();
-					console.log("  Plan review: ABORTED");
-					console.log(`  Run ID: ${activeRun.id.slice(0, 8)}`);
-					console.log();
-					process.exitCode = 1;
-					return;
-				}
-
-				trace("plan_review.resume.pre_tui.decision", {
-					runId: activeRun.id,
-					decision: pendingResumeDecision,
-				});
-			}
-		}
-
 		// --- Register adapter shutdown with TUI mode support ---
 		const cancelController = new AbortController();
 		// --- Spawn TUI ---
@@ -252,7 +212,6 @@ export default defineCommand({
 			enabled: isTuiRequested,
 			trace,
 		});
-		const tuiOwnsTerminal = () => false;
 		trace("plan_review.tui.controller.ready", {
 			active: tui.active,
 			attached: false,
@@ -279,33 +238,6 @@ export default defineCommand({
 		);
 		permissionHandler.start();
 
-		// Phase 5: Create TUI-native gates when in TUI mode (non-auto)
-		// These replace the readline-based gates from gates/human.ts
-		const tuiHumanGate =
-			isTuiRequested && !args.auto
-				? createTuiHumanGate(
-						(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-							._clientForTui,
-						tui,
-						{ signal: cancelController.signal, directory: projectRoot },
-					)
-				: undefined;
-		const tuiResumeGate =
-			pendingResumeDecision !== undefined
-				? async () => {
-						const decision = pendingResumeDecision ?? "abort";
-						pendingResumeDecision = undefined;
-						return decision;
-					}
-				: isTuiRequested && !args.auto
-					? createTuiPlanReviewResumeGate(
-							(adapter as import("../agents/opencode.js").OpenCodeAdapter)
-								._clientForTui,
-							tui,
-							{ signal: cancelController.signal, directory: projectRoot },
-						)
-					: undefined;
-
 		try {
 			trace("plan_review.loop.start", {
 				planPath: canonical,
@@ -322,17 +254,12 @@ export default defineCommand({
 					auto: args.auto,
 					allowDirty: args["allow-dirty"],
 					projectRoot,
-					// Function form: re-evaluated at each adapter call so TUI exit
-					// mid-run is reflected in subsequent invocations (P1.4).
-					quiet: () => effectiveQuiet || tuiOwnsTerminal(),
+					quiet: () => effectiveQuiet,
 					canonicalPlanPath: canonical,
 					showReasoning: args["show-reasoning"],
 					signal: cancelController.signal,
-					// Phase 4: Pass TUI controller for session switching and toasts
+					// TUI listen mode is observability-only; gates remain CLI-driven.
 					tui,
-					// Phase 5: Pass TUI-native gates for non-auto mode
-					humanGate: tuiHumanGate,
-					resumeGate: tuiResumeGate,
 					trace,
 				},
 			);
@@ -342,29 +269,23 @@ export default defineCommand({
 				runId: result.runId,
 			});
 
-			// Display final result.
-			// Guard on !tui.active: TUI may still own the terminal here (killed
-			// in finally below). Writing to stdout while TUI is active corrupts
-			// the display (P0.6 output ownership rule).
-			if (!tuiOwnsTerminal()) {
-				console.log();
-				if (result.approved) {
-					console.log("  Plan review: APPROVED");
-				} else {
-					console.log("  Plan review: NOT APPROVED");
-				}
-				console.log(`  Iterations: ${result.iterations}`);
-				console.log(`  Review: ${result.reviewPath}`);
-				console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
-				if (result.escalations.length > 0) {
-					console.log(`  Escalations: ${result.escalations.length}`);
-				}
-				console.log();
+			console.log();
+			if (result.approved) {
+				console.log("  Plan review: APPROVED");
+			} else {
+				console.log("  Plan review: NOT APPROVED");
+			}
+			console.log(`  Iterations: ${result.iterations}`);
+			console.log(`  Review: ${result.reviewPath}`);
+			console.log(`  Run ID: ${result.runId.slice(0, 8)}`);
+			if (result.escalations.length > 0) {
+				console.log(`  Escalations: ${result.escalations.length}`);
+			}
+			console.log();
 
-				if (result.approved) {
-					console.log(`  Next: 5x run ${planPath}`);
-					console.log();
-				}
+			if (result.approved) {
+				console.log(`  Next: 5x run ${planPath}`);
+				console.log();
 			}
 
 			if (!result.approved) {

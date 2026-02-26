@@ -200,7 +200,7 @@ export default defineCommand({
 		}
 
 		console.log("  External TUI is opt-in: use --tui-listen");
-		console.log("  Default is headless terminal mode");
+		console.log("  Interactive prompts always run in the CLI terminal");
 	},
 });
 
