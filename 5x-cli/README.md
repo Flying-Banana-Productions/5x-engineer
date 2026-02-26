@@ -18,7 +18,7 @@ It is built for Bun and uses OpenCode under the hood for agent execution.
 ## Install
 
 ```bash
-npm install -g 5x-cli
+npm install -g @5x-ai/5x-cli
 ```
 
 Verify:
