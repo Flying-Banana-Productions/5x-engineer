@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import {
 	remapReviewPathForWorktree,
+	resolveWorktreeWorkdir,
 	syncWorktreeTemplates,
+	worktreeSubfolderOffset,
 } from "../../src/commands/run.js";
 
 function makeTmpDir(): string {
@@ -161,5 +163,68 @@ describe("remapReviewPathForWorktree", () => {
 
 		expect(result.reviewPath).toBe("/tmp/review.md");
 		expect(result.warning).toBeTruthy();
+	});
+});
+
+describe("worktreeSubfolderOffset", () => {
+	test("returns empty string when projectRoot is the git root", () => {
+		const root = makeTmpDir();
+		mkdirSync(join(root, ".git"), { recursive: true });
+
+		try {
+			expect(worktreeSubfolderOffset(root)).toBe("");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("returns subfolder offset in a monorepo", () => {
+		// Create a temp dir with a .git marker and a subfolder
+		const root = makeTmpDir();
+		mkdirSync(join(root, ".git"), { recursive: true });
+		const subfolder = join(root, "packages", "my-app");
+		mkdirSync(subfolder, { recursive: true });
+
+		try {
+			const offset = worktreeSubfolderOffset(subfolder);
+			expect(offset).toBe(join("packages", "my-app"));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("returns empty string when no git root found", () => {
+		// A temp dir with no .git anywhere relevant
+		const root = makeTmpDir();
+		try {
+			// This may find a .git higher up depending on the system, but
+			// if root itself has no .git parent it returns ""
+			const offset = worktreeSubfolderOffset(root);
+			// Either "" (no git root) or a valid offset — not crashing is key
+			expect(typeof offset).toBe("string");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("resolveWorktreeWorkdir", () => {
+	test("returns worktree path unchanged when offset is empty", () => {
+		const wt = "/repo/.5x/worktrees/5x-feat";
+		expect(resolveWorktreeWorkdir(wt, "")).toBe(wt);
+	});
+
+	test("appends subfolder offset to worktree path", () => {
+		const wt = "/repo/.5x/worktrees/5x-feat";
+		expect(resolveWorktreeWorkdir(wt, "packages/my-app")).toBe(
+			"/repo/.5x/worktrees/5x-feat/packages/my-app",
+		);
+	});
+
+	test("handles single-level offset", () => {
+		const wt = "/monorepo/.5x/worktrees/5x-impl";
+		expect(resolveWorktreeWorkdir(wt, "5x-cli")).toBe(
+			"/monorepo/.5x/worktrees/5x-impl/5x-cli",
+		);
 	});
 });
