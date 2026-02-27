@@ -1160,7 +1160,7 @@ export async function runPhaseExecutionLoop(
 							.map((r) => `Command: ${r.command}\nOutput:\n${r.output}`)
 							.join("\n\n") ?? "Quality gate failed";
 
-					const fixPrompt = renderTemplate("author-process-review", {
+					const fixPrompt = renderTemplate("author-process-impl-review", {
 						review_path: phaseReviewPath,
 						plan_path: planPath,
 						user_notes: userGuidance ?? "(No additional notes)",
@@ -1262,7 +1262,7 @@ export async function runPhaseExecutionLoop(
 						phase: phase.number,
 						iteration,
 						role: "author",
-						template: "author-process-review",
+						template: "author-process-impl-review",
 						result_type: "status",
 						result_json: JSON.stringify(fixResult.status),
 						duration_ms: fixResult.duration,
@@ -1281,7 +1281,7 @@ export async function runPhaseExecutionLoop(
 						iteration,
 						data: {
 							role: "author",
-							template: "author-process-review",
+							template: "author-process-impl-review",
 							reason: "quality_retry",
 							duration: fixResult.duration,
 							logPath: qrFixLogPath,
@@ -1675,7 +1675,7 @@ export async function runPhaseExecutionLoop(
 							"author",
 							phase.number,
 							iteration,
-							"author-process-review",
+							"author-process-impl-review",
 							"status",
 						)
 					) {
@@ -1688,7 +1688,7 @@ export async function runPhaseExecutionLoop(
 							"author",
 							phase.number,
 							iteration,
-							"author-process-review",
+							"author-process-impl-review",
 							"status",
 						);
 						if (!stepRow) {
@@ -1785,7 +1785,7 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					const fixTemplate = renderTemplate("author-process-review", {
+					const fixTemplate = renderTemplate("author-process-impl-review", {
 						review_path: phaseReviewPath,
 						plan_path: planPath,
 						user_notes: userGuidance ?? "(No additional notes)",
@@ -1873,7 +1873,7 @@ export async function runPhaseExecutionLoop(
 						phase: phase.number,
 						iteration,
 						role: "author",
-						template: "author-process-review",
+						template: "author-process-impl-review",
 						result_type: "status",
 						result_json: JSON.stringify(autoFixResult.status),
 						duration_ms: autoFixResult.duration,
@@ -1892,7 +1892,7 @@ export async function runPhaseExecutionLoop(
 						iteration,
 						data: {
 							role: "author",
-							template: "author-process-review",
+							template: "author-process-impl-review",
 							reason: "auto_fix",
 							duration: autoFixResult.duration,
 							logPath: autoFixLogPath,

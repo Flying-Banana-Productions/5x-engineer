@@ -138,34 +138,68 @@ describe("author-next-phase template", () => {
 	});
 });
 
-describe("author-process-review template", () => {
+describe("author-process-plan-review template", () => {
 	const vars = {
-		review_path: "docs/development/reviews/2026-02-15-cli-review.md",
+		review_path: "docs/development/reviews/2026-02-15-cli-plan-review.md",
 		plan_path: "docs/development/001-impl-cli.md",
 		user_notes: "(No additional notes)",
 	};
 
 	test("renders with valid variables", () => {
-		const result = renderTemplate("author-process-review", vars);
-		expect(result.prompt).toContain("2026-02-15-cli-review.md");
+		const result = renderTemplate("author-process-plan-review", vars);
+		expect(result.prompt).toContain("2026-02-15-cli-plan-review.md");
 		expect(result.prompt).toContain("001-impl-cli.md");
 	});
 
 	test("includes completion section (no signal blocks)", () => {
-		const result = renderTemplate("author-process-review", vars);
+		const result = renderTemplate("author-process-plan-review", vars);
 		expect(result.prompt).toContain("Completion");
 		expect(result.prompt).toContain("structured output");
 		expect(result.prompt).not.toContain("5x:status");
 	});
 
 	test("instructs to focus on latest addendum", () => {
-		const result = renderTemplate("author-process-review", vars);
+		const result = renderTemplate("author-process-plan-review", vars);
 		expect(result.prompt).toContain("latest addendum");
 	});
 
-	test("includes guidance about plan-only vs code changes", () => {
-		const result = renderTemplate("author-process-review", vars);
-		expect(result.prompt).toContain("plan document only");
+	test("is explicitly scoped to document-only changes", () => {
+		const result = renderTemplate("author-process-plan-review", vars);
+		expect(result.prompt).toContain("document-only");
+		expect(result.prompt).not.toContain("Run all tests");
+	});
+});
+
+describe("author-process-impl-review template", () => {
+	const vars = {
+		review_path: "docs/development/reviews/2026-02-15-cli-phase-1-review.md",
+		plan_path: "docs/development/001-impl-cli.md",
+		user_notes: "(No additional notes)",
+	};
+
+	test("renders with valid variables", () => {
+		const result = renderTemplate("author-process-impl-review", vars);
+		expect(result.prompt).toContain("2026-02-15-cli-phase-1-review.md");
+		expect(result.prompt).toContain("001-impl-cli.md");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("author-process-impl-review", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain("structured output");
+		expect(result.prompt).not.toContain("5x:status");
+	});
+
+	test("instructs to focus on latest addendum", () => {
+		const result = renderTemplate("author-process-impl-review", vars);
+		expect(result.prompt).toContain("latest addendum");
+	});
+
+	test("is explicitly scoped to code implementation fixes", () => {
+		const result = renderTemplate("author-process-impl-review", vars);
+		expect(result.prompt).toContain("code implementation");
+		expect(result.prompt).toContain("Run all tests");
+		expect(result.prompt).not.toContain("document-only");
 	});
 });
 
@@ -255,15 +289,16 @@ describe("reviewer-commit template", () => {
 });
 
 describe("listTemplates", () => {
-	test("returns all 5 templates", () => {
+	test("returns all 6 templates", () => {
 		const templates = listTemplates();
 		const names = templates.map((t) => t.name);
 		expect(names).toContain("author-generate-plan");
 		expect(names).toContain("author-next-phase");
-		expect(names).toContain("author-process-review");
+		expect(names).toContain("author-process-plan-review");
+		expect(names).toContain("author-process-impl-review");
 		expect(names).toContain("reviewer-plan");
 		expect(names).toContain("reviewer-commit");
-		expect(templates.length).toBe(5);
+		expect(templates.length).toBe(6);
 	});
 
 	test("all templates have version 1", () => {

@@ -770,7 +770,7 @@ export async function runPlanReviewLoop(
 						"author",
 						"-1",
 						iteration,
-						"author-process-review",
+						"author-process-plan-review",
 						"status",
 					)
 				) {
@@ -782,7 +782,7 @@ export async function runPlanReviewLoop(
 						"author",
 						"-1",
 						iteration,
-						"author-process-review",
+						"author-process-plan-review",
 						"status",
 					);
 					if (!stepRow) {
@@ -851,7 +851,7 @@ export async function runPlanReviewLoop(
 				}
 
 				// Render author fix prompt
-				const authorTemplate = renderTemplate("author-process-review", {
+				const authorTemplate = renderTemplate("author-process-plan-review", {
 					review_path: reviewPath,
 					plan_path: planPath,
 					user_notes: userGuidance ?? "(No additional notes)",
@@ -917,7 +917,7 @@ export async function runPlanReviewLoop(
 					phase: "-1",
 					iteration,
 					role: "author",
-					template: "author-process-review",
+					template: "author-process-plan-review",
 					result_type: "status",
 					result_json: JSON.stringify(authorResult.status),
 					duration_ms: authorResult.duration,
@@ -935,7 +935,7 @@ export async function runPlanReviewLoop(
 					iteration,
 					data: {
 						role: "author",
-						template: "author-process-review",
+						template: "author-process-plan-review",
 						duration: authorResult.duration,
 						logPath: authorLogPath,
 					},

@@ -7,7 +7,10 @@ import authorGeneratePlanRaw from "./author-generate-plan.md" with {
 	type: "text",
 };
 import authorNextPhaseRaw from "./author-next-phase.md" with { type: "text" };
-import authorProcessReviewRaw from "./author-process-review.md" with {
+import authorProcessImplReviewRaw from "./author-process-impl-review.md" with {
+	type: "text",
+};
+import authorProcessPlanReviewRaw from "./author-process-plan-review.md" with {
 	type: "text",
 };
 import reviewerCommitRaw from "./reviewer-commit.md" with { type: "text" };
@@ -42,7 +45,8 @@ interface ParsedTemplate {
 const TEMPLATES: Record<string, string> = {
 	"author-generate-plan": authorGeneratePlanRaw,
 	"author-next-phase": authorNextPhaseRaw,
-	"author-process-review": authorProcessReviewRaw,
+	"author-process-plan-review": authorProcessPlanReviewRaw,
+	"author-process-impl-review": authorProcessImplReviewRaw,
 	"reviewer-plan": reviewerPlanRaw,
 	"reviewer-commit": reviewerCommitRaw,
 };
