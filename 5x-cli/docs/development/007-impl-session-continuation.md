@@ -1,12 +1,13 @@
 # Session Continuation at Escalation Gate
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** February 27, 2026
 **Updated:** February 27, 2026
 **Status:** Draft
 
 ## Revision History
 
+- **1.3 (2026-02-27):** Address latest addendum in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` v1.2 (P0: wire `timeout` + `abortOnTimeout` through *all* agent invocation call sites so guardrails are real; P1: add explicit pre-merge validation for OpenCode timeout/abort semantics and SSE subscribe replay behavior; P1: remove stringly-typed `resumeState` from `continueSession` payload and rely on existing typed routing fields).
 - **1.2 (2026-02-27):** Address latest addendum in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` (P0: timeout operability guardrail via explicit abort-on-timeout config; P1: update TUI test plan to drive `createTuiEscalationGate()` rather than private parser helpers; decide session callback semantics for reuse via a new callback; suppress re-offering `c` after a failed continuation attempt).
 - **1.1 (2026-02-27):** Address review feedback in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` (P0: handle new `EscalationResponse` action everywhere; explicit eligibility policy encoded on the event; include plan-review loop; decide timeout semantics; adjust test plan; fix symbol/path references).
 - **1.0 (2026-02-27):** Initial draft.
@@ -33,6 +34,10 @@ Why this change: interrupted sessions often have significant partial work comple
 
 **Timeouts preserve the remote session to make `c` viable, with an explicit operability guardrail.** Default behavior is to stop waiting locally and throw `AgentTimeoutError` (carrying `sessionId`) without aborting the remote session, so `c` can reuse it. Guardrail: add an explicit abort-on-timeout toggle so operators can choose hard cost-control over continuation.
 
+**Timeout config must be wired end-to-end (otherwise guardrails are a no-op).** `5x.config.*` already supports `author.timeout` / `reviewer.timeout`, but timeouts only take effect if every invocation passes `InvokeOptions.timeout` (and the new `InvokeOptions.abortOnTimeout`) into the adapter.
+
+**Avoid stringly-typed state routing in continuation metadata.** `continueSession` carries only `{ sessionId, role }`. Routing remains based on existing, already-typed state machine fields (`retryState` / `preEscalateState`) so we don't introduce new typo-prone state strings.
+
 **Limitation (explicit): in-memory only.** Continuation metadata is carried in-memory through the escalation event; it does not survive process restart/resume.
 
 ## Scope
@@ -45,6 +50,7 @@ In scope:
 - Update both headless (stdin) and TUI parsers/UX.
 - Update `docs/10-dashboard.md` to document the new response shape.
 - Add an explicit config/flag to choose abort-on-timeout vs preserve-for-continuation (operability guardrail).
+- Plumb `timeout` and `abortOnTimeout` into *all* relevant agent invocations (phase-execution loop, plan-review loop, and `plan` command).
 
 Out of scope:
 
@@ -82,7 +88,6 @@ export interface EscalationEvent {
   /** When set, `c` may be offered to reuse an existing agent session. */
   continueSession?: {
     sessionId: string;
-    resumeState: string;
     role: "author" | "reviewer";
   };
 }
@@ -92,7 +97,7 @@ export interface EscalationEvent {
 
 **`src/orchestrator/phase-execution-loop.ts`**: In each state that can transition to ESCALATE (EXECUTE, QUALITY_RETRY, REVIEW, AUTO_FIX):
 
-- **Success path** (`needs_human`/`failed` result): extract `sessionId` from `InvokeStatus`/`InvokeVerdict` and include in `EscalationEvent.continueSession` with the correct `role` and `resumeState`.
+- **Success path** (`needs_human`/`failed` result): extract `sessionId` from `InvokeStatus`/`InvokeVerdict` and include in `EscalationEvent.continueSession` with the correct `role`.
 - **Error path** (timeout, network error): extract `sessionId` from `AgentTimeoutError.sessionId` if available and include it in `EscalationEvent.continueSession` (best-effort).
 - **Error path (failed continuation attempt)**: if this escalation is being created from an invocation that already attempted continuation (`InvokeOptions.sessionId` was set), do **not** set `continueSession` on the new escalation event (force `f` path).
 
@@ -169,7 +174,7 @@ Update the toast message to mention `continue-session` only when the event is el
 - In the `"continue_session"` case:
   - Set `continueSessionId = lastEscalation.continueSession?.sessionId`
   - Set `userGuidance = response.guidance` if provided
-  - Compute `resumeState` from the event payload (prefer `lastEscalation.continueSession?.resumeState`; fall back to existing `retryState ?? preEscalateState`)
+  - Compute `resumeState` using existing typed routing (`retryState ?? preEscalateState`)
   - Transition to `resumeState`
 
 ### P3.2 — Handle continue_session in plan-review loop
@@ -231,13 +236,34 @@ Both callbacks remain best-effort/non-blocking (never awaited), matching current
 Guardrail (required): add an explicit abort-on-timeout toggle.
 
 - Add `InvokeOptions.abortOnTimeout?: boolean` (default: `false`)
-- Wire from config (recommended): `5x.config` under `author.abortOnTimeout` / `reviewer.abortOnTimeout`
+- Wire from config (required for non-no-op): `5x.config` under `author.abortOnTimeout` / `reviewer.abortOnTimeout` and pass to every invocation site
 - Record behavior in user-facing surfaces: update config schema docs/types and the `5x init` generated `5x.config.*` template to include commented `abortOnTimeout` examples.
 - When `abortOnTimeout === true`: preserve current behavior (abort remote session on timeout), and `c` will not be eligible after timeouts because there is no usable session to continue
 
 If we keep any abort-on-timeout behavior (e.g., via an opt-in flag), document that `c` is best-effort for timeouts under that configuration.
 
-### P4.4 — Error handling for continuation failures
+### P4.4 — Wire timeout + abortOnTimeout into all invocation call sites (P0)
+
+Problem: config keys only matter if they are passed into `InvokeOptions` everywhere we invoke the adapter.
+
+Required wiring:
+
+- **`src/orchestrator/phase-execution-loop.ts`**: every author/reviewer invocation passes:
+  - `timeout: config.{author|reviewer}.timeout`
+  - `abortOnTimeout: config.{author|reviewer}.abortOnTimeout`
+- **`src/orchestrator/plan-review-loop.ts`**: every author/reviewer invocation passes the same per-role timeout + abortOnTimeout.
+- **`src/commands/plan.ts`**: the author invocation passes:
+  - `timeout: config.author.timeout`
+  - `abortOnTimeout: config.author.abortOnTimeout`
+
+Config changes required to make this real:
+
+- **`src/config.ts`**: extend agent config schema to include `abortOnTimeout?: boolean` (default: `false`).
+- **`5x.config.*` templates (`src/commands/init.ts`)**: include commented `timeout` + `abortOnTimeout` examples for both `author` and `reviewer`.
+
+This closes the addendum P0.1 gap: `abortOnTimeout` (and `timeout`) are not a dead config knob.
+
+### P4.5 — Error handling for continuation failures
 
 No special error *class* is needed in the adapter. If `session.prompt()` fails because the session is aborted, deleted, or otherwise unusable, the error propagates normally.
 
@@ -286,6 +312,7 @@ Add/update tests that inject an escalation gate function returning `continue_ses
 
 - Phase-execution loop: `continue_session` resumes the correct state and passes `InvokeOptions.sessionId`.
 - Plan-review loop: `continue_session` is handled explicitly (no hang / no silent ignore), and the next invocation reuses the session ID when eligible.
+- Timeout wiring: adapter invocations receive the configured `timeout` (seconds) and `abortOnTimeout` values for both author and reviewer.
 - Eligibility enforcement: role/state mismatch cases do not set `event.continueSession`, and TUI enforcement rejects `continue_session` when not eligible.
 
 ### P6.3 — Unit tests for error classes
@@ -316,8 +343,31 @@ Add/update tests that inject an escalation gate function returning `continue_ses
 - `src/agents/errors.ts` (AgentTimeoutError.sessionId)
 - `src/config.ts` + `5x.config.*` (add `author.abortOnTimeout` / `reviewer.abortOnTimeout` wiring)
 - `src/commands/init.ts` (update generated `5x.config.*` template to include `abortOnTimeout` comments)
+- `src/commands/plan.ts` (pass `timeout` + `abortOnTimeout` into author invocation so config is not a no-op)
 - `docs/10-dashboard.md` (document new action)
 - `test/tui/gates.test.ts` + orchestrator tests (cover parsing + state machine safety)
+
+## Pre-merge Validation (P1)
+
+These are required checks before shipping continuation-after-timeout as a reliable feature.
+
+### V1 — Confirm OpenCode timeout/abort semantics preserve a usable session
+
+Assumption: local timeout aborts waiting but does *not* make the remote session unusable, and a follow-on `session.prompt()` to the same `sessionId` continues correctly.
+
+If this is false (remote run is cancelled/locks the session), we must change eligibility:
+
+- Do not set `EscalationEvent.continueSession` for timeout-originated escalations (force `f`), or
+- Add a cheap “session still usable?” check (if the SDK/server supports it) before offering `c`.
+
+### V2 — Confirm SSE `event.subscribe()` replay behavior for existing sessions
+
+Risk: if `event.subscribe()` replays historical events for an existing session, continued invocations may re-log prior transcript into the new `.ndjson` file.
+
+Mitigation options (pick the simplest supported by the SDK/server):
+
+- Use a `since`/cursor parameter if available, or
+- Best-effort dedupe/skip based on event IDs/timestamps if present in the event payload.
 
 ## Completion Gates
 
@@ -326,6 +376,7 @@ P0 blockers:
 - All `EscalationResponse` consumers explicitly handle `continue_session` (phase-execution loop, plan-review loop, TUI gate wrapper logic).
 - `c` is only offered when `EscalationEvent.continueSession` is set; role/state mismatch cases never set it.
 - Timeout operability guardrail is implemented: explicit abort-on-timeout toggle exists, documented, and plumbed into invocation.
+- `timeout` and `abortOnTimeout` are wired into all agent invocation call sites (phase-execution loop, plan-review loop, and `plan` command) so the guardrail is not a no-op.
 
 P1 recommended:
 
@@ -333,3 +384,4 @@ P1 recommended:
 - Plan references match actual symbols/paths (`escalationGate()`, `createTuiEscalationGate()`, etc.).
 - Tests cover `continue_session` without relying on interactive stdin unit tests.
 - Failed continuation attempts do not re-offer `c` indefinitely (suppression/forcing `f` path on subsequent escalation).
+- OpenCode abort/timeout semantics + SSE subscribe replay semantics are validated, with an explicit fallback if continuation is not viable after timeout.
