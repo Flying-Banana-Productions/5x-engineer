@@ -399,7 +399,11 @@ export default defineCommand({
 		registerLockCleanup(projectRoot, canonical);
 
 		// --- Resolve review path ---
-		const reviewsDir = resolve(projectRoot, config.paths.reviews);
+		// Implementation reviews use a dedicated directory (or fall back to reviews)
+		const reviewsDir = resolve(
+			projectRoot,
+			config.paths.runReviews ?? config.paths.reviews,
+		);
 		const additionalReviewDirs: string[] = [];
 		if (workdir !== projectRoot) {
 			const reviewsRel = relative(projectRoot, reviewsDir);
@@ -412,6 +416,7 @@ export default defineCommand({
 			}
 		}
 		let reviewPath = resolveReviewPath(db, canonical, reviewsDir, {
+			command: "run",
 			additionalReviewDirs,
 		});
 
@@ -445,7 +450,7 @@ export default defineCommand({
 				);
 				console.error(`  Review path: ${reviewPath}`);
 				console.error(
-					"  Fix: set paths.reviews to a path within the project root.",
+					"  Fix: set paths.runReviews (or paths.reviews) to a path within the project root.",
 				);
 			}
 		}
@@ -497,7 +502,7 @@ export default defineCommand({
 			`  Phases: ${incompletePhases.length} remaining of ${plan.phases.length} total`,
 		);
 		console.log(`  Review base: ${reviewPath}`);
-		console.log("  Review files: per-phase (-phase-N-review.md)");
+		console.log("  Review files: per-phase (<plan>-phase-N-review.md)");
 		if (args.phase) {
 			console.log(`  Starting from phase: ${args.phase}`);
 		}

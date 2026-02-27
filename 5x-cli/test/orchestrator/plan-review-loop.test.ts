@@ -273,6 +273,95 @@ describe("resolveReviewPath", () => {
 			cleanup();
 		}
 	});
+
+	test("reviewSuffix controls filename suffix for fresh paths", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const reviewsDir = join(tmp, "docs/development/reviews");
+			const dateStr = new Date().toISOString().slice(0, 10);
+
+			const planReviewPath = resolveReviewPath(db, planPath, reviewsDir, {
+				reviewSuffix: "plan-review",
+			});
+			expect(planReviewPath).toContain(
+				`${dateStr}-001-test-plan-plan-review.md`,
+			);
+
+			const implReviewPath = resolveReviewPath(db, planPath, reviewsDir, {
+				reviewSuffix: "review",
+			});
+			expect(implReviewPath).toContain(`${dateStr}-001-test-plan-review.md`);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("command filter scopes DB lookup to matching command type", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const canonicalPath = canonicalizePlanPath(planPath);
+			const reviewsDir = join(tmp, "docs/development/reviews");
+			const planReviewFile = join(reviewsDir, "2026-01-01-plan-review.md");
+			const runReviewFile = join(reviewsDir, "2026-01-01-impl-review.md");
+
+			createRun(db, {
+				id: "pr-run",
+				planPath: canonicalPath,
+				command: "plan-review",
+				reviewPath: planReviewFile,
+			});
+			updateRunStatus(db, "pr-run", "completed");
+
+			createRun(db, {
+				id: "run-run",
+				planPath: canonicalPath,
+				command: "run",
+				reviewPath: runReviewFile,
+			});
+			updateRunStatus(db, "run-run", "completed");
+
+			// Filtered to plan-review: gets plan review path
+			const forPlan = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "plan-review",
+			});
+			expect(forPlan).toBe(planReviewFile);
+
+			// Filtered to run: gets run review path
+			const forRun = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "run",
+			});
+			expect(forRun).toBe(runReviewFile);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("command filter computes fresh path when no matching command in DB", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const canonicalPath = canonicalizePlanPath(planPath);
+			const reviewsDir = join(tmp, "docs/development/reviews");
+
+			// Only a plan-review run exists
+			createRun(db, {
+				id: "pr-run",
+				planPath: canonicalPath,
+				command: "plan-review",
+				reviewPath: join(reviewsDir, "2026-01-01-plan-review.md"),
+			});
+			updateRunStatus(db, "pr-run", "completed");
+
+			// Looking for a 'run' command — no match, so fresh path is computed
+			const dateStr = new Date().toISOString().slice(0, 10);
+			const path = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "run",
+			});
+			expect(path).toContain(`${dateStr}-001-test-plan-review.md`);
+			expect(path).not.toBe(join(reviewsDir, "2026-01-01-plan-review.md"));
+		} finally {
+			cleanup();
+		}
+	});
 });
 
 describe("runPlanReviewLoop", () => {

@@ -71,6 +71,10 @@ export interface ResolveReviewPathOptions {
 	additionalReviewDirs?: string[];
 	/** Optional warning sink for testability. */
 	warn?: (message: string) => void;
+	/** Filter DB lookup to runs with this command (e.g. 'plan-review' or 'run'). */
+	command?: string;
+	/** Filename suffix before `.md` (default: 'review'). Use 'plan-review' for plan reviews. */
+	reviewSuffix?: string;
 }
 
 /**
@@ -155,9 +159,16 @@ function generateId(): string {
 }
 
 /**
- * Compute review path for a plan. Checks DB for an existing review_path from
- * prior runs on this plan (reuse for addendum continuity); if none, compute a
- * fresh path: `<reviewsDir>/<date>-<plan-basename>-review.md`.
+ * Compute review path for a plan or run. Checks DB for an existing review_path
+ * from prior runs on this plan (reuse for addendum continuity); if none, compute
+ * a fresh path: `<reviewsDir>/<date>-<plan-basename>-<suffix>.md`.
+ *
+ * Use `options.command` to scope the DB lookup to a specific command type
+ * (e.g. 'plan-review' or 'run') so plan-review paths don't leak into run
+ * lookups and vice versa.
+ *
+ * Use `options.reviewSuffix` to control the filename suffix (default: 'review').
+ * For plan reviews, pass 'plan-review' to produce `-plan-review.md` filenames.
  */
 export function resolveReviewPath(
 	db: Database,
@@ -191,8 +202,10 @@ export function resolveReviewPath(
 		});
 	};
 
+	const command = options.command;
+
 	// Check DB for existing review path — validate it's under the reviews dir
-	const latestRun = getLatestRun(db, canonical);
+	const latestRun = getLatestRun(db, canonical, command);
 	if (latestRun?.review_path) {
 		if (isUnderReviewsDir(latestRun.review_path)) {
 			return latestRun.review_path;
@@ -201,7 +214,7 @@ export function resolveReviewPath(
 	}
 
 	// Also check non-canonical path
-	const latestRunAlt = getLatestRun(db, planPath);
+	const latestRunAlt = getLatestRun(db, planPath, command);
 	if (latestRunAlt?.review_path) {
 		if (isUnderReviewsDir(latestRunAlt.review_path)) {
 			return latestRunAlt.review_path;
@@ -210,9 +223,10 @@ export function resolveReviewPath(
 	}
 
 	// Compute fresh path
+	const suffix = options.reviewSuffix ?? "review";
 	const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 	const planBase = basename(planPath, ".md");
-	return join(reviewsDir, `${date}-${planBase}-review.md`);
+	return join(reviewsDir, `${date}-${planBase}-${suffix}.md`);
 }
 
 /** Default human escalation gate — prompts via stdin. */

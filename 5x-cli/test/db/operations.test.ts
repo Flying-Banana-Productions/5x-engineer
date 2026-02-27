@@ -160,6 +160,45 @@ describe("runs", () => {
 		const run = unwrap(getLatestRun(db, "/plan.md"));
 		expect(run.review_path).toBe("/reviews/review.md");
 	});
+
+	test("getLatestRun filters by command when provided", () => {
+		createRun(db, {
+			id: "run1",
+			planPath: "/plan.md",
+			command: "plan-review",
+			reviewPath: "/reviews/plan-review.md",
+		});
+		updateRunStatus(db, "run1", "completed");
+		createRun(db, {
+			id: "run2",
+			planPath: "/plan.md",
+			command: "run",
+			reviewPath: "/reviews/impl-review.md",
+		});
+
+		// Without filter: returns the latest (run2)
+		const latest = unwrap(getLatestRun(db, "/plan.md"));
+		expect(latest.id).toBe("run2");
+
+		// Filtered to plan-review: returns run1
+		const planReview = unwrap(getLatestRun(db, "/plan.md", "plan-review"));
+		expect(planReview.id).toBe("run1");
+		expect(planReview.review_path).toBe("/reviews/plan-review.md");
+
+		// Filtered to run: returns run2
+		const run = unwrap(getLatestRun(db, "/plan.md", "run"));
+		expect(run.id).toBe("run2");
+		expect(run.review_path).toBe("/reviews/impl-review.md");
+	});
+
+	test("getLatestRun with command filter returns null when no match", () => {
+		createRun(db, {
+			id: "run1",
+			planPath: "/plan.md",
+			command: "plan-review",
+		});
+		expect(getLatestRun(db, "/plan.md", "run")).toBeNull();
+	});
 });
 
 // --- Events ---

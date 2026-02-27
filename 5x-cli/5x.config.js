@@ -4,10 +4,12 @@ export default {
 	// Configure model/timeouts independently for author and reviewer invocations.
 	author: {
 		model: "anthropic/claude-opus-4-6",
+    // model: "openai/gpt-5.3-codex",
 		// timeout: 900, // seconds; omit to disable timeout
 	},
 	reviewer: {
-		 model: "openai/gpt-5.2",
+    model: "opencode/gpt-5.2",
+		// model: "openai/gpt-5.2",
 		// timeout: 900, // seconds; omit to disable timeout
 	},
 
@@ -28,6 +30,8 @@ export default {
 	paths: {
 		plans: "docs/development",
 		reviews: "docs/development/reviews",
+		// planReviews: "docs/development/reviews/plans",  // plan review output dir (defaults to reviews)
+		// runReviews: "docs/development/reviews/impl",    // implementation review output dir (defaults to reviews)
 		archive: "docs/archive",
 		templates: {
 			plan: ".5x/templates/implementation-plan-template.md",

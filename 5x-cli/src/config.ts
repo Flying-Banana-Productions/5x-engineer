@@ -11,6 +11,10 @@ const AgentConfigSchema = z.object({
 const PathsSchema = z.object({
 	plans: z.string().default("docs/development"),
 	reviews: z.string().default("docs/development/reviews"),
+	/** Directory for plan reviews. Defaults to `reviews` at runtime. */
+	planReviews: z.string().optional(),
+	/** Directory for implementation (run) reviews. Defaults to `reviews` at runtime. */
+	runReviews: z.string().optional(),
 	archive: z.string().default("docs/archive"),
 	templates: z
 		.object({
@@ -113,7 +117,14 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 	]);
 	const allowedAgent = new Set(["model", "timeout"]);
 	const allowedWorktree = new Set(["postCreate"]);
-	const allowedPaths = new Set(["plans", "reviews", "archive", "templates"]);
+	const allowedPaths = new Set([
+		"plans",
+		"reviews",
+		"planReviews",
+		"runReviews",
+		"archive",
+		"templates",
+	]);
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
 

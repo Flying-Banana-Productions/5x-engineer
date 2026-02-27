@@ -40,6 +40,8 @@ export default {
 	paths: {
 		plans: "docs/development",
 		reviews: "docs/development/reviews",
+		// planReviews: "docs/development/reviews/plans",  // plan review output dir (defaults to reviews)
+		// runReviews: "docs/development/reviews/impl",    // implementation review output dir (defaults to reviews)
 		archive: "docs/archive",
 		templates: {
 			plan: ".5x/templates/implementation-plan-template.md",

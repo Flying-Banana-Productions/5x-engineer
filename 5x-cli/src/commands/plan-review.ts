@@ -129,7 +129,7 @@ export default defineCommand({
 		const { config } = await loadConfig(projectRoot);
 		trace("plan_review.config.loaded", {
 			projectRoot,
-			reviewsPath: config.paths.reviews,
+			reviewsPath: config.paths.planReviews ?? config.paths.reviews,
 		});
 
 		// Git safety check
@@ -154,9 +154,15 @@ export default defineCommand({
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
 
-		// Resolve review path
-		const reviewsDir = resolve(projectRoot, config.paths.reviews);
-		const reviewPath = resolveReviewPath(db, canonical, reviewsDir);
+		// Resolve review path — plan reviews use a dedicated directory (or fall back to reviews)
+		const reviewsDir = resolve(
+			projectRoot,
+			config.paths.planReviews ?? config.paths.reviews,
+		);
+		const reviewPath = resolveReviewPath(db, canonical, reviewsDir, {
+			command: "plan-review",
+			reviewSuffix: "plan-review",
+		});
 
 		// --- Fail-closed check for non-interactive mode (before adapter creation) ---
 		const isNonInteractive = !process.stdin.isTTY;

@@ -182,12 +182,12 @@ function generateId(): string {
 /**
  * Resolve the review file path for a specific phase.
  *
- * Default behavior now uses per-phase review files to prevent one large
- * append-only document from accumulating all phase addendums.
+ * Always produces per-phase review files to prevent one large append-only
+ * document from accumulating all phase addendums, and to keep implementation
+ * reviews cleanly separated from plan reviews.
  *
- * Backward compatibility:
  * - If `reviewPath` includes `{phase}`, that token is replaced.
- * - If `reviewPath` already exists, keep single-file behavior.
+ * - Otherwise, `-phase-<N>` is inserted before the `-review` suffix.
  */
 export function resolvePhaseReviewPath(
 	reviewPath: string,
@@ -197,10 +197,6 @@ export function resolvePhaseReviewPath(
 
 	if (reviewPath.includes("{phase}")) {
 		return reviewPath.replaceAll("{phase}", phaseToken);
-	}
-
-	if (existsSync(reviewPath)) {
-		return reviewPath;
 	}
 
 	const ext = extname(reviewPath);
