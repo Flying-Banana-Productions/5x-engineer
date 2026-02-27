@@ -448,7 +448,9 @@ export function createTuiHumanGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
-): (event: EscalationEvent) => Promise<"continue" | "approve" | "abort"> {
+): (
+	event: EscalationEvent,
+) => Promise<"continue" | "continue_session" | "approve" | "abort"> {
 	const escalationGate = createTuiEscalationGate(client, tui, opts);
 	return async (event) => {
 		const decision = await escalationGate(event);

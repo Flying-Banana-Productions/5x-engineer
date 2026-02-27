@@ -31,10 +31,13 @@ export interface EscalationEvent {
 	 * and other non-author escalations should set this to "REVIEW", "AUTO_FIX", etc.
 	 */
 	retryState?: string;
+	/** Set when the interrupted session can be continued. */
+	sessionId?: string;
 }
 
 export type EscalationResponse =
 	| { action: "continue"; guidance?: string }
+	| { action: "continue_session"; guidance?: string }
 	| { action: "approve" }
 	| { action: "abort" };
 

@@ -971,6 +971,7 @@ export async function runPhaseExecutionLoop(
 							reason: authorResult.status.reason ?? "Author needs human input",
 							iteration,
 							logPath: executeLogPath,
+							sessionId: authorResult.sessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -990,6 +991,7 @@ export async function runPhaseExecutionLoop(
 							reason: authorResult.status.reason ?? "Author reported failure",
 							iteration,
 							logPath: executeLogPath,
+							sessionId: authorResult.sessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1299,6 +1301,7 @@ export async function runPhaseExecutionLoop(
 								`Author reported ${fixResult.status.result} during quality fix`,
 							iteration,
 							logPath: qrFixLogPath,
+							sessionId: fixResult.sessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1931,6 +1934,7 @@ export async function runPhaseExecutionLoop(
 								"Author needs human input during fix",
 							iteration,
 							logPath: autoFixLogPath,
+							sessionId: autoFixResult.sessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1956,6 +1960,7 @@ export async function runPhaseExecutionLoop(
 								"Author reported failure during fix",
 							iteration,
 							logPath: autoFixLogPath,
+							sessionId: autoFixResult.sessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {

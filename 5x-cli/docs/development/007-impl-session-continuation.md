@@ -42,7 +42,7 @@ Out of scope:
 
 ## Phase 1: Types and Plumbing
 
-### P1.1 — Extend EscalationEvent and EscalationResponse
+### P1.1 — Extend EscalationEvent and EscalationResponse [x]
 
 **`src/gates/human.ts`**:
 
@@ -60,7 +60,7 @@ export type EscalationResponse =
   | { action: "abort" };
 ```
 
-### P1.2 — Add sessionId to InvokeOptions
+### P1.2 — Add sessionId to InvokeOptions [x]
 
 **`src/agents/types.ts`**:
 
@@ -72,7 +72,7 @@ export interface InvokeOptions {
 }
 ```
 
-### P1.3 — Capture sessionId on escalation events
+### P1.3 — Capture sessionId on escalation events [x]
 
 **`src/orchestrator/phase-execution-loop.ts`**: In author states (EXECUTE, QUALITY_RETRY, AUTO_FIX) that transition to ESCALATE:
 
