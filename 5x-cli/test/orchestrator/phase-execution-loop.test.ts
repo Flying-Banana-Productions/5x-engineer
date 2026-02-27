@@ -235,11 +235,17 @@ describe("runPhaseExecutionLoop", () => {
 		);
 	});
 
-	test("resolvePhaseReviewPath preserves legacy single-file path when it exists", () => {
+	test("resolvePhaseReviewPath always produces per-phase paths even when base exists", () => {
 		const { reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		try {
 			expect(existsSync(reviewPath)).toBe(true);
-			expect(resolvePhaseReviewPath(reviewPath, "2")).toBe(reviewPath);
+			// Even when the base review file exists on disk, per-phase paths are produced.
+			// This prevents implementation reviews from being appended to plan review files.
+			const expected = reviewPath.replace(
+				"test-review.md",
+				"test-phase-2-review.md",
+			);
+			expect(resolvePhaseReviewPath(reviewPath, "2")).toBe(expected);
 		} finally {
 			cleanup();
 		}

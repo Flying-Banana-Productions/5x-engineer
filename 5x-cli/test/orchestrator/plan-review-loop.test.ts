@@ -116,12 +116,21 @@ type MockResponse =
 			error: Error;
 	  };
 
+interface MockAdapterHooks {
+	onStatusInvoke?: (opts: InvokeOptions) => void;
+	onVerdictInvoke?: (opts: InvokeOptions) => void;
+}
+
 /** Build a mock adapter from a queue of responses. */
-function createMockAdapter(responses: MockResponse[]): AgentAdapter {
+function createMockAdapter(
+	responses: MockResponse[],
+	hooks: MockAdapterHooks = {},
+): AgentAdapter {
 	let idx = 0;
 	return {
 		serverUrl: "http://127.0.0.1:51234",
 		async invokeForStatus(_opts: InvokeOptions): Promise<InvokeStatus> {
+			hooks.onStatusInvoke?.(_opts);
 			const r = responses[idx++];
 			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
 			if (r.type === "error") throw r.error;
@@ -136,6 +145,7 @@ function createMockAdapter(responses: MockResponse[]): AgentAdapter {
 			};
 		},
 		async invokeForVerdict(_opts: InvokeOptions): Promise<InvokeVerdict> {
+			hooks.onVerdictInvoke?.(_opts);
 			const r = responses[idx++];
 			if (!r) throw new Error(`Mock adapter exhausted after ${idx - 1} calls`);
 			if (r.type === "error") throw r.error;
@@ -259,6 +269,95 @@ describe("resolveReviewPath", () => {
 
 			expect(path).toBe(priorReviewPath);
 			expect(warns).toHaveLength(0);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewSuffix controls filename suffix for fresh paths", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const reviewsDir = join(tmp, "docs/development/reviews");
+			const dateStr = new Date().toISOString().slice(0, 10);
+
+			const planReviewPath = resolveReviewPath(db, planPath, reviewsDir, {
+				reviewSuffix: "plan-review",
+			});
+			expect(planReviewPath).toContain(
+				`${dateStr}-001-test-plan-plan-review.md`,
+			);
+
+			const implReviewPath = resolveReviewPath(db, planPath, reviewsDir, {
+				reviewSuffix: "review",
+			});
+			expect(implReviewPath).toContain(`${dateStr}-001-test-plan-review.md`);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("command filter scopes DB lookup to matching command type", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const canonicalPath = canonicalizePlanPath(planPath);
+			const reviewsDir = join(tmp, "docs/development/reviews");
+			const planReviewFile = join(reviewsDir, "2026-01-01-plan-review.md");
+			const runReviewFile = join(reviewsDir, "2026-01-01-impl-review.md");
+
+			createRun(db, {
+				id: "pr-run",
+				planPath: canonicalPath,
+				command: "plan-review",
+				reviewPath: planReviewFile,
+			});
+			updateRunStatus(db, "pr-run", "completed");
+
+			createRun(db, {
+				id: "run-run",
+				planPath: canonicalPath,
+				command: "run",
+				reviewPath: runReviewFile,
+			});
+			updateRunStatus(db, "run-run", "completed");
+
+			// Filtered to plan-review: gets plan review path
+			const forPlan = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "plan-review",
+			});
+			expect(forPlan).toBe(planReviewFile);
+
+			// Filtered to run: gets run review path
+			const forRun = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "run",
+			});
+			expect(forRun).toBe(runReviewFile);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("command filter computes fresh path when no matching command in DB", () => {
+		const { tmp, db, planPath, cleanup } = createTestEnv();
+		try {
+			const canonicalPath = canonicalizePlanPath(planPath);
+			const reviewsDir = join(tmp, "docs/development/reviews");
+
+			// Only a plan-review run exists
+			createRun(db, {
+				id: "pr-run",
+				planPath: canonicalPath,
+				command: "plan-review",
+				reviewPath: join(reviewsDir, "2026-01-01-plan-review.md"),
+			});
+			updateRunStatus(db, "pr-run", "completed");
+
+			// Looking for a 'run' command — no match, so fresh path is computed
+			const dateStr = new Date().toISOString().slice(0, 10);
+			const path = resolveReviewPath(db, planPath, reviewsDir, {
+				command: "run",
+			});
+			expect(path).toContain(`${dateStr}-001-test-plan-review.md`);
+			expect(path).not.toBe(join(reviewsDir, "2026-01-01-plan-review.md"));
 		} finally {
 			cleanup();
 		}
@@ -460,6 +559,59 @@ describe("runPlanReviewLoop", () => {
 
 			expect(result.approved).toBe(true);
 			expect(humanCalls).toBe(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("escalation guidance is passed into the next author fix prompt", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			let authorPrompt = "";
+			const adapter = createMockAdapter(
+				[
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "not_ready",
+							items: [
+								{
+									id: "P2.1",
+									title: "Remote bind policy",
+									action: "human_required",
+									reason: "Need explicit stance",
+								},
+							],
+						},
+					},
+					{ type: "status", status: { result: "complete" } },
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onStatusInvoke: (opts) => {
+						authorPrompt = opts.prompt;
+					},
+				},
+			);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: async () => ({
+						action: "continue",
+						guidance: "Require explicit --allow-remote opt-in.",
+					}),
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			expect(authorPrompt).toContain("Require explicit --allow-remote opt-in.");
+			expect(authorPrompt).not.toContain("(No additional notes)");
 		} finally {
 			cleanup();
 		}

@@ -18,7 +18,7 @@ import {
 import { runMigrations } from "../db/schema.js";
 import { parsePlan } from "../parsers/plan.js";
 import { resolveProjectRoot } from "../project-root.js";
-import { renderTemplate } from "../templates/loader.js";
+import { renderTemplate, setTemplateOverrideDir } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
 import {
@@ -189,6 +189,9 @@ export default defineCommand({
 		// Initialize DB
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
+
+		// Enable user-customized prompt templates (if present on disk)
+		setTemplateOverrideDir(resolve(projectRoot, ".5x", "templates", "prompts"));
 
 		// Create run record
 		const runId = generateId();

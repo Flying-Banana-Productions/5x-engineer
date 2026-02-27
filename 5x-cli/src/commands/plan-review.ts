@@ -18,6 +18,7 @@ import {
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
 import {
@@ -129,7 +130,7 @@ export default defineCommand({
 		const { config } = await loadConfig(projectRoot);
 		trace("plan_review.config.loaded", {
 			projectRoot,
-			reviewsPath: config.paths.reviews,
+			reviewsPath: config.paths.planReviews ?? config.paths.reviews,
 		});
 
 		// Git safety check
@@ -154,9 +155,18 @@ export default defineCommand({
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
 
-		// Resolve review path
-		const reviewsDir = resolve(projectRoot, config.paths.reviews);
-		const reviewPath = resolveReviewPath(db, canonical, reviewsDir);
+		// Enable user-customized prompt templates (if present on disk)
+		setTemplateOverrideDir(resolve(projectRoot, ".5x", "templates", "prompts"));
+
+		// Resolve review path — plan reviews use a dedicated directory (or fall back to reviews)
+		const reviewsDir = resolve(
+			projectRoot,
+			config.paths.planReviews ?? config.paths.reviews,
+		);
+		const reviewPath = resolveReviewPath(db, canonical, reviewsDir, {
+			command: "plan-review",
+			reviewSuffix: "plan-review",
+		});
 
 		// --- Fail-closed check for non-interactive mode (before adapter creation) ---
 		const isNonInteractive = !process.stdin.isTTY;

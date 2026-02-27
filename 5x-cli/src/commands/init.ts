@@ -5,6 +5,7 @@ import {
 	DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
 	DEFAULT_REVIEW_TEMPLATE,
 } from "../templates/default-artifacts.js";
+import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
 
 /**
  * Generate the 5x.config.js content.
@@ -40,6 +41,8 @@ export default {
 	paths: {
 		plans: "docs/development",
 		reviews: "docs/development/reviews",
+		// planReviews: "docs/development/reviews/plans",  // plan review output dir (defaults to reviews)
+		// runReviews: "docs/development/reviews/impl",    // implementation review output dir (defaults to reviews)
 		archive: "docs/archive",
 		templates: {
 			plan: ".5x/templates/implementation-plan-template.md",
@@ -98,6 +101,44 @@ function ensureTemplateFiles(
 		writeFileSync(target.path, target.content, "utf-8");
 		if (exists) overwritten.push(target.name);
 		else created.push(target.name);
+	}
+
+	return { created, overwritten, skipped };
+}
+
+/**
+ * Scaffold editable copies of the agent prompt templates into
+ * `.5x/templates/prompts/`. Users can customize these to alter agent behavior;
+ * the loader falls back to bundled defaults for any missing files.
+ */
+function ensurePromptTemplates(
+	projectRoot: string,
+	force: boolean,
+): {
+	created: string[];
+	overwritten: string[];
+	skipped: string[];
+} {
+	const promptsDir = join(projectRoot, ".5x", "templates", "prompts");
+	mkdirSync(promptsDir, { recursive: true });
+
+	const templates = listTemplates();
+	const created: string[] = [];
+	const overwritten: string[] = [];
+	const skipped: string[] = [];
+
+	for (const tmpl of templates) {
+		const filename = `${tmpl.name}.md`;
+		const filePath = join(promptsDir, filename);
+		const exists = existsSync(filePath);
+		if (exists && !force) {
+			skipped.push(filename);
+			continue;
+		}
+		const content = getDefaultTemplateRaw(tmpl.name);
+		writeFileSync(filePath, content, "utf-8");
+		if (exists) overwritten.push(filename);
+		else created.push(filename);
 	}
 
 	return { created, overwritten, skipped };
@@ -189,6 +230,21 @@ export default defineCommand({
 			console.log(`  Skipped .5x/templates/${name} (already exists)`);
 		}
 
+		// 2b. Scaffold prompt templates (agent prompts, customizable)
+		const promptResult = ensurePromptTemplates(
+			projectRoot,
+			Boolean(args.force),
+		);
+		for (const name of promptResult.created) {
+			console.log(`  Created .5x/templates/prompts/${name}`);
+		}
+		for (const name of promptResult.overwritten) {
+			console.log(`  Overwrote .5x/templates/prompts/${name}`);
+		}
+		for (const name of promptResult.skipped) {
+			console.log(`  Skipped .5x/templates/prompts/${name} (already exists)`);
+		}
+
 		// 3. Update .gitignore
 		const gitignoreResult = ensureGitignore(projectRoot);
 		if (gitignoreResult.created) {
@@ -205,4 +261,9 @@ export default defineCommand({
 });
 
 // Export helpers for testing
-export { ensureGitignore, ensureTemplateFiles, generateConfigContent };
+export {
+	ensureGitignore,
+	ensurePromptTemplates,
+	ensureTemplateFiles,
+	generateConfigContent,
+};

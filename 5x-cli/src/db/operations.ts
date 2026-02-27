@@ -327,7 +327,18 @@ export function getActiveRun(db: Database, planPath: string): RunRow | null {
 		.get(planPath) as RunRow | null;
 }
 
-export function getLatestRun(db: Database, planPath: string): RunRow | null {
+export function getLatestRun(
+	db: Database,
+	planPath: string,
+	command?: string,
+): RunRow | null {
+	if (command) {
+		return db
+			.query(
+				"SELECT * FROM runs WHERE plan_path = ?1 AND command = ?2 ORDER BY rowid DESC LIMIT 1",
+			)
+			.get(planPath, command) as RunRow | null;
+	}
 	return db
 		.query(
 			"SELECT * FROM runs WHERE plan_path = ?1 ORDER BY rowid DESC LIMIT 1",

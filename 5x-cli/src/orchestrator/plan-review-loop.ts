@@ -56,7 +56,7 @@ import { buildEscalationReason } from "../utils/agent-event-helpers.js";
 // Re-exported here for backward compatibility with existing consumers.
 export type { EscalationEvent } from "../gates/human.js";
 
-import type { EscalationEvent } from "../gates/human.js";
+import type { EscalationEvent, EscalationResponse } from "../gates/human.js";
 
 export interface PlanReviewResult {
 	approved: boolean;
@@ -71,6 +71,10 @@ export interface ResolveReviewPathOptions {
 	additionalReviewDirs?: string[];
 	/** Optional warning sink for testability. */
 	warn?: (message: string) => void;
+	/** Filter DB lookup to runs with this command (e.g. 'plan-review' or 'run'). */
+	command?: string;
+	/** Filename suffix before `.md` (default: 'review'). Use 'plan-review' for plan reviews. */
+	reviewSuffix?: string;
 }
 
 /**
@@ -112,9 +116,7 @@ export interface PlanReviewLoopOptions {
 	/** Show reasoning/thinking tokens inline (dim). Default: false (suppressed). */
 	showReasoning?: boolean;
 	/** Override for testing — supply a function that prompts for human decisions. */
-	humanGate?: (
-		event: EscalationEvent,
-	) => Promise<"continue" | "approve" | "abort">;
+	humanGate?: (event: EscalationEvent) => Promise<PlanReviewHumanGateResponse>;
 	/** Override for testing — supply a function that prompts for resume decisions. */
 	resumeGate?: (
 		runId: string,
@@ -141,6 +143,12 @@ export interface PlanReviewLoopOptions {
 	trace?: (event: string, data?: unknown) => void;
 }
 
+export type PlanReviewHumanGateResponse =
+	| "continue"
+	| "approve"
+	| "abort"
+	| EscalationResponse;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -151,9 +159,16 @@ function generateId(): string {
 }
 
 /**
- * Compute review path for a plan. Checks DB for an existing review_path from
- * prior runs on this plan (reuse for addendum continuity); if none, compute a
- * fresh path: `<reviewsDir>/<date>-<plan-basename>-review.md`.
+ * Compute review path for a plan or run. Checks DB for an existing review_path
+ * from prior runs on this plan (reuse for addendum continuity); if none, compute
+ * a fresh path: `<reviewsDir>/<date>-<plan-basename>-<suffix>.md`.
+ *
+ * Use `options.command` to scope the DB lookup to a specific command type
+ * (e.g. 'plan-review' or 'run') so plan-review paths don't leak into run
+ * lookups and vice versa.
+ *
+ * Use `options.reviewSuffix` to control the filename suffix (default: 'review').
+ * For plan reviews, pass 'plan-review' to produce `-plan-review.md` filenames.
  */
 export function resolveReviewPath(
 	db: Database,
@@ -187,8 +202,10 @@ export function resolveReviewPath(
 		});
 	};
 
+	const command = options.command;
+
 	// Check DB for existing review path — validate it's under the reviews dir
-	const latestRun = getLatestRun(db, canonical);
+	const latestRun = getLatestRun(db, canonical, command);
 	if (latestRun?.review_path) {
 		if (isUnderReviewsDir(latestRun.review_path)) {
 			return latestRun.review_path;
@@ -197,7 +214,7 @@ export function resolveReviewPath(
 	}
 
 	// Also check non-canonical path
-	const latestRunAlt = getLatestRun(db, planPath);
+	const latestRunAlt = getLatestRun(db, planPath, command);
 	if (latestRunAlt?.review_path) {
 		if (isUnderReviewsDir(latestRunAlt.review_path)) {
 			return latestRunAlt.review_path;
@@ -206,15 +223,16 @@ export function resolveReviewPath(
 	}
 
 	// Compute fresh path
+	const suffix = options.reviewSuffix ?? "review";
 	const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 	const planBase = basename(planPath, ".md");
-	return join(reviewsDir, `${date}-${planBase}-review.md`);
+	return join(reviewsDir, `${date}-${planBase}-${suffix}.md`);
 }
 
 /** Default human escalation gate — prompts via stdin. */
 async function defaultHumanGate(
 	event: EscalationEvent,
-): Promise<"continue" | "approve" | "abort"> {
+): Promise<EscalationResponse> {
 	console.log();
 	console.log("  === Human Review Required ===");
 	console.log(`  Reason: ${event.reason}`);
@@ -226,7 +244,9 @@ async function defaultHumanGate(
 	}
 	console.log();
 	console.log("  Options:");
-	console.log("    f = fix and re-review");
+	console.log(
+		"    f = fix with guidance (agent addresses issues, then re-review)",
+	);
 	console.log("    o = override and move on (force approve)");
 	console.log("    q = abort (stop the review loop)");
 	console.log();
@@ -234,17 +254,32 @@ async function defaultHumanGate(
 	// Non-interactive detection
 	if (!process.stdin.isTTY) {
 		console.log("  Non-interactive mode detected — aborting.");
-		return "abort";
+		return { action: "abort" };
 	}
 
 	process.stdout.write("  Choice [f/o/q]: ");
 	const input = await readLine();
 	const choice = input.trim().toLowerCase();
-	if (choice === "f" || choice === "fix" || choice === "continue")
-		return "continue";
+	if (choice === "f" || choice === "fix" || choice === "continue") {
+		process.stdout.write("  Guidance (optional, press Enter to skip): ");
+		const guidance = await readLine();
+		return {
+			action: "continue",
+			guidance: guidance.trim() || undefined,
+		};
+	}
 	if (choice === "o" || choice === "override" || choice === "approve")
-		return "approve";
-	return "abort";
+		return { action: "approve" };
+	return { action: "abort" };
+}
+
+function normalizeHumanGateResponse(
+	response: PlanReviewHumanGateResponse,
+): EscalationResponse {
+	if (typeof response !== "string") return response;
+	if (response === "continue") return { action: "continue" };
+	if (response === "approve") return { action: "approve" };
+	return { action: "abort" };
 }
 
 /** Default resume gate — prompts via stdin. */
@@ -439,6 +474,7 @@ export async function runPlanReviewLoop(
 	// resumes the correct state (REVIEW or AUTO_FIX) rather than always REVIEW.
 	let preEscalateState: LoopState = "REVIEW";
 	let autoEscalationAttempts = 0;
+	let userGuidance: string | undefined;
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
@@ -734,7 +770,7 @@ export async function runPlanReviewLoop(
 						"author",
 						"-1",
 						iteration,
-						"author-process-review",
+						"author-process-plan-review",
 						"status",
 					)
 				) {
@@ -746,7 +782,7 @@ export async function runPlanReviewLoop(
 						"author",
 						"-1",
 						iteration,
-						"author-process-review",
+						"author-process-plan-review",
 						"status",
 					);
 					if (!stepRow) {
@@ -815,11 +851,12 @@ export async function runPlanReviewLoop(
 				}
 
 				// Render author fix prompt
-				const authorTemplate = renderTemplate("author-process-review", {
+				const authorTemplate = renderTemplate("author-process-plan-review", {
 					review_path: reviewPath,
 					plan_path: planPath,
-					user_notes: "(No additional notes)",
+					user_notes: userGuidance ?? "(No additional notes)",
 				});
+				userGuidance = undefined;
 
 				const authorResultId = generateId();
 				const authorLogPath = join(logDir, `agent-${authorResultId}.ndjson`);
@@ -880,7 +917,7 @@ export async function runPlanReviewLoop(
 					phase: "-1",
 					iteration,
 					role: "author",
-					template: "author-process-review",
+					template: "author-process-plan-review",
 					result_type: "status",
 					result_json: JSON.stringify(authorResult.status),
 					duration_ms: authorResult.duration,
@@ -898,7 +935,7 @@ export async function runPlanReviewLoop(
 					iteration,
 					data: {
 						role: "author",
-						template: "author-process-review",
+						template: "author-process-plan-review",
 						duration: authorResult.duration,
 						logPath: authorLogPath,
 					},
@@ -1022,22 +1059,29 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
-				const decision = await humanGate(lastEscalation);
+				const response = normalizeHumanGateResponse(
+					await humanGate(lastEscalation),
+				);
 				appendRunEvent(db, {
 					runId,
 					eventType: "human_decision",
 					iteration,
-					data: { decision, escalation: lastEscalation },
+					data: { response, escalation: lastEscalation },
 				});
 
-				switch (decision) {
-					case "continue":
+				switch (response.action) {
+					case "continue": {
 						// Resume explicit retry state when present; otherwise return to the
 						// state that triggered escalation.
-						state =
+						const resumeState =
 							(lastEscalation.retryState as LoopState | undefined) ??
 							preEscalateState;
+						if (response.guidance && resumeState === "AUTO_FIX") {
+							userGuidance = response.guidance;
+						}
+						state = resumeState;
 						break;
+					}
 					case "approve":
 						state = "APPROVED";
 						break;

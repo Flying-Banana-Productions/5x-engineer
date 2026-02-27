@@ -27,8 +27,8 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 - `--auto` flag for full autonomy with agent-driven escalation for consequential decisions
 - Per-project configuration via `5x.config.js` (JS-only for cross-runtime compatibility)
 
-**Out of scope:**
-- Custom UI/dashboard for monitoring runs — terminal output only
+**Out of scope (for this plan):**
+- Custom UI/dashboard for monitoring runs — separate initiative, see [10-dashboard.md](../10-dashboard.md)
 - Token cost optimization or caching — agents manage their own context
 - Multi-repo or monorepo orchestration — single project at a time
 - Agent model selection logic — user configures models in config file
@@ -1581,7 +1581,7 @@ $ 5x history --run abc123
 
 ## Not In Scope
 
-- **Web dashboard or monitoring UI** — terminal output only; CI integration is sufficient
+- **Web dashboard or monitoring UI** — separate initiative, see [10-dashboard.md](../10-dashboard.md)
 - **Token cost optimization** — agents manage their own context; CLI only reports what adapters provide
 - **Multi-project orchestration** — single project root per invocation
 - **Custom agent adapters** — only Claude Code and OpenCode; plugin system deferred

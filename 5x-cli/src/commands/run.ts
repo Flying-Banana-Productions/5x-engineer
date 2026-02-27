@@ -26,7 +26,8 @@ import { runPhaseExecutionLoop } from "../orchestrator/phase-execution-loop.js";
 import { resolveReviewPath } from "../orchestrator/plan-review-loop.js";
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
-import { resolveProjectRoot } from "../project-root.js";
+import { findGitRoot, resolveProjectRoot } from "../project-root.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
 import {
@@ -50,6 +51,30 @@ export interface WorktreeReviewPathResult {
 function isPathInside(parent: string, child: string): boolean {
 	const rel = relative(parent, child);
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Compute the subfolder offset between the git root and the project root.
+ * In a monorepo where `5x.config` lives in a subfolder, `git worktree add`
+ * checks out the entire repo so paths inside the worktree must include
+ * this offset. Returns "" when they're the same directory.
+ */
+export function worktreeSubfolderOffset(projectRoot: string): string {
+	const gitRoot = findGitRoot(projectRoot);
+	if (!gitRoot) return "";
+	return relative(gitRoot, projectRoot);
+}
+
+/**
+ * Given a raw worktree root path and a subfolder offset, return the
+ * effective working directory inside the worktree that corresponds
+ * to the project root.
+ */
+export function resolveWorktreeWorkdir(
+	worktreePath: string,
+	offset: string,
+): string {
+	return offset ? resolve(worktreePath, offset) : worktreePath;
 }
 
 export function remapReviewPathForWorktree(opts: {
@@ -230,11 +255,16 @@ export default defineCommand({
 		let workdir = projectRoot;
 		let createdWorktree = false;
 
+		// In a monorepo, projectRoot (where 5x.config lives) may be a
+		// subfolder of the git root.  `git worktree add` checks out the
+		// entire repo, so paths inside the worktree must include this offset.
+		const wtOffset = worktreeSubfolderOffset(projectRoot);
+
 		// Check DB for existing worktree association
 		const planRecord = getPlan(db, canonical);
 		if (planRecord?.worktree_path) {
 			if (existsSync(planRecord.worktree_path)) {
-				workdir = planRecord.worktree_path;
+				workdir = resolveWorktreeWorkdir(planRecord.worktree_path, wtOffset);
 				console.log(`  Using worktree: ${workdir}`);
 			}
 		}
@@ -251,7 +281,7 @@ export default defineCommand({
 
 			try {
 				const info = await createWorktree(projectRoot, branch, wtPath);
-				workdir = info.path;
+				workdir = resolveWorktreeWorkdir(info.path, wtOffset);
 				createdWorktree = true;
 				upsertPlan(db, {
 					planPath: canonical,
@@ -369,8 +399,15 @@ export default defineCommand({
 		// Register lock cleanup
 		registerLockCleanup(projectRoot, canonical);
 
+		// Enable user-customized prompt templates (if present on disk)
+		setTemplateOverrideDir(resolve(projectRoot, ".5x", "templates", "prompts"));
+
 		// --- Resolve review path ---
-		const reviewsDir = resolve(projectRoot, config.paths.reviews);
+		// Implementation reviews use a dedicated directory (or fall back to reviews)
+		const reviewsDir = resolve(
+			projectRoot,
+			config.paths.runReviews ?? config.paths.reviews,
+		);
 		const additionalReviewDirs: string[] = [];
 		if (workdir !== projectRoot) {
 			const reviewsRel = relative(projectRoot, reviewsDir);
@@ -383,6 +420,7 @@ export default defineCommand({
 			}
 		}
 		let reviewPath = resolveReviewPath(db, canonical, reviewsDir, {
+			command: "run",
 			additionalReviewDirs,
 		});
 
@@ -416,7 +454,7 @@ export default defineCommand({
 				);
 				console.error(`  Review path: ${reviewPath}`);
 				console.error(
-					"  Fix: set paths.reviews to a path within the project root.",
+					"  Fix: set paths.runReviews (or paths.reviews) to a path within the project root.",
 				);
 			}
 		}
@@ -468,7 +506,7 @@ export default defineCommand({
 			`  Phases: ${incompletePhases.length} remaining of ${plan.phases.length} total`,
 		);
 		console.log(`  Review base: ${reviewPath}`);
-		console.log("  Review files: per-phase (-phase-N-review.md)");
+		console.log("  Review files: per-phase (<plan>-phase-N-review.md)");
 		if (args.phase) {
 			console.log(`  Starting from phase: ${args.phase}`);
 		}

@@ -40,9 +40,11 @@ If the commit references an existing review document, validate that the commit(s
 
 ### Review Format
 
-If `{{review_path}}` already exists (prior review), append your assessment as a new **Addendum** section following the existing review template conventions. Do not modify the existing review content.
+If `{{review_path}}` already exists (prior review of this same implementation phase), append your assessment as a new **Addendum** section following the existing review template conventions. Do not modify the existing review content.
 
 If `{{review_path}}` does not exist, create a new review document. Look for a review template at `{{review_template_path}}` and follow its structure.
+
+**Important:** Only write to `{{review_path}}`. Do not write to or append to any other review files (e.g. plan review files).
 
 ### Issue Classification
 
