@@ -18,6 +18,7 @@ import {
 import { parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { createTuiController } from "../tui/controller.js";
 import { resolveTuiListen } from "../tui/detect.js";
 import {
@@ -153,6 +154,9 @@ export default defineCommand({
 		// Initialize DB
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
+
+		// Enable user-customized prompt templates (if present on disk)
+		setTemplateOverrideDir(resolve(projectRoot, ".5x", "templates", "prompts"));
 
 		// Resolve review path — plan reviews use a dedicated directory (or fall back to reviews)
 		const reviewsDir = resolve(

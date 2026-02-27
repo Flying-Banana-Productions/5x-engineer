@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 // Template files are co-located and imported as strings via Bun's text loader
@@ -50,6 +52,40 @@ const TEMPLATES: Record<string, string> = {
 	"reviewer-plan": reviewerPlanRaw,
 	"reviewer-commit": reviewerCommitRaw,
 };
+
+// ---------------------------------------------------------------------------
+// User-override support: if an override directory is set, templates on disk
+// take precedence over the bundled defaults. This allows users to customize
+// agent prompts by editing files scaffolded by `5x init`.
+// ---------------------------------------------------------------------------
+
+let overrideDir: string | null = null;
+
+/**
+ * Set a directory to check for user-customized prompt templates before falling
+ * back to the bundled defaults. Pass `null` to clear overrides.
+ *
+ * Clears the parsed cache so subsequent `loadTemplate` calls pick up the change.
+ */
+export function setTemplateOverrideDir(dir: string | null): void {
+	overrideDir = dir;
+	parsedCache.clear();
+}
+
+/**
+ * Return the raw bundled content (frontmatter + body) for a template.
+ * Used by `5x init` to scaffold editable copies to disk.
+ */
+export function getDefaultTemplateRaw(name: string): string {
+	const raw = TEMPLATES[name];
+	if (raw === undefined) {
+		const available = Object.keys(TEMPLATES).join(", ");
+		throw new Error(
+			`Unknown template "${name}". Available templates: ${available}`,
+		);
+	}
+	return raw;
+}
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const ESCAPED_BRACES_RE = /\\\{\{/g;
@@ -136,8 +172,10 @@ function parseTemplate(raw: string, templateName: string): ParsedTemplate {
 const parsedCache = new Map<string, ParsedTemplate>();
 
 /**
- * Load a template by name. Returns parsed metadata and raw body.
- * Throws if the template does not exist or has invalid frontmatter.
+ * Load a template by name. If an override directory is set and contains a
+ * matching `<name>.md` file, that file is used. Otherwise falls back to the
+ * bundled default. Throws if the template does not exist or has invalid
+ * frontmatter.
  */
 export function loadTemplate(name: string): {
 	metadata: TemplateMetadata;
@@ -146,7 +184,20 @@ export function loadTemplate(name: string): {
 	const cached = parsedCache.get(name);
 	if (cached) return cached;
 
-	const raw = TEMPLATES[name];
+	// Check for user override on disk
+	let raw: string | undefined;
+	if (overrideDir) {
+		const overridePath = join(overrideDir, `${name}.md`);
+		if (existsSync(overridePath)) {
+			raw = readFileSync(overridePath, "utf-8");
+		}
+	}
+
+	// Fall back to bundled default
+	if (raw === undefined) {
+		raw = TEMPLATES[name];
+	}
+
 	if (raw === undefined) {
 		const available = Object.keys(TEMPLATES).join(", ");
 		throw new Error(

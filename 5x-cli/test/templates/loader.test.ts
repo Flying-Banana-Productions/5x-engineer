@@ -1,9 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+	getDefaultTemplateRaw,
 	listTemplates,
 	loadTemplate,
 	renderBody,
 	renderTemplate,
+	setTemplateOverrideDir,
 } from "../../src/templates/loader.js";
 
 describe("loadTemplate", () => {
@@ -399,5 +404,175 @@ describe("frontmatter name validation (P1.1)", () => {
 			const { metadata } = loadTemplate(t.name);
 			expect(metadata.name).toBe(t.name);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Override mechanism tests
+// ---------------------------------------------------------------------------
+
+describe("setTemplateOverrideDir — disk-first loading", () => {
+	let tmpDir: string;
+
+	afterEach(() => {
+		setTemplateOverrideDir(null); // reset for other tests
+		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test("loads template from override dir when file exists", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		// Write a valid override with modified body
+		writeFileSync(
+			join(tmpDir, "author-generate-plan.md"),
+			[
+				"---",
+				"name: author-generate-plan",
+				"version: 1",
+				"variables:",
+				"  - prd_path",
+				"  - plan_path",
+				"  - plan_template_path",
+				"---",
+				"CUSTOM OVERRIDE: {{prd_path}} {{plan_path}} {{plan_template_path}}",
+			].join("\n"),
+		);
+
+		setTemplateOverrideDir(tmpDir);
+		const { body } = loadTemplate("author-generate-plan");
+		expect(body).toContain("CUSTOM OVERRIDE:");
+	});
+
+	test("falls back to bundled when override dir set but file missing", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		// Dir exists but no file for author-generate-plan
+
+		setTemplateOverrideDir(tmpDir);
+		const { body } = loadTemplate("author-generate-plan");
+		// Should get the bundled default
+		expect(body).toContain("Completion");
+		expect(body).not.toContain("CUSTOM OVERRIDE");
+	});
+
+	test("clearing override dir restores bundled templates", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		writeFileSync(
+			join(tmpDir, "author-generate-plan.md"),
+			[
+				"---",
+				"name: author-generate-plan",
+				"version: 1",
+				"variables:",
+				"  - prd_path",
+				"  - plan_path",
+				"  - plan_template_path",
+				"---",
+				"CUSTOM OVERRIDE: {{prd_path}} {{plan_path}} {{plan_template_path}}",
+			].join("\n"),
+		);
+
+		setTemplateOverrideDir(tmpDir);
+		expect(loadTemplate("author-generate-plan").body).toContain(
+			"CUSTOM OVERRIDE",
+		);
+
+		setTemplateOverrideDir(null);
+		expect(loadTemplate("author-generate-plan").body).not.toContain(
+			"CUSTOM OVERRIDE",
+		);
+	});
+
+	test("cache is cleared when override dir changes", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		const subDir = join(tmpDir, "v2");
+		mkdirSync(subDir);
+
+		writeFileSync(
+			join(tmpDir, "author-generate-plan.md"),
+			[
+				"---",
+				"name: author-generate-plan",
+				"version: 1",
+				"variables:",
+				"  - prd_path",
+				"  - plan_path",
+				"  - plan_template_path",
+				"---",
+				"VERSION_A: {{prd_path}} {{plan_path}} {{plan_template_path}}",
+			].join("\n"),
+		);
+		writeFileSync(
+			join(subDir, "author-generate-plan.md"),
+			[
+				"---",
+				"name: author-generate-plan",
+				"version: 1",
+				"variables:",
+				"  - prd_path",
+				"  - plan_path",
+				"  - plan_template_path",
+				"---",
+				"VERSION_B: {{prd_path}} {{plan_path}} {{plan_template_path}}",
+			].join("\n"),
+		);
+
+		setTemplateOverrideDir(tmpDir);
+		expect(loadTemplate("author-generate-plan").body).toContain("VERSION_A");
+
+		setTemplateOverrideDir(subDir);
+		expect(loadTemplate("author-generate-plan").body).toContain("VERSION_B");
+	});
+
+	test("override with mismatched frontmatter name throws", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		writeFileSync(
+			join(tmpDir, "author-generate-plan.md"),
+			[
+				"---",
+				"name: wrong-name",
+				"version: 1",
+				"variables:",
+				"  - prd_path",
+				"  - plan_path",
+				"  - plan_template_path",
+				"---",
+				"Bad template",
+			].join("\n"),
+		);
+
+		setTemplateOverrideDir(tmpDir);
+		expect(() => loadTemplate("author-generate-plan")).toThrow(
+			/does not match registry key/,
+		);
+	});
+
+	test("unknown template still throws even with override dir set", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-override-"));
+		setTemplateOverrideDir(tmpDir);
+		expect(() => loadTemplate("nonexistent-template")).toThrow(
+			/Unknown template/,
+		);
+	});
+});
+
+describe("getDefaultTemplateRaw", () => {
+	test("returns raw content including frontmatter", () => {
+		const raw = getDefaultTemplateRaw("author-generate-plan");
+		expect(raw).toMatch(/^---\n/);
+		expect(raw).toContain("name: author-generate-plan");
+		expect(raw).toContain("variables:");
+	});
+
+	test("returns content for all registered templates", () => {
+		const templates = listTemplates();
+		for (const t of templates) {
+			const raw = getDefaultTemplateRaw(t.name);
+			expect(raw).toContain(`name: ${t.name}`);
+		}
+	});
+
+	test("throws for unknown template name", () => {
+		expect(() => getDefaultTemplateRaw("does-not-exist")).toThrow(
+			/Unknown template "does-not-exist"/,
+		);
 	});
 });
