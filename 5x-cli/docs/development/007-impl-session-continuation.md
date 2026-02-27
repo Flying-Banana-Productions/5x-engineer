@@ -1,126 +1,58 @@
 # Session Continuation at Escalation Gate
 
-**Version:** 1.3
+**Version:** 2.0
 **Created:** February 27, 2026
-**Updated:** February 27, 2026
 **Status:** Draft
-
-## Revision History
-
-- **1.3 (2026-02-27):** Address latest addendum in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` v1.2 (P0: wire `timeout` + `abortOnTimeout` through *all* agent invocation call sites so guardrails are real; P1: add explicit pre-merge validation for OpenCode timeout/abort semantics and SSE subscribe replay behavior; P1: remove stringly-typed `resumeState` from `continueSession` payload and rely on existing typed routing fields).
-- **1.2 (2026-02-27):** Address latest addendum in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` (P0: timeout operability guardrail via explicit abort-on-timeout config; P1: update TUI test plan to drive `createTuiEscalationGate()` rather than private parser helpers; decide session callback semantics for reuse via a new callback; suppress re-offering `c` after a failed continuation attempt).
-- **1.1 (2026-02-27):** Address review feedback in `docs/development/reviews/2026-02-27-007-impl-session-continuation-plan-review.md` (P0: handle new `EscalationResponse` action everywhere; explicit eligibility policy encoded on the event; include plan-review loop; decide timeout semantics; adjust test plan; fix symbol/path references).
-- **1.0 (2026-02-27):** Initial draft.
 
 ## Overview
 
-Current behavior: when an agent session is interrupted (reports `needs_human` or `failed`) and the user is presented with the escalation gate `[f/o/q]`, choosing `f` (fix) creates a brand-new agent session. The new session has zero context from the prior attempt — no tool calls, file reads, partial edits, or conversation history. The only carryover is optional guidance text injected into the template's `user_notes` variable.
+Current behavior: when an agent session reports `needs_human` or `failed` and the escalation gate shows `[f/o/q]`, choosing `f` creates a brand-new agent session with zero context from the prior attempt.
 
-Desired behavior: a new `c` (continue session) option resumes the interrupted agent session by sending a follow-up message to the existing OpenCode session. The agent retains full conversation context and can pick up where it left off. The existing `f` option remains for cases where a fresh start is preferred.
+Desired behavior: a new `c` option resumes the interrupted OpenCode session. The agent retains full conversation context (tool calls, file reads, partial edits) and picks up where it left off. `f` remains for starting fresh.
 
-Why this change: interrupted sessions often have significant partial work completed. Restarting from scratch wastes tokens, time, and may produce different (worse) results without the accumulated context. Session continuation is the natural user expectation when "continuing" interrupted work.
+Why: restarting from scratch wastes tokens, time, and loses accumulated context. Continuation is the natural expectation.
 
 ## Design Decisions
 
-**Session continuation reuses the OpenCode `session.prompt()` API, not a new mechanism.** The adapter already sends two prompts per invocation (work + structured summary) to the same session. Continuation is simply a third+ message to an existing session. No SDK gap.
+**Reuses `session.prompt()`.** The adapter already sends two prompts per invocation (work + structured summary) to the same session. Continuation is a third message to an existing session. No SDK changes needed.
 
-**The `sessionId` is plumbed through `EscalationEvent`, not queried from the DB.** While `agent_results` stores session IDs, querying the DB adds coupling and race conditions. Carrying the ID in-memory through the escalation event is simpler and more reliable.
+**`sessionId` carried in-memory on `EscalationEvent`, not queried from DB.** Simpler and avoids coupling to the agent_results table. Does not survive process restart — that's acceptable.
 
-**Eligibility for `c` is explicit and enforced (not inferred by the gate).** The gate only offers `c` when the orchestrator sets a dedicated continuation payload on the escalation event (see `EscalationEvent.continueSession`). This prevents incorrect “continue reviewer session but route to author AUTO_FIX” behavior.
+**Only author sessions are continuable.** Reviewer-originated escalations that route to `AUTO_FIX` involve a role change; the reviewer's session has no author context. Only EXECUTE, QUALITY_RETRY, and AUTO_FIX states set `sessionId` on escalation events.
 
-**Continuation attempt failures force a fresh-session retry path (no repeat `c` loop).** If an invocation is attempted with `InvokeOptions.sessionId` and it fails (session gone/aborted/busy), the resulting escalation must *not* carry `EscalationEvent.continueSession`. This prevents offering `c` repeatedly for a session that is likely unusable.
+**No continuation after timeouts.** Timeout-originated escalations call `session.abort()` on the remote session. Continuing an aborted session is unreliable. Don't offer `c` — keeps the design simple and avoids needing `abortOnTimeout` config plumbing.
 
-**The continuation prompt is minimal and inline, not a template.** It is one or two sentences, not a full frontmatter template. The agent already has full context from its prior conversation — re-sending the plan path, phase number, etc. would be redundant.
+**Failed continuation suppresses repeat `c`.** If an invocation attempted continuation and failed, the resulting escalation omits `sessionId` to force the `f` path. Prevents a loop of retrying a broken session.
 
-**Timeouts preserve the remote session to make `c` viable, with an explicit operability guardrail.** Default behavior is to stop waiting locally and throw `AgentTimeoutError` (carrying `sessionId`) without aborting the remote session, so `c` can reuse it. Guardrail: add an explicit abort-on-timeout toggle so operators can choose hard cost-control over continuation.
-
-**Timeout config must be wired end-to-end (otherwise guardrails are a no-op).** `5x.config.*` already supports `author.timeout` / `reviewer.timeout`, but timeouts only take effect if every invocation passes `InvokeOptions.timeout` (and the new `InvokeOptions.abortOnTimeout`) into the adapter.
-
-**Avoid stringly-typed state routing in continuation metadata.** `continueSession` carries only `{ sessionId, role }`. Routing remains based on existing, already-typed state machine fields (`retryState` / `preEscalateState`) so we don't introduce new typo-prone state strings.
-
-**Limitation (explicit): in-memory only.** Continuation metadata is carried in-memory through the escalation event; it does not survive process restart/resume.
+**Continuation prompt is inline, not a template.** One or two sentences. The agent already has full context — re-sending plan path, phase number, etc. would be redundant.
 
 ## Scope
 
 In scope:
-
-- Add a new escalation decision `c` / `continue-session` that reuses an existing OpenCode session.
-- Plumb continuation metadata from adapter → orchestrators → escalation gate.
-- Handle the new `EscalationResponse` action everywhere it is consumed (no hangs / silent ignores).
-- Update both headless (stdin) and TUI parsers/UX.
-- Update `docs/10-dashboard.md` to document the new response shape.
-- Add an explicit config/flag to choose abort-on-timeout vs preserve-for-continuation (operability guardrail).
-- Plumb `timeout` and `abortOnTimeout` into *all* relevant agent invocations (phase-execution loop, plan-review loop, and `plan` command).
+- `c` / `continue-session` escalation option in headless and TUI gates
+- Plumb `sessionId` from adapter results → escalation events → state machine → adapter
+- Adapter: skip `session.create()` when `sessionId` provided
+- Phase execution loop only (`5x run`)
 
 Out of scope:
+- Plan-review loop (follow-up)
+- Timeout continuation / `abortOnTimeout` config
+- DB-backed continuation across process restart
+- Cross-role continuation (reviewer → author)
 
-- DB-backed continuation across process restart.
-- Cross-role continuation (e.g., continue reviewer session but route into author AUTO_FIX).
-- Fixing unrelated logging issues (e.g., `! [object Object]`).
+## Phase 1: Types and Plumbing
 
-## Phase 1: Plumb Continuation Metadata to the Escalation Gate
+### P1.1 — Extend EscalationEvent and EscalationResponse
 
-### P1.1 — Add sessionId to error classes
-
-**`src/agents/errors.ts`**: Add optional `sessionId?: string` property to `AgentTimeoutError`. Accept it as a constructor parameter.
-
-No change needed for `AgentCancellationError` — cancellation goes to ABORTED, never reaches the escalation gate.
-
-### P1.2 — Attach sessionId to errors in the adapter
-
-**`src/agents/opencode.ts`**: In `_invoke()` catch block (around line 1077), when constructing `AgentTimeoutError`, pass the local `sessionId` variable:
-
-```ts
-throw new AgentTimeoutError(
-  `Agent timed out after ${timeoutMs}ms`,
-  sessionId,
-);
-```
-
-### P1.3 — Add continuation metadata to EscalationEvent
-
-**`src/gates/human.ts`**: Add a dedicated continuation payload so the gate doesn’t need to infer eligibility from state machine internals:
+**`src/gates/human.ts`**:
 
 ```ts
 export interface EscalationEvent {
   // ...existing fields...
-
-  /** When set, `c` may be offered to reuse an existing agent session. */
-  continueSession?: {
-    sessionId: string;
-    role: "author" | "reviewer";
-  };
+  /** Set when the interrupted session can be continued. */
+  sessionId?: string;
 }
-```
 
-### P1.4 — Capture continuation metadata in phase execution loop
-
-**`src/orchestrator/phase-execution-loop.ts`**: In each state that can transition to ESCALATE (EXECUTE, QUALITY_RETRY, REVIEW, AUTO_FIX):
-
-- **Success path** (`needs_human`/`failed` result): extract `sessionId` from `InvokeStatus`/`InvokeVerdict` and include in `EscalationEvent.continueSession` with the correct `role`.
-- **Error path** (timeout, network error): extract `sessionId` from `AgentTimeoutError.sessionId` if available and include it in `EscalationEvent.continueSession` (best-effort).
-- **Error path (failed continuation attempt)**: if this escalation is being created from an invocation that already attempted continuation (`InvokeOptions.sessionId` was set), do **not** set `continueSession` on the new escalation event (force `f` path).
-
-This requires capturing the sessionId before it goes out of scope at the end of each case block. The cleanest approach is to include it directly on the `EscalationEvent` being constructed.
-
-Eligibility enforcement (P0): for any escalation where the next invocation role/state differs from the session being continued (e.g., reviewer-originated escalation that routes into author `AUTO_FIX`), do not set `continueSession`.
-
-### P1.5 — Capture continuation metadata in plan-review loop
-
-**`src/orchestrator/plan-review-loop.ts`**: When building an `EscalationEvent` from an agent invocation result/error:
-
-- Include `continueSession` only when the next invocation will use the same role/template family as the session being continued.
-- If the failed invocation already attempted continuation (`InvokeOptions.sessionId` was set), do **not** set `continueSession` on the resulting escalation (force `f` path).
-
-This loop has both reviewer and author invocations; tag `continueSession.role` accordingly.
-
-## Phase 2: Add `c` Option to Escalation Gate
-
-### P2.1 — Extend EscalationResponse type
-
-**`src/gates/human.ts`**: Add `"continue_session"` as a valid action:
-
-```ts
 export type EscalationResponse =
   | { action: "continue"; guidance?: string }
   | { action: "continue_session"; guidance?: string }
@@ -128,260 +60,105 @@ export type EscalationResponse =
   | { action: "abort" };
 ```
 
-### P2.2 — Update headless escalation gate
+### P1.2 — Add sessionId to InvokeOptions
 
-**`src/gates/human.ts`**: In `escalationGate(event)`:
-
-- Show `c` option only when `event.continueSession?.sessionId` is present
-- Display text:
-  ```
-  c = continue session (resume the interrupted agent)
-  f = fix in new session (start fresh with optional guidance)
-  o = override and move on (force approve this phase)
-  q = abort (stop execution)
-  ```
-- When user enters `c`: prompt for optional guidance (same flow as `f`), return `{ action: "continue_session", guidance? }`
-
-Enforcement: if the user enters `c` when `event.continueSession` is unset, treat it as invalid input (interactive) and re-prompt.
-
-### P2.3 — Update plan-review loop headless gate
-
-`plan-review` currently has its own stdin prompt (`defaultHumanGate`) in **`src/orchestrator/plan-review-loop.ts`**.
-
-Plan:
-
-- Prefer replacing `defaultHumanGate` with a thin wrapper around **`src/gates/human.ts`** `escalationGate(event)` so option sets and eligibility checks stay consistent.
-- If we keep a separate prompt, it must match the same `c` option rules (`event.continueSession`) and return `{ action: "continue_session" }`.
-
-### P2.4 — Update TUI escalation gate
-
-**`src/tui/gates.ts`**: Update the escalation decision parsing used by `createTuiEscalationGate(...)` (the parser helper may remain private):
-
-- Parse `c`, `continue-session` → `{ action: "continue_session" }`
-- Parse `c: some guidance` → `{ action: "continue_session", guidance: "some guidance" }`
-
-Enforcement (P0): `createTuiEscalationGate(event)` must reject `continue_session` when `event.continueSession` is unset (treat as invalid input and show the existing invalid-input toast).
-
-Update the toast message to mention `continue-session` only when the event is eligible.
-
-## Phase 3: Handle `continue_session` in All Consumers (P0)
-
-### P3.1 — Add continue_session case to ESCALATE handler
-
-**`src/orchestrator/phase-execution-loop.ts`**: In the ESCALATE handler (around line 1994):
-
-- Add `let continueSessionId: string | undefined` alongside existing `userGuidance` variable (near line 590).
-- In the `"continue_session"` case:
-  - Set `continueSessionId = lastEscalation.continueSession?.sessionId`
-  - Set `userGuidance = response.guidance` if provided
-  - Compute `resumeState` using existing typed routing (`retryState ?? preEscalateState`)
-  - Transition to `resumeState`
-
-### P3.2 — Handle continue_session in plan-review loop
-
-**`src/orchestrator/plan-review-loop.ts`**: Audit all `EscalationResponse` consumers (including any `switch (response.action)`) and explicitly handle `"continue_session"`.
-
-Minimum safe behavior: treat `continue_session` like `continue` for state progression, but also store the continued `sessionId` so the next agent invocation can pass `InvokeOptions.sessionId`.
-
-## Phase 4: Adapter Support for Session Continuation
-
-### P4.1 — Add continuation-related fields to InvokeOptions
-
-**`src/agents/types.ts`**: Add optional fields:
+**`src/agents/types.ts`**:
 
 ```ts
 export interface InvokeOptions {
-  // ... existing fields ...
-  /** Existing session ID to continue instead of creating a new session */
+  // ...existing fields...
+  /** Existing session ID to continue instead of creating a new session. */
   sessionId?: string;
-
-  /** If true, abort the remote session on timeout (disables continuation after timeouts). */
-  abortOnTimeout?: boolean;
-
-  /** Called when reusing an existing session (best-effort, never awaited). */
-  onSessionReused?: (sessionId: string) => void | Promise<void>;
 }
 ```
 
-### P4.2 — Modify _invoke() to support continuation
+### P1.3 — Capture sessionId on escalation events
+
+**`src/orchestrator/phase-execution-loop.ts`**: In author states (EXECUTE, QUALITY_RETRY, AUTO_FIX) that transition to ESCALATE:
+
+- **Success path** (`needs_human`/`failed`): set `event.sessionId` from `InvokeStatus.sessionId`.
+- **Error path** (non-timeout): do not set `sessionId` (session state is unknown).
+- **Failed continuation**: if `continueSessionId` was set for this invocation, do not set `sessionId` on the new escalation (prevents repeat `c` loop).
+
+Reviewer states (REVIEW) and timeout errors never set `sessionId`.
+
+## Phase 2: Gate, Adapter, and State Machine
+
+### P2.1 — Update headless escalation gate
+
+**`src/gates/human.ts`**: Show `c` only when `event.sessionId` is present:
+
+```
+c = continue session (resume the interrupted agent)
+f = fix in new session (start fresh with optional guidance)
+o = override and move on (force approve this phase)
+q = abort (stop execution)
+```
+
+`c` prompts for optional guidance (same flow as `f`), returns `{ action: "continue_session", guidance? }`. If `event.sessionId` is absent and user enters `c`, treat as invalid and re-prompt.
+
+### P2.2 — Update TUI escalation gate
+
+**`src/tui/gates.ts`**: Parse `c`, `continue-session` → `{ action: "continue_session" }`. Parse `c: guidance text` → `{ action: "continue_session", guidance }`. Reject `c` when `event.sessionId` is absent. Update toast text to mention `continue-session` only when eligible.
+
+### P2.3 — Adapter: skip session.create() for continuation
 
 **`src/agents/opencode.ts`**: In `_invoke()`:
 
-- When `opts.sessionId` is provided:
-  - Skip `session.create()` call
-  - Use `opts.sessionId` as the `sessionId` local variable
-  - The rest of the flow (SSE subscription, prompt sending, structured summary, timeout/abort) remains identical
-- When `opts.sessionId` is NOT provided: existing behavior (create new session)
+- When `opts.sessionId` is provided: skip `session.create()`, use the provided ID directly. Fire `onSessionCreated` callback with the existing ID (keeps TUI attach working). Everything else (SSE subscription, prompt sending, structured summary) is identical.
+- When not provided: existing behavior.
 
-The prompt text (`opts.prompt`) will contain the continuation message instead of a rendered template — the adapter doesn't care about the content, it just sends it.
+If `session.prompt()` fails on a continued session (deleted, aborted, etc.), the error propagates normally through existing catch blocks in the state machine.
 
-### P4.2b — TUI/session callback semantics (P1)
+### P2.4 — ESCALATE handler: continue_session action
 
-Continuation skips `session.create()`, so any UI behavior that relies on `InvokeOptions.onSessionCreated` won’t fire.
+**`src/orchestrator/phase-execution-loop.ts`**: Add `let continueSessionId: string | undefined` near existing `userGuidance` variable. In the `"continue_session"` case:
 
-Decision (P1): add a dedicated reuse callback so TUI/telemetry can distinguish new vs continued sessions.
+- Set `continueSessionId = lastEscalation.sessionId`
+- Set `userGuidance = response.guidance` if provided
+- Compute `resumeState` using existing routing (`retryState ?? preEscalateState`)
+- Transition to `resumeState`
 
-- Add `InvokeOptions.onSessionReused?: (sessionId: string) => void | Promise<void>`
-- Call `onSessionCreated(sessionId)` only when a new session is created
-- Call `onSessionReused(sessionId)` only when `opts.sessionId` is supplied and we reuse an existing session
+### P2.5 — Author states: use continuation prompt when continuing
 
-Both callbacks remain best-effort/non-blocking (never awaited), matching current `onSessionCreated` behavior.
+In EXECUTE, QUALITY_RETRY, AUTO_FIX — when `continueSessionId` is set:
 
-### P4.3 — Timeout behavior + operability guardrail (P0 addendum)
+- Build prompt: `"Continue the current session and complete all remaining tasks."`
+- If `userGuidance` is set, append: `"\n\nThe user has provided the following additional guidance:\n{guidance}"`
+- Pass `sessionId: continueSessionId` and the continuation prompt to `adapter.invokeForStatus()`
+- Clear `continueSessionId` and `userGuidance` after use
 
-**`src/agents/opencode.ts`**: Change timeout handling to preserve the remote session so `c` is viable:
+When `continueSessionId` is not set: existing behavior (render template, new session).
 
-- On timeout: stop waiting locally and throw `AgentTimeoutError` with `sessionId`.
+## Phase 3: Tests
 
-Guardrail (required): add an explicit abort-on-timeout toggle.
+### P3.1 — Gate tests
 
-- Add `InvokeOptions.abortOnTimeout?: boolean` (default: `false`)
-- Wire from config (required for non-no-op): `5x.config` under `author.abortOnTimeout` / `reviewer.abortOnTimeout` and pass to every invocation site
-- Record behavior in user-facing surfaces: update config schema docs/types and the `5x init` generated `5x.config.*` template to include commented `abortOnTimeout` examples.
-- When `abortOnTimeout === true`: preserve current behavior (abort remote session on timeout), and `c` will not be eligible after timeouts because there is no usable session to continue
+- `c` returns `{ action: "continue_session" }` when `event.sessionId` is present
+- `c: guidance text` returns `{ action: "continue_session", guidance: "guidance text" }`
+- `c` is rejected when `event.sessionId` is absent
 
-If we keep any abort-on-timeout behavior (e.g., via an opt-in flag), document that `c` is best-effort for timeouts under that configuration.
-
-### P4.4 — Wire timeout + abortOnTimeout into all invocation call sites (P0)
-
-Problem: config keys only matter if they are passed into `InvokeOptions` everywhere we invoke the adapter.
-
-Required wiring:
-
-- **`src/orchestrator/phase-execution-loop.ts`**: every author/reviewer invocation passes:
-  - `timeout: config.{author|reviewer}.timeout`
-  - `abortOnTimeout: config.{author|reviewer}.abortOnTimeout`
-- **`src/orchestrator/plan-review-loop.ts`**: every author/reviewer invocation passes the same per-role timeout + abortOnTimeout.
-- **`src/commands/plan.ts`**: the author invocation passes:
-  - `timeout: config.author.timeout`
-  - `abortOnTimeout: config.author.abortOnTimeout`
-
-Config changes required to make this real:
-
-- **`src/config.ts`**: extend agent config schema to include `abortOnTimeout?: boolean` (default: `false`).
-- **`5x.config.*` templates (`src/commands/init.ts`)**: include commented `timeout` + `abortOnTimeout` examples for both `author` and `reviewer`.
-
-This closes the addendum P0.1 gap: `abortOnTimeout` (and `timeout`) are not a dead config knob.
-
-### P4.5 — Error handling for continuation failures
-
-No special error *class* is needed in the adapter. If `session.prompt()` fails because the session is aborted, deleted, or otherwise unusable, the error propagates normally.
-
-State machine requirement (P1): if the failed invocation attempted continuation (`InvokeOptions.sessionId` was set), suppress `EscalationEvent.continueSession` on the resulting escalation so the user is not repeatedly offered `c` for the same broken session.
-
-## Phase 5: Wire Continuation into State Machine
-
-### P5.1 — Build continuation prompt in EXECUTE / QUALITY_RETRY / AUTO_FIX states
-
-**`src/orchestrator/phase-execution-loop.ts`**: At the top of each state that calls `adapter.invokeForStatus()`:
-
-- If `continueSessionId` is set:
-  - Build continuation prompt: `"Continue the current session and complete all remaining tasks."`
-  - If `userGuidance` is set, append: `"\n\nThe user has provided the following additional guidance:\n{guidance}"`
-  - Pass `sessionId: continueSessionId` and the continuation prompt to the adapter
-  - Clear `continueSessionId` and `userGuidance` after use (same as existing pattern for `userGuidance`)
-- If `continueSessionId` is NOT set: existing behavior (render template, create new session)
-
-### P5.2 — Handle REVIEW state continuation (if applicable)
-
-If the escalation originated from a reviewer error (timeout during review), the `resumeState` would be `REVIEW` and the adapter call is `invokeForVerdict()`. The same pattern applies: send a continuation prompt to the existing session, follow with the structured summary prompt.
-
-However, reviewer-originated escalations that route to an author state (e.g., `resumeState = "AUTO_FIX"`) must not offer `c`. This is enforced by omitting `event.continueSession` when the role/state boundary changes (Phase 1), so gates don’t need to infer it from `preEscalateState`.
-
-## Phase 6: Tests
-
-Test strategy avoids stdin-driven interactive unit tests: `src/gates/human.ts` disables interactivity under `NODE_ENV=test`, and plan-review has historically duplicated stdin prompts. Coverage comes from TUI parsing tests + orchestrator tests with injected gate functions.
-
-### P6.1 — TUI parsing tests (primary)
-
-**`test/tui/gates.test.ts`**:
-
-Drive parsing through the exported gate (`createTuiEscalationGate(...)`) rather than private helpers:
-
-- Simulate user text `c` → `{ action: "continue_session" }`
-- Simulate user text `continue-session` → `{ action: "continue_session" }`
-- Simulate user text `c: fix the import` → `{ action: "continue_session", guidance: "fix the import" }`
-
-Also add a negative case:
-
-- When `event.continueSession` is unset, `c` input is rejected as invalid (and does not resolve to `continue_session`).
-
-### P6.2 — Orchestrator integration tests (no stdin)
-
-Add/update tests that inject an escalation gate function returning `continue_session` and assert:
-
-- Phase-execution loop: `continue_session` resumes the correct state and passes `InvokeOptions.sessionId`.
-- Plan-review loop: `continue_session` is handled explicitly (no hang / no silent ignore), and the next invocation reuses the session ID when eligible.
-- Timeout wiring: adapter invocations receive the configured `timeout` (seconds) and `abortOnTimeout` values for both author and reviewer.
-- Eligibility enforcement: role/state mismatch cases do not set `event.continueSession`, and TUI enforcement rejects `continue_session` when not eligible.
-
-### P6.3 — Unit tests for error classes
-
-- `AgentTimeoutError` carries `sessionId` property
-- `AgentTimeoutError` without sessionId has `undefined`
-
-### P6.4 — Integration tests for phase execution loop
+### P3.2 — Phase execution loop tests
 
 - `continue_session` action routes to correct `resumeState`
-- `continueSessionId` is passed to adapter invocation
+- `continueSessionId` is passed to adapter via `InvokeOptions.sessionId`
 - `continueSessionId` is cleared after use
-- Failed continuation attempt suppresses follow-on `continueSession` (no repeat `c` loop)
-- Reviewer-originated escalation that routes to author states does not set `continueSession`
+- Failed continuation attempt omits `sessionId` on the next escalation event
+- Reviewer-originated escalations do not set `sessionId`
+- Author `needs_human` result sets `sessionId` on escalation event
 
-## Docs Updates
+### P3.3 — Adapter tests (if applicable)
 
-**`docs/10-dashboard.md`**: Update escalation gate response shape docs to include `continue_session`.
+- `_invoke()` skips `session.create()` when `opts.sessionId` provided
+- `_invoke()` creates new session when `opts.sessionId` not provided
 
-## Files / Touchpoints
+## Files
 
-- `src/gates/human.ts` (EscalationEvent: `continueSession`; EscalationResponse: `continue_session`; headless `escalationGate` UX)
-- `src/tui/gates.ts` (parse + eligibility enforcement + toast text)
-- `src/orchestrator/phase-execution-loop.ts` (build escalation events; handle `continue_session`; pass `InvokeOptions.sessionId`)
-- `src/orchestrator/plan-review-loop.ts` (build escalation events; handle `continue_session`; reuse sessionId when eligible)
-- `src/agents/types.ts` (InvokeOptions.sessionId + abortOnTimeout + onSessionReused)
-- `src/agents/opencode.ts` (reuse `opts.sessionId`; timeout semantics; callback behavior)
-- `src/agents/errors.ts` (AgentTimeoutError.sessionId)
-- `src/config.ts` + `5x.config.*` (add `author.abortOnTimeout` / `reviewer.abortOnTimeout` wiring)
-- `src/commands/init.ts` (update generated `5x.config.*` template to include `abortOnTimeout` comments)
-- `src/commands/plan.ts` (pass `timeout` + `abortOnTimeout` into author invocation so config is not a no-op)
-- `docs/10-dashboard.md` (document new action)
-- `test/tui/gates.test.ts` + orchestrator tests (cover parsing + state machine safety)
-
-## Pre-merge Validation (P1)
-
-These are required checks before shipping continuation-after-timeout as a reliable feature.
-
-### V1 — Confirm OpenCode timeout/abort semantics preserve a usable session
-
-Assumption: local timeout aborts waiting but does *not* make the remote session unusable, and a follow-on `session.prompt()` to the same `sessionId` continues correctly.
-
-If this is false (remote run is cancelled/locks the session), we must change eligibility:
-
-- Do not set `EscalationEvent.continueSession` for timeout-originated escalations (force `f`), or
-- Add a cheap “session still usable?” check (if the SDK/server supports it) before offering `c`.
-
-### V2 — Confirm SSE `event.subscribe()` replay behavior for existing sessions
-
-Risk: if `event.subscribe()` replays historical events for an existing session, continued invocations may re-log prior transcript into the new `.ndjson` file.
-
-Mitigation options (pick the simplest supported by the SDK/server):
-
-- Use a `since`/cursor parameter if available, or
-- Best-effort dedupe/skip based on event IDs/timestamps if present in the event payload.
-
-## Completion Gates
-
-P0 blockers:
-
-- All `EscalationResponse` consumers explicitly handle `continue_session` (phase-execution loop, plan-review loop, TUI gate wrapper logic).
-- `c` is only offered when `EscalationEvent.continueSession` is set; role/state mismatch cases never set it.
-- Timeout operability guardrail is implemented: explicit abort-on-timeout toggle exists, documented, and plumbed into invocation.
-- `timeout` and `abortOnTimeout` are wired into all agent invocation call sites (phase-execution loop, plan-review loop, and `plan` command) so the guardrail is not a no-op.
-
-P1 recommended:
-
-- Timeout behavior is implemented as decided (preserve remote session on timeout by default) and reflected in UX/plan text.
-- Plan references match actual symbols/paths (`escalationGate()`, `createTuiEscalationGate()`, etc.).
-- Tests cover `continue_session` without relying on interactive stdin unit tests.
-- Failed continuation attempts do not re-offer `c` indefinitely (suppression/forcing `f` path on subsequent escalation).
-- OpenCode abort/timeout semantics + SSE subscribe replay semantics are validated, with an explicit fallback if continuation is not viable after timeout.
+| File | Change |
+|---|---|
+| `src/gates/human.ts` | `EscalationEvent.sessionId`, `EscalationResponse` `continue_session`, gate UX |
+| `src/tui/gates.ts` | Parse `c` / `continue-session`, eligibility enforcement |
+| `src/agents/types.ts` | `InvokeOptions.sessionId` |
+| `src/agents/opencode.ts` | Skip `session.create()` when `sessionId` provided |
+| `src/orchestrator/phase-execution-loop.ts` | Capture `sessionId` on escalation events, handle `continue_session`, build continuation prompt |
+| Tests | Gate parsing, state machine routing, adapter session reuse |
