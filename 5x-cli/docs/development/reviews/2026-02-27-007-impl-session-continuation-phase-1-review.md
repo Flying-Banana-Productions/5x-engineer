@@ -46,3 +46,24 @@ Recommendation: either (a) adjust the plan’s P1.3 checkboxing to reflect what�
 **P1 recommended**
 - [ ] Align Phase 1 completion markers vs actual delivered scope (`docs/development/007-impl-session-continuation.md`)
 - [ ] Decide whether/where `sessionId` should be redacted or hidden in gate output/log views
+
+## Addendum (2026-02-27) — Follow-up Review for `d24569c`
+
+### What's Addressed
+
+- Plan updated to explicitly defer “failed continuation suppresses repeat c” to Phase 2 (removes Phase-1 plan/implementation mismatch).
+- `EscalationEvent.sessionId` documentation now captures intended exposure (persisted for diagnostics; not printed by headless gates).
+
+### Remaining Concerns
+
+- The `EscalationEvent.sessionId` comment is a bit absolute (“not surfaced in user-facing logs”, “No redaction needed”); `src/agents/opencode.ts` trace hooks include `sessionId`, and the DB stores it. Consider rewording to “not surfaced in standard CLI output” and treating tracing/DB as diagnostic surfaces.
+
+## Addendum (2026-02-27) — Follow-up Review for `740ca68`
+
+### What's Addressed
+
+- `src/gates/human.ts` updates the `EscalationEvent.sessionId` JSDoc to accurately reflect existing diagnostic surfaces (run events, DB `agent_results`, adapter trace hooks) and softens language to “not surfaced in standard CLI output / gate text”.
+
+### Remaining Concerns
+
+- The “no additional redaction required” conclusion is still a security/operability policy decision (where traces/logs are shipped, who can access DB/run events). If traces can end up in shared log sinks, consider explicit redaction rules or an allowlist of where `sessionId` is emitted.
