@@ -31,7 +31,14 @@ export interface EscalationEvent {
 	 * and other non-author escalations should set this to "REVIEW", "AUTO_FIX", etc.
 	 */
 	retryState?: string;
-	/** Set when the interrupted session can be continued. */
+	/**
+	 * Set when the interrupted session can be continued.
+	 *
+	 * This is an OpenCode session UUID — an opaque local identifier with no
+	 * remote auth capability. It is persisted in run events and agent_results
+	 * for diagnostic/resume purposes but is not surfaced in user-facing logs
+	 * or gate output text. No redaction needed.
+	 */
 	sessionId?: string;
 }
 

@@ -78,7 +78,7 @@ export interface InvokeOptions {
 
 - **Success path** (`needs_human`/`failed`): set `event.sessionId` from `InvokeStatus.sessionId`.
 - **Error path** (non-timeout): do not set `sessionId` (session state is unknown).
-- **Failed continuation**: if `continueSessionId` was set for this invocation, do not set `sessionId` on the new escalation (prevents repeat `c` loop).
+- **Failed continuation** *(deferred to Phase 2)*: if `continueSessionId` was set for this invocation, do not set `sessionId` on the new escalation (prevents repeat `c` loop). Requires `continueSessionId` state from P2.4.
 
 Reviewer states (REVIEW) and timeout errors never set `sessionId`.
 
