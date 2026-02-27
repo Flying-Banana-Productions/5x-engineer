@@ -1,6 +1,6 @@
 # Dashboard Command Center
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** February 26, 2026
 **Status:** Draft
 
@@ -34,8 +34,10 @@ Why this change: the workflow now has enough orchestration state (`runs`, `run_e
 - [ ] Implement dashboard bootstrap in new `src/dashboard/server.ts` with `startDashboardServer(opts)` and command-owned SIGINT/SIGTERM handling (do not rely on async shutdown after `process.exit()`).
 - [ ] Open dashboard DB access via `openDbReadOnly()` and set read reliability knobs (`PRAGMA busy_timeout` + bounded retry/backoff for transient `database is locked`).
 - [ ] Generate per-process session token (`crypto.randomBytes(32).toString("hex")`), persist `.5x/dashboard-token.<port>.json` mode `0600` with `{ pid, port, token, startedAt }`, and enforce request auth for static routes and WS upgrade.
+- [ ] Define browser auth propagation for static assets: bootstrap HTML is requested as `/?token=...`, server validates token once and sets `Set-Cookie: dashboard_token=<token>; HttpOnly; SameSite=Strict; Path=/`; `/style.css`, `/app.js`, and WS upgrade accept cookie auth (query token remains allowed for non-browser clients).
 - [ ] Add host-binding warning path for `0.0.0.0` and origin validation policy (strict localhost, relaxed non-localhost with token).
 - [ ] Introduce static asset embedding strategy (prod embedded imports + dev filesystem fallback) in new `src/dashboard/routes.ts`.
+- [ ] Define fresh-project bootstrap behavior when `.5x/` or `.5x/5x.db` is absent: server still starts, serves HTML/app shell, and returns an empty `snapshot` payload with a clear `awaiting first run` status instead of erroring.
 
 ```ts
 // src/commands/dashboard.ts
@@ -99,8 +101,10 @@ export type ClientMessage =
 - [ ] Implement resilient log watcher in new `src/dashboard/log-watcher.ts` using watch+rescan and per-file offsets for `.5x/logs/<run-id>/agent-*.ndjson`.
 - [ ] Implement gate directory scanner/watcher in new `src/dashboard/gate-responder.ts` for `.5x/gates/*.json` and `.resolved.json`, using fixture-backed tests in this phase before orchestrator bridge rollout.
 - [ ] Validate first-writer-wins behavior for `gate.respond` using exclusive create (`open/writeFile` with `wx`) and ignore stale/duplicate responses with auditable no-op signaling.
+- [ ] Validate gate file robustness: parse request/resolved JSON defensively, ignore malformed files without crashing, and emit diagnostic/audit events for invalid payloads.
 - [ ] Add on-connect snapshot enrichment with pending gates and active log metadata.
 - [ ] Add HTTP endpoint for backfill ranges (`Load earlier`) to support log virtualization in UI.
+- [ ] Define gate file lifecycle policy: retain files for audit, prune resolved files older than 7 days during periodic maintenance scan, and cap retained resolved files per run to prevent unbounded `.5x/gates/` growth.
 
 ```ts
 // src/dashboard/log-watcher.ts
@@ -120,7 +124,7 @@ export function createLogWatcher(opts: {
 
 **Completion gate:** `phaseGate`, `escalationGate`, and `resumeGate` resolve via shared bridge; terminal and dashboard race correctly; TUI-active runs force dashboard observe-only gate behavior.
 
-- [ ] Add new bridge module `src/gates/bridge.ts` implementing request/resolve protocol (`.5x/gates/<gate-id>.json` + `.resolved.json`), exclusive-create resolution (`wx`) for first writer, and audit event writes for stale resolver attempts.
+- [ ] Add new bridge module `src/gates/bridge.ts` implementing request/resolve protocol (`.5x/gates/<gate-id>.json` + `.resolved.json`), atomic request-file writes (`tmp + rename`) to avoid partial JSON reads, exclusive-create resolution (`wx`) for first writer, and audit event writes for stale resolver attempts.
 - [ ] Refactor `src/gates/human.ts:88-239` into thin wrappers that delegate to bridge while retaining existing typed interfaces (`PhaseSummary`, `EscalationEvent`, resume tuple).
 - [ ] Replace direct prompt defaults in `src/orchestrator/phase-execution-loop.ts:2478-2500` and `src/orchestrator/plan-review-loop.ts:214-277` with bridge-backed gate functions.
 - [ ] Keep existing `human_decision` payloads backward-compatible; represent dashboard bridge lifecycle via `gate_request`/`gate_resolved` event types (or explicitly versioned payloads if reused).
@@ -176,7 +180,10 @@ export function createStore(initialState) {
 **Completion gate:** test suite covers unit/integration/edge paths, security checks pass, and docs include operator workflow + limitations.
 
 - [ ] Add command tests in new `test/commands/dashboard.test.ts` (startup, auth rejection, host/port flags, graceful shutdown).
+- [ ] Add auth plumbing regression tests in `test/commands/dashboard.test.ts` to assert token bootstrap (`/?token=...`) sets auth cookie and subsequent `/style.css` + `/app.js` requests succeed without 401.
+- [ ] Add fresh-project bootstrap tests in `test/commands/dashboard.test.ts` for missing `.5x/` and missing `.5x/5x.db` (server up + empty snapshot response).
 - [ ] Add gate bridge tests in new `test/gates/bridge.test.ts` covering first-responder wins, stale gate file handling, TUI observe-only, and auto-mode short-circuit.
+- [ ] Extend `test/gates/bridge.test.ts` with atomic request-file write checks (`tmp + rename`) and malformed gate file ignore/audit behavior.
 - [ ] Extend orchestrator tests (`test/orchestrator/phase-execution-loop.test.ts`, `test/orchestrator/plan-review-loop.test.ts`) to assert bridge-driven `human_decision` event payload shape.
 - [ ] Add dashboard data/watcher tests in new `test/dashboard/data.test.ts`, `test/dashboard/log-watcher.test.ts`, `test/dashboard/ws-protocol.test.ts`.
 - [ ] Add docs updates in `docs/10-dashboard.md` (status links) and `README.md` usage examples for `5x dashboard` startup and token behavior.
@@ -224,11 +231,14 @@ export function createStore(initialState) {
 | Unit | `test/dashboard/log-watcher.test.ts` | Offset reads, missed-event recovery via 5s rescan, NDJSON line framing. |
 | Unit | `test/dashboard/ws-protocol.test.ts` | Message schema/version handling, subscribe/unsubscribe routing, invalid payload rejection, input size/type limits. |
 | Integration | `test/commands/dashboard.test.ts` | CLI startup/shutdown, auth enforcement, host/port behavior, token file creation. |
+| Integration | `test/commands/dashboard.test.ts` | Token bootstrap cookie propagation to static assets (`/style.css`, `/app.js`) to prevent 401-on-assets regressions. |
+| Integration | `test/commands/dashboard.test.ts` | Missing `.5x/` and `.5x/5x.db` bootstrap returns empty snapshot/app shell instead of startup failure. |
 | Integration | `test/orchestrator/phase-execution-loop.test.ts` | Phase loop gate flow remains correct with bridge-backed defaults. |
 | Integration | `test/orchestrator/plan-review-loop.test.ts` | Plan-review escalation and resume flow remains correct with unified bridge. |
 | Integration | Browser smoke (`bun run src/bin.ts dashboard --dev`) | End-to-end route rendering, live updates, gate modal interactions, reconnect flow. |
 | Edge | `test/dashboard/security.test.ts` | Unauthorized HTTP/WS rejection, localhost origin checks, 0.0.0.0 warning path. |
 | Edge | `test/dashboard/log-history.test.ts` | Log virtualization limits (10k lines), backfill endpoint range handling, per-connection memory caps. |
+| Edge | `test/dashboard/gate-responder.test.ts` | Malformed gate JSON ignored safely and resolved-file pruning policy bounds `.5x/gates/` growth. |
 
 ## Estimated Timeline
 
@@ -251,6 +261,13 @@ export function createStore(initialState) {
 - Persistent daemon mode detached from `5x dashboard` process lifecycle.
 
 ## Revision History
+
+### v1.2 (2026-02-27) — Addendum feedback incorporation
+
+- Specified token-to-static-asset auth propagation via bootstrap query token -> HttpOnly cookie, plus regression coverage for `/style.css` and `/app.js`.
+- Defined fresh-project bootstrap semantics for missing `.5x/`/`.5x/5x.db` as empty snapshot/app shell (non-fatal startup).
+- Added atomic gate request-file creation (`tmp + rename`) and malformed gate JSON handling requirements.
+- Added explicit gate file retention/pruning policy to cap `.5x/gates/` growth while preserving auditability.
 
 ### v1.1 (2026-02-27) — Review feedback incorporation
 
