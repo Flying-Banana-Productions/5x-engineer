@@ -278,10 +278,16 @@ async function ensurePhaseCheckpointClean(opts: {
 	phaseNumber: string;
 	runId: string;
 	iteration: number;
+	allowDirty?: boolean;
 	db: Database;
 	log: (...args: unknown[]) => void;
 	trace: (event: string, data?: unknown) => void;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
+	if (opts.allowDirty) {
+		opts.trace("phase.gate.clean_check.skipped", { reason: "allow-dirty" });
+		return { ok: true };
+	}
+
 	let changedFiles: string[];
 	try {
 		changedFiles = (await listChangedFiles(opts.workdir)).map(normalizeGitPath);
@@ -2251,6 +2257,7 @@ export async function runPhaseExecutionLoop(
 							phaseNumber: phase.number,
 							runId,
 							iteration,
+							allowDirty: options.allowDirty,
 							db,
 							log,
 							trace,
@@ -2300,6 +2307,7 @@ export async function runPhaseExecutionLoop(
 									phaseNumber: phase.number,
 									runId,
 									iteration,
+									allowDirty: options.allowDirty,
 									db,
 									log,
 									trace,
