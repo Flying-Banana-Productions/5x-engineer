@@ -76,6 +76,9 @@ When `reviewerSessionId` is not set (first review of a phase): existing behavior
 
 ## Phase 2: Follow-up Review Prompt
 
+- [x] P2.1 — Build follow-up prompt
+- [x] P2.2 — Structured summary prompt unchanged (no-op, confirmed)
+
 ### P2.1 — Build follow-up prompt
 
 When `reviewerSessionId` is set, construct the follow-up prompt inline:

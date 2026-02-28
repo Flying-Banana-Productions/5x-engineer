@@ -1532,15 +1532,31 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					const reviewerTemplate = renderTemplate("reviewer-commit", {
-						commit_hash: lastCommit ?? "HEAD",
-						review_path: phaseReviewPath,
-						plan_path: planPath,
-						review_template_path: resolve(
-							workdir,
-							config.paths.templates.review,
-						),
-					});
+					// Build reviewer prompt: follow-up (short) when reusing session,
+					// full template when creating a new session (008 Phase 2).
+					let reviewPrompt: string;
+					if (reviewerSessionId) {
+						const commitRef = lastCommit ?? "HEAD";
+						reviewPrompt = [
+							`A new commit (${commitRef}) has been made in response to your review feedback.`,
+							"",
+							`1. Examine the changes introduced at commit ${commitRef} and any subsequent commits.`,
+							"2. Verify whether the issues from your previous review have been addressed.",
+							"3. Identify any new issues introduced by the fixes.",
+							`4. Write your updated review as a new addendum to ${phaseReviewPath}.`,
+						].join("\n");
+					} else {
+						const reviewerTemplate = renderTemplate("reviewer-commit", {
+							commit_hash: lastCommit ?? "HEAD",
+							review_path: phaseReviewPath,
+							plan_path: planPath,
+							review_template_path: resolve(
+								workdir,
+								config.paths.templates.review,
+							),
+						});
+						reviewPrompt = reviewerTemplate.prompt;
+					}
 
 					log(`  Reviewer reviewing phase ${phase.number}...`);
 
@@ -1561,7 +1577,7 @@ export async function runPhaseExecutionLoop(
 							reviewerSessionId: reviewerSessionId ?? null,
 						});
 						reviewResult = await adapter.invokeForVerdict({
-							prompt: reviewerTemplate.prompt,
+							prompt: reviewPrompt,
 							model: config.reviewer.model,
 							// Reviewer timeout defaults to 120 seconds (2 min).
 							workdir,
