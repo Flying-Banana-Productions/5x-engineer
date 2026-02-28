@@ -283,11 +283,6 @@ async function ensurePhaseCheckpointClean(opts: {
 	log: (...args: unknown[]) => void;
 	trace: (event: string, data?: unknown) => void;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-	if (opts.allowDirty) {
-		opts.trace("phase.gate.clean_check.skipped", { reason: "allow-dirty" });
-		return { ok: true };
-	}
-
 	let changedFiles: string[];
 	try {
 		changedFiles = (await listChangedFiles(opts.workdir)).map(normalizeGitPath);
@@ -305,6 +300,57 @@ async function ensurePhaseCheckpointClean(opts: {
 	const reviewRel = normalizeGitPath(
 		relative(opts.workdir, resolve(opts.phaseReviewPath)),
 	);
+
+	// Always try to commit the review doc if it's dirty — this is a
+	// 5x-generated artifact and should be committed regardless of mode.
+	if (
+		reviewRel &&
+		!reviewRel.startsWith("..") &&
+		changedFiles.includes(reviewRel)
+	) {
+		try {
+			const commitMessage = `docs(review): finalize phase ${opts.phaseNumber} checkpoint`;
+			const { commit } = await commitFiles(
+				opts.workdir,
+				[reviewRel],
+				commitMessage,
+			);
+			opts.log(
+				`  Committed phase review notes: ${reviewRel} (${commit.slice(0, 8)})`,
+			);
+			appendRunEvent(opts.db, {
+				runId: opts.runId,
+				eventType: "phase_review_committed",
+				phase: opts.phaseNumber,
+				iteration: opts.iteration,
+				data: { path: reviewRel, commit },
+			});
+			opts.trace("phase.gate.review_commit", {
+				phase: opts.phaseNumber,
+				path: reviewRel,
+				commit,
+			});
+			// Remove from changed list for the dirty check below
+			changedFiles = changedFiles.filter((file) => file !== reviewRel);
+		} catch (err) {
+			// Non-fatal: log and continue to dirty check
+			opts.trace("phase.gate.review_commit.failed", {
+				phase: opts.phaseNumber,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	// With --allow-dirty, skip the remaining dirty-file check
+	if (opts.allowDirty) {
+		opts.trace("phase.gate.clean_check.skipped", { reason: "allow-dirty" });
+		return { ok: true };
+	}
+
+	if (changedFiles.length === 0) {
+		return { ok: true };
+	}
+
 	if (!reviewRel || reviewRel.startsWith("..")) {
 		return {
 			ok: false,
@@ -324,35 +370,7 @@ async function ensurePhaseCheckpointClean(opts: {
 		};
 	}
 
-	try {
-		const commitMessage = `docs(review): finalize phase ${opts.phaseNumber} checkpoint`;
-		const { commit } = await commitFiles(
-			opts.workdir,
-			[reviewRel],
-			commitMessage,
-		);
-		opts.log(
-			`  Committed phase review notes: ${reviewRel} (${commit.slice(0, 8)})`,
-		);
-		appendRunEvent(opts.db, {
-			runId: opts.runId,
-			eventType: "phase_review_committed",
-			phase: opts.phaseNumber,
-			iteration: opts.iteration,
-			data: { path: reviewRel, commit },
-		});
-		opts.trace("phase.gate.review_commit", {
-			phase: opts.phaseNumber,
-			path: reviewRel,
-			commit,
-		});
-		return { ok: true };
-	} catch (err) {
-		return {
-			ok: false,
-			reason: err instanceof Error ? err.message : String(err),
-		};
-	}
+	return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
