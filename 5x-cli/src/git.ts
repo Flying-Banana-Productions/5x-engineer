@@ -158,9 +158,12 @@ export async function hasUncommittedChanges(workdir: string): Promise<boolean> {
  * List changed file paths (staged, unstaged, and untracked), relative to workdir.
  */
 export async function listChangedFiles(workdir: string): Promise<string[]> {
+	// Use --relative so paths are relative to workdir, not the repo root.
+	// Without this, monorepo subdirectories get a prefix (e.g. "5x-cli/src/...")
+	// that breaks path comparisons in ensurePhaseCheckpointClean.
 	const [unstaged, staged, untracked] = await Promise.all([
-		run(["diff", "--name-only"], workdir),
-		run(["diff", "--cached", "--name-only"], workdir),
+		run(["diff", "--relative", "--name-only"], workdir),
+		run(["diff", "--cached", "--relative", "--name-only"], workdir),
 		run(["ls-files", "--others", "--exclude-standard"], workdir),
 	]);
 

@@ -236,6 +236,71 @@ Just some text, no phases.
 		expect(i1.line).toBeGreaterThan(i0.line);
 	});
 
+	test("parses sub-heading items with [x] markers", () => {
+		const md = `# Session Continuation
+
+**Version:** 2.0
+**Status:** Draft
+
+## Phase 1: Types and Plumbing
+
+### P1.1 — Extend types [x]
+
+Some description here.
+
+### P1.2 — Add sessionId [x]
+
+### P1.3 — Capture events [ ]
+
+## Phase 2: Implementation
+
+### P2.1 — Update gate [x]
+
+### P2.2 — Update TUI [ ]
+`;
+		const plan = parsePlan(md);
+		expect(plan.phases.length).toBe(2);
+
+		const p0 = unwrapDefined(plan.phases[0]);
+		expect(p0.items.length).toBe(3);
+		expect(p0.items[0]?.checked).toBe(true);
+		expect(p0.items[0]?.text).toBe("P1.1 — Extend types");
+		expect(p0.items[1]?.checked).toBe(true);
+		expect(p0.items[2]?.checked).toBe(false);
+		expect(p0.isComplete).toBe(false);
+
+		const p1 = unwrapDefined(plan.phases[1]);
+		expect(p1.items.length).toBe(2);
+		expect(p1.items[0]?.checked).toBe(true);
+		expect(p1.items[1]?.checked).toBe(false);
+		expect(p1.isComplete).toBe(false);
+
+		expect(plan.completionPercentage).toBe(60); // 3/5
+		expect(plan.currentPhase?.number).toBe("1");
+	});
+
+	test("sub-heading items — all checked marks phase complete", () => {
+		const md = `# Plan
+
+**Version:** 1.0
+**Status:** Done
+
+## Phase 1: Done
+
+### P1.1 — Task A [x]
+### P1.2 — Task B [x]
+
+## Phase 2: Also Done
+
+### P2.1 — Task C [X]
+`;
+		const plan = parsePlan(md);
+		expect(plan.phases[0]?.isComplete).toBe(true);
+		expect(plan.phases[1]?.isComplete).toBe(true);
+		expect(plan.currentPhase).toBeNull();
+		expect(plan.completionPercentage).toBe(100);
+	});
+
 	test("missing metadata returns empty strings", () => {
 		const md = `# Bare Plan
 

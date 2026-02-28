@@ -3,11 +3,13 @@ import { dirname, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { openDbReadOnly } from "../db/connection.js";
-import type { RunRow } from "../db/operations.js";
+import type { PhaseProgressRow, RunRow } from "../db/operations.js";
 import {
 	getActiveRun,
+	getApprovedPhaseNumbers,
 	getLastRunEvent,
 	getLatestRun,
+	listPhaseProgress,
 } from "../db/operations.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
@@ -19,27 +21,32 @@ function progressBar(percentage: number, width: number = 12): string {
 	return "\u2588".repeat(filled) + "\u2591".repeat(empty);
 }
 
-function phasePercentage(phase: Phase): number {
-	if (phase.isComplete) return 100;
+function phasePercentage(phase: Phase, approved: boolean): number {
+	if (approved || phase.isComplete) return 100;
 	if (phase.items.length === 0) return 0;
 	const checked = phase.items.filter((i) => i.checked).length;
 	return Math.round((checked / phase.items.length) * 100);
 }
 
-function formatStatus(phases: Phase[]): string {
-	const completedCount = phases.filter((p) => p.isComplete).length;
+function formatStatus(phases: Phase[], approvedSet: Set<string>): string {
+	const completedCount = phases.filter(
+		(p) => approvedSet.has(p.number) || p.isComplete,
+	).length;
 	const total = phases.length;
 
 	if (total === 0) return "No phases found";
 	if (completedCount === total) return "All phases complete";
 
-	const firstIncomplete = phases.find((p) => !p.isComplete);
+	const firstIncomplete = phases.find(
+		(p) => !approvedSet.has(p.number) && !p.isComplete,
+	);
 	if (completedCount === 0) {
 		return `Phase ${firstIncomplete?.number ?? "1"} ready`;
 	}
 
-	// Use actual phase numbers from the completed phases (handles dotted numbers like 1.1)
-	const completedPhases = phases.filter((p) => p.isComplete);
+	const completedPhases = phases.filter(
+		(p) => approvedSet.has(p.number) || p.isComplete,
+	);
 	const firstNum = completedPhases[0]?.number ?? "?";
 	const lastNum =
 		completedPhases[completedPhases.length - 1]?.number ?? firstNum;
@@ -60,16 +67,20 @@ function formatDuration(startedAt: string): string {
 	return `${hours}h ${mins % 60}m ago`;
 }
 
-function tryLoadRunState(opts: {
+interface DbState {
+	active: RunRow | null;
+	latest: RunRow | null;
+	lastEventType: string | null;
+	approvedPhases: Set<string>;
+	phaseProgress: PhaseProgressRow[];
+}
+
+function tryLoadDbState(opts: {
 	planPathProvided: string;
 	planPathCanonical: string;
 	projectRoot: string;
 	dbPath: string;
-}): {
-	active: RunRow | null;
-	latest: RunRow | null;
-	lastEventType: string | null;
-} | null {
+}): DbState | null {
 	const resolvedDbPath = resolve(opts.projectRoot, opts.dbPath);
 	if (!existsSync(resolvedDbPath)) return null;
 
@@ -97,7 +108,12 @@ function tryLoadRunState(opts: {
 			lastEventType = lastEvent?.event_type ?? null;
 		}
 
-		return { active, latest, lastEventType };
+		const approvedPhases = new Set(
+			getApprovedPhaseNumbers(db, opts.planPathCanonical),
+		);
+		const phaseProgress = listPhaseProgress(db, opts.planPathCanonical);
+
+		return { active, latest, lastEventType, approvedPhases, phaseProgress };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error(
@@ -143,29 +159,7 @@ export default defineCommand({
 			process.exit(1);
 		}
 
-		const versionStr = plan.version ? ` (v${plan.version})` : "";
-		const statusLine = formatStatus(plan.phases);
-		const completedCount = plan.phases.filter((p) => p.isComplete).length;
-
-		console.log();
-		console.log(`  ${plan.title}${versionStr}`);
-		console.log(`  Status: ${statusLine}`);
-		console.log();
-
-		for (const phase of plan.phases) {
-			const pct = phasePercentage(phase);
-			const bar = progressBar(pct);
-			const pctStr = `${pct}%`.padStart(4);
-			const label = `Phase ${phase.number}: ${phase.title}`;
-			console.log(`  ${label.padEnd(45)} ${bar} ${pctStr}`);
-		}
-
-		console.log();
-		console.log(
-			`  Overall: ${plan.completionPercentage}% (${completedCount}/${plan.phases.length} phases complete)`,
-		);
-
-		// Show DB run state if available
+		// Load DB state (phase approvals are the source of truth)
 		const planDir = dirname(planPathCanonical);
 		let dbPath = ".5x/5x.db";
 		let projectRoot = findGitRoot(planDir) ?? planDir;
@@ -179,23 +173,58 @@ export default defineCommand({
 				`Note: failed to load 5x config: ${message}. Using default DB path for status.`,
 			);
 		}
-		const runState = tryLoadRunState({
+
+		const dbState = tryLoadDbState({
 			planPathProvided,
 			planPathCanonical,
 			projectRoot,
 			dbPath,
 		});
-		if (runState?.active) {
-			const r = runState.active;
+
+		// DB-backed approvals are authoritative; fall back to parser for cold start
+		const approvedSet = dbState?.approvedPhases ?? new Set<string>();
+
+		const versionStr = plan.version ? ` (v${plan.version})` : "";
+		const statusLine = formatStatus(plan.phases, approvedSet);
+		const completedCount = plan.phases.filter(
+			(p) => approvedSet.has(p.number) || p.isComplete,
+		).length;
+
+		console.log();
+		console.log(`  ${plan.title}${versionStr}`);
+		console.log(`  Status: ${statusLine}`);
+		console.log();
+
+		for (const phase of plan.phases) {
+			const approved = approvedSet.has(phase.number);
+			const pct = phasePercentage(phase, approved);
+			const bar = progressBar(pct);
+			const pctStr = `${pct}%`.padStart(4);
+			const label = `Phase ${phase.number}: ${phase.title}`;
+			console.log(`  ${label.padEnd(45)} ${bar} ${pctStr}`);
+		}
+
+		const overallPct =
+			plan.phases.length > 0
+				? Math.round((completedCount / plan.phases.length) * 100)
+				: 0;
+		console.log();
+		console.log(
+			`  Overall: ${overallPct}% (${completedCount}/${plan.phases.length} phases complete)`,
+		);
+
+		// Show run info
+		if (dbState?.active) {
+			const r = dbState.active;
 			console.log();
 			console.log(
 				`  Active run: ${r.id.slice(0, 8)} (${r.command}, phase ${r.current_phase ?? "?"}, state: ${r.current_state ?? "?"})`,
 			);
 			console.log(
-				`  Started: ${formatDuration(r.started_at)}${runState.lastEventType ? ` | Last event: ${runState.lastEventType}` : ""}`,
+				`  Started: ${formatDuration(r.started_at)}${dbState.lastEventType ? ` | Last event: ${dbState.lastEventType}` : ""}`,
 			);
-		} else if (runState?.latest && runState.latest.status !== "active") {
-			const r = runState.latest;
+		} else if (dbState?.latest && dbState.latest.status !== "active") {
+			const r = dbState.latest;
 			console.log();
 			console.log(
 				`  Last run: ${r.id.slice(0, 8)} (${r.command}, ${r.status})`,

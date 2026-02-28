@@ -25,6 +25,8 @@ export interface ChecklistItem {
 
 const PHASE_HEADING_RE = /^(#{2,3})\s+Phase\s+(\d+(?:\.\d+)?)[:\s]+(.+)$/;
 const CHECKLIST_RE = /^-\s+\[([ xX])\]\s+(.+)$/;
+// Sub-heading items: ### P1.1 — Title [x] or ### Task name [ ]
+const SUBHEADING_ITEM_RE = /^#{3,}\s+(.+?)\s*\[([xX ])\]\s*$/;
 const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;
 const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
 const COMPLETE_SUFFIX_RE = /\s*[-–—]\s*COMPLETE\s*$/i;
@@ -105,6 +107,20 @@ export function parsePlan(markdown: string): ParsedPlan {
 					phase.items.push({
 						text: checkMatch[2]?.trim() ?? "",
 						checked: checkMatch[1] !== " ",
+						line: lineNum,
+					});
+				}
+				continue;
+			}
+
+			// Sub-heading items: ### P1.1 — Title [x]
+			const subheadingMatch = line.match(SUBHEADING_ITEM_RE);
+			if (subheadingMatch) {
+				const phase = phases[currentPhaseIdx];
+				if (phase) {
+					phase.items.push({
+						text: subheadingMatch[1]?.trim() ?? "",
+						checked: subheadingMatch[2] !== " ",
 						line: lineNum,
 					});
 				}

@@ -42,3 +42,17 @@ One correctness/UX edge case remains in TUI parsing: when continuation is inelig
 
 **P1 recommended**
 - [ ] TUI: reject `continue-session` text when ineligible (treat as invalid, do not fall through to `continue:` guidance parsing)
+
+## Addendum (2026-02-27) — P1.1 Follow-on Fix Review (commit `35e2774`)
+
+### What's Addressed
+
+- P1.1 resolved: `parseEscalationDecision()` now rejects `c` / `continue-session` (and guidance variants) when `canContinueSession` is false/absent, preventing accidental fallthrough to `continue` + guidance.
+- Tests updated to assert null-return behavior for `continue-session`, `continue-session: ...`, and `c: ...` when ineligible.
+- Local verification: `bun test` (636 pass).
+
+### Remaining Concerns
+
+- P2 security posture note still applies: `sessionId` appears in events/results and trace hooks; if IDs are sensitive in any environment, add redaction/guardrails or document assumptions.
+
+With P1.1 addressed, Phase 3 looks complete and is ready to advance.
