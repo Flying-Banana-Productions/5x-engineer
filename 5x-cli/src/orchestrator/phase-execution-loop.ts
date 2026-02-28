@@ -602,6 +602,7 @@ export async function runPhaseExecutionLoop(
 		let _phasePaused = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
 		let continueSessionId: string | undefined; // plumbed from escalation "continue_session" into next adapter call
+		let reviewerSessionId: string | undefined; // reuse reviewer session across review cycles within this phase (008)
 		let autoEscalationAttempts = 0;
 		// Tracks the state that most recently transitioned to ESCALATE, so that
 		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
@@ -1561,6 +1562,7 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							sessionId: reviewerSessionId,
 							// Phase 4: Select session immediately after creation (not after invoke)
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -1586,10 +1588,13 @@ export async function runPhaseExecutionLoop(
 							options.signal?.aborted
 						) {
 							state = "ABORTED";
+							reviewerSessionId = undefined; // clear on abort (008)
 							break;
 						}
 						const errorMessage =
 							err instanceof Error ? err.message : String(err);
+						// Clear reviewer session so retry/escalation uses a fresh session (008)
+						reviewerSessionId = undefined;
 						// Phase 4: Show toast for phase failure
 						if (options.tui) {
 							await options.tui.showToast(
@@ -1635,6 +1640,9 @@ export async function runPhaseExecutionLoop(
 						tokens_out: reviewResult.tokensOut ?? null,
 						cost_usd: reviewResult.costUsd ?? null,
 					});
+
+					// Capture reviewer session for reuse in subsequent review cycles (008)
+					reviewerSessionId = reviewResult.sessionId;
 
 					appendRunEvent(db, {
 						runId,

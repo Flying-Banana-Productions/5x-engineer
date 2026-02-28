@@ -38,6 +38,11 @@ Out of scope:
 
 ## Phase 1: Store Reviewer Session Across Review Cycles
 
+- [x] P1.1 — Add reviewerSessionId to phase execution loop state
+- [x] P1.2 — Capture sessionId after REVIEW invocation
+- [x] P1.3 — Pass sessionId on subsequent REVIEW invocations
+- [x] P1.4 — Clear on phase transition and failure
+
 ### P1.1 — Add reviewerSessionId to phase execution loop state
 
 **`src/orchestrator/phase-execution-loop.ts`**: Add `let reviewerSessionId: string | undefined` alongside existing loop state variables (near `userGuidance`, `continueSessionId`).
@@ -65,9 +70,9 @@ When `reviewerSessionId` is not set (first review of a phase): existing behavior
 
 ### P1.4 — Clear on phase transition and failure
 
-- Clear `reviewerSessionId` at the start of each phase (outer `for` loop)
-- Clear `reviewerSessionId` when state transitions to ABORTED
-- On REVIEW invocation failure when `reviewerSessionId` was set: clear it so the retry/escalation path uses a fresh session
+- [x] Clear `reviewerSessionId` at the start of each phase (outer `for` loop)
+- [x] Clear `reviewerSessionId` when state transitions to ABORTED
+- [x] On REVIEW invocation failure when `reviewerSessionId` was set: clear it so the retry/escalation path uses a fresh session
 
 ## Phase 2: Follow-up Review Prompt
 
