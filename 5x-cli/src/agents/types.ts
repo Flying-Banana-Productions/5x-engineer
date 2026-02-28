@@ -59,6 +59,9 @@ export interface InvokeOptions {
 	 * the active session during streaming.
 	 */
 	onSessionCreated?: (sessionId: string) => void | Promise<void>;
+
+	/** Existing session ID to continue instead of creating a new session. */
+	sessionId?: string;
 }
 
 // ---------------------------------------------------------------------------

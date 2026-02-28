@@ -768,27 +768,38 @@ export class OpenCodeAdapter implements AgentAdapter {
 			timeoutMs: timeoutMs ?? null,
 		});
 
-		// 1. Create session (P0.3: pass workdir as directory)
-		// Phase 4: Use descriptive session title if provided, otherwise fallback to generic
-		const sessionTitle = opts.sessionTitle ?? `5x-${resultType}-${Date.now()}`;
-		traceInvoke(opts.trace, "session.create.start", {
-			title: sessionTitle,
-			directory: opts.workdir,
-		});
-		const sessionResult = await this.client.session.create({
-			title: sessionTitle,
-			...(opts.workdir && { directory: opts.workdir }),
-		});
-		if (sessionResult.error) {
-			traceInvoke(opts.trace, "session.create.error", {
-				error: JSON.stringify(sessionResult.error),
+		// 1. Create session (or reuse existing one for continuation)
+		let sessionId: string;
+		if (opts.sessionId) {
+			// Continuation: reuse the existing session — skip session.create()
+			sessionId = opts.sessionId;
+			traceInvoke(opts.trace, "session.continue", {
+				sessionId,
+				directory: opts.workdir,
 			});
-			throw new Error(
-				`Failed to create session: ${JSON.stringify(sessionResult.error)}`,
-			);
+		} else {
+			// Phase 4: Use descriptive session title if provided, otherwise fallback to generic
+			const sessionTitle =
+				opts.sessionTitle ?? `5x-${resultType}-${Date.now()}`;
+			traceInvoke(opts.trace, "session.create.start", {
+				title: sessionTitle,
+				directory: opts.workdir,
+			});
+			const sessionResult = await this.client.session.create({
+				title: sessionTitle,
+				...(opts.workdir && { directory: opts.workdir }),
+			});
+			if (sessionResult.error) {
+				traceInvoke(opts.trace, "session.create.error", {
+					error: JSON.stringify(sessionResult.error),
+				});
+				throw new Error(
+					`Failed to create session: ${JSON.stringify(sessionResult.error)}`,
+				);
+			}
+			sessionId = sessionResult.data.id;
+			traceInvoke(opts.trace, "session.create.ok", { sessionId });
 		}
-		const sessionId = sessionResult.data.id;
-		traceInvoke(opts.trace, "session.create.ok", { sessionId });
 
 		// Invoke onSessionCreated callback immediately so TUI can track the session
 		// during streaming (not after the prompt completes).

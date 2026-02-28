@@ -31,10 +31,21 @@ export interface EscalationEvent {
 	 * and other non-author escalations should set this to "REVIEW", "AUTO_FIX", etc.
 	 */
 	retryState?: string;
+	/**
+	 * Set when the interrupted session can be continued.
+	 *
+	 * This is an OpenCode session UUID — an opaque local identifier with no
+	 * remote auth capability. It is persisted in run events, agent_results,
+	 * and adapter trace hooks for diagnostic/resume purposes. It is not
+	 * surfaced in standard CLI output or gate text. Tracing and DB storage
+	 * are treated as diagnostic surfaces — no additional redaction required.
+	 */
+	sessionId?: string;
 }
 
 export type EscalationResponse =
 	| { action: "continue"; guidance?: string }
+	| { action: "continue_session"; guidance?: string }
 	| { action: "approve" }
 	| { action: "abort" };
 
@@ -168,10 +179,15 @@ export async function escalationGate(
 		console.log(`  Next step on fix: ${event.retryState}`);
 	}
 
+	const canContinueSession = Boolean(event.sessionId);
+
 	console.log();
 	console.log("  Options:");
+	if (canContinueSession) {
+		console.log("    c = continue session (resume the interrupted agent)");
+	}
 	console.log(
-		"    f = fix with guidance (agent addresses issues, then re-review)",
+		"    f = fix in new session (start fresh with optional guidance)",
 	);
 	console.log("    o = override and move on (force approve this phase)");
 	console.log("    q = abort (stop execution)");
@@ -182,24 +198,54 @@ export async function escalationGate(
 		return { action: "abort" };
 	}
 
-	process.stdout.write("  Choice [f/o/q]: ");
-	const input = await readLine();
-	const choice = input.trim().toLowerCase();
+	const choiceHint = canContinueSession ? "c/f/o/q" : "f/o/q";
 
-	if (choice === "o" || choice === "override" || choice === "approve") {
-		return { action: "approve" };
+	// Loop until we get a valid choice (re-prompt on invalid input).
+	while (true) {
+		process.stdout.write(`  Choice [${choiceHint}]: `);
+		const input = await readLine();
+		const choice = input.trim().toLowerCase();
+
+		if (choice === "__sigint__") {
+			return { action: "abort" };
+		}
+
+		if (choice === "o" || choice === "override" || choice === "approve") {
+			return { action: "approve" };
+		}
+
+		if (choice === "c" || choice === "continue-session") {
+			if (canContinueSession) {
+				process.stdout.write("  Guidance (optional, press Enter to skip): ");
+				const guidance = await readLine();
+				return {
+					action: "continue_session",
+					guidance: guidance.trim() || undefined,
+				};
+			}
+			// Ineligible: no session to continue — treat as invalid and re-prompt.
+			console.log(
+				"  Invalid: no session available to continue. Use f, o, or q.",
+			);
+			continue;
+		}
+
+		if (choice === "f" || choice === "fix" || choice === "continue") {
+			process.stdout.write("  Guidance (optional, press Enter to skip): ");
+			const guidance = await readLine();
+			return {
+				action: "continue",
+				guidance: guidance.trim() || undefined,
+			};
+		}
+
+		if (choice === "q" || choice === "quit" || choice === "abort") {
+			return { action: "abort" };
+		}
+
+		// Unknown input — re-prompt.
+		console.log(`  Invalid choice "${choice}". Use ${choiceHint}.`);
 	}
-
-	if (choice === "f" || choice === "fix" || choice === "continue") {
-		process.stdout.write("  Guidance (optional, press Enter to skip): ");
-		const guidance = await readLine();
-		return {
-			action: "continue",
-			guidance: guidance.trim() || undefined,
-		};
-	}
-
-	return { action: "abort" };
 }
 
 // ---------------------------------------------------------------------------

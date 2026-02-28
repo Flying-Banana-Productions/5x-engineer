@@ -37,10 +37,12 @@ function parsePhaseDecision(text: string): "continue" | "exit" | null {
 	return null;
 }
 
-function parseEscalationDecision(
+export function parseEscalationDecision(
 	text: string,
+	opts?: { canContinueSession?: boolean },
 ):
 	| { action: "continue"; guidance?: string }
+	| { action: "continue_session"; guidance?: string }
 	| { action: "approve" | "abort" }
 	| null {
 	const trimmed = text.trim();
@@ -52,6 +54,26 @@ function parseEscalationDecision(
 	if (value === "q" || value === "abort") {
 		return { action: "abort" };
 	}
+
+	// "c" / "continue-session" → continue_session (only when eligible)
+	if (opts?.canContinueSession) {
+		if (value === "c" || value === "continue-session") {
+			return { action: "continue_session" };
+		}
+		const csMatch = trimmed.match(/^(?:continue-session|c)\s*[:-]?\s*(.+)$/i);
+		if (csMatch) {
+			const guidance = csMatch[1]?.trim();
+			return { action: "continue_session", guidance: guidance || undefined };
+		}
+	} else {
+		// When continuation is ineligible, reject continue-session variants
+		// (with or without guidance) so they don't fall through to the
+		// "continue" regex and silently start a fresh session.
+		if (value === "c" || value === "continue-session") return null;
+		if (/^continue-session\s*[:-]?\s*.+$/i.test(trimmed)) return null;
+		if (/^c\s*[:-]\s*.+$/i.test(trimmed)) return null;
+	}
+
 	if (value === "f" || value === "fix" || value === "continue") {
 		return { action: "continue" };
 	}
@@ -321,11 +343,12 @@ export function createTuiEscalationGate(
 	return async (event): Promise<EscalationResponse> => {
 		if (!tui.active) return headlessEscalationGate(event);
 
+		const canContinueSession = Boolean(event.sessionId);
 		const shortReason =
 			event.reason.length > 60
 				? `${event.reason.slice(0, 60)}...`
 				: event.reason;
-		const sessionId = await createGateSession(
+		const gateSessionId = await createGateSession(
 			client,
 			tui,
 			`Escalation: ${shortReason}`,
@@ -333,25 +356,28 @@ export function createTuiEscalationGate(
 		);
 
 		try {
-			await tui.showToast(
-				"Escalation requires input. Reply with approve, abort, or continue[: guidance].",
-				"error",
-			);
+			const toastMsg = canContinueSession
+				? "Escalation requires input. Reply with continue-session, fix, approve, or abort."
+				: "Escalation requires input. Reply with fix, approve, or abort.";
+			await tui.showToast(toastMsg, "error");
 		} catch {
 			// Best effort only.
 		}
 
 		try {
+			const validOptions = canContinueSession
+				? "continue-session, fix, approve, or abort"
+				: "fix, approve, or abort";
 			const lifecycle = await runWithGateLifecycle(tui, opts, (signal) =>
 				waitForParsedUserDecision(
 					client,
-					sessionId,
+					gateSessionId,
 					signal,
-					parseEscalationDecision,
+					(text) => parseEscalationDecision(text, { canContinueSession }),
 					async (text) => {
 						try {
 							await tui.showToast(
-								`Invalid input: "${text.trim()}". Use approve, abort, or continue[: guidance].`,
+								`Invalid input: "${text.trim()}". Use ${validOptions}.`,
 								"warning",
 							);
 						} catch {
@@ -371,7 +397,7 @@ export function createTuiEscalationGate(
 			const decision = lifecycle.value;
 			return decision;
 		} finally {
-			await deleteGateSession(client, sessionId);
+			await deleteGateSession(client, gateSessionId);
 		}
 	};
 }
@@ -448,7 +474,9 @@ export function createTuiHumanGate(
 	client: OpencodeClient,
 	tui: TuiController,
 	opts: TuiGateOptions = {},
-): (event: EscalationEvent) => Promise<"continue" | "approve" | "abort"> {
+): (
+	event: EscalationEvent,
+) => Promise<"continue" | "continue_session" | "approve" | "abort"> {
 	const escalationGate = createTuiEscalationGate(client, tui, opts);
 	return async (event) => {
 		const decision = await escalationGate(event);
