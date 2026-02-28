@@ -199,33 +199,53 @@ export async function escalationGate(
 	}
 
 	const choiceHint = canContinueSession ? "c/f/o/q" : "f/o/q";
-	process.stdout.write(`  Choice [${choiceHint}]: `);
-	const input = await readLine();
-	const choice = input.trim().toLowerCase();
 
-	if (choice === "o" || choice === "override" || choice === "approve") {
-		return { action: "approve" };
+	// Loop until we get a valid choice (re-prompt on invalid input).
+	while (true) {
+		process.stdout.write(`  Choice [${choiceHint}]: `);
+		const input = await readLine();
+		const choice = input.trim().toLowerCase();
+
+		if (choice === "__sigint__") {
+			return { action: "abort" };
+		}
+
+		if (choice === "o" || choice === "override" || choice === "approve") {
+			return { action: "approve" };
+		}
+
+		if (choice === "c" || choice === "continue-session") {
+			if (canContinueSession) {
+				process.stdout.write("  Guidance (optional, press Enter to skip): ");
+				const guidance = await readLine();
+				return {
+					action: "continue_session",
+					guidance: guidance.trim() || undefined,
+				};
+			}
+			// Ineligible: no session to continue — treat as invalid and re-prompt.
+			console.log(
+				"  Invalid: no session available to continue. Use f, o, or q.",
+			);
+			continue;
+		}
+
+		if (choice === "f" || choice === "fix" || choice === "continue") {
+			process.stdout.write("  Guidance (optional, press Enter to skip): ");
+			const guidance = await readLine();
+			return {
+				action: "continue",
+				guidance: guidance.trim() || undefined,
+			};
+		}
+
+		if (choice === "q" || choice === "quit" || choice === "abort") {
+			return { action: "abort" };
+		}
+
+		// Unknown input — re-prompt.
+		console.log(`  Invalid choice "${choice}". Use ${choiceHint}.`);
 	}
-
-	if ((choice === "c" || choice === "continue-session") && canContinueSession) {
-		process.stdout.write("  Guidance (optional, press Enter to skip): ");
-		const guidance = await readLine();
-		return {
-			action: "continue_session",
-			guidance: guidance.trim() || undefined,
-		};
-	}
-
-	if (choice === "f" || choice === "fix" || choice === "continue") {
-		process.stdout.write("  Guidance (optional, press Enter to skip): ");
-		const guidance = await readLine();
-		return {
-			action: "continue",
-			guidance: guidance.trim() || undefined,
-		};
-	}
-
-	return { action: "abort" };
 }
 
 // ---------------------------------------------------------------------------

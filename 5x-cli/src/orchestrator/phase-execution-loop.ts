@@ -180,6 +180,19 @@ function generateId(): string {
 }
 
 /**
+ * Build a continuation prompt for resuming an existing session.
+ * Centralizes the prompt assembly that was previously duplicated across
+ * EXECUTE, QUALITY_RETRY, and AUTO_FIX states.
+ */
+function buildContinuationPrompt(guidance?: string): string {
+	let prompt = "Continue the current session and complete all remaining tasks.";
+	if (guidance) {
+		prompt += `\n\nThe user has provided the following additional guidance:\n${guidance}`;
+	}
+	return prompt;
+}
+
+/**
  * Resolve the review file path for a specific phase.
  *
  * Always produces per-phase review files to prevent one large append-only
@@ -821,11 +834,7 @@ export async function runPhaseExecutionLoop(
 					let executeContinueSessionId: string | undefined;
 					if (continueSessionId) {
 						executeContinueSessionId = continueSessionId;
-						executePrompt =
-							"Continue the current session and complete all remaining tasks.";
-						if (userGuidance) {
-							executePrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
-						}
+						executePrompt = buildContinuationPrompt(userGuidance);
 						continueSessionId = undefined;
 						userGuidance = undefined;
 					} else {
@@ -984,11 +993,14 @@ export async function runPhaseExecutionLoop(
 					}
 
 					// Route on status
-					// Suppress sessionId on escalation if this was already a continuation
-					// attempt — prevents an infinite continue loop on a broken session.
-					const executeEscalationSessionId = executeContinueSessionId
-						? undefined
-						: authorResult.sessionId;
+					// Suppress sessionId only when a continuation attempt resulted in
+					// "failed" — the session is broken and should not be retried.
+					// Preserve sessionId on "needs_human" so the user can continue
+					// the session again (multi-turn continuation use-case).
+					const executeEscalationSessionId =
+						executeContinueSessionId && authorResult.status.result === "failed"
+							? undefined
+							: authorResult.sessionId;
 					if (authorResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason: authorResult.status.reason ?? "Author needs human input",
@@ -1183,11 +1195,7 @@ export async function runPhaseExecutionLoop(
 					let qrContinueSessionId: string | undefined;
 					if (continueSessionId) {
 						qrContinueSessionId = continueSessionId;
-						qualityRetryPrompt =
-							"Continue the current session and complete all remaining tasks.";
-						if (userGuidance) {
-							qualityRetryPrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
-						}
+						qualityRetryPrompt = buildContinuationPrompt(userGuidance);
 						continueSessionId = undefined;
 						userGuidance = undefined;
 					} else {
@@ -1330,11 +1338,14 @@ export async function runPhaseExecutionLoop(
 					});
 
 					// Route on author status
-					// Suppress sessionId on escalation if this was already a continuation
-					// attempt — prevents an infinite continue loop on a broken session.
-					const qrEscalationSessionId = qrContinueSessionId
-						? undefined
-						: fixResult.sessionId;
+					// Suppress sessionId only when a continuation attempt resulted in
+					// "failed" — the session is broken and should not be retried.
+					// Preserve sessionId on "needs_human" so the user can continue
+					// the session again (multi-turn continuation use-case).
+					const qrEscalationSessionId =
+						qrContinueSessionId && fixResult.status.result === "failed"
+							? undefined
+							: fixResult.sessionId;
 					if (
 						fixResult.status.result === "needs_human" ||
 						fixResult.status.result === "failed"
@@ -1837,11 +1848,7 @@ export async function runPhaseExecutionLoop(
 					let afContinueSessionId: string | undefined;
 					if (continueSessionId) {
 						afContinueSessionId = continueSessionId;
-						autoFixPrompt =
-							"Continue the current session and complete all remaining tasks.";
-						if (userGuidance) {
-							autoFixPrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
-						}
+						autoFixPrompt = buildContinuationPrompt(userGuidance);
 						continueSessionId = undefined;
 						userGuidance = undefined;
 					} else {
@@ -1988,11 +1995,14 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					// Suppress sessionId on escalation if this was already a continuation
-					// attempt — prevents an infinite continue loop on a broken session.
-					const afEscalationSessionId = afContinueSessionId
-						? undefined
-						: autoFixResult.sessionId;
+					// Suppress sessionId only when a continuation attempt resulted in
+					// "failed" — the session is broken and should not be retried.
+					// Preserve sessionId on "needs_human" so the user can continue
+					// the session again (multi-turn continuation use-case).
+					const afEscalationSessionId =
+						afContinueSessionId && autoFixResult.status.result === "failed"
+							? undefined
+							: autoFixResult.sessionId;
 					if (autoFixResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason:
@@ -2176,6 +2186,15 @@ export async function runPhaseExecutionLoop(
 						}
 						case "continue_session": {
 							// Resume the interrupted agent session instead of starting fresh.
+							if (!lastEscalation.sessionId) {
+								// Defensive: sessionId absent (custom gate or future refactor).
+								// Fall back to "continue" semantics (fresh session).
+								trace("phase.escalate.continue_session.no_session_id", {
+									runId,
+									phase: phase.number,
+									iteration,
+								});
+							}
 							continueSessionId = lastEscalation.sessionId;
 							if ("guidance" in response && response.guidance) {
 								userGuidance = response.guidance;

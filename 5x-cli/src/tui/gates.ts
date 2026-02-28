@@ -37,7 +37,7 @@ function parsePhaseDecision(text: string): "continue" | "exit" | null {
 	return null;
 }
 
-function parseEscalationDecision(
+export function parseEscalationDecision(
 	text: string,
 	opts?: { canContinueSession?: boolean },
 ):
@@ -60,7 +60,7 @@ function parseEscalationDecision(
 		if (value === "c" || value === "continue-session") {
 			return { action: "continue_session" };
 		}
-		const csMatch = trimmed.match(/^(?:c|continue-session)\s*[:-]?\s*(.+)$/i);
+		const csMatch = trimmed.match(/^(?:continue-session|c)\s*[:-]?\s*(.+)$/i);
 		if (csMatch) {
 			const guidance = csMatch[1]?.trim();
 			return { action: "continue_session", guidance: guidance || undefined };

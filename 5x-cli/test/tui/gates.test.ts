@@ -334,6 +334,115 @@ describe("createTuiEscalationGate", () => {
 	});
 });
 
+describe("createTuiEscalationGate — session continuation", () => {
+	test("resolves continue_session when sessionId is present and user types c", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "c"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			sessionId: "agent-session-123",
+		};
+		const result = await gate(event);
+		expect(result).toEqual({ action: "continue_session" });
+	});
+
+	test("resolves continue_session with guidance from 'c: text'", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "c: please fix the tests"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			sessionId: "agent-session-123",
+		};
+		const result = await gate(event);
+		expect(result.action).toBe("continue_session");
+		expect("guidance" in result ? result.guidance : undefined).toBe(
+			"please fix the tests",
+		);
+	});
+
+	test("resolves continue_session from 'continue-session' text", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "continue-session"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			sessionId: "agent-session-123",
+		};
+		const result = await gate(event);
+		expect(result).toEqual({ action: "continue_session" });
+	});
+
+	test("rejects c when sessionId is absent (treated as invalid)", async () => {
+		// When sessionId is absent, "c" should NOT match — it should be
+		// treated as invalid input. The next valid input ("fix") is accepted.
+		const client = createMockClient([
+			// First: user types "c" (invalid — no session)
+			...createDecisionEvents("sess-1", "msg-1", "c"),
+			// Then: user types "fix" (valid)
+			...createDecisionEvents("sess-1", "msg-2", "fix"),
+		]);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			// No sessionId — c is not eligible
+		};
+		const result = await gate(event);
+		// Should get "continue" from the second input ("fix"), not continue_session
+		expect(result.action).toBe("continue");
+	});
+
+	test("toast mentions continue-session when session eligible", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "abort"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			sessionId: "agent-session-123",
+		};
+		await gate(event);
+		const toastCall = (tui.showToast as ReturnType<typeof mock>).mock.calls[0];
+		expect(toastCall?.[0]).toContain("continue-session");
+	});
+
+	test("toast does not mention continue-session when session ineligible", async () => {
+		const client = createMockClient(
+			createDecisionEvents("sess-1", "msg-1", "abort"),
+		);
+		const tui = createMockTuiController();
+		const gate = createTuiEscalationGate(client, tui);
+
+		const event: EscalationEvent = {
+			reason: "Needs human",
+			iteration: 1,
+			// No sessionId
+		};
+		await gate(event);
+		const toastCall = (tui.showToast as ReturnType<typeof mock>).mock.calls[0];
+		expect(toastCall?.[0]).not.toContain("continue-session");
+	});
+});
+
 describe("createTuiResumeGate", () => {
 	test("resolves start-fresh from user text", async () => {
 		const client = createMockClient(

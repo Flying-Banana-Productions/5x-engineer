@@ -132,13 +132,13 @@ When `continueSessionId` is not set: existing behavior (render template, new ses
 
 ## Phase 3: Tests
 
-### P3.1 — Gate tests
+### P3.1 — Gate tests [x]
 
 - `c` returns `{ action: "continue_session" }` when `event.sessionId` is present
 - `c: guidance text` returns `{ action: "continue_session", guidance: "guidance text" }`
 - `c` is rejected when `event.sessionId` is absent
 
-### P3.2 — Phase execution loop tests
+### P3.2 — Phase execution loop tests [x]
 
 - `continue_session` action routes to correct `resumeState`
 - `continueSessionId` is passed to adapter via `InvokeOptions.sessionId`
@@ -147,7 +147,7 @@ When `continueSessionId` is not set: existing behavior (render template, new ses
 - Reviewer-originated escalations do not set `sessionId`
 - Author `needs_human` result sets `sessionId` on escalation event
 
-### P3.3 — Adapter tests (if applicable)
+### P3.3 — Adapter tests (if applicable) [x]
 
 - `_invoke()` skips `session.create()` when `opts.sessionId` provided
 - `_invoke()` creates new session when `opts.sessionId` not provided

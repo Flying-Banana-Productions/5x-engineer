@@ -1893,6 +1893,415 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	// ─── Session continuation tests (Phase 3 of 007) ───────────────────
+
+	test("continue_session routes to correct resumeState and passes sessionId to adapter", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: needs_human with sessionId
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "Need clarification" },
+					sessionId: "session-abc",
+				},
+				// Continue session: author completes
+				{
+					type: "status",
+					status: { result: "complete", commit: "def456" },
+					sessionId: "session-abc",
+				},
+				// Review: ready
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			// Intercept opts to verify sessionId propagation
+			const origInvokeForStatus = adapter.invokeForStatus.bind(adapter);
+			adapter.invokeForStatus = async (opts: InvokeOptions) => {
+				capturedOpts.push({ ...opts });
+				return origInvokeForStatus(opts);
+			};
+
+			let escalationCallCount = 0;
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async (event) => {
+						escalationCallCount++;
+						// First escalation: continue_session
+						expect(event.sessionId).toBe("session-abc");
+						return { action: "continue_session" };
+					},
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(escalationCallCount).toBe(1);
+			// Second invokeForStatus call should have sessionId set
+			expect(capturedOpts.length).toBe(2);
+			expect(capturedOpts[1]?.sessionId).toBe("session-abc");
+			// Prompt should be the continuation prompt
+			expect(capturedOpts[1]?.prompt).toContain("Continue the current session");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("continue_session clears continueSessionId after use", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: needs_human with sessionId
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help" },
+					sessionId: "session-abc",
+				},
+				// Continue session: also needs_human again
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "still need help" },
+					sessionId: "session-abc",
+				},
+				// User chooses "continue" (fresh) this time
+				{
+					type: "status",
+					status: { result: "complete", commit: "abc" },
+					sessionId: "session-def",
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const origInvokeForStatus = adapter.invokeForStatus.bind(adapter);
+			adapter.invokeForStatus = async (opts: InvokeOptions) => {
+				capturedOpts.push({ ...opts });
+				return origInvokeForStatus(opts);
+			};
+
+			let callNum = 0;
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => {
+						callNum++;
+						if (callNum === 1) return { action: "continue_session" };
+						return { action: "continue" };
+					},
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			// Call 1: initial execute (no sessionId)
+			expect(capturedOpts[0]?.sessionId).toBeUndefined();
+			// Call 2: continuation (has sessionId)
+			expect(capturedOpts[1]?.sessionId).toBe("session-abc");
+			// Call 3: fresh session (sessionId cleared)
+			expect(capturedOpts[2]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("failed continuation suppresses sessionId on next escalation", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				// EXECUTE: needs_human with sessionId
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help" },
+					sessionId: "session-abc",
+				},
+				// Continue session: fails
+				{
+					type: "status",
+					status: { result: "failed", reason: "session broken" },
+					sessionId: "session-abc",
+				},
+			]);
+
+			const escalationEvents: EscalationEvent[] = [];
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async (event) => {
+						escalationEvents.push(event);
+						if (escalationEvents.length === 1) {
+							return { action: "continue_session" };
+						}
+						return { action: "abort" };
+					},
+				},
+			);
+
+			expect(result.complete).toBe(false);
+			expect(escalationEvents.length).toBe(2);
+			// First escalation: has sessionId (eligible for continuation)
+			expect(escalationEvents[0]?.sessionId).toBe("session-abc");
+			// Second escalation: sessionId suppressed (failed continuation)
+			expect(escalationEvents[1]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("needs_human after continuation preserves sessionId (multi-turn)", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				// EXECUTE: needs_human with sessionId
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help" },
+					sessionId: "session-abc",
+				},
+				// Continue session: needs_human again (healthy session)
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "need more input" },
+					sessionId: "session-abc",
+				},
+				// Continue session again: complete
+				{
+					type: "status",
+					status: { result: "complete", commit: "xyz" },
+					sessionId: "session-abc",
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const escalationEvents: EscalationEvent[] = [];
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async (event) => {
+						escalationEvents.push(event);
+						return { action: "continue_session" };
+					},
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(escalationEvents.length).toBe(2);
+			// Both escalations should have sessionId (multi-turn continuation)
+			expect(escalationEvents[0]?.sessionId).toBe("session-abc");
+			expect(escalationEvents[1]?.sessionId).toBe("session-abc");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("author needs_human sets sessionId on escalation event", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help" },
+					sessionId: "session-xyz",
+				},
+			]);
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(false);
+			expect(result.escalations.length).toBeGreaterThan(0);
+			expect(result.escalations[0]?.sessionId).toBe("session-xyz");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewer-originated escalations do not set sessionId", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// Reviewer: human_required items → escalation
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "P0.1",
+								title: "Need decision",
+								action: "human_required",
+								reason: "Architecture choice",
+							},
+						],
+					},
+					sessionId: "reviewer-session-999",
+				},
+			]);
+
+			const escalationEvents: EscalationEvent[] = [];
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async (event) => {
+						escalationEvents.push(event);
+						return { action: "abort" };
+					},
+				},
+			);
+
+			expect(result.complete).toBe(false);
+			expect(escalationEvents.length).toBe(1);
+			// Reviewer escalation should NOT have sessionId (reviewer sessions aren't continuable)
+			expect(escalationEvents[0]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("continue_session with guidance includes guidance in prompt", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "help" },
+					sessionId: "session-abc",
+				},
+				{
+					type: "status",
+					status: { result: "complete", commit: "abc" },
+					sessionId: "session-abc",
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const origInvokeForStatus = adapter.invokeForStatus.bind(adapter);
+			adapter.invokeForStatus = async (opts: InvokeOptions) => {
+				capturedOpts.push({ ...opts });
+				return origInvokeForStatus(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => ({
+						action: "continue_session",
+						guidance: "Focus on the error handler",
+					}),
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			// Second call should have the guidance in the prompt
+			expect(capturedOpts[1]?.prompt).toContain("Focus on the error handler");
+			expect(capturedOpts[1]?.prompt).toContain("additional guidance");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("continue_session without sessionId falls back to fresh session", async () => {
+		// Test the defensive invariant: continue_session when lastEscalation.sessionId is absent.
+		// This happens when the escalation originated from an error path (e.g. invocation threw)
+		// rather than an agent result — no sessionId is set on the event.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: throws error (error path doesn't set sessionId on escalation)
+				{ type: "error", error: new Error("connection reset") },
+				// After continue_session (with no sessionId): fresh session author completes
+				{
+					type: "status",
+					status: { result: "complete", commit: "abc" },
+				},
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const origInvokeForStatus = adapter.invokeForStatus.bind(adapter);
+			adapter.invokeForStatus = async (opts: InvokeOptions) => {
+				capturedOpts.push({ ...opts });
+				return origInvokeForStatus(opts);
+			};
+
+			const traceEvents: string[] = [];
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => ({
+						action: "continue_session",
+					}),
+					phaseGate: fixedPhaseGate("continue"),
+					trace: (event) => traceEvents.push(event),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			// Second call should have undefined sessionId (error path doesn't provide one)
+			expect(capturedOpts[1]?.sessionId).toBeUndefined();
+			// Trace should record the defensive fallback
+			expect(
+				traceEvents.some((e) => e.includes("continue_session.no_session_id")),
+			).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("resume backward compat: PARSE_VERDICT mapped to REVIEW", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

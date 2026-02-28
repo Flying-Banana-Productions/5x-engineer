@@ -1651,3 +1651,193 @@ describe("serverUrl exposure (004 Phase 1)", () => {
 		expect(adapter.serverUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// 007 P3.3: Adapter session continuation
+// ---------------------------------------------------------------------------
+
+describe("007 P3.3: adapter session continuation", () => {
+	test("skips session.create() when opts.sessionId is provided", async () => {
+		let createCalled = false;
+		const { adapter } = createTestAdapter({
+			sessionCreate: async () => {
+				createCalled = true;
+				return {
+					data: {
+						id: "sess-new",
+						projectID: "proj-1",
+						directory: "/tmp",
+						title: "test",
+						version: "1",
+						time: { created: Date.now(), updated: Date.now() },
+					},
+					error: undefined,
+				};
+			},
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc123" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0.001,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({ sessionId: "sess-existing-456" }),
+		);
+
+		expect(createCalled).toBe(false);
+		expect(result.type).toBe("status");
+		expect(result.status.result).toBe("complete");
+	});
+
+	test("calls session.create() when opts.sessionId is not provided", async () => {
+		let createCalled = false;
+		const { adapter } = createTestAdapter({
+			sessionCreate: async () => {
+				createCalled = true;
+				return {
+					data: {
+						id: "sess-new",
+						projectID: "proj-1",
+						directory: "/tmp",
+						title: "test",
+						version: "1",
+						time: { created: Date.now(), updated: Date.now() },
+					},
+					error: undefined,
+				};
+			},
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc123" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0.001,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		await adapter.invokeForStatus(defaultInvokeOpts());
+
+		expect(createCalled).toBe(true);
+	});
+
+	test("fires onSessionCreated with existing sessionId on continuation", async () => {
+		const receivedSessionIds: string[] = [];
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc123" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0.001,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({
+				sessionId: "sess-existing-789",
+				onSessionCreated: (id) => {
+					receivedSessionIds.push(id);
+				},
+			}),
+		);
+
+		expect(receivedSessionIds).toEqual(["sess-existing-789"]);
+	});
+
+	test("prompts use the continued sessionId (not a new one)", async () => {
+		const promptSessionIds: string[] = [];
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async (...args: unknown[]) => {
+				const params = args[0] as Record<string, unknown>;
+				promptSessionIds.push(params.sessionID as string);
+				return {
+					data: {
+						info: {
+							structured: { result: "complete", commit: "abc123" },
+							tokens: {
+								input: 10,
+								output: 5,
+								reasoning: 0,
+								cache: { read: 0, write: 0 },
+							},
+							cost: 0.001,
+							time: { created: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+		});
+
+		await adapter.invokeForStatus(
+			defaultInvokeOpts({ sessionId: "sess-continued-abc" }),
+		);
+
+		// Both prompts (execution + summary) should use the continued session ID
+		expect(promptSessionIds.length).toBe(2);
+		expect(promptSessionIds[0]).toBe("sess-continued-abc");
+		expect(promptSessionIds[1]).toBe("sess-continued-abc");
+	});
+
+	test("returns the continued sessionId in result", async () => {
+		const { adapter } = createTestAdapter({
+			sessionPrompt: async () => ({
+				data: {
+					info: {
+						structured: { result: "complete", commit: "abc123" },
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+						cost: 0.001,
+						time: { created: Date.now() },
+					},
+					parts: [],
+				},
+				error: undefined,
+			}),
+		});
+
+		const result = await adapter.invokeForStatus(
+			defaultInvokeOpts({ sessionId: "sess-continued-xyz" }),
+		);
+
+		expect(result.sessionId).toBe("sess-continued-xyz");
+	});
+});
