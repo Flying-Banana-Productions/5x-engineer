@@ -84,7 +84,7 @@ Reviewer states (REVIEW) and timeout errors never set `sessionId`.
 
 ## Phase 2: Gate, Adapter, and State Machine
 
-### P2.1 — Update headless escalation gate
+### P2.1 — Update headless escalation gate [x]
 
 **`src/gates/human.ts`**: Show `c` only when `event.sessionId` is present:
 
@@ -97,11 +97,11 @@ q = abort (stop execution)
 
 `c` prompts for optional guidance (same flow as `f`), returns `{ action: "continue_session", guidance? }`. If `event.sessionId` is absent and user enters `c`, treat as invalid and re-prompt.
 
-### P2.2 — Update TUI escalation gate
+### P2.2 — Update TUI escalation gate [x]
 
 **`src/tui/gates.ts`**: Parse `c`, `continue-session` → `{ action: "continue_session" }`. Parse `c: guidance text` → `{ action: "continue_session", guidance }`. Reject `c` when `event.sessionId` is absent. Update toast text to mention `continue-session` only when eligible.
 
-### P2.3 — Adapter: skip session.create() for continuation
+### P2.3 — Adapter: skip session.create() for continuation [x]
 
 **`src/agents/opencode.ts`**: In `_invoke()`:
 
@@ -110,7 +110,7 @@ q = abort (stop execution)
 
 If `session.prompt()` fails on a continued session (deleted, aborted, etc.), the error propagates normally through existing catch blocks in the state machine.
 
-### P2.4 — ESCALATE handler: continue_session action
+### P2.4 — ESCALATE handler: continue_session action [x]
 
 **`src/orchestrator/phase-execution-loop.ts`**: Add `let continueSessionId: string | undefined` near existing `userGuidance` variable. In the `"continue_session"` case:
 
@@ -119,7 +119,7 @@ If `session.prompt()` fails on a continued session (deleted, aborted, etc.), the
 - Compute `resumeState` using existing routing (`retryState ?? preEscalateState`)
 - Transition to `resumeState`
 
-### P2.5 — Author states: use continuation prompt when continuing
+### P2.5 — Author states: use continuation prompt when continuing [x]
 
 In EXECUTE, QUALITY_RETRY, AUTO_FIX — when `continueSessionId` is set:
 

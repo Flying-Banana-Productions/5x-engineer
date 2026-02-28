@@ -588,6 +588,7 @@ export async function runPhaseExecutionLoop(
 		let _phaseAborted = false;
 		let _phasePaused = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
+		let continueSessionId: string | undefined; // plumbed from escalation "continue_session" into next adapter call
 		let autoEscalationAttempts = 0;
 		// Tracks the state that most recently transitioned to ESCALATE, so that
 		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
@@ -815,13 +816,28 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					const authorTemplate = renderTemplate("author-next-phase", {
-						plan_path: planPath,
-						phase_number: phase.number,
-						user_notes: userGuidance ?? "(No additional notes)",
-					});
-					// Clear guidance after use — it applies only to the next invocation
-					userGuidance = undefined;
+					// Build prompt: continuation or fresh template
+					let executePrompt: string;
+					let executeContinueSessionId: string | undefined;
+					if (continueSessionId) {
+						executeContinueSessionId = continueSessionId;
+						executePrompt =
+							"Continue the current session and complete all remaining tasks.";
+						if (userGuidance) {
+							executePrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
+						}
+						continueSessionId = undefined;
+						userGuidance = undefined;
+					} else {
+						const authorTemplate = renderTemplate("author-next-phase", {
+							plan_path: planPath,
+							phase_number: phase.number,
+							user_notes: userGuidance ?? "(No additional notes)",
+						});
+						executePrompt = authorTemplate.prompt;
+						// Clear guidance after use — it applies only to the next invocation
+						userGuidance = undefined;
+					}
 
 					log(`  Author implementing phase ${phase.number}...`);
 
@@ -841,9 +857,10 @@ export async function runPhaseExecutionLoop(
 							phase: phase.number,
 							iteration,
 							logPath: executeLogPath,
+							continueSessionId: executeContinueSessionId,
 						});
 						authorResult = await adapter.invokeForStatus({
-							prompt: authorTemplate.prompt,
+							prompt: executePrompt,
 							model: config.author.model,
 							workdir,
 							logPath: executeLogPath,
@@ -851,6 +868,7 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							sessionId: executeContinueSessionId,
 							// Phase 4: Select session immediately after creation (not after invoke)
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -966,12 +984,17 @@ export async function runPhaseExecutionLoop(
 					}
 
 					// Route on status
+					// Suppress sessionId on escalation if this was already a continuation
+					// attempt — prevents an infinite continue loop on a broken session.
+					const executeEscalationSessionId = executeContinueSessionId
+						? undefined
+						: authorResult.sessionId;
 					if (authorResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason: authorResult.status.reason ?? "Author needs human input",
 							iteration,
 							logPath: executeLogPath,
-							sessionId: authorResult.sessionId,
+							sessionId: executeEscalationSessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -991,7 +1014,7 @@ export async function runPhaseExecutionLoop(
 							reason: authorResult.status.reason ?? "Author reported failure",
 							iteration,
 							logPath: executeLogPath,
-							sessionId: authorResult.sessionId,
+							sessionId: executeEscalationSessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1155,22 +1178,36 @@ export async function runPhaseExecutionLoop(
 
 					qualityAttempt++;
 
-					// Build a message with quality gate failure details
-					const failureDetails =
-						qualityResult?.results
-							.filter((r) => !r.passed)
-							.map((r) => `Command: ${r.command}\nOutput:\n${r.output}`)
-							.join("\n\n") ?? "Quality gate failed";
+					// Build prompt: continuation or fresh template
+					let qualityRetryPrompt: string;
+					let qrContinueSessionId: string | undefined;
+					if (continueSessionId) {
+						qrContinueSessionId = continueSessionId;
+						qualityRetryPrompt =
+							"Continue the current session and complete all remaining tasks.";
+						if (userGuidance) {
+							qualityRetryPrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
+						}
+						continueSessionId = undefined;
+						userGuidance = undefined;
+					} else {
+						// Build a message with quality gate failure details
+						const failureDetails =
+							qualityResult?.results
+								.filter((r) => !r.passed)
+								.map((r) => `Command: ${r.command}\nOutput:\n${r.output}`)
+								.join("\n\n") ?? "Quality gate failed";
 
-					const fixPrompt = renderTemplate("author-process-impl-review", {
-						review_path: phaseReviewPath,
-						plan_path: planPath,
-						user_notes: userGuidance ?? "(No additional notes)",
-					});
-					userGuidance = undefined;
+						const fixPrompt = renderTemplate("author-process-impl-review", {
+							review_path: phaseReviewPath,
+							plan_path: planPath,
+							user_notes: userGuidance ?? "(No additional notes)",
+						});
+						userGuidance = undefined;
 
-					// Prepend quality failure context
-					const qualityFixPrompt = `Quality gates failed. Fix the following issues and ensure all tests pass:\n\n${failureDetails}\n\n---\n\n${fixPrompt.prompt}`;
+						// Prepend quality failure context
+						qualityRetryPrompt = `Quality gates failed. Fix the following issues and ensure all tests pass:\n\n${failureDetails}\n\n---\n\n${fixPrompt.prompt}`;
+					}
 
 					log(
 						`  Author fixing quality failures (attempt ${qualityAttempt + 1})...`,
@@ -1189,9 +1226,10 @@ export async function runPhaseExecutionLoop(
 							iteration,
 							attempt: qualityAttempt,
 							logPath: qrFixLogPath,
+							continueSessionId: qrContinueSessionId,
 						});
 						fixResult = await adapter.invokeForStatus({
-							prompt: qualityFixPrompt,
+							prompt: qualityRetryPrompt,
 							model: config.author.model,
 							workdir,
 							logPath: qrFixLogPath,
@@ -1199,6 +1237,7 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							sessionId: qrContinueSessionId,
 							// Phase 4: Select session immediately after creation (not after invoke)
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -1291,6 +1330,11 @@ export async function runPhaseExecutionLoop(
 					});
 
 					// Route on author status
+					// Suppress sessionId on escalation if this was already a continuation
+					// attempt — prevents an infinite continue loop on a broken session.
+					const qrEscalationSessionId = qrContinueSessionId
+						? undefined
+						: fixResult.sessionId;
 					if (
 						fixResult.status.result === "needs_human" ||
 						fixResult.status.result === "failed"
@@ -1301,7 +1345,7 @@ export async function runPhaseExecutionLoop(
 								`Author reported ${fixResult.status.result} during quality fix`,
 							iteration,
 							logPath: qrFixLogPath,
-							sessionId: fixResult.sessionId,
+							sessionId: qrEscalationSessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1788,12 +1832,27 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					const fixTemplate = renderTemplate("author-process-impl-review", {
-						review_path: phaseReviewPath,
-						plan_path: planPath,
-						user_notes: userGuidance ?? "(No additional notes)",
-					});
-					userGuidance = undefined;
+					// Build prompt: continuation or fresh template
+					let autoFixPrompt: string;
+					let afContinueSessionId: string | undefined;
+					if (continueSessionId) {
+						afContinueSessionId = continueSessionId;
+						autoFixPrompt =
+							"Continue the current session and complete all remaining tasks.";
+						if (userGuidance) {
+							autoFixPrompt += `\n\nThe user has provided the following additional guidance:\n${userGuidance}`;
+						}
+						continueSessionId = undefined;
+						userGuidance = undefined;
+					} else {
+						const fixTemplate = renderTemplate("author-process-impl-review", {
+							review_path: phaseReviewPath,
+							plan_path: planPath,
+							user_notes: userGuidance ?? "(No additional notes)",
+						});
+						autoFixPrompt = fixTemplate.prompt;
+						userGuidance = undefined;
+					}
 
 					const autoFixResultId = generateId();
 					const autoFixLogPath = join(
@@ -1810,9 +1869,10 @@ export async function runPhaseExecutionLoop(
 							phase: phase.number,
 							iteration,
 							logPath: autoFixLogPath,
+							continueSessionId: afContinueSessionId,
 						});
 						autoFixResult = await adapter.invokeForStatus({
-							prompt: fixTemplate.prompt,
+							prompt: autoFixPrompt,
 							model: config.author.model,
 							workdir,
 							logPath: autoFixLogPath,
@@ -1820,6 +1880,7 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							sessionId: afContinueSessionId,
 							// Phase 4: Select session immediately after creation (not after invoke)
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -1927,6 +1988,11 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
+					// Suppress sessionId on escalation if this was already a continuation
+					// attempt — prevents an infinite continue loop on a broken session.
+					const afEscalationSessionId = afContinueSessionId
+						? undefined
+						: autoFixResult.sessionId;
 					if (autoFixResult.status.result === "needs_human") {
 						const event: EscalationEvent = {
 							reason:
@@ -1934,7 +2000,7 @@ export async function runPhaseExecutionLoop(
 								"Author needs human input during fix",
 							iteration,
 							logPath: autoFixLogPath,
-							sessionId: autoFixResult.sessionId,
+							sessionId: afEscalationSessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -1960,7 +2026,7 @@ export async function runPhaseExecutionLoop(
 								"Author reported failure during fix",
 							iteration,
 							logPath: autoFixLogPath,
-							sessionId: autoFixResult.sessionId,
+							sessionId: afEscalationSessionId,
 						};
 						escalations.push(event);
 						appendRunEvent(db, {
@@ -2105,6 +2171,18 @@ export async function runPhaseExecutionLoop(
 									userGuidance = response.guidance;
 								}
 							}
+							state = resumeState;
+							break;
+						}
+						case "continue_session": {
+							// Resume the interrupted agent session instead of starting fresh.
+							continueSessionId = lastEscalation.sessionId;
+							if ("guidance" in response && response.guidance) {
+								userGuidance = response.guidance;
+							}
+							const resumeState =
+								(lastEscalation.retryState as PhaseState | undefined) ??
+								preEscalateState;
 							state = resumeState;
 							break;
 						}

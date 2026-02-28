@@ -179,10 +179,15 @@ export async function escalationGate(
 		console.log(`  Next step on fix: ${event.retryState}`);
 	}
 
+	const canContinueSession = Boolean(event.sessionId);
+
 	console.log();
 	console.log("  Options:");
+	if (canContinueSession) {
+		console.log("    c = continue session (resume the interrupted agent)");
+	}
 	console.log(
-		"    f = fix with guidance (agent addresses issues, then re-review)",
+		"    f = fix in new session (start fresh with optional guidance)",
 	);
 	console.log("    o = override and move on (force approve this phase)");
 	console.log("    q = abort (stop execution)");
@@ -193,12 +198,22 @@ export async function escalationGate(
 		return { action: "abort" };
 	}
 
-	process.stdout.write("  Choice [f/o/q]: ");
+	const choiceHint = canContinueSession ? "c/f/o/q" : "f/o/q";
+	process.stdout.write(`  Choice [${choiceHint}]: `);
 	const input = await readLine();
 	const choice = input.trim().toLowerCase();
 
 	if (choice === "o" || choice === "override" || choice === "approve") {
 		return { action: "approve" };
+	}
+
+	if ((choice === "c" || choice === "continue-session") && canContinueSession) {
+		process.stdout.write("  Guidance (optional, press Enter to skip): ");
+		const guidance = await readLine();
+		return {
+			action: "continue_session",
+			guidance: guidance.trim() || undefined,
+		};
 	}
 
 	if (choice === "f" || choice === "fix" || choice === "continue") {
