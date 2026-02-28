@@ -223,12 +223,36 @@ describe("parseEscalationDecision", () => {
 		expect(result).toBeNull();
 	});
 
-	test("'continue-session' when ineligible falls through to continue (not continue_session)", () => {
-		// When canContinueSession is false, 'continue-session' is not handled
-		// by the continue_session branch. It falls through to the 'continue'
-		// regex which interprets the '-session' suffix as guidance.
-		const result = parseEscalationDecision("continue-session");
-		expect(result?.action).toBe("continue");
+	test("'continue-session' when ineligible returns null (invalid input)", () => {
+		// When canContinueSession is false, 'continue-session' must NOT fall
+		// through to the 'continue' regex — that would silently start a fresh
+		// session with accidental guidance text.
+		expect(parseEscalationDecision("continue-session")).toBeNull();
+		expect(
+			parseEscalationDecision("continue-session", {
+				canContinueSession: false,
+			}),
+		).toBeNull();
+	});
+
+	test("'continue-session: guidance' when ineligible returns null", () => {
+		expect(
+			parseEscalationDecision("continue-session: check the logs"),
+		).toBeNull();
+		expect(
+			parseEscalationDecision("continue-session: check the logs", {
+				canContinueSession: false,
+			}),
+		).toBeNull();
+	});
+
+	test("'c: guidance' when ineligible returns null", () => {
+		expect(parseEscalationDecision("c: some guidance")).toBeNull();
+		expect(
+			parseEscalationDecision("c: some guidance", {
+				canContinueSession: false,
+			}),
+		).toBeNull();
 	});
 
 	// --- unknown input ---

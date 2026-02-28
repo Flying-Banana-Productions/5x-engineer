@@ -65,6 +65,13 @@ export function parseEscalationDecision(
 			const guidance = csMatch[1]?.trim();
 			return { action: "continue_session", guidance: guidance || undefined };
 		}
+	} else {
+		// When continuation is ineligible, reject continue-session variants
+		// (with or without guidance) so they don't fall through to the
+		// "continue" regex and silently start a fresh session.
+		if (value === "c" || value === "continue-session") return null;
+		if (/^continue-session\s*[:-]?\s*.+$/i.test(trimmed)) return null;
+		if (/^c\s*[:-]\s*.+$/i.test(trimmed)) return null;
 	}
 
 	if (value === "f" || value === "fix" || value === "continue") {
