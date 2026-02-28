@@ -2525,6 +2525,92 @@ describe("runPhaseExecutionLoop", () => {
 		}
 	});
 
+	test("reviewerSessionId cleared on assertReviewerVerdict failure (invalid verdict)", async () => {
+		// P1.2 of review: when assertReviewerVerdict throws (e.g. not_ready with
+		// empty items), the reviewerSessionId must be cleared so the next review
+		// attempt uses a fresh session rather than reusing a potentially bad one.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW 1: auto_fix needed (valid verdict, captures session)
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Fix it",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW 2: invalid verdict (not_ready with empty items → invariant violation)
+				// preEscalateState = REVIEW, so escalation "continue" loops back to REVIEW
+				{
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+				// REVIEW 3: escalation resumes at REVIEW → still invalid (exhaust one retry)
+				{
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
+					sessionId: "reviewer-sess-bad",
+				},
+				// REVIEW 4: finally valid — should use fresh session
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-2",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const cfg = defaultConfig(tmp);
+			cfg.maxAutoRetries = 3; // allow enough retries
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				cfg,
+				{
+					workdir: tmp,
+					auto: true,
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(4);
+			// First review: no sessionId (new session)
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+			// Second review: reuses session from first review
+			expect(capturedVerdictOpts[1]?.sessionId).toBe("reviewer-sess-1");
+			// Third review: sessionId cleared after invariant failure → fresh session
+			expect(capturedVerdictOpts[2]?.sessionId).toBeUndefined();
+			// Fourth review: sessionId cleared after second invariant failure → still fresh
+			expect(capturedVerdictOpts[3]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("reviewerSessionId cleared on REVIEW failure when set", async () => {
 		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
 		const planPath = join(tmp, "docs", "development", "001-test-plan.md");

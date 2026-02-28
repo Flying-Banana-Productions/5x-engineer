@@ -40,7 +40,7 @@ Out of scope:
 
 - [x] P1.1 — Add reviewerSessionId to phase execution loop state
 - [x] P1.2 — Capture sessionId after REVIEW invocation
-- [x] P1.3 — Pass sessionId on subsequent REVIEW invocations
+- [x] P1.3 — Pass sessionId on subsequent REVIEW invocations (full template; follow-up prompt deferred to Phase 2)
 - [x] P1.4 — Clear on phase transition and failure
 
 ### P1.1 — Add reviewerSessionId to phase execution loop state
@@ -63,8 +63,8 @@ On REVIEW errors (catch block), do not update `reviewerSessionId` — the prior 
 
 In the REVIEW state, when `reviewerSessionId` is set:
 
-- Build a follow-up prompt instead of rendering the full `reviewer-commit` template
 - Pass `sessionId: reviewerSessionId` to `adapter.invokeForVerdict()`
+- The full `reviewer-commit` template is still rendered (follow-up prompt optimization deferred to Phase 2)
 
 When `reviewerSessionId` is not set (first review of a phase): existing behavior (full template, new session).
 

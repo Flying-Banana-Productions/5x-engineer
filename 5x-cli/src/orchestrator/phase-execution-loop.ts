@@ -1551,6 +1551,8 @@ export async function runPhaseExecutionLoop(
 							phase: phase.number,
 							iteration,
 							logPath: reviewLogPath,
+							sessionReuse: !!reviewerSessionId,
+							reviewerSessionId: reviewerSessionId ?? null,
 						});
 						reviewResult = await adapter.invokeForVerdict({
 							prompt: reviewerTemplate.prompt,
@@ -1641,9 +1643,6 @@ export async function runPhaseExecutionLoop(
 						cost_usd: reviewResult.costUsd ?? null,
 					});
 
-					// Capture reviewer session for reuse in subsequent review cycles (008)
-					reviewerSessionId = reviewResult.sessionId;
-
 					appendRunEvent(db, {
 						runId,
 						eventType: "agent_invoke",
@@ -1657,10 +1656,13 @@ export async function runPhaseExecutionLoop(
 						},
 					});
 
-					// Validate invariants
+					// Validate invariants before capturing session (008: invalid
+					// verdicts must not pin the reviewer session for reuse)
 					try {
 						assertReviewerVerdict(reviewResult.verdict, "REVIEW");
 					} catch (err) {
+						// Clear reviewer session so retry uses a fresh session (008)
+						reviewerSessionId = undefined;
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
 							iteration,
@@ -1678,6 +1680,11 @@ export async function runPhaseExecutionLoop(
 						state = "ESCALATE";
 						break;
 					}
+
+					// Capture reviewer session for reuse in subsequent review cycles (008).
+					// Assigned after assertReviewerVerdict() passes so invalid verdicts
+					// don't pin a potentially bad session.
+					reviewerSessionId = reviewResult.sessionId;
 
 					appendRunEvent(db, {
 						runId,
