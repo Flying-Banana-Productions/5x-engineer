@@ -63,3 +63,19 @@ Recommendation: only suppress `sessionId` when the continuation attempt itself i
 - Headless gate behavior remains effectively untested (acknowledged in `test/gates/human.test.ts`); acceptable if we’re explicitly relying on TUI + orchestrator integration for coverage, but it’s still a risk surface.
 
 Updated readiness: Ready with corrections — core behavior matches the plan and prior review items are addressed; add adapter continuation tests to close Phase 3 plan coverage.
+
+## Addendum (2026-02-28) — Follow-up Review for commit `dedda65`
+
+**Local verification:** `bun run typecheck` (pass), `bun test` (634 pass)
+
+### What's Addressed
+
+- Prior addendum concerns are closed: adapter continuation is now directly unit-tested (skips `session.create()`, preserves/fires `onSessionCreated`, propagates sessionId to prompts, returns `result.sessionId`).
+- Gate/test completeness: headless non-interactive behavior is now exercised, and `parseEscalationDecision` is covered across eligibility + guidance parsing paths.
+- Plan compliance: Phase 3 items (P3.1–P3.3) are implemented and checked off in the plan.
+
+### Remaining Concerns
+
+- TUI parsing edge case: when ineligible, input `continue-session` currently falls through to the `continue` parser (guidance becomes `-session`); recommend treating this token as invalid (null) when `canContinueSession` is false to avoid surprising guidance injection. (action: auto_fix)
+
+Updated readiness: Ready — Phase 2 implementation matches the plan, Phase 3 coverage is present, and prior review gaps are resolved.
