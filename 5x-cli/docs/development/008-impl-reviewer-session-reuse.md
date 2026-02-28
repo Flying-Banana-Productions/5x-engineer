@@ -108,16 +108,16 @@ The adapter's two-prompt pattern (work prompt → structured summary) works iden
 
 ### P3.1 — Phase execution loop tests
 
-- First REVIEW of a phase creates a new session (no `sessionId` in `InvokeOptions`)
-- Second REVIEW of same phase passes `reviewerSessionId` via `InvokeOptions.sessionId`
-- `reviewerSessionId` is cleared at start of new phase
-- `reviewerSessionId` is cleared on REVIEW failure when it was set
-- Follow-up prompt contains the new commit hash and review path
-- Follow-up prompt does not contain full template content (plan_path variable, review dimensions, etc.)
+- [x] First REVIEW of a phase creates a new session (no `sessionId` in `InvokeOptions`)
+- [x] Second REVIEW of same phase passes `reviewerSessionId` via `InvokeOptions.sessionId`
+- [x] `reviewerSessionId` is cleared at start of new phase
+- [x] `reviewerSessionId` is cleared on REVIEW failure when it was set
+- [x] Follow-up prompt contains the new commit hash and review path
+- [x] Follow-up prompt does not contain full template content (plan_path variable, review dimensions, etc.)
 
 ### P3.2 — Fallback behavior
 
-- When `reviewerSessionId` is set but invocation fails, subsequent retry does not pass `sessionId` (fresh session)
+- [x] When `reviewerSessionId` is set but invocation fails, subsequent retry does not pass `sessionId` (fresh session)
 
 ## Files
 
