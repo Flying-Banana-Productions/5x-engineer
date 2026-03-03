@@ -4,7 +4,7 @@
 **Created:** February 18, 2026
 **Updated:** February 19, 2026 — **Phase 5 review corrections (v1.4):** no `process.exit()` post-adapter so `finally` always runs (P0.1), log dir permissions `0o700` (P0.2), hermetic factory tests (P1.1), typed `AdapterConfig` parameter (P1.2), adapter-aware signal shutdown via `registerAdapterShutdown()` (P2), model selection semantics documented (P2); prior: Phase 4 review corrections (v1.3), Phase 3 review corrections (v1.2)
 **Status:** Draft
-**Supersedes:** [001-impl-5x-cli.md](./001-impl-5x-cli.md) (phases 6–7 are cancelled; this document governs all remaining work)
+**Supersedes:** [001-impl-5x-cli.md](001-impl-5x-cli.md) (phases 6–7 are cancelled; this document governs all remaining work)
 
 ---
 

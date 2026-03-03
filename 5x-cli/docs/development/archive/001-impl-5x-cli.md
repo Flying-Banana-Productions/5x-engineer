@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The 5x workflow (described in the [project README](../../README.md)) is a two-phase author-review loop with human-gated checkpoints: an author agent writes plans and code, a reviewer agent critiques, and the human decides when to proceed. Today this loop is driven manually — the developer invokes slash commands one at a time, copies paths between them, reads review verdicts, and decides next steps.
+The 5x workflow (described in the [project README](5x-cli/README.md)) is a two-phase author-review loop with human-gated checkpoints: an author agent writes plans and code, a reviewer agent critiques, and the human decides when to proceed. Today this loop is driven manually — the developer invokes slash commands one at a time, copies paths between them, reads review verdicts, and decides next steps.
 
 `5x-cli` automates the orchestration while preserving human oversight. It is a standalone CLI tool that drives author and reviewer agents through structured loops, reads machine-readable signals from agent output to determine next steps, and pauses for human intervention when agents identify decisions that require taste or judgment. The CLI is a dumb state machine; the agents carry the intelligence.
 
@@ -28,7 +28,7 @@ The 5x workflow (described in the [project README](../../README.md)) is a two-ph
 - Per-project configuration via `5x.config.js` (JS-only for cross-runtime compatibility)
 
 **Out of scope (for this plan):**
-- Custom UI/dashboard for monitoring runs — separate initiative, see [10-dashboard.md](../10-dashboard.md)
+- Custom UI/dashboard for monitoring runs — separate initiative, see [10-dashboard.md](10-dashboard.md)
 - Token cost optimization or caching — agents manage their own context
 - Multi-repo or monorepo orchestration — single project at a time
 - Agent model selection logic — user configures models in config file
@@ -1581,7 +1581,7 @@ $ 5x history --run abc123
 
 ## Not In Scope
 
-- **Web dashboard or monitoring UI** — separate initiative, see [10-dashboard.md](../10-dashboard.md)
+- **Web dashboard or monitoring UI** — separate initiative, see [10-dashboard.md](10-dashboard.md)
 - **Token cost optimization** — agents manage their own context; CLI only reports what adapters provide
 - **Multi-project orchestration** — single project root per invocation
 - **Custom agent adapters** — only Claude Code and OpenCode; plugin system deferred
