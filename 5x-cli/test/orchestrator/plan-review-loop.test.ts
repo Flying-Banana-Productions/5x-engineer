@@ -1282,4 +1282,466 @@ describe("runPlanReviewLoop", () => {
 			cleanup();
 		}
 	});
+
+	// -----------------------------------------------------------------------
+	// Session reuse — author continuation at escalation gate
+	// -----------------------------------------------------------------------
+
+	test("continue_session routes to AUTO_FIX and passes sessionId to author", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			let capturedSessionId: string | undefined;
+			let capturedPrompt = "";
+			let statusCallCount = 0;
+			const adapter = createMockAdapter(
+				[
+					// Reviewer: auto_fix items
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [
+								{
+									id: "P1.1",
+									title: "Fix",
+									action: "auto_fix",
+									reason: "issue",
+								},
+							],
+						},
+					},
+					// Author fix → needs_human (creates escalation with sessionId)
+					{
+						type: "status",
+						status: { result: "needs_human", reason: "stuck" },
+					},
+					// Author fix via continue_session → complete
+					{ type: "status", status: { result: "complete" } },
+					// Final review: approved
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onStatusInvoke: (opts) => {
+						statusCallCount++;
+						// Capture the second author call (the continuation)
+						if (statusCallCount === 2) {
+							capturedSessionId = opts.sessionId;
+							capturedPrompt = opts.prompt;
+						}
+					},
+				},
+			);
+
+			let humanCallCount = 0;
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: async (event) => {
+						humanCallCount++;
+						if (humanCallCount === 1) {
+							// Author needs_human should include sessionId
+							expect(event.sessionId).toBe("mock-session");
+							return { action: "continue_session", guidance: "Try again" };
+						}
+						return { action: "abort" };
+					},
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// Should have passed the session ID to the author
+			expect(capturedSessionId).toBe("mock-session");
+			// Should use continuation prompt with guidance
+			expect(capturedPrompt).toContain("Continue the current session");
+			expect(capturedPrompt).toContain("Try again");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("continue_session clears continueSessionId after use", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const sessionIds: (string | undefined)[] = [];
+			const adapter = createMockAdapter(
+				[
+					// Reviewer: auto_fix
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [
+								{
+									id: "P1.1",
+									title: "Fix",
+									action: "auto_fix",
+									reason: "issue",
+								},
+							],
+						},
+					},
+					// Author fix → needs_human (triggers escalation with sessionId)
+					{
+						type: "status",
+						status: { result: "needs_human", reason: "stuck" },
+					},
+					// Author fix via continue_session → needs_human again
+					{
+						type: "status",
+						status: { result: "needs_human", reason: "still stuck" },
+					},
+					// Author fix fresh (no continuation)
+					{ type: "status", status: { result: "complete" } },
+					// Final review: approved
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onStatusInvoke: (opts) => {
+						sessionIds.push(opts.sessionId);
+					},
+				},
+			);
+
+			let humanCallCount = 0;
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: async () => {
+						humanCallCount++;
+						// First call: continue_session; second call: plain continue
+						if (humanCallCount === 1) {
+							return { action: "continue_session" };
+						}
+						return { action: "continue" };
+					},
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// First author: no sessionId (fresh). Second: continuation. Third: cleared.
+			expect(sessionIds[0]).toBeUndefined();
+			expect(sessionIds[1]).toBe("mock-session");
+			expect(sessionIds[2]).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("failed continuation suppresses sessionId on next escalation", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const escalationSessionIds: (string | undefined)[] = [];
+			const adapter = createMockAdapter([
+				// Reviewer: auto_fix
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "issue",
+							},
+						],
+					},
+				},
+				// Author fix → needs_human (escalation with sessionId)
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "stuck" },
+				},
+				// Author fix via continue_session → failed
+				{
+					type: "status",
+					status: { result: "failed", reason: "broken" },
+				},
+				// Author fix fresh after continue
+				{ type: "status", status: { result: "complete" } },
+				// Final review: approved
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			let humanCallCount = 0;
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: async (event) => {
+						humanCallCount++;
+						escalationSessionIds.push(event.sessionId);
+						if (humanCallCount === 1) {
+							return { action: "continue_session" };
+						}
+						// Second escalation: sessionId should be suppressed
+						return { action: "continue" };
+					},
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// First escalation (needs_human) should have sessionId
+			expect(escalationSessionIds[0]).toBe("mock-session");
+			// Second escalation: continuation failed → sessionId suppressed
+			expect(escalationSessionIds[1]).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("needs_human preserves sessionId for multi-turn continuation", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const escalationSessionIds: (string | undefined)[] = [];
+			const adapter = createMockAdapter([
+				// Reviewer: auto_fix
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "P1.1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "issue",
+							},
+						],
+					},
+				},
+				// Author fix → needs_human (first escalation)
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "stuck" },
+				},
+				// Author fix via continue_session → needs_human again (second escalation)
+				{
+					type: "status",
+					status: { result: "needs_human", reason: "still stuck" },
+				},
+				// Author fix via second continue_session → complete
+				{ type: "status", status: { result: "complete" } },
+				// Final review: approved
+				{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+			]);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: async (event) => {
+						escalationSessionIds.push(event.sessionId);
+						return { action: "continue_session" };
+					},
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// Both escalations should preserve sessionId (needs_human doesn't suppress)
+			expect(escalationSessionIds[0]).toBe("mock-session");
+			expect(escalationSessionIds[1]).toBe("mock-session");
+		} finally {
+			cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Session reuse — reviewer session reuse across review cycles
+	// -----------------------------------------------------------------------
+
+	test("reviewer session is reused across review cycles", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const reviewerSessionIds: (string | undefined)[] = [];
+			const reviewerPrompts: string[] = [];
+			const adapter = createMockAdapter(
+				[
+					// First review: corrections
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [
+								{
+									id: "P1.1",
+									title: "Fix",
+									action: "auto_fix",
+									reason: "issue",
+								},
+							],
+						},
+					},
+					// Author fix
+					{ type: "status", status: { result: "complete" } },
+					// Second review (should reuse session): approved
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onVerdictInvoke: (opts) => {
+						reviewerSessionIds.push(opts.sessionId);
+						reviewerPrompts.push(opts.prompt);
+					},
+				},
+			);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{ projectRoot: tmp },
+			);
+
+			expect(result.approved).toBe(true);
+			// First review: no session reuse (new session)
+			expect(reviewerSessionIds[0]).toBeUndefined();
+			// Second review: reuses the session from first review
+			expect(reviewerSessionIds[1]).toBe("mock-session");
+			// Second review should use follow-up prompt
+			expect(reviewerPrompts[1]).toContain("revised the plan");
+			expect(reviewerPrompts[1]).not.toContain("reviewer-plan");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewer session cleared on invocation failure", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const reviewerSessionIds: (string | undefined)[] = [];
+			const adapter = createMockAdapter(
+				[
+					// First review: corrections
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [
+								{
+									id: "P1.1",
+									title: "Fix",
+									action: "auto_fix",
+									reason: "issue",
+								},
+							],
+						},
+					},
+					// Author fix
+					{ type: "status", status: { result: "complete" } },
+					// Second review: fails
+					{ type: "error", error: new Error("session lost") },
+					// Third review (should NOT reuse): approved
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onVerdictInvoke: (opts) => {
+						reviewerSessionIds.push(opts.sessionId);
+					},
+				},
+			);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: fixedHumanGate("continue"),
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// First: no reuse; second: reuse from first; third: cleared after failure
+			expect(reviewerSessionIds[0]).toBeUndefined();
+			expect(reviewerSessionIds[1]).toBe("mock-session");
+			expect(reviewerSessionIds[2]).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewer session cleared on invalid verdict", async () => {
+		const { tmp, db, planPath, reviewPath, cleanup } = createTestEnv();
+		try {
+			const reviewerSessionIds: (string | undefined)[] = [];
+			const adapter = createMockAdapter(
+				[
+					// First review: corrections (valid)
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [
+								{
+									id: "P1.1",
+									title: "Fix",
+									action: "auto_fix",
+									reason: "issue",
+								},
+							],
+						},
+					},
+					// Author fix
+					{ type: "status", status: { result: "complete" } },
+					// Second review: invalid verdict (empty items on ready_with_corrections)
+					{
+						type: "verdict",
+						verdict: {
+							readiness: "ready_with_corrections",
+							items: [],
+						},
+					},
+					// Third review (should NOT reuse session): approved
+					{ type: "verdict", verdict: { readiness: "ready", items: [] } },
+				],
+				{
+					onVerdictInvoke: (opts) => {
+						reviewerSessionIds.push(opts.sessionId);
+					},
+				},
+			);
+
+			const result = await runPlanReviewLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(),
+				{
+					humanGate: fixedHumanGate("continue"),
+					projectRoot: tmp,
+				},
+			);
+
+			expect(result.approved).toBe(true);
+			// First: no reuse; second: reuse; third: cleared after invalid verdict
+			expect(reviewerSessionIds[0]).toBeUndefined();
+			expect(reviewerSessionIds[1]).toBe("mock-session");
+			expect(reviewerSessionIds[2]).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
 });

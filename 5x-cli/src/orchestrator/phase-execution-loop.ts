@@ -184,7 +184,7 @@ function generateId(): string {
  * Centralizes the prompt assembly that was previously duplicated across
  * EXECUTE, QUALITY_RETRY, and AUTO_FIX states.
  */
-function buildContinuationPrompt(guidance?: string): string {
+export function buildContinuationPrompt(guidance?: string): string {
 	let prompt = "Continue the current session and complete all remaining tasks.";
 	if (guidance) {
 		prompt += `\n\nThe user has provided the following additional guidance:\n${guidance}`;

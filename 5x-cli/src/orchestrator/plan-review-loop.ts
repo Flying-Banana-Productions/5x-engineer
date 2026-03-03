@@ -56,7 +56,12 @@ import { buildEscalationReason } from "../utils/agent-event-helpers.js";
 // Re-exported here for backward compatibility with existing consumers.
 export type { EscalationEvent } from "../gates/human.js";
 
-import type { EscalationEvent, EscalationResponse } from "../gates/human.js";
+import {
+	type EscalationEvent,
+	type EscalationResponse,
+	escalationGate as sharedEscalationGate,
+} from "../gates/human.js";
+import { buildContinuationPrompt } from "./phase-execution-loop.js";
 
 export interface PlanReviewResult {
 	approved: boolean;
@@ -145,6 +150,7 @@ export interface PlanReviewLoopOptions {
 
 export type PlanReviewHumanGateResponse =
 	| "continue"
+	| "continue_session"
 	| "approve"
 	| "abort"
 	| EscalationResponse;
@@ -229,55 +235,17 @@ export function resolveReviewPath(
 	return join(reviewsDir, `${date}-${planBase}-${suffix}.md`);
 }
 
-/** Default human escalation gate — prompts via stdin. */
-async function defaultHumanGate(
-	event: EscalationEvent,
-): Promise<EscalationResponse> {
-	console.log();
-	console.log("  === Human Review Required ===");
-	console.log(`  Reason: ${event.reason}`);
-	if (event.items && event.items.length > 0) {
-		console.log("  Items requiring human review:");
-		for (const item of event.items) {
-			console.log(`    - [${item.id}] ${item.title}: ${item.reason}`);
-		}
-	}
-	console.log();
-	console.log("  Options:");
-	console.log(
-		"    f = fix with guidance (agent addresses issues, then re-review)",
-	);
-	console.log("    o = override and move on (force approve)");
-	console.log("    q = abort (stop the review loop)");
-	console.log();
-
-	// Non-interactive detection
-	if (!process.stdin.isTTY) {
-		console.log("  Non-interactive mode detected — aborting.");
-		return { action: "abort" };
-	}
-
-	process.stdout.write("  Choice [f/o/q]: ");
-	const input = await readLine();
-	const choice = input.trim().toLowerCase();
-	if (choice === "f" || choice === "fix" || choice === "continue") {
-		process.stdout.write("  Guidance (optional, press Enter to skip): ");
-		const guidance = await readLine();
-		return {
-			action: "continue",
-			guidance: guidance.trim() || undefined,
-		};
-	}
-	if (choice === "o" || choice === "override" || choice === "approve")
-		return { action: "approve" };
-	return { action: "abort" };
-}
+// Default human escalation gate: reuse the shared escalationGate from
+// gates/human.ts which already supports "c" (continue_session) when
+// event.sessionId is present.
+const defaultHumanGate = sharedEscalationGate;
 
 function normalizeHumanGateResponse(
 	response: PlanReviewHumanGateResponse,
 ): EscalationResponse {
 	if (typeof response !== "string") return response;
 	if (response === "continue") return { action: "continue" };
+	if (response === "continue_session") return { action: "continue_session" };
 	if (response === "approve") return { action: "approve" };
 	return { action: "abort" };
 }
@@ -475,6 +443,8 @@ export async function runPlanReviewLoop(
 	let preEscalateState: LoopState = "REVIEW";
 	let autoEscalationAttempts = 0;
 	let userGuidance: string | undefined;
+	let continueSessionId: string | undefined; // plumbed from escalation "continue_session" into next author call
+	let reviewerSessionId: string | undefined; // reuse reviewer session across review cycles
 
 	// --- State machine loop ---
 	while (state !== "APPROVED" && state !== "ABORTED") {
@@ -543,6 +513,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -564,6 +535,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -583,6 +555,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -613,12 +586,29 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
-				// Render reviewer prompt
-				const reviewerTemplate = renderTemplate("reviewer-plan", {
-					plan_path: planPath,
-					review_path: reviewPath,
-					review_template_path: resolve(workdir, config.paths.templates.review),
-				});
+				// Build reviewer prompt: follow-up (short) when reusing session,
+				// full template when creating a new session.
+				let reviewPrompt: string;
+				if (reviewerSessionId) {
+					reviewPrompt = [
+						"The author has revised the plan in response to your review feedback.",
+						"",
+						"1. Re-read the plan file and your previous review notes.",
+						"2. Verify whether the issues from your previous review have been addressed.",
+						"3. Identify any new issues introduced by the revisions.",
+						`4. Write your updated review as a new addendum to ${reviewPath}.`,
+					].join("\n");
+				} else {
+					const reviewerTemplate = renderTemplate("reviewer-plan", {
+						plan_path: planPath,
+						review_path: reviewPath,
+						review_template_path: resolve(
+							workdir,
+							config.paths.templates.review,
+						),
+					});
+					reviewPrompt = reviewerTemplate.prompt;
+				}
 
 				log(`  Reviewer iteration ${Math.floor(iteration / 2) + 1}...`);
 
@@ -630,8 +620,15 @@ export async function runPlanReviewLoop(
 					// Phase 4: Pass descriptive session title for TUI
 					const reviewIteration = Math.floor(iteration / 2) + 1;
 					const sessionTitle = `Plan review — iteration ${reviewIteration}`;
+					trace("plan_review.review.invoke.start", {
+						runId,
+						iteration,
+						logPath: reviewLogPath,
+						sessionReuse: !!reviewerSessionId,
+						reviewerSessionId: reviewerSessionId ?? null,
+					});
 					reviewResult = await adapter.invokeForVerdict({
-						prompt: reviewerTemplate.prompt,
+						prompt: reviewPrompt,
 						model: config.reviewer.model,
 						workdir,
 						logPath: reviewLogPath,
@@ -640,6 +637,7 @@ export async function runPlanReviewLoop(
 						signal: options.signal,
 						trace,
 						sessionTitle,
+						sessionId: reviewerSessionId,
 						// Phase 4: Select session immediately after creation
 						onSessionCreated: options.tui
 							? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -652,8 +650,11 @@ export async function runPlanReviewLoop(
 						options.signal?.aborted
 					) {
 						state = "ABORTED";
+						reviewerSessionId = undefined;
 						break;
 					}
+					// Clear reviewer session so retry uses a fresh session
+					reviewerSessionId = undefined;
 					const event: EscalationEvent = {
 						reason: buildEscalationReason(
 							`Reviewer invocation failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -705,10 +706,12 @@ export async function runPlanReviewLoop(
 					},
 				});
 
-				// Validate invariants
+				// Validate invariants (clear reviewer session on invalid
+				// verdicts so retry/escalation uses a fresh session)
 				try {
 					assertReviewerVerdict(reviewResult.verdict, "PLAN_REVIEW/REVIEW");
 				} catch (err) {
+					reviewerSessionId = undefined;
 					const event: EscalationEvent = {
 						reason: err instanceof Error ? err.message : String(err),
 						iteration,
@@ -721,9 +724,15 @@ export async function runPlanReviewLoop(
 						iteration,
 						data: event,
 					});
+					iteration++;
 					state = "ESCALATE";
 					break;
 				}
+
+				// Capture reviewer session for reuse in subsequent review cycles.
+				// Assigned after assertReviewerVerdict() passes so invalid verdicts
+				// don't pin a potentially bad session.
+				reviewerSessionId = reviewResult.sessionId;
 
 				appendRunEvent(db, {
 					runId,
@@ -797,6 +806,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -818,6 +828,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -840,6 +851,7 @@ export async function runPlanReviewLoop(
 							iteration,
 							data: event,
 						});
+						iteration++;
 						state = "ESCALATE";
 						break;
 					}
@@ -850,13 +862,23 @@ export async function runPlanReviewLoop(
 					break;
 				}
 
-				// Render author fix prompt
-				const authorTemplate = renderTemplate("author-process-plan-review", {
-					review_path: reviewPath,
-					plan_path: planPath,
-					user_notes: userGuidance ?? "(No additional notes)",
-				});
-				userGuidance = undefined;
+				// Build prompt: continuation or fresh template
+				let authorPrompt: string;
+				let authorContinueSessionId: string | undefined;
+				if (continueSessionId) {
+					authorContinueSessionId = continueSessionId;
+					authorPrompt = buildContinuationPrompt(userGuidance);
+					continueSessionId = undefined;
+					userGuidance = undefined;
+				} else {
+					const authorTemplate = renderTemplate("author-process-plan-review", {
+						review_path: reviewPath,
+						plan_path: planPath,
+						user_notes: userGuidance ?? "(No additional notes)",
+					});
+					authorPrompt = authorTemplate.prompt;
+					userGuidance = undefined;
+				}
 
 				const authorResultId = generateId();
 				const authorLogPath = join(logDir, `agent-${authorResultId}.ndjson`);
@@ -867,7 +889,7 @@ export async function runPlanReviewLoop(
 					const fixIteration = Math.floor(iteration / 2) + 1;
 					const sessionTitle = `Plan revision — iteration ${fixIteration}`;
 					authorResult = await adapter.invokeForStatus({
-						prompt: authorTemplate.prompt,
+						prompt: authorPrompt,
 						model: config.author.model,
 						workdir,
 						logPath: authorLogPath,
@@ -876,6 +898,7 @@ export async function runPlanReviewLoop(
 						signal: options.signal,
 						trace,
 						sessionTitle,
+						sessionId: authorContinueSessionId,
 						// Phase 4: Select session immediately after creation
 						onSessionCreated: options.tui
 							? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -957,11 +980,20 @@ export async function runPlanReviewLoop(
 						iteration,
 						data: event,
 					});
+					iteration++;
 					state = "ESCALATE";
 					break;
 				}
 
-				// Route on status
+				// Route on status.
+				// Suppress sessionId only when a continuation attempt resulted in
+				// "failed" — the session is broken and should not be retried.
+				// Preserve sessionId on "needs_human" so the user can continue
+				// the session again (multi-turn continuation use-case).
+				const authorEscalationSessionId =
+					authorContinueSessionId && authorResult.status.result === "failed"
+						? undefined
+						: authorResult.sessionId;
 				if (authorResult.status.result === "needs_human") {
 					const event: EscalationEvent = {
 						reason:
@@ -969,6 +1001,7 @@ export async function runPlanReviewLoop(
 							"Author needs human input during fix",
 						iteration,
 						logPath: authorLogPath,
+						sessionId: authorEscalationSessionId,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -977,6 +1010,7 @@ export async function runPlanReviewLoop(
 						iteration,
 						data: event,
 					});
+					iteration++;
 					state = "ESCALATE";
 					break;
 				}
@@ -988,6 +1022,7 @@ export async function runPlanReviewLoop(
 							"Author reported failure during fix",
 						iteration,
 						logPath: authorLogPath,
+						sessionId: authorEscalationSessionId,
 					};
 					escalations.push(event);
 					appendRunEvent(db, {
@@ -996,6 +1031,7 @@ export async function runPlanReviewLoop(
 						iteration,
 						data: event,
 					});
+					iteration++;
 					state = "ESCALATE";
 					break;
 				}
@@ -1079,6 +1115,24 @@ export async function runPlanReviewLoop(
 						if (response.guidance && resumeState === "AUTO_FIX") {
 							userGuidance = response.guidance;
 						}
+						state = resumeState;
+						break;
+					}
+					case "continue_session": {
+						// Resume the interrupted agent session instead of starting fresh.
+						if (!lastEscalation.sessionId) {
+							trace("plan_review.escalate.continue_session.no_session_id", {
+								runId,
+								iteration,
+							});
+						}
+						continueSessionId = lastEscalation.sessionId;
+						if ("guidance" in response && response.guidance) {
+							userGuidance = response.guidance;
+						}
+						const resumeState =
+							(lastEscalation.retryState as LoopState | undefined) ??
+							preEscalateState;
 						state = resumeState;
 						break;
 					}

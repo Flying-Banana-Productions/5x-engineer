@@ -1,8 +1,5 @@
 import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 import {
-	type EscalationEvent,
-	type EscalationResponse,
-	escalationGate as headlessEscalationGate,
 	phaseGate as headlessPhaseGate,
 	resumeGate as headlessResumeGate,
 	type PhaseSummary,
@@ -34,62 +31,6 @@ function parsePhaseDecision(text: string): "continue" | "exit" | null {
 	) {
 		return "exit";
 	}
-	return null;
-}
-
-export function parseEscalationDecision(
-	text: string,
-	opts?: { canContinueSession?: boolean },
-):
-	| { action: "continue"; guidance?: string }
-	| { action: "continue_session"; guidance?: string }
-	| { action: "approve" | "abort" }
-	| null {
-	const trimmed = text.trim();
-	const value = normalize(trimmed);
-
-	if (value === "o" || value === "approve" || value === "override") {
-		return { action: "approve" };
-	}
-	if (value === "q" || value === "abort") {
-		return { action: "abort" };
-	}
-
-	// "c" / "continue-session" → continue_session (only when eligible)
-	if (opts?.canContinueSession) {
-		if (value === "c" || value === "continue-session") {
-			return { action: "continue_session" };
-		}
-		const csMatch = trimmed.match(/^(?:continue-session|c)\s*[:-]?\s*(.+)$/i);
-		if (csMatch) {
-			const guidance = csMatch[1]?.trim();
-			return { action: "continue_session", guidance: guidance || undefined };
-		}
-	} else {
-		// When continuation is ineligible, reject continue-session variants
-		// (with or without guidance) so they don't fall through to the
-		// "continue" regex and silently start a fresh session.
-		if (value === "c" || value === "continue-session") return null;
-		if (/^continue-session\s*[:-]?\s*.+$/i.test(trimmed)) return null;
-		if (/^c\s*[:-]\s*.+$/i.test(trimmed)) return null;
-	}
-
-	if (value === "f" || value === "fix" || value === "continue") {
-		return { action: "continue" };
-	}
-
-	const continueMatch = trimmed.match(/^continue\s*[:-]?\s*(.+)$/i);
-	if (continueMatch) {
-		const guidance = continueMatch[1]?.trim();
-		return { action: "continue", guidance: guidance || undefined };
-	}
-
-	const fixMatch = trimmed.match(/^fix\s*[:-]?\s*(.+)$/i);
-	if (fixMatch) {
-		const guidance = fixMatch[1]?.trim();
-		return { action: "continue", guidance: guidance || undefined };
-	}
-
 	return null;
 }
 
@@ -335,73 +276,6 @@ export function createTuiPhaseGate(
 	};
 }
 
-export function createTuiEscalationGate(
-	client: OpencodeClient,
-	tui: TuiController,
-	opts: TuiGateOptions = {},
-): (event: EscalationEvent) => Promise<EscalationResponse> {
-	return async (event): Promise<EscalationResponse> => {
-		if (!tui.active) return headlessEscalationGate(event);
-
-		const canContinueSession = Boolean(event.sessionId);
-		const shortReason =
-			event.reason.length > 60
-				? `${event.reason.slice(0, 60)}...`
-				: event.reason;
-		const gateSessionId = await createGateSession(
-			client,
-			tui,
-			`Escalation: ${shortReason}`,
-			opts.directory,
-		);
-
-		try {
-			const toastMsg = canContinueSession
-				? "Escalation requires input. Reply with continue-session, fix, approve, or abort."
-				: "Escalation requires input. Reply with fix, approve, or abort.";
-			await tui.showToast(toastMsg, "error");
-		} catch {
-			// Best effort only.
-		}
-
-		try {
-			const validOptions = canContinueSession
-				? "continue-session, fix, approve, or abort"
-				: "fix, approve, or abort";
-			const lifecycle = await runWithGateLifecycle(tui, opts, (signal) =>
-				waitForParsedUserDecision(
-					client,
-					gateSessionId,
-					signal,
-					(text) => parseEscalationDecision(text, { canContinueSession }),
-					async (text) => {
-						try {
-							await tui.showToast(
-								`Invalid input: "${text.trim()}". Use ${validOptions}.`,
-								"warning",
-							);
-						} catch {
-							// Best effort only.
-						}
-					},
-				),
-			);
-
-			if (lifecycle.type === "tui-exit") {
-				return headlessEscalationGate(event);
-			}
-			if (lifecycle.type === "abort") {
-				return { action: "abort" };
-			}
-
-			const decision = lifecycle.value;
-			return decision;
-		} finally {
-			await deleteGateSession(client, gateSessionId);
-		}
-	};
-}
-
 export function createTuiResumeGate(
 	client: OpencodeClient,
 	tui: TuiController,
@@ -468,31 +342,4 @@ export function createTuiResumeGate(
 			await deleteGateSession(client, sessionId);
 		}
 	};
-}
-
-export function createTuiHumanGate(
-	client: OpencodeClient,
-	tui: TuiController,
-	opts: TuiGateOptions = {},
-): (
-	event: EscalationEvent,
-) => Promise<"continue" | "continue_session" | "approve" | "abort"> {
-	const escalationGate = createTuiEscalationGate(client, tui, opts);
-	return async (event) => {
-		const decision = await escalationGate(event);
-		return decision.action;
-	};
-}
-
-export function createTuiPlanReviewResumeGate(
-	client: OpencodeClient,
-	tui: TuiController,
-	opts: TuiGateOptions = {},
-): (
-	runId: string,
-	iteration: number,
-) => Promise<"resume" | "start-fresh" | "abort"> {
-	const resumeGate = createTuiResumeGate(client, tui, opts);
-	return (runId, iteration) =>
-		resumeGate(runId, `iteration-${iteration}`, "REVIEW");
 }
