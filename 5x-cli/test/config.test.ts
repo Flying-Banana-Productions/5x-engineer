@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineConfig, FiveXConfigSchema, loadConfig } from "../src/config.js";
+import {
+	applyModelOverrides,
+	defineConfig,
+	FiveXConfigSchema,
+	loadConfig,
+} from "../src/config.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -205,6 +210,51 @@ describe("config", () => {
 			// Phase 1: model field is optional, no default
 			expect(result.data.author.model).toBeUndefined();
 			expect(result.data.reviewer.model).toBeUndefined();
+		}
+	});
+
+	test("CLI model overrides take precedence over config models", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { author: { model: "config-author" }, reviewer: { model: "config-reviewer" } };`,
+			);
+			const { config } = await loadConfig(tmp);
+			const overridden = applyModelOverrides(config, {
+				authorModel: "cli-author",
+				reviewerModel: "cli-reviewer",
+			});
+
+			expect(overridden.author.model).toBe("cli-author");
+			expect(overridden.reviewer.model).toBe("cli-reviewer");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("CLI model overrides can be applied independently", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { author: { model: "config-author" }, reviewer: { model: "config-reviewer" } };`,
+			);
+			const { config } = await loadConfig(tmp);
+
+			const reviewerOnly = applyModelOverrides(config, {
+				reviewerModel: "cli-reviewer",
+			});
+			expect(reviewerOnly.author.model).toBe("config-author");
+			expect(reviewerOnly.reviewer.model).toBe("cli-reviewer");
+
+			const authorOnly = applyModelOverrides(config, {
+				authorModel: "cli-author",
+			});
+			expect(authorOnly.author.model).toBe("cli-author");
+			expect(authorOnly.reviewer.model).toBe("config-reviewer");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 });

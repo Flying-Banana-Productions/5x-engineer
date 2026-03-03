@@ -50,6 +50,33 @@ const FiveXConfigSchema = z.object({
 
 export type FiveXConfig = z.infer<typeof FiveXConfigSchema>;
 
+export interface ModelOverrides {
+	authorModel?: string;
+	reviewerModel?: string;
+}
+
+/**
+ * Apply CLI model overrides on top of loaded config.
+ * CLI flags take precedence over config file values when provided.
+ */
+export function applyModelOverrides(
+	config: FiveXConfig,
+	overrides: ModelOverrides,
+): FiveXConfig {
+	const authorModel = overrides.authorModel?.trim();
+	const reviewerModel = overrides.reviewerModel?.trim();
+
+	return {
+		...config,
+		author: authorModel
+			? { ...config.author, model: authorModel }
+			: config.author,
+		reviewer: reviewerModel
+			? { ...config.reviewer, model: reviewerModel }
+			: config.reviewer,
+	};
+}
+
 /**
  * Helper for config files to get autocomplete.
  * Usage in 5x.config.js:
