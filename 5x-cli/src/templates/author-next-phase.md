@@ -42,4 +42,6 @@ You are implementing phase {{phase_number}} of the implementation plan at `{{pla
 
 ## Completion
 
+CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
+
 Commit your work and return when the phase is implemented. The structured outcome (complete/needs_human/failed + commit hash) is captured separately via structured output — you do not need to emit any special blocks.

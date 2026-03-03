@@ -43,4 +43,6 @@ This is a **document-only** task. You are revising the implementation plan, not 
 
 ## Completion
 
+CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
+
 Address the review items in the plan document and return when done. The structured outcome is captured separately via structured output — you do not need to emit any special blocks.

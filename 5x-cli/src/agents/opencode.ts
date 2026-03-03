@@ -64,9 +64,11 @@ function buildStructuredSummaryPrompt(
 ): string {
 	if (resultType === "status") {
 		return [
-			"Summarize the current session outcome using the required JSON schema.",
-			"Do not call tools. Base your answer only on work already completed in this session.",
-			"If result is complete, include commit when known.",
+			"IMPORTANT: Before responding, verify that all changes have been committed to git.",
+			"If you have uncommitted changes, commit them NOW — a 'complete' result without a",
+			"valid commit hash will be rejected and escalated as a failure.",
+			"Do not call any other tools. Base your answer only on work already completed in this session.",
+			"If result is complete, you MUST include the commit hash.",
 			"If result is needs_human or failed, include a concise reason.",
 		].join("\n");
 	}
