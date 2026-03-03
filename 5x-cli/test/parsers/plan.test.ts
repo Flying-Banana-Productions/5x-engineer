@@ -320,7 +320,7 @@ Some description here.
 
 const REAL_PLAN_PATH = resolve(
 	import.meta.dir,
-	"../../docs/development/001-impl-5x-cli.md",
+	"../../docs/development/archive/001-impl-5x-cli.md",
 );
 
 describe("parsePlan — real plan smoke test", () => {
