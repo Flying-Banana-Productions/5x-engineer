@@ -5,7 +5,7 @@ import {
 	createAndVerifyAdapter,
 	registerAdapterShutdown,
 } from "../agents/factory.js";
-import { loadConfig } from "../config.js";
+import { applyModelOverrides, loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
 	getApprovedPhaseNumbers,
@@ -210,6 +210,16 @@ export default defineCommand({
 				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
 			default: false,
 		},
+		"author-model": {
+			type: "string",
+			description:
+				"Override the author model for this run (takes precedence over config)",
+		},
+		"reviewer-model": {
+			type: "string",
+			description:
+				"Override the reviewer model for this run (takes precedence over config)",
+		},
 		"debug-trace": {
 			type: "boolean",
 			description:
@@ -229,7 +239,11 @@ export default defineCommand({
 
 		// Derive project root
 		const projectRoot = resolveProjectRoot();
-		const { config } = await loadConfig(projectRoot);
+		const { config: loadedConfig } = await loadConfig(projectRoot);
+		const config = applyModelOverrides(loadedConfig, {
+			authorModel: args["author-model"],
+			reviewerModel: args["reviewer-model"],
+		});
 		const traceLogger = createDebugTraceLogger({
 			enabled: Boolean(args["debug-trace"] || process.env.FIVEX_DEBUG_TRACE),
 			projectRoot,

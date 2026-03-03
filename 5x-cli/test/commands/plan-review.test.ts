@@ -35,6 +35,20 @@ describe("5x plan-review CLI", () => {
 		// If it doesn't exist, it should fail with "not found"
 		expect(exitCode).not.toBe(0);
 	});
+
+	test("accepts --author-model and --reviewer-model flags", async () => {
+		const { stderr, exitCode } = await runCommand([
+			"plan-review",
+			"nonexistent-plan.md",
+			"--author-model",
+			"author-cli-model",
+			"--reviewer-model",
+			"reviewer-cli-model",
+		]);
+		expect(exitCode).not.toBe(0);
+		expect(stderr).toContain("not found");
+		expect(stderr).not.toContain("Unknown option");
+	});
 });
 
 describe("5x plan CLI", () => {
@@ -45,5 +59,33 @@ describe("5x plan CLI", () => {
 		]);
 		expect(exitCode).not.toBe(0);
 		expect(stderr).toContain("not found");
+	});
+
+	test("accepts --author-model flag", async () => {
+		const { stderr, exitCode } = await runCommand([
+			"plan",
+			"nonexistent-prd.md",
+			"--author-model",
+			"author-cli-model",
+		]);
+		expect(exitCode).not.toBe(0);
+		expect(stderr).toContain("not found");
+		expect(stderr).not.toContain("Unknown option");
+	});
+});
+
+describe("5x run CLI", () => {
+	test("accepts --author-model and --reviewer-model flags", async () => {
+		const { stderr, exitCode } = await runCommand([
+			"run",
+			"nonexistent-plan.md",
+			"--author-model",
+			"author-cli-model",
+			"--reviewer-model",
+			"reviewer-cli-model",
+		]);
+		expect(exitCode).not.toBe(0);
+		expect(stderr).toContain("not found");
+		expect(stderr).not.toContain("Unknown option");
 	});
 });

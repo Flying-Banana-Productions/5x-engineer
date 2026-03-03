@@ -38,6 +38,11 @@ Out of scope:
 
 ## Phase 1: Store Reviewer Session Across Review Cycles
 
+- [x] P1.1 — Add reviewerSessionId to phase execution loop state
+- [x] P1.2 — Capture sessionId after REVIEW invocation
+- [x] P1.3 — Pass sessionId on subsequent REVIEW invocations (full template; follow-up prompt deferred to Phase 2)
+- [x] P1.4 — Clear on phase transition and failure
+
 ### P1.1 — Add reviewerSessionId to phase execution loop state
 
 **`src/orchestrator/phase-execution-loop.ts`**: Add `let reviewerSessionId: string | undefined` alongside existing loop state variables (near `userGuidance`, `continueSessionId`).
@@ -58,18 +63,21 @@ On REVIEW errors (catch block), do not update `reviewerSessionId` — the prior 
 
 In the REVIEW state, when `reviewerSessionId` is set:
 
-- Build a follow-up prompt instead of rendering the full `reviewer-commit` template
 - Pass `sessionId: reviewerSessionId` to `adapter.invokeForVerdict()`
+- The full `reviewer-commit` template is still rendered (follow-up prompt optimization deferred to Phase 2)
 
 When `reviewerSessionId` is not set (first review of a phase): existing behavior (full template, new session).
 
 ### P1.4 — Clear on phase transition and failure
 
-- Clear `reviewerSessionId` at the start of each phase (outer `for` loop)
-- Clear `reviewerSessionId` when state transitions to ABORTED
-- On REVIEW invocation failure when `reviewerSessionId` was set: clear it so the retry/escalation path uses a fresh session
+- [x] Clear `reviewerSessionId` at the start of each phase (outer `for` loop)
+- [x] Clear `reviewerSessionId` when state transitions to ABORTED
+- [x] On REVIEW invocation failure when `reviewerSessionId` was set: clear it so the retry/escalation path uses a fresh session
 
 ## Phase 2: Follow-up Review Prompt
+
+- [x] P2.1 — Build follow-up prompt
+- [x] P2.2 — Structured summary prompt unchanged (no-op, confirmed)
 
 ### P2.1 — Build follow-up prompt
 
@@ -100,16 +108,16 @@ The adapter's two-prompt pattern (work prompt → structured summary) works iden
 
 ### P3.1 — Phase execution loop tests
 
-- First REVIEW of a phase creates a new session (no `sessionId` in `InvokeOptions`)
-- Second REVIEW of same phase passes `reviewerSessionId` via `InvokeOptions.sessionId`
-- `reviewerSessionId` is cleared at start of new phase
-- `reviewerSessionId` is cleared on REVIEW failure when it was set
-- Follow-up prompt contains the new commit hash and review path
-- Follow-up prompt does not contain full template content (plan_path variable, review dimensions, etc.)
+- [x] First REVIEW of a phase creates a new session (no `sessionId` in `InvokeOptions`)
+- [x] Second REVIEW of same phase passes `reviewerSessionId` via `InvokeOptions.sessionId`
+- [x] `reviewerSessionId` is cleared at start of new phase
+- [x] `reviewerSessionId` is cleared on REVIEW failure when it was set
+- [x] Follow-up prompt contains the new commit hash and review path
+- [x] Follow-up prompt does not contain full template content (plan_path variable, review dimensions, etc.)
 
 ### P3.2 — Fallback behavior
 
-- When `reviewerSessionId` is set but invocation fails, subsequent retry does not pass `sessionId` (fresh session)
+- [x] When `reviewerSessionId` is set but invocation fails, subsequent retry does not pass `sessionId` (fresh session)
 
 ## Files
 

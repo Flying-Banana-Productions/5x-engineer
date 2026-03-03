@@ -48,5 +48,5 @@ export default {
 	maxReviewIterations: 5,
 	maxQualityRetries: 3,
 	maxAutoIterations: 10,
-	maxAutoRetries: 3,
+	maxAutoRetries: 5,
 };

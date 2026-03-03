@@ -1,6 +1,6 @@
 # 5x Dashboard — Live Web Command Center
 
-**Navigation**: [docs/development/001-impl-5x-cli.md](development/001-impl-5x-cli.md) > Dashboard
+**Navigation**: [docs/development/001-impl-5x-cli.md](001-impl-5x-cli.md) > Dashboard
 
 ---
 
@@ -1097,7 +1097,7 @@ The dashboard never conflicts with TUI mode because gate control is arbitrated a
 
 ## See Also
 
-- [001-impl-5x-cli.md](development/001-impl-5x-cli.md) — Core CLI implementation plan (orchestrator, DB, gates)
+- [001-impl-5x-cli.md](001-impl-5x-cli.md) — Core CLI implementation plan (orchestrator, DB, gates)
 - [src/gates/human.ts](../src/gates/human.ts) — Current terminal gate implementations
 - [src/db/schema.ts](../src/db/schema.ts) — Database schema and migrations
 - [src/orchestrator/phase-execution-loop.ts](../src/orchestrator/phase-execution-loop.ts) — Phase execution state machine

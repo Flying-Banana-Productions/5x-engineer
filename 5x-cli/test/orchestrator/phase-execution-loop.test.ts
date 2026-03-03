@@ -2369,4 +2369,538 @@ describe("runPhaseExecutionLoop", () => {
 			cleanup();
 		}
 	});
+
+	// ─── Reviewer session reuse tests (Phase 1 of 008) ─────────────────
+
+	test("first REVIEW creates new session (no sessionId in InvokeOptions)", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(1);
+			// First review should not pass a sessionId
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("second REVIEW of same phase passes reviewerSessionId via InvokeOptions.sessionId", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW 1: needs corrections → auto_fix
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix test",
+								action: "auto_fix",
+								reason: "Add test",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW 2: ready (should reuse session)
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(2);
+			// First review: no sessionId (new session)
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+			// Second review: should pass the reviewer session from first review
+			expect(capturedVerdictOpts[1]?.sessionId).toBe("reviewer-sess-1");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewerSessionId is cleared at start of new phase", async () => {
+		const { tmp, db, reviewPath, planPath, cleanup } = createTestEnv();
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// Phase 1: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "aaa" } },
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-phase1-sess",
+				},
+				// Phase 2: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "bbb" } },
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-phase2-sess",
+				},
+				// Phase 3: author + reviewer
+				{ type: "status", status: { result: "complete", commit: "ccc" } },
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-phase3-sess",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(3);
+			// Each phase's first review should not have a sessionId
+			// (reviewerSessionId cleared at phase boundary)
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+			expect(capturedVerdictOpts[1]?.sessionId).toBeUndefined();
+			expect(capturedVerdictOpts[2]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewerSessionId cleared on assertReviewerVerdict failure (invalid verdict)", async () => {
+		// P1.2 of review: when assertReviewerVerdict throws (e.g. not_ready with
+		// empty items), the reviewerSessionId must be cleared so the next review
+		// attempt uses a fresh session rather than reusing a potentially bad one.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW 1: auto_fix needed (valid verdict, captures session)
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Fix it",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW 2: invalid verdict (not_ready with empty items → invariant violation)
+				// preEscalateState = REVIEW, so escalation "continue" loops back to REVIEW
+				{
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+				// REVIEW 3: escalation resumes at REVIEW → still invalid (exhaust one retry)
+				{
+					type: "verdict",
+					verdict: { readiness: "not_ready", items: [] },
+					sessionId: "reviewer-sess-bad",
+				},
+				// REVIEW 4: finally valid — should use fresh session
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-2",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const cfg = defaultConfig(tmp);
+			cfg.maxAutoRetries = 3; // allow enough retries
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				cfg,
+				{
+					workdir: tmp,
+					auto: true,
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(4);
+			// First review: no sessionId (new session)
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+			// Second review: reuses session from first review
+			expect(capturedVerdictOpts[1]?.sessionId).toBe("reviewer-sess-1");
+			// Third review: sessionId cleared after invariant failure → fresh session
+			expect(capturedVerdictOpts[2]?.sessionId).toBeUndefined();
+			// Fourth review: sessionId cleared after second invariant failure → still fresh
+			expect(capturedVerdictOpts[3]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	// ─── Reviewer follow-up prompt tests (Phase 2 of 008) ────────────────
+
+	test("follow-up prompt contains commit hash and review path (not full template)", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc123" } },
+				// REVIEW 1: needs corrections → auto_fix
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix test",
+								action: "auto_fix",
+								reason: "Add test",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{
+					type: "status",
+					status: { result: "complete", commit: "def456" },
+				},
+				// REVIEW 2: ready (should use follow-up prompt)
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(2);
+
+			// First review: full template (contains review dimensions, etc.)
+			const firstPrompt = capturedVerdictOpts[0]?.prompt ?? "";
+			expect(firstPrompt).toContain("Staff Engineer");
+			expect(firstPrompt).toContain("Correctness");
+			expect(firstPrompt).toContain("Architecture");
+			expect(firstPrompt).toContain("Issue Classification");
+
+			// Second review: follow-up prompt (short, only commit + review path)
+			const followUpPrompt = capturedVerdictOpts[1]?.prompt ?? "";
+			expect(followUpPrompt).toContain("def456"); // commit hash
+			expect(followUpPrompt).toContain("review feedback");
+			expect(followUpPrompt).toContain("addendum");
+			// Should contain the phase review path
+			expect(followUpPrompt).toContain("phase-1-review");
+
+			// Follow-up prompt should NOT contain full template content
+			expect(followUpPrompt).not.toContain("Staff Engineer");
+			expect(followUpPrompt).not.toContain("Correctness");
+			expect(followUpPrompt).not.toContain("Architecture");
+			expect(followUpPrompt).not.toContain("Issue Classification");
+			expect(followUpPrompt).not.toContain("Review Perspective");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("follow-up prompt uses HEAD when lastCommit is undefined", async () => {
+		// Edge case: if lastCommit is somehow undefined, follow-up prompt
+		// should use "HEAD" as the fallback commit reference.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes (no commit in status — fallback via getLatestCommit which may fail)
+				{
+					type: "status",
+					status: { result: "complete", commit: "first-commit" },
+				},
+				// REVIEW 1: needs corrections
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Fix it",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes (commit field present)
+				{
+					type: "status",
+					status: { result: "complete", commit: "second-commit" },
+				},
+				// REVIEW 2: ready (follow-up prompt should reference second-commit)
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-1",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{ workdir: tmp, auto: true },
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(2);
+			// Second review should reference the auto-fix commit
+			const followUpPrompt = capturedVerdictOpts[1]?.prompt ?? "";
+			expect(followUpPrompt).toContain("second-commit");
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("first review after session cleared uses full template again", async () => {
+		// When reviewerSessionId is cleared (e.g., after failure), the next
+		// review should go back to using the full reviewer-commit template.
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW 1: auto_fix needed (captures session)
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Fix it",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW 2: fails (clears reviewerSessionId)
+				{ type: "error", error: new Error("context window exhausted") },
+				// Escalation → continue → REVIEW 3: should use full template
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-2",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => ({ action: "continue" }),
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(3);
+
+			// Review 1: full template (no session yet)
+			expect(capturedVerdictOpts[0]?.prompt).toContain("Staff Engineer");
+			// Review 2: follow-up prompt (session reuse) — but this one threw
+			expect(capturedVerdictOpts[1]?.prompt).toContain("review feedback");
+			expect(capturedVerdictOpts[1]?.prompt).not.toContain("Staff Engineer");
+			// Review 3: full template again (session cleared after error)
+			expect(capturedVerdictOpts[2]?.prompt).toContain("Staff Engineer");
+			expect(capturedVerdictOpts[2]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("reviewerSessionId cleared on REVIEW failure when set", async () => {
+		const { tmp, db, reviewPath, cleanup } = createTestEnv(PLAN_ONE_PHASE);
+		const planPath = join(tmp, "docs", "development", "001-test-plan.md");
+		try {
+			const capturedVerdictOpts: InvokeOptions[] = [];
+			const adapter = createMockAdapter([
+				// EXECUTE: author completes
+				{ type: "status", status: { result: "complete", commit: "abc" } },
+				// REVIEW 1: auto_fix needed
+				{
+					type: "verdict",
+					verdict: {
+						readiness: "ready_with_corrections",
+						items: [
+							{
+								id: "p1-1",
+								title: "Fix",
+								action: "auto_fix",
+								reason: "Fix it",
+							},
+						],
+					},
+					sessionId: "reviewer-sess-1",
+				},
+				// AUTO_FIX: author fixes
+				{ type: "status", status: { result: "complete", commit: "def" } },
+				// REVIEW 2: fails (session exhausted, etc.)
+				{ type: "error", error: new Error("context window exhausted") },
+				// After escalation continue → REVIEW 3: should use fresh session
+				{
+					type: "verdict",
+					verdict: { readiness: "ready", items: [] },
+					sessionId: "reviewer-sess-2",
+				},
+			]);
+
+			const origInvokeForVerdict = adapter.invokeForVerdict.bind(adapter);
+			adapter.invokeForVerdict = async (opts: InvokeOptions) => {
+				capturedVerdictOpts.push({ ...opts });
+				return origInvokeForVerdict(opts);
+			};
+
+			const result = await runPhaseExecutionLoop(
+				planPath,
+				reviewPath,
+				db,
+				adapter,
+				defaultConfig(tmp),
+				{
+					workdir: tmp,
+					escalationGate: async () => {
+						return { action: "continue" };
+					},
+					phaseGate: fixedPhaseGate("continue"),
+				},
+			);
+
+			expect(result.complete).toBe(true);
+			expect(capturedVerdictOpts.length).toBe(3);
+			// First review: no sessionId
+			expect(capturedVerdictOpts[0]?.sessionId).toBeUndefined();
+			// Second review: reuses session from first review
+			expect(capturedVerdictOpts[1]?.sessionId).toBe("reviewer-sess-1");
+			// Third review: sessionId cleared after failure → fresh session
+			expect(capturedVerdictOpts[2]?.sessionId).toBeUndefined();
+		} finally {
+			cleanup();
+		}
+	});
 });

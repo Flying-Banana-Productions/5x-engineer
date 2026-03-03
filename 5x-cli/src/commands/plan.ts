@@ -6,7 +6,7 @@ import {
 	registerAdapterShutdown,
 } from "../agents/factory.js";
 import type { AgentAdapter } from "../agents/types.js";
-import { loadConfig } from "../config.js";
+import { applyModelOverrides, loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
 	appendRunEvent,
@@ -130,6 +130,11 @@ export default defineCommand({
 				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
 			default: false,
 		},
+		"author-model": {
+			type: "string",
+			description:
+				"Override the author model for this run (takes precedence over config)",
+		},
 	},
 	async run({ args }) {
 		const prdPath = resolve(args.path);
@@ -141,7 +146,10 @@ export default defineCommand({
 
 		// Derive project root consistently (config file > git root > cwd)
 		const projectRoot = resolveProjectRoot();
-		const { config } = await loadConfig(projectRoot);
+		const { config: loadedConfig } = await loadConfig(projectRoot);
+		const config = applyModelOverrides(loadedConfig, {
+			authorModel: args["author-model"],
+		});
 
 		// Git safety check
 		if (!args["allow-dirty"]) {

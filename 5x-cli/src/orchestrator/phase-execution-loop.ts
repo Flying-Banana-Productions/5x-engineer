@@ -184,7 +184,7 @@ function generateId(): string {
  * Centralizes the prompt assembly that was previously duplicated across
  * EXECUTE, QUALITY_RETRY, and AUTO_FIX states.
  */
-function buildContinuationPrompt(guidance?: string): string {
+export function buildContinuationPrompt(guidance?: string): string {
 	let prompt = "Continue the current session and complete all remaining tasks.";
 	if (guidance) {
 		prompt += `\n\nThe user has provided the following additional guidance:\n${guidance}`;
@@ -278,6 +278,7 @@ async function ensurePhaseCheckpointClean(opts: {
 	phaseNumber: string;
 	runId: string;
 	iteration: number;
+	allowDirty?: boolean;
 	db: Database;
 	log: (...args: unknown[]) => void;
 	trace: (event: string, data?: unknown) => void;
@@ -299,6 +300,57 @@ async function ensurePhaseCheckpointClean(opts: {
 	const reviewRel = normalizeGitPath(
 		relative(opts.workdir, resolve(opts.phaseReviewPath)),
 	);
+
+	// Always try to commit the review doc if it's dirty — this is a
+	// 5x-generated artifact and should be committed regardless of mode.
+	if (
+		reviewRel &&
+		!reviewRel.startsWith("..") &&
+		changedFiles.includes(reviewRel)
+	) {
+		try {
+			const commitMessage = `docs(review): finalize phase ${opts.phaseNumber} checkpoint`;
+			const { commit } = await commitFiles(
+				opts.workdir,
+				[reviewRel],
+				commitMessage,
+			);
+			opts.log(
+				`  Committed phase review notes: ${reviewRel} (${commit.slice(0, 8)})`,
+			);
+			appendRunEvent(opts.db, {
+				runId: opts.runId,
+				eventType: "phase_review_committed",
+				phase: opts.phaseNumber,
+				iteration: opts.iteration,
+				data: { path: reviewRel, commit },
+			});
+			opts.trace("phase.gate.review_commit", {
+				phase: opts.phaseNumber,
+				path: reviewRel,
+				commit,
+			});
+			// Remove from changed list for the dirty check below
+			changedFiles = changedFiles.filter((file) => file !== reviewRel);
+		} catch (err) {
+			// Non-fatal: log and continue to dirty check
+			opts.trace("phase.gate.review_commit.failed", {
+				phase: opts.phaseNumber,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	// With --allow-dirty, skip the remaining dirty-file check
+	if (opts.allowDirty) {
+		opts.trace("phase.gate.clean_check.skipped", { reason: "allow-dirty" });
+		return { ok: true };
+	}
+
+	if (changedFiles.length === 0) {
+		return { ok: true };
+	}
+
 	if (!reviewRel || reviewRel.startsWith("..")) {
 		return {
 			ok: false,
@@ -318,35 +370,7 @@ async function ensurePhaseCheckpointClean(opts: {
 		};
 	}
 
-	try {
-		const commitMessage = `docs(review): finalize phase ${opts.phaseNumber} checkpoint`;
-		const { commit } = await commitFiles(
-			opts.workdir,
-			[reviewRel],
-			commitMessage,
-		);
-		opts.log(
-			`  Committed phase review notes: ${reviewRel} (${commit.slice(0, 8)})`,
-		);
-		appendRunEvent(opts.db, {
-			runId: opts.runId,
-			eventType: "phase_review_committed",
-			phase: opts.phaseNumber,
-			iteration: opts.iteration,
-			data: { path: reviewRel, commit },
-		});
-		opts.trace("phase.gate.review_commit", {
-			phase: opts.phaseNumber,
-			path: reviewRel,
-			commit,
-		});
-		return { ok: true };
-	} catch (err) {
-		return {
-			ok: false,
-			reason: err instanceof Error ? err.message : String(err),
-		};
-	}
+	return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +626,7 @@ export async function runPhaseExecutionLoop(
 		let _phasePaused = false;
 		let userGuidance: string | undefined; // plumbed from escalation "continue" into next author
 		let continueSessionId: string | undefined; // plumbed from escalation "continue_session" into next adapter call
+		let reviewerSessionId: string | undefined; // reuse reviewer session across review cycles within this phase (008)
 		let autoEscalationAttempts = 0;
 		// Tracks the state that most recently transitioned to ESCALATE, so that
 		// "continue" resumes the right state (REVIEW, AUTO_FIX, etc.) rather than
@@ -1525,15 +1550,31 @@ export async function runPhaseExecutionLoop(
 						break;
 					}
 
-					const reviewerTemplate = renderTemplate("reviewer-commit", {
-						commit_hash: lastCommit ?? "HEAD",
-						review_path: phaseReviewPath,
-						plan_path: planPath,
-						review_template_path: resolve(
-							workdir,
-							config.paths.templates.review,
-						),
-					});
+					// Build reviewer prompt: follow-up (short) when reusing session,
+					// full template when creating a new session (008 Phase 2).
+					let reviewPrompt: string;
+					if (reviewerSessionId) {
+						const commitRef = lastCommit ?? "HEAD";
+						reviewPrompt = [
+							`A new commit (${commitRef}) has been made in response to your review feedback.`,
+							"",
+							`1. Examine the changes introduced at commit ${commitRef} and any subsequent commits.`,
+							"2. Verify whether the issues from your previous review have been addressed.",
+							"3. Identify any new issues introduced by the fixes.",
+							`4. Write your updated review as a new addendum to ${phaseReviewPath}.`,
+						].join("\n");
+					} else {
+						const reviewerTemplate = renderTemplate("reviewer-commit", {
+							commit_hash: lastCommit ?? "HEAD",
+							review_path: phaseReviewPath,
+							plan_path: planPath,
+							review_template_path: resolve(
+								workdir,
+								config.paths.templates.review,
+							),
+						});
+						reviewPrompt = reviewerTemplate.prompt;
+					}
 
 					log(`  Reviewer reviewing phase ${phase.number}...`);
 
@@ -1550,9 +1591,11 @@ export async function runPhaseExecutionLoop(
 							phase: phase.number,
 							iteration,
 							logPath: reviewLogPath,
+							sessionReuse: !!reviewerSessionId,
+							reviewerSessionId: reviewerSessionId ?? null,
 						});
 						reviewResult = await adapter.invokeForVerdict({
-							prompt: reviewerTemplate.prompt,
+							prompt: reviewPrompt,
 							model: config.reviewer.model,
 							// Reviewer timeout defaults to 120 seconds (2 min).
 							workdir,
@@ -1561,6 +1604,7 @@ export async function runPhaseExecutionLoop(
 							showReasoning,
 							signal: options.signal,
 							sessionTitle,
+							sessionId: reviewerSessionId,
 							// Phase 4: Select session immediately after creation (not after invoke)
 							onSessionCreated: options.tui
 								? (sessionId) => options.tui?.selectSession(sessionId, workdir)
@@ -1586,10 +1630,13 @@ export async function runPhaseExecutionLoop(
 							options.signal?.aborted
 						) {
 							state = "ABORTED";
+							reviewerSessionId = undefined; // clear on abort (008)
 							break;
 						}
 						const errorMessage =
 							err instanceof Error ? err.message : String(err);
+						// Clear reviewer session so retry/escalation uses a fresh session (008)
+						reviewerSessionId = undefined;
 						// Phase 4: Show toast for phase failure
 						if (options.tui) {
 							await options.tui.showToast(
@@ -1649,10 +1696,13 @@ export async function runPhaseExecutionLoop(
 						},
 					});
 
-					// Validate invariants
+					// Validate invariants before capturing session (008: invalid
+					// verdicts must not pin the reviewer session for reuse)
 					try {
 						assertReviewerVerdict(reviewResult.verdict, "REVIEW");
 					} catch (err) {
+						// Clear reviewer session so retry uses a fresh session (008)
+						reviewerSessionId = undefined;
 						const event: EscalationEvent = {
 							reason: err instanceof Error ? err.message : String(err),
 							iteration,
@@ -1670,6 +1720,11 @@ export async function runPhaseExecutionLoop(
 						state = "ESCALATE";
 						break;
 					}
+
+					// Capture reviewer session for reuse in subsequent review cycles (008).
+					// Assigned after assertReviewerVerdict() passes so invalid verdicts
+					// don't pin a potentially bad session.
+					reviewerSessionId = reviewResult.sessionId;
 
 					appendRunEvent(db, {
 						runId,
@@ -2236,6 +2291,7 @@ export async function runPhaseExecutionLoop(
 							phaseNumber: phase.number,
 							runId,
 							iteration,
+							allowDirty: options.allowDirty,
 							db,
 							log,
 							trace,
@@ -2285,6 +2341,7 @@ export async function runPhaseExecutionLoop(
 									phaseNumber: phase.number,
 									runId,
 									iteration,
+									allowDirty: options.allowDirty,
 									db,
 									log,
 									trace,

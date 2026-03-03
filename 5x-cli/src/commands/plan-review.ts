@@ -5,7 +5,7 @@ import {
 	createAndVerifyAdapter,
 	registerAdapterShutdown,
 } from "../agents/factory.js";
-import { loadConfig } from "../config.js";
+import { applyModelOverrides, loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { createDebugTraceLogger } from "../debug/trace.js";
@@ -71,6 +71,16 @@ export default defineCommand({
 				"Show agent reasoning/thinking tokens inline (dim styling). Default: suppressed.",
 			default: false,
 		},
+		"author-model": {
+			type: "string",
+			description:
+				"Override the author model for this run (takes precedence over config)",
+		},
+		"reviewer-model": {
+			type: "string",
+			description:
+				"Override the reviewer model for this run (takes precedence over config)",
+		},
 		"debug-trace": {
 			type: "boolean",
 			description:
@@ -127,7 +137,11 @@ export default defineCommand({
 
 		// Derive project root consistently (config file > git root > cwd)
 		overlayEnvFromDirectory(projectRoot, process.env);
-		const { config } = await loadConfig(projectRoot);
+		const { config: loadedConfig } = await loadConfig(projectRoot);
+		const config = applyModelOverrides(loadedConfig, {
+			authorModel: args["author-model"],
+			reviewerModel: args["reviewer-model"],
+		});
 		trace("plan_review.config.loaded", {
 			projectRoot,
 			reviewsPath: config.paths.planReviews ?? config.paths.reviews,
