@@ -67,3 +67,14 @@ Recommendation: avoid spawning external processes in unit/integration tests unle
 
 - Spec/doc drift (new): implementation changed the public provider surface (`SessionOptions` no longer has `systemPrompt`/`timeout`; `resumeSession()` gained an optional options bag) but `docs/v1/100-architecture.md` and parts of `docs/development/007-impl-v1-architecture.md` still describe the original contract.
 - This needs an explicit decision: either update `docs/v1/100-architecture.md` (and the plan) to reflect the new API, or restore the removed `SessionOptions` fields to match the published architecture contract (even if OpenCode ignores them for now).
+
+## Addendum (2026-03-04) — Follow-up after `e668ca2`
+
+### What's Addressed
+
+- Spec/doc drift resolved: `docs/v1/100-architecture.md` now matches the implemented provider API (no `SessionOptions.systemPrompt`/`timeout`; `resumeSession(sessionId, opts?)` with `ResumeOptions.model?`).
+- Plan sync: `docs/development/007-impl-v1-architecture.md` updated to reflect the same API (including `ResumeOptions`).
+
+### Remaining Concerns
+
+- None for Phase 1 readiness. Note: the main-body P2 bullets about `SessionOptions.systemPrompt`/`timeout` are now obsolete given the chosen API shape; treat them as superseded by the updated architecture docs.
