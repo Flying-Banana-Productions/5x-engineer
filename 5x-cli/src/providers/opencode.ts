@@ -23,6 +23,7 @@ import type {
 	AgentProvider,
 	AgentSession,
 	JSONSchema,
+	ResumeOptions,
 	RunOptions,
 	RunResult,
 	SessionOptions,
@@ -99,6 +100,38 @@ async function sleepWithSignal(
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
+}
+
+/**
+ * Portable fallback for `AbortSignal.any()`.
+ * Uses native `AbortSignal.any` when available, otherwise fans-in manually.
+ */
+export function anySignal(signals: AbortSignal[]): AbortSignal {
+	if (signals.length === 0) {
+		return new AbortController().signal; // never-aborted signal
+	}
+	if (signals.length === 1) {
+		// biome-ignore lint/style/noNonNullAssertion: length check guarantees element exists
+		return signals[0]!;
+	}
+
+	// Use native if available
+	if (typeof AbortSignal.any === "function") {
+		return AbortSignal.any(signals);
+	}
+
+	// Manual fan-in fallback
+	const controller = new AbortController();
+	for (const signal of signals) {
+		if (signal.aborted) {
+			controller.abort(signal.reason);
+			return controller.signal;
+		}
+		signal.addEventListener("abort", () => controller.abort(signal.reason), {
+			once: true,
+		});
+	}
+	return controller.signal;
 }
 
 function buildStructuredSummaryPrompt(schema: JSONSchema): string {
@@ -390,7 +423,7 @@ class OpenCodeSession implements AgentSession {
 		if (timeoutController) cancelSignals.push(timeoutController.signal);
 		if (opts?.signal) cancelSignals.push(opts.signal);
 		const cancelSignal =
-			cancelSignals.length > 0 ? AbortSignal.any(cancelSignals) : undefined;
+			cancelSignals.length > 0 ? anySignal(cancelSignals) : undefined;
 
 		try {
 			// Phase 1: Execute prompt
@@ -526,7 +559,7 @@ class OpenCodeSession implements AgentSession {
 		if (timeoutController) cancelSignals.push(timeoutController.signal);
 		if (opts?.signal) cancelSignals.push(opts.signal);
 		const cancelSignal =
-			cancelSignals.length > 0 ? AbortSignal.any(cancelSignals) : undefined;
+			cancelSignals.length > 0 ? anySignal(cancelSignals) : undefined;
 
 		// SSE controller for the event stream
 		const sseController = new AbortController();
@@ -681,6 +714,15 @@ class OpenCodeSession implements AgentSession {
 		if (promptError) {
 			const isTimeout = timeoutController?.signal.aborted === true;
 			const isExternalCancel = opts?.signal?.aborted === true;
+
+			// Abort server-side session on timeout/cancel (best-effort, mirrors run())
+			if (isTimeout || isExternalCancel) {
+				try {
+					await this.client.session.abort({ sessionID: this.id });
+				} catch {
+					// Swallow abort errors — best-effort cleanup
+				}
+			}
 
 			if (isTimeout && !isExternalCancel) {
 				yield {
@@ -983,7 +1025,10 @@ export class OpenCodeProvider implements AgentProvider {
 		);
 	}
 
-	async resumeSession(sessionId: string): Promise<AgentSession> {
+	async resumeSession(
+		sessionId: string,
+		opts?: ResumeOptions,
+	): Promise<AgentSession> {
 		const result = await this.client.session.get({ sessionID: sessionId });
 		if (result.error) {
 			throw new Error(
@@ -998,12 +1043,10 @@ export class OpenCodeProvider implements AgentProvider {
 				? sessionData.directory
 				: undefined;
 
-		return new OpenCodeSession(
-			this.client,
-			sessionId,
-			this.defaultModel,
-			workdir,
-		);
+		// Model: use explicit override, then provider default
+		const model = opts?.model ?? this.defaultModel;
+
+		return new OpenCodeSession(this.client, sessionId, model, workdir);
 	}
 
 	async close(): Promise<void> {

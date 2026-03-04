@@ -82,8 +82,6 @@ export interface AgentSession {
 export interface SessionOptions {
   model: string;               // model identifier (provider-specific format)
   workingDirectory: string;    // cwd for tool execution (file edits, shell commands)
-  systemPrompt?: string;       // system prompt / instructions
-  timeout?: number;            // session-level timeout in seconds
 }
 
 /** JSON Schema type — matches `100-architecture.md` definition. */

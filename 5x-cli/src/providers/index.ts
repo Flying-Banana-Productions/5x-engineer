@@ -10,6 +10,7 @@ export {
 export {
 	AgentCancellationError,
 	AgentTimeoutError,
+	anySignal,
 	OpenCodeProvider,
 	parseModel,
 } from "./opencode.js";
@@ -20,6 +21,7 @@ export type {
 	AgentSession,
 	JSONSchema,
 	ProviderPlugin,
+	ResumeOptions,
 	RunOptions,
 	RunResult,
 	SessionOptions,

@@ -12,6 +12,7 @@ import type {
 	AgentSession,
 	JSONSchema,
 	ProviderPlugin,
+	ResumeOptions,
 	RunOptions,
 	RunResult,
 	SessionOptions,
@@ -28,7 +29,10 @@ describe("AgentProvider interface", () => {
 			async startSession(_opts: SessionOptions): Promise<AgentSession> {
 				return null as unknown as AgentSession;
 			}
-			async resumeSession(_sessionId: string): Promise<AgentSession> {
+			async resumeSession(
+				_sessionId: string,
+				_opts?: ResumeOptions,
+			): Promise<AgentSession> {
 				return null as unknown as AgentSession;
 			}
 			async close(): Promise<void> {}
@@ -80,24 +84,13 @@ describe("AgentSession interface", () => {
 });
 
 describe("SessionOptions", () => {
-	test("required and optional fields", () => {
-		// Minimal (required only)
-		const minimal: SessionOptions = {
+	test("required fields", () => {
+		const opts: SessionOptions = {
 			model: "anthropic/claude-sonnet-4-6",
 			workingDirectory: "/tmp/work",
 		};
-		expect(minimal.model).toBe("anthropic/claude-sonnet-4-6");
-		expect(minimal.workingDirectory).toBe("/tmp/work");
-
-		// Full (all fields)
-		const full: SessionOptions = {
-			model: "anthropic/claude-sonnet-4-6",
-			workingDirectory: "/tmp/work",
-			systemPrompt: "You are a helpful assistant.",
-			timeout: 300,
-		};
-		expect(full.systemPrompt).toBe("You are a helpful assistant.");
-		expect(full.timeout).toBe(300);
+		expect(opts.model).toBe("anthropic/claude-sonnet-4-6");
+		expect(opts.workingDirectory).toBe("/tmp/work");
 	});
 });
 

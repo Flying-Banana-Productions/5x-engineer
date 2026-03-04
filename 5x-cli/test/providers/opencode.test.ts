@@ -276,6 +276,71 @@ describe("OpenCodeProvider.resumeSession", () => {
 		expect(session.id).toBe("sess-test-123");
 	});
 
+	test("accepts model override via ResumeOptions", async () => {
+		const promptFn = mock(async (..._args: unknown[]) => {
+			return {
+				data: {
+					info: {
+						id: "msg-1",
+						role: "assistant",
+						tokens: { input: 10, output: 5 },
+						time: { created: Date.now(), completed: Date.now() },
+					},
+					parts: [{ type: "text", text: "ok" }],
+				},
+				error: undefined,
+			};
+		});
+		const { provider } = createTestProvider(
+			{ sessionPrompt: promptFn },
+			{ model: "anthropic/claude-sonnet-4-6" },
+		);
+
+		// Resume with model override
+		const session = await provider.resumeSession("sess-test-123", {
+			model: "openai/gpt-4o",
+		});
+		expect(session.id).toBe("sess-test-123");
+
+		// Run a prompt and verify the override model was used
+		await session.run("test");
+		const args = promptFn.mock.calls[0] as unknown[];
+		const params = args[0] as Record<string, unknown>;
+		const model = params.model as { providerID: string; modelID: string };
+		expect(model.providerID).toBe("openai");
+		expect(model.modelID).toBe("gpt-4o");
+	});
+
+	test("uses provider default model when no override on resume", async () => {
+		const promptFn = mock(async (..._args: unknown[]) => {
+			return {
+				data: {
+					info: {
+						id: "msg-1",
+						role: "assistant",
+						tokens: { input: 10, output: 5 },
+						time: { created: Date.now(), completed: Date.now() },
+					},
+					parts: [{ type: "text", text: "ok" }],
+				},
+				error: undefined,
+			};
+		});
+		const { provider } = createTestProvider(
+			{ sessionPrompt: promptFn },
+			{ model: "anthropic/claude-sonnet-4-6" },
+		);
+
+		// Resume without model override — should use provider default
+		const session = await provider.resumeSession("sess-test-123");
+		await session.run("test");
+		const args = promptFn.mock.calls[0] as unknown[];
+		const params = args[0] as Record<string, unknown>;
+		const model = params.model as { providerID: string; modelID: string };
+		expect(model.providerID).toBe("anthropic");
+		expect(model.modelID).toBe("claude-sonnet-4-6");
+	});
+
 	test("throws on non-existent session", async () => {
 		const { provider } = createTestProvider({
 			sessionGet: async () => ({
@@ -759,6 +824,129 @@ describe("AgentSession.runStreamed", () => {
 			);
 		}
 	});
+
+	test("aborts server-side session on timeout", async () => {
+		const abortFn = mock(async () => ({ data: true, error: undefined }));
+		const { provider } = createTestProvider({
+			eventSubscribe: async (...args: unknown[]) => ({
+				stream: (async function* () {
+					// Wait until SSE controller aborts (simulates real SDK behavior)
+					const opts = args[1] as { signal?: AbortSignal } | undefined;
+					const signal = opts?.signal;
+					if (signal) {
+						await new Promise<void>((resolve) => {
+							if (signal.aborted) {
+								resolve();
+								return;
+							}
+							signal.addEventListener("abort", () => resolve(), { once: true });
+						});
+					}
+				})(),
+			}),
+			sessionPrompt: async () => {
+				// Simulate slow response that exceeds timeout
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				return {
+					data: {
+						info: {
+							id: "msg-1",
+							role: "assistant",
+							tokens: { input: 0, output: 0 },
+							time: { created: Date.now(), completed: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+			sessionAbort: abortFn,
+		});
+
+		const session = await provider.startSession({
+			model: "anthropic/claude-sonnet-4-6",
+			workingDirectory: "/tmp",
+		});
+
+		const events: AgentEvent[] = [];
+		for await (const event of session.runStreamed("slow task", {
+			timeout: 0.1,
+		})) {
+			events.push(event);
+		}
+
+		// Should have emitted a terminal error event
+		const errorEvents = events.filter((e) => e.type === "error");
+		expect(errorEvents.length).toBeGreaterThanOrEqual(1);
+		expect(
+			(errorEvents[0] as Extract<AgentEvent, { type: "error" }>).message,
+		).toContain("timed out");
+
+		// Server-side session should have been aborted
+		expect(abortFn).toHaveBeenCalledTimes(1);
+	});
+
+	test("aborts server-side session on external cancel", async () => {
+		const abortFn = mock(async () => ({ data: true, error: undefined }));
+		const controller = new AbortController();
+		const { provider } = createTestProvider({
+			eventSubscribe: async (...args: unknown[]) => ({
+				stream: (async function* () {
+					const opts = args[1] as { signal?: AbortSignal } | undefined;
+					const signal = opts?.signal;
+					if (signal) {
+						await new Promise<void>((resolve) => {
+							if (signal.aborted) {
+								resolve();
+								return;
+							}
+							signal.addEventListener("abort", () => resolve(), { once: true });
+						});
+					}
+				})(),
+			}),
+			sessionPrompt: async () => {
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				return {
+					data: {
+						info: {
+							id: "msg-1",
+							role: "assistant",
+							tokens: { input: 0, output: 0 },
+							time: { created: Date.now(), completed: Date.now() },
+						},
+						parts: [],
+					},
+					error: undefined,
+				};
+			},
+			sessionAbort: abortFn,
+		});
+
+		const session = await provider.startSession({
+			model: "anthropic/claude-sonnet-4-6",
+			workingDirectory: "/tmp",
+		});
+
+		// Abort after 50ms
+		setTimeout(() => controller.abort(), 50);
+
+		const events: AgentEvent[] = [];
+		for await (const event of session.runStreamed("cancel me", {
+			signal: controller.signal,
+		})) {
+			events.push(event);
+		}
+
+		const errorEvents = events.filter((e) => e.type === "error");
+		expect(errorEvents.length).toBeGreaterThanOrEqual(1);
+		expect(
+			(errorEvents[0] as Extract<AgentEvent, { type: "error" }>).message,
+		).toContain("cancelled");
+
+		// Server-side session should have been aborted
+		expect(abortFn).toHaveBeenCalledTimes(1);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -766,45 +954,41 @@ describe("AgentSession.runStreamed", () => {
 // ---------------------------------------------------------------------------
 
 describe("createProvider", () => {
-	test("defaults to opencode when provider not specified", async () => {
-		// This will try to spawn a real OpenCode server, which may fail in CI.
-		// The test validates the code path, not the server availability.
-		const config = {
-			author: { model: "anthropic/claude-sonnet-4-6" },
-			reviewer: {},
-			qualityGates: [],
-			worktree: {},
-			paths: {
-				plans: "docs/development",
-				reviews: "docs/development/reviews",
-				archive: "docs/archive",
-				templates: {
-					plan: "docs/_implementation_plan_template.md",
-					review: "docs/development/reviews/_review_template.md",
+	test.skipIf(!process.env.TEST_OPENCODE_SERVER)(
+		"defaults to opencode when provider not specified (requires live server)",
+		async () => {
+			// Gated: only runs when TEST_OPENCODE_SERVER=1 is set.
+			// Spawns a real OpenCode server — too slow/flaky for CI without the env var.
+			const config = {
+				author: { model: "anthropic/claude-sonnet-4-6" },
+				reviewer: {},
+				qualityGates: [],
+				worktree: {},
+				paths: {
+					plans: "docs/development",
+					reviews: "docs/development/reviews",
+					archive: "docs/archive",
+					templates: {
+						plan: "docs/_implementation_plan_template.md",
+						review: "docs/development/reviews/_review_template.md",
+					},
 				},
-			},
-			db: { path: ".5x/5x.db" },
-			maxReviewIterations: 5,
-			maxQualityRetries: 3,
-			maxAutoIterations: 10,
-			maxAutoRetries: 3,
-		};
+				db: { path: ".5x/5x.db" },
+				maxReviewIterations: 5,
+				maxQualityRetries: 3,
+				maxAutoIterations: 10,
+				maxAutoRetries: 3,
+			};
 
-		try {
 			const provider = await createProvider(
 				"author",
 				config as Parameters<typeof createProvider>[1],
 			);
-			// If we get here, OpenCode is available
 			expect(typeof provider.startSession).toBe("function");
 			expect(typeof provider.close).toBe("function");
 			await provider.close();
-		} catch (err) {
-			// Expected if OpenCode not installed
-			expect(err).toBeInstanceOf(Error);
-			expect((err as Error).message).toMatch(/OpenCode server/);
-		}
-	});
+		},
+	);
 
 	test("throws ProviderNotFoundError for missing plugin", async () => {
 		const config = {

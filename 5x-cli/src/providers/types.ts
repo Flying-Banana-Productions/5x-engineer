@@ -14,8 +14,13 @@
 
 export interface AgentProvider {
 	startSession(opts: SessionOptions): Promise<AgentSession>;
-	resumeSession(sessionId: string): Promise<AgentSession>;
+	resumeSession(sessionId: string, opts?: ResumeOptions): Promise<AgentSession>;
 	close(): Promise<void>;
+}
+
+export interface ResumeOptions {
+	/** Model override for the resumed session. Falls back to provider default. */
+	model?: string;
 }
 
 export interface AgentSession {
@@ -33,10 +38,6 @@ export interface SessionOptions {
 	model: string;
 	/** Working directory for tool execution (file edits, shell commands). */
 	workingDirectory: string;
-	/** System prompt / instructions. */
-	systemPrompt?: string;
-	/** Session-level timeout in seconds. */
-	timeout?: number;
 }
 
 /** JSON Schema type — matches `100-architecture.md` definition. */
