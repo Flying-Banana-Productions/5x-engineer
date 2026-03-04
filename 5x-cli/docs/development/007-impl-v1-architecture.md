@@ -1,6 +1,6 @@
 # v1 Architecture Implementation
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 4, 2026
 **Status:** Draft
 
@@ -16,7 +16,7 @@ Why this change: The v0 state machines are brittle (every edge case requires new
 
 **Implement bottom-up: data layer → provider interface → CLI commands → cleanup.** The provider interface and DB schema are foundational — all commands depend on them. Building bottom-up ensures each phase has stable dependencies and is independently testable. Top-down would require mocking everything.
 
-**Provider implementations ship sequentially: OpenCode first, then Codex and Claude Agent.** OpenCode has a working v0 adapter to migrate from (`src/agents/opencode.ts:481-1130`). Codex and Claude Agent SDKs are new dependencies. Shipping OpenCode first validates the interface; the other two are thin adapters (~50-100 LOC) over their respective SDKs.
+**OpenCode is the bundled default provider; additional providers ship as separate plugin packages.** OpenCode has a working v0 adapter to migrate from (`src/agents/opencode.ts:481-1130`) and ships with the core CLI (direct import, zero additional install). Other providers (Codex, Claude Agent, third-party) are installed as separate npm packages (e.g. `npm install @5x-ai/provider-codex`) and loaded via dynamic `import()` at runtime. This eliminates optional/peer dependency packaging concerns — each plugin owns its SDK dependency. The core v1 architecture is validated end-to-end with OpenCode alone; plugin providers are developed independently on top of the stable `ProviderPlugin` contract.
 
 **DB migration is additive then subtractive.** Schema version 4 creates the `steps` table and migrates existing data. Old tables are dropped in the same migration. This is a clean break — no compatibility layer. The migration is wrapped in a transaction so it either fully succeeds or rolls back.
 
@@ -30,7 +30,7 @@ Why this change: The v0 state machines are brittle (every edge case requires new
 |-----------|-------------|---------|
 | 0 | — | Success |
 | 1 | (default) | General error / unhandled |
-| 2 | `TEMPLATE_NOT_FOUND`, `PLAN_NOT_FOUND` | Resource not found |
+| 2 | `TEMPLATE_NOT_FOUND`, `PLAN_NOT_FOUND`, `PROVIDER_NOT_FOUND`, `INVALID_PROVIDER` | Resource not found / invalid |
 | 3 | `NON_INTERACTIVE` | Interactive prompt required but stdin is not a TTY |
 | 4 | `PLAN_LOCKED` | Plan lock held by another process |
 | 5 | `DIRTY_WORKTREE` | Uncommitted changes without `--allow-dirty` |
@@ -40,6 +40,8 @@ Why this change: The v0 state machines are brittle (every edge case requires new
 **Dashboard reads from v1 schema (cross-initiative decision).** `docs/development/006-impl-dashboard.md` assumes v0 tables (`run_events`, `agent_results`, `quality_results`, `phase_progress`). This plan's v4 migration drops those tables. **Decision:** the dashboard implementation (006) must be updated to read from the v1 schema (`runs`, `steps`, `plans`) before or concurrently with this work. The v4 migration does NOT provide a compatibility view/layer for the old tables. If the dashboard ships first, it must be patched to use v1 tables before the v4 migration runs. This is called out in the "Not In Scope" section as an external dependency.
 
 **Skills are bundled as static markdown files, not generated.** Skills are standalone `.md` files in `.5x/skills/`. The `5x init` command copies them from bundled defaults. No code generation, no templating of skills themselves. Skills reference CLI commands by name — they are decoupled from the implementation.
+
+**External providers use a `ProviderPlugin` contract loaded via dynamic import.** The factory resolves provider names to packages by convention: short names map to scoped packages (`"codex"` → `@5x-ai/provider-codex`), and full package names are accepted for third-party providers (`"@acme/provider-foo"`). Each plugin package default-exports a `ProviderPlugin` with a `name` string and a `create()` factory function returning an `AgentProvider`. The bundled OpenCode provider bypasses this path (direct import). Plugin-specific configuration is passed through from the top-level config key matching the provider name (e.g. `codex: { apiKey: "..." }` is passed to the Codex plugin's `create()` function) — the core CLI does not validate plugin-specific config.
 
 **`step_name` follows `{prefix}:{action}[:{qualifier}]` convention.** Reserved prefixes and their semantics:
 
@@ -59,7 +61,7 @@ The `:{qualifier}` segment (e.g. `:status`, `:verdict`) is required for agent re
 
 ## Phase 1: AgentProvider Interface and OpenCode Provider
 
-**Completion gate:** `AgentProvider` and `AgentSession` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. `runStreamed()` emits `AgentEvent` objects via a minimal OpenCode SSE→AgentEvent mapper implemented directly in `src/providers/opencode.ts` (not dependent on the full event-router refactor in Phase 12). Existing v0 test patterns from `test/agents/` validate behavior.
+**Completion gate:** `AgentProvider`, `AgentSession`, and `ProviderPlugin` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. `runStreamed()` emits `AgentEvent` objects via a minimal OpenCode SSE→AgentEvent mapper implemented directly in `src/providers/opencode.ts` (not dependent on the full event-router refactor in Phase 11). Factory supports both direct import (bundled OpenCode) and dynamic import (external plugins via `ProviderPlugin` contract). Existing v0 test patterns from `test/agents/` validate behavior.
 
 - [ ] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `SessionOptions`, `RunOptions`, `RunResult`, and `AgentEvent` types exactly as specified in `100-architecture.md:198-240`.
 
@@ -110,13 +112,19 @@ export type AgentEvent =
   | { type: "error"; message: string }
   | { type: "usage"; tokens: { in: number; out: number }; costUsd?: number }
   | { type: "done"; result: RunResult };
+
+/** Contract for external provider plugins. Default export of a provider package. */
+export interface ProviderPlugin {
+  readonly name: string;
+  create(config?: Record<string, unknown>): Promise<AgentProvider>;
+}
 ```
 
 - [ ] Create `src/providers/opencode.ts` implementing `AgentProvider` using `@opencode-ai/sdk`. Port the core invocation logic from `src/agents/opencode.ts:481-1130` — session creation, prompt execution, two-phase structured output, SSE event mapping to `AgentEvent`, timeout/cancellation handling. Key differences from v0:
   - `startSession()` creates session via `client.session.create()` (same as v0 `_invoke` line 790)
   - `resumeSession()` retrieves via `client.session.get()`
   - `run()` does the two-phase prompt (execute + summary with `format: json_schema`) and returns `RunResult`
-  - `runStreamed()` maps OpenCode SSE events to `AgentEvent` via a minimal mapper implemented directly in `opencode.ts` (does NOT depend on `src/utils/event-router.ts` or `StreamWriter`; the full event-router refactor is deferred to Phase 12)
+  - `runStreamed()` maps OpenCode SSE events to `AgentEvent` via a minimal mapper implemented directly in `opencode.ts` (does NOT depend on `src/utils/event-router.ts` or `StreamWriter`; the full event-router refactor is deferred to Phase 11)
   - `close()` calls `server.close()` (same as v0 line 541)
   - Supports both managed mode (`createOpencode()`) and external mode (`createOpencodeClient()`)
 
@@ -132,7 +140,7 @@ export class OpenCodeProvider implements AgentProvider {
 }
 ```
 
-- [ ] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. **Forward-compatible with missing config keys (P1.1):** if `config.author.provider` or `config.reviewer.provider` is absent (i.e. Phase 8 config extension hasn't landed yet), default to `"opencode"`. Similarly, if `config.opencode.url` is absent, use managed mode. This allows Phase 1 to be implemented and tested independently of Phase 8. For v1, only `"opencode"` is handled; `"codex"` and `"claude-agent"` throw "not yet implemented" errors.
+- [ ] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. **Forward-compatible with missing config keys (P1.1):** if `config.author.provider` or `config.reviewer.provider` is absent (i.e. Phase 8 config extension hasn't landed yet), default to `"opencode"`. Similarly, if `config.opencode.url` is absent, use managed mode. This allows Phase 1 to be implemented and tested independently of Phase 8. **Plugin loading:** for `"opencode"`, uses a direct import (bundled). For any other provider name, resolves to an npm package via convention (`"codex"` → `@5x-ai/provider-codex`, or a full package name like `"@acme/provider-foo"`) and dynamically imports it. The imported module must default-export a `ProviderPlugin`. Throws `PROVIDER_NOT_FOUND` (exit code 2) with install instructions if the package is missing, or `INVALID_PROVIDER` if the module doesn't satisfy the `ProviderPlugin` contract.
 
 ```typescript
 // src/providers/factory.ts
@@ -140,6 +148,23 @@ export async function createProvider(
   role: "author" | "reviewer",
   config: FiveXConfig,
 ): Promise<AgentProvider>;
+
+// Plugin resolution (internal)
+async function loadPlugin(providerName: string): Promise<ProviderPlugin> {
+  if (providerName === "opencode") {
+    // Bundled — direct import, no plugin indirection
+    throw new Error("opencode is bundled; use direct import");
+  }
+  const packageName = providerName.startsWith("@")
+    ? providerName
+    : `@5x-ai/provider-${providerName}`;
+  const mod = await import(packageName); // throws if not installed
+  const plugin: ProviderPlugin = mod.default;
+  if (!plugin?.create || typeof plugin.create !== "function") {
+    throw new CliError("INVALID_PROVIDER", ...);
+  }
+  return plugin;
+}
 ```
 
 - [ ] Create `src/providers/index.ts` re-exporting types and factory.
@@ -190,7 +215,7 @@ CREATE INDEX idx_steps_phase ON steps(run_id, phase);
   3. Migrates `quality_results` → `steps` with `step_name = "quality:check"`
   4. Migrates `run_events` → `steps` with `step_name = "event:{event_type}"`
   5. Migrates `phase_progress` where `review_approved = 1` → `steps` with `step_name = "phase:complete"`
-  6. Rebuilds `runs` table using SQLite table-rebuild pattern (see below) to remove `current_state`, `current_phase`, `review_path` columns and add `config_json`, `updated_at` columns. Existing `created_at` values are preserved as-is (no timestamp semantics change; `updated_at` defaults to the migration timestamp for existing rows).
+  6. Rebuilds `runs` table using SQLite table-rebuild pattern (see below) to remove `current_state`, `current_phase`, `review_path` columns, rename timestamp columns, and add `config_json`. Explicit column mapping: `created_at = started_at`, `updated_at = COALESCE(completed_at, started_at)`. The v0 `completed_at` column is dropped (terminal state is now recorded as a `run:complete` or `run:abort` step). Tests must assert that existing `started_at` values appear as `created_at` and `completed_at` values appear as `updated_at` after migration.
   7. Drops `agent_results`, `quality_results`, `run_events`, `phase_progress` tables
 
 - [ ] Create `src/db/operations-v1.ts` with new step-based operations:
@@ -290,7 +315,7 @@ export function computeRunSummary(db: Database, runId: string): RunSummaryComput
   - Fresh DB migration (no v0 data)
   - Migration from v3 with existing v0 data (agent_results, quality_results, run_events, phase_progress)
   - Data integrity after migration: step counts match source records; both `result_type=status` and `result_type=verdict` rows from `agent_results` survive as distinct steps (e.g. `"author:tpl:status"` and `"author:tpl:verdict"`)
-  - Runs table rebuild: existing `created_at` values preserved, `updated_at` populated, dropped columns (`current_state`, `current_phase`, `review_path`) absent
+  - Runs table rebuild: v0 `started_at` mapped to `created_at`, v0 `completed_at` mapped to `updated_at`, dropped columns (`current_state`, `current_phase`, `review_path`, `started_at`, `completed_at`) absent, `config_json` column present
   - Migration on a v3 DB with representative data (multiple runs, mixed result types, partial phase_progress)
   - `recordStep` INSERT OR IGNORE semantics (first write wins)
   - Auto-increment iteration behavior
@@ -519,17 +544,17 @@ interface InvokeArgs {
 
 **Completion gate:** Config schema accepts `provider` field on author/reviewer, `opencode` top-level config, and `maxStepsPerRun`. Unknown/deprecated keys produce warnings. Existing configs continue to work.
 
-- [ ] Extend `AgentConfigSchema` in `src/config.ts:5-9` to add `provider`:
+- [ ] Extend `AgentConfigSchema` in `src/config.ts:5-9` to add `provider` as an open string (not an enum — allows third-party plugin names):
 
 ```typescript
 const AgentConfigSchema = z.object({
-  provider: z.enum(["opencode", "codex", "claude-agent"]).default("opencode"),
+  provider: z.string().default("opencode"),
   model: z.string().optional(),
   timeout: z.number().int().positive().optional(),
 });
 ```
 
-- [ ] Add `OpenCodeConfigSchema` and `maxStepsPerRun` to `FiveXConfigSchema` in `src/config.ts:38-49`:
+- [ ] Add `OpenCodeConfigSchema` and `maxStepsPerRun` to `FiveXConfigSchema` in `src/config.ts:38-49`. The `opencode` key is validated because it's the bundled provider. Plugin-specific config keys (e.g. `codex`, `claude`) are **not** validated by the core schema — they're passed through to the plugin's `create()` function via `z.passthrough()` or by reading raw config before Zod strips unknown keys:
 
 ```typescript
 const OpenCodeConfigSchema = z.object({
@@ -550,49 +575,22 @@ const FiveXConfigSchema = z.object({
   maxQualityRetries: z.number().int().positive().default(3),
   maxAutoIterations: z.number().int().positive().default(10),
   maxAutoRetries: z.number().int().positive().default(3),
-});
+}).passthrough(); // Allow plugin-specific config keys (e.g. codex: { ... })
 ```
 
-- [ ] Update `warnUnknownConfigKeys()` in `src/config.ts:130-206` to accept `provider` in agent config and `opencode` at root level. Add deprecation warnings for `maxAutoIterations` → `maxStepsPerRun`.
+- [ ] Update `warnUnknownConfigKeys()` in `src/config.ts:130-206` to accept `provider` in agent config and `opencode` at root level. Suppress unknown-key warnings for top-level keys that match a configured provider name (i.e. if `author.provider` is `"codex"`, don't warn about a top-level `codex` key). Add deprecation warnings for `maxAutoIterations` → `maxStepsPerRun`.
 
 - [ ] Update `applyModelOverrides()` in `src/config.ts:62-78` to also support `--author-provider`, `--reviewer-provider`, `--opencode-url` overrides.
 
 - [ ] Write tests in `test/config-v1.test.ts` covering:
   - New fields parse correctly
   - Defaults work (provider defaults to "opencode")
-  - Unknown keys warn
+  - Unknown keys warn (except keys matching a configured provider name)
   - Deprecated keys warn
   - `opencode.url` validation
+  - Plugin config passthrough: arbitrary keys under a provider name (e.g. `codex: { apiKey: "..." }`) survive parsing
 
-## Phase 9: Codex and Claude Agent Providers
-
-**Completion gate:** `CodexProvider` and `ClaudeAgentProvider` implement `AgentProvider`, pass unit tests with mocked SDKs, and can be selected via config `provider: "codex"` / `provider: "claude-agent"`.
-
-- [ ] Add `@openai/codex-sdk` and `@anthropic-ai/claude-agent-sdk` as **optional peer dependencies** in `package.json:51-57`. They are dynamically imported only when the corresponding provider is selected via config. This avoids inflating the install size for users who only use OpenCode (the default). The factory in `src/providers/factory.ts` uses `await import(...)` and throws a clear error if the SDK is not installed when a user selects `provider: "codex"` or `provider: "claude-agent"`.
-
-- [ ] Create `src/providers/codex.ts` implementing `AgentProvider`:
-  - `startSession()` → `codex.startThread({ workingDirectory })`
-  - `run()` → `thread.run(prompt, { outputSchema })` — native structured output
-  - `resumeSession()` → `codex.resumeThread(id)`
-  - `runStreamed()` → map Codex JSONL events to `AgentEvent`
-  - `close()` → cleanup
-
-- [ ] Create `src/providers/claude-agent.ts` implementing `AgentProvider`:
-  - `startSession()` → captures `session_id` from `init` event during first `query()`
-  - `run()` → `query({ prompt, options: { allowedTools, resume } })` — two-phase structured output
-  - `resumeSession()` → pass `session_id` via resume option
-  - `runStreamed()` → map Claude Agent async iterable to `AgentEvent`
-  - `close()` → no-op (fully in-process)
-
-- [ ] Update `src/providers/factory.ts` to handle `"codex"` and `"claude-agent"` provider types.
-
-- [ ] Write tests in `test/providers/codex.test.ts` and `test/providers/claude-agent.test.ts` covering:
-  - Session lifecycle (start, run, close)
-  - Structured output extraction
-  - AgentEvent mapping
-  - Error handling
-
-## Phase 10: Skills Bundling and Init Update
+## Phase 9: Skills Bundling and Init Update
 
 **Completion gate:** `5x init` scaffolds `.5x/skills/` with three bundled skill files. Skills are standalone markdown that reference v1 CLI commands.
 
@@ -610,9 +608,9 @@ const FiveXConfigSchema = z.object({
   - Existing skills are not overwritten
   - Skill content matches bundled source
 
-## Phase 11: v0 Cleanup and Public API Update
+## Phase 10: v0 Cleanup and Public API Update
 
-**Completion gate:** v0 orchestrator loops, commands, and adapter interface are deleted. `src/bin.ts` only registers v1 commands. `src/index.ts` exports v1 types. All tests pass. TypeScript compiles cleanly.
+**Completion gate:** v0 orchestrator loops, commands, and adapter interface are deleted. `src/bin.ts` only registers v1 commands. `src/index.ts` exports v1 types (including `ProviderPlugin`). All tests pass. TypeScript compiles cleanly.
 
 - [ ] Delete v0 orchestrator files:
   - `src/orchestrator/plan-review-loop.ts`
@@ -662,7 +660,7 @@ const main = defineCommand({
   - Remove: `runPlanReviewLoop`, `PlanReviewLoopOptions`, `PlanReviewResult`, `resolveReviewPath`
   - Remove: `escalationGate`, `phaseGate`, `resumeGate`, `staleLockGate`, `EscalationResponse`, `PhaseSummary`
   - Remove: v0 DB operation exports (`upsertAgentResult`, `upsertQualityResult`, `appendRunEvent`, etc.)
-  - Add: `AgentProvider`, `AgentSession`, `AgentEvent`, `RunResult`, `SessionOptions`, `RunOptions`
+  - Add: `AgentProvider`, `AgentSession`, `AgentEvent`, `RunResult`, `SessionOptions`, `RunOptions`, `ProviderPlugin`
   - Add: `recordStep`, `getSteps`, `StepRow`, `RecordStepInput`, `RecordStepResult`
   - Add: `outputSuccess`, `outputError`, `CliError`, `JsonEnvelope`
 
@@ -675,14 +673,13 @@ const main = defineCommand({
 - [ ] Run typecheck: `bunx --bun tsc --noEmit`
 - [ ] Run lint: `bunx --bun @biomejs/biome check src/ test/`
 
-## Phase 12: Event Router Migration
+## Phase 11: Event Router Migration
 
-**Completion gate:** The existing SSE event router in `src/utils/event-router.ts` is refactored to use `AgentEvent` as its canonical output type, consolidating the minimal mapper from Phase 1's `opencode.ts` into a shared, multi-provider `event-mapper.ts`. NDJSON logs use `AgentEvent` format exclusively. `StreamWriter` renders `AgentEvent` instead of raw SSE events.
+**Completion gate:** The existing SSE event router in `src/utils/event-router.ts` is refactored to use `AgentEvent` as its canonical output type, consolidating the minimal mapper from Phase 1's `opencode.ts` into a shared `event-mapper.ts`. NDJSON logs use `AgentEvent` format exclusively. `StreamWriter` renders `AgentEvent` instead of raw SSE events.
 
 - [ ] Create `src/providers/event-mapper.ts` that maps provider-native events to `AgentEvent`:
   - OpenCode: reuse logic from `src/utils/event-router.ts` (currently maps SSE events to StreamWriter calls) — refactor to emit `AgentEvent` objects instead
-  - Codex: new mapper for JSONL events
-  - Claude Agent: new mapper for query response events
+  - Plugin providers: each plugin is responsible for its own event mapping (the `runStreamed()` contract already requires `AsyncIterable<AgentEvent>`)
 
 - [ ] Update `src/utils/stream-writer.ts` to accept `AgentEvent` objects directly (instead of provider-specific event routing).
 
@@ -693,15 +690,60 @@ const main = defineCommand({
   - Tool input summary formatting (bash→command, edit→file, etc.)
   - Error events
 
+## Phase 12: Sample Provider Plugin
+
+**Completion gate:** A sample provider plugin exists in `packages/provider-sample/`, implements the `ProviderPlugin` contract, and is loadable via `provider: "sample"` in config. The factory's dynamic import path, error handling for missing plugins, and plugin contract validation are smoke-tested end-to-end. This phase validates the external plugin architecture without introducing real SDK dependencies.
+
+- [ ] Add Bun workspace configuration to the repo root `package.json`:
+
+```json
+{
+  "workspaces": ["packages/*"]
+}
+```
+
+- [ ] Create `packages/provider-sample/package.json`:
+
+```json
+{
+  "name": "@5x-ai/provider-sample",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "peerDependencies": {
+    "@5x-ai/5x-cli": "workspace:*"
+  }
+}
+```
+
+- [ ] Create `packages/provider-sample/src/index.ts` implementing `ProviderPlugin`:
+  - `SampleProvider` implements `AgentProvider` with echo/noop behavior:
+    - `startSession()` returns a `SampleSession` with a generated ID
+    - `resumeSession()` returns a session with the given ID
+    - `close()` is a no-op
+  - `SampleSession` implements `AgentSession`:
+    - `run()` echoes the prompt back as `RunResult.text` with zero tokens/cost
+    - `runStreamed()` yields a minimal event sequence: `text` → `usage` → `done`
+  - Default export satisfies `ProviderPlugin { name: "sample", create() }`
+  - No external SDK dependencies — the entire plugin is ~50 LOC
+
+- [ ] Write integration tests in `test/providers/plugin-loading.test.ts` covering:
+  - Factory resolves `provider: "sample"` → dynamically imports `@5x-ai/provider-sample`
+  - Full lifecycle through factory: `createProvider("author", config)` → `startSession` → `run` → `close`
+  - `runStreamed()` yields correctly typed `AgentEvent` sequence
+  - Missing plugin: factory throws `PROVIDER_NOT_FOUND` with install instructions when package doesn't exist
+  - Invalid plugin: module exists but doesn't export valid `ProviderPlugin` → `INVALID_PROVIDER` error
+  - Bundled OpenCode provider still works via direct import path (not the plugin code path)
+  - Plugin-specific config passthrough: `sample: { echo: true }` in config is passed to `create()`
+
 ## Files Touched
 
 | File | Change |
 |------|--------|
-| `src/providers/types.ts` | **New** — AgentProvider, AgentSession, AgentEvent interfaces |
-| `src/providers/opencode.ts` | **New** — OpenCode provider implementation |
-| `src/providers/codex.ts` | **New** — Codex provider implementation |
-| `src/providers/claude-agent.ts` | **New** — Claude Agent provider implementation |
-| `src/providers/factory.ts` | **New** — Provider factory |
+| `src/providers/types.ts` | **New** — AgentProvider, AgentSession, AgentEvent, ProviderPlugin interfaces |
+| `src/providers/opencode.ts` | **New** — OpenCode provider implementation (bundled) |
+| `src/providers/factory.ts` | **New** — Provider factory with plugin loading via dynamic import |
 | `src/providers/errors.ts` | **New** — AgentTimeoutError, AgentCancellationError |
 | `src/providers/event-mapper.ts` | **New** — Native event → AgentEvent mapping |
 | `src/providers/log-writer.ts` | **New** — NDJSON log writer for AgentEvent |
@@ -718,12 +760,13 @@ const main = defineCommand({
 | `src/commands/prompt.ts` | **New** — Human interaction commands |
 | `src/commands/worktree.ts` | **Modified** — Rewrite for v1 API (create/remove/list, JSON envelopes) |
 | `src/commands/init.ts` | **Modified** — Add skills scaffolding |
-| `src/config.ts` | **Modified** — Add provider, opencode, maxStepsPerRun fields |
+| `src/config.ts` | **Modified** — Add provider (open string), opencode, maxStepsPerRun; passthrough for plugin config |
 | `src/bin.ts` | **Modified** — Register v1 commands, remove v0 commands |
-| `src/index.ts` | **Modified** — Export v1 types, remove v0 exports |
+| `src/index.ts` | **Modified** — Export v1 types (incl. ProviderPlugin), remove v0 exports |
 | `src/utils/stream-writer.ts` | **Modified** — Accept AgentEvent input |
 | `src/utils/event-router.ts` | **Modified** — Refactor to emit AgentEvent objects |
-| `package.json` | **Modified** — Add @openai/codex-sdk, @anthropic-ai/claude-agent-sdk as optional peer deps |
+| `package.json` | **Modified** — Add workspaces config; remove @opencode-ai/sdk from root (moved to bundled provider) |
+| `packages/provider-sample/` | **New** — Sample provider plugin package for smoke testing plugin architecture |
 | `src/orchestrator/plan-review-loop.ts` | **Deleted** |
 | `src/orchestrator/phase-execution-loop.ts` | **Deleted** |
 | `src/commands/run.ts` | **Deleted** |
@@ -740,11 +783,10 @@ const main = defineCommand({
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/providers/types.test.ts` | Type contracts compile correctly |
+| Unit | `test/providers/types.test.ts` | Type contracts (incl. ProviderPlugin) compile correctly |
 | Integration | `test/providers/opencode.test.ts` | OpenCode provider lifecycle, structured output, streaming |
-| Unit | `test/providers/codex.test.ts` | Codex provider with mocked SDK |
-| Unit | `test/providers/claude-agent.test.ts` | Claude Agent provider with mocked SDK |
 | Unit | `test/providers/event-mapper.test.ts` | Native event → AgentEvent mapping |
+| Integration | `test/providers/plugin-loading.test.ts` | Plugin discovery, loading, error handling, config passthrough |
 | Unit | `test/db/schema-v4.test.ts` | Migration v4: steps table creation, data migration, table drops |
 | Unit | `test/db/operations-v1.test.ts` | Step recording, INSERT OR IGNORE, auto-increment, run lifecycle |
 | Unit | `test/output.test.ts` | JSON envelope formatting |
@@ -756,7 +798,7 @@ const main = defineCommand({
 | Unit | `test/commands/prompt.test.ts` | Non-interactive behavior, default values |
 | Integration | `test/commands/worktree-v1.test.ts` | Worktree create/remove/list lifecycle |
 | Unit | `test/commands/init-skills.test.ts` | Skills scaffolding |
-| Unit | `test/config-v1.test.ts` | Extended config schema |
+| Unit | `test/config-v1.test.ts` | Extended config schema, plugin config passthrough |
 
 ## Estimated Timeline
 
@@ -769,14 +811,14 @@ const main = defineCommand({
 | Phase 5: Agent Invocation Commands | 2 days | Phase 1, Phase 3, Phase 4 |
 | Phase 6: Quality/Inspection/Worktree Commands | 2 days | Phase 3 |
 | Phase 7: Human Interaction Commands | 1 day | Phase 3 |
-| Phase 8: Config Schema Extension | 1 day | None (but must land before Phase 9) |
-| Phase 9: Codex + Claude Agent Providers | 2 days | Phase 1, Phase 8 |
-| Phase 10: Skills Bundling | 1 day | None |
-| Phase 11: v0 Cleanup | 1.5 days | Phases 1-10 |
-| Phase 12: Event Router Migration | 1.5 days | Phase 1 |
-| **Total** | **~19.5 days** | |
+| Phase 8: Config Schema Extension | 1 day | None |
+| Phase 9: Skills Bundling | 1 day | None |
+| Phase 10: v0 Cleanup | 1.5 days | Phases 1-9 |
+| Phase 11: Event Router Migration | 1.5 days | Phase 1 |
+| Phase 12: Sample Provider Plugin | 1 day | Phase 1, Phase 8 |
+| **Total** | **~18.5 days** | |
 
-Phases 1, 2, 3, 8, 10, and 12 have no inter-dependencies and can be parallelized. Phase 9 depends on Phase 1 (provider interface) and Phase 8 (config keys for provider selection). Phase 1's factory is forward-compatible with missing config keys (defaults to `"opencode"`), so it does not depend on Phase 8. Critical path: Phase 1 → Phase 5 → Phase 11 (~8.5 days).
+Phases 1, 2, 3, 8, 9, and 11 have no inter-dependencies and can be parallelized. Phase 12 (sample plugin) depends on Phase 1 (provider interface + `ProviderPlugin` contract) and Phase 8 (config string-typed `provider` field). Phase 1's factory is forward-compatible with missing config keys (defaults to `"opencode"`), so it does not depend on Phase 8. Phase 12 is non-blocking — the v1 architecture is complete after Phase 11; Phase 12 validates the plugin extension point. Critical path: Phase 1 → Phase 5 → Phase 10 (~8.5 days).
 
 ## Not In Scope
 
@@ -785,11 +827,28 @@ Phases 1, 2, 3, 8, 10, and 12 have no inter-dependencies and can be parallelized
 - Remote/multi-user service
 - New workflow types beyond the three core skills
 - Automated skill selection
+- Production Codex and Claude Agent provider plugins (developed independently as `@5x-ai/provider-codex`, `@5x-ai/provider-claude` — only the sample plugin is in scope for validating the plugin architecture)
 - Category 2 (headless CLI wrapper) or Category 3 (model API + built-in tools) providers
 - TUI integration for v1 commands (can be added later on top of v1 primitives)
 - v0 → v1 data migration for in-progress runs (runs active at migration time are marked aborted)
 
 ## Revision History
+
+### v1.2 (March 4, 2026) — Plugin architecture for providers
+
+Review: `docs/development/reviews/2026-03-04-007-impl-v1-architecture-plan-review.md` (P2.2 follow-up)
+
+**Plugin architecture:**
+- Providers restructured as a plugin system. OpenCode remains bundled (direct import). External providers (Codex, Claude Agent, third-party) ship as separate npm packages loaded via dynamic `import()`. This eliminates the optional/peer dependency packaging question entirely — each plugin owns its SDK dependency.
+- Added `ProviderPlugin` contract to `src/providers/types.ts` (Phase 1): `{ name: string, create(config?) → AgentProvider }`.
+- Factory updated to resolve short provider names to scoped packages by convention (`"codex"` → `@5x-ai/provider-codex`) and accept full package names for third-party plugins.
+- Config `provider` field changed from `z.enum()` to `z.string()` (Phase 8). `FiveXConfigSchema` uses `.passthrough()` for plugin-specific config keys.
+
+**Phase reordering:**
+- Old Phase 9 (Codex + Claude Agent Providers) removed — production provider plugins are developed independently, out of scope for the v1 architecture plan.
+- Old Phases 10-12 renumbered to 9-11. Dependencies updated.
+- New Phase 12: Sample Provider Plugin — creates a minimal `@5x-ai/provider-sample` package in `packages/provider-sample/` to smoke test the plugin loading path, error handling, and contract validation end-to-end. Non-blocking for v1 completion.
+- Net timeline reduction: ~19.5 days → ~18.5 days (removed 2 days of Codex/Claude implementation, added 1 day for sample plugin + workspace setup).
 
 ### v1.1 (March 4, 2026) — Address review feedback
 
@@ -810,7 +869,7 @@ Review: `docs/development/reviews/2026-03-04-007-impl-v1-architecture-plan-revie
 
 **P2 items resolved:**
 - P2.1: `step_name` convention table added to Design Decisions — documents all reserved prefixes (`author:`, `reviewer:`, `quality:`, `human:`, `phase:`, `run:`, `event:`), the `:{qualifier}` segment, and guidance for custom workflows.
-- P2.2: Codex/Claude Agent SDKs changed to optional peer dependencies with dynamic `import()`. Factory throws clear error if SDK not installed.
+- P2.2: Codex/Claude Agent SDKs changed to optional peer dependencies with dynamic `import()`. Factory throws clear error if SDK not installed. *(Superseded by v1.2 plugin architecture.)*
 - P2.3: Exit-code convention table added — deterministic mapping from error `code` to exit code (0-7) so skills can reliably branch.
 
 ### v1.0 (March 4, 2026) — Initial plan

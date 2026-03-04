@@ -841,11 +841,11 @@ A SQL migration (schema version 4) will:
 
 1. Create the `steps` table
 2. Migrate existing data:
-   - `agent_results` → `steps` rows with `step_name = "{role}:{template}"`, agent metadata columns populated
+   - `agent_results` → `steps` rows with `step_name = "{role}:{template}:{result_type}"` (e.g. `"author:author-next-phase:status"`, `"reviewer:reviewer-phase:verdict"`), agent metadata columns populated. The `:{result_type}` qualifier is required because v0 allows both `status` and `verdict` rows for the same `(run_id, phase, iteration, role, template)`, which would collide under the v1 UNIQUE constraint without disambiguation.
    - `quality_results` → `steps` rows with `step_name = "quality:check"`, `result_json` containing the gate results
    - `run_events` → `steps` rows with `step_name = "event:{event_type}"`
    - `phase_progress` where `review_approved = 1` → `steps` rows with `step_name = "phase:complete"`
-3. Drop `runs.current_state` and `runs.current_phase` columns
+3. Rebuild `runs` table (SQLite table-rebuild pattern) to remove `current_state`, `current_phase`, `review_path` columns, map `created_at = started_at`, `updated_at = COALESCE(completed_at, started_at)`, and add `config_json`
 4. Drop `agent_results`, `quality_results`, `run_events`, `phase_progress` tables
 
 The `plans` and `schema_version` tables are unchanged.
@@ -871,6 +871,8 @@ v0 uses **upsert** semantics for `agent_results` and `quality_results` — re-ru
 | `run:abort` | `{ type: "terminal", status: "aborted", reason: "..." }` | Run aborted |
 
 These are conventions, not enforced enums. The orchestrating agent (or skill) can record custom step names for workflow-specific actions.
+
+**Note on naming format:** v1-native step names follow `{prefix}:{action}` (e.g. `author:implement`). Each name maps unambiguously to one result type, so no further qualification is needed. Migrated v0 data uses `{prefix}:{action}:{qualifier}` (e.g. `author:author-next-phase:status`) because v0 `agent_results` can have both `status` and `verdict` rows for the same template — the `:{qualifier}` prevents UNIQUE constraint collisions. Both forms are valid step names; skills should match on prefix (`author:`) rather than exact strings when scanning step history.
 
 ---
 
