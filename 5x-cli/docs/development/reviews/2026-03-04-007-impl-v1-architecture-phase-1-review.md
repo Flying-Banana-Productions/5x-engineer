@@ -53,3 +53,17 @@ Recommendation: avoid spawning external processes in unit/integration tests unle
 **P1 recommended**
 - [x] Add `AbortSignal.any` fallback helper
 - [x] Remove/gate real OpenCode server spawning from tests
+
+## Addendum (2026-03-04) — Follow-up after `2a18f14`
+
+### What's Addressed
+
+- P0.1 fixed: `runStreamed()` now best-effort calls `client.session.abort({ sessionID })` on timeout/cancel; new tests cover both timeout + external `AbortSignal`.
+- P1.1 fixed: introduced `anySignal()` and replaced direct `AbortSignal.any()` usage.
+- P1.2 fixed: the `createProvider()` default-provider test is gated behind `TEST_OPENCODE_SERVER`.
+- P2.2 addressed: `resumeSession()` supports a model override via new `ResumeOptions` and corresponding tests.
+
+### Remaining Concerns
+
+- Spec/doc drift (new): implementation changed the public provider surface (`SessionOptions` no longer has `systemPrompt`/`timeout`; `resumeSession()` gained an optional options bag) but `docs/v1/100-architecture.md` and parts of `docs/development/007-impl-v1-architecture.md` still describe the original contract.
+- This needs an explicit decision: either update `docs/v1/100-architecture.md` (and the plan) to reflect the new API, or restore the removed `SessionOptions` fields to match the published architecture contract (even if OpenCode ignores them for now).

@@ -63,14 +63,18 @@ The `:{qualifier}` segment (e.g. `:status`, `:verdict`) is required for agent re
 
 **Completion gate:** `AgentProvider`, `AgentSession`, and `ProviderPlugin` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. `runStreamed()` emits `AgentEvent` objects via a minimal OpenCode SSE→AgentEvent mapper implemented directly in `src/providers/opencode.ts` (not dependent on the full event-router refactor in Phase 11). Factory supports both direct import (bundled OpenCode) and dynamic import (external plugins via `ProviderPlugin` contract). Existing v0 test patterns from `test/agents/` validate behavior.
 
-- [x] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `SessionOptions`, `RunOptions`, `RunResult`, and `AgentEvent` types exactly as specified in `100-architecture.md:198-240`.
+- [x] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `ResumeOptions`, `SessionOptions`, `RunOptions`, `RunResult`, `AgentEvent`, and `ProviderPlugin` types per `100-architecture.md:198-244`.
 
 ```typescript
 // src/providers/types.ts
 export interface AgentProvider {
   startSession(opts: SessionOptions): Promise<AgentSession>;
-  resumeSession(sessionId: string): Promise<AgentSession>;
+  resumeSession(sessionId: string, opts?: ResumeOptions): Promise<AgentSession>;
   close(): Promise<void>;
+}
+
+export interface ResumeOptions {
+  model?: string;              // model override for the resumed session
 }
 
 export interface AgentSession {
@@ -120,7 +124,7 @@ export interface ProviderPlugin {
 
 - [x] Create `src/providers/opencode.ts` implementing `AgentProvider` using `@opencode-ai/sdk`. Port the core invocation logic from `src/agents/opencode.ts:481-1130` — session creation, prompt execution, two-phase structured output, SSE event mapping to `AgentEvent`, timeout/cancellation handling. Key differences from v0:
   - `startSession()` creates session via `client.session.create()` (same as v0 `_invoke` line 790)
-  - `resumeSession()` retrieves via `client.session.get()`
+  - `resumeSession()` retrieves via `client.session.get()`; accepts optional `ResumeOptions` for model override
   - `run()` does the two-phase prompt (execute + summary with `format: json_schema`) and returns `RunResult`
   - `runStreamed()` maps OpenCode SSE events to `AgentEvent` via a minimal mapper implemented directly in `opencode.ts` (does NOT depend on `src/utils/event-router.ts` or `StreamWriter`; the full event-router refactor is deferred to Phase 11)
   - `close()` calls `server.close()` (same as v0 line 541)
@@ -133,7 +137,7 @@ export class OpenCodeProvider implements AgentProvider {
   static createExternal(baseUrl: string, opts?: { model?: string }): OpenCodeProvider;
 
   startSession(opts: SessionOptions): Promise<AgentSession>;
-  resumeSession(sessionId: string): Promise<AgentSession>;
+  resumeSession(sessionId: string, opts?: ResumeOptions): Promise<AgentSession>;
   close(): Promise<void>;
 }
 ```

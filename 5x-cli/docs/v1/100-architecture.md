@@ -198,8 +198,12 @@ Sub-agent invocation is abstracted behind a provider interface. The CLI doesn't 
 ```typescript
 interface AgentProvider {
   startSession(opts: SessionOptions): Promise<AgentSession>;
-  resumeSession(sessionId: string): Promise<AgentSession>;
+  resumeSession(sessionId: string, opts?: ResumeOptions): Promise<AgentSession>;
   close(): Promise<void>;
+}
+
+interface ResumeOptions {
+  model?: string;              // model override for the resumed session
 }
 
 interface AgentSession {
@@ -211,14 +215,12 @@ interface AgentSession {
 interface SessionOptions {
   model: string;               // model identifier (provider-specific format)
   workingDirectory: string;    // cwd for tool execution (file edits, shell commands)
-  systemPrompt?: string;       // system prompt / instructions
-  timeout?: number;            // session-level timeout in seconds
 }
 
 interface RunOptions {
   outputSchema?: JSONSchema;   // structured output extraction
   signal?: AbortSignal;
-  timeout?: number;
+  timeout?: number;            // per-run timeout in seconds
 }
 
 interface RunResult {
@@ -240,7 +242,7 @@ type AgentEvent =
   | { type: "done"; result: RunResult };
 ```
 
-6 types, 4 methods. This is the entire abstraction between the CLI and any agent runtime. Each provider maps its native event format to `AgentEvent`; the CLI renders and logs normalized events without provider-specific knowledge. See `101-cli-primitives.md`, Section 9 for the full output and monitoring specification.
+7 types, 4 methods. This is the entire abstraction between the CLI and any agent runtime. Each provider maps its native event format to `AgentEvent`; the CLI renders and logs normalized events without provider-specific knowledge. See `101-cli-primitives.md`, Section 9 for the full output and monitoring specification.
 
 ### 6.2 v1 Providers
 
@@ -366,7 +368,7 @@ The current v0 agent interface (`AgentAdapter` in `src/agents/types.ts`) maps to
 | `invokeForVerdict(opts)` | `session.run(prompt, { outputSchema: ReviewerVerdictSchema })` | Same |
 | `InvokeOptions.logPath` | Managed by CLI (`5x invoke`), not passed to provider | Log path is determined by run ID + sequence counter |
 | `InvokeOptions.quiet` / `showReasoning` | CLI-level rendering flags on `5x invoke` | Not provider concerns — provider emits all events, CLI filters for display |
-| `InvokeOptions.sessionId` | `provider.resumeSession(sessionId)` | Explicit method instead of option bag |
+| `InvokeOptions.sessionId` | `provider.resumeSession(sessionId, opts?)` | Explicit method with optional `ResumeOptions` (model override) |
 | `InvokeOptions.trace` | Removed — replaced by `AgentEvent` stream | Provider emits normalized events, CLI handles logging |
 | `verify()` | Implicit — provider validates connectivity on `startSession()` | No separate health check |
 | `close()` | `provider.close()` | Same semantics |
