@@ -1,0 +1,1039 @@
+/**
+ * OpenCode provider — v1 AgentProvider implementation using @opencode-ai/sdk.
+ *
+ * Supports two modes:
+ * - Managed: spawns a local OpenCode server via `createOpencode()`
+ * - External: connects to an already-running server via `createOpencodeClient()`
+ *
+ * Ports core invocation logic from `src/agents/opencode.ts:481-1130` with
+ * the simplified v1 provider interface.
+ */
+
+import {
+	createOpencode,
+	createOpencodeClient,
+	type Event as OpenCodeEvent,
+	type OpencodeClient,
+	type OutputFormat,
+} from "@opencode-ai/sdk/v2";
+
+import { isStructuredOutputError } from "../protocol.js";
+import type {
+	AgentEvent,
+	AgentProvider,
+	AgentSession,
+	JSONSchema,
+	RunOptions,
+	RunResult,
+	SessionOptions,
+} from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Error classes (ported from src/agents/errors.ts)
+// ---------------------------------------------------------------------------
+
+export class AgentTimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentTimeoutError";
+	}
+}
+
+export class AgentCancellationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentCancellationError";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a "provider/model" string into the SDK's model object.
+ */
+export function parseModel(model: string): {
+	providerID: string;
+	modelID: string;
+} {
+	const slashIdx = model.indexOf("/");
+	if (slashIdx < 1) {
+		throw new Error(
+			`Invalid model format "${model}" — expected "provider/model" (e.g. "anthropic/claude-sonnet-4-6")`,
+		);
+	}
+	return {
+		providerID: model.slice(0, slashIdx),
+		modelID: model.slice(slashIdx + 1),
+	};
+}
+
+function isAbortLikeError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	if (err.name === "AbortError") return true;
+	return err.message.toLowerCase().includes("aborted");
+}
+
+async function sleepWithSignal(
+	ms: number,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (!signal) {
+		await new Promise((resolve) => setTimeout(resolve, ms));
+		return;
+	}
+	if (signal.aborted) {
+		throw new AgentCancellationError("Agent invocation cancelled");
+	}
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		(timer as { unref?: () => void }).unref?.();
+
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(new AgentCancellationError("Agent invocation cancelled"));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function buildStructuredSummaryPrompt(schema: JSONSchema): string {
+	// Detect if this is a status or verdict schema from the presence of key fields
+	const props = schema.properties as Record<string, unknown> | undefined;
+	const isStatus = props && "result" in props && "commit" in props;
+
+	if (isStatus) {
+		return [
+			"IMPORTANT: Before responding, verify that all changes have been committed to git.",
+			"If you have uncommitted changes, commit them NOW — a 'complete' result without a",
+			"valid commit hash will be rejected and escalated as a failure.",
+			"Do not call any other tools. Base your answer only on work already completed in this session.",
+			"If result is complete, you MUST include the commit hash.",
+			"If result is needs_human or failed, include a concise reason.",
+		].join("\n");
+	}
+
+	return [
+		"Summarize the current review outcome using the required JSON schema.",
+		"Do not call tools. Base your answer only on evidence already gathered in this session.",
+		"If readiness is not_ready or ready_with_corrections, include concrete items.",
+	].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// SSE → AgentEvent minimal mapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract session ID from an OpenCode SSE event (best-effort).
+ * Ported from v0 `getEventSessionId()`.
+ */
+function getEventSessionId(event: OpenCodeEvent): string | undefined {
+	const ev = event as Record<string, unknown>;
+	const type = typeof ev.type === "string" ? ev.type : undefined;
+	const props = ev.properties as Record<string, unknown> | undefined;
+	if (!props) return undefined;
+
+	if (typeof props.sessionID === "string") return props.sessionID;
+	if (typeof props.sessionId === "string") return props.sessionId;
+
+	const info = props.info as Record<string, unknown> | undefined;
+	if (info && typeof info.sessionID === "string") return info.sessionID;
+	if (info && typeof info.sessionId === "string") return info.sessionId;
+
+	if (type?.startsWith("session.") && info && typeof info.id === "string") {
+		return info.id;
+	}
+
+	const part = props.part as Record<string, unknown> | undefined;
+	if (part && typeof part.sessionID === "string") return part.sessionID;
+	if (part && typeof part.sessionId === "string") return part.sessionId;
+
+	// Deep fallback
+	return findSessionIdDeep(props);
+}
+
+function findSessionIdDeep(
+	value: unknown,
+	depth = 0,
+	seen = new Set<unknown>(),
+): string | undefined {
+	if (depth > 4 || value == null || typeof value !== "object") return undefined;
+	if (seen.has(value)) return undefined;
+	seen.add(value);
+
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = findSessionIdDeep(item, depth + 1, seen);
+			if (found) return found;
+		}
+		return undefined;
+	}
+
+	const obj = value as Record<string, unknown>;
+	if (typeof obj.sessionID === "string") return obj.sessionID;
+	if (typeof obj.sessionId === "string") return obj.sessionId;
+
+	for (const nested of Object.values(obj)) {
+		const found = findSessionIdDeep(nested, depth + 1, seen);
+		if (found) return found;
+	}
+	return undefined;
+}
+
+/** Context for resolving session IDs across related events. */
+interface SessionResolveContext {
+	partToSession: Map<string, string>;
+	messageToSession: Map<string, string>;
+}
+
+function resolveSessionIdWithContext(
+	event: OpenCodeEvent,
+	ctx: SessionResolveContext,
+): string | undefined {
+	const direct = getEventSessionId(event);
+	const ev = event as Record<string, unknown>;
+	const type = ev.type as string | undefined;
+	const props = ev.properties as Record<string, unknown> | undefined;
+	const info = props?.info as Record<string, unknown> | undefined;
+	const part = props?.part as Record<string, unknown> | undefined;
+
+	const getStr = (obj: Record<string, unknown> | undefined, key: string) => {
+		const v = obj?.[key];
+		return typeof v === "string" ? v : undefined;
+	};
+	const getStrAny = (
+		obj: Record<string, unknown> | undefined,
+		keys: readonly string[],
+	) => {
+		for (const k of keys) {
+			const v = getStr(obj, k);
+			if (v) return v;
+		}
+		return undefined;
+	};
+
+	if (direct) {
+		const messageId =
+			getStr(info, "id") ?? getStrAny(part, ["messageID", "messageId"]);
+		if (messageId) ctx.messageToSession.set(messageId, direct);
+
+		const partId = getStr(part, "id");
+		if (partId) ctx.partToSession.set(partId, direct);
+		return direct;
+	}
+
+	if (type === "message.part.delta" && props) {
+		const partId = getStrAny(props, ["partID", "partId"]);
+		if (partId) {
+			const fromPart = ctx.partToSession.get(partId);
+			if (fromPart) return fromPart;
+		}
+		const messageId = getStrAny(props, ["messageID", "messageId"]);
+		if (messageId) {
+			const fromMessage = ctx.messageToSession.get(messageId);
+			if (fromMessage) return fromMessage;
+		}
+	}
+
+	if (type === "message.part.updated" && part) {
+		const messageId = getStrAny(part, ["messageID", "messageId"]);
+		if (messageId) {
+			const fromMessage = ctx.messageToSession.get(messageId);
+			if (fromMessage) {
+				const partId = getStr(part, "id");
+				if (partId) ctx.partToSession.set(partId, fromMessage);
+				return fromMessage;
+			}
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Map an OpenCode SSE event to an AgentEvent.
+ * Returns undefined for events that should be skipped (non-content events).
+ *
+ * This is a minimal mapper — Phase 11 consolidates into a shared event-mapper.
+ */
+function mapSseToAgentEvent(event: OpenCodeEvent): AgentEvent | undefined {
+	const ev = event as Record<string, unknown>;
+	const type = ev.type as string | undefined;
+	const props = ev.properties as Record<string, unknown> | undefined;
+
+	if (type === "message.part.updated" && props) {
+		const part = props.part as Record<string, unknown> | undefined;
+		const partType = part?.type;
+
+		// Text delta
+		if (partType === "text") {
+			const delta = props.delta as string | undefined;
+			if (delta) return { type: "text", delta };
+			// Full text fallback — not great for streaming, but better than nothing
+			const text = part?.text;
+			if (typeof text === "string" && text.length > 0) {
+				return { type: "text", delta: text };
+			}
+		}
+
+		// Reasoning delta
+		if (partType === "reasoning") {
+			const delta = props.delta as string | undefined;
+			if (delta) return { type: "reasoning", delta };
+		}
+
+		// Tool events
+		if (partType === "tool" && part) {
+			const tool = typeof part.tool === "string" ? part.tool : "unknown";
+			const state = part.state as Record<string, unknown> | undefined;
+			const status = state?.status as string | undefined;
+			const input = state?.input;
+
+			if (status === "running" || status === "pending") {
+				const inputSummary = summarizeToolInput(tool, input);
+				return { type: "tool_start", tool, input_summary: inputSummary };
+			}
+
+			if (status === "completed" || status === "error") {
+				const output =
+					typeof state?.output === "string"
+						? (state.output as string)
+						: JSON.stringify(state?.output ?? "");
+				return {
+					type: "tool_end",
+					tool,
+					output: output.slice(0, 500),
+					error: status === "error",
+				};
+			}
+		}
+	}
+
+	// Legacy delta events
+	if (type === "message.part.delta" && props) {
+		const delta = props.delta as string | undefined;
+		if (delta) {
+			// Can't distinguish text vs reasoning without part registration context.
+			// Treat as text (the common case). Phase 11 will do better with full state.
+			return { type: "text", delta };
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Summarize tool input for the `tool_start` event.
+ */
+function summarizeToolInput(tool: string, input: unknown): string {
+	if (!input || typeof input !== "object") return "";
+	const obj = input as Record<string, unknown>;
+
+	switch (tool) {
+		case "bash":
+		case "shell":
+			return typeof obj.command === "string" ? obj.command : "";
+		case "edit":
+		case "write":
+		case "read":
+			return typeof obj.filePath === "string"
+				? obj.filePath
+				: typeof obj.path === "string"
+					? obj.path
+					: "";
+		case "glob":
+			return typeof obj.pattern === "string" ? obj.pattern : "";
+		case "grep":
+			return typeof obj.pattern === "string" ? obj.pattern : "";
+		default:
+			return JSON.stringify(input).slice(0, 100);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode Session
+// ---------------------------------------------------------------------------
+
+class OpenCodeSession implements AgentSession {
+	readonly id: string;
+
+	constructor(
+		private client: OpencodeClient,
+		sessionId: string,
+		private model: string | undefined,
+		private workdir: string | undefined,
+	) {
+		this.id = sessionId;
+	}
+
+	async run(prompt: string, opts?: RunOptions): Promise<RunResult> {
+		const start = Date.now();
+
+		// Build cancellation signal
+		const timeoutMs =
+			opts?.timeout !== undefined ? opts.timeout * 1000 : undefined;
+		const timeoutController =
+			timeoutMs !== undefined ? new AbortController() : undefined;
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+		if (timeoutController && timeoutMs !== undefined) {
+			timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+			(timeoutId as { unref?: () => void }).unref?.();
+		}
+
+		const cancelSignals: AbortSignal[] = [];
+		if (timeoutController) cancelSignals.push(timeoutController.signal);
+		if (opts?.signal) cancelSignals.push(opts.signal);
+		const cancelSignal =
+			cancelSignals.length > 0 ? AbortSignal.any(cancelSignals) : undefined;
+
+		try {
+			// Phase 1: Execute prompt
+			const executeResult = await this.sendPrompt(
+				prompt,
+				undefined,
+				cancelSignal,
+			);
+			if (executeResult.error) {
+				if (isStructuredOutputError(executeResult)) {
+					throw new Error(
+						`Structured output validation failed: ${JSON.stringify(executeResult.error)}`,
+					);
+				}
+				throw new Error(
+					`Agent invocation failed: ${JSON.stringify(executeResult.error)}`,
+				);
+			}
+
+			// Phase 2: Structured output extraction (if schema provided)
+			let structured: unknown;
+			let text = this.extractText(executeResult);
+			let info = executeResult.data?.info as
+				| Record<string, unknown>
+				| undefined;
+
+			if (opts?.outputSchema) {
+				const summaryFormat: OutputFormat = {
+					type: "json_schema",
+					schema: opts.outputSchema,
+					retryCount: 2,
+				};
+				const summaryPrompt = buildStructuredSummaryPrompt(opts.outputSchema);
+				const summaryResult = await this.sendPrompt(
+					summaryPrompt,
+					summaryFormat,
+					cancelSignal,
+				);
+
+				if (summaryResult.error) {
+					if (isStructuredOutputError(summaryResult)) {
+						throw new Error(
+							`Structured output validation failed: ${JSON.stringify(summaryResult.error)}`,
+						);
+					}
+					throw new Error(
+						`Agent invocation failed: ${JSON.stringify(summaryResult.error)}`,
+					);
+				}
+
+				info = summaryResult.data?.info as Record<string, unknown> | undefined;
+				structured = info?.structured;
+
+				if (structured == null) {
+					// Try recovery via polling
+					const recovered = await this.waitForStructuredResult(cancelSignal);
+					info = recovered.info as Record<string, unknown>;
+					structured = info?.structured;
+
+					if (structured == null) {
+						if (info?.error && isStructuredOutputError({ error: info.error })) {
+							throw new Error(
+								`Structured output validation failed after retries: ${JSON.stringify(info.error)}`,
+							);
+						}
+						throw new Error(
+							"Agent did not return structured output — expected JSON schema response.",
+						);
+					}
+				}
+
+				text = this.extractText(summaryResult) || text;
+			}
+
+			const duration = Date.now() - start;
+			const tokens = this.extractTokens(info);
+			const costUsd = this.extractCost(info);
+
+			return {
+				text,
+				structured,
+				sessionId: this.id,
+				tokens,
+				costUsd,
+				durationMs: duration,
+			};
+		} catch (err) {
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+			const isTimeout = timeoutController?.signal.aborted === true;
+			const isExternalCancel = opts?.signal?.aborted === true;
+
+			if (isTimeout || isExternalCancel) {
+				try {
+					await this.client.session.abort({ sessionID: this.id });
+				} catch {
+					// Ignore abort errors
+				}
+				if (isTimeout && !isExternalCancel) {
+					throw new AgentTimeoutError(`Agent timed out after ${timeoutMs}ms`);
+				}
+				throw new AgentCancellationError("Agent invocation cancelled");
+			}
+			throw err;
+		} finally {
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+		}
+	}
+
+	async *runStreamed(
+		prompt: string,
+		opts?: RunOptions,
+	): AsyncIterable<AgentEvent> {
+		const start = Date.now();
+
+		// Build cancellation signal
+		const timeoutMs =
+			opts?.timeout !== undefined ? opts.timeout * 1000 : undefined;
+		const timeoutController =
+			timeoutMs !== undefined ? new AbortController() : undefined;
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+		const resetInactivityTimeout = () => {
+			if (!timeoutController || timeoutMs === undefined) return;
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+			timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+		};
+		if (timeoutController && timeoutMs !== undefined) {
+			resetInactivityTimeout();
+		}
+
+		const cancelSignals: AbortSignal[] = [];
+		if (timeoutController) cancelSignals.push(timeoutController.signal);
+		if (opts?.signal) cancelSignals.push(opts.signal);
+		const cancelSignal =
+			cancelSignals.length > 0 ? AbortSignal.any(cancelSignals) : undefined;
+
+		// SSE controller for the event stream
+		const sseController = new AbortController();
+		const propagateCancel = () => sseController.abort();
+		cancelSignal?.addEventListener("abort", propagateCancel, { once: true });
+
+		// Start SSE stream
+		const sessionCtx: SessionResolveContext = {
+			partToSession: new Map(),
+			messageToSession: new Map(),
+		};
+
+		let streamRef: AsyncIterable<OpenCodeEvent> | undefined;
+		try {
+			const { stream } = await this.client.event.subscribe(
+				this.workdir ? { directory: this.workdir } : undefined,
+				{ signal: sseController.signal },
+			);
+			streamRef = stream;
+		} catch (err) {
+			if (!sseController.signal.aborted) {
+				yield {
+					type: "error",
+					message: `SSE subscription failed: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
+			return;
+		}
+
+		// Start the prompt in background
+		const promptPromise = (async () => {
+			// Phase 1: execute
+			const executeResult = await this.sendPrompt(
+				prompt,
+				undefined,
+				cancelSignal,
+			);
+			if (executeResult.error) {
+				throw new Error(
+					`Agent invocation failed: ${JSON.stringify(executeResult.error)}`,
+				);
+			}
+
+			// Phase 2: structured output (if schema provided)
+			if (opts?.outputSchema) {
+				const summaryFormat: OutputFormat = {
+					type: "json_schema",
+					schema: opts.outputSchema,
+					retryCount: 2,
+				};
+				const summaryPrompt = buildStructuredSummaryPrompt(opts.outputSchema);
+				const summaryResult = await this.sendPrompt(
+					summaryPrompt,
+					summaryFormat,
+					cancelSignal,
+				);
+
+				if (summaryResult.error) {
+					throw new Error(
+						`Agent invocation failed: ${JSON.stringify(summaryResult.error)}`,
+					);
+				}
+
+				const info = summaryResult.data?.info as
+					| Record<string, unknown>
+					| undefined;
+				let structured = info?.structured;
+
+				if (structured == null) {
+					const recovered = await this.waitForStructuredResult(cancelSignal);
+					structured = (recovered.info as Record<string, unknown>)?.structured;
+					if (structured == null) {
+						throw new Error(
+							"Agent did not return structured output — expected JSON schema response.",
+						);
+					}
+				}
+
+				return {
+					text: this.extractText(executeResult),
+					structured,
+					info: summaryResult.data?.info as Record<string, unknown> | undefined,
+				};
+			}
+
+			return {
+				text: this.extractText(executeResult),
+				structured: undefined,
+				info: executeResult.data?.info as Record<string, unknown> | undefined,
+			};
+		})();
+
+		// Stream SSE events while prompt runs
+		let promptDone = false;
+		let promptResult: Awaited<typeof promptPromise> | undefined;
+		let promptError: unknown;
+
+		// Mark prompt done when it completes
+		promptPromise
+			.then((r) => {
+				promptResult = r;
+				promptDone = true;
+			})
+			.catch((err) => {
+				promptError = err;
+				promptDone = true;
+			})
+			.finally(() => {
+				// Stop SSE stream after prompt completes
+				sseController.abort();
+			});
+
+		try {
+			for await (const event of streamRef) {
+				if (sseController.signal.aborted) break;
+
+				// Filter to this session
+				const eventSessionId = resolveSessionIdWithContext(event, sessionCtx);
+				if (!eventSessionId || eventSessionId !== this.id) continue;
+
+				// Reset inactivity timeout on activity
+				resetInactivityTimeout();
+
+				// Map to AgentEvent
+				const agentEvent = mapSseToAgentEvent(event);
+				if (agentEvent) {
+					yield agentEvent;
+				}
+			}
+		} catch (err) {
+			// Stream errors expected on abort
+			if (!sseController.signal.aborted) {
+				yield {
+					type: "error",
+					message: `SSE stream error: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
+		} finally {
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+			cancelSignal?.removeEventListener("abort", propagateCancel);
+		}
+
+		// Wait for prompt to finish if it hasn't
+		if (!promptDone) {
+			try {
+				promptResult = await promptPromise;
+			} catch (err) {
+				promptError = err;
+			}
+		}
+
+		if (promptError) {
+			const isTimeout = timeoutController?.signal.aborted === true;
+			const isExternalCancel = opts?.signal?.aborted === true;
+
+			if (isTimeout && !isExternalCancel) {
+				yield {
+					type: "error",
+					message: `Agent timed out after ${timeoutMs}ms`,
+				};
+			} else if (isExternalCancel) {
+				yield { type: "error", message: "Agent invocation cancelled" };
+			} else {
+				yield {
+					type: "error",
+					message:
+						promptError instanceof Error
+							? promptError.message
+							: String(promptError),
+				};
+			}
+			return;
+		}
+
+		if (promptResult) {
+			const duration = Date.now() - start;
+			const tokens = this.extractTokens(promptResult.info);
+			const costUsd = this.extractCost(promptResult.info);
+
+			const result: RunResult = {
+				text: promptResult.text,
+				structured: promptResult.structured,
+				sessionId: this.id,
+				tokens,
+				costUsd,
+				durationMs: duration,
+			};
+
+			yield { type: "usage", tokens, costUsd };
+			yield { type: "done", result };
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Private helpers
+	// -----------------------------------------------------------------------
+
+	private async sendPrompt(
+		text: string,
+		format: OutputFormat | undefined,
+		cancelSignal: AbortSignal | undefined,
+	) {
+		const modelObj = this.model ? parseModel(this.model) : undefined;
+		const promptPromise = this.client.session.prompt(
+			{
+				sessionID: this.id,
+				parts: [{ type: "text", text }],
+				...(format && { format }),
+				...(modelObj && { model: modelObj }),
+				...(this.workdir && { directory: this.workdir }),
+			},
+			cancelSignal ? { signal: cancelSignal } : undefined,
+		);
+
+		try {
+			// Race against abort signal (same pattern as v0 _invoke).
+			// Ensures cancellation works even if the SDK doesn't respect the signal.
+			const result =
+				cancelSignal !== undefined
+					? await Promise.race([
+							promptPromise,
+							new Promise<never>((_, reject) => {
+								if (cancelSignal.aborted) {
+									reject(cancelSignal.reason ?? new Error("aborted"));
+									return;
+								}
+								cancelSignal.addEventListener(
+									"abort",
+									() => reject(cancelSignal.reason ?? new Error("aborted")),
+									{ once: true },
+								);
+							}),
+						])
+					: await promptPromise;
+			return result;
+		} catch (err) {
+			const isCancel = cancelSignal?.aborted === true;
+			if (!isCancel && isAbortLikeError(err)) {
+				// Recoverable abort — poll for result
+				return await this.waitForRecoveredPromptResult(false, cancelSignal);
+			}
+			throw err;
+		}
+	}
+
+	private async waitForRecoveredPromptResult(
+		requireStructured: boolean,
+		signal?: AbortSignal,
+	) {
+		let stalledPolls = 0;
+
+		while (true) {
+			if (signal?.aborted) {
+				throw new AgentCancellationError("Agent invocation cancelled");
+			}
+
+			const messages = await this.client.session.messages(
+				{
+					sessionID: this.id,
+					...(this.workdir && { directory: this.workdir }),
+					limit: 50,
+				},
+				signal ? { signal } : undefined,
+			);
+
+			if (!messages.error && Array.isArray(messages.data)) {
+				const latestFirst = [...messages.data].reverse();
+				let hasInFlightAssistant = false;
+
+				for (const row of latestFirst) {
+					const rowObj = row as Record<string, unknown>;
+					const info = rowObj.info as Record<string, unknown> | undefined;
+					if (!info || info.role !== "assistant") continue;
+
+					const time = info.time as Record<string, unknown> | undefined;
+					const completed = typeof time?.completed === "number";
+					if (!completed) {
+						hasInFlightAssistant = true;
+						continue;
+					}
+
+					if (!requireStructured) {
+						return {
+							data: {
+								info,
+								parts: Array.isArray(rowObj.parts) ? rowObj.parts : [],
+							},
+							error: undefined,
+						};
+					}
+
+					const structured = info.structured;
+					if (structured != null) {
+						return {
+							data: {
+								info,
+								parts: Array.isArray(rowObj.parts) ? rowObj.parts : [],
+							},
+							error: undefined,
+						};
+					}
+
+					if (info.error && isStructuredOutputError({ error: info.error })) {
+						return {
+							data: { info, parts: [] },
+							error: undefined,
+						};
+					}
+				}
+
+				if (!hasInFlightAssistant) {
+					stalledPolls += 1;
+					if (stalledPolls >= 3) {
+						throw new Error(
+							requireStructured
+								? "Agent did not return structured output — expected JSON schema response."
+								: "Agent did not return a completed assistant message while recovering.",
+						);
+					}
+				} else {
+					stalledPolls = 0;
+				}
+			}
+
+			await sleepWithSignal(500, signal);
+		}
+	}
+
+	private async waitForStructuredResult(
+		signal?: AbortSignal,
+	): Promise<{ info: unknown }> {
+		const result = await this.waitForRecoveredPromptResult(true, signal);
+		return { info: result.data.info };
+	}
+
+	private extractText(result: unknown): string {
+		const r = result as Record<string, unknown>;
+		const data = r?.data as Record<string, unknown> | undefined;
+		const parts = data?.parts as Array<unknown> | undefined;
+		if (!parts) return "";
+
+		const textParts = parts
+			.map((p) => {
+				const part = p as Record<string, unknown>;
+				return part?.type === "text" && typeof part.text === "string"
+					? part.text
+					: "";
+			})
+			.filter((t) => t.length > 0);
+
+		return textParts.join("\n");
+	}
+
+	private extractTokens(info: Record<string, unknown> | undefined): {
+		in: number;
+		out: number;
+	} {
+		const tokens = info?.tokens as Record<string, unknown> | undefined;
+		return {
+			in: typeof tokens?.input === "number" ? tokens.input : 0,
+			out: typeof tokens?.output === "number" ? tokens.output : 0,
+		};
+	}
+
+	private extractCost(
+		info: Record<string, unknown> | undefined,
+	): number | undefined {
+		const cost = info?.cost;
+		return typeof cost === "number" ? cost : undefined;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode Provider
+// ---------------------------------------------------------------------------
+
+export class OpenCodeProvider implements AgentProvider {
+	private client: OpencodeClient;
+	private server: { url: string; close(): void } | null;
+	private defaultModel?: string;
+	private closed = false;
+
+	/** @internal Use static factory methods instead. */
+	constructor(
+		client: OpencodeClient,
+		server: { url: string; close(): void } | null,
+		defaultModel?: string,
+	) {
+		this.client = client;
+		this.server = server;
+		this.defaultModel = defaultModel;
+	}
+
+	/**
+	 * Create a managed provider — spawns a local OpenCode server.
+	 */
+	static async createManaged(opts?: {
+		model?: string;
+	}): Promise<OpenCodeProvider> {
+		try {
+			const { client, server } = await createOpencode({
+				hostname: "127.0.0.1",
+				port: 0,
+				timeout: 15_000,
+			});
+			return new OpenCodeProvider(client, server, opts?.model);
+		} catch (err) {
+			throw new Error(
+				"OpenCode server failed to start — check that opencode is installed and on PATH. " +
+					`Details: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	/**
+	 * Create an external provider — connects to an already-running OpenCode server.
+	 */
+	static createExternal(
+		baseUrl: string,
+		opts?: { model?: string },
+	): OpenCodeProvider {
+		const client = createOpencodeClient({ baseUrl });
+		return new OpenCodeProvider(client, null, opts?.model);
+	}
+
+	/**
+	 * The URL of the running OpenCode server.
+	 */
+	get serverUrl(): string {
+		return this.server?.url ?? "(external)";
+	}
+
+	async startSession(opts: SessionOptions): Promise<AgentSession> {
+		const model = opts.model ?? this.defaultModel;
+		const title = `5x-session-${Date.now()}`;
+
+		const sessionResult = await this.client.session.create({
+			title,
+			...(opts.workingDirectory && { directory: opts.workingDirectory }),
+		});
+
+		if (sessionResult.error) {
+			throw new Error(
+				`Failed to create session: ${JSON.stringify(sessionResult.error)}`,
+			);
+		}
+
+		const sessionId = sessionResult.data.id;
+		return new OpenCodeSession(
+			this.client,
+			sessionId,
+			model,
+			opts.workingDirectory,
+		);
+	}
+
+	async resumeSession(sessionId: string): Promise<AgentSession> {
+		const result = await this.client.session.get({ sessionID: sessionId });
+		if (result.error) {
+			throw new Error(
+				`Failed to resume session "${sessionId}": ${JSON.stringify(result.error)}`,
+			);
+		}
+
+		// Extract workdir from session data
+		const sessionData = result.data as Record<string, unknown>;
+		const workdir =
+			typeof sessionData.directory === "string"
+				? sessionData.directory
+				: undefined;
+
+		return new OpenCodeSession(
+			this.client,
+			sessionId,
+			this.defaultModel,
+			workdir,
+		);
+	}
+
+	async close(): Promise<void> {
+		if (this.closed) return;
+		this.closed = true;
+		try {
+			this.server?.close();
+		} catch {
+			// Ignore close errors — server may already be gone
+		}
+	}
+
+	/**
+	 * Health check — verify the server is reachable.
+	 */
+	async verify(): Promise<void> {
+		try {
+			const result = await this.client.session.list();
+			if (result.error) {
+				throw new Error(
+					typeof result.error === "object"
+						? JSON.stringify(result.error)
+						: String(result.error),
+				);
+			}
+		} catch (err) {
+			throw new Error(
+				"OpenCode server health check failed — server did not start correctly. " +
+					`Details: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+}

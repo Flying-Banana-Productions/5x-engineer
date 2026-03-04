@@ -63,7 +63,7 @@ The `:{qualifier}` segment (e.g. `:status`, `:verdict`) is required for agent re
 
 **Completion gate:** `AgentProvider`, `AgentSession`, and `ProviderPlugin` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. `runStreamed()` emits `AgentEvent` objects via a minimal OpenCode SSE→AgentEvent mapper implemented directly in `src/providers/opencode.ts` (not dependent on the full event-router refactor in Phase 11). Factory supports both direct import (bundled OpenCode) and dynamic import (external plugins via `ProviderPlugin` contract). Existing v0 test patterns from `test/agents/` validate behavior.
 
-- [ ] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `SessionOptions`, `RunOptions`, `RunResult`, and `AgentEvent` types exactly as specified in `100-architecture.md:198-240`.
+- [x] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `SessionOptions`, `RunOptions`, `RunResult`, and `AgentEvent` types exactly as specified in `100-architecture.md:198-240`.
 
 ```typescript
 // src/providers/types.ts
@@ -120,7 +120,7 @@ export interface ProviderPlugin {
 }
 ```
 
-- [ ] Create `src/providers/opencode.ts` implementing `AgentProvider` using `@opencode-ai/sdk`. Port the core invocation logic from `src/agents/opencode.ts:481-1130` — session creation, prompt execution, two-phase structured output, SSE event mapping to `AgentEvent`, timeout/cancellation handling. Key differences from v0:
+- [x] Create `src/providers/opencode.ts` implementing `AgentProvider` using `@opencode-ai/sdk`. Port the core invocation logic from `src/agents/opencode.ts:481-1130` — session creation, prompt execution, two-phase structured output, SSE event mapping to `AgentEvent`, timeout/cancellation handling. Key differences from v0:
   - `startSession()` creates session via `client.session.create()` (same as v0 `_invoke` line 790)
   - `resumeSession()` retrieves via `client.session.get()`
   - `run()` does the two-phase prompt (execute + summary with `format: json_schema`) and returns `RunResult`
@@ -140,7 +140,7 @@ export class OpenCodeProvider implements AgentProvider {
 }
 ```
 
-- [ ] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. **Forward-compatible with missing config keys (P1.1):** if `config.author.provider` or `config.reviewer.provider` is absent (i.e. Phase 8 config extension hasn't landed yet), default to `"opencode"`. Similarly, if `config.opencode.url` is absent, use managed mode. This allows Phase 1 to be implemented and tested independently of Phase 8. **Plugin loading:** for `"opencode"`, uses a direct import (bundled). For any other provider name, resolves to an npm package via convention (`"codex"` → `@5x-ai/provider-codex`, or a full package name like `"@acme/provider-foo"`) and dynamically imports it. The imported module must default-export a `ProviderPlugin`. Throws `PROVIDER_NOT_FOUND` (exit code 2) with install instructions if the package is missing, or `INVALID_PROVIDER` if the module doesn't satisfy the `ProviderPlugin` contract.
+- [x] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. **Forward-compatible with missing config keys (P1.1):** if `config.author.provider` or `config.reviewer.provider` is absent (i.e. Phase 8 config extension hasn't landed yet), default to `"opencode"`. Similarly, if `config.opencode.url` is absent, use managed mode. This allows Phase 1 to be implemented and tested independently of Phase 8. **Plugin loading:** for `"opencode"`, uses a direct import (bundled). For any other provider name, resolves to an npm package via convention (`"codex"` → `@5x-ai/provider-codex`, or a full package name like `"@acme/provider-foo"`) and dynamically imports it. The imported module must default-export a `ProviderPlugin`. Throws `PROVIDER_NOT_FOUND` (exit code 2) with install instructions if the package is missing, or `INVALID_PROVIDER` if the module doesn't satisfy the `ProviderPlugin` contract.
 
 ```typescript
 // src/providers/factory.ts
@@ -167,11 +167,11 @@ async function loadPlugin(providerName: string): Promise<ProviderPlugin> {
 }
 ```
 
-- [ ] Create `src/providers/index.ts` re-exporting types and factory.
+- [x] Create `src/providers/index.ts` re-exporting types and factory.
 
-- [ ] Write unit tests in `test/providers/types.test.ts` validating the type contracts (compile-time check).
+- [x] Write unit tests in `test/providers/types.test.ts` validating the type contracts (compile-time check).
 
-- [ ] Write integration tests in `test/providers/opencode.test.ts` covering:
+- [x] Write integration tests in `test/providers/opencode.test.ts` covering:
   - Managed mode lifecycle (create → startSession → run → close)
   - External mode connection
   - Structured output extraction (AuthorStatus and ReviewerVerdict schemas)
