@@ -186,7 +186,7 @@ async function loadPlugin(providerName: string): Promise<ProviderPlugin> {
 
 **Completion gate:** Schema version 4 migration creates `steps` table, migrates existing v0 data, drops old tables. `runMigrations()` succeeds on fresh DBs and on DBs with existing v0 data. All existing tests in `test/db/` pass with the new schema.
 
-- [ ] Add migration version 4 to `src/db/schema.ts:220` (after the existing `migrations` array). **Important:** SQLite does not reliably support `ALTER TABLE ... DROP COLUMN` across environments. The `runs` table modification (step 6) MUST use the table-rebuild pattern: `CREATE TABLE runs_new(...)` → `INSERT INTO runs_new SELECT ... FROM runs` → `DROP TABLE runs` → `ALTER TABLE runs_new RENAME TO runs`. The entire migration is wrapped in a transaction.
+- [x] Add migration version 4 to `src/db/schema.ts:220` (after the existing `migrations` array). **Important:** SQLite does not reliably support `ALTER TABLE ... DROP COLUMN` across environments. The `runs` table modification (step 6) MUST use the table-rebuild pattern: `CREATE TABLE runs_new(...)` → `INSERT INTO runs_new SELECT ... FROM runs` → `DROP TABLE runs` → `ALTER TABLE runs_new RENAME TO runs`. The entire migration is wrapped in a transaction.
 
   Migration steps:
   1. Creates the `steps` table per `101-cli-primitives.md:778-809`:
@@ -220,7 +220,7 @@ CREATE INDEX idx_steps_phase ON steps(run_id, phase);
   6. Rebuilds `runs` table using SQLite table-rebuild pattern (see below) to remove `current_state`, `current_phase`, `review_path` columns, rename timestamp columns, and add `config_json`. Explicit column mapping: `created_at = started_at`, `updated_at = COALESCE(completed_at, started_at)`. The v0 `completed_at` column is dropped (terminal state is now recorded as a `run:complete` or `run:abort` step). Tests must assert that existing `started_at` values appear as `created_at` and `completed_at` values appear as `updated_at` after migration.
   7. Drops `agent_results`, `quality_results`, `run_events`, `phase_progress` tables
 
-- [ ] Create `src/db/operations-v1.ts` with new step-based operations:
+- [x] Create `src/db/operations-v1.ts` with new step-based operations:
 
 ```typescript
 // src/db/operations-v1.ts
@@ -313,7 +313,7 @@ export function listRuns(db: Database, opts?: {
 export function computeRunSummary(db: Database, runId: string): RunSummaryComputed;
 ```
 
-- [ ] Write tests in `test/db/schema-v4.test.ts` covering:
+- [x] Write tests in `test/db/schema-v4.test.ts` covering:
   - Fresh DB migration (no v0 data)
   - Migration from v3 with existing v0 data (agent_results, quality_results, run_events, phase_progress)
   - Data integrity after migration: step counts match source records; both `result_type=status` and `result_type=verdict` rows from `agent_results` survive as distinct steps (e.g. `"author:tpl:status"` and `"author:tpl:verdict"`)
@@ -323,7 +323,7 @@ export function computeRunSummary(db: Database, runId: string): RunSummaryComput
   - Auto-increment iteration behavior
   - `computeRunSummary` aggregation
 
-- [ ] Write tests in `test/db/operations-v1.test.ts` covering all new operation functions.
+- [x] Write tests in `test/db/operations-v1.test.ts` covering all new operation functions.
 
 ## Phase 3: JSON Output Envelope and Shared Helpers
 

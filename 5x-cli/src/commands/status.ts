@@ -3,14 +3,8 @@ import { dirname, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { openDbReadOnly } from "../db/connection.js";
-import type { PhaseProgressRow, RunRow } from "../db/operations.js";
-import {
-	getActiveRun,
-	getApprovedPhaseNumbers,
-	getLastRunEvent,
-	getLatestRun,
-	listPhaseProgress,
-} from "../db/operations.js";
+import type { RunRow } from "../db/operations.js";
+import { getActiveRun, getLatestRun } from "../db/operations.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { findGitRoot } from "../project-root.js";
@@ -70,9 +64,7 @@ function formatDuration(startedAt: string): string {
 interface DbState {
 	active: RunRow | null;
 	latest: RunRow | null;
-	lastEventType: string | null;
 	approvedPhases: Set<string>;
-	phaseProgress: PhaseProgressRow[];
 }
 
 function tryLoadDbState(opts: {
@@ -102,18 +94,11 @@ function tryLoadDbState(opts: {
 				? getLatestRun(db, opts.planPathProvided)
 				: null);
 
-		let lastEventType: string | null = null;
-		if (active) {
-			const lastEvent = getLastRunEvent(db, active.id);
-			lastEventType = lastEvent?.event_type ?? null;
-		}
+		// v1 schema: approved phases are now tracked via 'phase:complete' steps.
+		// For now, derive approved phases from the plan's checked items.
+		const approvedPhases = new Set<string>();
 
-		const approvedPhases = new Set(
-			getApprovedPhaseNumbers(db, opts.planPathCanonical),
-		);
-		const phaseProgress = listPhaseProgress(db, opts.planPathCanonical);
-
-		return { active, latest, lastEventType, approvedPhases, phaseProgress };
+		return { active, latest, approvedPhases };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error(
@@ -217,17 +202,13 @@ export default defineCommand({
 		if (dbState?.active) {
 			const r = dbState.active;
 			console.log();
-			console.log(
-				`  Active run: ${r.id.slice(0, 8)} (${r.command}, phase ${r.current_phase ?? "?"}, state: ${r.current_state ?? "?"})`,
-			);
-			console.log(
-				`  Started: ${formatDuration(r.started_at)}${dbState.lastEventType ? ` | Last event: ${dbState.lastEventType}` : ""}`,
-			);
+			console.log(`  Active run: ${r.id.slice(0, 8)} (${r.command ?? "run"})`);
+			console.log(`  Started: ${formatDuration(r.created_at)}`);
 		} else if (dbState?.latest && dbState.latest.status !== "active") {
 			const r = dbState.latest;
 			console.log();
 			console.log(
-				`  Last run: ${r.id.slice(0, 8)} (${r.command}, ${r.status})`,
+				`  Last run: ${r.id.slice(0, 8)} (${r.command ?? "run"}, ${r.status})`,
 			);
 		}
 

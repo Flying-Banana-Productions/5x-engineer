@@ -26,13 +26,22 @@ export interface PhaseProgressRow {
 export interface RunRow {
 	id: string;
 	plan_path: string;
-	review_path: string | null;
-	command: string;
+	command: string | null;
 	status: string;
-	current_phase: string | null;
-	current_state: string | null;
-	started_at: string;
-	completed_at: string | null;
+	config_json: string | null;
+	created_at: string;
+	updated_at: string;
+	// v0 compat aliases (mapped from v1 columns)
+	/** @deprecated Use created_at */
+	started_at?: string;
+	/** @deprecated Removed in v1 — terminal state is now a step */
+	completed_at?: string | null;
+	/** @deprecated Removed in v1 */
+	review_path?: string | null;
+	/** @deprecated Removed in v1 */
+	current_phase?: string | null;
+	/** @deprecated Removed in v1 */
+	current_state?: string | null;
 }
 
 export interface RunEventRow {
@@ -98,13 +107,11 @@ export type QualityResultInput = Omit<QualityResultRow, "created_at">;
 export interface RunSummary {
 	id: string;
 	plan_path: string;
-	command: string;
+	command: string | null;
 	status: string;
-	started_at: string;
-	completed_at: string | null;
-	current_phase: string | null;
-	event_count: number;
-	agent_count: number;
+	created_at: string;
+	updated_at: string;
+	step_count: number;
 }
 
 export interface RunMetrics {
@@ -297,32 +304,30 @@ export function createRun(
 ): void {
 	const canonical = canonicalizePlanPath(run.planPath);
 	db.query(
-		`INSERT INTO runs (id, plan_path, command, review_path)
-     VALUES (?1, ?2, ?3, ?4)`,
-	).run(run.id, canonical, run.command, run.reviewPath ?? null);
+		`INSERT INTO runs (id, plan_path, command)
+     VALUES (?1, ?2, ?3)`,
+	).run(run.id, canonical, run.command);
 }
 
 export function updateRunStatus(
 	db: Database,
 	runId: string,
 	status: string,
-	state?: string,
-	phase?: string,
+	_state?: string,
+	_phase?: string,
 ): void {
 	db.query(
 		`UPDATE runs SET
        status = ?1,
-       current_state = COALESCE(?2, current_state),
-       current_phase = COALESCE(?3, current_phase),
-       completed_at = CASE WHEN ?1 IN ('completed','aborted','failed') THEN datetime('now') ELSE completed_at END
-     WHERE id = ?4`,
-	).run(status, state ?? null, phase ?? null, runId);
+       updated_at = datetime('now')
+     WHERE id = ?2`,
+	).run(status, runId);
 }
 
 export function getActiveRun(db: Database, planPath: string): RunRow | null {
 	return db
 		.query(
-			"SELECT * FROM runs WHERE plan_path = ?1 AND status = 'active' ORDER BY started_at DESC LIMIT 1",
+			"SELECT * FROM runs WHERE plan_path = ?1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
 		)
 		.get(planPath) as RunRow | null;
 }
@@ -641,20 +646,18 @@ export function getRunHistory(
 		return db
 			.query(
 				`SELECT r.*,
-           (SELECT COUNT(*) FROM run_events WHERE run_id = r.id) as event_count,
-           (SELECT COUNT(*) FROM agent_results WHERE run_id = r.id) as agent_count
+           (SELECT COUNT(*) FROM steps WHERE run_id = r.id) as step_count
          FROM runs r WHERE r.plan_path = ?1
-         ORDER BY r.started_at DESC LIMIT ?2`,
+         ORDER BY r.created_at DESC LIMIT ?2`,
 			)
 			.all(planPath, limit) as RunSummary[];
 	}
 	return db
 		.query(
 			`SELECT r.*,
-         (SELECT COUNT(*) FROM run_events WHERE run_id = r.id) as event_count,
-         (SELECT COUNT(*) FROM agent_results WHERE run_id = r.id) as agent_count
+         (SELECT COUNT(*) FROM steps WHERE run_id = r.id) as step_count
        FROM runs r
-       ORDER BY r.started_at DESC LIMIT ?1`,
+       ORDER BY r.created_at DESC LIMIT ?1`,
 		)
 		.all(limit) as RunSummary[];
 }
@@ -664,13 +667,14 @@ export function getRunMetrics(db: Database, runId: string): RunMetrics {
 		.query(
 			`SELECT
          COUNT(*) as total,
-         SUM(CASE WHEN role = 'author' THEN 1 ELSE 0 END) as authors,
-         SUM(CASE WHEN role = 'reviewer' THEN 1 ELSE 0 END) as reviewers,
+         SUM(CASE WHEN step_name LIKE 'author:%' THEN 1 ELSE 0 END) as authors,
+         SUM(CASE WHEN step_name LIKE 'reviewer:%' THEN 1 ELSE 0 END) as reviewers,
          COALESCE(SUM(tokens_in), 0) as tokens_in,
          COALESCE(SUM(tokens_out), 0) as tokens_out,
          COALESCE(SUM(cost_usd), 0) as cost,
          COALESCE(SUM(duration_ms), 0) as duration
-       FROM agent_results WHERE run_id = ?1`,
+       FROM steps WHERE run_id = ?1
+         AND (step_name LIKE 'author:%' OR step_name LIKE 'reviewer:%')`,
 		)
 		.get(runId) as {
 		total: number;
@@ -685,11 +689,16 @@ export function getRunMetrics(db: Database, runId: string): RunMetrics {
 	const qualityStats = db
 		.query(
 			`SELECT
-         SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
-         SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) as failed
-       FROM quality_results WHERE run_id = ?1`,
+         COUNT(*) as total,
+         SUM(CASE WHEN json_extract(result_json, '$.passed') = 1 THEN 1 ELSE 0 END) as passed,
+         SUM(CASE WHEN json_extract(result_json, '$.passed') = 0 THEN 1 ELSE 0 END) as failed
+       FROM steps WHERE run_id = ?1 AND step_name = 'quality:check'`,
 		)
-		.get(runId) as { passed: number | null; failed: number | null };
+		.get(runId) as {
+		total: number;
+		passed: number | null;
+		failed: number | null;
+	};
 
 	return {
 		run_id: runId,
