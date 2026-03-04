@@ -144,3 +144,32 @@ However, as written they are not consistent with current implementation or the m
 - [ ] Document locking/concurrency enforcement
 - [ ] Standardize phase ID format across docs and implementation
 - [ ] Decide and document commit policy for plan revisions
+
+---
+
+## Addendum (2026-03-04) — Re-review after doc revisions
+
+**Reviewed:** `docs/v1/100-architecture.md`, `docs/v1/101-cli-primitives.md`, `docs/v1/102-agent-skills.md` (revised)
+
+### What's addressed (✅)
+
+- **Draft vs implemented clarity:** All three v1 docs now clearly marked “Draft — Not Implemented”, and `docs/v1/100-architecture.md` scopes supersedence to “upon implementation”.
+- **Compatibility + mapping:** `docs/v1/100-architecture.md` adds a concrete compatibility table; `docs/v1/101-cli-primitives.md` adds an explicit v0→v1 command mapping.
+- **Locking/concurrency:** `docs/v1/101-cli-primitives.md` now specifies plan-lock acquisition in `5x run init` and release in `5x run complete`, aligning with current `.5x/locks` behavior.
+- **Phase ID consistency:** `docs/v1/101-cli-primitives.md` examples now use numeric-string phase IDs (`"1"`, `"1.1"`), matching `src/parsers/plan.ts` (`PHASE_HEADING_RE`).
+- **`run record` ergonomics:** `docs/v1/101-cli-primitives.md` now supports `--result -` (stdin) and `--result @path` (file), addressing shell quoting pain.
+- **`diff` safety:** `docs/v1/101-cli-primitives.md` removes the unsafe default-by-design `HEAD~1` behavior; skills must pass explicit refs.
+- **Skills availability + install story:** `docs/v1/102-agent-skills.md` now flags skills as requiring v1 primitives, and specifies `5x init` will scaffold `.5x/skills/`.
+- **Data model decision + migration plan:** `docs/v1/101-cli-primitives.md` now includes a concrete migration plan to `steps` + explicit idempotency semantics change (v0 upsert → v1 insert-ignore).
+- **Provider interface reconciliation:** `docs/v1/100-architecture.md` adds an explicit mapping from current `AgentAdapter` to the proposed provider/session interface and clarifies normalized logging.
+
+### Remaining concerns
+
+- **OpenCode session resume across CLI invocations (P1):** `docs/v1/100-architecture.md` + `docs/v1/101-cli-primitives.md` assume `--session` enables cross-invocation continuation while also stating each `5x invoke` creates a provider instance and closes it on exit. For OpenCode specifically, this implies a persistent underlying runtime (server/thread) independent of the `5x invoke` process. Clarify in `docs/v1/100-architecture.md` whether OpenCode provider connects to a persistent server (resume works), or whether resume is only guaranteed for providers with durable threads/sessions (Codex/Claude Agent) and OpenCode resume is best-effort.
+- **Clean-break migration risk (P2/product):** `docs/v1/100-architecture.md` positions a full removal of v0 commands at v1 ship. As a product decision, this is viable but high-friction; consider documenting an escape hatch (e.g., a separate `5x-v0` binary, or a short coexistence window) to reduce upgrade pain.
+
+### Updated readiness
+
+- **Doc set internal consistency:** ✅ — the three v1 docs now read as a coherent, implementation-ready proposal with explicit “not implemented” status and clear deltas vs v0.
+- **Consistency with current implementation:** ✅ (as a proposal) — docs no longer imply these commands/DB/providers exist today; they explicitly describe a replacement plan.
+- **Ready to implement:** ⚠️ — proceed after resolving the OpenCode session durability assumption (or explicitly scoping `--session` guarantees per provider).
