@@ -1,8 +1,8 @@
 # 5x CLI v1 — Architecture
 
-**Status:** Draft
+**Status:** Draft — Not Implemented
 **Date:** March 4, 2026
-**Supersedes:** `docs/000-technical-design-5x-cli.md` (v0 — scripted state machines)
+**Supersedes:** `docs/000-technical-design-5x-cli.md` (upon implementation — v0 doc remains authoritative until v1 ships)
 
 ---
 
@@ -345,20 +345,60 @@ Spawn a coding agent CLI in non-interactive mode, capture output. A base class i
 
 Direct model API calls (Anthropic SDK, Google GenAI, OpenAI SDK) with a 5x-managed tool execution loop and built-in tool set (read_file, write_file, edit_file, shell, etc.). This is the most universal but requires building a minimal agent harness. Deferred unless there is demand or a specific optimization opportunity.
 
+### 6.7 Migration from v0 AgentAdapter
+
+The current v0 agent interface (`AgentAdapter` in `src/agents/types.ts`) maps to the v1 provider interface as follows:
+
+| v0 `AgentAdapter` | v1 `AgentProvider` / `AgentSession` | Notes |
+|---|---|---|
+| `invokeForStatus(opts)` | `session.run(prompt, { outputSchema: AuthorStatusSchema })` | Provider handles structured output extraction internally |
+| `invokeForVerdict(opts)` | `session.run(prompt, { outputSchema: ReviewerVerdictSchema })` | Same |
+| `InvokeOptions.logPath` | Managed by CLI (`5x invoke`), not passed to provider | Log path is determined by run ID + sequence counter |
+| `InvokeOptions.quiet` / `showReasoning` | CLI-level rendering flags on `5x invoke` | Not provider concerns — provider emits all events, CLI filters for display |
+| `InvokeOptions.sessionId` | `provider.resumeSession(sessionId)` | Explicit method instead of option bag |
+| `InvokeOptions.trace` | Removed — replaced by `AgentEvent` stream | Provider emits normalized events, CLI handles logging |
+| `verify()` | Implicit — provider validates connectivity on `startSession()` | No separate health check |
+| `close()` | `provider.close()` | Same semantics |
+
+The existing OpenCode adapter (`src/agents/opencode.ts`) becomes the first `AgentProvider` implementation. The SSE event router from v0 (`src/utils/event-router.ts`) is reused as the `AgentEvent` mapping layer for the OpenCode provider.
+
+### 6.8 Logging Format
+
+v1 writes **normalized `AgentEvent` NDJSON only**. Raw provider-native events are not persisted separately. Each provider maps its native events to `AgentEvent` before emission; the CLI logs what it receives. This ensures consistent log format across all providers and simplifies tooling that reads logs.
+
+The v0 approach of logging raw OpenCode SSE events is replaced. Existing v0 log files remain readable but use a different format.
+
 **Gemini path:** Use a Category 1 provider that supports Gemini models (e.g., OpenCode with Gemini routing). A native Gemini provider via the Google GenAI Interactions API would be Category 3 — viable but requires the built-in tool set. If Google ships a coding agent SDK (their equivalent of Codex), it becomes a Category 1 adapter.
 
 ---
 
 ## 7. Migration Strategy
 
-**Parallel implementation.** v1 is built alongside v0 code:
+**Clean break.** When v1 ships, v0 orchestrator commands are removed — no coexistence period:
 
-1. v1 takes over the `5x run` namespace with subcommands (`run init`, `run state`, `run record`, etc.). v0's `5x run <plan>` is renamed to `5x exec <plan>` and deprecated.
-2. New v1 commands (`5x invoke`, `5x prompt`, `5x worktree`) are added under the `5x` binary
-3. Existing v0 commands (`5x plan`, `5x plan-review`) continue working unchanged alongside v1 commands
-4. Skills are standalone markdown files — no code dependency on v0
-5. Shared infrastructure (templates, plan parser, quality gates, config, protocol) is reused, not forked
-6. Once v1 skills are validated, v0 orchestrator loops (`5x exec`, `5x plan`, `5x plan-review`) are deprecated and removed
+1. v0 commands `5x run <plan>`, `5x plan`, `5x plan-review` are deleted. Their functionality is replaced by skills + v1 primitives.
+2. v1 commands (`5x run init/state/record/...`, `5x invoke`, `5x prompt`, `5x worktree`, `5x quality run`, `5x diff`, `5x plan phases`) are the entire CLI surface.
+3. Shared infrastructure (templates, plan parser, quality gates, config, protocol) is reused directly — not forked.
+4. Skills are standalone markdown files with no code dependency on v0.
+5. The v0 orchestrator loops, human gate functions, and their command wrappers are deleted from the codebase.
+
+### Compatibility with current CLI
+
+The v0 design doc (`docs/000-technical-design-5x-cli.md`) and its implementation remain authoritative until v1 is released. This table summarizes what exists today vs what v1 introduces:
+
+| Component | Current (v0) | v1 Proposed | Implementation status |
+|---|---|---|---|
+| **Agent interface** | `AgentAdapter` with `invokeForStatus`/`invokeForVerdict` — OpenCode only | `AgentProvider`/`AgentSession` with `run`/`runStreamed` — OpenCode, Codex, Claude Agent | Not implemented |
+| **DB schema** | `runs` + `run_events` + `agent_results` + `quality_results` + `phase_progress` (6 tables) | `runs` + `steps` + `plans` (3 tables, unified journal) | Not implemented |
+| **Orchestration** | TypeScript state machines (`plan-review-loop.ts`, `phase-execution-loop.ts`) | Agent skills (markdown) + CLI primitives | Not implemented |
+| **Commands** | `5x run <plan>`, `5x plan`, `5x plan-review`, `5x status` | `5x run init/state/record/...`, `5x invoke`, `5x prompt`, `5x quality run`, `5x diff` | Not implemented |
+| **Worktree** | `5x worktree status/cleanup` + `5x run --worktree` flag | `5x worktree create/remove/list` | Partially exists (v0 has status/cleanup) |
+| **Plan locking** | File-based plan locks (`.5x/locks/`) with stale detection | Preserved — `5x run init` acquires, `5x run complete` releases | Exists |
+| **Protocol** | `AuthorStatus`, `ReviewerVerdict`, JSON schemas, assertions | Preserved unchanged | Exists |
+| **Templates** | Template engine (YAML frontmatter + variable substitution + user overrides) | Preserved unchanged | Exists |
+| **Quality gates** | Subprocess execution with bounded output capture | Preserved unchanged | Exists |
+| **Plan parser** | Markdown parser, phase extraction, checklist tracking | Preserved unchanged | Exists |
+| **Output/logging** | SSE event router, raw OpenCode events in NDJSON | Normalized `AgentEvent` NDJSON across all providers | Not implemented |
 
 **What can be reused directly:**
 
@@ -370,10 +410,14 @@ Direct model API calls (Anthropic SDK, Google GenAI, OpenAI SDK) with a 5x-manag
 - `src/paths.ts` — path canonicalization
 - `src/db/` — migrations framework (schema will be revised)
 
-**What gets replaced:**
+**What gets deleted:**
 
-- `src/orchestrator/plan-review-loop.ts`
-- `src/orchestrator/phase-execution-loop.ts`
-- `src/commands/run.ts` (the orchestration wiring, not the CLI flags)
-- `src/commands/plan-review.ts` (same)
-- `src/gates/human.ts` (replaced by `5x prompt` commands)
+- `src/orchestrator/plan-review-loop.ts` — replaced by `5x-plan-review` skill
+- `src/orchestrator/phase-execution-loop.ts` — replaced by `5x-phase-execution` skill
+- `src/commands/run.ts` — replaced by `5x run` subcommands + `5x invoke`
+- `src/commands/plan.ts` — replaced by `5x-plan` skill + `5x invoke`
+- `src/commands/plan-review.ts` — replaced by `5x-plan-review` skill + `5x invoke`
+- `src/gates/human.ts` — replaced by `5x prompt` commands
+- `src/agents/types.ts` (`AgentAdapter`) — replaced by `AgentProvider`/`AgentSession`
+- `src/agents/opencode.ts` — rewritten as OpenCode provider
+- `src/agents/factory.ts` — replaced by provider instantiation in `5x invoke`

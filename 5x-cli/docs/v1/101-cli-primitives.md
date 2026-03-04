@@ -1,6 +1,6 @@
 # 5x CLI v1 — CLI Primitives Specification
 
-**Status:** Draft
+**Status:** Draft — Not Implemented
 **Date:** March 4, 2026
 **Parent:** `100-architecture.md`
 
@@ -31,6 +31,26 @@ All JSON output follows a consistent envelope:
   "error": { "code": "QUALITY_FAILED", "message": "2 of 3 gates failed", "detail": { ... } }
 }
 ```
+
+### Implementation status
+
+These primitives are not yet implemented. This document is an implementation-ready specification for the v1 CLI surface. When v1 ships, these commands replace the v0 CLI entirely — v0 orchestrator commands are removed, not deprecated (see `100-architecture.md`, Section 7).
+
+### Command mapping (v0 → v1)
+
+| v0 command | v1 replacement | Notes |
+|---|---|---|
+| `5x run <plan>` | `5x-phase-execution` skill + v1 primitives | **Removed** |
+| `5x plan <prd>` | `5x-plan` skill + v1 primitives | **Removed** |
+| `5x plan-review <plan>` | `5x-plan-review` skill + v1 primitives | **Removed** |
+| `5x status` | `5x run state` | Replaced |
+| (internal) orchestrator loops | Skills loaded into orchestrating agent | Logic moves to markdown |
+| (internal) `AgentAdapter.invokeForStatus()` | `5x invoke author <template>` | New public command |
+| (internal) `AgentAdapter.invokeForVerdict()` | `5x invoke reviewer <template>` | New public command |
+| (internal) human gate functions | `5x prompt choose/confirm/input` | New public commands |
+| `5x worktree status` | `5x worktree list` | Replaced |
+| `5x worktree cleanup` | `5x worktree remove` | Replaced |
+| `5x run --worktree` flag | `5x worktree create` | Extracted to standalone command |
 
 ---
 
@@ -80,9 +100,9 @@ Create a new run for a plan.
 **Behavior:**
 
 - Checks for an existing active run for this plan. If found, returns it instead of creating a new one (idempotent).
+- Acquires a file-based plan lock (`.5x/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen. Uses the same lock mechanism as v0 (`src/lock.ts`).
 - Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0.
 - Canonicalizes the plan path for DB identity (worktree-safe).
-- Does NOT acquire a lock — locking is a CLI-level concern if needed.
 
 ---
 
@@ -109,7 +129,7 @@ Query the current state of a run.
       {
         "id": 1,
         "step_name": "author:implement",
-        "phase": "phase-1",
+        "phase": "1",
         "iteration": 1,
         "result": { "type": "status", "status": { "result": "complete", "commit": "abc123" } },
         "created_at": "2026-03-04T10:05:00Z"
@@ -117,7 +137,7 @@ Query the current state of a run.
       {
         "id": 2,
         "step_name": "quality:check",
-        "phase": "phase-1",
+        "phase": "1",
         "iteration": 1,
         "result": { "type": "quality", "passed": true, "results": [...] },
         "created_at": "2026-03-04T10:06:00Z"
@@ -125,7 +145,7 @@ Query the current state of a run.
     ],
     "summary": {
       "total_steps": 2,
-      "current_phase": "phase-1",
+      "current_phase": "1",
       "latest_step": "quality:check",
       "phases_completed": [],
       "cost_usd": 0.45,
@@ -156,7 +176,7 @@ Record a completed step. This is the primary persistence primitive.
 |---|---|---|
 | `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:review`) |
 | `--run` | Yes | Run ID |
-| `--result` | Yes | Step result as JSON string |
+| `--result` | Yes | Step result as JSON string. Use `-` to read from stdin, or `@path` to read from a file. |
 | `--phase` | No | Phase identifier |
 | `--iteration` | No | Iteration number within the phase (default: auto-increment) |
 
@@ -168,7 +188,7 @@ Record a completed step. This is the primary persistence primitive.
   "data": {
     "step_id": 3,
     "step_name": "reviewer:review",
-    "phase": "phase-1",
+    "phase": "1",
     "iteration": 1,
     "recorded": true
   }
@@ -199,7 +219,7 @@ Mark a run as completed or aborted.
 5x run complete --run <id> [--status completed|aborted] [--reason <text>]
 ```
 
-Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step and updates the run status.
+Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step, updates the run status, and releases the plan lock.
 
 ---
 
@@ -408,13 +428,15 @@ Parse a plan and return its phases.
   "ok": true,
   "data": {
     "phases": [
-      { "id": "phase-1", "title": "Authentication Module", "done": true, "checklist_total": 5, "checklist_done": 5 },
-      { "id": "phase-2", "title": "Authorization Layer", "done": false, "checklist_total": 4, "checklist_done": 1 },
-      { "id": "phase-3", "title": "API Endpoints", "done": false, "checklist_total": 6, "checklist_done": 0 }
+      { "id": "1", "title": "Authentication Module", "done": true, "checklist_total": 5, "checklist_done": 5 },
+      { "id": "2", "title": "Authorization Layer", "done": false, "checklist_total": 4, "checklist_done": 1 },
+      { "id": "3", "title": "API Endpoints", "done": false, "checklist_total": 6, "checklist_done": 0 }
     ]
   }
 }
 ```
+
+Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"`, `"2"`), matching the regex `\d+(\.\d+)?`. This matches the current v0 plan parser output. Phases are sorted numerically (`CAST(phase AS REAL)`).
 
 ### `5x diff`
 
@@ -426,7 +448,7 @@ Get a git diff relative to a reference.
 
 | Flag | Description |
 |---|---|
-| `--since` | Git ref to diff against (commit, branch, tag). Default: HEAD~1. |
+| `--since` | Git ref to diff against (commit, branch, tag). Required — no default. The skill should always pass an explicit ref (e.g., the commit hash from the author result). If omitted, diffs the working tree against HEAD (unstaged + staged changes only). |
 | `--stat` | Include diffstat summary. |
 
 **Returns:**
@@ -448,6 +470,8 @@ Get a git diff relative to a reference.
 ## 6a. Worktree Management
 
 Git worktrees provide isolation — each run can work in a separate worktree so concurrent work doesn't conflict.
+
+**Migration from v0:** The current `5x worktree status` becomes `5x worktree list` (enhanced to show all worktrees, not just one). The current `5x worktree cleanup` becomes `5x worktree remove`. Worktree creation (currently the `--worktree` flag on `5x run`) is extracted to the standalone `5x worktree create` command.
 
 ### `5x worktree create`
 
@@ -570,6 +594,18 @@ Collect freeform text input from the human.
 ```
 
 This replaces the "continue with guidance" escalation path from v0 — the orchestrating agent asks the human for input via this primitive and includes it in the next sub-agent invocation.
+
+### Non-interactive behavior (all prompt commands)
+
+v0 uses `--auto` and `--ci` flags to control non-interactive behavior. v1 simplifies this: the `5x prompt *` commands detect whether stdin is a TTY and behave accordingly:
+
+| Condition | Behavior |
+|---|---|
+| **Interactive** (stdin is TTY) | Present prompt, wait for human response |
+| **Non-interactive + `--default` provided** | Return the default value immediately |
+| **Non-interactive + no `--default`** | Exit 1 with `code: "NON_INTERACTIVE"` |
+
+There is no `--auto` or `--ci` flag on v1 primitives. The equivalent of v0's `--ci` mode is simply running in a non-TTY environment (e.g., piped stdin) with `--default` values set on all prompt commands in the skill. Skills that need full CI support should provide defaults on every `5x prompt` call.
 
 ---
 
@@ -717,11 +753,11 @@ The orchestrating agent doesn't need special resume logic. On startup (or after 
 
 ### Concurrency
 
-The CLI does not enforce single-writer semantics. If two agents work on the same plan:
+Plan-level file locks prevent concurrent runs on the same plan. `5x run init` acquires the lock; `5x run complete` releases it. If a second agent attempts `5x run init` for a locked plan, it receives a `PLAN_LOCKED` error.
 
-- `5x run init` returns the same active run to both
-- Concurrent `5x run record` calls are serialized by SQLite (WAL mode). No data corruption, but both agents may record interleaved steps for the same phase. The step history becomes a merge of both agents' actions.
-- This is not a supported workflow. If concurrent execution is needed, use separate worktrees with separate plans.
+Stale locks (from crashed processes) are automatically stolen. The lock file contains the PID and start time for diagnostics.
+
+If concurrent execution on different plans is needed, use separate worktrees.
 
 ### Correcting bad state
 
@@ -799,6 +835,25 @@ CREATE TABLE plans (
 
 The `runs` table no longer tracks mutable state (current_state, current_phase). All state is derived from the ordered step history. This eliminates the class of bugs where `runs` metadata diverges from actual step records.
 
+### Migration plan
+
+A SQL migration (schema version 4) will:
+
+1. Create the `steps` table
+2. Migrate existing data:
+   - `agent_results` → `steps` rows with `step_name = "{role}:{template}"`, agent metadata columns populated
+   - `quality_results` → `steps` rows with `step_name = "quality:check"`, `result_json` containing the gate results
+   - `run_events` → `steps` rows with `step_name = "event:{event_type}"`
+   - `phase_progress` where `review_approved = 1` → `steps` rows with `step_name = "phase:complete"`
+3. Drop `runs.current_state` and `runs.current_phase` columns
+4. Drop `agent_results`, `quality_results`, `run_events`, `phase_progress` tables
+
+The `plans` and `schema_version` tables are unchanged.
+
+### Idempotency semantics
+
+v0 uses **upsert** semantics for `agent_results` and `quality_results` — re-running an agent for the same `(run_id, phase, iteration, role, template)` overwrites the previous result. v1 uses **INSERT OR IGNORE** (first write wins) — the existing record is returned, not overwritten. This is an intentional change: immutable step records are easier to reason about for resumability and auditability. Correcting bad state is done by recording a new iteration, not overwriting (see Section 10, "Correcting bad state").
+
 ### Step naming conventions
 
 | Step name | Result shape | When recorded |
@@ -825,6 +880,7 @@ The CLI enforces these regardless of what the orchestrating agent requests:
 
 | Constraint | Enforcement point | Behavior |
 |---|---|---|
+| **Plan lock** | `5x run init` | Acquires file-based plan lock. Rejects if plan is locked by another live process. Stale locks auto-stolen. |
 | **Max steps per run** | `5x run record` | Rejects new steps after `maxStepsPerRun` total steps. Returns error. This is a global safety net independent of skill-level iteration limits (which are smaller and trigger escalation, not hard failure). |
 | **Non-interactive safety** | `5x prompt *` | If stdin is not TTY and no default, exit 1. Never hang. |
 | **Structured output validation** | `5x invoke *` | AuthorStatus/ReviewerVerdict must pass assertion. Invalid output returns error, not a fake result. |
@@ -832,6 +888,8 @@ The CLI enforces these regardless of what the orchestrating agent requests:
 | **Provider cleanup** | Process exit | `provider.close()` called on CLI exit. Providers handle their own process/connection cleanup. |
 
 These constraints are **not overridable by the skill or agent**. They are safety rails at the toolbelt level.
+
+**Commit policy:** All author invocations are expected to produce a commit (`AuthorStatus.commit` must be a non-empty string). This is enforced by the skill as an invariant check, not by `5x invoke` itself — the CLI validates structured output format (valid `AuthorStatus` JSON), not semantic content (whether a commit actually exists). The skill checks the commit invariant and triggers recovery on violation.
 
 ---
 

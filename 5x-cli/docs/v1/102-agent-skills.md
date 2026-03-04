@@ -1,6 +1,6 @@
 # 5x CLI v1 — Agent Skills
 
-**Status:** Draft
+**Status:** Draft — Not Implemented
 **Date:** March 4, 2026
 **Parent:** `100-architecture.md`
 
@@ -67,6 +67,8 @@ Generate an implementation plan from a PRD/TDD, then optionally review and refin
 
 ```markdown
 # Skill: 5x-plan
+
+> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
 
 Generate an implementation plan from a requirements document, then run
 review/fix cycles until the plan is approved.
@@ -135,6 +137,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - After author generates the plan, the plan file must exist at $PLAN_PATH.
 - The plan must parse successfully (`5x plan phases $PLAN_PATH` returns phases).
 - The plan must have at least one phase.
+- Author must produce a commit (AuthorStatus.commit is present). All
+  author completions — plan generation, plan revision — must result
+  in a committed change.
 
 ## Recovery
 
@@ -144,6 +149,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Plan has no parseable phases**: The author didn't follow the template
   structure. Re-invoke with a fresh session and explicit instructions
   to follow the template format.
+- **Author claims complete but no commit**: Invariant violation — treat
+  as context loss. Re-invoke with a fresh session. If it fails again,
+  escalate to the human.
 
 ## Completion
 
@@ -161,6 +169,8 @@ Review an existing plan with iterative fix cycles.
 
 ```markdown
 # Skill: 5x-plan-review
+
+> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
 
 Run iterative review/fix cycles on an implementation plan until it is
 approved by the reviewer or the human overrides.
@@ -309,6 +319,8 @@ Execute plan phases with author/quality/reviewer loops.
 
 ```markdown
 # Skill: 5x-phase-execution
+
+> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
 
 Execute implementation phases from an approved plan. Each phase goes
 through: author implementation, quality gates, code review, and
@@ -679,9 +691,11 @@ Skills ship with the CLI as reference implementations:
   5x-phase-execution.md
 ```
 
-These can be installed via `5x init` (which already creates `.5x/` project structure) or referenced from the npm package directly.
+The `5x init` command (which already scaffolds `.5x/`, templates, and config) will be updated to also copy the three bundled skills into `.5x/skills/`. Skills can also be referenced directly from the npm package without copying.
 
 Users load a skill into their agent session using the agent's native skill/instruction mechanism:
 - **Claude Code:** Add to `.claude/skills/` or reference via CLAUDE.md
 - **OpenCode:** Reference in system prompt or instruction file
 - **Other agents:** Agent-specific mechanism for loading instructions
+
+**Note:** Skills are not executable until the v1 CLI primitives are implemented. v0 orchestrator commands (`5x plan`, `5x plan-review`, `5x run <plan>`) are removed when v1 ships — skills + v1 primitives are the sole interface.
