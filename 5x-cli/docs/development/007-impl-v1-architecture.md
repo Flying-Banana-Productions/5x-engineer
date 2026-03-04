@@ -1,6 +1,6 @@
 # v1 Architecture Implementation
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 4, 2026
 **Status:** Draft
 
@@ -22,13 +22,44 @@ Why this change: The v0 state machines are brittle (every edge case requires new
 
 **All v1 commands return JSON envelope `{ ok, data }` or `{ ok, error }`.** This is a new convention for v1 commands. v0 commands use console.log directly. Since v0 commands are being deleted (not preserved), the new convention applies only to new code. A shared `outputJson()` helper standardizes output.
 
+**Commands throw typed errors; `bin.ts` renders and exits (error-handling policy).** Command handlers throw a `CliError` class (with `code`, `message`, `detail?`, `exitCode`) rather than calling `process.exit` directly. The top-level `bin.ts` runner catches `CliError`, writes `{ ok: false, error: { code, message, detail } }` to stdout, and exits with the specified code. This keeps command logic testable (tests assert on thrown errors) while maintaining clean exit behavior for the CLI. `outputSuccess()` writes `{ ok: true, data }` and returns (does not exit) — the normal exit happens when the command function returns. `outputError()` is a convenience that throws `CliError`.
+
+**Exit codes are deterministic per error `code`.** Skills branch on exit codes, so they must be stable and documented:
+
+| Exit code | Error `code` | Meaning |
+|-----------|-------------|---------|
+| 0 | — | Success |
+| 1 | (default) | General error / unhandled |
+| 2 | `TEMPLATE_NOT_FOUND`, `PLAN_NOT_FOUND` | Resource not found |
+| 3 | `NON_INTERACTIVE` | Interactive prompt required but stdin is not a TTY |
+| 4 | `PLAN_LOCKED` | Plan lock held by another process |
+| 5 | `DIRTY_WORKTREE` | Uncommitted changes without `--allow-dirty` |
+| 6 | `MAX_STEPS_EXCEEDED` | Run hit `maxStepsPerRun` limit |
+| 7 | `INVALID_STRUCTURED_OUTPUT` | Agent returned unparseable structured output |
+
+**Dashboard reads from v1 schema (cross-initiative decision).** `docs/development/006-impl-dashboard.md` assumes v0 tables (`run_events`, `agent_results`, `quality_results`, `phase_progress`). This plan's v4 migration drops those tables. **Decision:** the dashboard implementation (006) must be updated to read from the v1 schema (`runs`, `steps`, `plans`) before or concurrently with this work. The v4 migration does NOT provide a compatibility view/layer for the old tables. If the dashboard ships first, it must be patched to use v1 tables before the v4 migration runs. This is called out in the "Not In Scope" section as an external dependency.
+
 **Skills are bundled as static markdown files, not generated.** Skills are standalone `.md` files in `.5x/skills/`. The `5x init` command copies them from bundled defaults. No code generation, no templating of skills themselves. Skills reference CLI commands by name — they are decoupled from the implementation.
+
+**`step_name` follows `{prefix}:{action}[:{qualifier}]` convention.** Reserved prefixes and their semantics:
+
+| Prefix | Meaning | Examples |
+|--------|---------|---------|
+| `author:` | Author agent invocation | `author:implement:status`, `author:fix-quality:status` |
+| `reviewer:` | Reviewer agent invocation | `reviewer:review:verdict` |
+| `quality:` | Quality gate check | `quality:check` |
+| `human:` | Human interaction/gate | `human:gate` |
+| `phase:` | Phase lifecycle event | `phase:complete` |
+| `run:` | Run lifecycle terminal steps | `run:complete`, `run:abort`, `run:reopen` |
+| `event:` | Migrated v0 run events | `event:{event_type}` |
+
+The `:{qualifier}` segment (e.g. `:status`, `:verdict`) is required for agent result steps to disambiguate `result_type` values from v0 migration. New v1 code should use it consistently. The `run:*` prefix is reserved for terminal/lifecycle steps recorded by `run complete` and `run reopen` commands. Skills and custom workflows may define additional prefixes but should not use reserved ones.
 
 **Config schema extends, not replaces.** The `FiveXConfigSchema` in `src/config.ts:38-49` gains `provider` field on author/reviewer and `opencode` top-level config. The `maxStepsPerRun` field replaces `maxAutoIterations`. Old fields are accepted with deprecation warnings.
 
 ## Phase 1: AgentProvider Interface and OpenCode Provider
 
-**Completion gate:** `AgentProvider` and `AgentSession` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. Existing v0 test patterns from `test/agents/` validate behavior.
+**Completion gate:** `AgentProvider` and `AgentSession` interfaces exist in `src/providers/types.ts`. `OpenCodeProvider` passes unit tests covering `startSession`, `resumeSession`, `run` (with structured output), and `close`. `runStreamed()` emits `AgentEvent` objects via a minimal OpenCode SSE→AgentEvent mapper implemented directly in `src/providers/opencode.ts` (not dependent on the full event-router refactor in Phase 12). Existing v0 test patterns from `test/agents/` validate behavior.
 
 - [ ] Create `src/providers/` directory with `types.ts` defining the `AgentProvider`, `AgentSession`, `SessionOptions`, `RunOptions`, `RunResult`, and `AgentEvent` types exactly as specified in `100-architecture.md:198-240`.
 
@@ -47,16 +78,19 @@ export interface AgentSession {
 }
 
 export interface SessionOptions {
-  model: string;
-  workingDirectory: string;
-  systemPrompt?: string;
-  timeout?: number;
+  model: string;               // model identifier (provider-specific format)
+  workingDirectory: string;    // cwd for tool execution (file edits, shell commands)
+  systemPrompt?: string;       // system prompt / instructions
+  timeout?: number;            // session-level timeout in seconds
 }
 
+/** JSON Schema type — matches `100-architecture.md` definition. */
+export type JSONSchema = Record<string, unknown>;
+
 export interface RunOptions {
-  outputSchema?: Record<string, unknown>;
+  outputSchema?: JSONSchema;   // structured output extraction
   signal?: AbortSignal;
-  timeout?: number;
+  timeout?: number;            // per-run timeout in seconds
 }
 
 export interface RunResult {
@@ -82,7 +116,7 @@ export type AgentEvent =
   - `startSession()` creates session via `client.session.create()` (same as v0 `_invoke` line 790)
   - `resumeSession()` retrieves via `client.session.get()`
   - `run()` does the two-phase prompt (execute + summary with `format: json_schema`) and returns `RunResult`
-  - `runStreamed()` maps OpenCode SSE events to `AgentEvent` using the existing event router from `src/utils/event-router.ts`
+  - `runStreamed()` maps OpenCode SSE events to `AgentEvent` via a minimal mapper implemented directly in `opencode.ts` (does NOT depend on `src/utils/event-router.ts` or `StreamWriter`; the full event-router refactor is deferred to Phase 12)
   - `close()` calls `server.close()` (same as v0 line 541)
   - Supports both managed mode (`createOpencode()`) and external mode (`createOpencodeClient()`)
 
@@ -98,7 +132,7 @@ export class OpenCodeProvider implements AgentProvider {
 }
 ```
 
-- [ ] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. For v1, only `"opencode"` is handled; `"codex"` and `"claude-agent"` throw "not yet implemented" errors.
+- [ ] Create `src/providers/factory.ts` with `createProvider(role, config)` that reads provider config from `FiveXConfig` and instantiates the correct provider. **Forward-compatible with missing config keys (P1.1):** if `config.author.provider` or `config.reviewer.provider` is absent (i.e. Phase 8 config extension hasn't landed yet), default to `"opencode"`. Similarly, if `config.opencode.url` is absent, use managed mode. This allows Phase 1 to be implemented and tested independently of Phase 8. For v1, only `"opencode"` is handled; `"codex"` and `"claude-agent"` throw "not yet implemented" errors.
 
 ```typescript
 // src/providers/factory.ts
@@ -125,7 +159,9 @@ export async function createProvider(
 
 **Completion gate:** Schema version 4 migration creates `steps` table, migrates existing v0 data, drops old tables. `runMigrations()` succeeds on fresh DBs and on DBs with existing v0 data. All existing tests in `test/db/` pass with the new schema.
 
-- [ ] Add migration version 4 to `src/db/schema.ts:220` (after the existing `migrations` array) that:
+- [ ] Add migration version 4 to `src/db/schema.ts:220` (after the existing `migrations` array). **Important:** SQLite does not reliably support `ALTER TABLE ... DROP COLUMN` across environments. The `runs` table modification (step 6) MUST use the table-rebuild pattern: `CREATE TABLE runs_new(...)` → `INSERT INTO runs_new SELECT ... FROM runs` → `DROP TABLE runs` → `ALTER TABLE runs_new RENAME TO runs`. The entire migration is wrapped in a transaction.
+
+  Migration steps:
   1. Creates the `steps` table per `101-cli-primitives.md:778-809`:
 
 ```sql
@@ -150,11 +186,11 @@ CREATE INDEX idx_steps_run ON steps(run_id, created_at);
 CREATE INDEX idx_steps_phase ON steps(run_id, phase);
 ```
 
-  2. Migrates `agent_results` → `steps` with `step_name = "{role}:{template}"`
+  2. Migrates `agent_results` → `steps` with `step_name = "{role}:{template}:{result_type}"` (e.g. `"author:author-next-phase:status"`, `"reviewer:reviewer-phase:verdict"`). Including `result_type` in `step_name` prevents UNIQUE constraint violations when the same `(run_id, phase, iteration, role, template)` has both a `status` and `verdict` row.
   3. Migrates `quality_results` → `steps` with `step_name = "quality:check"`
   4. Migrates `run_events` → `steps` with `step_name = "event:{event_type}"`
   5. Migrates `phase_progress` where `review_approved = 1` → `steps` with `step_name = "phase:complete"`
-  6. Alters `runs` table: drops `current_state`, `current_phase`, `review_path` columns; adds `config_json` and `updated_at` columns
+  6. Rebuilds `runs` table using SQLite table-rebuild pattern (see below) to remove `current_state`, `current_phase`, `review_path` columns and add `config_json`, `updated_at` columns. Existing `created_at` values are preserved as-is (no timestamp semantics change; `updated_at` defaults to the migration timestamp for existing rows).
   7. Drops `agent_results`, `quality_results`, `run_events`, `phase_progress` tables
 
 - [ ] Create `src/db/operations-v1.ts` with new step-based operations:
@@ -204,8 +240,11 @@ export interface RecordStepResult {
 /** INSERT OR IGNORE — first write wins. Returns existing record if duplicate. */
 export function recordStep(db: Database, input: RecordStepInput): RecordStepResult;
 
-/** Get all steps for a run, ordered by creation. */
-export function getSteps(db: Database, runId: string): StepRow[];
+/** Get steps for a run, ordered by creation. Supports optional pagination. */
+export function getSteps(db: Database, runId: string, opts?: {
+  sinceStepId?: number;  // return steps with id > sinceStepId
+  tail?: number;         // return only the last N steps
+}): StepRow[];
 
 /** Get steps filtered by phase. */
 export function getStepsByPhase(db: Database, runId: string, phase: string): StepRow[];
@@ -250,7 +289,9 @@ export function computeRunSummary(db: Database, runId: string): RunSummaryComput
 - [ ] Write tests in `test/db/schema-v4.test.ts` covering:
   - Fresh DB migration (no v0 data)
   - Migration from v3 with existing v0 data (agent_results, quality_results, run_events, phase_progress)
-  - Data integrity after migration (step counts match source records)
+  - Data integrity after migration: step counts match source records; both `result_type=status` and `result_type=verdict` rows from `agent_results` survive as distinct steps (e.g. `"author:tpl:status"` and `"author:tpl:verdict"`)
+  - Runs table rebuild: existing `created_at` values preserved, `updated_at` populated, dropped columns (`current_state`, `current_phase`, `review_path`) absent
+  - Migration on a v3 DB with representative data (multiple runs, mixed result types, partial phase_progress)
   - `recordStep` INSERT OR IGNORE semantics (first write wins)
   - Auto-increment iteration behavior
   - `computeRunSummary` aggregation
@@ -281,11 +322,21 @@ export interface ErrorEnvelope {
 
 export type JsonEnvelope<T> = SuccessEnvelope<T> | ErrorEnvelope;
 
-/** Write success JSON to stdout and exit 0. */
+/** Write success JSON to stdout (does not exit — command returns normally). */
 export function outputSuccess<T>(data: T): void;
 
-/** Write error JSON to stdout and exit with code. */
+/** Throw a CliError — caught by bin.ts, which writes error JSON to stdout and exits. */
 export function outputError(code: string, message: string, detail?: unknown, exitCode?: number): never;
+
+/** Typed error class for CLI commands. Thrown, not caught internally. */
+export class CliError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly detail?: unknown,
+    public readonly exitCode: number = 1,
+  );
+}
 
 /** Generate a run ID with prefix. */
 export function generateRunId(): string;
@@ -306,17 +357,25 @@ export function nextLogSequence(logDir: string): string;
 
 - [ ] Implement `5x run init --plan <path> [--command <name>] [--allow-dirty]`:
   - Canonicalize plan path via `canonicalizePlanPath()` from `src/paths.ts:4`
-  - Check for existing active run via `getActiveRunV1()`; if found, return it (idempotent)
-  - Acquire plan lock via `acquireLock()` from `src/lock.ts:98`; on `PLAN_LOCKED`, return error
-  - Check git safety via `checkGitSafety()` from `src/git.ts:74`; on dirty without `--allow-dirty`, return `DIRTY_WORKTREE` error
+  - **Lock-first invariant (P0.2):** `run init` MUST hold the plan lock before returning any active run. The sequence is:
+    1. Attempt to acquire plan lock via `acquireLock()` from `src/lock.ts:98`.
+    2. If lock is held by another **live** PID → return `PLAN_LOCKED` error (do NOT return the existing run).
+    3. If lock is missing or stale (owner PID dead) → steal/acquire it and proceed.
+    4. Only after the lock is held: check for existing active run via `getActiveRunV1()`. If found, return it (idempotent). If not, create a new run.
+  - This ordering guarantees that the caller always holds the lock when it receives a run, preventing two orchestrators from acting on the same plan concurrently.
+  - Check git safety via `checkGitSafety()` from `src/git.ts:74`; on dirty without `--allow-dirty`, return `DIRTY_WORKTREE` error (release lock before returning error)
   - Create run via `createRunV1()` with generated ID
   - Register lock cleanup via `registerLockCleanup()` from `src/lock.ts:196`
   - Return `{ ok: true, data: { run_id, plan_path, status, created_at } }`
 
-- [ ] Implement `5x run state --run <id>` / `5x run state --plan <path>`:
-  - Fetch run and all steps via `getRunV1()` and `getSteps()`
-  - Compute summary via `computeRunSummary()`
-  - Return full step list and summary per `101-cli-primitives.md:120-156`
+- [ ] Implement `5x run state --run <id>` / `5x run state --plan <path>` with optional pagination:
+  - Fetch run and steps via `getRunV1()` and `getSteps()`
+  - Support `--tail <N>` to return only the last N steps (default: all)
+  - Support `--since-step <id>` to return only steps after the given step ID
+  - When neither flag is set, return full step list (backward-compatible, agent-friendly)
+  - Compute summary via `computeRunSummary()` (always covers the full run, regardless of step filters)
+  - Return step list and summary per `101-cli-primitives.md:120-156`
+  - **Performance note:** for long runs with large `result_json` blobs, `--tail` / `--since-step` avoid unbounded payloads
 
 - [ ] Implement `5x run record <step-name> --run <id> --result <json> [--phase <id>] [--iteration <n>]`:
   - Parse `--result`: raw JSON string, `-` for stdin, `@path` for file
@@ -340,8 +399,9 @@ export function nextLogSequence(logDir: string): string;
 
 - [ ] Write integration tests in `test/commands/run-v1.test.ts` covering:
   - Full lifecycle: init → record → state → complete
-  - Idempotent init (returns existing active run)
-  - Plan lock enforcement (second init fails)
+  - Idempotent init (returns existing active run with lock held)
+  - Plan lock enforcement (second init from different PID returns `PLAN_LOCKED`)
+  - Stale lock recovery (lock held by dead PID is stolen, run returned)
   - Dirty worktree check (without --allow-dirty)
   - Step recording with INSERT OR IGNORE (duplicate returns recorded=false)
   - Auto-increment iteration
@@ -393,8 +453,8 @@ interface InvokeArgs {
   - Template resolution (bundled + override)
   - Variable substitution
   - Structured output validation (valid AuthorStatus, valid ReviewerVerdict)
-  - Invalid structured output (returns error with `INVALID_STRUCTURED_OUTPUT`)
-  - Template not found (exit 2)
+  - Invalid structured output (throws `INVALID_STRUCTURED_OUTPUT`, exit code 7)
+  - Template not found (throws `TEMPLATE_NOT_FOUND`, exit code 2)
   - NDJSON log file creation
   - Session resume via `--session`
 
@@ -435,7 +495,7 @@ interface InvokeArgs {
 - [ ] Implement `5x prompt choose <message> --options <a,b,c> [--default <a>]`:
   - If stdin is TTY: present numbered options, wait for selection
   - If not TTY + `--default`: return default immediately
-  - If not TTY + no default: exit 1 with `NON_INTERACTIVE`
+  - If not TTY + no default: throw `NON_INTERACTIVE` error (exit code 3)
   - Return `{ choice: "<selected>" }`
 
 - [ ] Implement `5x prompt confirm <message> [--default yes|no]`:
@@ -508,7 +568,7 @@ const FiveXConfigSchema = z.object({
 
 **Completion gate:** `CodexProvider` and `ClaudeAgentProvider` implement `AgentProvider`, pass unit tests with mocked SDKs, and can be selected via config `provider: "codex"` / `provider: "claude-agent"`.
 
-- [ ] Add `@openai/codex-sdk` and `@anthropic-ai/claude-agent-sdk` as dependencies in `package.json:51-57`.
+- [ ] Add `@openai/codex-sdk` and `@anthropic-ai/claude-agent-sdk` as **optional peer dependencies** in `package.json:51-57`. They are dynamically imported only when the corresponding provider is selected via config. This avoids inflating the install size for users who only use OpenCode (the default). The factory in `src/providers/factory.ts` uses `await import(...)` and throws a clear error if the SDK is not installed when a user selects `provider: "codex"` or `provider: "claude-agent"`.
 
 - [ ] Create `src/providers/codex.ts` implementing `AgentProvider`:
   - `startSession()` → `codex.startThread({ workingDirectory })`
@@ -604,7 +664,7 @@ const main = defineCommand({
   - Remove: v0 DB operation exports (`upsertAgentResult`, `upsertQualityResult`, `appendRunEvent`, etc.)
   - Add: `AgentProvider`, `AgentSession`, `AgentEvent`, `RunResult`, `SessionOptions`, `RunOptions`
   - Add: `recordStep`, `getSteps`, `StepRow`, `RecordStepInput`, `RecordStepResult`
-  - Add: `outputSuccess`, `outputError`, `JsonEnvelope`
+  - Add: `outputSuccess`, `outputError`, `CliError`, `JsonEnvelope`
 
 - [ ] Delete v0 test files:
   - `test/orchestrator/`
@@ -617,7 +677,7 @@ const main = defineCommand({
 
 ## Phase 12: Event Router Migration
 
-**Completion gate:** The existing SSE event router in `src/utils/event-router.ts` maps OpenCode SSE events to `AgentEvent` type. NDJSON logs use `AgentEvent` format exclusively. `StreamWriter` renders `AgentEvent` instead of raw SSE events.
+**Completion gate:** The existing SSE event router in `src/utils/event-router.ts` is refactored to use `AgentEvent` as its canonical output type, consolidating the minimal mapper from Phase 1's `opencode.ts` into a shared, multi-provider `event-mapper.ts`. NDJSON logs use `AgentEvent` format exclusively. `StreamWriter` renders `AgentEvent` instead of raw SSE events.
 
 - [ ] Create `src/providers/event-mapper.ts` that maps provider-native events to `AgentEvent`:
   - OpenCode: reuse logic from `src/utils/event-router.ts` (currently maps SSE events to StreamWriter calls) — refactor to emit `AgentEvent` objects instead
@@ -663,7 +723,7 @@ const main = defineCommand({
 | `src/index.ts` | **Modified** — Export v1 types, remove v0 exports |
 | `src/utils/stream-writer.ts` | **Modified** — Accept AgentEvent input |
 | `src/utils/event-router.ts` | **Modified** — Refactor to emit AgentEvent objects |
-| `package.json` | **Modified** — Add @openai/codex-sdk, @anthropic-ai/claude-agent-sdk deps |
+| `package.json` | **Modified** — Add @openai/codex-sdk, @anthropic-ai/claude-agent-sdk as optional peer deps |
 | `src/orchestrator/plan-review-loop.ts` | **Deleted** |
 | `src/orchestrator/phase-execution-loop.ts` | **Deleted** |
 | `src/commands/run.ts` | **Deleted** |
@@ -702,25 +762,25 @@ const main = defineCommand({
 
 | Phase | Effort | Dependencies |
 |-------|--------|-------------|
-| Phase 1: AgentProvider + OpenCode Provider | 3 days | None |
+| Phase 1: AgentProvider + OpenCode Provider | 3 days | None (factory defaults to opencode when config keys absent) |
 | Phase 2: DB Schema Migration | 2 days | None |
 | Phase 3: JSON Output Helpers | 0.5 day | None |
 | Phase 4: Run Lifecycle Commands | 2 days | Phase 2, Phase 3 |
 | Phase 5: Agent Invocation Commands | 2 days | Phase 1, Phase 3, Phase 4 |
 | Phase 6: Quality/Inspection/Worktree Commands | 2 days | Phase 3 |
 | Phase 7: Human Interaction Commands | 1 day | Phase 3 |
-| Phase 8: Config Schema Extension | 1 day | None |
-| Phase 9: Codex + Claude Agent Providers | 2 days | Phase 1 |
+| Phase 8: Config Schema Extension | 1 day | None (but must land before Phase 9) |
+| Phase 9: Codex + Claude Agent Providers | 2 days | Phase 1, Phase 8 |
 | Phase 10: Skills Bundling | 1 day | None |
 | Phase 11: v0 Cleanup | 1.5 days | Phases 1-10 |
 | Phase 12: Event Router Migration | 1.5 days | Phase 1 |
 | **Total** | **~19.5 days** | |
 
-Phases 1, 2, 3, 8, 9, 10, and 12 have no inter-dependencies and can be parallelized. Critical path: Phase 1 → Phase 5 → Phase 11 (~8.5 days).
+Phases 1, 2, 3, 8, 10, and 12 have no inter-dependencies and can be parallelized. Phase 9 depends on Phase 1 (provider interface) and Phase 8 (config keys for provider selection). Phase 1's factory is forward-compatible with missing config keys (defaults to `"opencode"`), so it does not depend on Phase 8. Critical path: Phase 1 → Phase 5 → Phase 11 (~8.5 days).
 
 ## Not In Scope
 
-- Web UI / dashboard (separate initiative, see `006-impl-dashboard.md`)
+- Web UI / dashboard (separate initiative, see `006-impl-dashboard.md`). **Note:** `006-impl-dashboard.md` must be updated to read from v1 schema (`runs`, `steps`, `plans`) before or alongside this work — no v0 compatibility layer is provided by this plan.
 - Multi-repo orchestration
 - Remote/multi-user service
 - New workflow types beyond the three core skills
@@ -730,6 +790,28 @@ Phases 1, 2, 3, 8, 9, 10, and 12 have no inter-dependencies and can be paralleli
 - v0 → v1 data migration for in-progress runs (runs active at migration time are marked aborted)
 
 ## Revision History
+
+### v1.1 (March 4, 2026) — Address review feedback
+
+Review: `docs/development/reviews/2026-03-04-007-impl-v1-architecture-plan-review.md`
+
+**P0 blockers resolved:**
+- P0.1: `step_name` for migrated `agent_results` now includes `result_type` (`"{role}:{template}:{result_type}"`) to prevent UNIQUE constraint collisions between status and verdict rows. Added migration test coverage for both variants.
+- P0.2: `run init` lock-first invariant documented — lock MUST be held before returning any active run. Stale-lock recovery and `PLAN_LOCKED` error for live-PID conflicts specified. Tests updated.
+- P0.3: Phase 1 completion gate no longer depends on Phase 12. OpenCode provider implements a minimal SSE→AgentEvent mapper directly; Phase 12 consolidates it into the shared event-mapper.
+- P0.4: Migration step 6 (`runs` table modification) uses SQLite table-rebuild pattern (`CREATE runs_new` → copy → drop → rename). Timestamp mapping documented.
+- P0.5: Dashboard compatibility decision documented — `006-impl-dashboard.md` must be updated to read from v1 schema; no v0 compatibility layer provided.
+
+**P1 items resolved:**
+- P1.1: Phase dependency graph corrected. Phase 1 factory defaults to `"opencode"` when config keys absent (forward-compatible). Phase 9 now explicitly depends on Phase 8. Parallelization note updated.
+- P1.2: `RunOptions.outputSchema` type changed from `Record<string, unknown>` to `JSONSchema`. `SessionOptions.timeout` and `RunOptions.timeout` annotated as seconds. Matches `100-architecture.md` exactly.
+- P1.3: Error-handling policy decided — commands throw `CliError`, `bin.ts` catches and renders. `outputError()` is a convenience that throws. Tests assert on thrown errors. `CliError` class added to Phase 3.
+- P1.4: `run state` supports `--tail <N>` and `--since-step <id>` pagination flags. Default (no flags) returns all steps for backward compatibility. `getSteps()` DB operation updated to accept pagination opts.
+
+**P2 items resolved:**
+- P2.1: `step_name` convention table added to Design Decisions — documents all reserved prefixes (`author:`, `reviewer:`, `quality:`, `human:`, `phase:`, `run:`, `event:`), the `:{qualifier}` segment, and guidance for custom workflows.
+- P2.2: Codex/Claude Agent SDKs changed to optional peer dependencies with dynamic `import()`. Factory throws clear error if SDK not installed.
+- P2.3: Exit-code convention table added — deterministic mapping from error `code` to exit code (0-7) so skills can reliably branch.
 
 ### v1.0 (March 4, 2026) — Initial plan
 
