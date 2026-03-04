@@ -244,13 +244,21 @@ type AgentEvent =
 
 ### 6.2 v1 Providers
 
-**OpenCode** — via OpenCode SDK, in-process.
+**OpenCode** — via `@opencode-ai/sdk`, two modes.
 
-- `startSession` → `client.session.create()`
-- `run()` → `client.session.prompt()` (streams SSE, waits for completion)
-- Structured output: two-phase (second prompt with `format: { type: "json_schema" }`)
-- Session resume via session ID
-- Process lifecycle: SDK manages internally (no external server at the 5x level)
+The SDK provides two factory functions:
+
+- **`createOpencode(opts?)`** — spawns an `opencode serve` process and returns `{ client, server }`. Default mode: each `5x invoke` starts a server on a random port, does work, and closes it on exit.
+- **`createOpencodeClient({ baseUrl })`** — connects to an already-running server. Used when `opencode.url` is configured (see Per-Role Configuration below).
+
+API mapping:
+
+- `startSession` → `client.session.create({ directory, title })`
+- `resumeSession` → `client.session.get({ sessionID })` (sessions persist on disk per-project — resume works across server restarts)
+- `run()` → `client.session.prompt({ sessionID, parts, format? })` (blocks until completion)
+- `runStreamed()` → `client.event.subscribe()` filtered by session ID (SSE stream)
+- Structured output: two-phase (second `prompt()` with `format: { type: "json_schema" }`)
+- Process lifecycle: in default mode, server is spawned per invocation and closed on exit. In external mode, the user manages the server. Session data persists to disk either way.
 
 **Codex** — via `@openai/codex-sdk`, wraps Codex CLI process.
 
@@ -286,7 +294,7 @@ type AgentEvent =
 
 No background server management at the 5x level. Each provider handles its own lifecycle:
 
-- **OpenCode:** SDK manages connection to server internally
+- **OpenCode:** Default mode spawns a server per invocation (`createOpencode({ port: 0 })`), closes on exit. External mode connects to user-managed server (`createOpencodeClient({ baseUrl })`). Sessions persist to disk per-project either way — resume works across server restarts.
 - **Codex:** SDK spawns CLI child process, manages via stdin/stdout JSONL
 - **Claude Agent:** Fully in-process, HTTP calls to Anthropic API
 
@@ -310,10 +318,13 @@ export default {
 }
 ```
 
-Or same provider for both:
+OpenCode with external server:
 
 ```javascript
 export default {
+  opencode: {
+    url: "http://localhost:4096",     // connect to existing server (skip per-invocation spawn)
+  },
   author: {
     provider: "opencode",
     model: "anthropic/claude-sonnet-4-6",

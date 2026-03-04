@@ -920,13 +920,20 @@ export default {
 
   // v1 additions
   maxStepsPerRun: 50,         // hard limit on total steps (replaces maxAutoIterations)
+
+  // Provider-specific configuration
+  opencode: {
+    url: "http://localhost:4096",   // optional: connect to existing OpenCode server
+  },
 };
 ```
 
 **Provider-specific notes:**
 
-- **`opencode`**: Model format is `provider/model` (e.g., `"anthropic/claude-sonnet-4-6"`). Requires OpenCode SDK.
+- **`opencode`**: Model format is `provider/model` (e.g., `"anthropic/claude-sonnet-4-6"`). Requires `@opencode-ai/sdk`. Two modes:
+  - **Default (no `opencode.url`):** Each `5x invoke` spawns a fresh `opencode serve` on a random port via `createOpencode()`, closes it on exit. Sessions persist to disk per-project — resume works across invocations.
+  - **External server (`opencode.url` set):** Connects to an already-running server via `createOpencodeClient({ baseUrl })`. Faster (no startup overhead), supports remote servers. Also available as `--opencode-url` CLI flag.
 - **`codex`**: Model format is OpenAI model name (e.g., `"o3"`). Requires `OPENAI_API_KEY` env var.
 - **`claude-agent`**: Model format is Anthropic model name (e.g., `"claude-sonnet-4-6"`). Requires `ANTHROPIC_API_KEY` env var. Also supports Bedrock (`CLAUDE_CODE_USE_BEDROCK=1`), Vertex AI (`CLAUDE_CODE_USE_VERTEX=1`), and Azure (`CLAUDE_CODE_USE_FOUNDRY=1`).
 
-CLI flags override config values (same precedence as v0). `--author-provider`, `--reviewer-provider`, `--author-model`, `--reviewer-model` flags are available on `5x invoke`.
+CLI flags override config values (same precedence as v0). `--author-provider`, `--reviewer-provider`, `--author-model`, `--reviewer-model`, `--opencode-url` flags are available on `5x invoke`.
