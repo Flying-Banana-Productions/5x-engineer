@@ -180,6 +180,7 @@ function warnUnknownConfigKeys(
 	rawConfig: unknown,
 	configPath: string,
 	cliProviderNames?: Set<string>,
+	warn: (...args: unknown[]) => void = console.error,
 ): void {
 	if (!isRecord(rawConfig)) return;
 
@@ -285,16 +286,14 @@ function warnUnknownConfigKeys(
 	// Warn about deprecated-but-still-parsed keys that are present in the config
 	for (const [key, help] of deprecatedAllowed) {
 		if (key in rawConfig) {
-			console.error(
-				`Warning: Deprecated config key "${key}" in ${configPath}. ${help}`,
-			);
+			warn(`Warning: Deprecated config key "${key}" in ${configPath}. ${help}`);
 		}
 	}
 
 	// Warn about unknown/deprecated-unknown keys
 	for (const path of unknown) {
 		const help = deprecatedUnknown.get(path);
-		console.error(
+		warn(
 			help
 				? `Warning: Deprecated config key "${path}" in ${configPath} (ignored). ${help}`
 				: `Warning: Unknown config key "${path}" in ${configPath} (ignored).`,
@@ -337,10 +336,13 @@ function applyDeprecatedAliases(
  * @param cliProviderNames — provider names from CLI flags (e.g. --author-provider).
  *   These are authoritative: matching top-level config keys are treated as plugin
  *   config and suppressed from unknown-key warnings.
+ * @param warn — optional warning output function (default: console.error).
+ *   Inject a custom function in tests to avoid monkey-patching the global.
  */
 export async function loadConfig(
 	projectRoot: string,
 	cliProviderNames?: Set<string>,
+	warn?: (...args: unknown[]) => void,
 ): Promise<LoadConfigResult> {
 	const configPath = discoverConfigFile(projectRoot);
 
@@ -363,7 +365,7 @@ export async function loadConfig(
 		);
 	}
 
-	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames);
+	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warn);
 
 	const result = FiveXConfigSchema.safeParse(rawConfig);
 	if (!result.success) {

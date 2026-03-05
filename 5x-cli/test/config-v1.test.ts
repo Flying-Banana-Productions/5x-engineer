@@ -149,106 +149,98 @@ describe("config v1 extensions", () => {
 
 	test("unknown root keys produce warnings", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { unknownThing: true };`,
 			);
-			await loadConfig(tmp);
-			expect(errors.join("\n")).toContain('Unknown config key "unknownThing"');
+			await loadConfig(tmp, undefined, warn);
+			expect(warnings.join("\n")).toContain(
+				'Unknown config key "unknownThing"',
+			);
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
 	test("provider-matching top-level keys do NOT produce warnings", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { author: { provider: "codex" }, codex: { apiKey: "sk-123" } };`,
 			);
-			await loadConfig(tmp);
+			await loadConfig(tmp, undefined, warn);
 			// "codex" matches author.provider, so no warning
-			const allErrors = errors.join("\n");
-			expect(allErrors).not.toContain("codex");
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).not.toContain("codex");
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
 	test("non-provider unknown keys still warn even when provider keys are present", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { author: { provider: "codex" }, codex: { apiKey: "sk-123" }, bogus: true };`,
 			);
-			await loadConfig(tmp);
-			const allErrors = errors.join("\n");
-			expect(allErrors).not.toContain('"codex"');
-			expect(allErrors).toContain('"bogus"');
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).not.toContain('"codex"');
+			expect(allWarnings).toContain('"bogus"');
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
 	test("opencode is a known key — no warning even without provider reference", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { opencode: { url: "http://localhost:3000" } };`,
 			);
-			await loadConfig(tmp);
-			const allErrors = errors.join("\n");
-			expect(allErrors).not.toContain("opencode");
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).not.toContain("opencode");
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
 	test("unknown opencode sub-keys warn", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { opencode: { url: "http://localhost:3000", badKey: true } };`,
 			);
-			await loadConfig(tmp);
-			const allErrors = errors.join("\n");
-			expect(allErrors).toContain('"opencode.badKey"');
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).toContain('"opencode.badKey"');
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
@@ -259,44 +251,40 @@ describe("config v1 extensions", () => {
 
 	test("maxAutoIterations produces deprecation warning", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { maxAutoIterations: 20 };`,
 			);
-			await loadConfig(tmp);
-			const allErrors = errors.join("\n");
-			expect(allErrors).toContain("maxAutoIterations");
-			expect(allErrors).toContain("maxStepsPerRun");
-			expect(allErrors).toContain("deprecated");
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).toContain("maxAutoIterations");
+			expect(allWarnings).toContain("maxStepsPerRun");
+			expect(allWarnings).toContain("deprecated");
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
 	test("provider field in agent config does NOT warn", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			writeFileSync(
 				join(tmp, "5x.config.js"),
 				`export default { author: { provider: "opencode", model: "gpt-4" } };`,
 			);
-			await loadConfig(tmp);
-			const allErrors = errors.join("\n");
-			expect(allErrors).toBe("");
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).toBe("");
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
@@ -520,10 +508,9 @@ describe("config v1 extensions", () => {
 
 	test("CLI provider names suppress unknown-key warnings for matching top-level keys", async () => {
 		const tmp = makeTmpDir();
-		const original = console.error;
-		const errors: string[] = [];
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
 		};
 		try {
 			// Config file has a "codex" key but does NOT reference codex as a provider
@@ -532,20 +519,16 @@ describe("config v1 extensions", () => {
 				`export default { codex: { apiKey: "sk-123" } };`,
 			);
 			// Without CLI provider names, "codex" would be unknown
-			const { config: _noCliConfig } = await loadConfig(tmp);
-			expect(errors.join("\n")).toContain('"codex"');
+			await loadConfig(tmp, undefined, warn);
+			expect(warnings.join("\n")).toContain('"codex"');
 
-			// Reset errors
-			errors.length = 0;
+			// Reset warnings
+			warnings.length = 0;
 
 			// With CLI provider names, "codex" should be suppressed
-			const { config: _withCliConfig } = await loadConfig(
-				tmp,
-				new Set(["codex"]),
-			);
-			expect(errors.join("\n")).not.toContain('"codex"');
+			await loadConfig(tmp, new Set(["codex"]), warn);
+			expect(warnings.join("\n")).not.toContain('"codex"');
 		} finally {
-			console.error = original;
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
