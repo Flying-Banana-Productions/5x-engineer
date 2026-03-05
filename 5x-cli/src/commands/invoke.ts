@@ -97,10 +97,16 @@ function parseVars(
  * Validate --timeout as a positive integer.
  * Returns the validated timeout or undefined if not provided.
  */
-function parseTimeout(raw: string | undefined): number | undefined {
-	if (!raw) return undefined;
-	const parsed = Number.parseInt(raw, 10);
-	if (Number.isNaN(parsed) || parsed <= 0 || String(parsed) !== raw) {
+function parseTimeout(raw: string | number | undefined): number | undefined {
+	// Explicitly check for undefined or null (not just falsy, to handle numeric 0)
+	if (raw === undefined || raw === null || raw === "") return undefined;
+
+	// If it's already a number (citty may parse numeric args), convert to string for validation
+	const rawStr = typeof raw === "number" ? String(raw) : raw;
+	const parsed = Number.parseInt(rawStr, 10);
+
+	// Reject NaN, zero, negative numbers, or partial parses (e.g., "10abc" where parsed=10 but rawStr!=="10")
+	if (Number.isNaN(parsed) || parsed <= 0 || String(parsed) !== rawStr) {
 		outputError(
 			"INVALID_ARGS",
 			`--timeout must be a positive integer (seconds), got: "${raw}"`,
@@ -168,7 +174,7 @@ async function invokeAgent(
 		model?: string;
 		workdir?: string;
 		session?: string;
-		timeout?: string;
+		timeout?: string | number;
 		quiet?: boolean;
 		"show-reasoning"?: boolean;
 		"author-provider"?: string;

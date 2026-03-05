@@ -411,7 +411,13 @@ export function mapSseToAgentEvent(
 
 	// Legacy delta events
 	if (type === "message.part.delta" && props) {
-		const partId = props.partID as string | undefined;
+		// Check both partID (legacy) and partId (camelCase) properties
+		const partId =
+			typeof props.partID === "string"
+				? props.partID
+				: typeof props.partId === "string"
+					? props.partId
+					: undefined;
 		const delta = props.delta as string | undefined;
 		if (partId && delta) {
 			// Skip if already handled via message.part.updated

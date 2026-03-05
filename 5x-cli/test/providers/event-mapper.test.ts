@@ -361,6 +361,40 @@ describe("mapSseToAgentEvent", () => {
 		expect(result).toEqual({ type: "text", delta: " more text" });
 	});
 
+	test("maps legacy message.part.delta with camelCase partId to text (P1.1 regression)", () => {
+		const state = createEventMapperState();
+		state.textPartIds.add("part_1"); // Simulate prior registration
+
+		const event = {
+			type: "message.part.delta",
+			properties: {
+				partId: "part_1", // camelCase variant
+				delta: " more text",
+			},
+		} as unknown as OpenCodeEvent;
+
+		const result = mapSseToAgentEvent(event, state);
+
+		expect(result).toEqual({ type: "text", delta: " more text" });
+	});
+
+	test("maps legacy message.part.delta with camelCase partId to reasoning (P1.1 regression)", () => {
+		const state = createEventMapperState();
+		state.reasoningPartIds.add("part_2"); // Simulate prior registration
+
+		const event = {
+			type: "message.part.delta",
+			properties: {
+				partId: "part_2", // camelCase variant
+				delta: " thinking...",
+			},
+		} as unknown as OpenCodeEvent;
+
+		const result = mapSseToAgentEvent(event, state);
+
+		expect(result).toEqual({ type: "reasoning", delta: " thinking..." });
+	});
+
 	test("suppresses delta if part was already handled via updated", () => {
 		const state = createEventMapperState();
 		state.textPartIds.add("part_1");

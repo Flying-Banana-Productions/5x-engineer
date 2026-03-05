@@ -62,7 +62,8 @@ export function nextLogSequence(logDir: string): string {
 	try {
 		const files = readdirSync(logDir);
 		for (const f of files) {
-			const match = f.match(/^agent-(\d{3})\.ndjson$/);
+			// Match any number of digits to handle old/manual logs (e.g., agent-1.ndjson)
+			const match = f.match(/^agent-(\d+)\.ndjson$/);
 			if (match?.[1]) {
 				const n = Number.parseInt(match[1], 10);
 				if (n > max) max = n;

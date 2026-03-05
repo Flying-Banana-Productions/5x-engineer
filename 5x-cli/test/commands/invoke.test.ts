@@ -316,6 +316,24 @@ describe("invoke", () => {
 			const seq = nextLogSequence("/nonexistent/dir/12345");
 			expect(seq).toBe("001");
 		});
+
+		test("nextLogSequence handles non-3-digit legacy files (P2)", async () => {
+			const dir = makeTmpDir();
+			try {
+				// Create legacy files without 3-digit padding (e.g., agent-1.ndjson)
+				writeFileSync(join(dir, "agent-1.ndjson"), "");
+				writeFileSync(join(dir, "agent-42.ndjson"), "");
+
+				const { nextLogSequence } = await import(
+					"../../src/providers/log-writer.js"
+				);
+				const seq = nextLogSequence(dir);
+				// Should correctly identify 42 as max and return 043
+				expect(seq).toBe("043");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
 	});
 
 	describe("parseVars helper", () => {
