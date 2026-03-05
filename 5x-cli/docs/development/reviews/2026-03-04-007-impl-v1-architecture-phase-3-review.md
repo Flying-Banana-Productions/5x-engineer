@@ -47,3 +47,17 @@ None identified for Phase 3 in isolation.
 
 **P1 recommended**
 - [x] Fix `outputSuccess(undefined)` contract violation; add test
+
+## Addendum (2026-03-04) — Follow-up for `835d90cb750dd5200d36acd8272636f51af938ff`
+
+### What's Addressed
+
+- P1.1 fixed: `outputSuccess()` now normalizes `undefined` → `null`, ensuring the `data` field is always present on the wire (`src/output.ts`).
+- Test coverage added to prevent regression (`test/output.test.ts`).
+
+### Remaining Concerns
+
+- P2.1 remains: `nextLogSequence()` is still non-atomic for concurrent writers; OK if the system assumes single-writer per run/logDir.
+- P2.2 remains: serialization failures from `JSON.stringify()` (BigInt/circular) still need an explicit policy.
+
+Net: Phase 3 now looks ready; remaining items are policy/operational decisions, not correctness bugs.
