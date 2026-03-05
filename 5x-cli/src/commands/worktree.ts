@@ -1,33 +1,76 @@
+/**
+ * v1 Worktree management commands.
+ *
+ * Subcommands: create, remove, list
+ *
+ * All commands return JSON envelopes via outputSuccess/outputError.
+ */
+
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import { runMigrations } from "../db/schema.js";
 import {
+	branchNameFromPlan,
+	createWorktree,
 	deleteBranch,
 	hasUncommittedChanges,
 	isBranchMerged,
+	listWorktrees,
 	removeWorktree,
+	runWorktreeSetupCommand,
 } from "../git.js";
+import { outputError, outputSuccess } from "../output.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
 
-const statusCmd = defineCommand({
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Derive worktree directory path from plan path.
+ * Uses basename + a short hash of the full canonical path to avoid collisions
+ * when plans in different directories share the same filename. */
+function worktreeDir(projectRoot: string, planPath: string): string {
+	const slug = basename(planPath).replace(/\.md$/, "");
+	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
+	return join(projectRoot, ".5x", "worktrees", `${slug}-${hash}`);
+}
+
+// ---------------------------------------------------------------------------
+// Subcommands
+// ---------------------------------------------------------------------------
+
+const createCmd = defineCommand({
 	meta: {
-		name: "status",
-		description: "Show worktree info for a plan",
+		name: "create",
+		description: "Create a git worktree for a plan",
 	},
 	args: {
-		path: {
-			type: "positional",
+		plan: {
+			type: "string",
 			description: "Path to implementation plan",
 			required: true,
 		},
+		branch: {
+			type: "string",
+			description: "Branch name (default: derived from plan filename)",
+		},
 	},
 	async run({ args }) {
-		const planPath = resolve(args.path);
+		const planPath = resolve(args.plan);
+
+		// Validate that the plan file exists before proceeding
+		if (!existsSync(planPath)) {
+			outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+				path: planPath,
+			});
+		}
+
 		const canonical = canonicalizePlanPath(planPath);
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
@@ -35,53 +78,82 @@ const statusCmd = defineCommand({
 		const db = getDb(projectRoot, config.db.path);
 		runMigrations(db);
 
-		const plan = getPlan(db, canonical);
-		if (!plan || (!plan.worktree_path && !plan.branch)) {
-			console.log();
-			console.log("  No worktree associated with this plan.");
-			console.log();
+		// Check if worktree already exists for this plan
+		const existingPlan = getPlan(db, canonical);
+		if (existingPlan?.worktree_path && existsSync(existingPlan.worktree_path)) {
+			outputSuccess({
+				worktree_path: existingPlan.worktree_path,
+				branch: existingPlan.branch,
+				created: false,
+			});
 			return;
 		}
 
-		console.log();
-		console.log(`  Plan: ${canonical}`);
-		if (plan.worktree_path) {
-			console.log(`  Worktree: ${plan.worktree_path}`);
-			console.log(
-				`  Exists: ${existsSync(plan.worktree_path) ? "yes" : "no (directory missing)"}`,
+		// Determine branch name and worktree path
+		const branch = args.branch || branchNameFromPlan(canonical);
+		const wtPath = worktreeDir(projectRoot, canonical);
+
+		// Create the worktree
+		try {
+			await createWorktree(projectRoot, branch, wtPath);
+		} catch (err) {
+			outputError(
+				"WORKTREE_ERROR",
+				`Failed to create worktree: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
-		if (plan.branch) {
-			console.log(`  Branch: ${plan.branch}`);
+
+		// Run postCreate hook if configured
+		const warnings: string[] = [];
+		if (config.worktree?.postCreate) {
+			try {
+				await runWorktreeSetupCommand(wtPath, config.worktree.postCreate);
+			} catch (err) {
+				// Non-fatal — worktree was created but hook failed
+				const msg = `postCreate hook failed: ${err instanceof Error ? err.message : String(err)}`;
+				process.stderr.write(`Warning: ${msg}\n`);
+				warnings.push(msg);
+			}
 		}
-		console.log();
+
+		// Record in plans table
+		upsertPlan(db, {
+			planPath: canonical,
+			worktreePath: wtPath,
+			branch,
+		});
+
+		const data: Record<string, unknown> = {
+			worktree_path: wtPath,
+			branch,
+			created: true,
+		};
+		if (warnings.length > 0) {
+			data.warnings = warnings;
+		}
+		outputSuccess(data);
 	},
 });
 
-const cleanupCmd = defineCommand({
+const removeCmd = defineCommand({
 	meta: {
-		name: "cleanup",
-		description: "Remove worktree for a plan",
+		name: "remove",
+		description: "Remove a worktree for a plan",
 	},
 	args: {
-		path: {
-			type: "positional",
+		plan: {
+			type: "string",
 			description: "Path to implementation plan",
 			required: true,
 		},
-		"delete-branch": {
-			type: "boolean",
-			description: "Also delete the branch (only if fully merged)",
-			default: false,
-		},
 		force: {
 			type: "boolean",
-			description: "Remove worktree even with uncommitted changes",
+			description: "Remove even with uncommitted changes",
 			default: false,
 		},
 	},
 	async run({ args }) {
-		const planPath = resolve(args.path);
+		const planPath = resolve(args.plan);
 		const canonical = canonicalizePlanPath(planPath);
 		const projectRoot = resolveProjectRoot();
 		const { config } = await loadConfig(projectRoot);
@@ -91,80 +163,118 @@ const cleanupCmd = defineCommand({
 
 		const plan = getPlan(db, canonical);
 		if (!plan?.worktree_path) {
-			console.error("Error: No worktree associated with this plan.");
-			process.exit(1);
+			outputError(
+				"WORKTREE_NOT_FOUND",
+				"No worktree associated with this plan",
+			);
 		}
 
-		const wtPath = plan.worktree_path;
+		const wtPath = plan.worktree_path as string;
 
-		// Check worktree exists
+		// If directory doesn't exist, just clear the DB and return
 		if (!existsSync(wtPath)) {
-			console.log(`  Worktree directory ${wtPath} does not exist.`);
-			// Clear DB association (pass empty string to null the fields)
 			upsertPlan(db, { planPath: canonical, worktreePath: "", branch: "" });
-			console.log("  Cleared plan worktree association from DB.");
+			outputSuccess({
+				worktree_path: wtPath,
+				removed: true,
+				note: "Directory was already missing; cleared DB association",
+			});
 			return;
 		}
 
-		// Check for uncommitted changes
+		// Check for uncommitted changes unless --force
 		if (!args.force) {
 			try {
 				const dirty = await hasUncommittedChanges(wtPath);
 				if (dirty) {
-					console.error(
-						"Error: Worktree has uncommitted changes. " +
-							"Commit or stash them, or use --force to remove anyway.",
+					outputError(
+						"DIRTY_WORKTREE",
+						"Worktree has uncommitted changes. Commit or stash them, or use --force.",
 					);
-					process.exit(1);
 				}
 			} catch {
-				// Can't check — proceed with caution
+				// Can't check — proceed
 			}
-		} else {
-			console.log(
-				"  WARNING: --force will discard all uncommitted changes in the worktree.",
-			);
 		}
 
 		// Remove worktree
-		console.log(`  Removing worktree ${wtPath}...`);
 		try {
 			await removeWorktree(projectRoot, wtPath, args.force);
 		} catch (err) {
-			console.error(
-				`Error: ${err instanceof Error ? err.message : String(err)}`,
+			outputError(
+				"WORKTREE_ERROR",
+				`Failed to remove worktree: ${err instanceof Error ? err.message : String(err)}`,
 			);
-			process.exit(1);
 		}
 
-		// Optionally delete branch
-		if (args["delete-branch"] && plan.branch) {
-			const merged = await isBranchMerged(plan.branch, projectRoot);
-			if (!merged) {
-				console.error(
-					`Error: Branch "${plan.branch}" has unmerged commits. ` +
-						"Merge it first or omit --delete-branch.",
-				);
-				// Still clear worktree association even if branch delete fails
-			} else {
-				try {
-					await deleteBranch(plan.branch, projectRoot);
-					console.log(`  Deleted branch ${plan.branch}.`);
-				} catch (err) {
-					console.error(
-						`Warning: Could not delete branch: ${err instanceof Error ? err.message : String(err)}`,
-					);
+		// Try to clean up the branch if merged
+		const branch = plan.branch;
+		let branchDeleted = false;
+		if (branch) {
+			try {
+				const merged = await isBranchMerged(branch, projectRoot);
+				if (merged) {
+					await deleteBranch(branch, projectRoot);
+					branchDeleted = true;
 				}
+			} catch {
+				// Non-fatal — branch cleanup is best effort
 			}
-		} else if (plan.branch) {
-			console.log(
-				`  Branch ${plan.branch} retained (use --delete-branch to remove).`,
-			);
 		}
 
-		// Clear DB association (pass empty string to explicitly null the fields)
+		// Clear DB association
 		upsertPlan(db, { planPath: canonical, worktreePath: "", branch: "" });
-		console.log("  Cleared plan worktree association from DB.");
+
+		outputSuccess({
+			worktree_path: wtPath,
+			removed: true,
+			branch_deleted: branchDeleted,
+		});
+	},
+});
+
+const listCmd = defineCommand({
+	meta: {
+		name: "list",
+		description: "List active worktrees",
+	},
+	args: {},
+	async run() {
+		const projectRoot = resolveProjectRoot();
+		const { config } = await loadConfig(projectRoot);
+
+		const db = getDb(projectRoot, config.db.path);
+		runMigrations(db);
+
+		// Get all plans that have worktree associations
+		const plans = db
+			.query(
+				"SELECT plan_path, worktree_path, branch FROM plans WHERE worktree_path IS NOT NULL AND worktree_path != ''",
+			)
+			.all() as Array<{
+			plan_path: string;
+			worktree_path: string;
+			branch: string | null;
+		}>;
+
+		// Cross-reference with git worktrees for active status
+		let gitWorktrees: Array<{ path: string; branch: string }> = [];
+		try {
+			gitWorktrees = await listWorktrees(projectRoot);
+		} catch {
+			// If git fails, still return DB data
+		}
+
+		const gitPaths = new Set(gitWorktrees.map((w) => w.path));
+
+		const worktrees = plans.map((p) => ({
+			plan_path: p.plan_path,
+			worktree_path: p.worktree_path,
+			branch: p.branch,
+			exists: gitPaths.has(p.worktree_path) || existsSync(p.worktree_path),
+		}));
+
+		outputSuccess({ worktrees });
 	},
 });
 
@@ -174,7 +284,8 @@ export default defineCommand({
 		description: "Manage git worktrees for plan execution",
 	},
 	subCommands: {
-		status: () => Promise.resolve(statusCmd),
-		cleanup: () => Promise.resolve(cleanupCmd),
+		create: () => Promise.resolve(createCmd),
+		remove: () => Promise.resolve(removeCmd),
+		list: () => Promise.resolve(listCmd),
 	},
 });

@@ -210,25 +210,39 @@ export async function commitFiles(
 
 /**
  * Run a shell command in a worktree after creation.
- * Stdout/stderr are inherited so setup progress is visible to users.
+ *
+ * **stdout is redirected to stderr** so hook output never contaminates
+ * the JSON envelope that the calling command writes to stdout.
+ * stderr is inherited directly.
  */
 export async function runWorktreeSetupCommand(
 	workdir: string,
 	command: string,
-): Promise<void> {
+): Promise<{ stdout: string; stderr: string }> {
 	const proc = Bun.spawn(["sh", "-c", command], {
 		cwd: workdir,
 		stdin: "inherit",
-		stdout: "inherit",
-		stderr: "inherit",
+		stdout: "pipe",
+		stderr: "pipe",
 	});
 
-	const exitCode = await proc.exited;
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+
+	// Forward hook output to stderr so it remains observable
+	if (stdout) process.stderr.write(stdout);
+	if (stderr) process.stderr.write(stderr);
+
 	if (exitCode !== 0) {
 		throw new Error(
 			`Worktree setup command failed (exit ${exitCode}): ${command}`,
 		);
 	}
+
+	return { stdout, stderr };
 }
 
 /** Check if a branch exists locally. */
