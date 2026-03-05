@@ -190,7 +190,7 @@ const chooseCmd = defineCommand({
 
 **Completion gate:** `src/commands/run-v1.handler.ts` exports `runV1Init`, `runV1State`, `runV1Record`, `runV1Complete`, `runV1Reopen`, `runV1List`. `run-v1.ts` is a thin adapter. All run tests pass.
 
-- [ ] Create `src/commands/run-v1.handler.ts`:
+- [x] Create `src/commands/run-v1.handler.ts`:
 
 ```typescript
 // src/commands/run-v1.handler.ts
@@ -254,7 +254,7 @@ export async function runV1List(params: RunListParams): Promise<void>;
 
   `resolveDbContext()` replaces the repeated project-root/config/DB/migration boilerplate in `runV1State`, `runV1Record`, `runV1Complete`, `runV1Reopen`, `runV1List`. `runV1Init` has a unique setup flow (lock-first, conditional DB open) so it calls `resolveProjectRoot()` and `loadConfig()` directly.
 
-- [ ] Slim `src/commands/run-v1.ts` to adapter-only:
+- [x] Slim `src/commands/run-v1.ts` to adapter-only:
 
 ```typescript
 // src/commands/run-v1.ts — adapter (~130 lines, down from 698)
