@@ -83,3 +83,22 @@ The plan calls for validating that a module exists but does not default-export a
 - New: `5x-cli/packages/provider-invalid/package.json` uses the name `@5x-ai/provider-provider-invalid`; this works if config uses `provider: "provider-invalid"`, but it’s confusing and makes tests harder to read.
 - New: `peerDependencies` values use `file:../..` (both sample + invalid). For an example meant to mirror third-party publishing, `workspace:*` (or a semver range) is closer to the plan.
 - Architectural follow-up (optional): `5x-cli/src/providers/factory.ts` still throws non-`CliError` types even though the v1 CLI has `CliError` available; today it’s bridged in `invoke`, but future call sites could regress exit-code determinism unless they replicate the bridge.
+
+## Addendum (2026-03-05) — Review Follow-up for `32576d07`
+
+### What's Addressed
+
+- P1.1 validated: `5x-cli/test/providers/plugin-loading.test.ts` now exercises the factory dynamic-import success path for `provider: "sample"` and asserts config passthrough impacts behavior (`echo: false` and `echo: true`).
+- P1.2 validated: `5x-cli/test/providers/plugin-loading.test.ts` now asserts `createProvider()` throws `InvalidProviderError` with `code=INVALID_PROVIDER` and `exitCode=2` when loading the invalid provider plugin.
+- Fixture cleanup: `5x-cli/packages/provider-invalid/package.json` renamed to `@5x-ai/provider-invalid` (removed the duplicate `provider-` prefix).
+
+### New Concerns
+
+- `5x-cli/package.json` now includes `@5x-ai/provider-sample` and `@5x-ai/provider-invalid` as `devDependencies` to make dynamic import resolution work in tests. That’s reasonable for tests, but it slightly muddles the story that external providers are separately installed packages; ensure this doesn’t accidentally ship/publish or become a runtime expectation.
+- The provider plugin `peerDependencies` still use `file:../..`; if these packages are meant as a publishing example, consider switching to `workspace:*` (within the monorepo) or a normal semver range.
+
+### Remaining Concerns
+
+- P0.1 note (from original review) is addressed in `invoke`, but `5x-cli/src/providers/factory.ts` still throws non-`CliError` errors. If any other command starts using `createProvider()` without the same bridging, exit-code determinism can regress. Treat as a low-severity architecture hygiene item.
+
+**Provisional readiness update:** Phase 12’s plan compliance gaps (P1.1/P1.2) are now closed; remaining items are mostly hygiene/documentation-level.
