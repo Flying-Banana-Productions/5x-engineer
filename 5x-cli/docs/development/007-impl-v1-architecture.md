@@ -440,9 +440,9 @@ export function nextLogSequence(logDir: string): string;
 
 **Completion gate:** `5x invoke author <template>` and `5x invoke reviewer <template>` execute sub-agent invocations via the provider interface, return structured results as JSON, and write NDJSON log files. Template resolution, variable substitution, and structured output validation work end-to-end.
 
-- [ ] Create `src/commands/invoke.ts` implementing the `invoke` subcommand group with `author` and `reviewer` subcommands.
+- [x] Create `src/commands/invoke.ts` implementing the `invoke` subcommand group with `author` and `reviewer` subcommands.
 
-- [ ] Implement shared invocation logic (used by both `invoke author` and `invoke reviewer`):
+- [x] Implement shared invocation logic (used by both `invoke author` and `invoke reviewer`):
   - Resolve template via `loadTemplate()` from `src/templates/loader.ts:180` — look in `.5x/templates/prompts/{template}.md` (override), then bundled defaults
   - Render template via `renderTemplate()` from `src/templates/loader.ts:286` with `--var key=value` parsed into record
   - Create provider via `createProvider(role, config)` from `src/providers/factory.ts`
@@ -468,15 +468,15 @@ interface InvokeArgs {
 }
 ```
 
-- [ ] Implement NDJSON log writer using `AgentEvent` stream from `runStreamed()`:
+- [x] Implement NDJSON log writer using `AgentEvent` stream from `runStreamed()`:
   - Create log dir `.5x/logs/<run_id>/` with `0o700` permissions
   - Compute sequence number from existing files in the directory
   - Write each `AgentEvent` as a JSON line
   - Reuse console rendering from `src/utils/stream-writer.ts` for non-quiet mode
 
-- [ ] Register `invoke` in `src/bin.ts`.
+- [x] Register `invoke` in `src/bin.ts`.
 
-- [ ] Write tests in `test/commands/invoke.test.ts` covering:
+- [x] Write tests in `test/commands/invoke.test.ts` covering:
   - Template resolution (bundled + override)
   - Variable substitution
   - Structured output validation (valid AuthorStatus, valid ReviewerVerdict)

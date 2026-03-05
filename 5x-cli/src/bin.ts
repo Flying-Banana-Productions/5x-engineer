@@ -11,6 +11,7 @@ const main = defineCommand({
 	},
 	subCommands: {
 		run: () => import("./commands/run-v1.js").then((m) => m.default),
+		invoke: () => import("./commands/invoke.js").then((m) => m.default),
 		status: () => import("./commands/status.js").then((m) => m.default),
 		init: () => import("./commands/init.js").then((m) => m.default),
 		worktree: () => import("./commands/worktree.js").then((m) => m.default),
