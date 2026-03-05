@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ensureSkills as ensureSkillsFromInit } from "../../src/commands/init.js";
+import { ensureSkills as ensureSkillsFromInit } from "../../src/commands/init.handler.js";
 import {
 	ensureSkills,
 	getDefaultSkillRaw,

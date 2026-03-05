@@ -394,7 +394,7 @@ export async function planPhases(params: PlanPhasesParams): Promise<void>;
 
 **Completion gate:** Each command has a handler file. `init-skills.test.ts` imports from handler file. All tests pass.
 
-- [ ] Create `src/commands/init.handler.ts`:
+- [x] Create `src/commands/init.handler.ts`:
 
 ```typescript
 export interface InitParams {
@@ -417,9 +417,9 @@ export { ensureSkills } from "../skills/loader.js";
   - `ensurePromptTemplates()` (from `init.ts:115-146`)
   - `ensureGitignore()` (from `init.ts:152-177`)
 
-- [ ] Slim `src/commands/init.ts` to adapter-only (~15 lines).
+- [x] Slim `src/commands/init.ts` to adapter-only (~15 lines).
 
-- [ ] Create `src/commands/worktree.handler.ts`:
+- [x] Create `src/commands/worktree.handler.ts`:
 
 ```typescript
 export interface WorktreeCreateParams {
@@ -442,9 +442,9 @@ export async function worktreeList(): Promise<void>;
 
   Uses `resolveDbContext()` for the project-root/config/DB/migration boilerplate.
 
-- [ ] Slim `src/commands/worktree.ts` to adapter-only (~50 lines).
+- [x] Slim `src/commands/worktree.ts` to adapter-only (~50 lines).
 
-- [ ] Update `test/commands/init-skills.test.ts` import:
+- [x] Update `test/commands/init-skills.test.ts` import:
 
 ```typescript
 // Before:
