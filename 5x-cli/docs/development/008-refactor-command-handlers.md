@@ -139,7 +139,7 @@ export async function resolveDbContext(opts?: {
 
 **Completion gate:** `src/commands/prompt.handler.ts` exports `promptChoose`, `promptConfirm`, `promptInput`. `prompt.ts` is a thin adapter. All prompt tests pass.
 
-- [ ] Create `src/commands/prompt.handler.ts`:
+- [x] Create `src/commands/prompt.handler.ts`:
 
 ```typescript
 // src/commands/prompt.handler.ts
@@ -167,7 +167,7 @@ export async function promptInput(params: InputParams): Promise<void>;
 
   Each function contains the full business logic currently in the corresponding `defineCommand` run handler (lines 147-247, 266-342, 362-387). They import from `../utils/stdin.js` instead of using local helpers.
 
-- [ ] Slim `src/commands/prompt.ts` to adapter-only:
+- [x] Slim `src/commands/prompt.ts` to adapter-only:
 
 ```typescript
 // src/commands/prompt.ts — adapter (~40 lines)
