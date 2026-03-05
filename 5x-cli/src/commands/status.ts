@@ -3,8 +3,9 @@ import { dirname, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { loadConfig } from "../config.js";
 import { openDbReadOnly } from "../db/connection.js";
-import type { RunRow } from "../db/operations.js";
-import { getActiveRun, getLatestRun } from "../db/operations.js";
+import { getLatestRun } from "../db/operations.js";
+import type { RunRowV1 } from "../db/operations-v1.js";
+import { getActiveRunV1, getSteps } from "../db/operations-v1.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { findGitRoot } from "../project-root.js";
@@ -62,8 +63,8 @@ function formatDuration(startedAt: string): string {
 }
 
 interface DbState {
-	active: RunRow | null;
-	latest: RunRow | null;
+	active: RunRowV1 | null;
+	latest: RunRowV1 | null;
 	approvedPhases: Set<string>;
 }
 
@@ -80,23 +81,28 @@ function tryLoadDbState(opts: {
 	try {
 		db = openDbReadOnly(opts.projectRoot, opts.dbPath);
 
-		const activeCanonical = getActiveRun(db, opts.planPathCanonical);
-		const active =
-			activeCanonical ??
-			(opts.planPathProvided !== opts.planPathCanonical
-				? getActiveRun(db, opts.planPathProvided)
-				: null);
+		// v1: getActiveRunV1 canonicalizes internally
+		const active = getActiveRunV1(db, opts.planPathCanonical);
 
-		const latestCanonical = active ?? getLatestRun(db, opts.planPathCanonical);
+		// Fall back to getLatestRun (any status) for display purposes
 		const latest =
-			latestCanonical ??
+			active ??
+			(getLatestRun(db, opts.planPathCanonical) as RunRowV1 | null) ??
 			(opts.planPathProvided !== opts.planPathCanonical
-				? getLatestRun(db, opts.planPathProvided)
+				? (getLatestRun(db, opts.planPathProvided) as RunRowV1 | null)
 				: null);
 
-		// v1 schema: approved phases are now tracked via 'phase:complete' steps.
-		// For now, derive approved phases from the plan's checked items.
+		// v1 schema: derive approved phases from 'phase:complete' steps
 		const approvedPhases = new Set<string>();
+		const run = active ?? latest;
+		if (run) {
+			const steps = getSteps(db, run.id);
+			for (const step of steps) {
+				if (step.step_name === "phase:complete" && step.phase != null) {
+					approvedPhases.add(step.phase);
+				}
+			}
+		}
 
 		return { active, latest, approvedPhases };
 	} catch (err) {

@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { _resetForTest, closeDb, getDb } from "../../src/db/connection.js";
-import { createRun } from "../../src/db/operations.js";
+import { createRunV1, recordStep } from "../../src/db/operations-v1.js";
 import { runMigrations } from "../../src/db/schema.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
@@ -141,7 +141,7 @@ Overall: 60% (3/5 tasks)
 			const db = getDb(tmp, ".5x/custom.db");
 			runMigrations(db);
 			const canonicalPlanPath = realpathSync(fixture);
-			createRun(db, {
+			createRunV1(db, {
 				id: "run1",
 				planPath: canonicalPlanPath,
 				command: "run",
@@ -154,6 +154,66 @@ Overall: 60% (3/5 tasks)
 			expect(exitCode).toBe(0);
 			expect(stderr).not.toContain("Migration");
 			expect(stdout).toContain("Active run: run1");
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("derives approved phases from phase:complete steps", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-status-approval-"));
+		const fixture = join(tmp, "plan.md");
+		writeFileSync(
+			fixture,
+			`# Approval Plan
+
+**Version:** 1.0
+
+## Phase 1: Foundation
+
+- [ ] Task A
+- [ ] Task B
+
+## Phase 2: Build
+
+- [ ] Task C
+- [ ] Task D
+`,
+		);
+		writeFileSync(
+			join(tmp, "5x.config.js"),
+			`export default { db: { path: ".5x/5x.db" } };\n`,
+		);
+
+		try {
+			const db = getDb(tmp, ".5x/5x.db");
+			runMigrations(db);
+			const canonicalPlanPath = realpathSync(fixture);
+			createRunV1(db, {
+				id: "run1",
+				planPath: canonicalPlanPath,
+				command: "run",
+			});
+
+			// Record phase:complete for phase 1
+			recordStep(db, {
+				run_id: "run1",
+				step_name: "phase:complete",
+				phase: "1",
+				iteration: 1,
+				result_json: '{"approved":true}',
+			});
+
+			closeDb();
+			_resetForTest();
+
+			const { stdout, exitCode } = await runStatus([fixture]);
+			expect(exitCode).toBe(0);
+			// Phase 1 should show 100% (approved via step)
+			// Phase 2 should show 0% (not approved, no checked items)
+			expect(stdout).toContain("100%");
+			expect(stdout).toContain("0%");
+			// Overall should show 50% (1/2 phases complete)
+			expect(stdout).toContain("1/2 phases complete");
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

@@ -616,4 +616,28 @@ describe("computeRunSummary", () => {
 		const summary = computeRunSummary(db, "run1");
 		expect(summary.phases_completed).toEqual(["1", "2", "3"]);
 	});
+
+	test("phases_completed excludes NULL phase values", () => {
+		createRunV1(db, { id: "run1", planPath: "/plan.md" });
+
+		// Record a phase:complete with a real phase
+		recordStep(db, {
+			run_id: "run1",
+			step_name: "phase:complete",
+			phase: "1",
+			iteration: 1,
+			result_json: "{}",
+		});
+
+		// Record a phase:complete with NULL phase (edge case)
+		db.query(
+			`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)
+			 VALUES ('run1', 'phase:complete', NULL, 1, '{}')`,
+		).run();
+
+		const summary = computeRunSummary(db, "run1");
+		expect(summary.phases_completed).toEqual(["1"]);
+		// The NULL-phase step should still count in total_steps
+		expect(summary.total_steps).toBe(2);
+	});
 });

@@ -385,7 +385,7 @@ export function computeRunSummary(
 	const phases = db
 		.query(
 			`SELECT DISTINCT phase FROM steps
-			 WHERE run_id = ?1 AND step_name = 'phase:complete'
+			 WHERE run_id = ?1 AND step_name = 'phase:complete' AND phase IS NOT NULL
 			 ORDER BY CAST(phase AS REAL) ASC`,
 		)
 		.all(runId) as Array<{ phase: string }>;
