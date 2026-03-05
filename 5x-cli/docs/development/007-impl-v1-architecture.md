@@ -489,55 +489,55 @@ interface InvokeArgs {
 
 **Completion gate:** `5x quality run`, `5x plan phases`, `5x diff`, and `5x worktree create/remove/list` return JSON envelopes and are registered in the CLI.
 
-- [ ] Create `src/commands/quality-v1.ts` implementing `5x quality run`:
+- [x] Create `src/commands/quality-v1.ts` implementing `5x quality run`:
   - Reuse `runQualityGates()` from `src/gates/quality.ts:146`
   - Wrap result in JSON envelope per `101-cli-primitives.md:396-408`
   - Return `{ passed, results: [{ command, passed, duration_ms, output }] }`
 
-- [ ] Create `src/commands/plan-v1.ts` implementing `5x plan phases <path>`:
+- [x] Create `src/commands/plan-v1.ts` implementing `5x plan phases <path>`:
   - Reuse `parsePlan()` from `src/parsers/plan.ts`
   - Return `{ phases: [{ id, title, done, checklist_total, checklist_done }] }`
 
-- [ ] Create `src/commands/diff.ts` implementing `5x diff [--since <ref>] [--stat]`:
+- [x] Create `src/commands/diff.ts` implementing `5x diff [--since <ref>] [--stat]`:
   - Shell out to `git diff` via `Bun.spawn` (similar to `src/git.ts:33-48`)
   - Parse stat output for `files_changed`, `insertions`, `deletions`
   - Return per `101-cli-primitives.md:455-465`
 
-- [ ] Rewrite `src/commands/worktree.ts` (currently at 180 lines) to implement v1 API:
+- [x] Rewrite `src/commands/worktree.ts` (currently at 180 lines) to implement v1 API:
   - `5x worktree create --plan <path> [--branch <name>]` — uses `createWorktree()` from `src/git.ts:304`, runs `postCreate` hook, records in `plans` table
   - `5x worktree remove --plan <path> [--force]` — uses `removeWorktree()` from `src/git.ts:324`, clears DB
   - `5x worktree list` — uses `listWorktrees()` from `src/git.ts:339`, joins with `plans` table
   - All return JSON envelopes
 
-- [ ] Register `quality`, updated `plan`, `diff` in `src/bin.ts`.
+- [x] Register `quality`, updated `plan`, `diff` in `src/bin.ts`.
 
-- [ ] Write tests in `test/commands/quality-v1.test.ts`, `test/commands/plan-v1.test.ts`, `test/commands/diff.test.ts`, `test/commands/worktree-v1.test.ts`.
+- [x] Write tests in `test/commands/quality-v1.test.ts`, `test/commands/plan-v1.test.ts`, `test/commands/diff.test.ts`, `test/commands/worktree-v1.test.ts`.
 
 ## Phase 7: Human Interaction Commands
 
 **Completion gate:** `5x prompt choose`, `5x prompt confirm`, and `5x prompt input` present interactive prompts and return JSON results. Non-TTY behavior (default values, `NON_INTERACTIVE` error) works correctly.
 
-- [ ] Create `src/commands/prompt.ts` implementing the `prompt` subcommand group:
+- [x] Create `src/commands/prompt.ts` implementing the `prompt` subcommand group:
 
-- [ ] Implement `5x prompt choose <message> --options <a,b,c> [--default <a>]`:
+- [x] Implement `5x prompt choose <message> --options <a,b,c> [--default <a>]`:
   - If stdin is TTY: present numbered options, wait for selection
   - If not TTY + `--default`: return default immediately
   - If not TTY + no default: throw `NON_INTERACTIVE` error (exit code 3)
   - Return `{ choice: "<selected>" }`
 
-- [ ] Implement `5x prompt confirm <message> [--default yes|no]`:
+- [x] Implement `5x prompt confirm <message> [--default yes|no]`:
   - If stdin is TTY: present `[y/n]` prompt
   - Non-TTY behavior same as `choose`
   - Return `{ confirmed: true|false }`
 
-- [ ] Implement `5x prompt input <message> [--multiline]`:
+- [x] Implement `5x prompt input <message> [--multiline]`:
   - If stdin is TTY: read line (or multiline with Ctrl+D terminator)
   - If not TTY: read from stdin pipe
   - Return `{ input: "<text>" }`
 
-- [ ] Register `prompt` in `src/bin.ts`.
+- [x] Register `prompt` in `src/bin.ts`.
 
-- [ ] Write tests in `test/commands/prompt.test.ts` covering:
+- [x] Write tests in `test/commands/prompt.test.ts` covering:
   - Non-interactive with default (returns default)
   - Non-interactive without default (NON_INTERACTIVE error)
   - Input parsing (single line, multiline)
