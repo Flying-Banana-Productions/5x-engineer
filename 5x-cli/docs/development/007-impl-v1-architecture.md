@@ -380,9 +380,9 @@ export function nextLogSequence(logDir: string): string;
 
 **Completion gate:** `5x run init`, `5x run state`, `5x run record`, `5x run complete`, `5x run reopen`, and `5x run list` are functional and return JSON envelopes. Integration tests exercise the full lifecycle: init → record steps → state → complete.
 
-- [ ] Create `src/commands/run-v1.ts` implementing the `run` subcommand group with six subcommands. Register it in `src/bin.ts` replacing the v0 `run` import (line 17).
+- [x] Create `src/commands/run-v1.ts` implementing the `run` subcommand group with six subcommands. Register it in `src/bin.ts` replacing the v0 `run` import (line 17).
 
-- [ ] Implement `5x run init --plan <path> [--command <name>] [--allow-dirty]`:
+- [x] Implement `5x run init --plan <path> [--command <name>] [--allow-dirty]`:
   - Canonicalize plan path via `canonicalizePlanPath()` from `src/paths.ts:4`
   - **Lock-first invariant (P0.2):** `run init` MUST hold the plan lock before returning any active run. The sequence is:
     1. Attempt to acquire plan lock via `acquireLock()` from `src/lock.ts:98`.
@@ -395,7 +395,7 @@ export function nextLogSequence(logDir: string): string;
   - Register lock cleanup via `registerLockCleanup()` from `src/lock.ts:196`
   - Return `{ ok: true, data: { run_id, plan_path, status, created_at } }`
 
-- [ ] Implement `5x run state --run <id>` / `5x run state --plan <path>` with optional pagination:
+- [x] Implement `5x run state --run <id>` / `5x run state --plan <path>` with optional pagination:
   - Fetch run and steps via `getRunV1()` and `getSteps()`
   - Support `--tail <N>` to return only the last N steps (default: all)
   - Support `--since-step <id>` to return only steps after the given step ID
@@ -404,27 +404,27 @@ export function nextLogSequence(logDir: string): string;
   - Return step list and summary per `101-cli-primitives.md:120-156`
   - **Performance note:** for long runs with large `result_json` blobs, `--tail` / `--since-step` avoid unbounded payloads
 
-- [ ] Implement `5x run record <step-name> --run <id> --result <json> [--phase <id>] [--iteration <n>]`:
+- [x] Implement `5x run record <step-name> --run <id> --result <json> [--phase <id>] [--iteration <n>]`:
   - Parse `--result`: raw JSON string, `-` for stdin, `@path` for file
   - Compute iteration via `nextIteration()` if `--iteration` omitted
   - Record via `recordStep()` — INSERT OR IGNORE
   - Return `{ step_id, step_name, phase, iteration, recorded }` per `101-cli-primitives.md:184-195`
   - Enforce `maxStepsPerRun` from config; return error if exceeded
 
-- [ ] Implement `5x run complete --run <id> [--status completed|aborted] [--reason <text>]`:
+- [x] Implement `5x run complete --run <id> [--status completed|aborted] [--reason <text>]`:
   - Record terminal step (`run:complete` or `run:abort`)
   - Update run status via `completeRun()`
   - Release plan lock via `releaseLock()` from `src/lock.ts:154`
 
-- [ ] Implement `5x run reopen --run <id>`:
+- [x] Implement `5x run reopen --run <id>`:
   - Record `run:reopen` step with previous status
   - Set run back to active via `reopenRun()`
 
-- [ ] Implement `5x run list [--plan <path>] [--status <s>] [--limit <n>]`:
+- [x] Implement `5x run list [--plan <path>] [--status <s>] [--limit <n>]`:
   - Query via `listRuns()`
   - Return array of run summaries
 
-- [ ] Write integration tests in `test/commands/run-v1.test.ts` covering:
+- [x] Write integration tests in `test/commands/run-v1.test.ts` covering:
   - Full lifecycle: init → record → state → complete
   - Idempotent init (returns existing active run with lock held)
   - Plan lock enforcement (second init from different PID returns `PLAN_LOCKED`)
