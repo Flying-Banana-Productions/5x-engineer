@@ -116,7 +116,7 @@ async function readResultJson(raw: string): Promise<string> {
 	return raw;
 }
 
-/** Get maxStepsPerRun from config, with fallback for pre-Phase-8 configs. */
+/** Get maxStepsPerRun from config, honoring deprecated maxAutoIterations alias. */
 function getMaxStepsPerRun(config: Record<string, unknown>): number {
 	if (
 		typeof config === "object" &&
@@ -125,6 +125,15 @@ function getMaxStepsPerRun(config: Record<string, unknown>): number {
 		typeof config.maxStepsPerRun === "number"
 	) {
 		return config.maxStepsPerRun;
+	}
+	// Fallback: honor deprecated maxAutoIterations if maxStepsPerRun absent
+	if (
+		typeof config === "object" &&
+		config !== null &&
+		"maxAutoIterations" in config &&
+		typeof config.maxAutoIterations === "number"
+	) {
+		return config.maxAutoIterations;
 	}
 	return 50; // default
 }

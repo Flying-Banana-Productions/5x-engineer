@@ -167,7 +167,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value != null && !Array.isArray(value);
 }
 
-function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
+function warnUnknownConfigKeys(
+	rawConfig: unknown,
+	configPath: string,
+	cliProviderNames?: Set<string>,
+): void {
 	if (!isRecord(rawConfig)) return;
 
 	const allowedRoot = new Set([
@@ -198,9 +202,10 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
 
-	// Collect provider names referenced in author/reviewer config.
-	// Top-level keys matching these names are plugin config — not unknown.
-	const providerNames = new Set<string>();
+	// Collect provider names referenced in author/reviewer config AND from CLI
+	// overrides. Top-level keys matching these names are plugin config — not unknown.
+	// CLI overrides are authoritative: suppress warnings for their provider keys.
+	const providerNames = new Set<string>(cliProviderNames);
 	for (const role of ["author", "reviewer"]) {
 		const roleConfig = rawConfig[role];
 		if (
@@ -289,12 +294,44 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 }
 
 /**
+ * Apply deprecated config aliases after parsing.
+ *
+ * If `maxAutoIterations` was explicitly set in the raw config but
+ * `maxStepsPerRun` was NOT, treat `maxAutoIterations` as the effective
+ * `maxStepsPerRun`. This ensures existing configs that set
+ * `maxAutoIterations` for safety/cost limits are honored (while the
+ * deprecation warning is still emitted by `warnUnknownConfigKeys`).
+ */
+function applyDeprecatedAliases(
+	config: FiveXConfig,
+	rawConfig: unknown,
+): FiveXConfig {
+	if (!isRecord(rawConfig)) return config;
+
+	// Only alias if the user explicitly set maxAutoIterations but did NOT
+	// explicitly set maxStepsPerRun (i.e. maxStepsPerRun is the Zod default).
+	if ("maxAutoIterations" in rawConfig && !("maxStepsPerRun" in rawConfig)) {
+		const legacy = rawConfig.maxAutoIterations;
+		if (typeof legacy === "number" && Number.isInteger(legacy) && legacy > 0) {
+			return { ...config, maxStepsPerRun: legacy };
+		}
+	}
+
+	return config;
+}
+
+/**
  * Load and validate 5x.config.js / .mjs from the project root.
  * Falls back to defaults if no config file is found.
  * Throws with an actionable error if the file exists but fails to load.
+ *
+ * @param cliProviderNames — provider names from CLI flags (e.g. --author-provider).
+ *   These are authoritative: matching top-level config keys are treated as plugin
+ *   config and suppressed from unknown-key warnings.
  */
 export async function loadConfig(
 	projectRoot: string,
+	cliProviderNames?: Set<string>,
 ): Promise<LoadConfigResult> {
 	const configPath = discoverConfigFile(projectRoot);
 
@@ -317,7 +354,7 @@ export async function loadConfig(
 		);
 	}
 
-	warnUnknownConfigKeys(rawConfig, configPath);
+	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames);
 
 	const result = FiveXConfigSchema.safeParse(rawConfig);
 	if (!result.success) {
@@ -327,8 +364,13 @@ export async function loadConfig(
 		throw new Error(`Invalid config in ${configPath}:\n${issues}`);
 	}
 
+	// P0.1: Honor maxAutoIterations as alias for maxStepsPerRun when the
+	// user hasn't explicitly set maxStepsPerRun. This prevents existing configs
+	// from silently increasing run length/cost.
+	const config = applyDeprecatedAliases(result.data, rawConfig);
+
 	return {
-		config: result.data,
+		config,
 		configPath,
 	};
 }

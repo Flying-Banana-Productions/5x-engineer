@@ -11,7 +11,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
-import { loadConfig } from "../config.js";
+import { applyModelOverrides, loadConfig } from "../config.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import { resolveProjectRoot } from "../project-root.js";
 import {
@@ -215,6 +215,9 @@ async function invokeAgent(
 		timeout?: string;
 		quiet?: boolean;
 		"show-reasoning"?: boolean;
+		"author-provider"?: string;
+		"reviewer-provider"?: string;
+		"opencode-url"?: string;
 	},
 ): Promise<void> {
 	// Validate --run (required) — reject path traversal
@@ -227,7 +230,30 @@ async function invokeAgent(
 	const timeout = parseTimeout(args.timeout);
 
 	const projectRoot = resolveProjectRoot(args.workdir);
-	const { config } = await loadConfig(projectRoot);
+
+	// Collect CLI-override provider names so loadConfig can suppress
+	// unknown-key warnings for matching top-level config keys.
+	const cliProviderNames = new Set<string>();
+	if (args["author-provider"]?.trim()) {
+		cliProviderNames.add(args["author-provider"].trim());
+	}
+	if (args["reviewer-provider"]?.trim()) {
+		cliProviderNames.add(args["reviewer-provider"].trim());
+	}
+
+	const { config: baseConfig } = await loadConfig(
+		projectRoot,
+		cliProviderNames.size > 0 ? cliProviderNames : undefined,
+	);
+
+	// Apply CLI overrides — these are authoritative and take precedence
+	const config = applyModelOverrides(baseConfig, {
+		authorModel: role === "author" ? args.model : undefined,
+		reviewerModel: role === "reviewer" ? args.model : undefined,
+		authorProvider: args["author-provider"],
+		reviewerProvider: args["reviewer-provider"],
+		opencodeUrl: args["opencode-url"],
+	});
 
 	// Set up template override directory
 	const templateDir = join(projectRoot, ".5x", "templates", "prompts");
@@ -414,6 +440,18 @@ const sharedArgs = {
 		type: "boolean" as const,
 		description: "Show agent reasoning/thinking in console output",
 		default: false,
+	},
+	"author-provider": {
+		type: "string" as const,
+		description: "Override author provider (e.g. codex, @acme/provider-foo)",
+	},
+	"reviewer-provider": {
+		type: "string" as const,
+		description: "Override reviewer provider",
+	},
+	"opencode-url": {
+		type: "string" as const,
+		description: "Override OpenCode server URL (external mode)",
 	},
 };
 

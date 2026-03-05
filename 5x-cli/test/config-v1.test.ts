@@ -424,4 +424,106 @@ describe("config v1 extensions", () => {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
+
+	// -----------------------------------------------------------------------
+	// P0.1: maxAutoIterations → maxStepsPerRun alias
+	// -----------------------------------------------------------------------
+
+	test("maxAutoIterations is honored as maxStepsPerRun when maxStepsPerRun absent", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { maxAutoIterations: 20 };`,
+			);
+			// Suppress deprecation warning output
+			const original = console.error;
+			console.error = () => {};
+			try {
+				const { config } = await loadConfig(tmp);
+				expect(config.maxStepsPerRun).toBe(20);
+			} finally {
+				console.error = original;
+			}
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("explicit maxStepsPerRun takes precedence over maxAutoIterations", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { maxStepsPerRun: 100, maxAutoIterations: 20 };`,
+			);
+			const original = console.error;
+			console.error = () => {};
+			try {
+				const { config } = await loadConfig(tmp);
+				expect(config.maxStepsPerRun).toBe(100);
+			} finally {
+				console.error = original;
+			}
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("maxAutoIterations alias not applied when maxStepsPerRun is explicitly set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { maxStepsPerRun: 30, maxAutoIterations: 5 };`,
+			);
+			const original = console.error;
+			console.error = () => {};
+			try {
+				const { config } = await loadConfig(tmp);
+				// Explicit maxStepsPerRun wins
+				expect(config.maxStepsPerRun).toBe(30);
+			} finally {
+				console.error = original;
+			}
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// P2.2: CLI provider names suppress unknown-key warnings
+	// -----------------------------------------------------------------------
+
+	test("CLI provider names suppress unknown-key warnings for matching top-level keys", async () => {
+		const tmp = makeTmpDir();
+		const original = console.error;
+		const errors: string[] = [];
+		console.error = (...args: unknown[]) => {
+			errors.push(args.map(String).join(" "));
+		};
+		try {
+			// Config file has a "codex" key but does NOT reference codex as a provider
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { codex: { apiKey: "sk-123" } };`,
+			);
+			// Without CLI provider names, "codex" would be unknown
+			const { config: _noCliConfig } = await loadConfig(tmp);
+			expect(errors.join("\n")).toContain('"codex"');
+
+			// Reset errors
+			errors.length = 0;
+
+			// With CLI provider names, "codex" should be suppressed
+			const { config: _withCliConfig } = await loadConfig(
+				tmp,
+				new Set(["codex"]),
+			);
+			expect(errors.join("\n")).not.toContain('"codex"');
+		} finally {
+			console.error = original;
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });

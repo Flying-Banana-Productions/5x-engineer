@@ -6,9 +6,9 @@
  *   - Short names → `@5x-ai/provider-{name}`
  *   - Full package names (starting with @) → used as-is
  *
- * Forward-compatible with missing config keys (P1.1): if `config.author.provider`
- * or `config.reviewer.provider` is absent (Phase 8 hasn't landed), defaults to "opencode".
- * Similarly, if `config.opencode.url` is absent, uses managed mode.
+ * The config schema (Phase 8) ensures `config[role].provider` always has a value
+ * (defaults to "opencode" via Zod). `config.opencode.url` is optional — when
+ * absent, the bundled OpenCode provider uses managed (local) mode.
  */
 
 import type { FiveXConfig } from "../config.js";
@@ -108,8 +108,8 @@ async function loadPlugin(providerName: string): Promise<ProviderPlugin> {
 /**
  * Create a provider for the given role based on config.
  *
- * Forward-compatible: if config keys from Phase 8 aren't present yet,
- * defaults to "opencode" in managed mode.
+ * Reads `config[role].provider` (always present, defaults to "opencode")
+ * and dispatches to the bundled OpenCode provider or an external plugin.
  */
 export async function createProvider(
 	role: "author" | "reviewer",
@@ -159,7 +159,11 @@ function getPluginConfig(
 ): Record<string, unknown> | undefined {
 	const raw = config as Record<string, unknown>;
 	const pluginConfig = raw[providerName];
-	if (pluginConfig && typeof pluginConfig === "object") {
+	if (
+		pluginConfig != null &&
+		typeof pluginConfig === "object" &&
+		!Array.isArray(pluginConfig)
+	) {
 		return pluginConfig as Record<string, unknown>;
 	}
 	return undefined;
