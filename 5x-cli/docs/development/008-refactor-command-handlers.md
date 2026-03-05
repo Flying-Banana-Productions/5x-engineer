@@ -350,7 +350,7 @@ const authorCmd = defineCommand({
 
 **Completion gate:** Each command has a handler file. All tests pass.
 
-- [ ] Create `src/commands/diff.handler.ts`:
+- [x] Create `src/commands/diff.handler.ts`:
 
 ```typescript
 export interface DiffParams {
@@ -366,9 +366,9 @@ export async function runDiff(params: DiffParams): Promise<void>;
   - `parseStatSummary()` (from `diff.ts:37-60`)
   - `parseFileNames()` (from `diff.ts:63-68`)
 
-- [ ] Slim `src/commands/diff.ts` to adapter-only (~20 lines).
+- [x] Slim `src/commands/diff.ts` to adapter-only (~20 lines).
 
-- [ ] Create `src/commands/quality-v1.handler.ts`:
+- [x] Create `src/commands/quality-v1.handler.ts`:
 
 ```typescript
 export async function runQuality(): Promise<void>;
@@ -376,9 +376,9 @@ export async function runQuality(): Promise<void>;
 
   Uses `resolveProjectContext()`. No params needed (reads config internally). Does not need DB.
 
-- [ ] Slim `src/commands/quality-v1.ts` to adapter-only (~15 lines).
+- [x] Slim `src/commands/quality-v1.ts` to adapter-only (~15 lines).
 
-- [ ] Create `src/commands/plan-v1.handler.ts`:
+- [x] Create `src/commands/plan-v1.handler.ts`:
 
 ```typescript
 export interface PlanPhasesParams {
@@ -388,7 +388,7 @@ export interface PlanPhasesParams {
 export async function planPhases(params: PlanPhasesParams): Promise<void>;
 ```
 
-- [ ] Slim `src/commands/plan-v1.ts` to adapter-only (~15 lines).
+- [x] Slim `src/commands/plan-v1.ts` to adapter-only (~15 lines).
 
 ## Phase 6: Extract Handlers — `init`, `worktree`
 
