@@ -47,6 +47,12 @@ function parseIntArg(
 	flag: string,
 	opts?: { positive?: boolean },
 ): number {
+	// Strict full-string validation: reject trailing junk like "1abc"
+	if (!/^-?\d+$/.test(value)) {
+		outputError("INVALID_ARGS", `${flag} must be a valid integer`, {
+			value,
+		});
+	}
 	const n = Number.parseInt(value, 10);
 	if (!Number.isFinite(n)) {
 		outputError("INVALID_ARGS", `${flag} must be a valid integer`, {
@@ -71,6 +77,12 @@ function parseFloatArg(
 	flag: string,
 	opts?: { nonNegative?: boolean },
 ): number {
+	// Strict full-string validation: reject trailing junk like "1.5abc"
+	if (!/^-?(\d+)(\.\d+)?$/.test(value)) {
+		outputError("INVALID_ARGS", `${flag} must be a valid number`, {
+			value,
+		});
+	}
 	const n = Number.parseFloat(value);
 	if (!Number.isFinite(n)) {
 		outputError("INVALID_ARGS", `${flag} must be a valid number`, {

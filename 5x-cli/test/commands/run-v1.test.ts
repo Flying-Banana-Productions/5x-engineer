@@ -1234,6 +1234,132 @@ describe("5x run lifecycle", () => {
 		}
 	});
 
+	test("numeric args reject trailing junk (strict parsing)", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath, projectRoot } = setupProject(dir);
+
+			const init = await run5x(projectRoot, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+			]);
+			const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+				.run_id as string;
+
+			// --tail with trailing junk: "1abc" should be rejected, not parsed as 1
+			const tailJunk = await run5x(projectRoot, [
+				"run",
+				"state",
+				"--run",
+				runId,
+				"--tail",
+				"1abc",
+			]);
+			expect(tailJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(tailJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --limit with trailing junk
+			const limitJunk = await run5x(projectRoot, [
+				"run",
+				"list",
+				"--limit",
+				"5xyz",
+			]);
+			expect(limitJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(limitJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --since-step with trailing junk
+			const sinceJunk = await run5x(projectRoot, [
+				"run",
+				"state",
+				"--run",
+				runId,
+				"--since-step",
+				"3abc",
+			]);
+			expect(sinceJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(sinceJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --iteration with trailing junk
+			const iterJunk = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:junk",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--iteration",
+				"2foo",
+			]);
+			expect(iterJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(iterJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --tokens-in with trailing junk
+			const tokensJunk = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:junk2",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--tokens-in",
+				"100abc",
+			]);
+			expect(tokensJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(tokensJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --cost-usd with trailing junk (float parsing)
+			const costJunk = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:junk3",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--cost-usd",
+				"1.5abc",
+			]);
+			expect(costJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(costJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --duration-ms with trailing junk
+			const durationJunk = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:junk4",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--duration-ms",
+				"500ms",
+			]);
+			expect(durationJunk.exitCode).not.toBe(0);
+			expect(
+				(parseJson(durationJunk.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("corrupt config_json falls back to default maxStepsPerRun", async () => {
 		const dir = makeTmpDir();
 		try {
