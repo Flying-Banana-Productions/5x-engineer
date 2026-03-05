@@ -110,6 +110,26 @@ describe("outputSuccess", () => {
 		expect(parsed).toEqual({ ok: true, data: null });
 	});
 
+	test("normalizes undefined data to null so `data` field is always present on the wire", () => {
+		const calls: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			outputSuccess(undefined);
+		} finally {
+			console.log = origLog;
+		}
+
+		const raw = calls[0];
+		expect(raw).toBeDefined();
+		const parsed = JSON.parse(raw as string);
+		// `data` must be present (as null), not omitted
+		expect(parsed).toEqual({ ok: true, data: null });
+		expect("data" in parsed).toBe(true);
+	});
+
 	test("handles complex nested data", () => {
 		const calls: string[] = [];
 		const origLog = console.log;

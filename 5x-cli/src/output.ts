@@ -94,7 +94,11 @@ export class CliError extends Error {
  * Write success JSON to stdout. Does not exit — the command returns normally.
  */
 export function outputSuccess<T>(data: T): void {
-	const envelope: SuccessEnvelope<T> = { ok: true, data };
+	// Normalize undefined → null so JSON.stringify always includes the `data` field.
+	// Without this, `JSON.stringify({ ok: true, data: undefined })` drops `data` entirely,
+	// violating the `{ ok, data }` envelope contract.
+	const normalized = data === undefined ? null : data;
+	const envelope = { ok: true as const, data: normalized };
 	console.log(JSON.stringify(envelope));
 }
 

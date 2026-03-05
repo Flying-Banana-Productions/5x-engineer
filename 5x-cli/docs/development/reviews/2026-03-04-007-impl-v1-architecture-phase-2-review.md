@@ -82,3 +82,18 @@ Recommendation: add `AND phase IS NOT NULL` and keep types aligned.
 - Release/merge readiness: this change removes `5x run`/`5x plan`/`5x plan-review` without adding v1 replacements yet. This is OK for a feature branch mid-migration, but would be a breaking change if merged/released before Phase 4/5 land.
 - Dead-but-dangerous code remains: `src/db/operations.ts` still contains v0-only functions that reference dropped tables (even if no longer exported/used). Consider deleting or making them fail fast with an explicit schema/version error if accidentally imported by path.
 - Previously-noted P2 items remain unchanged: `recordStep()` auto-increment race semantics and the migration’s rowid-based “latest run” selection for `phase_progress` attachment.
+
+## Addendum (2026-03-04) — Review Follow-up for `98f072d5874477353e8e02b2ad551915cc0cf9bd`
+
+### What's Addressed
+
+- Prior addendum concern resolved: v0-only DB ops referencing dropped tables were removed from `src/db/operations.ts` (only v4-safe plan/run/reporting helpers remain).
+- P2 items were clarified in-code:
+  - `src/db/operations-v1.ts` documents the `recordStep()` auto-increment race and the single-process assumption.
+  - `src/db/schema.ts` documents why rowid is used to pick the "latest run" when migrating approvals.
+- Public API adjusted: `src/index.ts` now exports `getRunMetrics`/`RunMetrics` from `src/db/operations.ts`.
+
+### New / Remaining Concerns
+
+- Release/merge readiness remains the main human decision: the CLI surface is still intentionally minimal (`status`/`init`/`worktree`) until v1 command replacements land.
+- The rowid "clock skew immunity" rationale is fine, but it codifies the semantic choice; if the desired behavior is actually "most recent active run" or "most recent by created_at" then this migration logic will need revisiting.
