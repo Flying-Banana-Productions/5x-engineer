@@ -67,3 +67,18 @@ Recommendation: add `AND phase IS NOT NULL` and keep types aligned.
 **P1 recommended**
 - [ ] `status` derives approvals from `steps` (`phase:complete`) instead of `phase_progress`
 - [ ] `computeRunSummary` filters `phase IS NOT NULL` (and updates types/tests accordingly)
+
+## Addendum (2026-03-04) — Review Follow-up for `61858b05834ae3f1ebe61843d57447de25c3eba1`
+
+### What's Addressed
+
+- P0.1 resolved: v0 commands removed from `src/bin.ts` and v0 command entrypoints deleted, so schema v4 can no longer be broken at runtime by legacy paths.
+- P0.2 resolved: `src/index.ts` no longer exports v0 agent/orchestrator APIs or v0-only DB ops that target dropped tables; exports are aligned to v4-safe surfaces plus v1 provider + step APIs.
+- P1.1 resolved: `src/commands/status.ts` now derives approvals from `steps` (`phase:complete`) and has test coverage.
+- P1.2 resolved: `computeRunSummary()` filters `phase IS NOT NULL`.
+
+### Remaining Concerns
+
+- Release/merge readiness: this change removes `5x run`/`5x plan`/`5x plan-review` without adding v1 replacements yet. This is OK for a feature branch mid-migration, but would be a breaking change if merged/released before Phase 4/5 land.
+- Dead-but-dangerous code remains: `src/db/operations.ts` still contains v0-only functions that reference dropped tables (even if no longer exported/used). Consider deleting or making them fail fast with an explicit schema/version error if accidentally imported by path.
+- Previously-noted P2 items remain unchanged: `recordStep()` auto-increment race semantics and the migration’s rowid-based “latest run” selection for `phase_progress` attachment.

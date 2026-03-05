@@ -97,6 +97,13 @@ export function nextIteration(
 /**
  * INSERT OR IGNORE a step. First write wins (immutable steps).
  * Returns the recorded step info; `recorded=false` if a duplicate existed.
+ *
+ * NOTE: The auto-increment path (iteration omitted) is not concurrency-safe.
+ * Two concurrent writers can compute the same next iteration, and one INSERT
+ * will be silently ignored. This is acceptable because 5x runs are
+ * single-process (plan lock prevents concurrent orchestrators). If
+ * multi-process writers are ever needed, callers should provide an explicit
+ * iteration or use a retry-on-conflict loop.
  */
 export function recordStep(
 	db: Database,

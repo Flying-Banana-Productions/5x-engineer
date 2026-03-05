@@ -302,7 +302,11 @@ const migrations: Migration[] = [
 				FROM run_events
 			`);
 
-			// 2d. Stage phase_progress data (approved only)
+			// 2d. Stage phase_progress data (approved only).
+			// NOTE: "latest run" is determined by rowid (insertion order) rather
+			// than started_at/created_at. In practice these are equivalent since
+			// runs are inserted sequentially, but rowid is used here because it
+			// is monotonically increasing and immune to clock skew.
 			db.exec(`
 				CREATE TEMP TABLE _mig_phases AS
 				SELECT

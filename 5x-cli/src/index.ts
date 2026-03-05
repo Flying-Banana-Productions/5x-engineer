@@ -5,14 +5,20 @@ export type { FiveXConfig } from "./config.js";
 export { defineConfig, loadConfig } from "./config.js";
 // DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
-// DB — v0 operations (still valid on v4 schema: runs, plans tables)
-export type { PlanRow, RunRow, RunSummary } from "./db/operations.js";
+// DB — operations (valid on v4 schema: runs, plans, steps tables)
+export type {
+	PlanRow,
+	RunMetrics,
+	RunRow,
+	RunSummary,
+} from "./db/operations.js";
 export {
 	createRun,
 	getActiveRun,
 	getLatestRun,
 	getPlan,
 	getRunHistory,
+	getRunMetrics,
 	updateRunStatus,
 	upsertPlan,
 } from "./db/operations.js";
