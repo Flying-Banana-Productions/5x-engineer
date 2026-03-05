@@ -615,31 +615,31 @@ const FiveXConfigSchema = z.object({
 
 **Completion gate:** v0 orchestrator loops, commands, and adapter interface are deleted. `src/bin.ts` only registers v1 commands. `src/index.ts` exports v1 types (including `ProviderPlugin`). All tests pass. TypeScript compiles cleanly.
 
-- [ ] Delete v0 orchestrator files:
+- [x] Delete v0 orchestrator files:
   - `src/orchestrator/plan-review-loop.ts`
   - `src/orchestrator/phase-execution-loop.ts`
   - `src/orchestrator/` directory
 
-- [ ] Delete v0 agent adapter files:
+- [x] Delete v0 agent adapter files:
   - `src/agents/types.ts`
   - `src/agents/opencode.ts`
   - `src/agents/factory.ts`
   - `src/agents/errors.ts` (move error classes to `src/providers/errors.ts` if still needed)
   - `src/agents/` directory
 
-- [ ] Delete v0 command files:
+- [x] Delete v0 command files:
   - `src/commands/run.ts` (replaced by `src/commands/run-v1.ts`)
   - `src/commands/plan.ts` (replaced by `5x-plan` skill)
   - `src/commands/plan-review.ts` (replaced by `5x-plan-review` skill)
   - `src/commands/status.ts` (replaced by `5x run state`)
 
-- [ ] Delete v0 gate file:
+- [x] Delete v0 gate file:
   - `src/gates/human.ts` (replaced by `src/commands/prompt.ts`)
 
-- [ ] Delete v0 DB operations (superseded by `operations-v1.ts`):
+- [x] Delete v0 DB operations (superseded by `operations-v1.ts`):
   - Remove v0-only functions from `src/db/operations.ts` (or rename `operations-v1.ts` to `operations.ts`)
 
-- [ ] Update `src/bin.ts` to register only v1 commands:
+- [x] Update `src/bin.ts` to register only v1 commands:
 
 ```typescript
 const main = defineCommand({
@@ -657,7 +657,7 @@ const main = defineCommand({
 });
 ```
 
-- [ ] Update `src/index.ts` to export v1 types and remove v0 exports:
+- [x] Update `src/index.ts` to export v1 types and remove v0 exports:
   - Remove: `AgentAdapter`, `InvokeOptions`, `InvokeResult`, `InvokeStatus`, `InvokeVerdict`, `createAndVerifyAdapter`, `OpenCodeAdapter`
   - Remove: `runPhaseExecutionLoop`, `PhaseExecutionOptions`, `PhaseExecutionResult`
   - Remove: `runPlanReviewLoop`, `PlanReviewLoopOptions`, `PlanReviewResult`, `resolveReviewPath`
@@ -667,14 +667,14 @@ const main = defineCommand({
   - Add: `recordStep`, `getSteps`, `StepRow`, `RecordStepInput`, `RecordStepResult`
   - Add: `outputSuccess`, `outputError`, `CliError`, `JsonEnvelope`
 
-- [ ] Delete v0 test files:
+- [x] Delete v0 test files:
   - `test/orchestrator/`
   - `test/agents/`
   - `test/commands/run.test.ts`, `test/commands/plan.test.ts`, `test/commands/plan-review.test.ts`
 
-- [ ] Run full test suite: `bun test`
-- [ ] Run typecheck: `bunx --bun tsc --noEmit`
-- [ ] Run lint: `bunx --bun @biomejs/biome check src/ test/`
+- [x] Run full test suite: `bun test`
+- [x] Run typecheck: `bunx --bun tsc --noEmit`
+- [x] Run lint: `bunx --bun @biomejs/biome check src/ test/`
 
 ## Phase 11: Event Router Migration
 
