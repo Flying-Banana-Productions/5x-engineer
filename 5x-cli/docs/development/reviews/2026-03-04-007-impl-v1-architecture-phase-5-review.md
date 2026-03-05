@@ -75,3 +75,23 @@ Recommendation: resolve relative to `projectRoot` (or document the current behav
 - [ ] Align `--run` required/optional behavior with the plan (or update the plan)
 - [ ] Make `model` output truthful (wire through, or remove)
 - [ ] Clarify and stabilize `--workdir` resolution behavior
+
+## Addendum (2026-03-05) — Fix verification (`c97a1f2`)
+
+**Local verification:** `bun test test/commands/invoke.test.ts` (pass)
+
+### What's Addressed
+
+- P0.1 fixed: `--run` is now required and validated against a safe path-component regex (blocks traversal/dots/slashes).
+- P0.2 fixed: `isStructuredOutputError()` is checked before the object-typed guard, so object payloads classify correctly.
+- P0.3 fixed: `--timeout` is parsed as a strict positive integer; rejects NaN/0/negative/partial parses.
+- P1.1 fixed: `--run` enforced as required (implementation + citty arg schema).
+- P1.2 fixed: removed misleading `model` field from `invoke` JSON output.
+- P1.3 fixed: `--workdir` resolves relative to `projectRoot` (still supports absolute paths).
+- Tests added for run_id validation + timeout validation + structured-output-error regression.
+
+### Remaining Concerns
+
+- P2 perf: NDJSON uses `appendFileSync` per event; OK for now, but may become a bottleneck for very chatty streams.
+- P2 robustness: template-not-found is still detected via message substring matching (fragile vs. stable typed error).
+- P2 coverage: still no true end-to-end `invoke` test using a fake provider/session to exercise `runStreamed` + NDJSON writing without a live OpenCode server.
