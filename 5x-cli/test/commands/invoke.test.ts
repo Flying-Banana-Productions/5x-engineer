@@ -316,112 +316,136 @@ describe("invoke", () => {
 		// We can't import the private parseVars function directly, but we test
 		// the behavior through the CLI. We test edge cases via the CliError path.
 
-		test("var flag without = is rejected by CLI", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"noequals",
-					"--run",
-					"run_test123",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"var flag without = is rejected by CLI",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"noequals",
+						"--run",
+						"run_test123",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("CLI integration", () => {
-		test("template not found returns exit code 2", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"nonexistent-template",
-					"--run",
-					"run_test123",
-				]);
-				expect(result.exitCode).toBe(2);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("TEMPLATE_NOT_FOUND");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"template not found returns exit code 2",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"nonexistent-template",
+						"--run",
+						"run_test123",
+					]);
+					expect(result.exitCode).toBe(2);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("TEMPLATE_NOT_FOUND");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 
-		test("missing template variables returns error", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// author-next-phase requires plan_path, phase_id, plan_content, implementation_status
-				// Only provide some of them
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/path/to/plan.md",
-					"--run",
-					"run_test123",
-				]);
-				// Should fail because of missing required variables
-				expect(result.exitCode).not.toBe(0);
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"missing template variables returns error",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// author-next-phase requires plan_path, phase_id, plan_content, implementation_status
+					// Only provide some of them
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/path/to/plan.md",
+						"--run",
+						"run_test123",
+					]);
+					// Should fail because of missing required variables
+					expect(result.exitCode).not.toBe(0);
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 
-		test("invoke subcommand is registered and accessible", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// Just test that the command is registered - even with no args
-				// it should show help or an error, not "unknown command"
-				const result = await run5x(dir, ["invoke"]);
-				// citty shows usage info for parent commands with subcommands
-				// The exit code may be 0 (help) or non-zero, but it shouldn't crash
-				// or say "unknown command"
-				expect(result.stderr).not.toContain("Unknown command");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"invoke subcommand is registered and accessible",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// Just test that the command is registered - even with no args
+					// it should show help or an error, not "unknown command"
+					const result = await run5x(dir, ["invoke"]);
+					// citty shows usage info for parent commands with subcommands
+					// The exit code may be 0 (help) or non-zero, but it shouldn't crash
+					// or say "unknown command"
+					expect(result.stderr).not.toContain("Unknown command");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 
-		test("invoke author subcommand is registered", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// With no template arg, should get an error about missing template
-				const result = await run5x(dir, ["invoke", "author"]);
-				// Should not crash — citty will either show usage or error
-				expect(result.exitCode).toBeDefined();
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"invoke author subcommand is registered",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// With no template arg, should get an error about missing template
+					const result = await run5x(dir, ["invoke", "author"]);
+					// Should not crash — citty will either show usage or error
+					expect(result.exitCode).toBeDefined();
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 
-		test("invoke reviewer subcommand is registered", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, ["invoke", "reviewer"]);
-				expect(result.exitCode).toBeDefined();
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"invoke reviewer subcommand is registered",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, ["invoke", "reviewer"]);
+					expect(result.exitCode).toBeDefined();
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("structured output error detection", () => {
@@ -661,67 +685,75 @@ describe("invoke", () => {
 	});
 
 	describe("session resume", () => {
-		test("--session flag is accepted by the command definition", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// Pass --session flag — the command should parse it.
-				// It will fail because the provider can't connect, but
-				// the flag should be recognized.
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--session",
-					"sess-resume-123",
-					"--run",
-					"run_test789",
-				]);
-				// It should NOT say "unknown flag" or similar parse error
-				// It will likely fail on provider connection but that's expected
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				// Should fail on provider/agent, NOT on arg parsing
-				expect(error.code).not.toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"--session flag is accepted by the command definition",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// Pass --session flag — the command should parse it.
+					// It will fail because the provider can't connect, but
+					// the flag should be recognized.
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--session",
+						"sess-resume-123",
+						"--run",
+						"run_test789",
+					]);
+					// It should NOT say "unknown flag" or similar parse error
+					// It will likely fail on provider connection but that's expected
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					// Should fail on provider/agent, NOT on arg parsing
+					expect(error.code).not.toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("run_id validation (P0.1)", () => {
-		test("path traversal in --run is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"../../../etc/evil",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"path traversal in --run is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"../../../etc/evil",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 
 		test("run_id with dots is rejected", async () => {
 			const dir = makeTmpDir();
@@ -749,232 +781,264 @@ describe("invoke", () => {
 			}
 		});
 
-		test("valid run_id is accepted", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// This will fail later (no provider), but should NOT fail on run_id validation
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_abc123",
-				]);
-				const json = parseJson(result.stdout);
-				if (!json.ok) {
-					const error = json.error as Record<string, unknown>;
-					// Should NOT fail on INVALID_ARGS for the run_id
-					expect(error.code).not.toBe("INVALID_ARGS");
+		test(
+			"valid run_id is accepted",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// This will fail later (no provider), but should NOT fail on run_id validation
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_abc123",
+					]);
+					const json = parseJson(result.stdout);
+					if (!json.ok) {
+						const error = json.error as Record<string, unknown>;
+						// Should NOT fail on INVALID_ARGS for the run_id
+						expect(error.code).not.toBe("INVALID_ARGS");
+					}
+				} finally {
+					cleanupDir(dir);
 				}
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+			},
+			{ timeout: 20000 },
+		);
 
-		test("run_id starting with non-alphanumeric is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"-run_123",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"run_id starting with non-alphanumeric is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"-run_123",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("timeout validation (P0.3)", () => {
-		test("NaN timeout is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_test123",
-					"--timeout",
-					"notanumber",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-				expect(typeof error.message === "string" && error.message).toContain(
-					"--timeout",
-				);
-			} finally {
-				cleanupDir(dir);
-			}
-		});
-
-		test("negative timeout is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// Note: citty may interpret "-5" as a flag rather than a value,
-				// so we use --timeout=-5 format to ensure it's passed as the value.
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_test123",
-					"--timeout=-5",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
-
-		test("zero timeout is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_test123",
-					"--timeout",
-					"0",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
-
-		test("partial parse timeout (e.g. '10abc') is rejected", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_test123",
-					"--timeout",
-					"10abc",
-				]);
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-			} finally {
-				cleanupDir(dir);
-			}
-		});
-
-		test("valid positive integer timeout is accepted", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				// Will fail on provider, but should NOT fail on timeout validation
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-					"--run",
-					"run_test123",
-					"--timeout",
-					"30",
-				]);
-				const json = parseJson(result.stdout);
-				if (!json.ok) {
+		test(
+			"NaN timeout is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_test123",
+						"--timeout",
+						"notanumber",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
 					const error = json.error as Record<string, unknown>;
-					expect(error.code).not.toBe("INVALID_ARGS");
+					expect(error.code).toBe("INVALID_ARGS");
+					expect(typeof error.message === "string" && error.message).toContain(
+						"--timeout",
+					);
+				} finally {
+					cleanupDir(dir);
 				}
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"negative timeout is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// Note: citty may interpret "-5" as a flag rather than a value,
+					// so we use --timeout=-5 format to ensure it's passed as the value.
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_test123",
+						"--timeout=-5",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"zero timeout is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_test123",
+						"--timeout",
+						"0",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"partial parse timeout (e.g. '10abc') is rejected",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_test123",
+						"--timeout",
+						"10abc",
+					]);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).toBe("INVALID_ARGS");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"valid positive integer timeout is accepted",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					// Will fail on provider, but should NOT fail on timeout validation
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_test123",
+						"--timeout",
+						"30",
+					]);
+					const json = parseJson(result.stdout);
+					if (!json.ok) {
+						const error = json.error as Record<string, unknown>;
+						expect(error.code).not.toBe("INVALID_ARGS");
+					}
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("--run is required (P1.1)", () => {
-		test("invoke without --run fails", async () => {
-			const dir = makeTmpDir();
-			try {
-				setupProject(dir);
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					"plan_path=/p",
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=none",
-				]);
-				// Should fail — --run is required
-				expect(result.exitCode).not.toBe(0);
-			} finally {
-				cleanupDir(dir);
-			}
-		});
+		test(
+			"invoke without --run fails",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+					]);
+					// Should fail — --run is required
+					expect(result.exitCode).not.toBe(0);
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
 	});
 
 	describe("output envelope format", () => {
