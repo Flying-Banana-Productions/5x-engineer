@@ -547,7 +547,7 @@ interface InvokeArgs {
 
 **Completion gate:** Config schema accepts `provider` field on author/reviewer, `opencode` top-level config, and `maxStepsPerRun`. Unknown/deprecated keys produce warnings. Existing configs continue to work.
 
-- [ ] Extend `AgentConfigSchema` in `src/config.ts:5-9` to add `provider` as an open string (not an enum — allows third-party plugin names):
+- [x] Extend `AgentConfigSchema` in `src/config.ts:5-9` to add `provider` as an open string (not an enum — allows third-party plugin names):
 
 ```typescript
 const AgentConfigSchema = z.object({
@@ -557,7 +557,7 @@ const AgentConfigSchema = z.object({
 });
 ```
 
-- [ ] Add `OpenCodeConfigSchema` and `maxStepsPerRun` to `FiveXConfigSchema` in `src/config.ts:38-49`. The `opencode` key is validated because it's the bundled provider. Plugin-specific config keys (e.g. `codex`, `claude`) are **not** validated by the core schema — they're passed through to the plugin's `create()` function via `z.passthrough()` or by reading raw config before Zod strips unknown keys:
+- [x] Add `OpenCodeConfigSchema` and `maxStepsPerRun` to `FiveXConfigSchema` in `src/config.ts:38-49`. The `opencode` key is validated because it's the bundled provider. Plugin-specific config keys (e.g. `codex`, `claude`) are **not** validated by the core schema — they're passed through to the plugin's `create()` function via `z.passthrough()` or by reading raw config before Zod strips unknown keys:
 
 ```typescript
 const OpenCodeConfigSchema = z.object({
@@ -581,11 +581,11 @@ const FiveXConfigSchema = z.object({
 }).passthrough(); // Allow plugin-specific config keys (e.g. codex: { ... })
 ```
 
-- [ ] Update `warnUnknownConfigKeys()` in `src/config.ts:130-206` to accept `provider` in agent config and `opencode` at root level. Suppress unknown-key warnings for top-level keys that match a configured provider name (i.e. if `author.provider` is `"codex"`, don't warn about a top-level `codex` key). Add deprecation warnings for `maxAutoIterations` → `maxStepsPerRun`.
+- [x] Update `warnUnknownConfigKeys()` in `src/config.ts:130-206` to accept `provider` in agent config and `opencode` at root level. Suppress unknown-key warnings for top-level keys that match a configured provider name (i.e. if `author.provider` is `"codex"`, don't warn about a top-level `codex` key). Add deprecation warnings for `maxAutoIterations` → `maxStepsPerRun`.
 
-- [ ] Update `applyModelOverrides()` in `src/config.ts:62-78` to also support `--author-provider`, `--reviewer-provider`, `--opencode-url` overrides.
+- [x] Update `applyModelOverrides()` in `src/config.ts:62-78` to also support `--author-provider`, `--reviewer-provider`, `--opencode-url` overrides.
 
-- [ ] Write tests in `test/config-v1.test.ts` covering:
+- [x] Write tests in `test/config-v1.test.ts` covering:
   - New fields parse correctly
   - Defaults work (provider defaults to "opencode")
   - Unknown keys warn (except keys matching a configured provider name)

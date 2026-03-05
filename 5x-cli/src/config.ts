@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 const AgentConfigSchema = z.object({
+	/** Provider name — open string to allow third-party plugins (e.g. "opencode", "codex", "@acme/provider-foo"). */
+	provider: z.string().default("opencode"),
 	model: z.string().optional(),
 	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
 	timeout: z.number().int().positive().optional(),
@@ -35,29 +37,43 @@ const WorktreeSchema = z.object({
 	postCreate: z.string().min(1).optional(),
 });
 
-const FiveXConfigSchema = z.object({
-	author: AgentConfigSchema.default({}),
-	reviewer: AgentConfigSchema.default({}),
-	qualityGates: z.array(z.string()).default([]),
-	worktree: WorktreeSchema.default({}),
-	paths: PathsSchema.default({}),
-	db: DbSchema.default({}),
-	maxReviewIterations: z.number().int().positive().default(5),
-	maxQualityRetries: z.number().int().positive().default(3),
-	maxAutoIterations: z.number().int().positive().default(10),
-	maxAutoRetries: z.number().int().positive().default(3),
+const OpenCodeConfigSchema = z.object({
+	/** URL for external OpenCode server. Omit for managed (local) mode. */
+	url: z.string().url().optional(),
 });
+
+const FiveXConfigSchema = z
+	.object({
+		author: AgentConfigSchema.default({}),
+		reviewer: AgentConfigSchema.default({}),
+		opencode: OpenCodeConfigSchema.default({}),
+		qualityGates: z.array(z.string()).default([]),
+		worktree: WorktreeSchema.default({}),
+		paths: PathsSchema.default({}),
+		db: DbSchema.default({}),
+		maxStepsPerRun: z.number().int().positive().default(50),
+		// Preserved for backward compat, deprecated
+		maxReviewIterations: z.number().int().positive().default(5),
+		maxQualityRetries: z.number().int().positive().default(3),
+		maxAutoIterations: z.number().int().positive().default(10),
+		maxAutoRetries: z.number().int().positive().default(3),
+	})
+	.passthrough(); // Allow plugin-specific config keys (e.g. codex: { ... })
 
 export type FiveXConfig = z.infer<typeof FiveXConfigSchema>;
 
 export interface ModelOverrides {
 	authorModel?: string;
 	reviewerModel?: string;
+	authorProvider?: string;
+	reviewerProvider?: string;
+	opencodeUrl?: string;
 }
 
 /**
- * Apply CLI model overrides on top of loaded config.
+ * Apply CLI overrides on top of loaded config.
  * CLI flags take precedence over config file values when provided.
+ * Supports model, provider, and opencode URL overrides.
  */
 export function applyModelOverrides(
 	config: FiveXConfig,
@@ -65,17 +81,43 @@ export function applyModelOverrides(
 ): FiveXConfig {
 	const authorModel = overrides.authorModel?.trim();
 	const reviewerModel = overrides.reviewerModel?.trim();
+	const authorProvider = overrides.authorProvider?.trim();
+	const reviewerProvider = overrides.reviewerProvider?.trim();
+	const opencodeUrl = overrides.opencodeUrl?.trim();
+
+	let author = config.author;
+	if (authorModel || authorProvider) {
+		author = {
+			...author,
+			...(authorModel ? { model: authorModel } : {}),
+			...(authorProvider ? { provider: authorProvider } : {}),
+		};
+	}
+
+	let reviewer = config.reviewer;
+	if (reviewerModel || reviewerProvider) {
+		reviewer = {
+			...reviewer,
+			...(reviewerModel ? { model: reviewerModel } : {}),
+			...(reviewerProvider ? { provider: reviewerProvider } : {}),
+		};
+	}
+
+	let opencode = config.opencode;
+	if (opencodeUrl) {
+		opencode = { ...opencode, url: opencodeUrl };
+	}
 
 	return {
 		...config,
-		author: authorModel
-			? { ...config.author, model: authorModel }
-			: config.author,
-		reviewer: reviewerModel
-			? { ...config.reviewer, model: reviewerModel }
-			: config.reviewer,
+		author,
+		reviewer,
+		opencode,
 	};
 }
+
+/** Input type for config files — all keys optional, Zod fills in defaults. */
+export type FiveXConfigInput = z.input<typeof FiveXConfigSchema>;
 
 /**
  * Helper for config files to get autocomplete.
@@ -84,12 +126,10 @@ export function applyModelOverrides(
  *   export default defineConfig({ ... });
  *
  * Or with JSDoc:
- *   /** @type {import('5x-cli').FiveXConfig} *\/
+ *   /** @type {import('5x-cli').FiveXConfigInput} *\/
  *   export default { ... };
  */
-export function defineConfig(
-	config: Partial<FiveXConfig>,
-): Partial<FiveXConfig> {
+export function defineConfig(config: FiveXConfigInput): FiveXConfigInput {
 	return config;
 }
 
@@ -133,16 +173,19 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 	const allowedRoot = new Set([
 		"author",
 		"reviewer",
+		"opencode",
 		"qualityGates",
 		"worktree",
 		"paths",
 		"db",
+		"maxStepsPerRun",
 		"maxReviewIterations",
 		"maxQualityRetries",
 		"maxAutoIterations",
 		"maxAutoRetries",
 	]);
-	const allowedAgent = new Set(["model", "timeout"]);
+	const allowedAgent = new Set(["provider", "model", "timeout"]);
+	const allowedOpencode = new Set(["url"]);
 	const allowedWorktree = new Set(["postCreate"]);
 	const allowedPaths = new Set([
 		"plans",
@@ -155,7 +198,31 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
 
-	const deprecatedHelp = new Map<string, string>([
+	// Collect provider names referenced in author/reviewer config.
+	// Top-level keys matching these names are plugin config — not unknown.
+	const providerNames = new Set<string>();
+	for (const role of ["author", "reviewer"]) {
+		const roleConfig = rawConfig[role];
+		if (
+			isRecord(roleConfig) &&
+			typeof roleConfig.provider === "string" &&
+			roleConfig.provider !== "opencode"
+		) {
+			providerNames.add(roleConfig.provider);
+		}
+	}
+
+	// Deprecated keys that are still parsed but should produce a warning.
+	// These are in the allowed set (not unknown), but we emit deprecation notices.
+	const deprecatedAllowed = new Map<string, string>([
+		[
+			"maxAutoIterations",
+			"Use maxStepsPerRun instead. maxAutoIterations is deprecated.",
+		],
+	]);
+
+	// Deprecated keys that are unknown (not in schema) — treated as unknown with help text.
+	const deprecatedUnknown = new Map<string, string>([
 		["author.adapter", "Use author.model instead."],
 		["reviewer.adapter", "Use reviewer.model instead."],
 	]);
@@ -169,6 +236,10 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 	): void {
 		for (const key of Object.keys(obj).sort()) {
 			if (!allowed.has(key)) {
+				// Suppress warnings for top-level keys matching a configured provider name
+				if (!prefix && providerNames.has(key)) {
+					continue;
+				}
 				unknown.push(prefix ? `${prefix}.${key}` : key);
 				continue;
 			}
@@ -179,6 +250,8 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 			const nextPrefix = prefix ? `${prefix}.${key}` : key;
 			if (key === "author" || key === "reviewer") {
 				collect(value, allowedAgent, nextPrefix);
+			} else if (key === "opencode") {
+				collect(value, allowedOpencode, nextPrefix);
 			} else if (key === "worktree") {
 				collect(value, allowedWorktree, nextPrefix);
 			} else if (key === "paths") {
@@ -195,8 +268,18 @@ function warnUnknownConfigKeys(rawConfig: unknown, configPath: string): void {
 
 	collect(rawConfig, allowedRoot, "");
 
+	// Warn about deprecated-but-still-parsed keys that are present in the config
+	for (const [key, help] of deprecatedAllowed) {
+		if (key in rawConfig) {
+			console.error(
+				`Warning: Deprecated config key "${key}" in ${configPath}. ${help}`,
+			);
+		}
+	}
+
+	// Warn about unknown/deprecated-unknown keys
 	for (const path of unknown) {
-		const help = deprecatedHelp.get(path);
+		const help = deprecatedUnknown.get(path);
 		console.error(
 			help
 				? `Warning: Deprecated config key "${path}" in ${configPath} (ignored). ${help}`

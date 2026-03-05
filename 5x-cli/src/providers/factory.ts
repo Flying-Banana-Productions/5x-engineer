@@ -115,11 +115,8 @@ export async function createProvider(
 	role: "author" | "reviewer",
 	config: FiveXConfig,
 ): Promise<AgentProvider> {
-	// Forward-compatible: read provider from config if present (Phase 8 adds this field).
-	// Cast through unknown to avoid type error before Phase 8 extends the schema.
-	const roleConfig = config[role] as Record<string, unknown>;
-	const providerName =
-		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
+	const roleConfig = config[role];
+	const providerName = roleConfig.provider;
 
 	if (providerName === "opencode") {
 		return createOpenCodeProvider(config, roleConfig);
@@ -136,16 +133,10 @@ export async function createProvider(
  */
 async function createOpenCodeProvider(
 	config: FiveXConfig,
-	roleConfig: Record<string, unknown>,
+	roleConfig: { provider: string; model?: string; timeout?: number },
 ): Promise<AgentProvider> {
-	// Forward-compatible: read opencode config if present (Phase 8 adds this key).
-	const opencodeConfig = (config as Record<string, unknown>).opencode as
-		| Record<string, unknown>
-		| undefined;
-	const url =
-		typeof opencodeConfig?.url === "string" ? opencodeConfig.url : undefined;
-	const model =
-		typeof roleConfig?.model === "string" ? roleConfig.model : undefined;
+	const url = config.opencode.url;
+	const model = roleConfig.model;
 
 	if (url) {
 		// External mode: connect to running server
