@@ -1,0 +1,14 @@
+{
+  "name": "@5x-ai/provider-sample",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@5x-ai/5x-cli": "file:../..",
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}

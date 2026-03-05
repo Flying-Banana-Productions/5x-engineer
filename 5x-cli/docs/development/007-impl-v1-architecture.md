@@ -704,7 +704,7 @@ const main = defineCommand({
 
 **Completion gate:** A sample provider plugin exists in `packages/provider-sample/`, implements the `ProviderPlugin` contract, and is loadable via `provider: "sample"` in config. The factory's dynamic import path, error handling for missing plugins, and plugin contract validation are smoke-tested end-to-end. This phase validates the external plugin architecture without introducing real SDK dependencies.
 
-- [ ] Add Bun workspace configuration to the repo root `package.json`:
+- [x] Add Bun workspace configuration to the repo root `package.json`:
 
 ```json
 {
@@ -712,7 +712,7 @@ const main = defineCommand({
 }
 ```
 
-- [ ] Create `packages/provider-sample/package.json`:
+- [x] Create `packages/provider-sample/package.json`:
 
 ```json
 {
@@ -727,25 +727,25 @@ const main = defineCommand({
 }
 ```
 
-- [ ] Create `packages/provider-sample/src/index.ts` implementing `ProviderPlugin`:
-  - `SampleProvider` implements `AgentProvider` with echo/noop behavior:
-    - `startSession()` returns a `SampleSession` with a generated ID
-    - `resumeSession()` returns a session with the given ID
-    - `close()` is a no-op
-  - `SampleSession` implements `AgentSession`:
-    - `run()` echoes the prompt back as `RunResult.text` with zero tokens/cost
-    - `runStreamed()` yields a minimal event sequence: `text` → `usage` → `done`
-  - Default export satisfies `ProviderPlugin { name: "sample", create() }`
-  - No external SDK dependencies — the entire plugin is ~50 LOC
+- [x] Create `packages/provider-sample/src/index.ts` implementing `ProviderPlugin`:
+   - `SampleProvider` implements `AgentProvider` with echo/noop behavior:
+     - `startSession()` returns a `SampleSession` with a generated ID
+     - `resumeSession()` returns a session with the given ID
+     - `close()` is a no-op
+   - `SampleSession` implements `AgentSession`:
+     - `run()` echoes the prompt back as `RunResult.text` with zero tokens/cost
+     - `runStreamed()` yields a minimal event sequence: `text` → `usage` → `done`
+   - Default export satisfies `ProviderPlugin { name: "sample", create() }`
+   - No external SDK dependencies — the entire plugin is ~50 LOC
 
-- [ ] Write integration tests in `test/providers/plugin-loading.test.ts` covering:
-  - Factory resolves `provider: "sample"` → dynamically imports `@5x-ai/provider-sample`
-  - Full lifecycle through factory: `createProvider("author", config)` → `startSession` → `run` → `close`
-  - `runStreamed()` yields correctly typed `AgentEvent` sequence
-  - Missing plugin: factory throws `PROVIDER_NOT_FOUND` with install instructions when package doesn't exist
-  - Invalid plugin: module exists but doesn't export valid `ProviderPlugin` → `INVALID_PROVIDER` error
-  - Bundled OpenCode provider still works via direct import path (not the plugin code path)
-  - Plugin-specific config passthrough: `sample: { echo: true }` in config is passed to `create()`
+- [x] Write integration tests in `test/providers/plugin-loading.test.ts` covering:
+   - Factory resolves `provider: "sample"` → dynamically imports `@5x-ai/provider-sample`
+   - Full lifecycle through factory: `createProvider("author", config)` → `startSession` → `run` → `close`
+   - `runStreamed()` yields correctly typed `AgentEvent` sequence
+   - Missing plugin: factory throws `PROVIDER_NOT_FOUND` with install instructions when package doesn't exist
+   - Invalid plugin: module exists but doesn't export valid `ProviderPlugin` → `INVALID_PROVIDER` error
+   - Bundled OpenCode provider still works via direct import path (not the plugin code path)
+   - Plugin-specific config passthrough: `sample: { echo: true }` in config is passed to `create()`
 
 ## Files Touched
 
