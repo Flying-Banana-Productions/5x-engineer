@@ -66,3 +66,16 @@ Recommendation:
 
 - Docs/contract drift: new error codes `EOF` (exit 3) and `INTERRUPTED` (exit 130) are not reflected in the exit-code docstring in `src/output.ts` nor in the implementation plan’s exit-code table; document these (or rename/scope them) so skills can rely on them
 - `FORCE_TTY` is a useful test hook but is now part of runtime behavior; consider namespacing (e.g. `5X_FORCE_TTY`) or scoping to test-only to reduce surprise
+
+## Addendum (2026-03-05) — Re-review after doc/env fixes (`067e9c4`)
+
+### What's Addressed
+
+- Docs/contract drift fixed: exit-code docs updated in both the implementation plan and `src/output.ts` (`docs/development/007-impl-v1-architecture.md`, `src/output.ts`)
+- Test hook namespaced: `FORCE_TTY` renamed to `5X_FORCE_TTY` and tests updated (`src/commands/prompt.ts`, `test/commands/prompt.test.ts`)
+
+### Remaining Concerns
+
+- Minor doc drift in this review file: the prior addendum references `FORCE_TTY=1`; the correct env var is now `5X_FORCE_TTY=1`
+
+Updated readiness: Ready (no remaining P0/P1/P2 issues observed for Phase 7).
