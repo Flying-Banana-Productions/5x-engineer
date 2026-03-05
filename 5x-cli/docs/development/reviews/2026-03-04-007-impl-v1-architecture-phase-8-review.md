@@ -53,3 +53,19 @@ Recommendation: add the flags to the relevant commands (likely `src/commands/inv
 **P1 recommended**
 - [ ] Add CLI flags for provider/opencode URL overrides and apply them in invocation flow.
 - [ ] Align provider factory comments (and/or behavior) with the post-Phase-8 typed config.
+
+## Addendum (2026-03-05) — Follow-up on `2aec3db`
+
+All previously raised items (P0.1, P1.1, P1.2, P2.1, P2.2) are addressed by `2aec3db`. Local `bun test` passes.
+
+### What's Addressed
+
+- P0.1: `maxAutoIterations` honored as an alias when `maxStepsPerRun` is absent (`src/config.ts`, plus fallback in `src/commands/run-v1.ts`); new tests added in `test/config-v1.test.ts`.
+- P1.1: `5x invoke` now supports `--author-provider`, `--reviewer-provider`, `--opencode-url`; overrides applied via `applyModelOverrides()` before `createProvider()` (`src/commands/invoke.ts`).
+- P1.2: Provider factory docs updated to match Phase-8 typed config defaults (`src/providers/factory.ts`).
+- P2.1: `getPluginConfig()` rejects `null`/arrays (`src/providers/factory.ts`).
+- P2.2: Unknown-key warnings now suppress top-level keys matching CLI provider overrides (`src/config.ts` + `test/config-v1.test.ts`).
+
+### Remaining Concerns
+
+- New: `--opencode-url` override is not URL-validated (schema validates file config, but CLI path bypasses it). Recommendation: validate in `src/commands/invoke.ts` (or inside `applyModelOverrides`) using `new URL()` / `z.string().url()`.

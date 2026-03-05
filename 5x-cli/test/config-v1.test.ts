@@ -362,6 +362,29 @@ describe("config v1 extensions", () => {
 		expect(overridden.reviewer.model).toBe("claude");
 	});
 
+	test("applyModelOverrides rejects invalid opencode URL", () => {
+		const config = FiveXConfigSchema.parse({});
+		expect(() =>
+			applyModelOverrides(config, { opencodeUrl: "not-a-url" }),
+		).toThrow("Invalid --opencode-url");
+	});
+
+	test("applyModelOverrides accepts valid opencode URL", () => {
+		const config = FiveXConfigSchema.parse({});
+		const overridden = applyModelOverrides(config, {
+			opencodeUrl: "http://localhost:3000",
+		});
+		expect(overridden.opencode.url).toBe("http://localhost:3000");
+	});
+
+	test("applyModelOverrides accepts https opencode URL", () => {
+		const config = FiveXConfigSchema.parse({});
+		const overridden = applyModelOverrides(config, {
+			opencodeUrl: "https://agent.example.com:8080/v1",
+		});
+		expect(overridden.opencode.url).toBe("https://agent.example.com:8080/v1");
+	});
+
 	test("applyModelOverrides trims whitespace", () => {
 		const config = FiveXConfigSchema.parse({});
 		const overridden = applyModelOverrides(config, {

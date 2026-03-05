@@ -105,6 +105,15 @@ export function applyModelOverrides(
 
 	let opencode = config.opencode;
 	if (opencodeUrl) {
+		// Validate URL — the schema validates file-based config via z.string().url(),
+		// but CLI overrides bypass schema parsing. Apply the same check here.
+		try {
+			new URL(opencodeUrl);
+		} catch {
+			throw new Error(
+				`Invalid --opencode-url: "${opencodeUrl}" is not a valid URL`,
+			);
+		}
 		opencode = { ...opencode, url: opencodeUrl };
 	}
 
