@@ -329,7 +329,7 @@ export function computeRunSummary(db: Database, runId: string): RunSummaryComput
 
 **Completion gate:** A shared `outputJson()` helper exists in `src/output.ts`. All v1 commands use `{ ok: true, data }` / `{ ok: false, error: { code, message, detail? } }` format.
 
-- [ ] Create `src/output.ts` with JSON output helpers:
+- [x] Create `src/output.ts` with JSON output helpers:
 
 ```typescript
 // src/output.ts
@@ -372,9 +372,9 @@ export function generateRunId(): string;
 export function nextLogSequence(logDir: string): string;
 ```
 
-- [ ] Create `src/run-id.ts` with `generateRunId()` returning `"run_" + crypto.randomUUID().replace(/-/g, "").slice(0, 12)`.
+- [x] Create `src/run-id.ts` with `generateRunId()` returning `"run_" + crypto.randomUUID().replace(/-/g, "").slice(0, 12)`.
 
-- [ ] Write tests in `test/output.test.ts` covering envelope formatting and error codes.
+- [x] Write tests in `test/output.test.ts` covering envelope formatting and error codes.
 
 ## Phase 4: Run Lifecycle Commands
 
