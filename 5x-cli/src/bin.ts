@@ -7,7 +7,7 @@ const main = defineCommand({
 	meta: {
 		name: "5x",
 		version,
-		description: "Automated author-review loop runner for the 5x workflow",
+		description: "A toolbelt of primitives for the 5x workflow",
 	},
 	subCommands: {
 		run: () => import("./commands/run-v1.js").then((m) => m.default),

@@ -111,7 +111,7 @@ export function getPlan(db: Database, planPath: string): PlanRow | null {
 
 export function createRun(
 	db: Database,
-	run: { id: string; planPath: string; command: string; reviewPath?: string },
+	run: { id: string; planPath: string; command: string },
 ): void {
 	const canonical = canonicalizePlanPath(run.planPath);
 	db.query(
