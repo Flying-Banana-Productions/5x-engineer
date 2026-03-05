@@ -48,16 +48,28 @@ type Role = "author" | "reviewer";
 interface InvokeResult {
 	result: unknown;
 	session_id: string;
-	model: string | null;
 	duration_ms: number;
 	tokens: { in: number; out: number };
 	cost_usd: number | null;
-	log_path: string | null;
+	log_path: string;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Safe run_id pattern: alphanumeric start, then alphanumeric/underscore/hyphen, max 64 chars. */
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** Validate that a run_id is safe for use as a filesystem path component. */
+function validateRunId(runId: string): void {
+	if (!SAFE_RUN_ID.test(runId)) {
+		outputError(
+			"INVALID_ARGS",
+			`--run must match ${SAFE_RUN_ID} (alphanumeric start, alphanumeric/underscore/hyphen, 1-64 chars), got: "${runId}"`,
+		);
+	}
+}
 
 /** Parse --var key=value flags into a record.
  *  Accepts a single string or array of strings (citty may collapse repeated flags). */
@@ -84,15 +96,26 @@ function parseVars(
 }
 
 /**
- * Create NDJSON log directory and return the log file path.
- * Returns null if --run is not provided (no log directory to write to).
+ * Validate --timeout as a positive integer.
+ * Returns the validated timeout or undefined if not provided.
  */
-function prepareLogPath(
-	projectRoot: string,
-	runId: string | undefined,
-): string | null {
-	if (!runId) return null;
+function parseTimeout(raw: string | undefined): number | undefined {
+	if (!raw) return undefined;
+	const parsed = Number.parseInt(raw, 10);
+	if (Number.isNaN(parsed) || parsed <= 0 || String(parsed) !== raw) {
+		outputError(
+			"INVALID_ARGS",
+			`--timeout must be a positive integer (seconds), got: "${raw}"`,
+		);
+	}
+	return parsed;
+}
 
+/**
+ * Create NDJSON log directory and return the log file path.
+ * The runId must already be validated via validateRunId().
+ */
+function prepareLogPath(projectRoot: string, runId: string): string {
 	const logDir = join(projectRoot, ".5x", "logs", runId);
 	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
@@ -184,7 +207,7 @@ async function invokeAgent(
 	role: Role,
 	args: {
 		template: string;
-		run?: string;
+		run: string;
 		var?: string | string[];
 		model?: string;
 		workdir?: string;
@@ -194,6 +217,15 @@ async function invokeAgent(
 		"show-reasoning"?: boolean;
 	},
 ): Promise<void> {
+	// Validate --run (required) — reject path traversal
+	if (!args.run) {
+		outputError("INVALID_ARGS", "--run is required for invoke commands");
+	}
+	validateRunId(args.run);
+
+	// Validate --timeout early
+	const timeout = parseTimeout(args.timeout);
+
 	const projectRoot = resolveProjectRoot(args.workdir);
 	const { config } = await loadConfig(projectRoot);
 
@@ -230,7 +262,10 @@ async function invokeAgent(
 	}
 
 	// 3. Start or resume session
-	const workdir = resolve(args.workdir ?? projectRoot);
+	// Resolve workdir relative to projectRoot (not process.cwd)
+	const workdir = args.workdir
+		? resolve(projectRoot, args.workdir)
+		: projectRoot;
 	const roleConfig = config[role] as Record<string, unknown>;
 	const model =
 		args.model ??
@@ -253,13 +288,12 @@ async function invokeAgent(
 		throw err;
 	}
 
-	// 4. Prepare log path
+	// 4. Prepare log path (--run is required and already validated)
 	const logPath = prepareLogPath(projectRoot, args.run);
 
 	// 5. Build run options
 	const outputSchema =
 		role === "author" ? AuthorStatusSchema : ReviewerVerdictSchema;
-	const timeout = args.timeout ? Number.parseInt(args.timeout, 10) : undefined;
 	const quiet = args.quiet ?? false;
 	const showReasoning = args["show-reasoning"] ?? false;
 
@@ -286,15 +320,20 @@ async function invokeAgent(
 
 	// 7. Validate structured output
 	const structured = runResult.structured;
+
+	// Check for StructuredOutputError BEFORE the object guard — real error
+	// payloads are typically objects and would fall through to assert* otherwise.
+	if (isStructuredOutputError(structured)) {
+		await provider.close().catch(() => {});
+		outputError(
+			"INVALID_STRUCTURED_OUTPUT",
+			"Agent returned a structured output error",
+			{ raw: structured },
+		);
+	}
+
 	if (!structured || typeof structured !== "object") {
 		await provider.close().catch(() => {});
-		if (isStructuredOutputError(structured)) {
-			outputError(
-				"INVALID_STRUCTURED_OUTPUT",
-				"Agent returned a structured output error",
-				{ raw: structured },
-			);
-		}
 		outputError(
 			"INVALID_STRUCTURED_OUTPUT",
 			`Agent did not return valid structured output for ${role}`,
@@ -321,10 +360,6 @@ async function invokeAgent(
 	const output: InvokeResult = {
 		result: structured,
 		session_id: runResult.sessionId,
-		model:
-			((runResult as unknown as Record<string, unknown>).model as
-				| string
-				| null) ?? null,
 		duration_ms: runResult.durationMs,
 		tokens: runResult.tokens,
 		cost_usd: runResult.costUsd ?? null,
@@ -346,7 +381,8 @@ const sharedArgs = {
 	},
 	run: {
 		type: "string" as const,
-		description: "Run ID (for NDJSON log directory)",
+		description: "Run ID (required — used for NDJSON log directory)",
+		required: true as const,
 	},
 	var: {
 		type: "string" as const,

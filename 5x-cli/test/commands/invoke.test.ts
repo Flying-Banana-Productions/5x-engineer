@@ -456,6 +456,40 @@ describe("invoke", () => {
 				}),
 			).toBe(false);
 		});
+
+		test("isStructuredOutputError detects object-typed error payloads (P0.2 regression)", async () => {
+			// StructuredOutputError payloads are typically objects. The old code
+			// only called isStructuredOutputError inside the !object guard, making
+			// detection unreachable for object payloads. This test ensures
+			// object-typed StructuredOutputError payloads are still detected.
+			const { isStructuredOutputError } = await import("../../src/protocol.js");
+
+			// Object with nested structured output error — should be detected
+			const objError = {
+				data: {
+					info: {
+						error: {
+							name: "StructuredOutputError",
+							message: "Failed to parse structured output",
+						},
+					},
+				},
+				// This is an object, so typeof === "object" is true
+				someOtherField: "value",
+			};
+			expect(typeof objError).toBe("object");
+			expect(isStructuredOutputError(objError)).toBe(true);
+
+			// Object with message-based detection
+			const msgError = {
+				error: {
+					name: "SomeError",
+					message: "structured output parsing failed",
+				},
+			};
+			expect(typeof msgError).toBe("object");
+			expect(isStructuredOutputError(msgError)).toBe(true);
+		});
 	});
 
 	describe("schemas match expected format", () => {
@@ -656,6 +690,287 @@ describe("invoke", () => {
 				const error = json.error as Record<string, unknown>;
 				// Should fail on provider/agent, NOT on arg parsing
 				expect(error.code).not.toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+	});
+
+	describe("run_id validation (P0.1)", () => {
+		test("path traversal in --run is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"../../../etc/evil",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("run_id with dots is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run..traversal",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("valid run_id is accepted", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				// This will fail later (no provider), but should NOT fail on run_id validation
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_abc123",
+				]);
+				const json = parseJson(result.stdout);
+				if (!json.ok) {
+					const error = json.error as Record<string, unknown>;
+					// Should NOT fail on INVALID_ARGS for the run_id
+					expect(error.code).not.toBe("INVALID_ARGS");
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("run_id starting with non-alphanumeric is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"-run_123",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+	});
+
+	describe("timeout validation (P0.3)", () => {
+		test("NaN timeout is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_test123",
+					"--timeout",
+					"notanumber",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+				expect(typeof error.message === "string" && error.message).toContain(
+					"--timeout",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("negative timeout is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				// Note: citty may interpret "-5" as a flag rather than a value,
+				// so we use --timeout=-5 format to ensure it's passed as the value.
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_test123",
+					"--timeout=-5",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("zero timeout is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_test123",
+					"--timeout",
+					"0",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("partial parse timeout (e.g. '10abc') is rejected", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_test123",
+					"--timeout",
+					"10abc",
+				]);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+
+		test("valid positive integer timeout is accepted", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				// Will fail on provider, but should NOT fail on timeout validation
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+					"--run",
+					"run_test123",
+					"--timeout",
+					"30",
+				]);
+				const json = parseJson(result.stdout);
+				if (!json.ok) {
+					const error = json.error as Record<string, unknown>;
+					expect(error.code).not.toBe("INVALID_ARGS");
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		});
+	});
+
+	describe("--run is required (P1.1)", () => {
+		test("invoke without --run fails", async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					"plan_path=/p",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=none",
+				]);
+				// Should fail — --run is required
+				expect(result.exitCode).not.toBe(0);
 			} finally {
 				cleanupDir(dir);
 			}
