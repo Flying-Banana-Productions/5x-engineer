@@ -39,7 +39,7 @@ The `startDir` parameter matches `resolveProjectRoot(startDir?)` semantics. `pro
 
 **Completion gate:** `src/utils/stdin.ts` and `src/utils/parse-args.ts` exist, are imported by handler files, and all tests pass. Unit tests for `parseIntArg`/`parseFloatArg` exist in `test/utils/parse-args.test.ts`.
 
-- [ ] Create `src/utils/stdin.ts` extracting from `src/commands/prompt.ts:19-120`:
+- [x] Create `src/utils/stdin.ts` extracting from `src/commands/prompt.ts:19-120`:
 
 ```typescript
 // src/utils/stdin.ts
@@ -65,7 +65,7 @@ export function readStdinPipe(): Promise<string>;
 
   Module-level state (`stdinBuffer`, `stdinEnded`) moves with the functions.
 
-- [ ] Create `src/utils/parse-args.ts` extracting from `src/commands/run-v1.ts:44-98`:
+- [x] Create `src/utils/parse-args.ts` extracting from `src/commands/run-v1.ts:44-98`:
 
 ```typescript
 // src/utils/parse-args.ts
@@ -94,7 +94,7 @@ export function parseTimeout(
 ): number | undefined;
 ```
 
-- [ ] Create `src/commands/context.ts`:
+- [x] Create `src/commands/context.ts`:
 
 ```typescript
 // src/commands/context.ts
