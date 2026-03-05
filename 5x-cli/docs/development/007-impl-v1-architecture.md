@@ -683,18 +683,22 @@ const main = defineCommand({
 - [x] Create `src/providers/event-mapper.ts` that maps provider-native events to `AgentEvent`:
   - OpenCode: reuse logic from `src/utils/event-router.ts` (currently maps SSE events to StreamWriter calls) — refactor to emit `AgentEvent` objects instead
   - Plugin providers: each plugin is responsible for its own event mapping (the `runStreamed()` contract already requires `AsyncIterable<AgentEvent>`)
+  - Handles both `properties.partID` and `properties.partId` in legacy delta mapping (P1.1)
 
 - [x] Update `src/utils/stream-writer.ts` to accept `AgentEvent` objects directly (instead of provider-specific event routing).
 
 - [x] Update NDJSON log writing (currently in `src/agents/opencode.ts:295-475`) to write `AgentEvent` objects. Move log writing logic to a shared `src/providers/log-writer.ts`.
+  - Sequence detection now matches `agent-\d+.ndjson` (handles legacy non-3-digit filenames)
 
 - [x] Write tests in `test/providers/event-mapper.test.ts` covering:
   - OpenCode SSE → AgentEvent mapping (text, reasoning, tool_start, tool_end, error)
   - Tool input summary formatting (bash→command, edit→file, etc.)
   - Error events
+  - Both `partID` and `partId` key variants (regression test)
 
 - [x] Write tests in `test/providers/opencode.test.ts` covering:
   - `runStreamed()` yields `usage` and `done` events (synthesized after prompt completion, not mapped from SSE)
+  - Note: `usage`/`done` events are synthesized in `src/providers/opencode.ts`, not mapped from SSE
 
 ## Phase 12: Sample Provider Plugin
 
