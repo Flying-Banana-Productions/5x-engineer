@@ -26,7 +26,12 @@ import {
 } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { checkGitSafety } from "../git.js";
-import { acquireLock, registerLockCleanup, releaseLock } from "../lock.js";
+import {
+	acquireLock,
+	isLocked,
+	registerLockCleanup,
+	releaseLock,
+} from "../lock.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
@@ -35,6 +40,50 @@ import { generateRunId } from "../run-id.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Validate a numeric CLI flag. Returns the parsed value or throws INVALID_ARGS. */
+function parseIntArg(
+	value: string,
+	flag: string,
+	opts?: { positive?: boolean },
+): number {
+	const n = Number.parseInt(value, 10);
+	if (!Number.isFinite(n)) {
+		outputError("INVALID_ARGS", `${flag} must be a valid integer`, {
+			value,
+		});
+	}
+	if (opts?.positive && n <= 0) {
+		outputError("INVALID_ARGS", `${flag} must be a positive integer`, {
+			value,
+		});
+	}
+	if (n < 0) {
+		outputError("INVALID_ARGS", `${flag} must be non-negative`, {
+			value,
+		});
+	}
+	return n;
+}
+
+function parseFloatArg(
+	value: string,
+	flag: string,
+	opts?: { nonNegative?: boolean },
+): number {
+	const n = Number.parseFloat(value);
+	if (!Number.isFinite(n)) {
+		outputError("INVALID_ARGS", `${flag} must be a valid number`, {
+			value,
+		});
+	}
+	if (opts?.nonNegative && n < 0) {
+		outputError("INVALID_ARGS", `${flag} must be non-negative`, {
+			value,
+		});
+	}
+	return n;
+}
 
 /** Read --result value: raw JSON string, "-" for stdin, "@path" for file. */
 async function readResultJson(raw: string): Promise<string> {
@@ -225,9 +274,9 @@ const stateCmd = defineCommand({
 		// Build step query options
 		const stepOpts: { sinceStepId?: number; tail?: number } = {};
 		if (args["since-step"]) {
-			stepOpts.sinceStepId = Number.parseInt(args["since-step"], 10);
+			stepOpts.sinceStepId = parseIntArg(args["since-step"], "--since-step");
 		} else if (args.tail) {
-			stepOpts.tail = Number.parseInt(args.tail, 10);
+			stepOpts.tail = parseIntArg(args.tail, "--tail", { positive: true });
 		}
 
 		const steps = getSteps(db, run.id, stepOpts);
@@ -343,11 +392,17 @@ const recordCmd = defineCommand({
 			);
 		}
 
-		// Enforce maxStepsPerRun
-		const maxSteps = run.config_json
-			? getMaxStepsPerRun(
-					JSON.parse(run.config_json) as Record<string, unknown>,
-				)
+		// Enforce maxStepsPerRun (guard against corrupt config_json)
+		let runConfig: Record<string, unknown> | null = null;
+		if (run.config_json) {
+			try {
+				runConfig = JSON.parse(run.config_json) as Record<string, unknown>;
+			} catch {
+				// Corrupt config_json — fall through to global config default
+			}
+		}
+		const maxSteps = runConfig
+			? getMaxStepsPerRun(runConfig)
 			: getMaxStepsPerRun(config as unknown as Record<string, unknown>);
 
 		const summary = computeRunSummary(db, args.run);
@@ -376,22 +431,22 @@ const recordCmd = defineCommand({
 			step_name: args.stepName,
 			phase: args.phase,
 			iteration: args.iteration
-				? Number.parseInt(args.iteration, 10)
+				? parseIntArg(args.iteration, "--iteration", { positive: true })
 				: undefined,
 			result_json: resultJson,
 			session_id: args["session-id"],
 			model: args.model,
 			tokens_in: args["tokens-in"]
-				? Number.parseInt(args["tokens-in"], 10)
+				? parseIntArg(args["tokens-in"], "--tokens-in")
 				: undefined,
 			tokens_out: args["tokens-out"]
-				? Number.parseInt(args["tokens-out"], 10)
+				? parseIntArg(args["tokens-out"], "--tokens-out")
 				: undefined,
 			cost_usd: args["cost-usd"]
-				? Number.parseFloat(args["cost-usd"])
+				? parseFloatArg(args["cost-usd"], "--cost-usd", { nonNegative: true })
 				: undefined,
 			duration_ms: args["duration-ms"]
-				? Number.parseInt(args["duration-ms"], 10)
+				? parseIntArg(args["duration-ms"], "--duration-ms")
 				: undefined,
 			log_path: args["log-path"],
 		});
@@ -447,6 +502,23 @@ const completeCmd = defineCommand({
 			);
 		}
 
+		// Enforce lock ownership: the plan must either be unlocked, locked by us,
+		// or locked by a dead process. If another live PID holds the lock, refuse.
+		if (run.plan_path) {
+			const lockStatus = isLocked(projectRoot, run.plan_path);
+			if (
+				lockStatus.locked &&
+				!lockStatus.stale &&
+				lockStatus.info?.pid !== process.pid
+			) {
+				outputError(
+					"PLAN_LOCKED",
+					`Plan is locked by PID ${lockStatus.info?.pid}; cannot complete run owned by another process`,
+					{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				);
+			}
+		}
+
 		// Record terminal step
 		const stepName = status === "completed" ? "run:complete" : "run:abort";
 		recordStep(db, {
@@ -461,7 +533,7 @@ const completeCmd = defineCommand({
 		// Update run status
 		completeRun(db, args.run, status);
 
-		// Release plan lock
+		// Release plan lock (ownership-safe: only releases if we own it or it's stale)
 		if (run.plan_path) {
 			releaseLock(projectRoot, run.plan_path);
 		}
@@ -499,6 +571,22 @@ const reopenCmd = defineCommand({
 		}
 		if (run.status === "active") {
 			outputError("RUN_ALREADY_ACTIVE", `Run ${args.run} is already active`);
+		}
+
+		// Enforce lock ownership: if the plan is locked by another live PID, refuse.
+		if (run.plan_path) {
+			const lockStatus = isLocked(projectRoot, run.plan_path);
+			if (
+				lockStatus.locked &&
+				!lockStatus.stale &&
+				lockStatus.info?.pid !== process.pid
+			) {
+				outputError(
+					"PLAN_LOCKED",
+					`Plan is locked by PID ${lockStatus.info?.pid}; cannot reopen run`,
+					{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				);
+			}
 		}
 
 		// Record reopen step with previous status
@@ -548,9 +636,11 @@ const listCmd = defineCommand({
 		runMigrations(db);
 
 		const runs = listRuns(db, {
-			planPath: args.plan,
+			planPath: args.plan ? canonicalizePlanPath(args.plan) : undefined,
 			status: args.status,
-			limit: args.limit ? Number.parseInt(args.limit, 10) : undefined,
+			limit: args.limit
+				? parseIntArg(args.limit, "--limit", { positive: true })
+				: undefined,
 		});
 
 		outputSuccess({

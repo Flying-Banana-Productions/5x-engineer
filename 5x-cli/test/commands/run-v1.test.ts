@@ -995,6 +995,289 @@ describe("5x run lifecycle", () => {
 		}
 	});
 
+	test("complete does not release another live PID's lock", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath, projectRoot } = setupProject(dir);
+
+			// Init a run (acquires lock for this process)
+			const init = await run5x(projectRoot, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+			]);
+			const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+				.run_id as string;
+
+			// Now overwrite the lock to simulate another live PID owning it.
+			// Use PID 1 which is always alive on Linux.
+			const { canonicalizePlanPath } = await import("../../src/paths.js");
+			const { createHash } = await import("node:crypto");
+			const canonical = canonicalizePlanPath(planPath);
+			const hash = createHash("sha256")
+				.update(canonical)
+				.digest("hex")
+				.slice(0, 16);
+			const lockFilePath = join(projectRoot, ".5x", "locks", `${hash}.lock`);
+			writeFileSync(
+				lockFilePath,
+				JSON.stringify({
+					pid: 1,
+					startedAt: new Date().toISOString(),
+					planPath: canonical,
+				}),
+			);
+
+			// Try to complete — should be rejected because lock is owned by PID 1
+			const result = await run5x(projectRoot, [
+				"run",
+				"complete",
+				"--run",
+				runId,
+				"--status",
+				"completed",
+			]);
+			expect(result.exitCode).toBe(4); // PLAN_LOCKED
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as Record<string, unknown>).code).toBe("PLAN_LOCKED");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("reopen rejects when plan is locked by another live PID", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath, projectRoot } = setupProject(dir);
+
+			// Init and complete a run
+			const init = await run5x(projectRoot, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+			]);
+			const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+				.run_id as string;
+
+			await run5x(projectRoot, [
+				"run",
+				"complete",
+				"--run",
+				runId,
+				"--status",
+				"completed",
+			]);
+
+			// Now create a lock owned by PID 1 (always alive on Linux)
+			const { canonicalizePlanPath } = await import("../../src/paths.js");
+			const { createHash } = await import("node:crypto");
+			const canonical = canonicalizePlanPath(planPath);
+			const hash = createHash("sha256")
+				.update(canonical)
+				.digest("hex")
+				.slice(0, 16);
+			const lockDir = join(projectRoot, ".5x", "locks");
+			mkdirSync(lockDir, { recursive: true });
+			writeFileSync(
+				join(lockDir, `${hash}.lock`),
+				JSON.stringify({
+					pid: 1,
+					startedAt: new Date().toISOString(),
+					planPath: canonical,
+				}),
+			);
+
+			// Reopen should fail
+			const result = await run5x(projectRoot, [
+				"run",
+				"reopen",
+				"--run",
+				runId,
+			]);
+			expect(result.exitCode).toBe(4); // PLAN_LOCKED
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as Record<string, unknown>).code).toBe("PLAN_LOCKED");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("numeric args validation — NaN and negative values rejected", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath, projectRoot } = setupProject(dir);
+
+			// Init a run
+			const init = await run5x(projectRoot, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+			]);
+			const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+				.run_id as string;
+
+			// --tail with NaN
+			const tailResult = await run5x(projectRoot, [
+				"run",
+				"state",
+				"--run",
+				runId,
+				"--tail",
+				"abc",
+			]);
+			expect(tailResult.exitCode).not.toBe(0);
+			const tailData = parseJson(tailResult.stdout);
+			expect((tailData.error as Record<string, unknown>).code).toBe(
+				"INVALID_ARGS",
+			);
+
+			// --tail with 0 (must be positive)
+			const tailZero = await run5x(projectRoot, [
+				"run",
+				"state",
+				"--run",
+				runId,
+				"--tail",
+				"0",
+			]);
+			expect(tailZero.exitCode).not.toBe(0);
+			expect(
+				(parseJson(tailZero.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --iteration with 0 (must be positive)
+			const iterResult = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:step",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--iteration",
+				"0",
+			]);
+			expect(iterResult.exitCode).not.toBe(0);
+			expect(
+				(parseJson(iterResult.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --iteration with NaN
+			const iterNaN = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:step2",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--iteration",
+				"abc",
+			]);
+			expect(iterNaN.exitCode).not.toBe(0);
+			expect(
+				(parseJson(iterNaN.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --limit with NaN
+			const limitResult = await run5x(projectRoot, [
+				"run",
+				"list",
+				"--limit",
+				"not-a-number",
+			]);
+			expect(limitResult.exitCode).not.toBe(0);
+			expect(
+				(parseJson(limitResult.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --tokens-in with NaN
+			const tokensResult = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:tokens",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--tokens-in",
+				"xyz",
+			]);
+			expect(tokensResult.exitCode).not.toBe(0);
+			expect(
+				(parseJson(tokensResult.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+
+			// --cost-usd with NaN
+			const costResult = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:cost",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+				"--cost-usd",
+				"not-a-cost",
+			]);
+			expect(costResult.exitCode).not.toBe(0);
+			expect(
+				(parseJson(costResult.stdout).error as Record<string, unknown>).code,
+			).toBe("INVALID_ARGS");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("corrupt config_json falls back to default maxStepsPerRun", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath, projectRoot } = setupProject(dir);
+
+			const init = await run5x(projectRoot, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+			]);
+			const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+				.run_id as string;
+
+			// Corrupt the config_json in the DB
+			const { getDb } = await import("../../src/db/connection.js");
+			const { _resetForTest, closeDb } = await import(
+				"../../src/db/connection.js"
+			);
+			const db = getDb(projectRoot);
+			db.exec(
+				`UPDATE runs SET config_json = 'NOT-VALID-JSON' WHERE id = '${runId}'`,
+			);
+			closeDb();
+			_resetForTest();
+
+			// Record should still work (falls back to global default)
+			const result = await run5x(projectRoot, [
+				"run",
+				"record",
+				"test:step",
+				"--run",
+				runId,
+				"--result",
+				"{}",
+			]);
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("record with optional metadata fields", async () => {
 		const dir = makeTmpDir();
 		try {

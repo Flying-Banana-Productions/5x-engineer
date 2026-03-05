@@ -34,7 +34,15 @@ try {
 		console.log(JSON.stringify(envelope));
 		process.exit(err.exitCode);
 	}
-	// Non-CliError — log and exit
-	console.error(err instanceof Error ? err.message : String(err));
+	// Non-CliError — still emit a JSON envelope to keep the CLI contract stable
+	const message = err instanceof Error ? err.message : String(err);
+	const envelope = {
+		ok: false as const,
+		error: {
+			code: "INTERNAL_ERROR",
+			message,
+		},
+	};
+	console.log(JSON.stringify(envelope));
 	process.exit(1);
 }

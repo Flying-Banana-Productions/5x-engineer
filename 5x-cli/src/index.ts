@@ -70,9 +70,10 @@ export {
 	runWorktreeSetupCommand,
 } from "./git.js";
 // Lock
-export type { LockInfo, LockResult } from "./lock.js";
+export type { LockInfo, LockResult, ReleaseLockResult } from "./lock.js";
 export {
 	acquireLock,
+	forceReleaseLock,
 	isLocked,
 	registerLockCleanup,
 	releaseLock,

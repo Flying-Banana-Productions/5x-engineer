@@ -150,20 +150,74 @@ function writeLock(path: string, planPath: string): void {
 	writeFileSync(path, JSON.stringify(info, null, 2));
 }
 
-/** Release a plan lock. Idempotent — no-op if lock doesn't exist. */
-export function releaseLock(projectRoot: string, planPath: string): void {
+export interface ReleaseLockResult {
+	released: boolean;
+	reason?: "not_locked" | "not_owner" | "released" | "stale_released";
+}
+
+/**
+ * Release a plan lock. Ownership-safe: only removes the lock when
+ * the lock is owned by the current process OR the owning PID is dead (stale).
+ * Returns whether the lock was actually released.
+ *
+ * Use `forceReleaseLock()` if you need to remove a lock regardless of owner.
+ */
+export function releaseLock(
+	projectRoot: string,
+	planPath: string,
+): ReleaseLockResult {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
 	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
 	const existing = findExistingLock(projectRoot, canonicalPlanPath);
+
+	if (!existing) {
+		return { released: true, reason: "not_locked" };
+	}
+
+	const info = existing.info;
+
+	// Corrupt lock file — safe to remove
+	if (!info) {
+		removeLockFiles(canonicalPath, existing.path);
+		return { released: true, reason: "stale_released" };
+	}
+
+	// Owned by current process — safe to release
+	if (info.pid === process.pid) {
+		removeLockFiles(canonicalPath, existing.path);
+		return { released: true, reason: "released" };
+	}
+
+	// Owned by a dead process — stale, safe to release
+	if (!isPidAlive(info.pid)) {
+		removeLockFiles(canonicalPath, existing.path);
+		return { released: true, reason: "stale_released" };
+	}
+
+	// Owned by another live process — refuse to release
+	return { released: false, reason: "not_owner" };
+}
+
+/**
+ * Force-release a plan lock regardless of ownership.
+ * Use sparingly — this bypasses the ownership safety check.
+ */
+export function forceReleaseLock(projectRoot: string, planPath: string): void {
+	const canonicalPlanPath = canonicalizePlanPath(planPath);
+	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
+	const existing = findExistingLock(projectRoot, canonicalPlanPath);
+	removeLockFiles(canonicalPath, existing?.path);
+}
+
+function removeLockFiles(canonicalPath: string, existingPath?: string): void {
 	try {
 		unlinkSync(canonicalPath);
 	} catch {
 		// Already gone — fine
 	}
-
-	if (existing && existing.path !== canonicalPath) {
+	if (existingPath && existingPath !== canonicalPath) {
 		try {
-			unlinkSync(existing.path);
+			unlinkSync(existingPath);
 		} catch {}
 	}
 }
