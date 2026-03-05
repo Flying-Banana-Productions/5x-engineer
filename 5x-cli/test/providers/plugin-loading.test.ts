@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import samplePlugin from "../../packages/provider-sample/src/index.js";
 import {
 	createProvider,
+	InvalidProviderError,
 	ProviderNotFoundError,
 } from "../../src/providers/factory.js";
 import type { AgentEvent, ProviderPlugin } from "../../src/providers/types.js";
@@ -246,6 +247,96 @@ describe("plugin loading errors", () => {
 			if (err instanceof ProviderNotFoundError) {
 				expect(err.code).toBe("PROVIDER_NOT_FOUND");
 				expect(err.message).toContain("@acme/nonexistent-provider");
+			}
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Factory dynamic import success path (P1.1)
+// ---------------------------------------------------------------------------
+
+describe("factory dynamic import success path", () => {
+	test("createProvider resolves provider: 'sample' to @5x-ai/provider-sample via dynamic import", async () => {
+		// This test validates that the factory can dynamically import the sample provider
+		// using the standard plugin resolution path (not file URL bypass)
+		const config = createMockConfig("sample", { echo: false });
+
+		const provider = await createProvider(
+			"author",
+			config as Parameters<typeof createProvider>[1],
+		);
+
+		// Verify the provider was created successfully via dynamic import
+		expect(provider).toBeDefined();
+		expect(typeof provider.startSession).toBe("function");
+		expect(typeof provider.resumeSession).toBe("function");
+		expect(typeof provider.close).toBe("function");
+
+		// Verify full lifecycle works
+		const session = await provider.startSession({
+			model: "test-model",
+			workingDirectory: "/tmp",
+		});
+
+		expect(session).toBeDefined();
+		expect(typeof session.id).toBe("string");
+		expect(session.id.startsWith("sample_")).toBe(true);
+
+		// Verify the plugin config was passed through (echo: false)
+		const result = await session.run("Hello, dynamic import!");
+		expect(result.text).toBe("Sample provider response");
+		expect(result.text).not.toContain("[SampleProvider echo]");
+
+		await provider.close();
+	});
+
+	test("factory loads sample provider with echo enabled via config passthrough", async () => {
+		const config = createMockConfig("sample", { echo: true });
+
+		const provider = await createProvider(
+			"reviewer",
+			config as Parameters<typeof createProvider>[1],
+		);
+
+		const session = await provider.startSession({
+			model: "test-model",
+			workingDirectory: "/tmp",
+		});
+
+		// With echo: true, the prompt should be echoed back
+		const result = await session.run("Test message");
+		expect(result.text).toContain("[SampleProvider echo]");
+		expect(result.text).toContain("Test message");
+
+		await provider.close();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Invalid provider error handling (P1.2)
+// ---------------------------------------------------------------------------
+
+describe("invalid provider error handling", () => {
+	test("createProvider throws INVALID_PROVIDER when loading invalid plugin", async () => {
+		// This test validates that the factory correctly detects and reports
+		// when a provider package exists but doesn't export a valid ProviderPlugin
+		const config = createMockConfig("invalid");
+
+		try {
+			await createProvider(
+				"author",
+				config as Parameters<typeof createProvider>[1],
+			);
+			expect.unreachable("Should have thrown InvalidProviderError");
+		} catch (err) {
+			expect(err).toBeInstanceOf(InvalidProviderError);
+			if (err instanceof InvalidProviderError) {
+				expect(err.code).toBe("INVALID_PROVIDER");
+				expect(err.exitCode).toBe(2);
+				expect(err.message).toContain("@5x-ai/provider-invalid");
+				expect(err.message).toContain("does not export a valid ProviderPlugin");
+				expect(err.message).toContain("missing the required 'create' function");
 			}
 		}
 	});

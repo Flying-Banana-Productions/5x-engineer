@@ -67,3 +67,19 @@ The plan calls for validating that a module exists but does not default-export a
 - [ ] Add dynamic-import success-path test for `provider: "sample"` via `createProvider()`
 - [ ] Add invalid-plugin test for `INVALID_PROVIDER`
 - [ ] Align sample plugin `package.json` dependency model with the plan (`peerDependencies`)
+
+## Addendum (2026-03-05) — Review Follow-up for `669dafc2`
+
+### What's Addressed
+
+- P0.1 exit code propagation: `5x-cli/src/commands/invoke.ts` now passes `exitCode` into `outputError(...)` when bridging provider factory errors.
+- P1.3 dependency model: `5x-cli/packages/provider-sample/package.json` now uses `peerDependencies` (instead of `devDependencies`).
+- Fixture added: `5x-cli/packages/provider-invalid/` exists to support invalid-plugin testing.
+
+### Remaining Concerns
+
+- P1.1 still not validated: `5x-cli/test/providers/plugin-loading.test.ts` does not exercise the factory dynamic-import success path (`createProvider()` with `provider: "sample"` resolving `@5x-ai/provider-sample`). The new “file URL” import test bypasses `createProvider()`/`loadPlugin()`.
+- P1.2 still not validated: there is no test that asserts `createProvider()` (or `loadPlugin()`) throws `INVALID_PROVIDER` when the invalid package is selected. The current “invalid plugin” test only asserts the fixture shape is invalid; it does not assert factory behavior.
+- New: `5x-cli/packages/provider-invalid/package.json` uses the name `@5x-ai/provider-provider-invalid`; this works if config uses `provider: "provider-invalid"`, but it’s confusing and makes tests harder to read.
+- New: `peerDependencies` values use `file:../..` (both sample + invalid). For an example meant to mirror third-party publishing, `workspace:*` (or a semver range) is closer to the plan.
+- Architectural follow-up (optional): `5x-cli/src/providers/factory.ts` still throws non-`CliError` types even though the v1 CLI has `CliError` available; today it’s bridged in `invoke`, but future call sites could regress exit-code determinism unless they replicate the bridge.

@@ -12,12 +12,14 @@
         "zod": "^3.24.0",
       },
       "devDependencies": {
+        "@5x-ai/provider-invalid": "workspace:*",
+        "@5x-ai/provider-sample": "workspace:*",
         "@types/bun": "latest",
         "typescript": "^5.7.0",
       },
     },
     "packages/provider-invalid": {
-      "name": "@5x-ai/provider-provider-invalid",
+      "name": "@5x-ai/provider-invalid",
       "version": "0.0.1",
       "peerDependencies": {
         "@5x-ai/5x-cli": "file:../..",
@@ -34,7 +36,7 @@
   "packages": {
     "@5x-ai/5x-cli": ["5x-cli@root:", {}],
 
-    "@5x-ai/provider-provider-invalid": ["@5x-ai/provider-provider-invalid@workspace:packages/provider-invalid"],
+    "@5x-ai/provider-invalid": ["@5x-ai/provider-invalid@workspace:packages/provider-invalid"],
 
     "@5x-ai/provider-sample": ["@5x-ai/provider-sample@workspace:packages/provider-sample"],
 
