@@ -1,7 +1,7 @@
 /**
  * v1 Quality gate command.
  *
- * `5x quality run [--config <path>]`
+ * `5x quality run`
  *
  * Reads `qualityGates` from config, executes each sequentially,
  * and returns a JSON envelope with pass/fail results.

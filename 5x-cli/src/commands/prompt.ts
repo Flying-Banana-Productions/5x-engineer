@@ -17,36 +17,71 @@ import { outputError, outputSuccess } from "../output.js";
 // ---------------------------------------------------------------------------
 
 function isTTY(): boolean {
+	// Allow tests to force interactive mode via env var.
+	if (process.env.FORCE_TTY === "1") return true;
 	// Bun test sets NODE_ENV=test even when stdin is a TTY. Disable interactive
 	// prompts in test runs to avoid hanging suites.
 	if (process.env.NODE_ENV === "test") return false;
 	return !!process.stdin.isTTY;
 }
 
-/** Read a single line from stdin. */
-function readLine(): Promise<string> {
+/** Sentinel returned by readLine when stdin receives EOF (Ctrl+D). */
+const EOF = Symbol("EOF");
+/** Sentinel returned by readLine when SIGINT is received. */
+const SIGINT = Symbol("SIGINT");
+
+/** Buffered leftover from previous readLine calls. */
+let stdinBuffer = "";
+/** Whether stdin has ended. */
+let stdinEnded = false;
+
+/** Read a single line from stdin. Returns EOF symbol on stdin close, SIGINT symbol on interrupt. */
+function readLine(): Promise<string | typeof EOF | typeof SIGINT> {
 	return new Promise((resolve) => {
-		const chunks: Buffer[] = [];
+		// Check buffer for a complete line first
+		const nlIdx = stdinBuffer.indexOf("\n");
+		if (nlIdx !== -1) {
+			const line = stdinBuffer.slice(0, nlIdx);
+			stdinBuffer = stdinBuffer.slice(nlIdx + 1);
+			resolve(line);
+			return;
+		}
+
+		// If stdin already ended and no newline in buffer, return EOF
+		if (stdinEnded) {
+			resolve(EOF);
+			return;
+		}
+
 		const cleanup = () => {
 			process.stdin.removeListener("data", onData);
+			process.stdin.removeListener("end", onEnd);
 			process.removeListener("SIGINT", onSigint);
 			process.stdin.pause();
 		};
 
 		const onData = (chunk: Buffer) => {
-			chunks.push(chunk);
-			const text = Buffer.concat(chunks).toString();
-			if (text.includes("\n")) {
+			stdinBuffer += chunk.toString();
+			const nlIdx = stdinBuffer.indexOf("\n");
+			if (nlIdx !== -1) {
+				const line = stdinBuffer.slice(0, nlIdx);
+				stdinBuffer = stdinBuffer.slice(nlIdx + 1);
 				cleanup();
-				resolve(text.split("\n")[0] ?? "");
+				resolve(line);
 			}
+		};
+		const onEnd = () => {
+			stdinEnded = true;
+			cleanup();
+			resolve(EOF);
 		};
 		const onSigint = () => {
 			cleanup();
-			resolve("");
+			resolve(SIGINT);
 		};
 		process.stdin.resume();
 		process.stdin.on("data", onData);
+		process.stdin.on("end", onEnd);
 		process.once("SIGINT", onSigint);
 	});
 }
@@ -154,38 +189,61 @@ const chooseCmd = defineCommand({
 		console.error();
 
 		const defaultHint = defaultVal ? ` [${defaultVal}]` : "";
-		process.stderr.write(`  Choice${defaultHint}: `);
-		const input = await readLine();
-		const trimmed = input.trim();
 
-		// Empty input → use default if available
-		if (!trimmed && defaultVal) {
-			outputSuccess({ choice: defaultVal });
-			return;
-		}
+		// Reprompt loop: require valid input before proceeding
+		for (;;) {
+			process.stderr.write(`  Choice${defaultHint}: `);
+			const input = await readLine();
 
-		// Try numeric selection
-		const num = Number.parseInt(trimmed, 10);
-		if (!Number.isNaN(num) && num >= 1 && num <= optionsList.length) {
-			outputSuccess({ choice: optionsList[num - 1] });
-			return;
-		}
+			// EOF (Ctrl+D) — use default if available, otherwise error
+			if (input === EOF) {
+				if (defaultVal) {
+					outputSuccess({ choice: defaultVal });
+					return;
+				}
+				outputError("EOF", "End of input received with no valid selection");
+			}
 
-		// Try exact text match (case-insensitive)
-		const match = optionsList.find(
-			(o) => o.toLowerCase() === trimmed.toLowerCase(),
-		);
-		if (match) {
-			outputSuccess({ choice: match });
-			return;
-		}
+			// SIGINT — exit with dedicated error
+			if (input === SIGINT) {
+				outputError("INTERRUPTED", "Prompt interrupted by user");
+			}
 
-		// Invalid — use default if available, otherwise first option
-		if (defaultVal) {
-			outputSuccess({ choice: defaultVal });
-			return;
+			const trimmed = input.trim();
+
+			// Empty input → use default if available, otherwise reprompt
+			if (!trimmed) {
+				if (defaultVal) {
+					outputSuccess({ choice: defaultVal });
+					return;
+				}
+				console.error(
+					"  Invalid selection. Please enter a number or option name.",
+				);
+				continue;
+			}
+
+			// Try numeric selection
+			const num = Number.parseInt(trimmed, 10);
+			if (!Number.isNaN(num) && num >= 1 && num <= optionsList.length) {
+				outputSuccess({ choice: optionsList[num - 1] });
+				return;
+			}
+
+			// Try exact text match (case-insensitive)
+			const match = optionsList.find(
+				(o) => o.toLowerCase() === trimmed.toLowerCase(),
+			);
+			if (match) {
+				outputSuccess({ choice: match });
+				return;
+			}
+
+			// Invalid input — reprompt
+			console.error(
+				"  Invalid selection. Please enter a number or option name.",
+			);
 		}
-		outputSuccess({ choice: optionsList[0] });
 	},
 });
 
@@ -242,27 +300,45 @@ const confirmCmd = defineCommand({
 					? "[y/N]"
 					: "[y/n]";
 
-		process.stderr.write(`  ${args.message} ${hint}: `);
-		const input = await readLine();
-		const trimmed = input.trim().toLowerCase();
+		// Reprompt loop: require valid input before proceeding
+		for (;;) {
+			process.stderr.write(`  ${args.message} ${hint}: `);
+			const input = await readLine();
 
-		if (!trimmed && defaultBool !== undefined) {
-			outputSuccess({ confirmed: defaultBool });
-			return;
+			// EOF (Ctrl+D) — use default if available, otherwise error
+			if (input === EOF) {
+				if (defaultBool !== undefined) {
+					outputSuccess({ confirmed: defaultBool });
+					return;
+				}
+				outputError("EOF", "End of input received with no valid selection");
+			}
+
+			// SIGINT — exit with dedicated error
+			if (input === SIGINT) {
+				outputError("INTERRUPTED", "Prompt interrupted by user");
+			}
+
+			const trimmed = input.trim().toLowerCase();
+
+			if (!trimmed && defaultBool !== undefined) {
+				outputSuccess({ confirmed: defaultBool });
+				return;
+			}
+
+			if (trimmed === "y" || trimmed === "yes" || trimmed === "true") {
+				outputSuccess({ confirmed: true });
+				return;
+			}
+
+			if (trimmed === "n" || trimmed === "no" || trimmed === "false") {
+				outputSuccess({ confirmed: false });
+				return;
+			}
+
+			// Invalid input — reprompt
+			console.error("  Invalid input. Please enter y or n.");
 		}
-
-		if (trimmed === "y" || trimmed === "yes" || trimmed === "true") {
-			outputSuccess({ confirmed: true });
-			return;
-		}
-
-		if (trimmed === "n" || trimmed === "no" || trimmed === "false") {
-			outputSuccess({ confirmed: false });
-			return;
-		}
-
-		// Ambiguous — use default if available, otherwise false
-		outputSuccess({ confirmed: defaultBool ?? false });
 	},
 });
 
@@ -299,6 +375,13 @@ const inputCmd = defineCommand({
 		} else {
 			process.stderr.write(`  ${args.message}: `);
 			const text = await readLine();
+			if (text === EOF) {
+				outputSuccess({ input: "" });
+				return;
+			}
+			if (text === SIGINT) {
+				outputError("INTERRUPTED", "Prompt interrupted by user");
+			}
 			outputSuccess({ input: text });
 		}
 	},

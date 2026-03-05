@@ -13,7 +13,11 @@ interface CmdResult {
 	exitCode: number;
 }
 
-async function run5x(args: string[], stdin?: string): Promise<CmdResult> {
+async function run5x(
+	args: string[],
+	stdin?: string,
+	env?: Record<string, string>,
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
@@ -21,6 +25,7 @@ async function run5x(args: string[], stdin?: string): Promise<CmdResult> {
 			stdin !== undefined
 				? (new Response(stdin).body as ReadableStream)
 				: "pipe",
+		env: { ...process.env, ...env },
 	});
 
 	const [stdout, stderr, exitCode] = await Promise.all([
@@ -29,6 +34,17 @@ async function run5x(args: string[], stdin?: string): Promise<CmdResult> {
 		proc.exited,
 	]);
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
+/**
+ * Run with FORCE_TTY=1 to exercise interactive code paths.
+ * stdin content is piped in and then the pipe closes (triggering EOF after data).
+ */
+async function run5xInteractive(
+	args: string[],
+	stdin: string,
+): Promise<CmdResult> {
+	return run5x(args, stdin, { FORCE_TTY: "1" });
 }
 
 function parseJson(stdout: string): Record<string, unknown> {
@@ -241,5 +257,222 @@ describe("5x prompt input", () => {
 		expect(data.ok).toBe(true);
 		const payload = data.data as { input: string };
 		expect(payload.input).toBe(input);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Interactive choose (FORCE_TTY=1)
+// ---------------------------------------------------------------------------
+
+describe("5x prompt choose (interactive)", () => {
+	test("accepts numeric selection", async () => {
+		const result = await run5xInteractive(
+			["prompt", "choose", "Pick", "--options", "red,green,blue"],
+			"2\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { choice: string }).choice).toBe("green");
+	});
+
+	test("accepts text selection (case-insensitive)", async () => {
+		const result = await run5xInteractive(
+			["prompt", "choose", "Pick", "--options", "red,green,blue"],
+			"GREEN\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { choice: string }).choice).toBe("green");
+	});
+
+	test("empty input with default returns default", async () => {
+		const result = await run5xInteractive(
+			[
+				"prompt",
+				"choose",
+				"Pick",
+				"--options",
+				"red,green,blue",
+				"--default",
+				"green",
+			],
+			"\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { choice: string }).choice).toBe("green");
+	});
+
+	test("invalid then valid input succeeds (reprompt)", async () => {
+		// Send invalid input "xyz" first, then valid "1" — should reprompt and accept "1"
+		const result = await run5xInteractive(
+			["prompt", "choose", "Pick", "--options", "red,green,blue"],
+			"xyz\n1\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { choice: string }).choice).toBe("red");
+		// Verify reprompt message appeared on stderr
+		expect(result.stderr).toContain("Invalid selection");
+	});
+
+	test("EOF with default returns default", async () => {
+		// Empty stdin (pipe closes immediately) = EOF
+		const result = await run5xInteractive(
+			[
+				"prompt",
+				"choose",
+				"Pick",
+				"--options",
+				"red,green,blue",
+				"--default",
+				"blue",
+			],
+			"",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { choice: string }).choice).toBe("blue");
+	});
+
+	test("EOF without default returns EOF error", async () => {
+		const result = await run5xInteractive(
+			["prompt", "choose", "Pick", "--options", "red,green,blue"],
+			"",
+		);
+		expect(result.exitCode).toBe(3);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(false);
+		expect((data.error as { code: string }).code).toBe("EOF");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Interactive confirm (FORCE_TTY=1)
+// ---------------------------------------------------------------------------
+
+describe("5x prompt confirm (interactive)", () => {
+	test("accepts 'y' input", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?"],
+			"y\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(true);
+	});
+
+	test("accepts 'n' input", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?"],
+			"n\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(false);
+	});
+
+	test("accepts 'yes' input (case-insensitive)", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?"],
+			"YES\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(true);
+	});
+
+	test("empty input with default returns default", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?", "--default", "yes"],
+			"\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(true);
+	});
+
+	test("invalid then valid input succeeds (reprompt)", async () => {
+		// Send invalid "maybe" first, then valid "y"
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?"],
+			"maybe\ny\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(true);
+		// Verify reprompt message appeared on stderr
+		expect(result.stderr).toContain("Invalid input");
+	});
+
+	test("EOF with default returns default", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?", "--default", "no"],
+			"",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { confirmed: boolean }).confirmed).toBe(false);
+	});
+
+	test("EOF without default returns EOF error", async () => {
+		const result = await run5xInteractive(
+			["prompt", "confirm", "Continue?"],
+			"",
+		);
+		expect(result.exitCode).toBe(3);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(false);
+		expect((data.error as { code: string }).code).toBe("EOF");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Interactive input (FORCE_TTY=1)
+// ---------------------------------------------------------------------------
+
+describe("5x prompt input (interactive)", () => {
+	test("reads single line interactively", async () => {
+		const result = await run5xInteractive(
+			["prompt", "input", "Enter text"],
+			"hello\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { input: string }).input).toBe("hello");
+	});
+
+	test("EOF on single-line input returns empty string", async () => {
+		const result = await run5xInteractive(
+			["prompt", "input", "Enter text"],
+			"",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { input: string }).input).toBe("");
+	});
+
+	test("reads multiline interactively (Ctrl+D / EOF terminates)", async () => {
+		const result = await run5xInteractive(
+			["prompt", "input", "Enter text", "--multiline"],
+			"line one\nline two\n",
+		);
+		expect(result.exitCode).toBe(0);
+		const data = parseJson(result.stdout);
+		expect(data.ok).toBe(true);
+		expect((data.data as { input: string }).input).toBe("line one\nline two\n");
 	});
 });
