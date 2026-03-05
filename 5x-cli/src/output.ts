@@ -9,11 +9,12 @@
  *   0 — Success
  *   1 — General error / unhandled
  *   2 — TEMPLATE_NOT_FOUND, PLAN_NOT_FOUND, PROVIDER_NOT_FOUND, INVALID_PROVIDER
- *   3 — NON_INTERACTIVE
+ *   3 — NON_INTERACTIVE, EOF (interactive prompt required / stdin closed)
  *   4 — PLAN_LOCKED
  *   5 — DIRTY_WORKTREE
  *   6 — MAX_STEPS_EXCEEDED
  *   7 — INVALID_STRUCTURED_OUTPUT
+ * 130 — INTERRUPTED (prompt cancelled via SIGINT)
  */
 
 // ---------------------------------------------------------------------------

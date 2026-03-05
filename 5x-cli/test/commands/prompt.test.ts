@@ -37,14 +37,14 @@ async function run5x(
 }
 
 /**
- * Run with FORCE_TTY=1 to exercise interactive code paths.
+ * Run with 5X_FORCE_TTY=1 to exercise interactive code paths.
  * stdin content is piped in and then the pipe closes (triggering EOF after data).
  */
 async function run5xInteractive(
 	args: string[],
 	stdin: string,
 ): Promise<CmdResult> {
-	return run5x(args, stdin, { FORCE_TTY: "1" });
+	return run5x(args, stdin, { "5X_FORCE_TTY": "1" });
 }
 
 function parseJson(stdout: string): Record<string, unknown> {
@@ -261,7 +261,7 @@ describe("5x prompt input", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Interactive choose (FORCE_TTY=1)
+// Interactive choose (5X_FORCE_TTY=1)
 // ---------------------------------------------------------------------------
 
 describe("5x prompt choose (interactive)", () => {
@@ -353,7 +353,7 @@ describe("5x prompt choose (interactive)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Interactive confirm (FORCE_TTY=1)
+// Interactive confirm (5X_FORCE_TTY=1)
 // ---------------------------------------------------------------------------
 
 describe("5x prompt confirm (interactive)", () => {
@@ -439,7 +439,7 @@ describe("5x prompt confirm (interactive)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Interactive input (FORCE_TTY=1)
+// Interactive input (5X_FORCE_TTY=1)
 // ---------------------------------------------------------------------------
 
 describe("5x prompt input (interactive)", () => {

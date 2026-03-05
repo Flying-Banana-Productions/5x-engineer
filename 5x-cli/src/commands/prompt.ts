@@ -18,7 +18,7 @@ import { outputError, outputSuccess } from "../output.js";
 
 function isTTY(): boolean {
 	// Allow tests to force interactive mode via env var.
-	if (process.env.FORCE_TTY === "1") return true;
+	if (process.env["5X_FORCE_TTY"] === "1") return true;
 	// Bun test sets NODE_ENV=test even when stdin is a TTY. Disable interactive
 	// prompts in test runs to avoid hanging suites.
 	if (process.env.NODE_ENV === "test") return false;

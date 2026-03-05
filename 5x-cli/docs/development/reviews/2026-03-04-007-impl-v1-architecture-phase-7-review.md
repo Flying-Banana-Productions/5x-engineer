@@ -52,3 +52,17 @@ Recommendation:
 
 **P1 recommended**
 - [ ] `prompt choose/confirm` interactive invalid input policy is explicit and tested
+
+## Addendum (2026-03-05) — Re-review after fixes (`68edc79`)
+
+### What's Addressed
+
+- P0.1 fixed: `readLine()` now resolves on EOF via an `end` listener; `choose`/`confirm` handle EOF deterministically (`src/commands/prompt.ts`)
+- P1.1 addressed: interactive `choose`/`confirm` now reprompt on invalid input instead of silently defaulting; added interactive-path tests via `FORCE_TTY=1` (`test/commands/prompt.test.ts`)
+- P2 addressed: `src/commands/quality-v1.ts` comment no longer advertises `--config`
+- Cancel semantics improved: SIGINT now returns `INTERRUPTED` with exit code 130 (`src/output.ts`, `src/commands/prompt.ts`)
+
+### Remaining Concerns
+
+- Docs/contract drift: new error codes `EOF` (exit 3) and `INTERRUPTED` (exit 130) are not reflected in the exit-code docstring in `src/output.ts` nor in the implementation plan’s exit-code table; document these (or rename/scope them) so skills can rely on them
+- `FORCE_TTY` is a useful test hook but is now part of runtime behavior; consider namespacing (e.g. `5X_FORCE_TTY`) or scoping to test-only to reduce surprise

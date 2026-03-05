@@ -31,11 +31,12 @@ Why this change: The v0 state machines are brittle (every edge case requires new
 | 0 | — | Success |
 | 1 | (default) | General error / unhandled |
 | 2 | `TEMPLATE_NOT_FOUND`, `PLAN_NOT_FOUND`, `PROVIDER_NOT_FOUND`, `INVALID_PROVIDER` | Resource not found / invalid |
-| 3 | `NON_INTERACTIVE` | Interactive prompt required but stdin is not a TTY |
+| 3 | `NON_INTERACTIVE`, `EOF` | Interactive prompt required but stdin is not a TTY / stdin closed without valid input |
 | 4 | `PLAN_LOCKED` | Plan lock held by another process |
 | 5 | `DIRTY_WORKTREE` | Uncommitted changes without `--allow-dirty` |
 | 6 | `MAX_STEPS_EXCEEDED` | Run hit `maxStepsPerRun` limit |
 | 7 | `INVALID_STRUCTURED_OUTPUT` | Agent returned unparseable structured output |
+| 130 | `INTERRUPTED` | Prompt cancelled via SIGINT (Ctrl+C) |
 
 **Dashboard reads from v1 schema (cross-initiative decision).** `docs/development/006-impl-dashboard.md` assumes v0 tables (`run_events`, `agent_results`, `quality_results`, `phase_progress`). This plan's v4 migration drops those tables. **Decision:** the dashboard implementation (006) must be updated to read from the v1 schema (`runs`, `steps`, `plans`) before or concurrently with this work. The v4 migration does NOT provide a compatibility view/layer for the old tables. If the dashboard ships first, it must be patched to use v1 tables before the v4 migration runs. This is called out in the "Not In Scope" section as an external dependency.
 
