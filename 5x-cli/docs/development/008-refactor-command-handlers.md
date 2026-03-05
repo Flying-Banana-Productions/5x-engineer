@@ -2,7 +2,7 @@
 
 **Version:** 1.1
 **Created:** March 5, 2026
-**Status:** Draft
+**Status:** Complete
 **Review:** `docs/development/reviews/2026-03-05-008-refactor-command-handlers-plan-review.md`
 
 ## Overview
@@ -457,10 +457,10 @@ import { ensureSkills as ensureSkillsFromInit } from "../../src/commands/init.ha
 
 **Completion gate:** Full test suite, typecheck, and lint pass. No business logic remains in citty adapter files.
 
-- [ ] Run `bun test` — all tests pass
-- [ ] Run `bunx --bun tsc --noEmit` — no type errors
-- [ ] Run `bunx --bun @biomejs/biome check src/ test/` — no lint errors
-- [ ] Manual verification: each adapter file contains only `defineCommand`, args definitions, arg parsing/normalization (string→number via `parse-args.ts`), and a call to the handler function. No IO side effects, no DB calls, no git operations, no `outputSuccess`/`outputError` calls. No handler file imports `citty`.
+- [x] Run `bun test` — all tests pass
+- [x] Run `bunx --bun tsc --noEmit` — no type errors
+- [x] Run `bunx --bun @biomejs/biome check src/ test/` — no lint errors
+- [x] Manual verification: each adapter file contains only `defineCommand`, args definitions, arg parsing/normalization (string→number via `parse-args.ts`), and a call to the handler function. No IO side effects, no DB calls, no git operations, no `outputSuccess`/`outputError` calls. No handler file imports `citty`.
 
 ## Files Touched
 
