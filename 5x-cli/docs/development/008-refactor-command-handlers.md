@@ -286,7 +286,7 @@ const stateCmd = defineCommand({
 
 **Completion gate:** `src/commands/invoke.handler.ts` exports `invokeAgent`. `invoke.ts` is a thin adapter. All invoke tests pass.
 
-- [ ] Create `src/commands/invoke.handler.ts`:
+- [x] Create `src/commands/invoke.handler.ts`:
 
 ```typescript
 // src/commands/invoke.handler.ts
@@ -320,7 +320,7 @@ export async function invokeAgent(role: InvokeRole, params: InvokeParams): Promi
 
   `parseTimeout()` stays in the adapter (or moves to `parse-args.ts`) since it converts a CLI string to `number | undefined` — the handler receives `timeoutSeconds?: number`.
 
-- [ ] Slim `src/commands/invoke.ts` to adapter-only:
+- [x] Slim `src/commands/invoke.ts` to adapter-only:
 
 ```typescript
 // src/commands/invoke.ts — adapter (~80 lines, down from 472)
