@@ -8,7 +8,8 @@ import {
 	outputError,
 	outputSuccess,
 } from "../src/output.js";
-import { generateRunId, nextLogSequence } from "../src/run-id.js";
+import { nextLogSequence } from "../src/providers/log-writer.js";
+import { generateRunId } from "../src/run-id.js";
 
 // ---------------------------------------------------------------------------
 // CliError

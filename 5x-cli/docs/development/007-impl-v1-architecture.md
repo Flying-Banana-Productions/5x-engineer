@@ -680,15 +680,15 @@ const main = defineCommand({
 
 **Completion gate:** The existing SSE event router in `src/utils/event-router.ts` is refactored to use `AgentEvent` as its canonical output type, consolidating the minimal mapper from Phase 1's `opencode.ts` into a shared `event-mapper.ts`. NDJSON logs use `AgentEvent` format exclusively. `StreamWriter` renders `AgentEvent` instead of raw SSE events.
 
-- [ ] Create `src/providers/event-mapper.ts` that maps provider-native events to `AgentEvent`:
+- [x] Create `src/providers/event-mapper.ts` that maps provider-native events to `AgentEvent`:
   - OpenCode: reuse logic from `src/utils/event-router.ts` (currently maps SSE events to StreamWriter calls) — refactor to emit `AgentEvent` objects instead
   - Plugin providers: each plugin is responsible for its own event mapping (the `runStreamed()` contract already requires `AsyncIterable<AgentEvent>`)
 
-- [ ] Update `src/utils/stream-writer.ts` to accept `AgentEvent` objects directly (instead of provider-specific event routing).
+- [x] Update `src/utils/stream-writer.ts` to accept `AgentEvent` objects directly (instead of provider-specific event routing).
 
-- [ ] Update NDJSON log writing (currently in `src/agents/opencode.ts:295-475`) to write `AgentEvent` objects. Move log writing logic to a shared `src/providers/log-writer.ts`.
+- [x] Update NDJSON log writing (currently in `src/agents/opencode.ts:295-475`) to write `AgentEvent` objects. Move log writing logic to a shared `src/providers/log-writer.ts`.
 
-- [ ] Write tests in `test/providers/event-mapper.test.ts` covering:
+- [x] Write tests in `test/providers/event-mapper.test.ts` covering:
   - OpenCode SSE → AgentEvent mapping (text, reasoning, tool_start, tool_end, usage, done)
   - Tool input summary formatting (bash→command, edit→file, etc.)
   - Error events

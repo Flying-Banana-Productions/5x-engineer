@@ -18,6 +18,12 @@ import {
 } from "@opencode-ai/sdk/v2";
 
 import { isStructuredOutputError } from "../protocol.js";
+import {
+	createEventMapperState,
+	mapSseToAgentEvent,
+	resolveSessionIdWithContext,
+	type SessionResolveContext,
+} from "./event-mapper.js";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -158,235 +164,11 @@ function buildStructuredSummaryPrompt(schema: JSONSchema): string {
 }
 
 // ---------------------------------------------------------------------------
-// SSE → AgentEvent minimal mapper
+// SSE → AgentEvent mapping
 // ---------------------------------------------------------------------------
 
-/**
- * Extract session ID from an OpenCode SSE event (best-effort).
- * Ported from v0 `getEventSessionId()`.
- */
-function getEventSessionId(event: OpenCodeEvent): string | undefined {
-	const ev = event as Record<string, unknown>;
-	const type = typeof ev.type === "string" ? ev.type : undefined;
-	const props = ev.properties as Record<string, unknown> | undefined;
-	if (!props) return undefined;
-
-	if (typeof props.sessionID === "string") return props.sessionID;
-	if (typeof props.sessionId === "string") return props.sessionId;
-
-	const info = props.info as Record<string, unknown> | undefined;
-	if (info && typeof info.sessionID === "string") return info.sessionID;
-	if (info && typeof info.sessionId === "string") return info.sessionId;
-
-	if (type?.startsWith("session.") && info && typeof info.id === "string") {
-		return info.id;
-	}
-
-	const part = props.part as Record<string, unknown> | undefined;
-	if (part && typeof part.sessionID === "string") return part.sessionID;
-	if (part && typeof part.sessionId === "string") return part.sessionId;
-
-	// Deep fallback
-	return findSessionIdDeep(props);
-}
-
-function findSessionIdDeep(
-	value: unknown,
-	depth = 0,
-	seen = new Set<unknown>(),
-): string | undefined {
-	if (depth > 4 || value == null || typeof value !== "object") return undefined;
-	if (seen.has(value)) return undefined;
-	seen.add(value);
-
-	if (Array.isArray(value)) {
-		for (const item of value) {
-			const found = findSessionIdDeep(item, depth + 1, seen);
-			if (found) return found;
-		}
-		return undefined;
-	}
-
-	const obj = value as Record<string, unknown>;
-	if (typeof obj.sessionID === "string") return obj.sessionID;
-	if (typeof obj.sessionId === "string") return obj.sessionId;
-
-	for (const nested of Object.values(obj)) {
-		const found = findSessionIdDeep(nested, depth + 1, seen);
-		if (found) return found;
-	}
-	return undefined;
-}
-
-/** Context for resolving session IDs across related events. */
-interface SessionResolveContext {
-	partToSession: Map<string, string>;
-	messageToSession: Map<string, string>;
-}
-
-function resolveSessionIdWithContext(
-	event: OpenCodeEvent,
-	ctx: SessionResolveContext,
-): string | undefined {
-	const direct = getEventSessionId(event);
-	const ev = event as Record<string, unknown>;
-	const type = ev.type as string | undefined;
-	const props = ev.properties as Record<string, unknown> | undefined;
-	const info = props?.info as Record<string, unknown> | undefined;
-	const part = props?.part as Record<string, unknown> | undefined;
-
-	const getStr = (obj: Record<string, unknown> | undefined, key: string) => {
-		const v = obj?.[key];
-		return typeof v === "string" ? v : undefined;
-	};
-	const getStrAny = (
-		obj: Record<string, unknown> | undefined,
-		keys: readonly string[],
-	) => {
-		for (const k of keys) {
-			const v = getStr(obj, k);
-			if (v) return v;
-		}
-		return undefined;
-	};
-
-	if (direct) {
-		const messageId =
-			getStr(info, "id") ?? getStrAny(part, ["messageID", "messageId"]);
-		if (messageId) ctx.messageToSession.set(messageId, direct);
-
-		const partId = getStr(part, "id");
-		if (partId) ctx.partToSession.set(partId, direct);
-		return direct;
-	}
-
-	if (type === "message.part.delta" && props) {
-		const partId = getStrAny(props, ["partID", "partId"]);
-		if (partId) {
-			const fromPart = ctx.partToSession.get(partId);
-			if (fromPart) return fromPart;
-		}
-		const messageId = getStrAny(props, ["messageID", "messageId"]);
-		if (messageId) {
-			const fromMessage = ctx.messageToSession.get(messageId);
-			if (fromMessage) return fromMessage;
-		}
-	}
-
-	if (type === "message.part.updated" && part) {
-		const messageId = getStrAny(part, ["messageID", "messageId"]);
-		if (messageId) {
-			const fromMessage = ctx.messageToSession.get(messageId);
-			if (fromMessage) {
-				const partId = getStr(part, "id");
-				if (partId) ctx.partToSession.set(partId, fromMessage);
-				return fromMessage;
-			}
-		}
-	}
-
-	return undefined;
-}
-
-/**
- * Map an OpenCode SSE event to an AgentEvent.
- * Returns undefined for events that should be skipped (non-content events).
- *
- * This is a minimal mapper — Phase 11 consolidates into a shared event-mapper.
- */
-function mapSseToAgentEvent(event: OpenCodeEvent): AgentEvent | undefined {
-	const ev = event as Record<string, unknown>;
-	const type = ev.type as string | undefined;
-	const props = ev.properties as Record<string, unknown> | undefined;
-
-	if (type === "message.part.updated" && props) {
-		const part = props.part as Record<string, unknown> | undefined;
-		const partType = part?.type;
-
-		// Text delta
-		if (partType === "text") {
-			const delta = props.delta as string | undefined;
-			if (delta) return { type: "text", delta };
-			// Full text fallback — not great for streaming, but better than nothing
-			const text = part?.text;
-			if (typeof text === "string" && text.length > 0) {
-				return { type: "text", delta: text };
-			}
-		}
-
-		// Reasoning delta
-		if (partType === "reasoning") {
-			const delta = props.delta as string | undefined;
-			if (delta) return { type: "reasoning", delta };
-		}
-
-		// Tool events
-		if (partType === "tool" && part) {
-			const tool = typeof part.tool === "string" ? part.tool : "unknown";
-			const state = part.state as Record<string, unknown> | undefined;
-			const status = state?.status as string | undefined;
-			const input = state?.input;
-
-			if (status === "running" || status === "pending") {
-				const inputSummary = summarizeToolInput(tool, input);
-				return { type: "tool_start", tool, input_summary: inputSummary };
-			}
-
-			if (status === "completed" || status === "error") {
-				const output =
-					typeof state?.output === "string"
-						? (state.output as string)
-						: JSON.stringify(state?.output ?? "");
-				return {
-					type: "tool_end",
-					tool,
-					output: output.slice(0, 500),
-					error: status === "error",
-				};
-			}
-		}
-	}
-
-	// Legacy delta events
-	if (type === "message.part.delta" && props) {
-		const delta = props.delta as string | undefined;
-		if (delta) {
-			// Can't distinguish text vs reasoning without part registration context.
-			// Treat as text (the common case). Phase 11 will do better with full state.
-			return { type: "text", delta };
-		}
-	}
-
-	return undefined;
-}
-
-/**
- * Summarize tool input for the `tool_start` event.
- */
-function summarizeToolInput(tool: string, input: unknown): string {
-	if (!input || typeof input !== "object") return "";
-	const obj = input as Record<string, unknown>;
-
-	switch (tool) {
-		case "bash":
-		case "shell":
-			return typeof obj.command === "string" ? obj.command : "";
-		case "edit":
-		case "write":
-		case "read":
-			return typeof obj.filePath === "string"
-				? obj.filePath
-				: typeof obj.path === "string"
-					? obj.path
-					: "";
-		case "glob":
-			return typeof obj.pattern === "string" ? obj.pattern : "";
-		case "grep":
-			return typeof obj.pattern === "string" ? obj.pattern : "";
-		default:
-			return JSON.stringify(input).slice(0, 100);
-	}
-}
+// NOTE: Event mapping functions are imported from event-mapper.ts.
+// This includes: getEventSessionId, resolveSessionIdWithContext, mapSseToAgentEvent
 
 // ---------------------------------------------------------------------------
 // OpenCode Session
@@ -572,6 +354,9 @@ class OpenCodeSession implements AgentSession {
 			messageToSession: new Map(),
 		};
 
+		// Event mapper state for deduplication and part tracking
+		const mapperState = createEventMapperState();
+
 		let streamRef: AsyncIterable<OpenCodeEvent> | undefined;
 		try {
 			const { stream } = await this.client.event.subscribe(
@@ -684,7 +469,7 @@ class OpenCodeSession implements AgentSession {
 				resetInactivityTimeout();
 
 				// Map to AgentEvent
-				const agentEvent = mapSseToAgentEvent(event);
+				const agentEvent = mapSseToAgentEvent(event, mapperState);
 				if (agentEvent) {
 					yield agentEvent;
 				}

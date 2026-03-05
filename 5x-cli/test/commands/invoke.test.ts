@@ -282,7 +282,9 @@ describe("invoke", () => {
 		test("nextLogSequence returns 001 for empty directory", async () => {
 			const dir = makeTmpDir();
 			try {
-				const { nextLogSequence } = await import("../../src/run-id.js");
+				const { nextLogSequence } = await import(
+					"../../src/providers/log-writer.js"
+				);
 				const seq = nextLogSequence(dir);
 				expect(seq).toBe("001");
 			} finally {
@@ -297,7 +299,9 @@ describe("invoke", () => {
 				writeFileSync(join(dir, "agent-001.ndjson"), "");
 				writeFileSync(join(dir, "agent-002.ndjson"), "");
 
-				const { nextLogSequence } = await import("../../src/run-id.js");
+				const { nextLogSequence } = await import(
+					"../../src/providers/log-writer.js"
+				);
 				const seq = nextLogSequence(dir);
 				expect(seq).toBe("003");
 			} finally {
@@ -306,7 +310,9 @@ describe("invoke", () => {
 		});
 
 		test("nextLogSequence returns 001 for nonexistent directory", async () => {
-			const { nextLogSequence } = await import("../../src/run-id.js");
+			const { nextLogSequence } = await import(
+				"../../src/providers/log-writer.js"
+			);
 			const seq = nextLogSequence("/nonexistent/dir/12345");
 			expect(seq).toBe("001");
 		});
@@ -663,7 +669,7 @@ describe("invoke", () => {
 			}
 		});
 
-		test("log sequence numbers increment correctly", () => {
+		test("log sequence numbers increment correctly", async () => {
 			const dir = makeTmpDir();
 			try {
 				const logDir = join(dir, ".5x", "logs", "run_test456");
@@ -673,9 +679,9 @@ describe("invoke", () => {
 				writeFileSync(join(logDir, "agent-001.ndjson"), "");
 				writeFileSync(join(logDir, "agent-002.ndjson"), "");
 
-				const { nextLogSequence } = require("../../src/run-id.js") as {
-					nextLogSequence: (dir: string) => string;
-				};
+				const { nextLogSequence } = await import(
+					"../../src/providers/log-writer.js"
+				);
 				const seq = nextLogSequence(logDir);
 				expect(seq).toBe("003");
 			} finally {

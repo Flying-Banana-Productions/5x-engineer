@@ -8,7 +8,6 @@
  * the result in a JSON envelope.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { applyModelOverrides, loadConfig } from "../config.js";
@@ -24,14 +23,13 @@ import {
 	ReviewerVerdictSchema,
 } from "../protocol.js";
 import { createProvider } from "../providers/factory.js";
+import { appendLogLine, prepareLogPath } from "../providers/log-writer.js";
 import type {
-	AgentEvent,
 	AgentProvider,
 	AgentSession,
 	RunOptions,
 	RunResult,
 } from "../providers/types.js";
-import { nextLogSequence } from "../run-id.js";
 import {
 	loadTemplate,
 	renderTemplate,
@@ -112,24 +110,6 @@ function parseTimeout(raw: string | undefined): number | undefined {
 }
 
 /**
- * Create NDJSON log directory and return the log file path.
- * The runId must already be validated via validateRunId().
- */
-function prepareLogPath(projectRoot: string, runId: string): string {
-	const logDir = join(projectRoot, ".5x", "logs", runId);
-	mkdirSync(logDir, { recursive: true, mode: 0o700 });
-
-	const seq = nextLogSequence(logDir);
-	return join(logDir, `agent-${seq}.ndjson`);
-}
-
-/** Write a single AgentEvent as a JSON line to an NDJSON log file. */
-function appendLogLine(logPath: string, event: AgentEvent): void {
-	const line = JSON.stringify({ ...event, ts: new Date().toISOString() });
-	appendFileSync(logPath, `${line}\n`);
-}
-
-/**
  * Run the agent invocation with streaming, writing events to the NDJSON log
  * and optionally rendering console output.
  */
@@ -157,35 +137,11 @@ async function invokeStreamed(
 
 			// Console rendering (stderr, so stdout is reserved for JSON envelope)
 			if (writer) {
-				switch (event.type) {
-					case "text":
-						writer.writeText(event.delta);
-						break;
-					case "reasoning":
-						if (showReasoning) {
-							writer.writeThinking(event.delta);
-						}
-						break;
-					case "tool_start":
-						writer.endBlock();
-						writer.writeLine(`[tool] ${event.tool}: ${event.input_summary}`, {
-							dim: true,
-						});
-						break;
-					case "tool_end":
-						if (event.error) {
-							writer.writeLine(`[tool] ${event.tool}: ERROR`, { dim: true });
-						}
-						break;
-					case "error":
-						writer.endBlock();
-						writer.writeLine(`[error] ${event.message}`, { dim: true });
-						break;
-					case "done":
-						result = event.result;
-						break;
-				}
-			} else if (event.type === "done") {
+				writer.writeEvent(event, { showReasoning });
+			}
+
+			// Capture result from done event
+			if (event.type === "done") {
 				result = event.result;
 			}
 		}
@@ -315,7 +271,8 @@ async function invokeAgent(
 	}
 
 	// 4. Prepare log path (--run is required and already validated)
-	const logPath = prepareLogPath(projectRoot, args.run);
+	const logDir = join(projectRoot, ".5x", "logs", args.run);
+	const logPath = prepareLogPath(logDir);
 
 	// 5. Build run options
 	const outputSchema =
