@@ -13,6 +13,8 @@ import { outputError } from "../output.js";
 
 /**
  * Parse and validate an integer CLI argument.
+ * Rejects negative values by default (non-negative only).
+ * Use `{ positive: true }` to also reject zero.
  * Throws INVALID_ARGS on failure.
  */
 export function parseIntArg(

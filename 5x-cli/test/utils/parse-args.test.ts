@@ -170,4 +170,9 @@ describe("parseTimeout", () => {
 	test("rejects float string", () => {
 		expect(() => parseTimeout("1.5")).toThrow(CliError);
 	});
+
+	test("rejects leading-zero forms like '05'", () => {
+		// String(parseInt("05")) === "5" !== "05", so strict equality rejects it
+		expect(() => parseTimeout("05")).toThrow(CliError);
+	});
 });
