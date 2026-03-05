@@ -244,7 +244,13 @@ async function invokeAgent(
 		if (err instanceof CliError) throw err;
 		// ProviderNotFoundError / InvalidProviderError from factory
 		if (err instanceof Error && "code" in err && "exitCode" in err) {
-			outputError((err as { code: string }).code, err.message);
+			const exitCode = (err as { exitCode: number }).exitCode;
+			outputError(
+				(err as { code: string }).code,
+				err.message,
+				undefined,
+				exitCode,
+			);
 		}
 		throw err;
 	}

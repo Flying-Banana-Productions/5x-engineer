@@ -52,14 +52,16 @@ export class InvalidProviderError extends Error {
 // Plugin resolution
 // ---------------------------------------------------------------------------
 
-function resolvePackageName(providerName: string): string {
+export function resolvePackageName(providerName: string): string {
 	if (providerName.startsWith("@")) {
 		return providerName;
 	}
 	return `@5x-ai/provider-${providerName}`;
 }
 
-async function loadPlugin(providerName: string): Promise<ProviderPlugin> {
+export async function loadPlugin(
+	providerName: string,
+): Promise<ProviderPlugin> {
 	const packageName = resolvePackageName(providerName);
 
 	let mod: Record<string, unknown>;
