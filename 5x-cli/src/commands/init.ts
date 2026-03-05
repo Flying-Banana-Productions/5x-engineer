@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defineCommand } from "citty";
+import { ensureSkills } from "../skills/loader.js";
 import {
 	DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
 	DEFAULT_REVIEW_TEMPLATE,
@@ -245,6 +246,18 @@ export default defineCommand({
 			console.log(`  Skipped .5x/templates/prompts/${name} (already exists)`);
 		}
 
+		// 2c. Scaffold skills (agent workflows, customizable)
+		const skillsResult = ensureSkills(projectRoot, Boolean(args.force));
+		for (const name of skillsResult.created) {
+			console.log(`  Created .5x/skills/${name}`);
+		}
+		for (const name of skillsResult.overwritten) {
+			console.log(`  Overwrote .5x/skills/${name}`);
+		}
+		for (const name of skillsResult.skipped) {
+			console.log(`  Skipped .5x/skills/${name} (already exists)`);
+		}
+
 		// 3. Update .gitignore
 		const gitignoreResult = ensureGitignore(projectRoot);
 		if (gitignoreResult.created) {
@@ -264,6 +277,7 @@ export default defineCommand({
 export {
 	ensureGitignore,
 	ensurePromptTemplates,
+	ensureSkills,
 	ensureTemplateFiles,
 	generateConfigContent,
 };

@@ -69,3 +69,15 @@ All previously raised items (P0.1, P1.1, P1.2, P2.1, P2.2) are addressed by `2ae
 ### Remaining Concerns
 
 - New: `--opencode-url` override is not URL-validated (schema validates file config, but CLI path bypasses it). Recommendation: validate in `src/commands/invoke.ts` (or inside `applyModelOverrides`) using `new URL()` / `z.string().url()`.
+
+## Addendum (2026-03-05) — Follow-up on `6dca41a`
+
+`6dca41a` addresses the remaining concern from the prior addendum by validating the CLI `--opencode-url` override inside `applyModelOverrides()` using `new URL()`, with added test coverage. Local `bun test` passes.
+
+### What's Addressed
+
+- `--opencode-url` now fails fast on invalid values (same validation intent as `z.string().url()` for file config).
+
+### Remaining Concerns
+
+- None for Phase 8.

@@ -597,16 +597,16 @@ const FiveXConfigSchema = z.object({
 
 **Completion gate:** `5x init` scaffolds `.5x/skills/` with three bundled skill files. Skills are standalone markdown that reference v1 CLI commands.
 
-- [ ] Create bundled skill files:
+- [x] Create bundled skill files:
   - `.5x/skills/5x-plan.md` — from `102-agent-skills.md:68-162`
   - `.5x/skills/5x-plan-review.md` — from `102-agent-skills.md:170-312`
   - `.5x/skills/5x-phase-execution.md` — from `102-agent-skills.md:320-602`
 
-- [ ] Store skill content as importable text (same pattern as templates in `src/templates/loader.ts:8-19`).
+- [x] Store skill content as importable text (same pattern as templates in `src/templates/loader.ts:8-19`).
 
-- [ ] Update `src/commands/init.ts` to copy bundled skills to `.5x/skills/` during scaffolding. Skip if files already exist (don't overwrite user customizations).
+- [x] Update `src/commands/init.ts` to copy bundled skills to `.5x/skills/` during scaffolding. Skip if files already exist (don't overwrite user customizations).
 
-- [ ] Write tests in `test/commands/init-skills.test.ts` validating:
+- [x] Write tests in `test/commands/init-skills.test.ts` validating:
   - Skills are created on first init
   - Existing skills are not overwritten
   - Skill content matches bundled source
