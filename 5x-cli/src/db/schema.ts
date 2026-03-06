@@ -217,6 +217,190 @@ const migrations: Migration[] = [
       `);
 		},
 	},
+	{
+		version: 4,
+		description:
+			"v1 schema: create steps table, migrate v0 data, rebuild runs, drop old tables",
+		up(db) {
+			// Step ordering is critical: rebuild `runs` BEFORE creating `steps`
+			// so there are no FK references blocking the DROP TABLE.
+
+			// 1. Rebuild runs table using SQLite table-rebuild pattern
+			// Remove: current_state, current_phase, review_path
+			// Rename: started_at → created_at, completed_at → updated_at (via COALESCE)
+			// Add: config_json
+			db.exec(`
+				CREATE TABLE runs_new (
+					id          TEXT PRIMARY KEY,
+					plan_path   TEXT NOT NULL,
+					command     TEXT,
+					status      TEXT NOT NULL DEFAULT 'active',
+					config_json TEXT,
+					created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+					updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+				)
+			`);
+			db.exec(`
+				INSERT INTO runs_new (id, plan_path, command, status, created_at, updated_at)
+				SELECT
+					id,
+					plan_path,
+					command,
+					status,
+					started_at,
+					COALESCE(completed_at, started_at)
+				FROM runs
+			`);
+			// Migrate data from v0 tables BEFORE dropping runs, since they
+			// reference runs(id) via FK. We store into a temp table first
+			// so we can drop runs cleanly.
+
+			// 2a. Stage agent_results data into a temp table
+			db.exec(`
+				CREATE TEMP TABLE _mig_agent AS
+				SELECT
+					run_id,
+					role || ':' || template || ':' || result_type AS step_name,
+					phase,
+					iteration,
+					result_json,
+					session_id,
+					model,
+					tokens_in,
+					tokens_out,
+					cost_usd,
+					duration_ms,
+					log_path,
+					created_at
+				FROM agent_results
+			`);
+
+			// 2b. Stage quality_results data
+			db.exec(`
+				CREATE TEMP TABLE _mig_quality AS
+				SELECT
+					run_id,
+					'quality:check' AS step_name,
+					phase,
+					attempt AS iteration,
+					results AS result_json,
+					duration_ms,
+					created_at
+				FROM quality_results
+			`);
+
+			// 2c. Stage run_events data
+			db.exec(`
+				CREATE TEMP TABLE _mig_events AS
+				SELECT
+					run_id,
+					'event:' || event_type AS step_name,
+					phase,
+					COALESCE(iteration, 1) AS iteration,
+					COALESCE(data, '{}') AS result_json,
+					created_at
+				FROM run_events
+			`);
+
+			// 2d. Stage phase_progress data (approved only).
+			// NOTE: "latest run" is determined by rowid (insertion order) rather
+			// than started_at/created_at. In practice these are equivalent since
+			// runs are inserted sequentially, but rowid is used here because it
+			// is monotonically increasing and immune to clock skew.
+			db.exec(`
+				CREATE TEMP TABLE _mig_phases AS
+				SELECT
+					r.id AS run_id,
+					'phase:complete' AS step_name,
+					pp.phase,
+					1 AS iteration,
+					json_object(
+						'implementation_done', pp.implementation_done,
+						'review_readiness', pp.latest_review_readiness,
+						'review_approved', pp.review_approved
+					) AS result_json,
+					pp.updated_at AS created_at
+				FROM phase_progress pp
+				INNER JOIN runs r ON r.plan_path = pp.plan_path
+				WHERE pp.review_approved = 1
+				AND r.id = (
+					SELECT r2.id FROM runs r2
+					WHERE r2.plan_path = pp.plan_path
+					ORDER BY r2.rowid DESC LIMIT 1
+				)
+			`);
+
+			// 3. Drop old tables (now safe — data is staged in temp tables)
+			db.exec("DROP TABLE IF EXISTS agent_results");
+			db.exec("DROP TABLE IF EXISTS quality_results");
+			db.exec("DROP TABLE IF EXISTS run_events");
+			db.exec("DROP TABLE IF EXISTS phase_progress");
+
+			// 4. Drop old runs and rename new
+			db.exec("DROP TABLE runs");
+			db.exec("ALTER TABLE runs_new RENAME TO runs");
+			db.exec("CREATE INDEX idx_runs_plan_path ON runs(plan_path)");
+			db.exec("CREATE INDEX idx_runs_status ON runs(status)");
+
+			// 5. Create the steps table
+			db.exec(`
+				CREATE TABLE steps (
+					id            INTEGER PRIMARY KEY AUTOINCREMENT,
+					run_id        TEXT NOT NULL REFERENCES runs(id),
+					step_name     TEXT NOT NULL,
+					phase         TEXT,
+					iteration     INTEGER NOT NULL DEFAULT 1,
+					result_json   TEXT NOT NULL,
+					session_id    TEXT,
+					model         TEXT,
+					tokens_in     INTEGER,
+					tokens_out    INTEGER,
+					cost_usd      REAL,
+					duration_ms   INTEGER,
+					log_path      TEXT,
+					created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+					UNIQUE(run_id, step_name, phase, iteration)
+				);
+				CREATE INDEX idx_steps_run ON steps(run_id, created_at);
+				CREATE INDEX idx_steps_phase ON steps(run_id, phase);
+			`);
+
+			// 6. Migrate staged data into steps
+			db.exec(`
+				INSERT INTO steps (run_id, step_name, phase, iteration, result_json,
+					session_id, model, tokens_in, tokens_out, cost_usd, duration_ms, log_path, created_at)
+				SELECT run_id, step_name, phase, iteration, result_json,
+					session_id, model, tokens_in, tokens_out, cost_usd, duration_ms, log_path, created_at
+				FROM _mig_agent
+			`);
+
+			db.exec(`
+				INSERT INTO steps (run_id, step_name, phase, iteration, result_json,
+					duration_ms, created_at)
+				SELECT run_id, step_name, phase, iteration, result_json,
+					duration_ms, created_at
+				FROM _mig_quality
+			`);
+
+			db.exec(`
+				INSERT INTO steps (run_id, step_name, phase, iteration, result_json, created_at)
+				SELECT run_id, step_name, phase, iteration, result_json, created_at
+				FROM _mig_events
+			`);
+
+			db.exec(`
+				INSERT INTO steps (run_id, step_name, phase, iteration, result_json, created_at)
+				SELECT run_id, step_name, phase, iteration, result_json, created_at
+				FROM _mig_phases
+			`);
+
+			// 7. Clean up temp tables
+			db.exec("DROP TABLE IF EXISTS _mig_agent");
+			db.exec("DROP TABLE IF EXISTS _mig_quality");
+			db.exec("DROP TABLE IF EXISTS _mig_events");
+			db.exec("DROP TABLE IF EXISTS _mig_phases");
+		},
+	},
 ];
 
 /**

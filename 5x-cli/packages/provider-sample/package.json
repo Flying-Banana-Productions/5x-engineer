@@ -1,0 +1,12 @@
+{
+  "name": "@5x-ai/provider-sample",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "@5x-ai/5x-cli": "file:../.."
+  }
+}

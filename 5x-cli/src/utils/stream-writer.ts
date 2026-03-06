@@ -9,6 +9,7 @@
  * for testability.
  */
 
+import type { AgentEvent } from "../providers/types.js";
 import { type AnsiConfig, resolveAnsi } from "./ansi.js";
 
 export interface StreamWriterOptions {
@@ -68,6 +69,44 @@ export class StreamWriter {
 			this.write(`${this.ansi.dim}${truncated}${this.ansi.reset}\n`);
 		} else {
 			this.write(`${truncated}\n`);
+		}
+	}
+
+	/**
+	 * Write an AgentEvent directly.
+	 * Routes the event to the appropriate write method based on event type.
+	 */
+	writeEvent(event: AgentEvent, opts?: { showReasoning?: boolean }): void {
+		switch (event.type) {
+			case "text":
+				this.writeText(event.delta);
+				break;
+			case "reasoning":
+				if (opts?.showReasoning) {
+					this.writeThinking(event.delta);
+				}
+				break;
+			case "tool_start":
+				this.endBlock();
+				this.writeLine(`[tool] ${event.tool}: ${event.input_summary}`, {
+					dim: true,
+				});
+				break;
+			case "tool_end":
+				if (event.error) {
+					this.writeLine(`[tool] ${event.tool}: ERROR`, { dim: true });
+				}
+				break;
+			case "error":
+				this.endBlock();
+				this.writeLine(`[error] ${event.message}`, { dim: true });
+				break;
+			case "usage":
+				// Usage events are not rendered to console (only logged)
+				break;
+			case "done":
+				// Done event marks the end, no console output
+				break;
 		}
 	}
 

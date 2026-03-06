@@ -58,7 +58,7 @@ export function getDb(projectRoot: string, dbPath?: string): Database {
 }
 
 /**
- * Open a read-only connection for inspection commands (e.g. `5x status`).
+ * Open a read-only connection for inspection commands (e.g. `5x run state`).
  * Does not run pragmas or create files.
  */
 export function openDbReadOnly(projectRoot: string, dbPath?: string): Database {

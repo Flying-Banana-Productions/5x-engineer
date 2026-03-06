@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, isLocked, releaseLock } from "../src/lock.js";
+import {
+	acquireLock,
+	forceReleaseLock,
+	isLocked,
+	releaseLock,
+} from "../src/lock.js";
 
 function makeTmp(): string {
 	return mkdtempSync(join(tmpdir(), "5x-lock-"));
@@ -172,20 +177,130 @@ describe("acquireLock", () => {
 });
 
 describe("releaseLock", () => {
-	test("removes lock file", () => {
+	test("removes lock file owned by current process", () => {
 		const tmp = withTmp();
 		acquireLock(tmp, "/plan.md");
 		expect(isLocked(tmp, "/plan.md").locked).toBe(true);
-		releaseLock(tmp, "/plan.md");
+		const result = releaseLock(tmp, "/plan.md");
+		expect(result.released).toBe(true);
+		expect(result.reason).toBe("released");
 		expect(isLocked(tmp, "/plan.md").locked).toBe(false);
 	});
 
-	test("is idempotent", () => {
+	test("is idempotent — releasing non-existent lock succeeds", () => {
 		const tmp = withTmp();
 		acquireLock(tmp, "/plan.md");
 		releaseLock(tmp, "/plan.md");
-		releaseLock(tmp, "/plan.md"); // should not throw
+		const result = releaseLock(tmp, "/plan.md");
+		expect(result.released).toBe(true);
+		expect(result.reason).toBe("not_locked");
 		expect(isLocked(tmp, "/plan.md").locked).toBe(false);
+	});
+
+	test("refuses to release lock held by another live process", () => {
+		const tmp = withTmp();
+		// Spawn a real subprocess so we have a live PID
+		const child = Bun.spawn(["sleep", "60"], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const childPid = child.pid;
+
+		try {
+			const locksDir = join(tmp, ".5x", "locks");
+			const { mkdirSync } = require("node:fs");
+			mkdirSync(locksDir, { recursive: true });
+
+			const { createHash } = require("node:crypto");
+			const hash = createHash("sha256")
+				.update("/plan.md")
+				.digest("hex")
+				.slice(0, 16);
+			const lockFile = join(locksDir, `${hash}.lock`);
+
+			writeFileSync(
+				lockFile,
+				JSON.stringify({
+					pid: childPid,
+					startedAt: new Date().toISOString(),
+					planPath: "/plan.md",
+				}),
+			);
+
+			const result = releaseLock(tmp, "/plan.md");
+			expect(result.released).toBe(false);
+			expect(result.reason).toBe("not_owner");
+			// Lock should still be held
+			expect(isLocked(tmp, "/plan.md").locked).toBe(true);
+		} finally {
+			child.kill();
+		}
+	});
+
+	test("releases lock held by dead process (stale)", () => {
+		const tmp = withTmp();
+		const locksDir = join(tmp, ".5x", "locks");
+		const { mkdirSync } = require("node:fs");
+		mkdirSync(locksDir, { recursive: true });
+
+		const { createHash } = require("node:crypto");
+		const hash = createHash("sha256")
+			.update("/plan.md")
+			.digest("hex")
+			.slice(0, 16);
+		const lockFile = join(locksDir, `${hash}.lock`);
+
+		writeFileSync(
+			lockFile,
+			JSON.stringify({
+				pid: 99999999,
+				startedAt: new Date().toISOString(),
+				planPath: "/plan.md",
+			}),
+		);
+
+		const result = releaseLock(tmp, "/plan.md");
+		expect(result.released).toBe(true);
+		expect(result.reason).toBe("stale_released");
+		expect(isLocked(tmp, "/plan.md").locked).toBe(false);
+	});
+});
+
+describe("forceReleaseLock", () => {
+	test("removes lock regardless of ownership", () => {
+		const tmp = withTmp();
+		const child = Bun.spawn(["sleep", "60"], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const childPid = child.pid;
+
+		try {
+			const locksDir = join(tmp, ".5x", "locks");
+			const { mkdirSync } = require("node:fs");
+			mkdirSync(locksDir, { recursive: true });
+
+			const { createHash } = require("node:crypto");
+			const hash = createHash("sha256")
+				.update("/plan.md")
+				.digest("hex")
+				.slice(0, 16);
+			const lockFile = join(locksDir, `${hash}.lock`);
+
+			writeFileSync(
+				lockFile,
+				JSON.stringify({
+					pid: childPid,
+					startedAt: new Date().toISOString(),
+					planPath: "/plan.md",
+				}),
+			);
+
+			forceReleaseLock(tmp, "/plan.md");
+			expect(isLocked(tmp, "/plan.md").locked).toBe(false);
+		} finally {
+			child.kill();
+		}
 	});
 });
 

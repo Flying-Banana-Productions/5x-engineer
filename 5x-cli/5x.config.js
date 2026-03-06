@@ -8,7 +8,7 @@ export default {
 		// timeout: 900, // seconds; omit to disable timeout
 	},
 	reviewer: {
-    model: "opencode/gpt-5.2",
+    model: "openai/gpt-5.2",
 		// model: "openai/gpt-5.2",
 		// timeout: 900, // seconds; omit to disable timeout
 	},

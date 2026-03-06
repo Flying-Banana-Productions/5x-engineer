@@ -211,7 +211,9 @@ describe("5x init", () => {
 
 describe("ensureGitignore", () => {
 	test("creates .gitignore if missing", async () => {
-		const { ensureGitignore } = await import("../../src/commands/init.js");
+		const { ensureGitignore } = await import(
+			"../../src/commands/init.handler.js"
+		);
 		const tmp = makeTmpDir();
 		try {
 			const result = ensureGitignore(tmp);
@@ -224,7 +226,9 @@ describe("ensureGitignore", () => {
 	});
 
 	test("appends if .gitignore exists without entry", async () => {
-		const { ensureGitignore } = await import("../../src/commands/init.js");
+		const { ensureGitignore } = await import(
+			"../../src/commands/init.handler.js"
+		);
 		const tmp = makeTmpDir();
 		try {
 			writeFileSync(join(tmp, ".gitignore"), "node_modules/\n", "utf-8");
@@ -237,7 +241,9 @@ describe("ensureGitignore", () => {
 	});
 
 	test("no-ops if .gitignore already contains .5x/", async () => {
-		const { ensureGitignore } = await import("../../src/commands/init.js");
+		const { ensureGitignore } = await import(
+			"../../src/commands/init.handler.js"
+		);
 		const tmp = makeTmpDir();
 		try {
 			writeFileSync(join(tmp, ".gitignore"), "node_modules/\n.5x/\n", "utf-8");
@@ -253,7 +259,7 @@ describe("ensureGitignore", () => {
 describe("generateConfigContent", () => {
 	test("generates valid JS config with model examples", async () => {
 		const { generateConfigContent } = await import(
-			"../../src/commands/init.js"
+			"../../src/commands/init.handler.js"
 		);
 		const content = generateConfigContent();
 		expect(content).toContain("@type");
@@ -278,7 +284,9 @@ describe("generateConfigContent", () => {
 
 describe("ensureTemplateFiles", () => {
 	test("creates both default template files", async () => {
-		const { ensureTemplateFiles } = await import("../../src/commands/init.js");
+		const { ensureTemplateFiles } = await import(
+			"../../src/commands/init.handler.js"
+		);
 		const tmp = makeTmpDir();
 		try {
 			const result = ensureTemplateFiles(tmp, false);
@@ -292,7 +300,9 @@ describe("ensureTemplateFiles", () => {
 	});
 
 	test("does not overwrite existing templates unless forced", async () => {
-		const { ensureTemplateFiles } = await import("../../src/commands/init.js");
+		const { ensureTemplateFiles } = await import(
+			"../../src/commands/init.handler.js"
+		);
 		const tmp = makeTmpDir();
 		const planPath = join(
 			tmp,

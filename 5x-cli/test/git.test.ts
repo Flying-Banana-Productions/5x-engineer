@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+/**
+ * Tests for git.ts — all subprocess calls are mocked via spyOn(subprocess).
+ * No real git commands are spawned. No temp repos or filesystem side effects.
+ */
+
+import { afterEach, describe, expect, type Mock, spyOn, test } from "bun:test";
 import {
 	branchExists,
 	branchNameFromPlan,
@@ -20,40 +22,55 @@ import {
 	removeWorktree,
 	runWorktreeSetupCommand,
 } from "../src/git.js";
+import { subprocess } from "../src/utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
-// Helpers — minimize process spawns to avoid contention under --concurrent
+// Mock helpers
 // ---------------------------------------------------------------------------
 
-/** Run a shell command synchronously to avoid async scheduling contention. */
-function sh(cmd: string, cwd: string) {
-	Bun.spawnSync(["sh", "-c", cmd], {
-		cwd,
-		stdout: "pipe",
-		stderr: "pipe",
-		env: {
-			...process.env,
-			GIT_AUTHOR_NAME: "Test",
-			GIT_AUTHOR_EMAIL: "test@test.com",
-			GIT_COMMITTER_NAME: "Test",
-			GIT_COMMITTER_EMAIL: "test@test.com",
+const ok = (stdout: string) => ({ stdout, stderr: "", exitCode: 0 });
+const fail = (stderr: string, exitCode = 1) => ({
+	stdout: "",
+	stderr,
+	exitCode,
+});
+
+let execGitSpy: Mock<typeof subprocess.execGit>;
+let execShellSpy: Mock<typeof subprocess.execShell>;
+
+afterEach(() => {
+	execGitSpy?.mockRestore();
+	execShellSpy?.mockRestore();
+});
+
+/**
+ * Set up the git mock to respond based on command patterns.
+ * Each entry is [matchFn, response]. First match wins.
+ */
+function mockGit(
+	...rules: Array<
+		[
+			(args: string[]) => boolean,
+			{ stdout: string; stderr: string; exitCode: number },
+		]
+	>
+) {
+	execGitSpy = spyOn(subprocess, "execGit").mockImplementation(
+		async (args: string[], _workdir: string) => {
+			for (const [match, response] of rules) {
+				if (match(args)) return response;
+			}
+			return fail(`Unexpected git call: git ${args.join(" ")}`);
 		},
-	});
-}
-
-/** Create a git repo with initial commit (single sync process). */
-function initRepo(): string {
-	const dir = mkdtempSync(join(tmpdir(), "5x-git-"));
-	sh(
-		"git init -b main && git config user.email test@test.com && git config user.name Test && echo init > README.md && git add . && git commit -m init",
-		dir,
 	);
-	return dir;
+	return execGitSpy;
 }
 
-function cleanup(dir: string) {
-	rmSync(dir, { recursive: true, force: true });
-}
+/** Match git subcommand by first N args. */
+const cmd =
+	(...prefix: string[]) =>
+	(args: string[]) =>
+		prefix.every((p, i) => args[i] === p);
 
 // ---------------------------------------------------------------------------
 // Safety checks
@@ -61,50 +78,49 @@ function cleanup(dir: string) {
 
 describe("checkGitSafety", () => {
 	test("clean repo reports safe", async () => {
-		const r = initRepo();
-		try {
-			const rpt = await checkGitSafety(r);
-			expect(rpt.safe).toBe(true);
-			expect(rpt.isDirty).toBe(false);
-			expect(rpt.untrackedFiles).toHaveLength(0);
-			expect(rpt.branch).toBe("main");
-			expect(rpt.repoRoot).toBe(r);
-		} finally {
-			cleanup(r);
-		}
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[cmd("status", "--porcelain"), ok("")],
+		);
+		const rpt = await checkGitSafety("/fake/repo");
+		expect(rpt.safe).toBe(true);
+		expect(rpt.isDirty).toBe(false);
+		expect(rpt.untrackedFiles).toHaveLength(0);
+		expect(rpt.branch).toBe("main");
+		expect(rpt.repoRoot).toBe("/fake/repo");
 	});
 
 	test("dirty working tree reports unsafe", async () => {
-		const r = initRepo();
-		try {
-			sh("echo x >> README.md", r);
-			const rpt = await checkGitSafety(r);
-			expect(rpt.safe).toBe(false);
-			expect(rpt.isDirty).toBe(true);
-		} finally {
-			cleanup(r);
-		}
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[cmd("status", "--porcelain"), ok(" M README.md")],
+		);
+		const rpt = await checkGitSafety("/fake/repo");
+		expect(rpt.safe).toBe(false);
+		expect(rpt.isDirty).toBe(true);
 	});
 
 	test("untracked files reports unsafe", async () => {
-		const r = initRepo();
-		try {
-			sh("echo new > untracked.txt", r);
-			const rpt = await checkGitSafety(r);
-			expect(rpt.safe).toBe(false);
-			expect(rpt.untrackedFiles.length).toBeGreaterThan(0);
-		} finally {
-			cleanup(r);
-		}
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[cmd("status", "--porcelain"), ok("?? untracked.txt")],
+		);
+		const rpt = await checkGitSafety("/fake/repo");
+		expect(rpt.safe).toBe(false);
+		expect(rpt.untrackedFiles).toContain("untracked.txt");
 	});
 
 	test("throws for non-git directory", async () => {
-		const d = mkdtempSync(join(tmpdir(), "5x-nongit-"));
-		try {
-			await expect(checkGitSafety(d)).rejects.toThrow("Not a git repository");
-		} finally {
-			cleanup(d);
-		}
+		mockGit([
+			cmd("rev-parse", "--show-toplevel"),
+			fail("fatal: not a git repository"),
+		]);
+		await expect(checkGitSafety("/not/a/repo")).rejects.toThrow(
+			"Not a git repository",
+		);
 	});
 });
 
@@ -114,173 +130,196 @@ describe("checkGitSafety", () => {
 
 describe("getCurrentBranch", () => {
 	test("returns branch name", async () => {
-		const r = initRepo();
-		try {
-			expect(await getCurrentBranch(r)).toBe("main");
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")]);
+		expect(await getCurrentBranch("/r")).toBe("main");
+	});
+
+	test("returns HEAD when detached", async () => {
+		mockGit([cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("HEAD")]);
+		expect(await getCurrentBranch("/r")).toBe("HEAD");
 	});
 });
 
 describe("createBranch", () => {
 	test("creates and switches to new branch", async () => {
-		const r = initRepo();
-		try {
-			await createBranch("feature/test", r);
-			expect(await getCurrentBranch(r)).toBe("feature/test");
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("checkout", "-b", "feature/test"), ok("")]);
+		// Should not throw
+		await createBranch("feature/test", "/r");
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["checkout", "-b", "feature/test"],
+			"/r",
+		);
 	});
 
 	test("throws if branch already exists", async () => {
-		const r = initRepo();
-		try {
-			// Create branch in a single shell to avoid extra process spawns
-			sh("git checkout -b feature/test && git checkout main", r);
-			await expect(createBranch("feature/test", r)).rejects.toThrow();
-		} finally {
-			cleanup(r);
-		}
+		mockGit([
+			cmd("checkout", "-b", "feature/test"),
+			fail("fatal: a branch named 'feature/test' already exists"),
+		]);
+		await expect(createBranch("feature/test", "/r")).rejects.toThrow(
+			'Failed to create branch "feature/test"',
+		);
 	});
 });
 
 describe("getLatestCommit", () => {
 	test("returns full commit hash", async () => {
-		const r = initRepo();
-		try {
-			const hash = await getLatestCommit(r);
-			expect(hash).toMatch(/^[0-9a-f]{40}$/);
-		} finally {
-			cleanup(r);
-		}
+		const hash = "abc123def456".repeat(4).slice(0, 40);
+		mockGit([cmd("rev-parse", "HEAD"), ok(hash)]);
+		expect(await getLatestCommit("/r")).toBe(hash);
+	});
+
+	test("throws on failure", async () => {
+		mockGit([cmd("rev-parse", "HEAD"), fail("fatal: bad default revision")]);
+		await expect(getLatestCommit("/r")).rejects.toThrow(
+			"Failed to get latest commit",
+		);
 	});
 });
 
 describe("hasUncommittedChanges", () => {
 	test("clean repo returns false", async () => {
-		const r = initRepo();
-		try {
-			expect(await hasUncommittedChanges(r)).toBe(false);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("status", "--porcelain"), ok("")]);
+		expect(await hasUncommittedChanges("/r")).toBe(false);
 	});
 
 	test("dirty repo returns true", async () => {
-		const r = initRepo();
-		try {
-			sh("echo x >> README.md", r);
-			expect(await hasUncommittedChanges(r)).toBe(true);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("status", "--porcelain"), ok(" M file.txt")]);
+		expect(await hasUncommittedChanges("/r")).toBe(true);
 	});
 });
 
 describe("listChangedFiles", () => {
 	test("returns staged, unstaged, and untracked files", async () => {
-		const r = initRepo();
-		try {
-			sh(
-				"echo x >> README.md && echo staged > staged.txt && git add staged.txt && echo u > untracked.txt",
-				r,
-			);
-			const files = await listChangedFiles(r);
-			expect(files).toContain("README.md");
-			expect(files).toContain("staged.txt");
-			expect(files).toContain("untracked.txt");
-		} finally {
-			cleanup(r);
-		}
+		mockGit(
+			[cmd("diff", "--relative", "--name-only"), ok("modified.txt")],
+			[cmd("diff", "--cached", "--relative", "--name-only"), ok("staged.txt")],
+			[cmd("ls-files", "--others", "--exclude-standard"), ok("untracked.txt")],
+		);
+		const files = await listChangedFiles("/r");
+		expect(files).toContain("modified.txt");
+		expect(files).toContain("staged.txt");
+		expect(files).toContain("untracked.txt");
+	});
+
+	test("deduplicates files across categories", async () => {
+		mockGit(
+			[cmd("diff", "--relative", "--name-only"), ok("same.txt")],
+			[cmd("diff", "--cached", "--relative", "--name-only"), ok("same.txt")],
+			[cmd("ls-files", "--others", "--exclude-standard"), ok("")],
+		);
+		const files = await listChangedFiles("/r");
+		expect(files).toEqual(["same.txt"]);
+	});
+
+	test("handles empty output", async () => {
+		mockGit(
+			[cmd("diff", "--relative", "--name-only"), ok("")],
+			[cmd("diff", "--cached", "--relative", "--name-only"), ok("")],
+			[cmd("ls-files", "--others", "--exclude-standard"), ok("")],
+		);
+		const files = await listChangedFiles("/r");
+		expect(files).toHaveLength(0);
 	});
 });
 
 describe("commitFiles", () => {
-	test("commits only specified files", async () => {
-		const r = initRepo();
-		try {
-			sh("echo review > review.md && echo notes > notes.txt", r);
-			const result = await commitFiles(r, ["review.md"], "docs: add review");
-			expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+	test("stages files, commits, returns hash", async () => {
+		const hash = "a1b2c3d4e5f6".repeat(4).slice(0, 40);
+		mockGit(
+			[cmd("add", "--"), ok("")],
+			[cmd("commit", "-m"), ok("")],
+			[cmd("rev-parse", "HEAD"), ok(hash)],
+		);
+		const result = await commitFiles("/r", ["file.txt"], "test commit");
+		expect(result.commit).toBe(hash);
+		expect(execGitSpy).toHaveBeenCalledWith(["add", "--", "file.txt"], "/r");
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["commit", "-m", "test commit"],
+			"/r",
+		);
+	});
 
-			const files = await listChangedFiles(r);
-			expect(files).toContain("notes.txt");
-			expect(files).not.toContain("review.md");
-		} finally {
-			cleanup(r);
-		}
+	test("throws on empty file list", async () => {
+		await expect(commitFiles("/r", [], "msg")).rejects.toThrow(
+			"No files provided",
+		);
+	});
+
+	test("throws on stage failure", async () => {
+		mockGit([cmd("add", "--"), fail("fatal: pathspec 'x' did not match")]);
+		await expect(commitFiles("/r", ["x"], "msg")).rejects.toThrow(
+			"Failed to stage files",
+		);
+	});
+
+	test("throws on commit failure", async () => {
+		mockGit(
+			[cmd("add", "--"), ok("")],
+			[cmd("commit", "-m"), fail("nothing to commit")],
+		);
+		await expect(commitFiles("/r", ["f.txt"], "msg")).rejects.toThrow(
+			"Failed to create commit",
+		);
 	});
 });
 
 describe("runWorktreeSetupCommand", () => {
-	test("runs setup command in workdir", async () => {
-		const r = initRepo();
-		try {
-			await runWorktreeSetupCommand(r, "touch .worktree-ready");
-			expect(existsSync(join(r, ".worktree-ready"))).toBe(true);
-		} finally {
-			cleanup(r);
-		}
+	test("runs shell command and returns output", async () => {
+		execShellSpy = spyOn(subprocess, "execShell").mockResolvedValue({
+			stdout: "setup done\n",
+			stderr: "",
+			exitCode: 0,
+		});
+		const result = await runWorktreeSetupCommand("/wt", "echo setup done");
+		expect(result.stdout).toBe("setup done\n");
+		expect(execShellSpy).toHaveBeenCalledWith("echo setup done", "/wt");
 	});
 
-	test("throws when setup command exits non-zero", async () => {
-		const r = initRepo();
-		try {
-			await expect(runWorktreeSetupCommand(r, "exit 7")).rejects.toThrow(
-				"Worktree setup command failed",
-			);
-		} finally {
-			cleanup(r);
-		}
+	test("throws when command exits non-zero", async () => {
+		execShellSpy = spyOn(subprocess, "execShell").mockResolvedValue({
+			stdout: "",
+			stderr: "error\n",
+			exitCode: 7,
+		});
+		await expect(runWorktreeSetupCommand("/wt", "exit 7")).rejects.toThrow(
+			"Worktree setup command failed",
+		);
 	});
 });
 
 describe("branchExists", () => {
 	test("returns true for existing branch", async () => {
-		const r = initRepo();
-		try {
-			expect(await branchExists("main", r)).toBe(true);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("rev-parse", "--verify"), ok("abc123")]);
+		expect(await branchExists("main", "/r")).toBe(true);
 	});
 
 	test("returns false for non-existent branch", async () => {
-		const r = initRepo();
-		try {
-			expect(await branchExists("nonexistent", r)).toBe(false);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("rev-parse", "--verify"), fail("fatal: not a valid ref")]);
+		expect(await branchExists("nonexistent", "/r")).toBe(false);
 	});
 });
 
 describe("getBranchCommits", () => {
 	test("returns commits since divergence", async () => {
-		const r = initRepo();
-		try {
-			// Single shell: create branch + commit on it
-			sh(
-				"git checkout -b feature/x && echo a > a.txt && git add . && git commit -m 'add a'",
-				r,
-			);
-			const commits = await getBranchCommits("main", r);
-			expect(commits).toHaveLength(1);
-			expect(commits[0]).toMatch(/^[0-9a-f]{40}$/);
-		} finally {
-			cleanup(r);
-		}
+		const hash = "a".repeat(40);
+		mockGit([cmd("log"), ok(hash)]);
+		const commits = await getBranchCommits("main", "/r");
+		expect(commits).toEqual([hash]);
 	});
 
 	test("returns empty for no new commits", async () => {
-		const r = initRepo();
-		try {
-			expect(await getBranchCommits("main", r)).toHaveLength(0);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("log"), ok("")]);
+		const commits = await getBranchCommits("main", "/r");
+		expect(commits).toHaveLength(0);
+	});
+
+	test("parses multiple commits", async () => {
+		const h1 = "a".repeat(40);
+		const h2 = "b".repeat(40);
+		mockGit([cmd("log"), ok(`${h1}\n${h2}`)]);
+		const commits = await getBranchCommits("main", "/r");
+		expect(commits).toEqual([h1, h2]);
 	});
 });
 
@@ -333,49 +372,76 @@ describe("isBranchRelevant", () => {
 // ---------------------------------------------------------------------------
 
 describe("worktree operations", () => {
-	test("create and list worktree", async () => {
-		const r = initRepo();
-		try {
-			const wtPath = join(r, "wt", "test");
-			const info = await createWorktree(r, "wt-branch", wtPath);
-			expect(info.path).toBe(wtPath);
-			expect(info.branch).toBe("wt-branch");
-
-			const trees = await listWorktrees(r);
-			expect(trees.length).toBeGreaterThanOrEqual(2);
-			const wt = trees.find((t) => t.branch === "wt-branch");
-			expect(wt).toBeDefined();
-		} finally {
-			cleanup(r);
-		}
+	test("create worktree with new branch", async () => {
+		mockGit(
+			[cmd("rev-parse", "--verify"), fail("not found")], // branch doesn't exist
+			[cmd("worktree", "add"), ok("Preparing worktree")],
+		);
+		const info = await createWorktree("/repo", "wt-branch", "/repo/wt/test");
+		expect(info.path).toBe("/repo/wt/test");
+		expect(info.branch).toBe("wt-branch");
+		// Should use -b flag for new branch
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["worktree", "add", "/repo/wt/test", "-b", "wt-branch"],
+			"/repo",
+		);
 	});
 
 	test("create worktree with existing branch", async () => {
-		const r = initRepo();
-		try {
-			sh("git branch existing-branch", r);
-			const info = await createWorktree(
-				r,
-				"existing-branch",
-				join(r, "wt", "e"),
-			);
-			expect(info.branch).toBe("existing-branch");
-		} finally {
-			cleanup(r);
-		}
+		mockGit(
+			[cmd("rev-parse", "--verify"), ok("abc123")], // branch exists
+			[cmd("worktree", "add"), ok("Preparing worktree")],
+		);
+		const info = await createWorktree("/repo", "existing-branch", "/repo/wt/e");
+		expect(info.branch).toBe("existing-branch");
+		// Should NOT use -b flag for existing branch
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["worktree", "add", "/repo/wt/e", "existing-branch"],
+			"/repo",
+		);
+	});
+
+	test("list worktrees parses porcelain output", async () => {
+		mockGit([
+			cmd("worktree", "list", "--porcelain"),
+			ok(
+				[
+					"worktree /repo",
+					"HEAD abc123",
+					"branch refs/heads/main",
+					"",
+					"worktree /repo/wt/test",
+					"HEAD def456",
+					"branch refs/heads/wt-branch",
+					"",
+				].join("\n"),
+			),
+		]);
+		const trees = await listWorktrees("/repo");
+		expect(trees).toHaveLength(2);
+		expect(trees[0]).toEqual({ path: "/repo", branch: "main" });
+		expect(trees[1]).toEqual({
+			path: "/repo/wt/test",
+			branch: "wt-branch",
+		});
 	});
 
 	test("remove worktree", async () => {
-		const r = initRepo();
-		try {
-			const wtPath = join(r, "wt", "rm");
-			await createWorktree(r, "rm-branch", wtPath);
-			await removeWorktree(r, wtPath);
-			const trees = await listWorktrees(r);
-			expect(trees.find((t) => t.branch === "rm-branch")).toBeUndefined();
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("worktree", "remove"), ok("")]);
+		await removeWorktree("/repo", "/repo/wt/rm");
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["worktree", "remove", "/repo/wt/rm"],
+			"/repo",
+		);
+	});
+
+	test("remove worktree with force", async () => {
+		mockGit([cmd("worktree", "remove"), ok("")]);
+		await removeWorktree("/repo", "/repo/wt/rm", true);
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["worktree", "remove", "/repo/wt/rm", "--force"],
+			"/repo",
+		);
 	});
 });
 
@@ -385,30 +451,22 @@ describe("worktree operations", () => {
 
 describe("isBranchMerged", () => {
 	test("merged branch returns true", async () => {
-		const r = initRepo();
-		try {
-			// Single shell: create branch, commit, checkout main, merge
-			sh(
-				"git checkout -b to-merge && echo m > m.txt && git add . && git commit -m merge && git checkout main && git merge to-merge",
-				r,
-			);
-			expect(await isBranchMerged("to-merge", r)).toBe(true);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("branch", "--merged", "HEAD"), ok("  main\n  to-merge")]);
+		expect(await isBranchMerged("to-merge", "/r")).toBe(true);
+	});
+
+	test("current branch (with asterisk) returns true", async () => {
+		mockGit([cmd("branch", "--merged", "HEAD"), ok("* main\n  feature")]);
+		expect(await isBranchMerged("main", "/r")).toBe(true);
 	});
 
 	test("unmerged branch returns false", async () => {
-		const r = initRepo();
-		try {
-			// Single shell: create branch, commit, checkout main (no merge)
-			sh(
-				"git checkout -b unmerged && echo u > u.txt && git add . && git commit -m unmerged && git checkout main",
-				r,
-			);
-			expect(await isBranchMerged("unmerged", r)).toBe(false);
-		} finally {
-			cleanup(r);
-		}
+		mockGit([cmd("branch", "--merged", "HEAD"), ok("  main")]);
+		expect(await isBranchMerged("unmerged", "/r")).toBe(false);
+	});
+
+	test("handles git failure gracefully", async () => {
+		mockGit([cmd("branch", "--merged", "HEAD"), fail("error")]);
+		expect(await isBranchMerged("any", "/r")).toBe(false);
 	});
 });
