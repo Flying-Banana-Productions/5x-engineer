@@ -26,3 +26,15 @@
 
 console.log = () => {};
 console.warn = () => {};
+
+// ---------------------------------------------------------------------------
+// Sanitize git environment variables
+// ---------------------------------------------------------------------------
+// When tests run inside a git hook (e.g. pre-push from a worktree), git
+// sets GIT_DIR which leaks into Bun.spawnSync/Bun.spawn calls. This
+// causes git commands in tests to operate on the real repo's index
+// instead of temp dirs, corrupting the working tree. Strip them globally.
+// ---------------------------------------------------------------------------
+delete process.env.GIT_DIR;
+delete process.env.GIT_WORK_TREE;
+delete process.env.GIT_INDEX_FILE;

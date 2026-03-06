@@ -6,6 +6,7 @@
 
 import { outputError, outputSuccess } from "../output.js";
 import { resolveProjectRoot } from "../project-root.js";
+import { subprocess } from "../utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -14,27 +15,6 @@ import { resolveProjectRoot } from "../project-root.js";
 export interface DiffParams {
 	since?: string;
 	stat?: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function gitRun(
-	args: string[],
-	workdir: string,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const proc = Bun.spawn(["git", ...args], {
-		cwd: workdir,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
 /** Parse `git diff --stat` summary line: " N files changed, M insertions(+), D deletions(-)" */
@@ -81,7 +61,7 @@ export async function runDiff(params: DiffParams): Promise<void> {
 	// Validate --since ref exists if provided
 	const ref = params.since;
 	if (ref) {
-		const verifyResult = await gitRun(
+		const verifyResult = await subprocess.execGit(
 			["rev-parse", "--verify", ref],
 			projectRoot,
 		);
@@ -100,8 +80,8 @@ export async function runDiff(params: DiffParams): Promise<void> {
 
 	// Run diff and name-only in parallel
 	const [diffResult, nameResult] = await Promise.all([
-		gitRun(diffArgs, projectRoot),
-		gitRun(nameArgs, projectRoot),
+		subprocess.execGit(diffArgs, projectRoot),
+		subprocess.execGit(nameArgs, projectRoot),
 	]);
 
 	if (diffResult.exitCode !== 0) {
@@ -124,7 +104,7 @@ export async function runDiff(params: DiffParams): Promise<void> {
 		| undefined;
 	if (params.stat) {
 		const statArgs = ref ? ["diff", "--stat", ref] : ["diff", "--stat", "HEAD"];
-		const statResult = await gitRun(statArgs, projectRoot);
+		const statResult = await subprocess.execGit(statArgs, projectRoot);
 		if (statResult.exitCode !== 0) {
 			outputError("GIT_ERROR", `git diff --stat failed: ${statResult.stderr}`, {
 				command: "git diff --stat",
