@@ -25,8 +25,10 @@ review/fix cycles until the plan is approved.
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status)
 - `5x invoke author <template> --run <id> --var key=val` — invoke author sub-agent
 - `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer sub-agent
+- `5x plan phases <path>` — get phase list and check plan parses
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
 
@@ -60,9 +62,9 @@ Record: `5x run record "author:generate-plan" --run $RUN --result '<result>'`
 
 ### Step 3: Review loop
 
-This is the same pattern as the 5x-plan-review skill (Section 3.2).
-Execute the review loop from that skill starting at the "Review"
-step, using the same $RUN (do not create a new run).
+This is the same pattern as the 5x-plan-review skill.
+Execute the review loop from that skill starting at Step 1 (Review),
+using the same $RUN (do not create a new run).
 
 ### Step 4: Complete
 

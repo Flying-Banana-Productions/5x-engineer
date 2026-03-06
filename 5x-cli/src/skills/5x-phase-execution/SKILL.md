@@ -27,6 +27,8 @@ optional fix cycles.
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status)
+- `5x run reopen --run <id>` — reopen a completed/aborted run
 - `5x invoke author <template> --run <id> --var key=val` — invoke author
 - `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer
 - `5x quality run` — run quality gates
@@ -35,7 +37,6 @@ optional fix cycles.
 - `5x worktree create --plan <path>` — create isolated worktree
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
-- `5x prompt confirm <msg>` — yes/no confirmation
 
 ## Workflow
 

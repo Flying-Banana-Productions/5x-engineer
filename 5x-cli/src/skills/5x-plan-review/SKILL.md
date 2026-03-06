@@ -24,8 +24,10 @@ approved by the reviewer or the human overrides.
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status)
 - `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer
 - `5x invoke author <template> --run <id> --var key=val` — invoke author
+- `5x plan phases <path>` — verify plan still parses after revisions
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
