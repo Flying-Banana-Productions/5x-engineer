@@ -54,7 +54,14 @@ export async function resolveDbContext(opts?: {
 	});
 	const db = getDb(projectRoot, config.db.path);
 	if (opts?.migrate !== false) {
-		runMigrations(db);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
 	}
 	return { projectRoot, config, db };
 }

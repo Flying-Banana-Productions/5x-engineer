@@ -80,7 +80,13 @@ export {
 } from "./lock.js";
 // Output helpers (v1 JSON envelope)
 export type { ErrorEnvelope, JsonEnvelope, SuccessEnvelope } from "./output.js";
-export { CliError, outputError, outputSuccess } from "./output.js";
+export {
+	CliError,
+	jsonStringify,
+	outputError,
+	outputSuccess,
+	setPrettyPrint,
+} from "./output.js";
 // Parsers
 export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
 export { parsePlan } from "./parsers/plan.js";

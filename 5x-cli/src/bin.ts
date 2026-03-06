@@ -1,7 +1,16 @@
 #!/usr/bin/env bun
 import { defineCommand, runCommand, showUsage } from "citty";
-import { CliError } from "./output.js";
+import { CliError, jsonStringify, setPrettyPrint } from "./output.js";
 import { version } from "./version.js";
+
+// ---------------------------------------------------------------------------
+// Global --no-pretty flag (parsed before citty sees the args)
+// ---------------------------------------------------------------------------
+const noPrettyIdx = process.argv.indexOf("--no-pretty");
+if (noPrettyIdx !== -1) {
+	setPrettyPrint(false);
+	process.argv.splice(noPrettyIdx, 1);
+}
 
 const main = defineCommand({
 	meta: {
@@ -18,6 +27,7 @@ const main = defineCommand({
 		prompt: () => import("./commands/prompt.js").then((m) => m.default),
 		init: () => import("./commands/init.js").then((m) => m.default),
 		skills: () => import("./commands/skills.js").then((m) => m.default),
+		upgrade: () => import("./commands/upgrade.js").then((m) => m.default),
 		worktree: () => import("./commands/worktree.js").then((m) => m.default),
 	},
 });
@@ -73,7 +83,7 @@ try {
 				...(err.detail !== undefined ? { detail: err.detail } : {}),
 			},
 		};
-		console.log(JSON.stringify(envelope));
+		console.log(jsonStringify(envelope));
 		process.exit(err.exitCode);
 	}
 	// Citty CLIError (e.g. E_NO_COMMAND, E_UNKNOWN_COMMAND) — show usage
@@ -91,6 +101,6 @@ try {
 			message,
 		},
 	};
-	console.log(JSON.stringify(envelope));
+	console.log(jsonStringify(envelope));
 	process.exit(1);
 }

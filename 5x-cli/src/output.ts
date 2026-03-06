@@ -93,6 +93,27 @@ export class CliError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Pretty-print state
+// ---------------------------------------------------------------------------
+
+/**
+ * When true (the default), JSON envelopes are pretty-printed with 2-space
+ * indentation for human readability.  Pass `--no-pretty` on the CLI to
+ * disable (compact JSON — useful for scripts and agent skills).
+ */
+let prettyPrint = true;
+
+/** Set the pretty-print mode. Called from bin.ts based on `--no-pretty`. */
+export function setPrettyPrint(value: boolean): void {
+	prettyPrint = value;
+}
+
+/** Serialize a value to JSON respecting the current pretty-print setting. */
+export function jsonStringify(value: unknown): string {
+	return JSON.stringify(value, null, prettyPrint ? 2 : undefined);
+}
+
+// ---------------------------------------------------------------------------
 // Output helpers
 // ---------------------------------------------------------------------------
 
@@ -105,7 +126,7 @@ export function outputSuccess<T>(data: T): void {
 	// violating the `{ ok, data }` envelope contract.
 	const normalized = data === undefined ? null : data;
 	const envelope = { ok: true as const, data: normalized };
-	console.log(JSON.stringify(envelope));
+	console.log(jsonStringify(envelope));
 }
 
 /**

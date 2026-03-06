@@ -52,6 +52,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@decimalturn/toml-patch": "^1.0.2",
     "@opencode-ai/sdk": "^1.2.6",
     "citty": "^0.1.6",
     "dotenv": "^16.6.1",

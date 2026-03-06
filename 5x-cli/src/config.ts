@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
 
 const AgentConfigSchema = z.object({
@@ -142,7 +143,8 @@ export function defineConfig(config: FiveXConfigInput): FiveXConfigInput {
 	return config;
 }
 
-const CONFIG_FILENAMES = ["5x.config.js", "5x.config.mjs"] as const;
+/** Ordered by priority — TOML is preferred over JS. */
+const CONFIG_FILENAMES = ["5x.toml", "5x.config.js", "5x.config.mjs"] as const;
 
 /**
  * Walk up from `startDir` to find a config file.
@@ -232,14 +234,14 @@ function warnUnknownConfigKeys(
 	const deprecatedAllowed = new Map<string, string>([
 		[
 			"maxAutoIterations",
-			"Use maxStepsPerRun instead. maxAutoIterations is deprecated.",
+			'Renamed to "maxStepsPerRun". Run "5x upgrade" to update your config.',
 		],
 	]);
 
 	// Deprecated keys that are unknown (not in schema) — treated as unknown with help text.
 	const deprecatedUnknown = new Map<string, string>([
-		["author.adapter", "Use author.model instead."],
-		["reviewer.adapter", "Use reviewer.model instead."],
+		["author.adapter", "No longer used — you can safely remove it."],
+		["reviewer.adapter", "No longer used — you can safely remove it."],
 	]);
 
 	const unknown: string[] = [];
@@ -286,7 +288,7 @@ function warnUnknownConfigKeys(
 	// Warn about deprecated-but-still-parsed keys that are present in the config
 	for (const [key, help] of deprecatedAllowed) {
 		if (key in rawConfig) {
-			warn(`Warning: Deprecated config key "${key}" in ${configPath}. ${help}`);
+			warn(`Note: "${key}" is deprecated. ${help}`);
 		}
 	}
 
@@ -295,7 +297,7 @@ function warnUnknownConfigKeys(
 		const help = deprecatedUnknown.get(path);
 		warn(
 			help
-				? `Warning: Deprecated config key "${path}" in ${configPath} (ignored). ${help}`
+				? `Note: "${path}" is deprecated. ${help}`
 				: `Warning: Unknown config key "${path}" in ${configPath} (ignored).`,
 		);
 	}
@@ -355,14 +357,19 @@ export async function loadConfig(
 
 	let rawConfig: unknown;
 	try {
-		const module = await import(configPath);
-		rawConfig = module.default ?? module;
+		if (configPath.endsWith(".toml")) {
+			const text = readFileSync(configPath, "utf-8");
+			rawConfig = parseToml(text);
+		} else {
+			const module = await import(configPath);
+			rawConfig = module.default ?? module;
+		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(
-			`Failed to load ${configPath}: ${message}. ` +
-				`Config must be a JS/MJS module exporting a default config object.`,
-		);
+		const hint = configPath.endsWith(".toml")
+			? "Config must be a valid TOML file."
+			: "Config must be a JS/MJS module exporting a default config object.";
+		throw new Error(`Failed to load ${configPath}: ${message}. ${hint}`);
 	}
 
 	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warn);

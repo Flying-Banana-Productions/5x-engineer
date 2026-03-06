@@ -7,6 +7,7 @@ import {
 	exitCodeForError,
 	outputError,
 	outputSuccess,
+	setPrettyPrint,
 } from "../src/output.js";
 import { nextLogSequence } from "../src/providers/log-writer.js";
 import { generateRunId } from "../src/run-id.js";
@@ -152,6 +153,45 @@ describe("outputSuccess", () => {
 		expect(parsed.ok).toBe(true);
 		expect(parsed.data.steps).toHaveLength(1);
 		expect(parsed.data.summary.total_cost).toBe(0.15);
+	});
+
+	test("pretty-prints JSON by default (indented)", () => {
+		const calls: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			setPrettyPrint(true);
+			outputSuccess({ key: "value" });
+		} finally {
+			console.log = origLog;
+		}
+
+		const raw = calls[0] as string;
+		// Pretty-printed JSON has newlines and indentation
+		expect(raw).toContain("\n");
+		expect(raw).toContain('  "ok"');
+	});
+
+	test("compact JSON when setPrettyPrint(false)", () => {
+		const calls: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			setPrettyPrint(false);
+			outputSuccess({ key: "value" });
+		} finally {
+			setPrettyPrint(true); // restore default
+			console.log = origLog;
+		}
+
+		const raw = calls[0] as string;
+		// Compact JSON: no newlines
+		expect(raw).not.toContain("\n");
+		expect(raw).toBe('{"ok":true,"data":{"key":"value"}}');
 	});
 });
 

@@ -227,10 +227,9 @@ describe("5x skills install output", () => {
 			const { stdout, exitCode } = await runSkillsInstall(tmp, "project");
 			expect(exitCode).toBe(0);
 
-			// Find the JSON line (last non-empty line)
-			const lines = stdout.trim().split("\n");
-			const jsonLine = lines[lines.length - 1] as string;
-			const envelope = JSON.parse(jsonLine);
+			// Find the JSON envelope — may span multiple lines (pretty-printed)
+			const jsonStart = stdout.indexOf('{\n  "ok"');
+			const envelope = JSON.parse(stdout.slice(jsonStart));
 			expect(envelope.ok).toBe(true);
 			expect(envelope.data.scope).toBe("project");
 			expect(envelope.data.installRoot).toBe(".agents");

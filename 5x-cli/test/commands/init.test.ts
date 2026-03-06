@@ -48,31 +48,31 @@ describe("5x init", () => {
 			const { stdout, exitCode } = await runInit(tmp);
 
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Created 5x.config.js");
+			expect(stdout).toContain("Created 5x.toml");
 			expect(stdout).toContain("Created .5x/ directory");
 			expect(stdout).toContain(".gitignore");
 			expect(stdout).toContain("--tui-listen");
 
-			// Config file exists and is valid JS
-			const configPath = join(tmp, "5x.config.js");
+			// Config file exists and is valid TOML
+			const configPath = join(tmp, "5x.toml");
 			expect(existsSync(configPath)).toBe(true);
 			const configContent = readFileSync(configPath, "utf-8");
-			expect(configContent).not.toContain("adapter:");
-			expect(configContent).toContain("model:");
-			expect(configContent).toContain("timeout:");
+			expect(configContent).toContain("[author]");
+			expect(configContent).toContain("[reviewer]");
+			expect(configContent).toContain("# model");
+			expect(configContent).toContain("# timeout");
 			expect(configContent).toContain("qualityGates");
-			expect(configContent).toContain("worktree:");
-			expect(configContent).toContain("postCreate:");
-			expect(configContent).toContain("paths:");
+			expect(configContent).toContain("[worktree]");
+			expect(configContent).toContain("# postCreate");
+			expect(configContent).toContain("[paths]");
 			expect(configContent).toContain(
-				'plan: ".5x/templates/implementation-plan-template.md"',
+				'plan = ".5x/templates/implementation-plan-template.md"',
 			);
 			expect(configContent).toContain(
-				'review: ".5x/templates/review-template.md"',
+				'review = ".5x/templates/review-template.md"',
 			);
-			expect(configContent).toContain("db:");
+			expect(configContent).toContain("[db]");
 			expect(configContent).toContain("maxReviewIterations");
-			expect(configContent).toContain("@type");
 
 			// .5x/ directory exists
 			expect(existsSync(join(tmp, ".5x"))).toBe(true);
@@ -95,20 +95,20 @@ describe("5x init", () => {
 		}
 	});
 
-	test("skips config file if already exists (without --force)", async () => {
+	test("skips config if 5x.toml already exists (without --force)", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const configPath = join(tmp, "5x.config.js");
+			const configPath = join(tmp, "5x.toml");
 			writeFileSync(
 				configPath,
-				"// existing config\nexport default {};",
+				"# existing config\nmaxStepsPerRun = 10\n",
 				"utf-8",
 			);
 
 			const { stdout, exitCode } = await runInit(tmp);
 
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Skipped 5x.config.js");
+			expect(stdout).toContain("Skipped config (5x.toml already exists");
 
 			// Original config unchanged
 			const content = readFileSync(configPath, "utf-8");
@@ -118,22 +118,35 @@ describe("5x init", () => {
 		}
 	});
 
+	test("skips config if legacy 5x.config.js exists (without --force)", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.config.js"), "export default {};", "utf-8");
+
+			const { stdout, exitCode } = await runInit(tmp);
+
+			expect(exitCode).toBe(0);
+			expect(stdout).toContain("Skipped config (5x.config.js already exists");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
 	test("overwrites config file with --force", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const configPath = join(tmp, "5x.config.js");
-			writeFileSync(configPath, "// old config\nexport default {};", "utf-8");
+			const configPath = join(tmp, "5x.toml");
+			writeFileSync(configPath, "# old config\nmaxStepsPerRun = 1\n", "utf-8");
 
 			const { stdout, exitCode } = await runInit(tmp, ["--force"]);
 
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Overwrote 5x.config.js");
+			expect(stdout).toContain("Overwrote 5x.toml");
 
-			// Config was overwritten
+			// Config was overwritten with fresh defaults
 			const content = readFileSync(configPath, "utf-8");
 			expect(content).not.toContain("old config");
-			expect(content).not.toContain("adapter:");
-			expect(content).toContain("model:");
+			expect(content).toContain("[author]");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -256,29 +269,27 @@ describe("ensureGitignore", () => {
 	});
 });
 
-describe("generateConfigContent", () => {
-	test("generates valid JS config with model examples", async () => {
-		const { generateConfigContent } = await import(
+describe("generateTomlConfig", () => {
+	test("generates valid TOML config with expected sections and keys", async () => {
+		const { generateTomlConfig } = await import(
 			"../../src/commands/init.handler.js"
 		);
-		const content = generateConfigContent();
-		expect(content).toContain("@type");
-		expect(content).toContain("export default");
-		expect(content).toContain("author:");
-		expect(content).toContain("reviewer:");
-		expect(content).toContain("model:");
-		expect(content).toContain("timeout:");
-		expect(content).toContain("worktree:");
-		expect(content).toContain("postCreate:");
-		expect(content).toContain("paths:");
+		const content = generateTomlConfig();
+		expect(content).toContain("[author]");
+		expect(content).toContain("[reviewer]");
+		expect(content).toContain("# model");
+		expect(content).toContain("# timeout");
+		expect(content).toContain("[worktree]");
+		expect(content).toContain("# postCreate");
+		expect(content).toContain("[paths]");
 		expect(content).toContain(
-			'plan: ".5x/templates/implementation-plan-template.md"',
+			'plan = ".5x/templates/implementation-plan-template.md"',
 		);
-		expect(content).toContain('review: ".5x/templates/review-template.md"');
-		expect(content).toContain("db:");
+		expect(content).toContain('review = ".5x/templates/review-template.md"');
+		expect(content).toContain("[db]");
 		expect(content).toContain("maxAutoRetries");
-		expect(content).not.toContain("adapter:");
-		expect(content).toContain("Remote server support is a future feature");
+		expect(content).toContain("maxStepsPerRun");
+		expect(content).toContain("qualityGates");
 	});
 });
 

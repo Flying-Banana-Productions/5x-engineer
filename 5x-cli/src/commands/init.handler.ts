@@ -6,6 +6,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import defaultTomlConfig from "../templates/5x.default.toml" with {
+	type: "text",
+};
 import {
 	DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
 	DEFAULT_REVIEW_TEMPLATE,
@@ -25,60 +28,11 @@ export interface InitParams {
 // ---------------------------------------------------------------------------
 
 /**
- * Generate the 5x.config.js content.
+ * Return the default 5x.toml config content.
+ * Loaded from the bundled template file at src/templates/5x.default.toml.
  */
-function generateConfigContent(): string {
-	return `/** @type {import('5x-cli').FiveXConfig} */
-export default {
-	// OpenCode server runs locally (same host). Remote server support is a future feature.
-	// Configure model/timeouts independently for author and reviewer invocations.
-	author: {
-		// model: "anthropic/claude-sonnet-4-6",
-		// timeout: 900, // seconds; omit to disable timeout
-	},
-	reviewer: {
-		// model: "openai/gpt-5.2",
-		// timeout: 900, // seconds; omit to disable timeout
-	},
-
-	// Commands run after author implementation and before reviewer pass.
-	// Any failing command triggers quality-retry behavior.
-	qualityGates: [
-		// "bun test",
-		// "bun run lint",
-		// "bun run build",
-	],
-
-	// Optional hook for \`5x run --worktree\` after a new worktree is created.
-	worktree: {
-		// postCreate: "bun install",
-	},
-
-	// Paths are relative to repository root unless absolute.
-	paths: {
-		plans: "docs/development",
-		reviews: "docs/development/reviews",
-		// planReviews: "docs/development/reviews/plans",  // plan review output dir (defaults to reviews)
-		// runReviews: "docs/development/reviews/impl",    // implementation review output dir (defaults to reviews)
-		archive: "docs/archive",
-		templates: {
-			plan: ".5x/templates/implementation-plan-template.md",
-			review: ".5x/templates/review-template.md",
-		},
-	},
-
-	// SQLite database location for run history and state.
-	db: {
-		path: ".5x/5x.db",
-	},
-
-	// Loop guardrails and retry limits.
-	maxReviewIterations: 5,
-	maxQualityRetries: 3,
-	maxAutoIterations: 10,
-	maxAutoRetries: 3,
-};
-`;
+function generateTomlConfig(): string {
+	return defaultTomlConfig;
 }
 
 function ensureTemplateFiles(
@@ -200,20 +154,23 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	const projectRoot = resolve(".");
 	const force = Boolean(params.force);
 
-	// 1. Generate config file
-	const configPath = join(projectRoot, "5x.config.js");
+	// 1. Generate config file (TOML format)
+	const configPath = join(projectRoot, "5x.toml");
 	const configExists = existsSync(configPath);
-	if (configExists && !force) {
+	// Also check for legacy JS config — skip if either exists (user can `5x upgrade` to convert)
+	const legacyJsExists =
+		existsSync(join(projectRoot, "5x.config.js")) ||
+		existsSync(join(projectRoot, "5x.config.mjs"));
+	if ((configExists || legacyJsExists) && !force) {
+		const which = configExists ? "5x.toml" : "5x.config.js";
 		console.log(
-			"  Skipped 5x.config.js (already exists, use --force to overwrite)",
+			`  Skipped config (${which} already exists, use --force to overwrite)`,
 		);
 	} else {
-		const configContent = generateConfigContent();
+		const configContent = generateTomlConfig();
 		writeFileSync(configPath, configContent, "utf-8");
 		console.log(
-			configExists && force
-				? "  Overwrote 5x.config.js"
-				: "  Created 5x.config.js",
+			configExists && force ? "  Overwrote 5x.toml" : "  Created 5x.toml",
 		);
 	}
 
@@ -266,10 +223,10 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	);
 }
 
-// Export helpers for testing
+// Export helpers for testing and for the upgrade command
 export {
 	ensureGitignore,
 	ensurePromptTemplates,
 	ensureTemplateFiles,
-	generateConfigContent,
+	generateTomlConfig,
 };

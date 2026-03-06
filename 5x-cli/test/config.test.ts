@@ -193,9 +193,7 @@ describe("config", () => {
 			);
 			const { config } = await loadConfig(tmp);
 			expect(config.author.model).toBeUndefined();
-			expect(errors.join("\n")).toContain(
-				'Deprecated config key "author.adapter"',
-			);
+			expect(errors.join("\n")).toContain('"author.adapter" is deprecated');
 			expect(errors.join("\n")).toContain('Unknown config key "extra"');
 		} finally {
 			console.error = original;
@@ -253,6 +251,122 @@ describe("config", () => {
 			});
 			expect(authorOnly.author.model).toBe("cli-author");
 			expect(authorOnly.reviewer.model).toBe("config-reviewer");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// TOML config loading
+// ---------------------------------------------------------------------------
+
+describe("TOML config", () => {
+	test("loads 5x.toml with basic config", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`maxStepsPerRun = 25\n\n[author]\nmodel = "anthropic/claude-sonnet-4-6"\n`,
+			);
+			const { config, configPath } = await loadConfig(tmp);
+			expect(configPath).toBe(join(tmp, "5x.toml"));
+			expect(config.maxStepsPerRun).toBe(25);
+			expect(config.author.model).toBe("anthropic/claude-sonnet-4-6");
+			expect(config.reviewer.model).toBeUndefined(); // default
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("5x.toml takes precedence over 5x.config.js", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[author]\nmodel = "toml-model"\n`);
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { author: { model: "js-model" } };`,
+			);
+			const { config, configPath } = await loadConfig(tmp);
+			expect(configPath).toEndWith("5x.toml");
+			expect(config.author.model).toBe("toml-model");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("TOML syntax error throws actionable message", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[broken\nkey = !!!`);
+			await expect(loadConfig(tmp)).rejects.toThrow("Failed to load");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("TOML with full config shape loads correctly", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				[
+					"maxStepsPerRun = 100",
+					"maxReviewIterations = 10",
+					"maxQualityRetries = 5",
+					"maxAutoRetries = 2",
+					'qualityGates = ["bun test", "bun run lint"]',
+					"",
+					"[author]",
+					'provider = "claude-code"',
+					'model = "model-a"',
+					"timeout = 300",
+					"",
+					"[reviewer]",
+					'provider = "opencode"',
+					'model = "model-b"',
+					"",
+					"[worktree]",
+					'postCreate = "bun install"',
+					"",
+					"[paths]",
+					'plans = "custom/plans"',
+					'reviews = "custom/reviews"',
+					'archive = "custom/archive"',
+					"",
+					"[paths.templates]",
+					'plan = "custom/plan.md"',
+					'review = "custom/review.md"',
+					"",
+					"[db]",
+					'path = "custom/5x.db"',
+				].join("\n"),
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.maxStepsPerRun).toBe(100);
+			expect(config.qualityGates).toEqual(["bun test", "bun run lint"]);
+			expect(config.author.provider).toBe("claude-code");
+			expect(config.author.model).toBe("model-a");
+			expect(config.author.timeout).toBe(300);
+			expect(config.reviewer.provider).toBe("opencode");
+			expect(config.worktree.postCreate).toBe("bun install");
+			expect(config.paths.plans).toBe("custom/plans");
+			expect(config.paths.templates.plan).toBe("custom/plan.md");
+			expect(config.db.path).toBe("custom/5x.db");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("TOML walks up directories to find config", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const child = join(tmp, "a", "b", "c");
+			mkdirSync(child, { recursive: true });
+			writeFileSync(join(tmp, "5x.toml"), `maxReviewIterations = 42\n`);
+			const { config, configPath } = await loadConfig(child);
+			expect(configPath).toBe(join(tmp, "5x.toml"));
+			expect(config.maxReviewIterations).toBe(42);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
