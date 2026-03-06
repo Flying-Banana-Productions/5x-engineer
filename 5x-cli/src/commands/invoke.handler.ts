@@ -18,13 +18,18 @@ import {
 	ReviewerVerdictSchema,
 } from "../protocol.js";
 import { createProvider } from "../providers/factory.js";
-import { appendLogLine, prepareLogPath } from "../providers/log-writer.js";
+import {
+	appendLogLine,
+	appendSessionStart,
+	prepareLogPath,
+} from "../providers/log-writer.js";
 import type {
 	AgentProvider,
 	AgentSession,
 	RunOptions,
 	RunResult,
 } from "../providers/types.js";
+import { validateRunId } from "../run-id.js";
 import {
 	loadTemplate,
 	renderTemplate,
@@ -48,6 +53,7 @@ export interface InvokeParams {
 	timeoutSeconds?: number;
 	quiet?: boolean;
 	showReasoning?: boolean;
+	stderr?: boolean;
 	authorProvider?: string;
 	reviewerProvider?: string;
 	opencodeUrl?: string;
@@ -65,19 +71,6 @@ interface InvokeResult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Safe run_id pattern: alphanumeric start, then alphanumeric/underscore/hyphen, max 64 chars. */
-const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
-/** Validate that a run_id is safe for use as a filesystem path component. */
-function validateRunId(runId: string): void {
-	if (!SAFE_RUN_ID.test(runId)) {
-		outputError(
-			"INVALID_ARGS",
-			`--run must match ${SAFE_RUN_ID} (alphanumeric start, alphanumeric/underscore/hyphen, 1-64 chars), got: "${runId}"`,
-		);
-	}
-}
 
 /**
  * Parse --var key=value flags into a record.
@@ -116,9 +109,10 @@ async function invokeStreamed(
 	logPath: string | null,
 	quiet: boolean,
 	showReasoning: boolean,
+	forceStderr: boolean,
 ): Promise<RunResult> {
 	const writer =
-		!quiet && process.stderr.isTTY
+		!quiet && (forceStderr || process.stderr.isTTY)
 			? new StreamWriter({ writer: (s) => process.stderr.write(s) })
 			: null;
 
@@ -261,11 +255,21 @@ export async function invokeAgent(
 	const logDir = join(projectRoot, ".5x", "logs", params.run);
 	const logPath = prepareLogPath(logDir);
 
+	// 4b. Write session metadata as first NDJSON line (log-only, not an AgentEvent)
+	appendSessionStart(logPath, {
+		type: "session_start",
+		role,
+		template: templateName,
+		run: params.run,
+		phase_number: variables.phase_number,
+	});
+
 	// 5. Build run options
 	const outputSchema =
 		role === "author" ? AuthorStatusSchema : ReviewerVerdictSchema;
 	const quiet = params.quiet ?? false;
 	const showReasoning = params.showReasoning ?? false;
+	const forceStderr = params.stderr ?? false;
 
 	const runOpts: RunOptions = {
 		outputSchema: outputSchema as Record<string, unknown>,
@@ -282,6 +286,7 @@ export async function invokeAgent(
 			logPath,
 			quiet,
 			showReasoning,
+			forceStderr,
 		);
 	} catch (err) {
 		await provider.close().catch(() => {});

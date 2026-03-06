@@ -22,11 +22,16 @@ export {
 	InvalidProviderError,
 	ProviderNotFoundError,
 } from "./factory.js";
-export type { LogEntry, LogWriterOptions } from "./log-writer.js";
+export type {
+	LogEntry,
+	LogWriterOptions,
+	SessionStartEntry,
+} from "./log-writer.js";
 // Log writer
 export {
 	appendLogLine,
 	appendLogLines,
+	appendSessionStart,
 	createBufferLogWriter,
 	createLogWriter,
 	nextLogSequence,

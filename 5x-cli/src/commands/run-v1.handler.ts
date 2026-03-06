@@ -4,8 +4,8 @@
  * Framework-independent: no citty imports.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import {
@@ -32,7 +32,10 @@ import {
 import { CliError, outputError, outputSuccess } from "../output.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
-import { generateRunId } from "../run-id.js";
+import type { AgentEvent } from "../providers/types.js";
+import { generateRunId, validateRunId } from "../run-id.js";
+import { NdjsonTailer } from "../utils/ndjson-tailer.js";
+import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
 
 // ---------------------------------------------------------------------------
@@ -471,4 +474,165 @@ export async function runV1List(params: RunListParams): Promise<void> {
 			step_count: r.step_count,
 		})),
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Watch
+// ---------------------------------------------------------------------------
+
+export interface RunWatchParams {
+	run: string;
+	humanReadable?: boolean;
+	showReasoning?: boolean;
+	noReplay?: boolean;
+	workdir?: string;
+}
+
+export async function runV1Watch(params: RunWatchParams): Promise<void> {
+	validateRunId(params.run);
+
+	// Validate run exists — try DB first, fall back to log dir existence
+	const { projectRoot, db } = await resolveDbContext({
+		startDir: params.workdir,
+	});
+	const run = getRunV1(db, params.run);
+	const logDir = join(projectRoot, ".5x", "logs", params.run);
+
+	if (!run) {
+		if (existsSync(logDir)) {
+			process.stderr.write(
+				`[watch] Warning: run '${params.run}' not found in DB, but log directory exists. Proceeding.\n`,
+			);
+		} else {
+			outputError(
+				"RUN_NOT_FOUND",
+				`Run '${params.run}' not found (no DB entry and no log directory)`,
+			);
+		}
+	}
+
+	// Ensure log dir exists (run may have been init'd but no invoke yet)
+	mkdirSync(logDir, { recursive: true });
+
+	// Set up abort on SIGINT
+	const controller = new AbortController();
+	const onSigint = () => controller.abort();
+	process.on("SIGINT", onSigint);
+
+	const tailer = new NdjsonTailer({
+		dir: logDir,
+		signal: controller.signal,
+		startAtEnd: params.noReplay,
+	});
+
+	const humanReadable = params.humanReadable ?? false;
+	const showReasoning = params.showReasoning ?? false;
+
+	if (humanReadable) {
+		await watchHumanReadable(tailer, showReasoning);
+	} else {
+		await watchNdjson(tailer);
+	}
+
+	process.off("SIGINT", onSigint);
+}
+
+/**
+ * Default mode: output raw NDJSON lines with a `source` field to stdout.
+ */
+async function watchNdjson(tailer: NdjsonTailer): Promise<void> {
+	for await (const { file, entry } of tailer) {
+		const line = JSON.stringify({ source: file, ...entry });
+		process.stdout.write(`${line}\n`);
+	}
+}
+
+/**
+ * Human-readable mode: render events through StreamWriter with label headers.
+ */
+async function watchHumanReadable(
+	tailer: NdjsonTailer,
+	showReasoning: boolean,
+): Promise<void> {
+	const writer = new StreamWriter({
+		writer: (s) => process.stdout.write(s),
+	});
+	const labels = new Map<string, string>();
+	let currentFile: string | null = null;
+
+	try {
+		for await (const { file, entry } of tailer) {
+			const type = entry.type as string;
+
+			// session_start: update label, render header, don't pass to StreamWriter
+			if (type === "session_start") {
+				const role = entry.role as string;
+				const phase = entry.phase_number as string | undefined;
+				const label = phase ? `[${role}-phase-${phase}]` : `[${role}]`;
+				labels.set(file, label);
+
+				// Print label header immediately
+				writer.endBlock();
+				writer.writeLine(label);
+				currentFile = file;
+				continue;
+			}
+
+			// On file switch, flush and print label header
+			if (file !== currentFile) {
+				writer.endBlock();
+				const label = labels.get(file) ?? `[${file.replace(".ndjson", "")}]`;
+				writer.writeLine(label);
+				currentFile = file;
+			}
+
+			// Route to StreamWriter — reconstruct AgentEvent from entry
+			const event = entryToAgentEvent(entry);
+			if (event) {
+				writer.writeEvent(event, { showReasoning });
+			}
+		}
+	} finally {
+		writer.destroy();
+	}
+}
+
+/**
+ * Best-effort conversion from a parsed log entry to AgentEvent.
+ * Returns null for unrecognized types (session_start, unknown).
+ */
+function entryToAgentEvent(entry: Record<string, unknown>): AgentEvent | null {
+	const type = entry.type as string;
+	switch (type) {
+		case "text":
+			return { type: "text", delta: entry.delta as string };
+		case "reasoning":
+			return { type: "reasoning", delta: entry.delta as string };
+		case "tool_start":
+			return {
+				type: "tool_start",
+				tool: entry.tool as string,
+				input_summary: entry.input_summary as string,
+			};
+		case "tool_end":
+			return {
+				type: "tool_end",
+				tool: entry.tool as string,
+				output: entry.output as string,
+				...(entry.error ? { error: entry.error as boolean } : {}),
+			};
+		case "error":
+			return { type: "error", message: entry.message as string };
+		case "usage":
+			return {
+				type: "usage",
+				tokens: entry.tokens as { in: number; out: number },
+				...(entry.costUsd != null ? { costUsd: entry.costUsd as number } : {}),
+			};
+		case "done":
+			// done events are informational in watch context
+			return null;
+		default:
+			return null;
+	}
 }

@@ -51,6 +51,11 @@ const sharedArgs = {
 		description: "Show agent reasoning/thinking in console output",
 		default: false,
 	},
+	stderr: {
+		type: "boolean" as const,
+		description: "Stream output to stderr even when not a TTY",
+		default: false,
+	},
 	"author-provider": {
 		type: "string" as const,
 		description: "Override author provider (e.g. codex, @acme/provider-foo)",
@@ -82,6 +87,7 @@ const authorCmd = defineCommand({
 			timeoutSeconds: parseTimeout(args.timeout as string | undefined),
 			quiet: args.quiet as boolean | undefined,
 			showReasoning: args["show-reasoning"] as boolean | undefined,
+			stderr: args.stderr as boolean | undefined,
 			authorProvider: args["author-provider"] as string | undefined,
 			reviewerProvider: args["reviewer-provider"] as string | undefined,
 			opencodeUrl: args["opencode-url"] as string | undefined,
@@ -105,6 +111,7 @@ const reviewerCmd = defineCommand({
 			timeoutSeconds: parseTimeout(args.timeout as string | undefined),
 			quiet: args.quiet as boolean | undefined,
 			showReasoning: args["show-reasoning"] as boolean | undefined,
+			stderr: args.stderr as boolean | undefined,
 			authorProvider: args["author-provider"] as string | undefined,
 			reviewerProvider: args["reviewer-provider"] as string | undefined,
 			opencodeUrl: args["opencode-url"] as string | undefined,

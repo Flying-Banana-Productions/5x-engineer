@@ -33,6 +33,18 @@ export interface LogEntry {
 	[key: string]: unknown;
 }
 
+/**
+ * Log-only metadata written by the CLI invoke handler, NOT emitted by providers.
+ * Written as the first NDJSON line in each log file to make logs self-describing.
+ */
+export interface SessionStartEntry {
+	type: "session_start";
+	role: string;
+	template: string;
+	run: string;
+	phase_number?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Log Path Management
 // ---------------------------------------------------------------------------
@@ -78,6 +90,22 @@ export function nextLogSequence(logDir: string): string {
 // ---------------------------------------------------------------------------
 // Log Writing
 // ---------------------------------------------------------------------------
+
+/**
+ * Write a session_start metadata line to an NDJSON log file.
+ * Should be called once, before any AgentEvent lines.
+ */
+export function appendSessionStart(
+	logPath: string,
+	entry: SessionStartEntry,
+	opts?: LogWriterOptions,
+): void {
+	const timestamp = opts?.getTimestamp
+		? opts.getTimestamp()
+		: new Date().toISOString();
+	const line = JSON.stringify({ ts: timestamp, ...entry });
+	appendFileSync(logPath, `${line}\n`);
+}
 
 /**
  * Write an AgentEvent as a JSON line to an NDJSON log file.

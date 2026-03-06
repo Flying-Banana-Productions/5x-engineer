@@ -15,6 +15,7 @@ import {
 	runV1Record,
 	runV1Reopen,
 	runV1State,
+	runV1Watch,
 } from "./run-v1.handler.js";
 
 const initCmd = defineCommand({
@@ -220,6 +221,47 @@ const listCmd = defineCommand({
 		}),
 });
 
+const watchCmd = defineCommand({
+	meta: {
+		name: "watch",
+		description: "Watch agent logs for a run in real-time",
+	},
+	args: {
+		run: {
+			type: "string" as const,
+			description: "Run ID",
+			required: true as const,
+		},
+		"human-readable": {
+			type: "boolean" as const,
+			description: "Render human-readable output instead of raw NDJSON",
+			default: false,
+		},
+		"show-reasoning": {
+			type: "boolean" as const,
+			description: "Show agent reasoning (human-readable mode only)",
+			default: false,
+		},
+		"tail-only": {
+			type: "boolean" as const,
+			description: "Start at current EOF instead of replaying existing logs",
+			default: false,
+		},
+		workdir: {
+			type: "string" as const,
+			description: "Project root override",
+		},
+	},
+	run: ({ args }) =>
+		runV1Watch({
+			run: args.run as string,
+			humanReadable: args["human-readable"] as boolean,
+			showReasoning: args["show-reasoning"] as boolean,
+			noReplay: args["tail-only"] as boolean,
+			workdir: args.workdir as string | undefined,
+		}),
+});
+
 export default defineCommand({
 	meta: {
 		name: "run",
@@ -232,5 +274,6 @@ export default defineCommand({
 		complete: () => Promise.resolve(completeCmd),
 		reopen: () => Promise.resolve(reopenCmd),
 		list: () => Promise.resolve(listCmd),
+		watch: () => Promise.resolve(watchCmd),
 	},
 });

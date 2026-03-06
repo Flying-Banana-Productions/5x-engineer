@@ -55,6 +55,16 @@ capabilities:
    is available. Pass `--default` to provide a fallback for non-interactive
    environments.
 
+### Monitoring agent progress
+
+Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
+To monitor progress in real-time, suggest the user run in a separate terminal:
+
+    5x run watch --run <run-id> --human-readable
+
+When invoking sub-agents, use the `--stderr` flag if your harness displays
+subprocess stderr output (e.g., `5x invoke author ... --stderr`).
+
 ## Workflow
 
 ### Step 0: Initialize
