@@ -40,13 +40,20 @@ optional fix cycles.
 
 ### Human interaction note
 
-The `5x prompt` commands are for shell scripts and non-agent automation.
-If you are an agent with a native conversational UI (e.g., Claude Code,
-OpenCode), ask the human directly through your UI instead of spawning
-`5x prompt`. `5x prompt` subprocesses cannot access the terminal when
-launched from a TUI agent. The workflow steps below that reference
-`5x prompt` describe **what to ask and when** — use your own interface
-to collect the response.
+The workflow steps reference `5x prompt` commands to describe **what to
+ask the human and when**. How you collect the response depends on your
+capabilities:
+
+1. **You have a question/input tool** (e.g., MCP question tool, built-in
+   ask-user tool): use it directly. This is preferred — it keeps the
+   interaction in your native UI.
+2. **You have a conversational UI**: ask the human in the conversation
+   and use their reply.
+3. **Neither of the above**: spawn `5x prompt choose` / `5x prompt input`
+   as a subprocess. This works in direct terminal sessions and shell
+   scripts but will fail with `NON_INTERACTIVE` (exit 3) if no terminal
+   is available. Pass `--default` to provide a fallback for non-interactive
+   environments.
 
 ## Workflow
 
