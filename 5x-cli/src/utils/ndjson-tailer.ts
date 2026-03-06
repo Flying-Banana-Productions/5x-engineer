@@ -180,7 +180,17 @@ export class NdjsonTailer {
 					const toRead = Math.min(MAX_CHUNK_SIZE, size - state.offset);
 					const buf =
 						toRead === readBuf.length ? readBuf : Buffer.alloc(toRead);
-					const bytesRead = readSync(fd, buf, 0, toRead, state.offset);
+
+					let bytesRead: number;
+					try {
+						bytesRead = readSync(fd, buf, 0, toRead, state.offset);
+					} catch {
+						// EIO/EPERM/etc. during concurrent writes or rotations — degrade gracefully
+						process.stderr.write(
+							`[watch] Warning: read error for ${file}, will retry next poll\n`,
+						);
+						break;
+					}
 					if (bytesRead === 0) break;
 
 					state.offset += bytesRead;

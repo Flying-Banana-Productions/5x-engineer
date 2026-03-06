@@ -131,3 +131,50 @@ Recommendation: make `NdjsonTailer` testable via injection (poll interval, a `po
 - [ ] DB validation behavior is reconciled with ad-hoc `invoke` (escape hatch or fallback)
 - [ ] `session_start` avoids logging full var values by default (size + sensitive-data hardening)
 - [ ] Tailer tests are deterministic (no `fs.watch`/timer flakes)
+
+---
+
+## Addendum (2026-03-06) — Implementation Review (`d643a9fa4b`)
+
+**Reviewed:** `d643a9fa4b` (implementation) + `5x-cli/docs/development/009-run-watch-and-stderr.md` (v1.1)
+
+**Local verification:** `bun test --concurrent --dots 5x-cli/test/utils/ndjson-tailer.test.ts 5x-cli/test/commands/run-watch.test.ts` (pass)
+
+### What's addressed (✅)
+
+- **P0.1 output contract:** `5x run watch` now defaults to NDJSON-to-stdout streaming (machine-parseable) and gates human-readable output behind `--human-readable` (`5x-cli/src/commands/run-v1.handler.ts`, `5x-cli/src/commands/run-v1.ts`, `5x-cli/docs/development/009-run-watch-and-stderr.md`).
+- **P0.2 session_start semantics:** `session_start` is log-only metadata (`SessionStartEntry` + `appendSessionStart()`), not an `AgentEvent` variant; watch treats it as control-plane label data (`5x-cli/src/providers/log-writer.ts`, `5x-cli/src/commands/invoke.handler.ts`, `5x-cli/src/commands/run-v1.handler.ts`).
+- **P0.3 tailer correctness + memory bounds:** `NdjsonTailer` parses the real log entry shape (timestamped objects), reads bounded 64KB chunks, caps partial buffers at 1MB, and is deterministic in tests via `poll()`/`pollInterval: 0` (`5x-cli/src/utils/ndjson-tailer.ts`, `5x-cli/test/utils/ndjson-tailer.test.ts`).
+- **P0.4 interleaving safety:** human-readable watch forces StreamWriter boundaries on file switches and before label headers to avoid cross-file token mixing (`5x-cli/src/commands/run-v1.handler.ts`).
+- **P1.1 DB validation fallback:** watch fast-fails via DB when possible, but proceeds when DB is missing/stale and the log dir exists (warns to stderr) (`5x-cli/src/commands/run-v1.handler.ts`).
+- **P1.2 sensitive vars:** `session_start` only records `phase_number` (no full var dump) (`5x-cli/src/commands/invoke.handler.ts`, `5x-cli/src/providers/log-writer.ts`).
+- **P1.3 test flake avoidance:** tailer and watch tests avoid `fs.watch`/timer reliance and remain stable.
+
+### Remaining concerns
+
+### P0.5 — Log directory permissions: `run watch` can create `.5x/logs/<run>` without `0o700`
+
+**Risk:** `runV1Watch()` creates the log directory via `mkdirSync(logDir, { recursive: true })` with no explicit mode (`5x-cli/src/commands/run-v1.handler.ts`). If `run watch` is the first codepath to create that run’s log directory, it may be group/world-readable (umask-dependent). Later `prepareLogPath()` will not tighten permissions on an existing directory, so sensitive logs can be exposed.
+
+**Requirement:** Ensure `.5x/logs/<run>` is created with `0o700` (and consider explicitly chmod’ing to `0o700` when it already exists, or at least warning if perms are too open).
+
+### P1 — Human-readable robustness: don’t crash on unexpected/legacy log entries
+
+`entryToAgentEvent()` currently casts fields (e.g. `delta`) to string and can throw if logs contain malformed/partial/legacy entries. Recommendation: add runtime guards (type checks) and treat bad lines as warnings + skip (especially in `--human-readable` mode) (`5x-cli/src/commands/run-v1.handler.ts`).
+
+### P1 — Tailer IO hardening: treat read/stat errors as best-effort
+
+`NdjsonTailer.poll()` catches some FS errors, but `readSync()` failures (EIO/EPERM during concurrent writes/rotations) can still throw and crash the watcher. Recommendation: wrap per-read operations in try/catch and degrade with warnings (`5x-cli/src/utils/ndjson-tailer.ts`).
+
+### P2 — NDJSON-mode error signaling doesn’t match the updated plan
+
+The plan states streaming-time errors should be emitted as NDJSON `{source:"watch",type:"error",...}` in default mode; current implementation writes warnings to stderr only (malformed JSON lines) and otherwise stays silent. Decide whether to align code to doc or relax the doc (`5x-cli/docs/development/009-run-watch-and-stderr.md`, `5x-cli/src/utils/ndjson-tailer.ts`).
+
+### P2 — Documentation: stdout envelope claims are now materially false
+
+`5x-cli/src/output.ts` still claims “All v1 commands return `{ ok: true, data }` or `{ ok: false, error }`” to stdout. `run watch` intentionally streams non-envelope JSON lines (and in `--human-readable`, plain text) to stdout. Recommendation: update the comment/docs to explicitly carve out streaming commands.
+
+### Updated readiness
+
+- **Implementation completion:** ✅ — core behavior implemented + tests passing.
+- **Production readiness:** ⚠️ — fix P0.5 (log dir perms) before treating this as safe-by-default; remaining items are hardening/docs.

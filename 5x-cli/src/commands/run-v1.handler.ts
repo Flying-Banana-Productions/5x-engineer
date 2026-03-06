@@ -511,8 +511,8 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 		}
 	}
 
-	// Ensure log dir exists (run may have been init'd but no invoke yet)
-	mkdirSync(logDir, { recursive: true });
+	// Ensure log dir exists with restricted permissions (run may have been init'd but no invoke yet)
+	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
 	// Set up abort on SIGINT
 	const controller = new AbortController();
@@ -599,40 +599,74 @@ async function watchHumanReadable(
 
 /**
  * Best-effort conversion from a parsed log entry to AgentEvent.
- * Returns null for unrecognized types (session_start, unknown).
+ * Returns null for unrecognized types, malformed entries, or legacy log shapes.
+ * Never throws — treats bad data as skip-worthy.
  */
 function entryToAgentEvent(entry: Record<string, unknown>): AgentEvent | null {
-	const type = entry.type as string;
-	switch (type) {
-		case "text":
-			return { type: "text", delta: entry.delta as string };
-		case "reasoning":
-			return { type: "reasoning", delta: entry.delta as string };
-		case "tool_start":
-			return {
-				type: "tool_start",
-				tool: entry.tool as string,
-				input_summary: entry.input_summary as string,
-			};
-		case "tool_end":
-			return {
-				type: "tool_end",
-				tool: entry.tool as string,
-				output: entry.output as string,
-				...(entry.error ? { error: entry.error as boolean } : {}),
-			};
-		case "error":
-			return { type: "error", message: entry.message as string };
-		case "usage":
-			return {
-				type: "usage",
-				tokens: entry.tokens as { in: number; out: number },
-				...(entry.costUsd != null ? { costUsd: entry.costUsd as number } : {}),
-			};
-		case "done":
-			// done events are informational in watch context
-			return null;
-		default:
-			return null;
+	try {
+		const type = entry.type;
+		if (typeof type !== "string") return null;
+
+		switch (type) {
+			case "text":
+				return typeof entry.delta === "string"
+					? { type: "text", delta: entry.delta }
+					: null;
+			case "reasoning":
+				return typeof entry.delta === "string"
+					? { type: "reasoning", delta: entry.delta }
+					: null;
+			case "tool_start":
+				return typeof entry.tool === "string"
+					? {
+							type: "tool_start",
+							tool: entry.tool,
+							input_summary:
+								typeof entry.input_summary === "string"
+									? entry.input_summary
+									: "",
+						}
+					: null;
+			case "tool_end":
+				return typeof entry.tool === "string"
+					? {
+							type: "tool_end",
+							tool: entry.tool,
+							output: typeof entry.output === "string" ? entry.output : "",
+							...(typeof entry.error === "boolean"
+								? { error: entry.error }
+								: {}),
+						}
+					: null;
+			case "error":
+				return typeof entry.message === "string"
+					? { type: "error", message: entry.message }
+					: null;
+			case "usage": {
+				const tokens = entry.tokens;
+				if (
+					typeof tokens !== "object" ||
+					tokens === null ||
+					typeof (tokens as Record<string, unknown>).in !== "number" ||
+					typeof (tokens as Record<string, unknown>).out !== "number"
+				) {
+					return null;
+				}
+				return {
+					type: "usage",
+					tokens: tokens as { in: number; out: number },
+					...(typeof entry.costUsd === "number"
+						? { costUsd: entry.costUsd }
+						: {}),
+				};
+			}
+			case "done":
+				return null;
+			default:
+				return null;
+		}
+	} catch {
+		// Defensive: if any property access throws (e.g., proxy objects), skip
+		return null;
 	}
 }

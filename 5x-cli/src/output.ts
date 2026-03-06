@@ -1,9 +1,12 @@
 /**
  * JSON output envelope helpers for v1 CLI commands.
  *
- * All v1 commands return `{ ok: true, data }` or `{ ok: false, error }`.
- * Command handlers throw `CliError`; bin.ts catches it, writes the error
- * envelope to stdout, and exits with the specified exit code.
+ * Most v1 commands return `{ ok: true, data }` or `{ ok: false, error }`.
+ * Streaming commands (e.g., `run watch`) write non-envelope output to stdout
+ * (raw NDJSON lines or human-readable text); pre-streaming errors still use
+ * the standard envelope. Command handlers throw `CliError`; bin.ts catches
+ * it, writes the error envelope to stdout, and exits with the specified
+ * exit code.
  *
  * Exit codes:
  *   0 — Success
