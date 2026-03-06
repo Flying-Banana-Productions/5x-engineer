@@ -1,3 +1,13 @@
+---
+name: 5x-plan-review
+description: >-
+  Run iterative review/fix cycles on an implementation plan until it is
+  approved by the reviewer or the human overrides. Use when a plan needs
+  quality review before execution.
+metadata:
+  author: 5x-engineer
+---
+
 # Skill: 5x-plan-review
 
 > **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.

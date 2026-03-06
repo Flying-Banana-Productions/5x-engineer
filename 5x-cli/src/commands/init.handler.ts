@@ -6,7 +6,6 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ensureSkills } from "../skills/loader.js";
 import {
 	DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
 	DEFAULT_REVIEW_TEMPLATE,
@@ -250,18 +249,6 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		console.log(`  Skipped .5x/templates/prompts/${name} (already exists)`);
 	}
 
-	// 2c. Scaffold skills (agent workflows, customizable)
-	const skillsResult = ensureSkills(projectRoot, force);
-	for (const name of skillsResult.created) {
-		console.log(`  Created .5x/skills/${name}`);
-	}
-	for (const name of skillsResult.overwritten) {
-		console.log(`  Overwrote .5x/skills/${name}`);
-	}
-	for (const name of skillsResult.skipped) {
-		console.log(`  Skipped .5x/skills/${name} (already exists)`);
-	}
-
 	// 3. Update .gitignore
 	const gitignoreResult = ensureGitignore(projectRoot);
 	if (gitignoreResult.created) {
@@ -274,13 +261,15 @@ export async function initScaffold(params: InitParams): Promise<void> {
 
 	console.log("  External TUI is opt-in: use --tui-listen");
 	console.log("  Interactive prompts always run in the CLI terminal");
+	console.log(
+		"  Run '5x skills install project' to install skills for agent clients",
+	);
 }
 
 // Export helpers for testing
 export {
 	ensureGitignore,
 	ensurePromptTemplates,
-	ensureSkills,
 	ensureTemplateFiles,
 	generateConfigContent,
 };

@@ -1,3 +1,13 @@
+---
+name: 5x-plan
+description: >-
+  Generate an implementation plan from a requirements document, then run
+  review/fix cycles until the plan is approved. Use when starting a new
+  feature or project that needs a structured implementation plan.
+metadata:
+  author: 5x-engineer
+---
+
 # Skill: 5x-plan
 
 > **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
