@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 
@@ -25,14 +26,21 @@ function cleanupDir(dir: string): void {
 }
 
 function setupProject(dir: string): void {
-	Bun.spawnSync(["git", "init"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+	Bun.spawnSync(["git", "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.name", "Test"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -43,11 +51,13 @@ function setupProject(dir: string): void {
 
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "commit", "-m", "init"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -62,6 +72,7 @@ interface CmdResult {
 async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -139,6 +150,7 @@ describe("5x diff", () => {
 			// Get initial commit hash
 			const hashResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});
@@ -148,11 +160,13 @@ describe("5x diff", () => {
 			writeFileSync(join(dir, "new-file.txt"), "new content\n");
 			Bun.spawnSync(["git", "add", "-A"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});
 			Bun.spawnSync(["git", "commit", "-m", "add new file"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});
@@ -250,6 +264,7 @@ describe("5x diff", () => {
 
 			const hashResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});
@@ -258,11 +273,13 @@ describe("5x diff", () => {
 			writeFileSync(join(dir, "file.txt"), "updated content\n");
 			Bun.spawnSync(["git", "add", "-A"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});
 			Bun.spawnSync(["git", "commit", "-m", "update file"], {
 				cwd: dir,
+				env: cleanGitEnv(),
 				stdout: "pipe",
 				stderr: "pipe",
 			});

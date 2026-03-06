@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 
@@ -30,14 +31,21 @@ function setupProject(dir: string): {
 	projectRoot: string;
 } {
 	// Init git repo
-	Bun.spawnSync(["git", "init"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+	Bun.spawnSync(["git", "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.name", "Test"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -58,11 +66,13 @@ function setupProject(dir: string): {
 	// Initial commit so worktree is clean
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "commit", "-m", "init"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -79,6 +89,7 @@ interface CmdResult {
 async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});

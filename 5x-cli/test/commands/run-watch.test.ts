@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 
@@ -26,14 +27,21 @@ function makeTmpDir(): string {
 }
 
 function setupProject(dir: string): string {
-	Bun.spawnSync(["git", "init"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+	Bun.spawnSync(["git", "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.name", "Test"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -49,11 +57,13 @@ function setupProject(dir: string): string {
 
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "commit", "-m", "init"], {
 		cwd: dir,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -75,6 +85,7 @@ async function run5x(
 ): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
+		env: cleanGitEnv(),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -111,7 +122,7 @@ async function initRun(projectRoot: string): Promise<string> {
 			"--plan",
 			"docs/development/test-plan.md",
 		],
-		{ cwd: projectRoot, stdout: "pipe", stderr: "pipe" },
+		{ cwd: projectRoot, env: cleanGitEnv(), stdout: "pipe", stderr: "pipe" },
 	);
 	const stdout = await new Response(proc.stdout).text();
 	await proc.exited;

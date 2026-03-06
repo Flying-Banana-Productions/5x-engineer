@@ -33,7 +33,13 @@ console.warn = () => {};
 // When tests run inside a git hook (e.g. pre-push from a worktree), git
 // sets GIT_DIR which leaks into Bun.spawnSync/Bun.spawn calls. This
 // causes git commands in tests to operate on the real repo's index
-// instead of temp dirs, corrupting the working tree. Strip them globally.
+// instead of temp dirs, corrupting the working tree.
+//
+// NOTE: `delete process.env.X` in Bun does NOT call unsetenv() at the
+// C level — child processes still inherit the original value. The delete
+// below helps in-process code that reads process.env directly, but ALL
+// Bun.spawnSync / Bun.spawn calls must also pass `env: cleanGitEnv()`
+// from test/helpers/clean-env.ts. See that file for details.
 // ---------------------------------------------------------------------------
 delete process.env.GIT_DIR;
 delete process.env.GIT_WORK_TREE;
