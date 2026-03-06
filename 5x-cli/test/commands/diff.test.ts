@@ -73,6 +73,7 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});

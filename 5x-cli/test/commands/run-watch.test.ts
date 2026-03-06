@@ -86,6 +86,7 @@ async function run5x(
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -122,7 +123,13 @@ async function initRun(projectRoot: string): Promise<string> {
 			"--plan",
 			"docs/development/test-plan.md",
 		],
-		{ cwd: projectRoot, env: cleanGitEnv(), stdout: "pipe", stderr: "pipe" },
+		{
+			cwd: projectRoot,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		},
 	);
 	const stdout = await new Response(proc.stdout).text();
 	await proc.exited;
