@@ -10,8 +10,6 @@ metadata:
 
 # Skill: 5x-plan
 
-> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
-
 Generate an implementation plan from a requirements document, then run
 review/fix cycles until the plan is approved.
 

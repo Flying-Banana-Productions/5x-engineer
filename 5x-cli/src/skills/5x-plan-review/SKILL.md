@@ -10,8 +10,6 @@ metadata:
 
 # Skill: 5x-plan-review
 
-> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
-
 Run iterative review/fix cycles on an implementation plan until it is
 approved by the reviewer or the human overrides.
 

@@ -10,8 +10,6 @@ metadata:
 
 # Skill: 5x-phase-execution
 
-> **Requires:** v1 CLI primitives (not yet implemented). See `101-cli-primitives.md`.
-
 Execute implementation phases from an approved plan. Each phase goes
 through: author implementation, quality gates, code review, and
 optional fix cycles.
