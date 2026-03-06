@@ -32,6 +32,16 @@ review/fix cycles until the plan is approved.
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
 
+### Human interaction note
+
+The `5x prompt` commands are for shell scripts and non-agent automation.
+If you are an agent with a native conversational UI (e.g., Claude Code,
+OpenCode), ask the human directly through your UI instead of spawning
+`5x prompt`. `5x prompt` subprocesses cannot access the terminal when
+launched from a TUI agent. The workflow steps below that reference
+`5x prompt` describe **what to ask and when** — use your own interface
+to collect the response.
+
 ## Workflow
 
 ### Step 1: Initialize

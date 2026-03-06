@@ -3,17 +3,36 @@
  *
  * Framework-independent: no citty imports. Uses stdin utilities from
  * src/utils/stdin.ts and output helpers from src/output.ts.
+ *
+ * Prompt text is written via getPromptOutput() (stderr normally, /dev/tty
+ * when stdin is piped but a terminal is available). JSON results always
+ * go to stdout via outputSuccess/outputError.
  */
 
 import { outputError, outputSuccess } from "../output.js";
 import {
 	EOF,
+	getPromptOutput,
 	isTTY,
 	readAll,
 	readLine,
 	readStdinPipe,
 	SIGINT,
 } from "../utils/stdin.js";
+
+// ---------------------------------------------------------------------------
+// Prompt output helpers
+// ---------------------------------------------------------------------------
+
+/** Write a line to the prompt output stream (stderr or /dev/tty). */
+function promptLine(text: string): void {
+	getPromptOutput().write(`${text}\n`);
+}
+
+/** Write text without a trailing newline to the prompt output stream. */
+function promptWrite(text: string): void {
+	getPromptOutput().write(text);
+}
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -74,20 +93,20 @@ export async function promptChoose(params: ChooseParams): Promise<void> {
 	}
 
 	// Interactive: display numbered options and read selection
-	console.error(); // stderr to avoid polluting JSON stdout
-	console.error(`  ${params.message}`);
-	console.error();
+	promptLine("");
+	promptLine(`  ${params.message}`);
+	promptLine("");
 	for (let i = 0; i < optionsList.length; i++) {
 		const marker = defaultVal === optionsList[i] ? " (default)" : "";
-		console.error(`    ${i + 1}. ${optionsList[i]}${marker}`);
+		promptLine(`    ${i + 1}. ${optionsList[i]}${marker}`);
 	}
-	console.error();
+	promptLine("");
 
 	const defaultHint = defaultVal ? ` [${defaultVal}]` : "";
 
 	// Reprompt loop: require valid input before proceeding
 	for (;;) {
-		process.stderr.write(`  Choice${defaultHint}: `);
+		promptWrite(`  Choice${defaultHint}: `);
 		const input = await readLine();
 
 		// EOF (Ctrl+D) — use default if available, otherwise error
@@ -112,9 +131,7 @@ export async function promptChoose(params: ChooseParams): Promise<void> {
 				outputSuccess({ choice: defaultVal });
 				return;
 			}
-			console.error(
-				"  Invalid selection. Please enter a number or option name.",
-			);
+			promptLine("  Invalid selection. Please enter a number or option name.");
 			continue;
 		}
 
@@ -135,7 +152,7 @@ export async function promptChoose(params: ChooseParams): Promise<void> {
 		}
 
 		// Invalid input — reprompt
-		console.error("  Invalid selection. Please enter a number or option name.");
+		promptLine("  Invalid selection. Please enter a number or option name.");
 	}
 }
 
@@ -174,7 +191,7 @@ export async function promptConfirm(params: ConfirmParams): Promise<void> {
 
 	// Reprompt loop: require valid input before proceeding
 	for (;;) {
-		process.stderr.write(`  ${params.message} ${hint}: `);
+		promptWrite(`  ${params.message} ${hint}: `);
 		const input = await readLine();
 
 		// EOF (Ctrl+D) — use default if available, otherwise error
@@ -209,7 +226,7 @@ export async function promptConfirm(params: ConfirmParams): Promise<void> {
 		}
 
 		// Invalid input — reprompt
-		console.error("  Invalid input. Please enter y or n.");
+		promptLine("  Invalid input. Please enter y or n.");
 	}
 }
 
@@ -223,11 +240,11 @@ export async function promptInput(params: InputParams): Promise<void> {
 
 	// Interactive
 	if (params.multiline) {
-		console.error(`  ${params.message} (Ctrl+D to finish):`);
+		promptLine(`  ${params.message} (Ctrl+D to finish):`);
 		const text = await readAll();
 		outputSuccess({ input: text });
 	} else {
-		process.stderr.write(`  ${params.message}: `);
+		promptWrite(`  ${params.message}: `);
 		const text = await readLine();
 		if (text === EOF) {
 			outputSuccess({ input: "" });
