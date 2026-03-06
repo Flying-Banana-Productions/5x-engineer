@@ -178,3 +178,27 @@ The plan states streaming-time errors should be emitted as NDJSON `{source:"watc
 
 - **Implementation completion:** ✅ — core behavior implemented + tests passing.
 - **Production readiness:** ⚠️ — fix P0.5 (log dir perms) before treating this as safe-by-default; remaining items are hardening/docs.
+
+---
+
+## Addendum (2026-03-06) — Follow-up Review (`c4ba7b66e9`)
+
+**Reviewed:** `c4ba7b66e9`
+
+**Local verification:** `bun test --concurrent --dots 5x-cli/test/utils/ndjson-tailer.test.ts 5x-cli/test/commands/run-watch.test.ts 5x-cli/test/output.test.ts` (pass)
+
+### What's addressed (✅)
+
+- **P0.5 log dir perms:** `runV1Watch()` now creates `.5x/logs/<run>` with `mode: 0o700` (`5x-cli/src/commands/run-v1.handler.ts`).
+- **P1 human-readable robustness:** `entryToAgentEvent()` now has runtime type guards + is non-throwing (skip on malformed/legacy entries) (`5x-cli/src/commands/run-v1.handler.ts`).
+- **P1 tailer IO hardening:** `NdjsonTailer` catches `readSync()` failures and degrades with a warning + retry on next poll (`5x-cli/src/utils/ndjson-tailer.ts`).
+- **P2 doc alignment:** Plan doc now states streaming-time errors are stderr warnings (stdout stays clean NDJSON); `output.ts` docs now explicitly carve out streaming commands (`5x-cli/docs/development/009-run-watch-and-stderr.md`, `5x-cli/src/output.ts`).
+
+### Remaining concerns
+
+- **Existing directory perms (minor):** `mkdirSync(..., mode: 0o700)` does not tighten permissions on already-existing directories. Optional hardening: if `logDir` exists, consider a best-effort `chmodSync(logDir, 0o700)` (or at least warn when perms are too open).
+
+### Updated readiness
+
+- **Implementation completion:** ✅
+- **Production readiness:** ✅ — no remaining P0/P1 items from this review.
