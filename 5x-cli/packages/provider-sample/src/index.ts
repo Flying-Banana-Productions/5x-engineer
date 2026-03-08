@@ -8,7 +8,8 @@
  *   author:
  *     provider: "sample"
  *   sample:
- *     echo: true  # optional config passed to create()
+ *     echo: true       # optional — echo prompt back as text (default true)
+ *     structured: {}   # optional — JSON object returned as structured output
  */
 
 import type {
@@ -31,17 +32,20 @@ class SampleSession implements AgentSession {
 	private model: string;
 	private workingDirectory: string;
 	private echoMode: boolean;
+	private structuredOutput: unknown;
 
 	constructor(
 		id: string,
 		model: string,
 		workingDirectory: string,
 		echoMode: boolean,
+		structuredOutput?: unknown,
 	) {
 		this.id = id;
 		this.model = model;
 		this.workingDirectory = workingDirectory;
 		this.echoMode = echoMode;
+		this.structuredOutput = structuredOutput;
 	}
 
 	run(prompt: string, _opts?: RunOptions): Promise<RunResult> {
@@ -52,6 +56,7 @@ class SampleSession implements AgentSession {
 
 		return Promise.resolve({
 			text,
+			structured: this.structuredOutput,
 			sessionId: this.id,
 			tokens: { in: 0, out: 0 },
 			durationMs,
@@ -75,6 +80,7 @@ class SampleSession implements AgentSession {
 		// Yield done event with full result
 		const result: RunResult = {
 			text,
+			structured: this.structuredOutput,
 			sessionId: this.id,
 			tokens: { in: 0, out: 0 },
 			durationMs: 0,
@@ -90,11 +96,13 @@ class SampleSession implements AgentSession {
 class SampleProvider implements AgentProvider {
 	private model: string;
 	private echoMode: boolean;
+	private structuredOutput: unknown;
 	private sessions: Map<string, SampleSession> = new Map();
 
-	constructor(model?: string, echoMode = true) {
+	constructor(model?: string, echoMode = true, structuredOutput?: unknown) {
 		this.model = model ?? "sample/default";
 		this.echoMode = echoMode;
+		this.structuredOutput = structuredOutput;
 	}
 
 	async startSession(opts: SessionOptions): Promise<AgentSession> {
@@ -104,6 +112,7 @@ class SampleProvider implements AgentProvider {
 			opts.model ?? this.model,
 			opts.workingDirectory,
 			this.echoMode,
+			this.structuredOutput,
 		);
 		this.sessions.set(id, session);
 		return session;
@@ -125,6 +134,7 @@ class SampleProvider implements AgentProvider {
 			opts?.model ?? this.model,
 			"/tmp", // Default working directory for resumed sessions
 			this.echoMode,
+			this.structuredOutput,
 		);
 		this.sessions.set(sessionId, session);
 		return session;
@@ -145,7 +155,9 @@ const samplePlugin: ProviderPlugin = {
 	async create(config?: Record<string, unknown>): Promise<AgentProvider> {
 		const model = typeof config?.model === "string" ? config.model : undefined;
 		const echoMode = config?.echo !== false; // default true
-		return new SampleProvider(model, echoMode);
+		// structured: JSON object to return as structured output (for testing invoke enrichment)
+		const structured = config?.structured;
+		return new SampleProvider(model, echoMode, structured);
 	},
 };
 

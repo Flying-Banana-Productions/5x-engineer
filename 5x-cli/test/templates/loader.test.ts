@@ -6,6 +6,7 @@ import {
 	getDefaultTemplateRaw,
 	listTemplates,
 	loadTemplate,
+	parseTemplate,
 	renderBody,
 	renderTemplate,
 	setTemplateOverrideDir,
@@ -389,53 +390,33 @@ describe("template stepName", () => {
 	});
 
 	test("unknown template name with no step_name has stepName null, no warning", () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), "tmpl-step-"));
-		try {
-			// Write a custom template with an unknown name
-			writeFileSync(
-				join(tmpDir, "custom-template.md"),
-				[
-					"---",
-					"name: custom-template",
-					"version: 1",
-					"variables:",
-					"  - some_var",
-					"---",
-					"Custom body {{some_var}}",
-				].join("\n"),
-			);
+		// parseTemplate is exported for testing — call it directly with an
+		// unknown template name (not in STEP_NAME_FALLBACKS) and no step_name
+		// in frontmatter. stepName should be null and no warning emitted.
+		const raw = [
+			"---",
+			"name: custom-template",
+			"version: 1",
+			"variables:",
+			"  - some_var",
+			"---",
+			"Custom body {{some_var}}",
+		].join("\n");
 
-			// We need a way to load a non-registered template. Since loadTemplate
-			// requires the template to be in TEMPLATES registry or override dir,
-			// we add the unknown template to the override dir. But loadTemplate
-			// checks the registry first, and for unknown names it will throw.
-			// The fallback logic only applies when parseTemplate is called on an
-			// existing template. For truly unknown templates, loadTemplate throws.
-			//
-			// So the test for "unknown template name" is about a template that IS
-			// loadable (e.g., in override dir) but not in the fallback map.
-			// However, loadTemplate requires the name to be in TEMPLATES registry.
-			// This means custom templates can't be loaded via loadTemplate — they'd
-			// need to be registered first.
-			//
-			// The step_name fallback is really for known templates that are overridden
-			// on disk without the new field. For truly new custom templates, the user
-			// would need to add step_name in their frontmatter.
-			//
-			// We can test via direct parseTemplate by accessing it through the module.
-			// But parseTemplate is private. Instead, we verify the behavior through
-			// a known template that explicitly sets step_name to validate the parsing.
-			//
-			// For this test, we verify the fallback map doesn't have this name and
-			// that if it were parsed, stepName would be null. We test this by
-			// checking that a registered template that HAS step_name in frontmatter
-			// gets it correctly (already tested above).
-			//
-			// The "unknown template" case would only happen if someone registers a
-			// new template in TEMPLATES without step_name. We trust parseTemplate's
-			// logic here.
+		const origStderr = console.error;
+		const stderrLines: string[] = [];
+		console.error = (...args: unknown[]) => {
+			stderrLines.push(args.map(String).join(" "));
+		};
+		try {
+			const result = parseTemplate(raw, "custom-template");
+			expect(result.metadata.stepName).toBeNull();
+			// No warning should have been emitted for unknown template names
+			expect(stderrLines.some((l) => l.includes('missing "step_name"'))).toBe(
+				false,
+			);
 		} finally {
-			rmSync(tmpDir, { recursive: true, force: true });
+			console.error = origStderr;
 		}
 	});
 

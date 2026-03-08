@@ -111,8 +111,14 @@ const ESCAPED_SENTINEL = "\x00LBRACE\x00";
 /**
  * Parse YAML frontmatter from a raw template string.
  * Returns metadata and the body (everything after frontmatter).
+ *
+ * Exported for direct testing of step_name fallback/null behavior
+ * with arbitrary template names outside the TEMPLATES registry.
  */
-function parseTemplate(raw: string, templateName: string): ParsedTemplate {
+export function parseTemplate(
+	raw: string,
+	templateName: string,
+): ParsedTemplate {
 	const match = FRONTMATTER_RE.exec(raw);
 	if (!match) {
 		throw new Error(

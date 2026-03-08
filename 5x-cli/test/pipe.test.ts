@@ -297,13 +297,24 @@ describe("readUpstreamEnvelope", () => {
 	});
 
 	test("returns null when stdin is TTY (no pipe)", async () => {
-		// When running without piping stdin, isStdinPiped() returns false.
-		// We can't easily test TTY in a subprocess, but we test the non-piped
-		// path via the isStdinPiped function directly.
-		const { isStdinPiped } = await import("../src/pipe.js");
-		// In test context (bun test), stdin is typically not a TTY
-		// This is a basic sanity check
-		expect(typeof isStdinPiped()).toBe("boolean");
+		// Validate the non-piped branch of readUpstreamEnvelope() by
+		// temporarily setting process.stdin.isTTY = true and calling
+		// readUpstreamEnvelope directly. This is a unit seam test.
+		const { readUpstreamEnvelope } = await import("../src/pipe.js");
+		const origIsTTY = process.stdin.isTTY;
+		try {
+			Object.defineProperty(process.stdin, "isTTY", {
+				value: true,
+				configurable: true,
+			});
+			const result = await readUpstreamEnvelope();
+			expect(result).toBeNull();
+		} finally {
+			Object.defineProperty(process.stdin, "isTTY", {
+				value: origIsTTY,
+				configurable: true,
+			});
+		}
 	});
 
 	test("returns null on empty stdin", async () => {
