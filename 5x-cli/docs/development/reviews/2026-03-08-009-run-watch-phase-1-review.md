@@ -57,3 +57,17 @@ Recommendation: wrap the watch execution in `try/finally` to always `process.off
 **P1 recommended**
 - [x] `run watch` cleanup is `try/finally`-safe; unexpected errors do not corrupt stdout
 - [x] `validateRunId()` has direct unit coverage for boundary cases
+
+## Addendum (2026-03-08) — Review of follow-on fix commit `19cef1d`
+
+### What's Addressed
+
+- P1.1 implemented: `runV1Watch()` now uses `try/finally` to always `process.off("SIGINT", ...)` and `tailer.destroy()`; unexpected streaming-time errors are emitted to stderr (avoids a JSON envelope landing mid-stdout stream).
+- P1.2 implemented: added direct unit coverage for `SAFE_RUN_ID` + `validateRunId()` boundary cases in `test/run-id.test.ts`.
+- P2.1 implemented: `run watch` warns if an existing log dir is group/other accessible (mode has any `0o077` bits).
+
+### Remaining Concerns
+
+- P2.2 still open (`human_required`): decide whether watch-side stderr warnings (e.g., malformed JSON) should be rate-limited / quieted; current behavior is safe but can be noisy.
+- `human_required`: decide desired exit semantics on unexpected watch failures. Current implementation logs to stderr and returns (likely exit code 0); if this is used in automation, consider setting `process.exitCode = 1` when catching unexpected errors.
+- `auto_fix`: consider including `err.stack` (when available) in the stderr log for unexpected watch errors to improve debuggability without corrupting stdout.
