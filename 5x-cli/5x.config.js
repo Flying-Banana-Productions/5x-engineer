@@ -47,6 +47,6 @@ export default {
 	// Loop guardrails and retry limits.
 	maxReviewIterations: 5,
 	maxQualityRetries: 3,
-	maxAutoIterations: 10,
+	maxStepsPerRun: 10,
 	maxAutoRetries: 5,
 };
