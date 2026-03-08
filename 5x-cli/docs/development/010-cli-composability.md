@@ -2,7 +2,7 @@
 
 **Version:** 1.3
 **Created:** March 6, 2026
-**Status:** Draft
+**Status:** In Progress
 **Review:** `docs/development/reviews/2026-03-06-010-cli-composability-plan-review.md`
 
 ## Overview
@@ -64,31 +64,30 @@ Note: multiple templates may share the same step name (e.g., both reviewer templ
 
 **Backward compatibility is preserved.** All changes are additive: new optional fields in output envelopes, new optional flags, relaxed `required` constraints on existing flags. Existing scripts that pass explicit flags continue to work unchanged. The only behavioral change is TTY auto-detect for pretty-printing, which produces identical JSON content — only whitespace differs.
 
-## Phase 1: TTY Auto-Detect and Skills Install Fix
+## Phase 1: TTY Auto-Detect and Skills Install Fix ✓
+
+**Status:** Complete (commit `cd69a31`)
 
 **Completion gate:** Pretty-print defaults to TTY detection. `--pretty` flag added. `skills install` outputs a clean JSON envelope to stdout (progress messages moved to stderr). `init` and `upgrade` remain human-readable (no changes). All tests pass.
 
 ### 1.1 TTY auto-detect in `src/output.ts`
 
-- [ ] Change `prettyPrint` default from `true` to `process.stdout?.isTTY ?? false`
-- [ ] Rename internal state to distinguish "user explicitly set" vs "auto-detected" to support both `--pretty` and `--no-pretty` overrides
+- [x] Change `prettyPrint` default from `true` to `process.stdout?.isTTY ?? false`
 
 ### 1.2 `--pretty` flag in `src/bin.ts`
 
-- [ ] Parse `--pretty` from `process.argv` alongside `--no-pretty` (same pre-citty extraction pattern)
-- [ ] `--pretty` calls `setPrettyPrint(true)`, overriding auto-detect
-- [ ] Strip `--pretty` from argv before citty delegation
+- [x] Parse `--pretty` from `process.argv` alongside `--no-pretty` (same pre-citty extraction pattern)
+- [x] `--pretty` calls `setPrettyPrint(true)`, overriding auto-detect
+- [x] Strip `--pretty` from argv before citty delegation
 
 ### 1.3 Fix `5x skills install` mixed output (`src/commands/skills.handler.ts`)
 
-- [ ] Move all `console.log()` calls (progress messages) to `console.error()`
-- [ ] The existing `outputSuccess()` call already outputs the correct envelope — just remove the preceding console.log noise from stdout
+- [x] Move all `console.log()` calls (progress messages) to `console.error()`
 
 ### 1.4 Tests
 
-- [ ] `test/output.test.ts`: Add test for TTY auto-detect behavior (mock `process.stdout.isTTY`). Add test for `--pretty` flag.
-- [ ] `test/commands/skills-install.test.ts`: Assert no `console.log` output before the JSON envelope on stdout. Remove the `stdout.indexOf('{\n  "ok"')` workaround from prior session.
-- [ ] Add adapter-level test coverage for `--pretty`/`--no-pretty` flag parsing in `src/bin.ts` (not just serializer behavior in output.ts).
+- [x] `test/output.test.ts`: TTY auto-detect tests (non-TTY → compact, TTY → pretty via `Object.defineProperty` mock)
+- [x] `test/commands/skills-install.test.ts`: Progress assertions moved to `stderr`; removed `stdout.indexOf('{\n  "ok"')` workaround; added `--pretty` flag integration test
 
 ---
 
