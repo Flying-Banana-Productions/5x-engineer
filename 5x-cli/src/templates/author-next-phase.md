@@ -2,6 +2,7 @@
 name: author-next-phase
 version: 1
 variables: [plan_path, phase_number, user_notes]
+step_name: "author:implement"
 ---
 
 You are implementing phase {{phase_number}} of the implementation plan at `{{plan_path}}`.

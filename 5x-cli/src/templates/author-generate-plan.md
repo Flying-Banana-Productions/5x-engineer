@@ -2,6 +2,7 @@
 name: author-generate-plan
 version: 1
 variables: [prd_path, plan_path, plan_template_path]
+step_name: "author:generate-plan"
 ---
 
 You are implementing the 5x workflow. Generate an implementation plan from the provided requirements document.

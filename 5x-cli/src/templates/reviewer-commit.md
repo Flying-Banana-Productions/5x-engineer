@@ -2,6 +2,7 @@
 name: reviewer-commit
 version: 1
 variables: [commit_hash, review_path, plan_path, review_template_path]
+step_name: "reviewer:review"
 ---
 
 You are a Staff Engineer reviewing the implementation work at commit `{{commit_hash}}` and any follow-on commits.

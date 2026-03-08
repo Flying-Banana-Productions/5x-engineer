@@ -64,6 +64,10 @@ export interface InvokeParams {
 }
 
 interface InvokeResult {
+	run_id: string;
+	step_name: string | null;
+	phase: string | null;
+	model: string;
 	result: unknown;
 	session_id: string;
 	duration_ms: number;
@@ -377,6 +381,10 @@ export async function invokeAgent(
 
 	// 9. Return result
 	const output: InvokeResult = {
+		run_id: params.run,
+		step_name: rendered.stepName,
+		phase: variables.phase_number ?? null,
+		model,
 		result: structured,
 		session_id: runResult.sessionId,
 		duration_ms: runResult.durationMs,

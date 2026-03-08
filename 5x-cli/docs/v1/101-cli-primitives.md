@@ -278,16 +278,18 @@ Invoke the author sub-agent with a prompt template.
 {
   "ok": true,
   "data": {
-    "status": {
+    "run_id": "run_abc123",
+    "step_name": "author:implement",
+    "phase": "1",
+    "model": "anthropic/claude-sonnet-4-6",
+    "result": {
       "result": "complete",
       "commit": "abc1234",
       "notes": "Implemented the authentication module with JWT support."
     },
     "session_id": "sess_xyz",
-    "model": "anthropic/claude-sonnet-4-6",
     "duration_ms": 45000,
-    "tokens_in": 8500,
-    "tokens_out": 3200,
+    "tokens": { "in": 8500, "out": 3200 },
     "cost_usd": 0.12,
     "log_path": ".5x/logs/run_abc123/agent-001.ndjson"
   }
@@ -352,7 +354,11 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
 {
   "ok": true,
   "data": {
-    "verdict": {
+    "run_id": "run_abc123",
+    "step_name": "reviewer:review",
+    "phase": "1",
+    "model": "anthropic/claude-sonnet-4-6",
+    "result": {
       "readiness": "ready_with_corrections",
       "items": [
         {
@@ -366,10 +372,8 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
       "summary": "Implementation is solid. One blocking issue with error handling."
     },
     "session_id": "sess_abc",
-    "model": "anthropic/claude-sonnet-4-6",
     "duration_ms": 30000,
-    "tokens_in": 12000,
-    "tokens_out": 1500,
+    "tokens": { "in": 12000, "out": 1500 },
     "cost_usd": 0.08,
     "log_path": ".5x/logs/run_abc123/agent-002.ndjson"
   }

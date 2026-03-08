@@ -93,17 +93,19 @@ Note: multiple templates may share the same step name (e.g., both reviewer templ
 
 ## Phase 2: Template Step Names, Shared Pipe Infrastructure, and Context Enrichment
 
+**Status:** Complete
+
 **Completion gate:** Template frontmatter includes required `step_name` field. `src/pipe.ts` exists with full test coverage. `docs/v1/101-cli-primitives.md` invoke/quality output shapes match actual code. Invoke output includes `run_id`, `step_name`, `phase`, `model`. All tests pass.
 
 ### 2.0 Update `docs/v1/101-cli-primitives.md` output contracts
 
-- [ ] Update `5x invoke author` return example (line 277-294): change `status` wrapper key to `result`, change flat `tokens_in`/`tokens_out` to nested `tokens: { in, out }`, add `run_id`, `step_name`, `phase`, `model` fields
-- [ ] Update `5x invoke reviewer` return example (line 350-376): change `verdict` wrapper key to `result`, same token/metadata fixes, add `run_id`, `step_name`, `phase`, `model` fields
-- [ ] Verify `5x quality run` return example matches actual code shape
+- [x] Update `5x invoke author` return example (line 277-294): change `status` wrapper key to `result`, change flat `tokens_in`/`tokens_out` to nested `tokens: { in, out }`, add `run_id`, `step_name`, `phase`, `model` fields
+- [x] Update `5x invoke reviewer` return example (line 350-376): change `verdict` wrapper key to `result`, same token/metadata fixes, add `run_id`, `step_name`, `phase`, `model` fields
+- [x] Verify `5x quality run` return example matches actual code shape
 
 ### 2.1 Add `step_name` to template frontmatter
 
-- [ ] Update `TemplateMetadata` in `src/templates/loader.ts` to include `stepName`:
+- [x] Update `TemplateMetadata` in `src/templates/loader.ts` to include `stepName`:
 
 ```typescript
 export interface TemplateMetadata {
@@ -114,7 +116,7 @@ export interface TemplateMetadata {
 }
 ```
 
-- [ ] Define a canonical fallback map for known bundled templates (used when `step_name` is missing from on-disk overrides scaffolded before this change):
+- [x] Define a canonical fallback map for known bundled templates (used when `step_name` is missing from on-disk overrides scaffolded before this change):
 
 ```typescript
 const STEP_NAME_FALLBACKS: Record<string, string> = {
@@ -127,12 +129,12 @@ const STEP_NAME_FALLBACKS: Record<string, string> = {
 };
 ```
 
-- [ ] Update `parseTemplate()` in `src/templates/loader.ts` to extract `step_name`:
+- [x] Update `parseTemplate()` in `src/templates/loader.ts` to extract `step_name`:
   - If present: validate it is a non-empty string
   - If missing for a known template name: use `STEP_NAME_FALLBACKS[name]` and emit a warning to stderr: `Warning: Template "${name}" is missing "step_name" in frontmatter. Using default "${fallback}". Run "5x init --force" to update your templates.`
   - If missing for an unknown template name: set `stepName: null` (template may not be workflow-aware)
 
-- [ ] Update all 6 bundled template `.md` files to add `step_name` to frontmatter:
+- [x] Update all 6 bundled template `.md` files to add `step_name` to frontmatter:
 
 ```yaml
 # author-generate-plan.md
@@ -172,9 +174,9 @@ variables: [commit_hash, review_path, plan_path, review_template_path]
 step_name: "reviewer:review"
 ```
 
-- [ ] Update `5x init` template scaffolding: since `5x init` copies bundled templates to `.5x/templates/prompts/`, the new frontmatter flows automatically. Users editing these local copies can customize `step_name` per-project. Older scaffolded copies without `step_name` will use the fallback with a warning.
+- [x] Update `5x init` template scaffolding: since `5x init` copies bundled templates to `.5x/templates/prompts/`, the new frontmatter flows automatically. Users editing these local copies can customize `step_name` per-project. Older scaffolded copies without `step_name` will use the fallback with a warning.
 
-- [ ] Update `renderTemplate()` return type to include `stepName`:
+- [x] Update `renderTemplate()` return type to include `stepName`:
 
 ```typescript
 export interface RenderedTemplate {
@@ -186,7 +188,7 @@ export interface RenderedTemplate {
 
 ### 2.2 Create `src/pipe.ts`
 
-- [ ] Create shared pipe utility module. `isStdinPiped()` must use `process.stdin.isTTY` directly — do NOT import or reuse anything from `src/utils/stdin.ts` (which has `/dev/tty` fallback and test override logic for interactive prompts):
+- [x] Create shared pipe utility module. `isStdinPiped()` must use `process.stdin.isTTY` directly — do NOT import or reuse anything from `src/utils/stdin.ts` (which has `/dev/tty` fallback and test override logic for interactive prompts):
 
 ```typescript
 /** Shape of context extracted from an upstream 5x envelope. */
@@ -252,14 +254,14 @@ export function isStdinPiped(): boolean
 
 ### 2.3 `extractPipeContext` implementation details
 
-- [ ] Extract `run_id` from `data.run_id` (string check)
-- [ ] Extract `step_name` from `data.step_name` (string check)
-- [ ] Extract `phase` from `data.phase` (string check)
-- [ ] Build `templateVars`: iterate `Object.entries(data)`, include entries where `typeof value === "string"`. Apply the following exclusion list to skip internal metadata keys: `run_id`, `session_id`, `log_path`, `cost_usd`, `duration_ms`, `model`, `step_name`, `ok`. Apply template safety check: skip values containing `\n` or `-->`.
+- [x] Extract `run_id` from `data.run_id` (string check)
+- [x] Extract `step_name` from `data.step_name` (string check)
+- [x] Extract `phase` from `data.phase` (string check)
+- [x] Build `templateVars`: iterate `Object.entries(data)`, include entries where `typeof value === "string"`. Apply the following exclusion list to skip internal metadata keys: `run_id`, `session_id`, `log_path`, `cost_usd`, `duration_ms`, `model`, `step_name`, `ok`. Apply template safety check: skip values containing `\n` or `-->`.
 
 ### 2.4 Enrich invoke output (`src/commands/invoke.handler.ts`)
 
-- [ ] Add fields to `InvokeResult` interface:
+- [x] Add fields to `InvokeResult` interface:
 
 ```typescript
 interface InvokeResult {
@@ -276,14 +278,14 @@ interface InvokeResult {
 }
 ```
 
-- [ ] Populate `run_id` from `params.run`
-- [ ] Populate `step_name` from `rendered.stepName` (the template's frontmatter `step_name`; may be `null` for templates without it)
-- [ ] Populate `phase` from `variables.phase_number ?? null` (where `variables` is the parsed `--var` record)
-- [ ] Populate `model` from the resolved model variable (already available in `invokeAgent()` at the session creation point)
+- [x] Populate `run_id` from `params.run`
+- [x] Populate `step_name` from `rendered.stepName` (the template's frontmatter `step_name`; may be `null` for templates without it)
+- [x] Populate `phase` from `variables.phase_number ?? null` (where `variables` is the parsed `--var` record)
+- [x] Populate `model` from the resolved model variable (already available in `invokeAgent()` at the session creation point)
 
 ### 2.5 Tests
 
-- [ ] `test/pipe.test.ts` **(NEW)**: Unit tests for:
+- [x] `test/pipe.test.ts` **(NEW)**: Unit tests for:
   - `readUpstreamEnvelope()` with valid invoke envelope
   - `readUpstreamEnvelope()` with valid non-invoke envelope (e.g., quality)
   - `readUpstreamEnvelope()` returns null when stdin is TTY
@@ -296,10 +298,10 @@ interface InvokeResult {
   - `extractPipeContext()` skips non-string values (objects, arrays, numbers)
   - `extractInvokeMetadata()` detects invoke shape and extracts all fields including model
   - `extractInvokeMetadata()` returns null for non-invoke data
-- [ ] Update template loader tests to assert `stepName` in parsed metadata for all bundled templates
-- [ ] Test: on-disk template override missing `step_name` for known template -> warns to stderr, uses canonical fallback
-- [ ] Test: unknown template name with no `step_name` -> `stepName: null`, no warning
-- [ ] Update invoke handler tests to assert new `run_id`, `step_name`, `phase`, `model` fields in output
+- [x] Update template loader tests to assert `stepName` in parsed metadata for all bundled templates
+- [x] Test: on-disk template override missing `step_name` for known template -> warns to stderr, uses canonical fallback
+- [x] Test: unknown template name with no `step_name` -> `stepName: null`, no warning
+- [x] Update invoke handler tests to assert new `run_id`, `step_name`, `phase`, `model` fields in output
 
 ---
 

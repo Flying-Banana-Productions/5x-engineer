@@ -2,6 +2,7 @@
 name: author-process-impl-review
 version: 1
 variables: [review_path, plan_path, user_notes]
+step_name: "author:fix-review"
 ---
 
 You are fixing implementation issues identified in a code review for `{{plan_path}}`.
