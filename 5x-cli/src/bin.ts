@@ -5,16 +5,27 @@ import { version } from "./version.js";
 
 // ---------------------------------------------------------------------------
 // Global --pretty / --no-pretty flags (parsed before citty sees the args)
+// Last flag wins when both are present — preserves standard CLI precedence.
 // ---------------------------------------------------------------------------
-const noPrettyIdx = process.argv.indexOf("--no-pretty");
-if (noPrettyIdx !== -1) {
-	setPrettyPrint(false);
-	process.argv.splice(noPrettyIdx, 1);
-}
-const prettyIdx = process.argv.indexOf("--pretty");
-if (prettyIdx !== -1) {
-	setPrettyPrint(true);
-	process.argv.splice(prettyIdx, 1);
+{
+	// Collect indices of all --pretty / --no-pretty flags (there may be dupes)
+	const indices: { idx: number; pretty: boolean }[] = [];
+	for (let i = process.argv.length - 1; i >= 0; i--) {
+		if (process.argv[i] === "--pretty") {
+			indices.push({ idx: i, pretty: true });
+		} else if (process.argv[i] === "--no-pretty") {
+			indices.push({ idx: i, pretty: false });
+		}
+	}
+	if (indices.length > 0) {
+		// Apply the flag with the highest original argv index (last wins)
+		const last = indices.reduce((a, b) => (a.idx > b.idx ? a : b));
+		setPrettyPrint(last.pretty);
+		// Remove all flag occurrences from argv (reverse-sorted to keep indices valid)
+		for (const { idx } of indices.sort((a, b) => b.idx - a.idx)) {
+			process.argv.splice(idx, 1);
+		}
+	}
 }
 
 const main = defineCommand({
