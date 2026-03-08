@@ -1145,6 +1145,129 @@ describe("invoke", () => {
 		);
 	});
 
+	describe("--stderr flag (P1.2)", () => {
+		test(
+			"without --stderr, non-TTY stderr has no streaming text",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+
+					// Configure sample provider so we get predictable streaming events
+					writeFileSync(
+						join(dir, "5x.toml"),
+						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n',
+					);
+
+					// The invoke will fail at structured output validation (sample provider
+					// returns no structured output), but streaming events occur before that.
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_stderr_test1",
+					]);
+
+					// Without --stderr, non-TTY stderr should NOT contain streaming text
+					expect(result.stderr).not.toContain("Sample provider response");
+					// The invocation should fail (no structured output from sample provider)
+					expect(result.exitCode).not.toBe(0);
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"with --stderr, streaming text appears on stderr despite non-TTY",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+
+					// Configure sample provider
+					writeFileSync(
+						join(dir, "5x.toml"),
+						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n',
+					);
+
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+						"--run",
+						"run_stderr_test2",
+						"--stderr",
+					]);
+
+					// With --stderr, streaming text SHOULD appear on stderr even in non-TTY
+					expect(result.stderr).toContain("Sample provider response");
+					// The invocation still fails (no structured output)
+					expect(result.exitCode).not.toBe(0);
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"--stderr flag is accepted by the CLI for both author and reviewer",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					writeFileSync(
+						join(dir, "5x.toml"),
+						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n',
+					);
+
+					// Test with reviewer subcommand
+					const result = await run5x(dir, [
+						"invoke",
+						"reviewer",
+						"reviewer-commit",
+						"--var",
+						"commit_hash=abc123",
+						"--var",
+						"review_path=docs/development/reviews/r.md",
+						"--var",
+						"plan_path=docs/development/test-plan.md",
+						"--run",
+						"run_stderr_test3",
+						"--stderr",
+					]);
+
+					// Should not fail on arg parsing — should reach provider invocation
+					const json = parseJson(result.stdout);
+					if (!json.ok) {
+						const error = json.error as Record<string, unknown>;
+						expect(error.code).not.toBe("INVALID_ARGS");
+					}
+					// With --stderr, streaming text should appear on stderr
+					expect(result.stderr).toContain("Sample provider response");
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+	});
+
 	describe("output envelope format", () => {
 		test("CliError produces correct JSON envelope", async () => {
 			const { CliError } = await import("../../src/output.js");

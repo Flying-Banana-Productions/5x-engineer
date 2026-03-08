@@ -552,6 +552,7 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 		// a NDJSON or human-readable stdout stream.
 		const msg = err instanceof Error ? err.message : String(err);
 		process.stderr.write(`[watch] Error: ${msg}\n`);
+		process.exitCode = 1;
 		controller.abort();
 	} finally {
 		process.off("SIGINT", onSigint);

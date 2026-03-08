@@ -412,4 +412,53 @@ describe("5x run watch", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("exits non-zero on unexpected streaming error (P1.1)", async () => {
+		const dir = makeTmpDir();
+		try {
+			const projectRoot = setupProject(dir);
+			const runId = await initRun(projectRoot);
+
+			// Write multiple log entries so the harness can throw after the first write
+			const logDir = join(projectRoot, ".5x", "logs", runId);
+			mkdirSync(logDir, { recursive: true });
+			writeLine(join(logDir, "agent-001.ndjson"), {
+				ts: "2026-01-01T00:00:00Z",
+				type: "text",
+				delta: "first line",
+			});
+			writeLine(join(logDir, "agent-001.ndjson"), {
+				ts: "2026-01-01T00:00:01Z",
+				type: "text",
+				delta: "second line",
+			});
+			writeLine(join(logDir, "agent-001.ndjson"), {
+				ts: "2026-01-01T00:00:02Z",
+				type: "text",
+				delta: "third line",
+			});
+
+			const harness = resolve(
+				import.meta.dir,
+				"../helpers/watch-error-harness.ts",
+			);
+			const proc = Bun.spawn(["bun", "run", harness, projectRoot, runId], {
+				cwd: projectRoot,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			const [stderr, exitCode] = await Promise.all([
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+
+			expect(stderr).toContain("[watch] Error:");
+			expect(exitCode).not.toBe(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
