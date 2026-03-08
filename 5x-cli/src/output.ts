@@ -97,13 +97,15 @@ export class CliError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * When true (the default), JSON envelopes are pretty-printed with 2-space
- * indentation for human readability.  Pass `--no-pretty` on the CLI to
- * disable (compact JSON — useful for scripts and agent skills).
+ * Pretty-print state for JSON envelopes.
+ *
+ * Auto-detected from TTY: pretty when stdout is a terminal (human-readable),
+ * compact when piped (machine-parseable).  Override with `--pretty` or
+ * `--no-pretty` on the CLI.
  */
-let prettyPrint = true;
+let prettyPrint: boolean = process.stdout?.isTTY ?? false;
 
-/** Set the pretty-print mode. Called from bin.ts based on `--no-pretty`. */
+/** Set the pretty-print mode. Called from bin.ts based on `--pretty`/`--no-pretty`. */
 export function setPrettyPrint(value: boolean): void {
 	prettyPrint = value;
 }

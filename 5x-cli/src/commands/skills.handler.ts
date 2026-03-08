@@ -74,13 +74,15 @@ export async function skillsInstall(
 		scope === "user" ? `~/${installRoot}/skills/` : `${installRoot}/skills/`;
 
 	for (const name of created) {
-		console.log(`  Created ${targetDisplay}${name}/SKILL.md`);
+		console.error(`  Created ${targetDisplay}${name}/SKILL.md`);
 	}
 	for (const name of overwritten) {
-		console.log(`  Overwrote ${targetDisplay}${name}/SKILL.md`);
+		console.error(`  Overwrote ${targetDisplay}${name}/SKILL.md`);
 	}
 	for (const name of skipped) {
-		console.log(`  Skipped ${targetDisplay}${name}/SKILL.md (already exists)`);
+		console.error(
+			`  Skipped ${targetDisplay}${name}/SKILL.md (already exists)`,
+		);
 	}
 
 	outputSuccess({

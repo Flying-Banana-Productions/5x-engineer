@@ -4,12 +4,17 @@ import { CliError, jsonStringify, setPrettyPrint } from "./output.js";
 import { version } from "./version.js";
 
 // ---------------------------------------------------------------------------
-// Global --no-pretty flag (parsed before citty sees the args)
+// Global --pretty / --no-pretty flags (parsed before citty sees the args)
 // ---------------------------------------------------------------------------
 const noPrettyIdx = process.argv.indexOf("--no-pretty");
 if (noPrettyIdx !== -1) {
 	setPrettyPrint(false);
 	process.argv.splice(noPrettyIdx, 1);
+}
+const prettyIdx = process.argv.indexOf("--pretty");
+if (prettyIdx !== -1) {
+	setPrettyPrint(true);
+	process.argv.splice(prettyIdx, 1);
 }
 
 const main = defineCommand({

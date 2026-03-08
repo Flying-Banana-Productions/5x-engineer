@@ -52,14 +52,14 @@ describe("5x skills install project", () => {
 	test("installs all bundled skills to .agents/skills/", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "project");
+			const { stderr, exitCode } = await runSkillsInstall(tmp, "project");
 			expect(exitCode).toBe(0);
 
 			const names = listSkillNames();
 			for (const name of names) {
 				const skillPath = join(tmp, ".agents", "skills", name, "SKILL.md");
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`Created .agents/skills/${name}/SKILL.md`);
+				expect(stderr).toContain(`Created .agents/skills/${name}/SKILL.md`);
 
 				// Verify content has valid frontmatter
 				const content = readFileSync(skillPath, "utf-8");
@@ -80,13 +80,13 @@ describe("5x skills install project", () => {
 			mkdirSync(skillDir, { recursive: true });
 			writeFileSync(join(skillDir, "SKILL.md"), "CUSTOM CONTENT", "utf-8");
 
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "project");
+			const { stderr, exitCode } = await runSkillsInstall(tmp, "project");
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain(
+			expect(stderr).toContain(
 				"Skipped .agents/skills/5x-plan/SKILL.md (already exists)",
 			);
 			// Other skills should still be created
-			expect(stdout).toContain(
+			expect(stderr).toContain(
 				"Created .agents/skills/5x-plan-review/SKILL.md",
 			);
 
@@ -107,11 +107,11 @@ describe("5x skills install project", () => {
 			mkdirSync(skillDir, { recursive: true });
 			writeFileSync(join(skillDir, "SKILL.md"), "CUSTOM CONTENT", "utf-8");
 
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "project", [
+			const { stderr, exitCode } = await runSkillsInstall(tmp, "project", [
 				"--force",
 			]);
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Overwrote .agents/skills/5x-plan/SKILL.md");
+			expect(stderr).toContain("Overwrote .agents/skills/5x-plan/SKILL.md");
 
 			// Verify skill was overwritten with bundled content
 			const content = readFileSync(join(skillDir, "SKILL.md"), "utf-8");
@@ -135,7 +135,7 @@ describe("5x skills install project", () => {
 
 			const names = listSkillNames();
 			for (const name of names) {
-				expect(second.stdout).toContain(
+				expect(second.stderr).toContain(
 					`Skipped .agents/skills/${name}/SKILL.md (already exists)`,
 				);
 			}
@@ -150,7 +150,7 @@ describe("5x skills install user", () => {
 		const tmp = makeTmpDir();
 		const fakeHome = makeTmpDir();
 		try {
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "user", [], {
+			const { stderr, exitCode } = await runSkillsInstall(tmp, "user", [], {
 				HOME: fakeHome,
 			});
 			expect(exitCode).toBe(0);
@@ -159,7 +159,7 @@ describe("5x skills install user", () => {
 			for (const name of names) {
 				const skillPath = join(fakeHome, ".agents", "skills", name, "SKILL.md");
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`Created ~/.agents/skills/${name}/SKILL.md`);
+				expect(stderr).toContain(`Created ~/.agents/skills/${name}/SKILL.md`);
 			}
 		} finally {
 			cleanupDir(tmp);
@@ -172,7 +172,7 @@ describe("5x skills install --install-root", () => {
 	test("installs to custom root directory for project scope", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "project", [
+			const { stderr, exitCode } = await runSkillsInstall(tmp, "project", [
 				"--install-root",
 				".claude",
 			]);
@@ -182,7 +182,7 @@ describe("5x skills install --install-root", () => {
 			for (const name of names) {
 				const skillPath = join(tmp, ".claude", "skills", name, "SKILL.md");
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`Created .claude/skills/${name}/SKILL.md`);
+				expect(stderr).toContain(`Created .claude/skills/${name}/SKILL.md`);
 			}
 		} finally {
 			cleanupDir(tmp);
@@ -193,7 +193,7 @@ describe("5x skills install --install-root", () => {
 		const tmp = makeTmpDir();
 		const fakeHome = makeTmpDir();
 		try {
-			const { stdout, exitCode } = await runSkillsInstall(
+			const { stderr, exitCode } = await runSkillsInstall(
 				tmp,
 				"user",
 				["--install-root", ".opencode"],
@@ -211,7 +211,7 @@ describe("5x skills install --install-root", () => {
 					"SKILL.md",
 				);
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`Created ~/.opencode/skills/${name}/SKILL.md`);
+				expect(stderr).toContain(`Created ~/.opencode/skills/${name}/SKILL.md`);
 			}
 		} finally {
 			cleanupDir(tmp);
@@ -221,21 +221,45 @@ describe("5x skills install --install-root", () => {
 });
 
 describe("5x skills install output", () => {
-	test("returns JSON success envelope", async () => {
+	test("returns clean JSON success envelope on stdout (no progress noise)", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { stdout, exitCode } = await runSkillsInstall(tmp, "project");
+			const { stdout, stderr, exitCode } = await runSkillsInstall(
+				tmp,
+				"project",
+			);
 			expect(exitCode).toBe(0);
 
-			// Find the JSON envelope — may span multiple lines (pretty-printed)
-			const jsonStart = stdout.indexOf('{\n  "ok"');
-			const envelope = JSON.parse(stdout.slice(jsonStart));
+			// stdout is a clean JSON envelope (compact since subprocess pipes)
+			const envelope = JSON.parse(stdout.trim());
 			expect(envelope.ok).toBe(true);
 			expect(envelope.data.scope).toBe("project");
 			expect(envelope.data.installRoot).toBe(".agents");
 			expect(envelope.data.created.length).toBe(listSkillNames().length);
 			expect(envelope.data.skipped).toHaveLength(0);
 			expect(envelope.data.overwritten).toHaveLength(0);
+
+			// Progress messages go to stderr, not stdout
+			expect(stderr).toContain("Created");
+			expect(stdout).not.toContain("Created .agents");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("returns pretty JSON envelope when --pretty is passed", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { stdout, exitCode } = await runSkillsInstall(tmp, "project", [
+				"--pretty",
+			]);
+			expect(exitCode).toBe(0);
+
+			// With --pretty, JSON envelope is indented
+			expect(stdout.trim()).toMatch(/^\{\n/);
+			const envelope = JSON.parse(stdout.trim());
+			expect(envelope.ok).toBe(true);
+			expect(envelope.data.scope).toBe("project");
 		} finally {
 			cleanupDir(tmp);
 		}
