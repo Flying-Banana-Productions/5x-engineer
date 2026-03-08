@@ -39,3 +39,16 @@ Phase 1 is close, but not fully closed. The core behavior from `cd69a31` is in p
 **P1 recommended**
 - [ ] Make global `--pretty` / `--no-pretty` precedence follow argv order, with last flag winning.
 - [ ] Add adapter-level coverage for global pretty-flag parsing and import-time TTY default behavior.
+
+## Addendum (2026-03-08) -- Phase 1 follow-up at `394ef32`
+
+### What's Addressed
+
+- `src/bin.ts` now resolves `--pretty` / `--no-pretty` by original argv position, so the last occurrence wins and all copies are stripped before citty parsing.
+- `test/bin-pretty.test.ts` adds adapter-level subprocess coverage for compact-by-default piped output plus both override flags and both mixed-order precedence cases.
+- Local verification passed: `bun test test/output.test.ts test/commands/skills-install.test.ts test/bin-pretty.test.ts` (41 pass, 0 fail).
+- This follow-up closes the two issues from the original review: the CLI ordering bug and the missing adapter-level coverage.
+
+### Remaining Concerns
+
+- None. Phase 1 now meets the plan's completion gate and is ready to close.
