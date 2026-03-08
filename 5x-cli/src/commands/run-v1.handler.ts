@@ -4,7 +4,7 @@
  * Framework-independent: no citty imports.
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -514,6 +514,18 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	// Ensure log dir exists with restricted permissions (run may have been init'd but no invoke yet)
 	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
+	// Warn if an existing log dir has overly-permissive mode (e.g., manually created without 0o700)
+	try {
+		const dirMode = statSync(logDir).mode & 0o777;
+		if (dirMode & 0o077) {
+			process.stderr.write(
+				`[watch] Warning: log directory has mode ${dirMode.toString(8).padStart(3, "0")} (group/other access); expected 700\n`,
+			);
+		}
+	} catch {
+		// stat failure is non-fatal — proceed
+	}
+
 	// Set up abort on SIGINT
 	const controller = new AbortController();
 	const onSigint = () => controller.abort();
@@ -528,13 +540,23 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	const humanReadable = params.humanReadable ?? false;
 	const showReasoning = params.showReasoning ?? false;
 
-	if (humanReadable) {
-		await watchHumanReadable(tailer, showReasoning);
-	} else {
-		await watchNdjson(tailer);
+	try {
+		if (humanReadable) {
+			await watchHumanReadable(tailer, showReasoning);
+		} else {
+			await watchNdjson(tailer);
+		}
+	} catch (err) {
+		// Unexpected streaming error — emit to stderr (not stdout) and abort cleanly.
+		// This prevents bin.ts from writing a JSON error envelope into the middle of
+		// a NDJSON or human-readable stdout stream.
+		const msg = err instanceof Error ? err.message : String(err);
+		process.stderr.write(`[watch] Error: ${msg}\n`);
+		controller.abort();
+	} finally {
+		process.off("SIGINT", onSigint);
+		tailer.destroy();
 	}
-
-	process.off("SIGINT", onSigint);
 }
 
 /**
