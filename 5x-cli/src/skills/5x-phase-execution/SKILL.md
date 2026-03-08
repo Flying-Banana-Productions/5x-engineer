@@ -55,15 +55,34 @@ capabilities:
    is available. Pass `--default` to provide a fallback for non-interactive
    environments.
 
+### Invoking sub-agents
+
+**CRITICAL: Always run `5x invoke` as a subprocess** (via your shell/bash
+tool), never as an inline tool call. Sub-agent sessions consume tens of
+thousands of tokens — running them inline floods your context window and
+wastes budget. Running as a subprocess keeps only the final JSON envelope
+(~500 bytes) in your context.
+
+```bash
+# Correct: subprocess captures only the JSON envelope
+RESULT=$(5x invoke author author-next-phase --run $RUN \
+  --var plan_path=$PLAN_PATH --var phase_number=$PHASE 2>/dev/null)
+
+# Parse fields from the envelope
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit')
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+SESSION=$(echo "$RESULT" | jq -r '.data.session_id')
+```
+
+Use `2>/dev/null` to discard stderr (streaming output) from your context.
+The user can monitor progress separately via `5x run watch`.
+
 ### Monitoring agent progress
 
 Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
 To monitor progress in real-time, suggest the user run in a separate terminal:
 
     5x run watch --run <run-id> --human-readable
-
-When invoking sub-agents, use the `--stderr` flag if your harness displays
-subprocess stderr output (e.g., `5x invoke author ... --stderr`).
 
 ## Workflow
 
