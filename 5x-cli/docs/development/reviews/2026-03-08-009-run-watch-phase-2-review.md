@@ -57,3 +57,18 @@ Recommendation: add targeted unit/integration coverage around `invokeStreamed()`
 **P1 recommended**
 - [ ] Unexpected watch-time internal failures exit non-zero
 - [ ] `invoke --stderr` has direct behavioral test coverage
+
+## Addendum (2026-03-08) — Follow-on review for `7052304`
+
+This follow-on commit closes the remaining mechanical gaps from the main review. With these fixes in place, the phase is ready.
+
+### What's Addressed
+
+- `runV1Watch()` now sets `process.exitCode = 1` on unexpected streaming failures, so broken watch sessions no longer report success.
+- `test/commands/run-watch.test.ts` adds a subprocess harness that forces a mid-stream stdout failure and verifies stderr warning plus non-zero exit.
+- `test/commands/invoke.test.ts` now covers both sides of the `--stderr` contract: default suppression on non-TTY stderr and forced streaming when `--stderr` is present.
+- Reviewer-path CLI coverage was added too, so the flag is exercised on both `invoke author` and `invoke reviewer`.
+
+### Remaining Concerns
+
+- None.

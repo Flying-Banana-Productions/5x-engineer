@@ -2,7 +2,7 @@
 # https://github.com/5x-engineer/5x-cli
 
 # Maximum steps per automated run (safety guardrail)
-maxStepsPerRun = 10
+maxStepsPerRun = 50
 
 # Maximum review iterations before stopping
 maxReviewIterations = 5
