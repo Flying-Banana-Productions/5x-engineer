@@ -74,8 +74,7 @@ Invoke the author to generate the plan:
 
     5x invoke author author-generate-plan --run $RUN \
       --var prd_path=$PRD_PATH \
-      --var plan_path=$PLAN_PATH \
-      --var plan_template_path=$TEMPLATE_PATH
+      --var plan_path=$PLAN_PATH
 
 Check the result:
 - If `result: "complete"` — record the step and continue to Step 3.

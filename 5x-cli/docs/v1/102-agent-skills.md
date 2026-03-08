@@ -105,8 +105,7 @@ Invoke the author to generate the plan:
 
     5x invoke author author-generate-plan --run $RUN \
       --var prd_path=$PRD_PATH \
-      --var plan_path=$PLAN_PATH \
-      --var plan_template_path=$TEMPLATE_PATH
+      --var plan_path=$PLAN_PATH
 
 Check the result:
 - If `result: "complete"` — record the step and continue to Step 3.
@@ -203,7 +202,6 @@ Invoke the reviewer to review the plan:
     5x invoke reviewer reviewer-plan --run $RUN \
       --var plan_path=$PLAN_PATH \
       --var review_path=$REVIEW_PATH \
-      --var review_template_path=$REVIEW_TEMPLATE_PATH \
       ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
 
 Capture $REVIEWER_SESSION from the response for reuse in subsequent reviews.
@@ -430,7 +428,6 @@ Invoke the reviewer:
       --var commit_hash=$COMMIT \
       --var review_path=$REVIEW_PATH \
       --var plan_path=$PLAN_PATH \
-      --var review_template_path=$REVIEW_TEMPLATE_PATH \
       ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
 
 Capture $REVIEWER_SESSION from the response.

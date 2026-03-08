@@ -5,7 +5,11 @@
  */
 
 import { join, resolve } from "node:path";
-import { applyModelOverrides, loadConfig } from "../config.js";
+import {
+	applyModelOverrides,
+	type FiveXConfig,
+	loadConfig,
+} from "../config.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import { resolveProjectRoot } from "../project-root.js";
 import {
@@ -96,6 +100,38 @@ function parseVars(
 		result[key] = value;
 	}
 	return result;
+}
+
+/**
+ * Resolve internal template-path variables owned by the CLI.
+ * Explicit --var values override these defaults.
+ */
+export function resolveInvokeTemplateVariables(
+	declaredVars: string[],
+	explicitVars: Record<string, string>,
+	config: Pick<FiveXConfig, "paths">,
+	projectRoot: string,
+): Record<string, string> {
+	const internalVars: Record<string, string> = {};
+
+	if (declaredVars.includes("plan_template_path")) {
+		internalVars.plan_template_path = resolve(
+			projectRoot,
+			config.paths.templates.plan,
+		);
+	}
+
+	if (declaredVars.includes("review_template_path")) {
+		internalVars.review_template_path = resolve(
+			projectRoot,
+			config.paths.templates.review,
+		);
+	}
+
+	return {
+		...internalVars,
+		...explicitVars,
+	};
 }
 
 /**
@@ -192,8 +228,10 @@ export async function invokeAgent(
 
 	// 1. Resolve and render template
 	const templateName = params.template;
+	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
 	try {
-		loadTemplate(templateName);
+		const loaded = loadTemplate(templateName);
+		templateMetadata = loaded.metadata;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (message.includes("Unknown template") || message.includes("not found")) {
@@ -202,7 +240,13 @@ export async function invokeAgent(
 		throw err;
 	}
 
-	const variables = parseVars(params.vars);
+	const explicitVars = parseVars(params.vars);
+	const variables = resolveInvokeTemplateVariables(
+		templateMetadata.variables,
+		explicitVars,
+		config,
+		projectRoot,
+	);
 	const rendered = renderTemplate(templateName, variables);
 
 	// 2. Create provider

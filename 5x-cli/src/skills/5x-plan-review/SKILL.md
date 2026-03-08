@@ -70,7 +70,6 @@ Invoke the reviewer to review the plan:
     5x invoke reviewer reviewer-plan --run $RUN \
       --var plan_path=$PLAN_PATH \
       --var review_path=$REVIEW_PATH \
-      --var review_template_path=$REVIEW_TEMPLATE_PATH \
       ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
 
 Capture $REVIEWER_SESSION from the response for reuse in subsequent reviews.

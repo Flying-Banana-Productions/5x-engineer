@@ -210,6 +210,74 @@ describe("invoke", () => {
 				/missing required variables/,
 			);
 		});
+
+		test("invoke resolves plan template path internally", async () => {
+			const { FiveXConfigSchema } = await import("../../src/config.js");
+			const { resolveInvokeTemplateVariables } = await import(
+				"../../src/commands/invoke.handler.js"
+			);
+
+			const config = FiveXConfigSchema.parse({});
+			const vars = resolveInvokeTemplateVariables(
+				["prd_path", "plan_path", "plan_template_path"],
+				{
+					prd_path: "docs/requirements.md",
+					plan_path: "docs/development/001-plan.md",
+				},
+				config,
+				"/tmp/project",
+			);
+
+			expect(vars.plan_template_path).toBe(
+				"/tmp/project/docs/_implementation_plan_template.md",
+			);
+		});
+
+		test("invoke resolves review template path internally", async () => {
+			const { FiveXConfigSchema } = await import("../../src/config.js");
+			const { resolveInvokeTemplateVariables } = await import(
+				"../../src/commands/invoke.handler.js"
+			);
+
+			const config = FiveXConfigSchema.parse({});
+			const vars = resolveInvokeTemplateVariables(
+				["commit_hash", "review_path", "plan_path", "review_template_path"],
+				{
+					commit_hash: "abc123",
+					review_path: "docs/development/reviews/review.md",
+					plan_path: "docs/development/001-plan.md",
+				},
+				config,
+				"/tmp/project",
+			);
+
+			expect(vars.review_template_path).toBe(
+				"/tmp/project/docs/development/reviews/_review_template.md",
+			);
+		});
+
+		test("explicit template path vars override internal defaults", async () => {
+			const { FiveXConfigSchema } = await import("../../src/config.js");
+			const { resolveInvokeTemplateVariables } = await import(
+				"../../src/commands/invoke.handler.js"
+			);
+
+			const config = FiveXConfigSchema.parse({});
+			const vars = resolveInvokeTemplateVariables(
+				["prd_path", "plan_path", "plan_template_path", "review_template_path"],
+				{
+					prd_path: "docs/requirements.md",
+					plan_path: "docs/development/001-plan.md",
+					plan_template_path: "/custom/plan.md",
+					review_template_path: "/custom/review.md",
+				},
+				config,
+				"/tmp/project",
+			);
+
+			expect(vars.plan_template_path).toBe("/custom/plan.md");
+			expect(vars.review_template_path).toBe("/custom/review.md");
+		});
 	});
 
 	describe("structured output validation", () => {
