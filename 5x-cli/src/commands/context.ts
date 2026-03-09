@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -14,6 +14,8 @@ import { runMigrations } from "../db/schema.js";
 import { resolveProjectRoot } from "../project-root.js";
 import {
 	type ControlPlaneResult,
+	DB_FILENAME,
+	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 
@@ -96,10 +98,7 @@ export async function resolveDbContext(opts?: {
 		}
 
 		// Compute DB path: <stateDir>/5x.db relative to controlPlaneRoot
-		// getDb resolves: resolve(projectRoot, dbPath)
-		const dbRelPath = isAbsolute(controlPlane.stateDir)
-			? join(controlPlane.stateDir, "5x.db")
-			: join(controlPlane.stateDir, "5x.db");
+		const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
 		const db = getDb(root, dbRelPath);
 
 		if (opts?.migrate !== false) {
@@ -122,7 +121,11 @@ export async function resolveDbContext(opts?: {
 		providerNames: opts?.providerNames,
 		contextDir: opts?.contextDir,
 	});
-	const db = getDb(projectRoot, config.db.path);
+	// Normalize db.path: treat as directory, append DB_FILENAME.
+	// Backward compat: `.5x/5x.db` normalizes to `.5x` → `.5x/5x.db`.
+	const normalizedDir = normalizeDbPath(config.db.path);
+	const dbRelPath = join(normalizedDir, DB_FILENAME);
+	const db = getDb(projectRoot, dbRelPath);
 
 	if (opts?.migrate !== false) {
 		try {

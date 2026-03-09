@@ -481,8 +481,12 @@ export async function resolveLayeredConfig(
 	if (rootConfigPath) {
 		try {
 			rootRaw = await loadRawConfig(rootConfigPath);
-		} catch {
-			// Config parse error — fall through to defaults
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const hint = rootConfigPath.endsWith(".toml")
+				? "Config must be a valid TOML file."
+				: "Config must be a JS/MJS module exporting a default config object.";
+			throw new Error(`Failed to load ${rootConfigPath}: ${message}. ${hint}`);
 		}
 	}
 
@@ -509,8 +513,14 @@ export async function resolveLayeredConfig(
 			if (nearestConfigPath) {
 				try {
 					nearestRaw = await loadRawConfig(nearestConfigPath);
-				} catch {
-					nearestConfigPath = null;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const hint = nearestConfigPath.endsWith(".toml")
+						? "Config must be a valid TOML file."
+						: "Config must be a JS/MJS module exporting a default config object.";
+					throw new Error(
+						`Failed to load ${nearestConfigPath}: ${message}. ${hint}`,
+					);
 				}
 			}
 		}
@@ -553,13 +563,13 @@ export async function resolveLayeredConfig(
 	// Parse through Zod to fill defaults
 	const result = FiveXConfigSchema.safeParse(mergedRaw);
 	if (!result.success) {
-		// Fallback to defaults on parse error
-		return {
-			config: FiveXConfigSchema.parse({}),
-			rootConfigPath,
-			nearestConfigPath,
-			isLayered,
-		};
+		const source = isLayered
+			? `merged config from ${rootConfigPath ?? "defaults"} + ${nearestConfigPath}`
+			: (rootConfigPath ?? nearestConfigPath ?? "config");
+		const issues = result.error.issues
+			.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+			.join("\n");
+		throw new Error(`Invalid config in ${source}:\n${issues}`);
 	}
 
 	const config = applyDeprecatedAliases(result.data, mergedRaw);

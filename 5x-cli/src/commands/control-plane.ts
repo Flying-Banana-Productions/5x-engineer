@@ -72,7 +72,7 @@ function sanitizedEnv(): Record<string, string | undefined> {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_STATE_DIR = ".5x";
-const DB_FILENAME = "5x.db";
+export const DB_FILENAME = "5x.db";
 
 /** Config filenames in priority order (only need TOML for bootstrap). */
 const CONFIG_FILENAMES = ["5x.toml", "5x.config.js", "5x.config.mjs"] as const;
@@ -118,7 +118,7 @@ function readDbPathFromConfig(rootDir: string): string | null {
  * Backward compat: if `path.basename(dbPath) === '5x.db'`, strip the
  * filename and use `path.dirname(dbPath)`.
  */
-function normalizeDbPath(dbPath: string): string {
+export function normalizeDbPath(dbPath: string): string {
 	if (basename(dbPath) === DB_FILENAME) {
 		return dirname(dbPath);
 	}
@@ -161,7 +161,7 @@ function stateDbExists(stateDir: string): boolean {
  * For linked worktrees: git-dir is `.git/worktrees/<name>` or an absolute
  * path; we use `git rev-parse --show-toplevel` to get the checkout root.
  */
-function resolveCheckoutRoot(startDir: string): string | null {
+export function resolveCheckoutRoot(startDir: string): string | null {
 	const toplevel = gitSync(["rev-parse", "--show-toplevel"], startDir);
 	return toplevel ? resolve(toplevel) : null;
 }

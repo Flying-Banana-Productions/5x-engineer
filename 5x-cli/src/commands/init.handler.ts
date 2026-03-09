@@ -14,7 +14,10 @@ import {
 	DEFAULT_REVIEW_TEMPLATE,
 } from "../templates/default-artifacts.js";
 import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
-import { resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	resolveCheckoutRoot,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -158,12 +161,15 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	// Managed-mode guard: block `5x init` from a linked worktree when the
 	// main repo is already 5x-managed. No escape hatch — `--force` only
 	// overwrites config/templates, it does not bypass this guard.
+	// Compare the git checkout root (not raw cwd) against controlPlaneRoot
+	// so that running `5x init` from a subdirectory of the main checkout
+	// is correctly recognized as "main checkout" and allowed.
 	const controlPlane = resolveControlPlaneRoot(projectRoot);
 	if (controlPlane.mode === "managed") {
-		// Check if we're in a linked worktree (cwd is not the control-plane root)
-		const normalizedCwd = resolve(projectRoot);
+		const checkoutRoot = resolveCheckoutRoot(projectRoot);
+		const normalizedCheckout = checkoutRoot ? resolve(checkoutRoot) : null;
 		const normalizedRoot = resolve(controlPlane.controlPlaneRoot);
-		if (normalizedCwd !== normalizedRoot) {
+		if (normalizedCheckout !== normalizedRoot) {
 			throw new Error(
 				`This worktree is managed by the control-plane at \`${controlPlane.controlPlaneRoot}\`. ` +
 					"Run `5x init` from the main checkout if you need to re-initialize.",
