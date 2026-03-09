@@ -56,7 +56,7 @@ This is the intended workflow. Your agent (OpenCode, Claude Code, etc.) loads a 
 5x init
 ```
 
-2. Edit `5x.config.js` -- set your models, quality gates, and paths.
+2. Edit `5x.toml` -- set your models, quality gates, and paths.
 
 3. Install skills so your agent can discover them:
 
@@ -85,31 +85,28 @@ The skill guides the agent through the full workflow: plan generation, review cy
 
 ### Option B: Bash Scripting
 
-Every 5x command returns a JSON envelope (`{ "ok": true, "data": {...} }`), making it straightforward to compose in scripts with `jq`.
-
-A complete single-phase author/review loop:
+Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.
 
 ```bash
-# Initialize a run
-RUN_ID=$(5x run init --plan docs/development/001-impl-example.md | jq -r '.data.run_id')
+# Pipe-composed: run_id and plan_path flow from init to invoke automatically
+5x run init --plan docs/development/001-impl-example.md | \
+  5x invoke author author-next-phase --var phase_number=1 --record
+```
 
-# Invoke the author agent
-5x invoke author author-next-phase \
-  --run "$RUN_ID" \
-  --var plan_path=docs/development/001-impl-example.md \
-  --var phase_number=1
+For workflows that need branching logic, capture the envelope and use `jq`:
 
-# Run quality gates
-5x quality run
+```bash
+PLAN="docs/development/001-impl-example.md"
+RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
 
-# Invoke the reviewer
-5x invoke reviewer reviewer-commit \
-  --run "$RUN_ID" \
-  --var plan_path=docs/development/001-impl-example.md \
-  --var phase_number=1 \
-  --var "diff=$(5x diff | jq -r '.data.diff')"
+# --record auto-records using the template's step_name
+AUTHOR_OUT=$(5x invoke author author-next-phase --run "$RUN_ID" --record \
+  --var "plan_path=$PLAN" --var phase_number=1)
+RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
 
-# Complete the run
+# Quality output piped to run record (step name + run from CLI flags)
+5x quality run | 5x run record "quality:check" --run "$RUN_ID"
+
 5x run complete --run "$RUN_ID"
 ```
 
@@ -167,35 +164,41 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 ```bash
 5x run init --plan <path> [--allow-dirty]     # Start or resume a run for a plan
 5x run state --run <id>                        # Get run state, steps, and summary
-5x run record <step> --run <id> --result '{}' [--phase <p>] [--iteration <n>]
+5x run record [step] [--run <id>] [--result '{}'] [--phase <p>] [--iteration <n>]
 5x run complete --run <id> [--status aborted]  # Complete or abort a run
 5x run reopen --run <id>                       # Re-activate a completed/aborted run
 5x run list [--plan <path>] [--status active]  # List runs
 5x run watch --run <id> [--human-readable]     # Tail agent logs in real-time
 ```
 
-`run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations).
+`run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations). When piping from `invoke`, step name, run ID, result, and metadata are auto-extracted: `5x invoke ... | 5x run record`.
 
 ### Agent Invocation
 
 ```bash
-5x invoke author <template> --run <id> [--var key=value ...] [--model <m>]
-5x invoke reviewer <template> --run <id> [--var key=value ...] [--model <m>]
+5x invoke author <template> [--run <id>] [--var key=value ...] [--record]
+5x invoke reviewer <template> [--run <id>] [--var key=value ...] [--record]
 ```
 
 Invokes a sub-agent with a prompt template. The author returns `AuthorStatus` (`result: complete | needs_human | failed`), the reviewer returns `ReviewerVerdict` (`readiness: ready | ready_with_corrections | not_ready`).
 
-Key flags: `--var` (template variables, repeatable), `--model` (override config), `--session` (resume session), `--timeout` (seconds), `--quiet` (suppress stderr stream), `--stderr` (force stderr output in non-TTY contexts).
+Key flags:
+- `--run` -- run ID (optional when piping from an upstream command)
+- `--var key=value` -- template variables (repeatable). Supports `--var key=@path` (read from file) and `--var key=@-` (read from stdin)
+- `--record` / `--record-step` -- auto-record the result as a run step using the template's `step_name`
+- `--phase`, `--iteration` -- metadata for `--record`
+- `--session` -- resume an existing session (auto-selects an abbreviated prompt template if a `-continued` variant exists)
+- `--model` (override config), `--timeout` (seconds), `--quiet` (suppress stderr), `--stderr` (force stderr in non-TTY)
 
 Templates are resolved from `.5x/templates/prompts/` (user overrides) then bundled defaults.
 
 ### Quality Gates
 
 ```bash
-5x quality run    # Execute all configured quality gates
+5x quality run [--record --run <id>]    # Execute quality gates, optionally auto-record
 ```
 
-Runs each command in `qualityGates` from config sequentially. Returns `{ passed: bool, results: [...] }`.
+Runs each command in `qualityGates` from config sequentially. Returns `{ passed: bool, results: [...] }`. With `--record`, the result is auto-recorded as a `quality:check` step. Can also pipe to `run record`: `5x quality run | 5x run record "quality:check" --run <id>`.
 
 ### Inspection
 
@@ -231,48 +234,44 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 
 ## Configuration
 
-`5x init` creates `5x.config.js` (or `.mjs`). Auto-discovered by walking up from the working directory.
+`5x init` creates `5x.toml`. Auto-discovered by walking up from the working directory. (`5x.config.js` / `.mjs` are also supported for backward compatibility.)
 
-```js
-/** @type {import('5x-cli').FiveXConfig} */
-export default {
-  author: {
-    provider: "opencode",         // "opencode" (default) or plugin name
-    model: "anthropic/claude-sonnet-4-6",
-    timeout: 300,                 // seconds per invocation
-  },
-  reviewer: {
-    provider: "opencode",
-    model: "anthropic/claude-sonnet-4-6",
-    timeout: 120,
-  },
+```toml
+# 5x.toml
 
-  // Shell commands run by `5x quality run`
-  qualityGates: [
-    "bun test --concurrent --dots",
-    "bun run lint",
-    "bun run typecheck",
-  ],
+maxStepsPerRun = 50    # Hard limit on steps per run (prevents runaway loops)
 
-  // Hard limit on steps per run (prevents runaway loops)
-  maxStepsPerRun: 50,
+# Shell commands run by `5x quality run`
+qualityGates = [
+  "bun test --concurrent --dots",
+  "bun run lint",
+  "bun run typecheck",
+]
 
-  paths: {
-    plans: "docs/development",
-    reviews: "docs/development/reviews",
-    archive: "docs/archive",
-    templates: {
-      plan: ".5x/templates/implementation-plan-template.md",
-      review: ".5x/templates/review-template.md",
-    },
-  },
+[author]
+provider = "opencode"                  # "opencode" (default) or plugin name
+model = "anthropic/claude-sonnet-4-6"
+timeout = 300                          # Inactivity timeout in seconds
 
-  db: { path: ".5x/5x.db" },
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-sonnet-4-6"
+timeout = 120
 
-  worktree: {
-    postCreate: "bun install",    // runs after worktree creation
-  },
-};
+[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+archive = "docs/archive"
+
+[paths.templates]
+plan = ".5x/templates/implementation-plan-template.md"
+review = ".5x/templates/review-template.md"
+
+[db]
+path = ".5x/5x.db"
+
+[worktree]
+postCreate = "bun install"
 ```
 
 ## Output Contract
@@ -287,7 +286,7 @@ export default {
 { "ok": false, "error": { "code": "RUN_NOT_FOUND", "message": "...", "detail": { ... } } }
 ```
 
-Streaming commands (`run watch`) write NDJSON lines or human-readable text to stdout instead of envelopes. Pre-streaming errors still use the envelope format.
+Output is compact JSON when piped, pretty-printed when stdout is a TTY. Override with `--pretty` or `--no-pretty`. Streaming commands (`run watch`) write NDJSON lines or human-readable text to stdout instead of envelopes.
 
 ### Exit Codes
 

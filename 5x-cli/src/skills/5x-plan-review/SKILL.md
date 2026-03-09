@@ -58,7 +58,8 @@ wastes budget. Running as a subprocess keeps only the final JSON envelope
 
 ```bash
 # Correct: subprocess captures only the JSON envelope
-RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
+# --record auto-records using the template's step_name
+RESULT=$(5x invoke reviewer reviewer-plan --run $RUN --record \
   --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH 2>/dev/null)
 
 # Parse fields from the envelope
@@ -106,17 +107,17 @@ Track $REVIEWER_SESSION (initially empty) for reviewer session reuse.
 Invoke the reviewer to review the plan:
 
     5x invoke reviewer reviewer-plan --run $RUN \
+      --record --phase plan \
       --var plan_path=$PLAN_PATH \
       --var review_path=$REVIEW_PATH \
       ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
 
-When `--session` is passed, the CLI automatically uses the
-`reviewer-plan-continued` template (a shorter prompt) if available,
-since the full instructions are already in the session context.
+`--record` auto-records using the template's `step_name`
+(`reviewer:review`). When `--session` is passed, the CLI automatically
+uses the `reviewer-plan-continued` template (a shorter prompt) since
+the full instructions are already in the session context.
 
 Capture $REVIEWER_SESSION from the response for reuse in subsequent reviews.
-
-Record: `5x run record "reviewer:review" --run $RUN --phase plan --result '<result>'`
 
 ### Step 2: Route the verdict
 
@@ -144,15 +145,17 @@ Read the verdict from the response:
 Invoke the author to revise the plan:
 
     5x invoke author author-process-plan-review --run $RUN \
+      --record --phase plan \
       --var review_path=$REVIEW_PATH \
       --var plan_path=$PLAN_PATH
 
+`--record` auto-records using the template's `step_name`
+(`author:fix-review`).
+
 Check the result:
-- `result: "complete"` — record and go to Step 1 (next review cycle).
+- `result: "complete"` — go to Step 1 (next review cycle).
 - `result: "needs_human"` — go to Step 4 (Escalate).
 - `result: "failed"` — go to Step 4 (Escalate).
-
-Record: `5x run record "author:revise-plan" --run $RUN --phase plan --result '<result>'`
 
 Increment $ITERATION. If $ITERATION > 5, go to Step 4 (Escalate)
 with the message "Maximum review iterations reached."

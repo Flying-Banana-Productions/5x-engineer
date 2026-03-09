@@ -77,6 +77,26 @@ SESSION=$(echo "$RESULT" | jq -r '.data.session_id')
 Use `2>/dev/null` to discard stderr (streaming output) from your context.
 The user can monitor progress separately via `5x run watch`.
 
+### Timeout layers
+
+Two independent timeouts apply to agent invocations:
+
+1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
+   in config, or `--timeout` CLI override): an inactivity timeout
+   inside `5x invoke` that resets on each agent event. When it fires,
+   you get a clean `AgentTimeoutError` in the JSON envelope. Do NOT
+   pass `--timeout` unless you intend to override the configured value.
+
+2. **Shell tool timeout**: your bash/subprocess tool's wall-clock
+   limit. This is a blunt circuit breaker — when it fires, the process
+   is killed and you get empty or truncated output.
+
+These serve different purposes and cannot be cleanly aligned. Set your
+shell tool timeout generously (e.g., 10 minutes) as a safety net for
+catastrophic hangs. Let the invocation timeout handle normal operational
+control. An unexpectedly killed subprocess produces empty output — see
+Recovery for handling.
+
 ### Monitoring agent progress
 
 Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
@@ -109,11 +129,15 @@ Track $REVIEWER_SESSION = "" (for session reuse within this phase).
 Invoke the author to implement the phase:
 
     5x invoke author author-next-phase --run $RUN \
+      --record --phase $PHASE \
       --var plan_path=$PLAN_PATH \
       --var phase_number=$PHASE_NUMBER
 
+`--record` auto-records the step using the template's `step_name`
+(`author:implement`). No separate `5x run record` call is needed.
+
 Check the result:
-- `result: "complete"` with a commit hash — record and continue to Step 2.
+- `result: "complete"` with a commit hash — continue to Step 2.
 - `result: "complete"` without a commit — **invariant violation**.
   See Recovery.
 - `result: "needs_human"` — present the reason and options:
@@ -122,19 +146,17 @@ Check the result:
   `--var user_notes="$GUIDANCE"`.
 - `result: "failed"` — present to human, abort or retry.
 
-Record: `5x run record "author:implement" --run $RUN --phase $PHASE --result '<result>'`
-
 Capture $COMMIT from the result for the reviewer.
 
 #### Step 2: Quality gates
 
-    5x quality run
+    5x quality run --record --run $RUN --phase $PHASE
+
+`--record` auto-records as `quality:check`.
 
 Check the result:
-- `passed: true` — record and continue to Step 3.
+- `passed: true` — continue to Step 3.
 - `passed: false` — go to Step 2a (Quality retry).
-
-Record: `5x run record "quality:check" --run $RUN --phase $PHASE --result '<result>'`
 
 ##### Step 2a: Quality retry
 
@@ -149,11 +171,13 @@ If $QUALITY_RETRIES > 2:
 Invoke author to fix quality failures:
 
     5x invoke author author-process-impl-review --run $RUN \
+      --record --phase $PHASE --record-step "author:fix-quality" \
       --var review_path="" \
       --var plan_path=$PLAN_PATH \
       --var user_notes="Quality gate failures: $FAILURES"
 
-Record: `5x run record "author:fix-quality" --run $RUN --phase $PHASE --result '<result>'`
+`--record-step` overrides the template's default step name for this
+quality-fix context.
 
 Loop back to Step 2.
 
@@ -162,14 +186,17 @@ Loop back to Step 2.
 Invoke the reviewer:
 
     5x invoke reviewer reviewer-commit --run $RUN \
+      --record --phase $PHASE --iteration $REVIEW_ITERATIONS \
       --var commit_hash=$COMMIT \
       --var review_path=$REVIEW_PATH \
       --var plan_path=$PLAN_PATH \
       ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
 
-Capture $REVIEWER_SESSION from the response.
+When `--session` is passed, the CLI automatically uses an abbreviated
+prompt template (`reviewer-commit-continued`) if one exists, since the
+full instructions are already in the session context.
 
-Record: `5x run record "reviewer:review" --run $RUN --phase $PHASE --result '<result>'`
+Capture $REVIEWER_SESSION from the response.
 
 #### Step 4: Route the verdict
 
@@ -196,16 +223,15 @@ If $REVIEW_ITERATIONS > 3:
 Invoke the author to fix review items:
 
     5x invoke author author-process-impl-review --run $RUN \
+      --record --phase $PHASE --iteration $REVIEW_ITERATIONS \
       --var review_path=$REVIEW_PATH \
       --var plan_path=$PLAN_PATH
 
 Check the result:
-- `result: "complete"` — record, update $COMMIT, loop back to Step 2
+- `result: "complete"` — update $COMMIT, loop back to Step 2
   (quality gates must pass again after changes).
 - `result: "needs_human"` — go to Step 5a (Escalate).
 - `result: "failed"` — go to Step 5a (Escalate).
-
-Record: `5x run record "author:fix-review" --run $RUN --phase $PHASE --result '<result>'`
 
 #### Step 5a: Escalate
 
@@ -318,6 +344,16 @@ still says not_ready on the same issues.
    to the human.
 3. If the diff doesn't address the items, re-invoke the author with
    explicit quotes of the review items and the current code.
+
+### Subprocess returns empty output
+
+**Symptom:** The `5x invoke` subprocess returns no output.
+
+**Response:**
+1. The agent process was likely killed by the shell tool's wall-clock
+   timeout before completing. Retry with a longer timeout and a fresh
+   session (omit --session).
+2. If empty output persists after retry, escalate to the human.
 
 ### Structured output validation failure
 

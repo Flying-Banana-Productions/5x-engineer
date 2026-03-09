@@ -70,6 +70,26 @@ COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit')
 Use `2>/dev/null` to discard stderr (streaming output) from your context.
 The user can monitor progress separately via `5x run watch`.
 
+### Timeout layers
+
+Two independent timeouts apply to agent invocations:
+
+1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
+   in config, or `--timeout` CLI override): an inactivity timeout
+   inside `5x invoke` that resets on each agent event. When it fires,
+   you get a clean `AgentTimeoutError` in the JSON envelope. Do NOT
+   pass `--timeout` unless you intend to override the configured value.
+
+2. **Shell tool timeout**: your bash/subprocess tool's wall-clock
+   limit. This is a blunt circuit breaker — when it fires, the process
+   is killed and you get empty or truncated output.
+
+These serve different purposes and cannot be cleanly aligned. Set your
+shell tool timeout generously (e.g., 10 minutes) as a safety net for
+catastrophic hangs. Let the invocation timeout handle normal operational
+control. An unexpectedly killed subprocess produces empty output — see
+Recovery for handling.
+
 ### Monitoring agent progress
 
 Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
@@ -90,19 +110,20 @@ and skip to the appropriate step based on recorded history.
 
 Invoke the author to generate the plan:
 
-    5x invoke author author-generate-plan --run $RUN \
+    5x invoke author author-generate-plan --run $RUN --record \
       --var prd_path=$PRD_PATH \
       --var plan_path=$PLAN_PATH
 
+`--record` auto-records the step using the template's `step_name`
+(`author:generate-plan`).
+
 Check the result:
-- If `result: "complete"` — record the step and continue to Step 3.
+- If `result: "complete"` — continue to Step 3.
 - If `result: "needs_human"` — present the reason to the human via
   `5x prompt choose` with options: provide-guidance, abort.
   If guidance, collect it via `5x prompt input` and re-invoke with
   `--var user_notes="$GUIDANCE"`.
 - If `result: "failed"` — present the reason to the human and abort.
-
-Record: `5x run record "author:generate-plan" --run $RUN --result '<result>'`
 
 ### Step 3: Review loop
 
@@ -138,6 +159,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Author claims complete but no commit**: Invariant violation — treat
   as context loss. Re-invoke with a fresh session. If it fails again,
   escalate to the human.
+- **Subprocess returns empty output**: The agent process was likely
+  killed by the shell tool's timeout. Retry with a longer timeout and
+  a fresh session. If empty output persists, escalate to the human.
 
 ## Completion
 
