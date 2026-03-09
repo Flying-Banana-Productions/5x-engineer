@@ -103,12 +103,18 @@ function readDbPathFromConfig(rootDir: string): string | null {
 			} catch {
 				// Config parse error — fall through to default
 			}
+		} else if (filename === "5x.config.js" || filename === "5x.config.mjs") {
+			// Simple regex extraction for JS/MJS configs during bootstrap.
+			// This handles common patterns: db: { path: "..." } or db.path = "..."
+			try {
+				const text = readFileSync(configPath, "utf-8");
+				// Match db: { path: "value" } or db: { path: 'value' }
+				const match = text.match(/db\s*:\s*\{[^}]*path\s*:\s*["']([^"']+)["']/);
+				if (match?.[1]) return match[1];
+			} catch {
+				// Config read error — fall through to default
+			}
 		}
-		// For JS/MJS configs we can't synchronously import them during bootstrap.
-		// Fall through to default. This is acceptable: JS configs that set db.path
-		// are rare, and the default `.5x` works for the vast majority of cases.
-		// Phase 1a note: we only need this for TOML, which is the preferred format.
-		break; // Found a config file but couldn't extract db.path
 	}
 	return null;
 }
