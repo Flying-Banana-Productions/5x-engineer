@@ -119,3 +119,24 @@ The v1.6 revision addresses the remaining issues from the v1.5 addendum. The pla
 - Testability is strong: the matrix is specific and maps well to the identified failure modes.
 
 **Readiness:** Ready
+
+## Addendum (2026-03-09) - Phase 1 implementation re-review
+
+### What's Addressed
+
+- `resolveControlPlaneRoot`, `resolveRunExecutionContext`, and layered config resolution are now implemented with focused helpers instead of more cwd-specific branching.
+- The latest follow-up closes the two correctness gaps from the previous round: `5x init` now scaffolds at the checkout root when invoked from a subdirectory, and `run init` normalizes legacy file-style `db.path` values before opening the DB.
+- Regression coverage improved materially. Targeted Bun tests for control-plane resolution, run-context resolution, init guard behavior, and config layering all pass locally.
+
+### Remaining Concerns
+
+- **P1.1 - Control-plane bootstrap still ignores JS/MJS `db.path` overrides.** `readDbPathFromConfig()` only reads `5x.toml` and explicitly falls back to the default when the root config is `5x.config.js` or `5x.config.mjs` (`5x-cli/src/commands/control-plane.ts:85`, `5x-cli/src/commands/control-plane.ts:107`). That means an existing repo with a custom DB location in JS config can be misdetected as unmanaged from a worktree, reopening the split-brain problem the phase is meant to close. Because the current resolver is synchronous, fixing this needs an explicit product/architecture choice: either support JS/MJS during bootstrap or formally narrow the contract to TOML-only for `db.path`. **Action:** `human_required`
+- **P1.2 - Layered config discovery can escape the control-plane root.** `resolveLayeredConfig()` uses `discoverConfigFile()` for both the root and nearest lookup, and that helper walks all the way to `/` with no boundary (`5x-cli/src/config.ts:153`, `5x-cli/src/config.ts:478`, `5x-cli/src/config.ts:502`). If a repo lacks an in-repo `5x.toml`, the resolver can silently adopt a parent-directory config outside `controlPlaneRoot`, which violates the plan's "root config from controlPlaneRoot" contract and can leak unrelated paths/quality settings into the repo. Bound both searches to `controlPlaneRoot` and add regression coverage. **Action:** `auto_fix`
+
+### Assessment
+
+- Architecture is headed the right way and most Phase 1 mechanics are now in place.
+- This is not ready to advance as complete Phase 1 work yet because bootstrap behavior for non-TOML configs is still undefined in shipped code.
+- If the JS/MJS bootstrap contract is resolved and the config-discovery boundary is fixed, the remaining issues here look mechanical.
+
+**Readiness:** Not ready

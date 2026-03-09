@@ -149,10 +149,14 @@ const CONFIG_FILENAMES = ["5x.toml", "5x.config.js", "5x.config.mjs"] as const;
 /**
  * Walk up from `startDir` to find a config file.
  * Returns the absolute path to the config file, or null.
+ *
+ * @param stopDir - If provided, stop walking at this directory (inclusive).
+ *   Prevents discovery from escaping beyond a boundary (e.g. controlPlaneRoot).
  */
-function discoverConfigFile(startDir: string): string | null {
+function discoverConfigFile(startDir: string, stopDir?: string): string | null {
 	let dir = resolve(startDir);
 	const root = resolve("/");
+	const boundary = stopDir ? resolve(stopDir) : null;
 
 	while (true) {
 		for (const filename of CONFIG_FILENAMES) {
@@ -161,6 +165,8 @@ function discoverConfigFile(startDir: string): string | null {
 				return candidate;
 			}
 		}
+		// Stop at boundary (inclusive — we already checked this dir)
+		if (boundary && dir === boundary) break;
 		const parent = dirname(dir);
 		if (parent === dir || dir === root) break;
 		dir = parent;
@@ -474,8 +480,8 @@ export async function resolveLayeredConfig(
 	contextDir?: string,
 	warn: (...args: unknown[]) => void = console.error,
 ): Promise<LayeredConfigResult> {
-	// Discover root config
-	const rootConfigPath = discoverConfigFile(controlPlaneRoot);
+	// Discover root config — only look at controlPlaneRoot itself (no upward walk)
+	const rootConfigPath = discoverConfigFile(controlPlaneRoot, controlPlaneRoot);
 	let rootRaw: unknown = null;
 
 	if (rootConfigPath) {
@@ -499,7 +505,8 @@ export async function resolveLayeredConfig(
 		const resolvedRoot = resolve(controlPlaneRoot);
 
 		if (resolvedContext !== resolvedRoot) {
-			nearestConfigPath = discoverConfigFile(resolvedContext);
+			// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
+			nearestConfigPath = discoverConfigFile(resolvedContext, controlPlaneRoot);
 
 			// Only use nearest if it's a different file from root
 			if (
