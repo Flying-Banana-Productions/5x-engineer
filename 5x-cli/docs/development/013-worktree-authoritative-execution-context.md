@@ -262,18 +262,18 @@ Files:
 
 **Completion gate:** `invoke --run` works from root cwd and still executes in mapped worktree by default.
 
-- [ ] Update `invoke.handler.ts`:
+- [x] Update `invoke.handler.ts`:
   - when `params.run` present and `params.workdir` absent, call resolver and set provider `workingDirectory` to resolved worktree directory.
   - when resolver returns effective mapped plan path, inject it as default for `plan_path` variable resolution.
   - pass `dirname(effectivePlanPath)` as `contextDir` to config resolution so layered config is plan-anchored (Phase 1c).
-- [ ] Preserve explicit precedence:
+- [x] Preserve explicit precedence:
   - explicit `--workdir` wins over mapping
   - explicit `--var plan_path=...` wins over resolver defaults
-- [ ] Ensure `invoke` still works for non-run flows and for unmapped runs.
-- [ ] **Re-anchor artifact paths to `controlPlaneRoot`:**
+- [x] Ensure `invoke` still works for non-run flows and for unmapped runs.
+- [x] **Re-anchor artifact paths to `controlPlaneRoot`:**
   - Log directory: `join(controlPlaneRoot, stateDir, "logs", params.run)` instead of `join(projectRoot, ".5x", "logs", params.run)`.
   - Template override lookup: `join(controlPlaneRoot, stateDir, "templates", "prompts")` instead of `join(projectRoot, ".5x", "templates", "prompts")`.
-- [ ] Extend invoke output envelope with optional execution context fields for downstream pipelines:
+- [x] Extend invoke output envelope with optional execution context fields for downstream pipelines:
   - `worktree_path` (if mapped)
   - `worktree_plan_path` (if resolved)
 

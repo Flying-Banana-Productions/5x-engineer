@@ -21,6 +21,10 @@ export interface PipeContext {
 	stepName?: string;
 	/** Phase identifier. */
 	phase?: string;
+	/** Mapped worktree path (Phase 2: from invoke envelope). */
+	worktreePath?: string;
+	/** Effective plan path in worktree (Phase 2: from invoke envelope). */
+	worktreePlanPath?: string;
 	/** Template variable fallbacks — eligible string fields from upstream data. */
 	templateVars: Record<string, string>;
 }
@@ -55,6 +59,9 @@ const EXCLUDED_TEMPLATE_VAR_KEYS = new Set([
 	"model",
 	"step_name",
 	"ok",
+	// Phase 2: worktree context fields are internal plumbing, not template vars
+	"worktree_path",
+	"worktree_plan_path",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -144,6 +151,13 @@ export function extractPipeContext(data: Record<string, unknown>): PipeContext {
 	}
 	if (typeof data.phase === "string") {
 		ctx.phase = data.phase;
+	}
+	// Phase 2: extract worktree context fields
+	if (typeof data.worktree_path === "string") {
+		ctx.worktreePath = data.worktree_path;
+	}
+	if (typeof data.worktree_plan_path === "string") {
+		ctx.worktreePlanPath = data.worktree_plan_path;
 	}
 
 	// Build templateVars from eligible string fields
