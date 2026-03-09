@@ -38,3 +38,16 @@ The script now passes `review_path=.5x/reviews/phase-${PHASE}-review.md` into `r
 
 **P1 recommended**
 - [x] Ensure `.5x/reviews/` exists before invoking `reviewer-commit` with `review_path=.5x/reviews/phase-${PHASE}-review.md`
+
+## Addendum (2026-03-09) - Commit `b33d489` follow-up validation
+
+### What's Addressed
+
+- The Phase 7 review-path blocker is fixed: `examples/author-review-loop.sh` now creates `.5x/reviews/` before the first reviewer write, so the scripted loop no longer depends on downstream implicit directory creation.
+- The change stays aligned with the Phase 7 plan: composability patterns remain intact, and the added `mkdir -p` is the minimal operable fix for the example workflow.
+- The follow-on Phase 5 change in `src/commands/invoke.handler.ts` narrows `@file` detection to `@./` and `@/`, restoring backward compatibility for literal `@`-prefixed values without weakening the new `--var @path` contract.
+- Targeted verification passed: `bash -n examples/author-review-loop.sh`; `bun test test/commands/invoke-var-file.test.ts`.
+
+### Remaining Concerns
+
+- None for Phase 7. The previously reported P1 issue is resolved, and I did not find new correctness, architecture, security, performance, operability, or test-strategy concerns in `b33d489`.
