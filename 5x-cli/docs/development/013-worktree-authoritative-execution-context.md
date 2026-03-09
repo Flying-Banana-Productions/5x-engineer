@@ -1,6 +1,6 @@
 # Feature: Worktree-Authoritative Execution Context
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Created:** March 9, 2026  
 **Status:** Proposed (revised)
 
@@ -40,6 +40,7 @@ Desired behavior:
 - All run lifecycle + step recording stays in repo-root DB.
 - A worktree checkout does not need its own `.5x` state directory.
 - **`db.path` is a directory path** (not a file path). Default: `.5x`. The canonical DB file is always `5x.db` within that directory. When resolving the DB location, `resolveControlPlaneRoot` computes `<controlPlaneRoot>/<db.path>/5x.db` (or `<db.path>/5x.db` directly if `db.path` is absolute). This decouples the config knob from the DB filename and ensures the bootstrap sequence is deterministic: the resolver always knows to look for `5x.db` inside the configured directory.
+- **`db.path` backward compatibility:** the current config schema and existing user configs may use file-style values (e.g. `.5x/5x.db`). To avoid breaking backward compat, `resolveControlPlaneRoot` normalizes legacy file-style values during resolution: if `db.path` ends with `/5x.db` or `\5x.db` (i.e. includes the DB filename), the resolver strips the trailing filename component and uses the parent directory. Concretely: `db.path = ".5x/5x.db"` normalizes to `.5x`, and the DB resolves to `.5x/5x.db` as expected. The normalization is applied once during resolution, before any path joining. This means existing configs that set `db.path` to a file path continue to work without migration. The normalization check is: if `path.basename(dbPath) === '5x.db'`, use `path.dirname(dbPath)` instead.
 
 **Authoritative control-plane resolution via git common-dir.**
 
@@ -55,7 +56,7 @@ Resolution strategy for the canonical control-plane root:
    - If `--git-common-dir` returns a relative path (starts with `.` or `..`), resolve it relative to the absolute path of `--git-dir`. This handles git's default behavior where common-dir is expressed relative to the worktree's git-dir.
 3. Derive the main repo root as the parent of the resolved common-dir (i.e. `dirname(absoluteCommonDir)`).
 4. Determine the state directory path. If root config exists and specifies `db.path`, use that value; otherwise use the default (`.5x`). If `db.path` is relative, resolve it relative to the main repo root; if absolute, use it directly. The canonical DB file is always `5x.db` within this directory. **If `<stateDir>/5x.db` exists, that is the canonical control-plane DB (managed mode). This always wins — even if the current checkout also has a local state DB.**
-5. If no DB exists at the main repo root's state directory, check the current checkout root for a local `<stateDir>/5x.db` (using the same `db.path` resolution). If found, that checkout is in isolated mode.
+5. If no DB exists at the main repo root's state directory, check the current checkout root for a local state DB. **In isolated mode, the current checkout root IS the control-plane root.** Its local `5x.toml` is the sole config — the `db` section applies directly with no layering against the main repo root config. Read `db.path` from `<checkoutRoot>/5x.toml` (if it exists; otherwise use default `.5x`), apply the same normalization and resolution rules as step 4 but relative to the checkout root. Check `<checkoutRoot>/<stateDir>/5x.db`. If found, that checkout is in isolated mode with `controlPlaneRoot = checkoutRoot`.
 6. If neither exists, the command is outside any 5x-managed context and falls through to existing behavior (init prompt, etc.).
 
 Note: the two-stage bootstrap is minimal — step 4 only needs to read `db.path` from the root config file (a TOML parse of a single field), not open the DB. This avoids a chicken-and-egg problem: the config file is a plain file at a known location (`controlPlaneRoot/5x.toml`), so it can be read before the DB exists.
@@ -69,7 +70,7 @@ A new helper `resolveControlPlaneRoot(startDir?)` encapsulates this logic and is
 **Two operating modes are supported (default + explicit isolated).**
 
 - **Managed mode (default):** commands from any checkout (root or linked worktree) resolve the root state DB via git common-dir. Run-scoped commands use plan→worktree mapping for execution context. When the root DB exists, it is always authoritative — a local state DB in a worktree checkout is ignored.
-- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout whose git common-dir root does NOT have a state DB. The local state DB becomes the control-plane DB; state is local to that worktree and can be discarded with it. If a root DB is later created (e.g. via `5x init` in the main checkout), subsequent commands from the worktree will switch to managed mode and use the root DB.
+- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout whose git common-dir root does NOT have a state DB. **The worktree checkout root becomes the control-plane root.** Its local `5x.toml` is the sole config — the `db` section applies directly with no layering against the main repo root config. The local state DB becomes the control-plane DB; state is local to that worktree and can be discarded with it. If a root DB is later created (e.g. via `5x init` in the main checkout), subsequent commands from the worktree will switch to managed mode and use the root DB.
 - No implicit cross-sync between managed and isolated DBs.
 
 **Run-scoped context resolution becomes first-class.**
@@ -112,7 +113,7 @@ When a run is mapped to a worktree and that worktree path is missing or unreadab
 
 **Plans must live under `controlPlaneRoot`.**
 
-Run-managed plans must have a canonical path that is a descendant of `controlPlaneRoot`. This is enforced at `run init` time: if the resolved `plan_path` is not under `controlPlaneRoot`, `run init` fails with a `PLAN_OUTSIDE_CONTROL_PLANE` error and remediation guidance ("move the plan under the repository root or use a symlink"). Rationale: the run context resolver derives a repo-relative path from `run.plan_path` and re-roots it into mapped worktrees. This only works when the plan is inside the repo tree. External absolute paths cannot be meaningfully re-rooted, and symlink/realpath edge cases create ambiguity.
+Run-managed plans must have a canonical path that is a descendant of `controlPlaneRoot`. This is enforced at `run init` time: if the resolved `plan_path` is not under `controlPlaneRoot`, `run init` fails with a `PLAN_OUTSIDE_CONTROL_PLANE` error and remediation guidance ("move the plan under the repository root"). Rationale: the run context resolver derives a repo-relative path from `run.plan_path` and re-roots it into mapped worktrees. This only works when the plan is inside the repo tree. External absolute paths cannot be meaningfully re-rooted. Note: symlinks do not help here — `canonicalizePlanPath` resolves symlinks via `realpathSync`, so a symlink to an external plan would still canonicalize outside the repo and be rejected.
 
 `resolveRunExecutionContext` also validates this invariant defensively: if a stored `run.plan_path` is not under `controlPlaneRoot` (e.g. legacy data), it returns a structured error `PLAN_PATH_INVALID` with the offending path and remediation guidance.
 
@@ -180,17 +181,17 @@ Phase 2 and Phase 3 checklist items include explicit re-anchoring for each artif
   - Run both `git rev-parse --git-dir` and `git rev-parse --git-common-dir` from `startDir` (or cwd).
   - Resolve common-dir to an absolute path: if already absolute, use directly; if relative (starts with `.` or `..`), resolve relative to the absolute path of git-dir.
   - Derive main repo root as `dirname(absoluteCommonDir)`.
-  - **DB directory resolution:** read `db.path` from root config file (`<mainRepoRoot>/5x.toml`) if it exists; otherwise use default `.5x`. `db.path` is a directory path. If relative, resolve relative to main repo root; if absolute, use directly. The DB file is always `5x.db` within this directory.
+  - **DB directory resolution:** read `db.path` from root config file (`<mainRepoRoot>/5x.toml`) if it exists; otherwise use default `.5x`. `db.path` is a directory path. **Backward compat normalization:** if `path.basename(dbPath) === '5x.db'`, strip the filename and use `path.dirname(dbPath)` as the directory. If relative, resolve relative to main repo root; if absolute, use directly. The DB file is always `5x.db` within this directory.
   - Check for `<stateDir>/5x.db` at main repo root → managed mode (always wins, even if local state DB exists).
   - If no root DB, check current checkout root for local `<stateDir>/5x.db` → isolated mode.
-  - Return `{ controlPlaneRoot, stateDir, mode: 'managed' | 'isolated' | 'none' }`.
+  - Return `{ controlPlaneRoot, stateDir, mode: 'managed' | 'isolated' | 'none' }`. In managed mode, `controlPlaneRoot` is the main repo root (parent of git common-dir). In isolated mode, `controlPlaneRoot` is the current checkout root (the worktree itself).
 - [ ] Update `resolveDbContext()` in `src/commands/context.ts` to use `resolveControlPlaneRoot` for DB path resolution instead of deriving DB path directly from `resolveProjectRoot`.
 - [ ] **Add `5x init` guard in `src/commands/init.handler.ts`:**
   - Before scaffolding, call `resolveControlPlaneRoot()` from cwd.
   - If mode is `managed` (root state DB exists at git common-dir root), refuse with error: "This worktree is managed by the control-plane at `<controlPlaneRoot>`. Run `5x init` from the main checkout if you need to re-initialize."
   - No escape hatch (`--force` does not bypass this check; it only overwrites config/templates as before).
   - Isolated mode is only allowed when the main checkout was never 5x-initialized (mode is `none`).
-- [ ] Add unit tests covering: root checkout, nested linked worktree, externally attached worktree (checkout outside repo tree), isolated mode (local state DB in worktree with no root DB), no-context fallback, custom `db.path` directory (non-default), absolute `db.path`, `5x init` blocked from managed worktree, `5x init` allowed from unmanaged worktree.
+- [ ] Add unit tests covering: root checkout, nested linked worktree, externally attached worktree (checkout outside repo tree), isolated mode (local state DB in worktree with no root DB), no-context fallback, custom `db.path` directory (non-default), absolute `db.path`, legacy file-style `db.path` normalization (e.g. `.5x/5x.db` → `.5x`), `5x init` blocked from managed worktree, `5x init` allowed from unmanaged worktree.
 
 #### 1b: Run execution context resolver
 
@@ -314,7 +315,7 @@ All `run` subcommands that accept `--run` must use the control-plane resolver to
 
 Note: `run init` already uses a custom DB resolution flow (lock-first). It must also be updated to resolve the control-plane root via `resolveControlPlaneRoot` so that `run init` from a linked worktree creates the run in the root DB. Config should be resolved with `contextDir = dirname(canonicalPlanPath)` (Phase 1c) so run config inherits the correct sub-project settings.
 
-**Plan-path validation at `run init`:** before creating the run, validate that the resolved `plan_path` is a descendant of `controlPlaneRoot`. If not, fail with `PLAN_OUTSIDE_CONTROL_PLANE` error: "Plan path `<path>` is outside the repository root `<controlPlaneRoot>`. Move the plan under the repository root or use a symlink." This ensures all stored `run.plan_path` values are re-roottable into mapped worktrees.
+**Plan-path validation at `run init`:** before creating the run, validate that the resolved `plan_path` is a descendant of `controlPlaneRoot`. If not, fail with `PLAN_OUTSIDE_CONTROL_PLANE` error: "Plan path `<path>` is outside the repository root `<controlPlaneRoot>`. Move the plan under the repository root." (Do not suggest symlinks — `canonicalizePlanPath` resolves symlinks via `realpathSync`, so a symlink to an external plan would still canonicalize outside the repo and be rejected.) This ensures all stored `run.plan_path` values are re-roottable into mapped worktrees.
 
 #### 3c: Cross-cutting artifact path re-anchoring
 
@@ -396,6 +397,7 @@ Files:
 - [ ] From directory with no git context: returns mode `none`.
 - [ ] Custom `db.path` directory (non-default): resolver finds DB at `<controlPlaneRoot>/<db.path>/5x.db`.
 - [ ] Absolute `db.path`: resolver finds DB at `<db.path>/5x.db` directly.
+- [ ] Legacy file-style `db.path` (e.g. `.5x/5x.db`): normalized to directory `.5x`, resolver finds DB at `.5x/5x.db` (not `.5x/5x.db/5x.db`).
 - [ ] `db.path` read from root config only (not nearest config in layered resolution).
 
 ### Core behavior
@@ -470,6 +472,8 @@ Isolated mode only applies when the git common-dir root does NOT have a state DB
 - [ ] `5x init` inside a worktree whose parent repo HAS a state DB: **refused** (managed-mode guard).
 - [ ] `5x init` inside an externally attached worktree whose parent repo has no state DB creates local state DB (isolated mode).
 - [ ] Commands in isolated mode do not read/write the root DB (because it doesn't exist).
+- [ ] Isolated mode `controlPlaneRoot` is the checkout root, not the main repo root.
+- [ ] Isolated mode `db.path` is read from the checkout root's `5x.toml`, not the main repo root's config.
 - [ ] `run init` in isolated mode creates run in local DB, not root DB.
 - [ ] `invoke --run` in isolated mode uses local DB run context.
 - [ ] `quality run --run` in isolated mode executes against local checkout.
@@ -529,7 +533,7 @@ Isolated mode only applies when the git common-dir root does NOT have a state DB
 - When root DB exists, it always wins: a local state DB in a worktree is ignored in favor of the root DB, with a startup warning emitted.
 - `run init` rejects plan paths outside `controlPlaneRoot`.
 - All `.5x` artifacts (logs, locks, templates, worktrees, debug) resolve under `controlPlaneRoot`/`stateDir`, not under the ambient `projectRoot` from cwd.
-- `db.path` is treated as a directory path (default `.5x`); the DB file is always `5x.db` within that directory.
+- `db.path` is treated as a directory path (default `.5x`); the DB file is always `5x.db` within that directory. Legacy file-style `db.path` values (e.g. `.5x/5x.db`) are normalized to their parent directory automatically.
 - In a monorepo with sub-project `5x.toml` (e.g. `5x-cli/5x.toml`):
   - Plans under the sub-project use the sub-project's `paths.*`, `qualityGates`, and other config.
   - Plans under the repo root use the root `5x.toml` config (or Zod defaults if none).
@@ -537,6 +541,14 @@ Isolated mode only applies when the git common-dir root does NOT have a state DB
   - Sub-project `db` overrides are ignored; root DB is always authoritative.
 
 ## Revision History
+
+### v1.6 — March 9, 2026 (review addendum: `013-worktree-authoritative-execution-context-review.md`, v1.5 re-review)
+
+Addressed remaining concerns from the v1.5 re-review addendum:
+
+- **P1.1 — `db.path` backward compatibility normalization.** The plan now changes `db.path` from file to directory semantics, but existing configs may have file-style values like `.5x/5x.db`. Added normalization rule: if `path.basename(dbPath) === '5x.db'`, strip the filename and use `path.dirname(dbPath)`. Applied in design decisions (`db.path` section), Phase 1a implementation (DB directory resolution step), Phase 1a test list, and control-plane resolution test matrix. Updated acceptance criteria.
+- **P1.2 — Isolated-mode `db.path` resolution made explicit.** In isolated mode, the worktree checkout root IS the control-plane root. Its local `5x.toml` is the sole config — the `db` section applies directly with no layering against the main repo root config. Updated: resolution algorithm step 5, "Two operating modes" section, `resolveControlPlaneRoot` return shape description, and isolated mode test matrix (added `controlPlaneRoot` identity and `db.path` source tests).
+- **P2.1 — Symlink remediation text fixed.** Removed "use a symlink" from plan-path error remediation guidance. `canonicalizePlanPath()` resolves symlinks via `realpathSync`, so symlinks to external plans would still canonicalize outside the repo and be rejected. Updated: "Plans must live under controlPlaneRoot" design section and Phase 3b `run init` plan-path validation text. Both now explain why symlinks don't help.
 
 ### v1.5 — March 9, 2026 (review: `013-worktree-authoritative-execution-context-review.md`)
 
