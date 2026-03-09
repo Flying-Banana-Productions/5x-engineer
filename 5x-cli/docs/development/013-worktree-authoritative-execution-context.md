@@ -176,44 +176,44 @@ Phase 2 and Phase 3 checklist items include explicit re-anchoring for each artif
 
 #### 1a: Control-plane root resolver
 
-- [ ] Add `resolveControlPlaneRoot(startDir?)` helper (new module, e.g. `src/commands/control-plane.ts`).
-- [ ] Implementation:
-  - Run both `git rev-parse --git-dir` and `git rev-parse --git-common-dir` from `startDir` (or cwd).
-  - Resolve common-dir to an absolute path: if already absolute, use directly; if relative (starts with `.` or `..`), resolve relative to the absolute path of git-dir.
-  - Derive main repo root as `dirname(absoluteCommonDir)`.
-  - **DB directory resolution:** read `db.path` from root config file (`<mainRepoRoot>/5x.toml`) if it exists; otherwise use default `.5x`. `db.path` is a directory path. **Backward compat normalization:** if `path.basename(dbPath) === '5x.db'`, strip the filename and use `path.dirname(dbPath)` as the directory. If relative, resolve relative to main repo root; if absolute, use directly. The DB file is always `5x.db` within this directory.
-  - Check for `<stateDir>/5x.db` at main repo root → managed mode (always wins, even if local state DB exists).
-  - If no root DB, check current checkout root for local `<stateDir>/5x.db` → isolated mode.
-  - Return `{ controlPlaneRoot, stateDir, mode: 'managed' | 'isolated' | 'none' }`. In managed mode, `controlPlaneRoot` is the main repo root (parent of git common-dir). In isolated mode, `controlPlaneRoot` is the current checkout root (the worktree itself).
-- [ ] Update `resolveDbContext()` in `src/commands/context.ts` to use `resolveControlPlaneRoot` for DB path resolution instead of deriving DB path directly from `resolveProjectRoot`.
-- [ ] **Add `5x init` guard in `src/commands/init.handler.ts`:**
-  - Before scaffolding, call `resolveControlPlaneRoot()` from cwd.
-  - If mode is `managed` (root state DB exists at git common-dir root), refuse with error: "This worktree is managed by the control-plane at `<controlPlaneRoot>`. Run `5x init` from the main checkout if you need to re-initialize."
-  - No escape hatch (`--force` does not bypass this check; it only overwrites config/templates as before).
-  - Isolated mode is only allowed when the main checkout was never 5x-initialized (mode is `none`).
-- [ ] Add unit tests covering: root checkout, nested linked worktree, externally attached worktree (checkout outside repo tree), isolated mode (local state DB in worktree with no root DB), no-context fallback, custom `db.path` directory (non-default), absolute `db.path`, legacy file-style `db.path` normalization (e.g. `.5x/5x.db` → `.5x`), `5x init` blocked from managed worktree, `5x init` allowed from unmanaged worktree.
+- [x] Add `resolveControlPlaneRoot(startDir?)` helper (new module, e.g. `src/commands/control-plane.ts`).
+- [x] Implementation:
+  - [x] Run both `git rev-parse --git-dir` and `git rev-parse --git-common-dir` from `startDir` (or cwd).
+  - [x] Resolve common-dir to an absolute path: if already absolute, use directly; if relative (starts with `.` or `..`), resolve relative to the absolute path of git-dir.
+  - [x] Derive main repo root as `dirname(absoluteCommonDir)`.
+  - [x] **DB directory resolution:** read `db.path` from root config file (`<mainRepoRoot>/5x.toml`) if it exists; otherwise use default `.5x`. `db.path` is a directory path. **Backward compat normalization:** if `path.basename(dbPath) === '5x.db'`, strip the filename and use `path.dirname(dbPath)` as the directory. If relative, resolve relative to main repo root; if absolute, use directly. The DB file is always `5x.db` within this directory.
+  - [x] Check for `<stateDir>/5x.db` at main repo root → managed mode (always wins, even if local state DB exists).
+  - [x] If no root DB, check current checkout root for local `<stateDir>/5x.db` → isolated mode.
+  - [x] Return `{ controlPlaneRoot, stateDir, mode: 'managed' | 'isolated' | 'none' }`. In managed mode, `controlPlaneRoot` is the main repo root (parent of git common-dir). In isolated mode, `controlPlaneRoot` is the current checkout root (the worktree itself).
+- [x] Update `resolveDbContext()` in `src/commands/context.ts` to use `resolveControlPlaneRoot` for DB path resolution instead of deriving DB path directly from `resolveProjectRoot`.
+- [x] **Add `5x init` guard in `src/commands/init.handler.ts`:**
+  - [x] Before scaffolding, call `resolveControlPlaneRoot()` from cwd.
+  - [x] If mode is `managed` (root state DB exists at git common-dir root), refuse with error: "This worktree is managed by the control-plane at `<controlPlaneRoot>`. Run `5x init` from the main checkout if you need to re-initialize."
+  - [x] No escape hatch (`--force` does not bypass this check; it only overwrites config/templates as before).
+  - [x] Isolated mode is only allowed when the main checkout was never 5x-initialized (mode is `none`).
+- [x] Add unit tests covering: root checkout, nested linked worktree, externally attached worktree (checkout outside repo tree), isolated mode (local state DB in worktree with no root DB), no-context fallback, custom `db.path` directory (non-default), absolute `db.path`, legacy file-style `db.path` normalization (e.g. `.5x/5x.db` → `.5x`), `5x init` blocked from managed worktree, `5x init` allowed from unmanaged worktree.
 
 #### 1b: Run execution context resolver
 
-- [ ] Add `resolveRunExecutionContext(runId, opts?)` helper (new module, e.g. `src/commands/run-context.ts`).
-- [ ] Inputs:
-  - `runId` (required)
-  - `controlPlaneRoot` (from `resolveControlPlaneRoot`)
-  - optional override for explicit workdir
-- [ ] Output shape:
-  - `controlPlaneRoot`
-  - `run` (`id`, `plan_path`, `status`)
-  - `mappedWorktreePath | null`
-  - `effectiveWorkingDirectory`
-  - `effectivePlanPath`
-  - `planPathInWorktreeExists` (bool)
-- [ ] Canonical path logic:
-  - validate that `run.plan_path` is under `controlPlaneRoot`; if not, return structured error `PLAN_PATH_INVALID` with the offending path and remediation guidance
-  - derive repo-relative path from root `run.plan_path`
-  - if mapped worktree exists and is accessible on disk, join relative plan path into mapped worktree path
-  - if mapped worktree is expected but missing/unreadable, return structured error `WORKTREE_MISSING` with expected path and remediation guidance
-  - if derived worktree plan file exists, use it as `effectivePlanPath`; else fallback to root plan path
-- [ ] Add lightweight unit tests for resolver edge cases (including missing worktree → error, plan path outside control-plane root → error).
+- [x] Add `resolveRunExecutionContext(runId, opts?)` helper (new module, e.g. `src/commands/run-context.ts`).
+- [x] Inputs:
+  - [x] `runId` (required)
+  - [x] `controlPlaneRoot` (from `resolveControlPlaneRoot`)
+  - [x] optional override for explicit workdir
+- [x] Output shape:
+  - [x] `controlPlaneRoot`
+  - [x] `run` (`id`, `plan_path`, `status`)
+  - [x] `mappedWorktreePath | null`
+  - [x] `effectiveWorkingDirectory`
+  - [x] `effectivePlanPath`
+  - [x] `planPathInWorktreeExists` (bool)
+- [x] Canonical path logic:
+  - [x] validate that `run.plan_path` is under `controlPlaneRoot`; if not, return structured error `PLAN_PATH_INVALID` with the offending path and remediation guidance
+  - [x] derive repo-relative path from root `run.plan_path`
+  - [x] if mapped worktree exists and is accessible on disk, join relative plan path into mapped worktree path
+  - [x] if mapped worktree is expected but missing/unreadable, return structured error `WORKTREE_MISSING` with expected path and remediation guidance
+  - [x] if derived worktree plan file exists, use it as `effectivePlanPath`; else fallback to root plan path
+- [x] Add lightweight unit tests for resolver edge cases (including missing worktree → error, plan path outside control-plane root → error).
 
 Files:
 
@@ -230,27 +230,27 @@ Files:
 
 **Completion gate:** config resolution returns the correct layered config for any plan/run context, independent of cwd. Sub-project `5x.toml` overrides are merged correctly with root config.
 
-- [ ] Add `resolveLayeredConfig(controlPlaneRoot, contextDir?)` helper in `src/config.ts`.
-- [ ] Implementation:
-  - Discover **root config**: `discoverConfigFile(controlPlaneRoot)`. Load and parse if found.
-  - If `contextDir` provided and differs from `controlPlaneRoot`, discover **nearest config**: `discoverConfigFile(contextDir)`. Load and parse if found and is a different file from root config.
-  - Merge: Zod defaults ← root config ← nearest config overrides.
-  - Objects: deep field-level merge (nearest config inherits unset fields from root).
-  - Arrays: replace (nearest config array replaces root array entirely).
-  - `db` section: always from root config (or Zod defaults). If nearest config contains `db`, emit warning and ignore.
-  - Return `{ config: FiveXConfig, rootConfigPath: string | null, nearestConfigPath: string | null, isLayered: boolean }`.
-- [ ] Update `resolveProjectContext()` in `src/commands/context.ts` to accept optional `contextDir` parameter and use `resolveLayeredConfig` instead of plain `loadConfig` when `contextDir` is provided.
-- [ ] Update `resolveDbContext()` to pass `contextDir` through to `resolveProjectContext()`.
-- [ ] Add unit tests covering:
-  - Root config only (no sub-project config): existing behavior preserved, `isLayered = false`.
-  - Sub-project config overrides `paths.*`: correct merge, root paths replaced.
-  - Sub-project config overrides `qualityGates`: array replace, not append.
-  - Sub-project config sets `author.timeout` only: inherits `author.model` from root (deep merge).
-  - Sub-project config sets `db.path`: ignored with warning, root DB path used.
-  - No root config, sub-project config only: sub-project provides all settings, Zod defaults fill gaps.
-  - No config at all: Zod defaults returned, `isLayered = false`.
-  - `contextDir` inside sub-project: walks up and finds nearest `5x.toml`.
-  - `contextDir` at repo root: finds root `5x.toml` only, no layering.
+- [x] Add `resolveLayeredConfig(controlPlaneRoot, contextDir?)` helper in `src/config.ts`.
+- [x] Implementation:
+  - [x] Discover **root config**: `discoverConfigFile(controlPlaneRoot)`. Load and parse if found.
+  - [x] If `contextDir` provided and differs from `controlPlaneRoot`, discover **nearest config**: `discoverConfigFile(contextDir)`. Load and parse if found and is a different file from root config.
+  - [x] Merge: Zod defaults ← root config ← nearest config overrides.
+  - [x] Objects: deep field-level merge (nearest config inherits unset fields from root).
+  - [x] Arrays: replace (nearest config array replaces root array entirely).
+  - [x] `db` section: always from root config (or Zod defaults). If nearest config contains `db`, emit warning and ignore.
+  - [x] Return `{ config: FiveXConfig, rootConfigPath: string | null, nearestConfigPath: string | null, isLayered: boolean }`.
+- [x] Update `resolveProjectContext()` in `src/commands/context.ts` to accept optional `contextDir` parameter and use `resolveLayeredConfig` instead of plain `loadConfig` when `contextDir` is provided.
+- [x] Update `resolveDbContext()` to pass `contextDir` through to `resolveProjectContext()`.
+- [x] Add unit tests covering:
+  - [x] Root config only (no sub-project config): existing behavior preserved, `isLayered = false`.
+  - [x] Sub-project config overrides `paths.*`: correct merge, root paths replaced.
+  - [x] Sub-project config overrides `qualityGates`: array replace, not append.
+  - [x] Sub-project config sets `author.timeout` only: inherits `author.model` from root (deep merge).
+  - [x] Sub-project config sets `db.path`: ignored with warning, root DB path used.
+  - [x] No root config, sub-project config only: sub-project provides all settings, Zod defaults fill gaps.
+  - [x] No config at all: Zod defaults returned, `isLayered = false`.
+  - [x] `contextDir` inside sub-project: walks up and finds nearest `5x.toml`.
+  - [x] `contextDir` at repo root: finds root `5x.toml` only, no layering.
 
 Files:
 
