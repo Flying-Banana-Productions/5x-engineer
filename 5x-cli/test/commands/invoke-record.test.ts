@@ -458,4 +458,66 @@ describe("invoke --record", () => {
 		},
 		{ timeout: 60000 },
 	);
+
+	test(
+		"--record without step name available emits warning to stderr, does not corrupt stdout",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				// Create a custom template in the override dir with a name NOT in
+				// the step_name fallback map — this ensures stepName is null.
+				const overrideDir = join(projectRoot, ".5x", "templates", "prompts");
+				mkdirSync(overrideDir, { recursive: true });
+				writeFileSync(
+					join(overrideDir, "custom-author-task.md"),
+					[
+						"---",
+						"name: custom-author-task",
+						"version: 1",
+						"variables: [plan_path]",
+						"---",
+						"Do something with {{plan_path}}.",
+					].join("\n"),
+				);
+
+				const result = await run5x(projectRoot, [
+					"invoke",
+					"author",
+					"custom-author-task",
+					"--run",
+					runId,
+					"--record",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				// Primary envelope should be the only JSON on stdout
+				const trimmed = result.stdout.trim();
+				const json = JSON.parse(trimmed) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+
+				// Verify there's exactly one JSON object (no second error envelope)
+				expect(() => JSON.parse(trimmed)).not.toThrow();
+
+				// The data should be the invoke result
+				const data = json.data as Record<string, unknown>;
+				expect(data).toHaveProperty("result");
+				expect(data).toHaveProperty("session_id");
+				// step_name should be null since template is not in the fallback map
+				expect(data.step_name).toBeNull();
+
+				// stderr should contain a warning about the missing step name
+				expect(result.stderr).toContain("Warning");
+				expect(result.stderr).toContain("step name");
+
+				// Exit code should be non-zero
+				expect(result.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 60000 },
+	);
 });

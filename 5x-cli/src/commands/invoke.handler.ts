@@ -480,43 +480,46 @@ export async function invokeAgent(
 
 	outputSuccess(output);
 
-	// Auto-record the step if --record is set
+	// Auto-record the step if --record is set.
+	// IMPORTANT: outputSuccess() has already written the primary envelope above.
+	// All errors from here must go to stderr — never outputError() (which would
+	// write a second JSON envelope to stdout, corrupting the stream).
 	if (params.record) {
 		const stepName = params.recordStep ?? rendered.stepName;
 		if (!stepName) {
-			outputError(
-				"INVALID_ARGS",
-				"--record requires a step name. Provide --record-step or add step_name to the template frontmatter.",
+			console.error(
+				"Warning: --record requires a step name. Provide --record-step or add step_name to the template frontmatter.",
 			);
-		}
-
-		try {
-			await recordStepInternal({
-				run: params.run,
-				stepName,
-				result: JSON.stringify(structured),
-				phase: params.phase ?? variables.phase_number,
-				iteration: params.iteration,
-				sessionId: runResult.sessionId,
-				model,
-				durationMs: runResult.durationMs,
-				tokensIn: runResult.tokens.in,
-				tokensOut: runResult.tokens.out,
-				costUsd: runResult.costUsd ?? undefined,
-				logPath: logPath ?? undefined,
-			});
-		} catch (err) {
-			// Recording is a side effect — primary envelope already written.
-			// Warn on stderr with structured code, set non-zero exit via process.exitCode.
-			if (err instanceof RecordError) {
-				console.error(
-					`Warning: failed to record step [${err.code}]: ${err.message}`,
-				);
-			} else {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.error(`Warning: failed to record step: ${msg}`);
-			}
 			process.exitCode = 1;
+		} else {
+			try {
+				await recordStepInternal({
+					run: params.run,
+					stepName,
+					result: JSON.stringify(structured),
+					phase: params.phase ?? variables.phase_number,
+					iteration: params.iteration,
+					sessionId: runResult.sessionId,
+					model,
+					durationMs: runResult.durationMs,
+					tokensIn: runResult.tokens.in,
+					tokensOut: runResult.tokens.out,
+					costUsd: runResult.costUsd ?? undefined,
+					logPath: logPath ?? undefined,
+				});
+			} catch (err) {
+				// Recording is a side effect — primary envelope already written.
+				// Warn on stderr with structured code, set non-zero exit via process.exitCode.
+				if (err instanceof RecordError) {
+					console.error(
+						`Warning: failed to record step [${err.code}]: ${err.message}`,
+					);
+				} else {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.error(`Warning: failed to record step: ${msg}`);
+				}
+				process.exitCode = 1;
+			}
 		}
 	}
 }

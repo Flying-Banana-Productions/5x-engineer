@@ -236,7 +236,7 @@ describe("quality run --record", () => {
 	);
 
 	test(
-		"--record without --run errors",
+		"--record without --run errors with warning on stderr, not a second envelope",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -244,24 +244,20 @@ describe("quality run --record", () => {
 
 				const result = await run5x(projectRoot, ["quality", "run", "--record"]);
 
-				// Quality runs first (producing output), then recording fails
-				// because --run is missing. The primary envelope is already written.
-				// The error about --run should appear.
-				// Since outputSuccess already wrote the quality result, the error
-				// comes as a second envelope OR stderr warning depending on implementation.
-				// Per the plan: outputError is called for validation.
-				// Since outputSuccess was already called, the behavior depends on
-				// whether the code uses outputError (which throws CliError, caught by bin.ts)
-				// or just stderr.
-				// Looking at the handler: it calls outputError which throws, so
-				// bin.ts catches it and outputs the error envelope.
-				// This means there will be TWO JSON objects on stdout (quality + error).
-				// The exit code should be non-zero.
+				// Quality runs first (producing the primary envelope), then recording
+				// validation fails because --run is missing. The warning goes to stderr
+				// (never outputError, which would produce a second JSON envelope on stdout).
 				expect(result.exitCode).not.toBe(0);
 
-				// The stderr or stdout should contain a message about --run
-				const allOutput = result.stdout + result.stderr;
-				expect(allOutput).toContain("--run");
+				// Primary envelope should be the only JSON on stdout
+				const trimmed = result.stdout.trim();
+				const json = JSON.parse(trimmed) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+				expect(() => JSON.parse(trimmed)).not.toThrow();
+
+				// stderr should contain a warning about --run
+				expect(result.stderr).toContain("--run");
+				expect(result.stderr).toContain("Warning");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -365,6 +361,88 @@ describe("quality run --record", () => {
 
 				// Exit code should be non-zero due to recording failure
 				expect(result.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--record without --run emits warning to stderr, does not corrupt stdout with a second envelope",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot } = await setupProjectWithRun(dir);
+
+				const result = await run5x(projectRoot, ["quality", "run", "--record"]);
+
+				// The primary quality envelope should be the only JSON on stdout
+				const trimmed = result.stdout.trim();
+				const json = JSON.parse(trimmed) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.passed).toBe(true);
+
+				// Verify there's exactly one JSON object — no second error envelope
+				expect(() => JSON.parse(trimmed)).not.toThrow();
+
+				// stderr should contain a warning about --run being required
+				expect(result.stderr).toContain("--run");
+				expect(result.stderr).toContain("Warning");
+
+				// Exit code should be non-zero
+				expect(result.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--record with empty quality gates still records the result",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				// Set up project with NO quality gates
+				const { projectRoot, runId } = await setupProjectWithRun(dir, []);
+
+				const result = await run5x(projectRoot, [
+					"quality",
+					"run",
+					"--record",
+					"--run",
+					runId,
+				]);
+
+				// Primary envelope should be the empty-gates success result
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.passed).toBe(true);
+				expect(data.results).toEqual([]);
+
+				// Verify step was recorded in DB
+				const state = await run5x(projectRoot, [
+					"run",
+					"state",
+					"--run",
+					runId,
+				]);
+				const stateJson = parseJson(state.stdout);
+				expect(stateJson.ok).toBe(true);
+				const steps = (stateJson.data as Record<string, unknown>)
+					.steps as Array<Record<string, unknown>>;
+				expect(steps.length).toBeGreaterThanOrEqual(1);
+				expect(steps[0]?.step_name).toBe("quality:check");
+
+				// Verify result_json contains the empty-gates quality data
+				const resultJson = JSON.parse(
+					steps[0]?.result_json as string,
+				) as Record<string, unknown>;
+				expect(resultJson.passed).toBe(true);
+				expect(resultJson.results).toEqual([]);
 			} finally {
 				cleanupDir(dir);
 			}

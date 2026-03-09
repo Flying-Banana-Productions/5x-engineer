@@ -7,7 +7,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runQualityGates } from "../gates/quality.js";
-import { outputError, outputSuccess } from "../output.js";
+import { outputSuccess } from "../output.js";
 import { resolveProjectContext } from "./context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
@@ -23,6 +23,53 @@ export interface QualityParams {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Auto-record the quality result as a run step.
+ *
+ * IMPORTANT: This runs AFTER outputSuccess() has written the primary envelope.
+ * All errors must go to stderr — never outputError() (which would write a
+ * second JSON envelope to stdout, corrupting the stream).
+ */
+async function autoRecord(
+	params: QualityParams,
+	qualityData: Record<string, unknown>,
+): Promise<void> {
+	if (!params.run) {
+		console.error(
+			"Warning: --run is required when using --record. Step was not recorded.",
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	const stepName = params.recordStep ?? "quality:check";
+
+	try {
+		await recordStepInternal({
+			run: params.run,
+			stepName,
+			result: JSON.stringify(qualityData),
+			phase: params.phase,
+		});
+	} catch (err) {
+		// Recording is a side effect — primary envelope already written.
+		// Warn on stderr with structured code, set non-zero exit via process.exitCode.
+		if (err instanceof RecordError) {
+			console.error(
+				`Warning: failed to record step [${err.code}]: ${err.message}`,
+			);
+		} else {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error(`Warning: failed to record step: ${msg}`);
+		}
+		process.exitCode = 1;
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -31,10 +78,16 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 
 	const commands = config.qualityGates;
 	if (commands.length === 0) {
-		outputSuccess({
+		const qualityData = {
 			passed: true,
 			results: [],
-		});
+		};
+		outputSuccess(qualityData);
+
+		// Auto-record the empty-gates success if --record is set
+		if (params.record) {
+			await autoRecord(params, qualityData);
+		}
 		return;
 	}
 
@@ -64,31 +117,6 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 
 	// Auto-record if --record is set
 	if (params.record) {
-		if (!params.run) {
-			outputError("INVALID_ARGS", "--run is required when using --record");
-		}
-
-		const stepName = params.recordStep ?? "quality:check";
-
-		try {
-			await recordStepInternal({
-				run: params.run,
-				stepName,
-				result: JSON.stringify(qualityData),
-				phase: params.phase,
-			});
-		} catch (err) {
-			// Recording is a side effect — primary envelope already written.
-			// Warn on stderr with structured code, set non-zero exit via process.exitCode.
-			if (err instanceof RecordError) {
-				console.error(
-					`Warning: failed to record step [${err.code}]: ${err.message}`,
-				);
-			} else {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.error(`Warning: failed to record step: ${msg}`);
-			}
-			process.exitCode = 1;
-		}
+		await autoRecord(params, qualityData);
 	}
 }
