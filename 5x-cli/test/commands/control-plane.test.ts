@@ -276,4 +276,65 @@ describe("resolveControlPlaneRoot", () => {
 			rmSync(externalDir, { recursive: true, force: true });
 		}
 	});
+
+	test("JS config db.path bootstrap extraction", () => {
+		initRepo(tmp);
+		// Write a JS config with custom db.path
+		writeFileSync(
+			join(tmp, "5x.config.js"),
+			`export default { db: { path: "js-state" } };\n`,
+		);
+		createStateDb(tmp, "js-state");
+
+		const result = resolveControlPlaneRoot(tmp);
+		expect(result.mode).toBe("managed");
+		expect(result.stateDir).toBe("js-state");
+	});
+
+	test("MJS config db.path bootstrap extraction", () => {
+		initRepo(tmp);
+		// Write an MJS config with custom db.path
+		writeFileSync(
+			join(tmp, "5x.config.mjs"),
+			`export default { db: { path: "mjs-state" } };\n`,
+		);
+		createStateDb(tmp, "mjs-state");
+
+		const result = resolveControlPlaneRoot(tmp);
+		expect(result.mode).toBe("managed");
+		expect(result.stateDir).toBe("mjs-state");
+	});
+
+	test("TOML config takes precedence over JS config for db.path", () => {
+		initRepo(tmp);
+		// Write both TOML and JS configs
+		writeConfig(tmp, `[db]\npath = "toml-state"\n`);
+		writeFileSync(
+			join(tmp, "5x.config.js"),
+			`export default { db: { path: "js-state" } };\n`,
+		);
+		// State DB exists at TOML's path
+		createStateDb(tmp, "toml-state");
+
+		const result = resolveControlPlaneRoot(tmp);
+		expect(result.mode).toBe("managed");
+		expect(result.stateDir).toBe("toml-state");
+	});
+
+	test("TOML without db.path uses default state dir, ignoring JS config", () => {
+		initRepo(tmp);
+		// Write TOML without db.path and JS with db.path
+		writeConfig(tmp, `[author]\nmodel = "test"\n`);
+		writeFileSync(
+			join(tmp, "5x.config.js"),
+			`export default { db: { path: "js-state" } };\n`,
+		);
+		// State DB at default location (since TOML has no db.path)
+		createStateDb(tmp, ".5x");
+
+		const result = resolveControlPlaneRoot(tmp);
+		expect(result.mode).toBe("managed");
+		// Should use default ".5x", not "js-state", because TOML takes precedence
+		expect(result.stateDir).toBe(".5x");
+	});
 });

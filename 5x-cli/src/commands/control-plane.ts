@@ -87,6 +87,8 @@ function readDbPathFromConfig(rootDir: string): string | null {
 		const configPath = join(rootDir, filename);
 		if (!existsSync(configPath)) continue;
 
+		// Config file found — stop searching (precedence: first match wins).
+		// Only extract db.path if present; don't fall through to lower-priority configs.
 		if (filename === "5x.toml") {
 			try {
 				const text = readFileSync(configPath, "utf-8");
@@ -101,7 +103,7 @@ function readDbPathFromConfig(rootDir: string): string | null {
 					return (db as Record<string, unknown>).path as string;
 				}
 			} catch {
-				// Config parse error — fall through to default
+				// Config parse error — fall through to return null below
 			}
 		} else if (filename === "5x.config.js" || filename === "5x.config.mjs") {
 			// Simple regex extraction for JS/MJS configs during bootstrap.
@@ -112,9 +114,11 @@ function readDbPathFromConfig(rootDir: string): string | null {
 				const match = text.match(/db\s*:\s*\{[^}]*path\s*:\s*["']([^"']+)["']/);
 				if (match?.[1]) return match[1];
 			} catch {
-				// Config read error — fall through to default
+				// Config read error — fall through to return null below
 			}
 		}
+		// Config file exists but no db.path found — stop searching (precedence).
+		return null;
 	}
 	return null;
 }
