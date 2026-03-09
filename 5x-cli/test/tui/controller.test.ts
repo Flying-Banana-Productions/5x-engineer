@@ -3,7 +3,17 @@ import {
 	_createActiveControllerForTest,
 	_createNoopControllerForTest,
 	createTuiController,
+	type TuiTimingConfig,
 } from "../../src/tui/controller.js";
+
+// Fast timing constants to avoid real clock waits in tests.
+const FAST_TIMING: TuiTimingConfig = {
+	selectSessionRetryDelays: [0, 1, 1, 1, 1, 1, 1],
+	attachedRetryInterval: 5,
+	attachedApiTimeout: 10,
+	externalApiTimeout: 10,
+	externalSyncInterval: 10,
+};
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -169,11 +179,12 @@ describe("external TUI mode", () => {
 			workdir: "/tmp",
 			client,
 			enabled: true,
+			timing: FAST_TIMING,
 		});
 		process.stderr.write = origWrite;
 
 		await controller.selectSession("sess-ext", "/tmp");
-		await new Promise((resolve) => setTimeout(resolve, 1300));
+		await new Promise((resolve) => setTimeout(resolve, 80));
 		controller.kill();
 
 		expect(client.tui.selectSession).toHaveBeenCalled();
@@ -200,11 +211,12 @@ describe("external TUI mode", () => {
 			workdir: "/tmp",
 			client,
 			enabled: true,
+			timing: FAST_TIMING,
 		});
 		process.stderr.write = origWrite;
 
 		await controller.selectSession("sess-ext", "/tmp");
-		await new Promise((resolve) => setTimeout(resolve, 900));
+		await new Promise((resolve) => setTimeout(resolve, 80));
 		controller.kill();
 
 		expect(
@@ -368,10 +380,14 @@ describe("active TuiController", () => {
 				return { data: true, error: undefined };
 			},
 		);
-		const controller = _createActiveControllerForTest(proc, client);
+		const controller = _createActiveControllerForTest(
+			proc,
+			client,
+			FAST_TIMING,
+		);
 
 		await controller.selectSession("sess-abc", "/workdir");
-		await new Promise((resolve) => setTimeout(resolve, 400));
+		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(attempts).toBe(3);
 		expect(client.tui.selectSession).toHaveBeenLastCalledWith({
 			sessionID: "sess-abc",
@@ -389,10 +405,14 @@ describe("active TuiController", () => {
 				return { data: true, error: undefined };
 			},
 		});
-		const controller = _createActiveControllerForTest(proc, client);
+		const controller = _createActiveControllerForTest(
+			proc,
+			client,
+			FAST_TIMING,
+		);
 
 		await controller.selectSession("sess-hang", "/workdir");
-		await new Promise((resolve) => setTimeout(resolve, 1400));
+		await new Promise((resolve) => setTimeout(resolve, 80));
 
 		expect(attempts).toBeGreaterThan(1);
 	});

@@ -451,21 +451,27 @@ describe("ProviderPlugin contract validation", () => {
 
 describe("bundled opencode provider", () => {
 	test("opencode provider works via direct import (not plugin path)", async () => {
+		// Use external mode (dummy URL) to avoid spawning a real opencode server.
+		// The factory routing is the same — "opencode" is recognized as bundled.
 		const config = createMockConfig("opencode");
+		const externalConfig = {
+			...config,
+			opencode: { url: "http://127.0.0.1:1" },
+		};
 		let provider: Awaited<ReturnType<typeof createProvider>> | undefined;
 
 		try {
 			provider = await createProvider(
 				"author",
-				config as Parameters<typeof createProvider>[1],
+				externalConfig as Parameters<typeof createProvider>[1],
 			);
 
 			// The OpenCode provider should be instantiated directly, not via dynamic import
 			expect(provider).toBeDefined();
 			expect(typeof provider.startSession).toBe("function");
 		} catch (err) {
-			// In CI or environments without opencode on PATH, managed mode fails.
-			// Verify it's the expected "not on PATH" error, not a factory bug.
+			// Should not reach here — external mode creation is synchronous and doesn't
+			// depend on a running server.
 			const msg = err instanceof Error ? err.message : String(err);
 			expect(msg).toContain("opencode");
 		} finally {

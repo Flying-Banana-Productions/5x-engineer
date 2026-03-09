@@ -200,7 +200,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", "run_fakeid12345"],
-				1000,
+				500,
 			);
 			expect(result.stderr).toContain("not found in DB");
 			expect(result.stderr).toContain("Proceeding");
@@ -242,7 +242,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", runId],
-				1000,
+				500,
 			);
 
 			const lines = result.stdout.split("\n").filter((l) => l.length > 0);
@@ -287,7 +287,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", runId, "--human-readable"],
-				1000,
+				500,
 			);
 
 			// Should contain the label header
@@ -343,7 +343,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", runId, "--human-readable"],
-				1000,
+				500,
 			);
 
 			// Both labels should appear
@@ -373,7 +373,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", runId, "--tail-only"],
-				1000,
+				500,
 			);
 
 			// Should not contain existing content
@@ -402,7 +402,7 @@ describe("5x run watch", () => {
 			const result = await run5x(
 				projectRoot,
 				["run", "watch", "--run", runId, "--human-readable"],
-				1000,
+				500,
 			);
 
 			// Should fall back to filename-based label

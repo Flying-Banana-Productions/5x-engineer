@@ -73,6 +73,13 @@ function setupProject(dir: string): string {
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
 
+	// Default to sample provider so tests don't spawn a real opencode server.
+	// Tests that need specific provider config overwrite 5x.toml after setupProject().
+	writeFileSync(
+		join(dir, "5x.toml"),
+		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n',
+	);
+
 	// Create plan
 	const planDir = join(dir, "docs", "development");
 	mkdirSync(planDir, { recursive: true });
@@ -662,17 +669,23 @@ describe("invoke", () => {
 			const { FiveXConfigSchema } = await import("../../src/config.js");
 			const config = FiveXConfigSchema.parse({});
 
-			// The factory should attempt to create an OpenCode provider.
-			// Since we don't have a running OpenCode server, this will throw,
-			// but it should NOT throw PROVIDER_NOT_FOUND — it should be the
-			// bundled OpenCode provider path.
+			// Verify default config uses opencode
+			expect(config.author.provider).toBe("opencode");
+
+			// Verify factory takes the bundled path (not PROVIDER_NOT_FOUND).
+			// Use external mode (dummy URL) to avoid spawning a real opencode server —
+			// the factory routing logic is the same for managed vs external mode.
+			const externalConfig = {
+				...config,
+				opencode: { ...config.opencode, url: "http://127.0.0.1:1" },
+			};
 			const { createProvider } = await import("../../src/providers/factory.js");
 			let provider: Awaited<ReturnType<typeof createProvider>> | undefined;
 			try {
-				provider = await createProvider("author", config);
+				provider = await createProvider("author", externalConfig);
+				// Factory recognized "opencode" as bundled provider — not PROVIDER_NOT_FOUND
+				expect(provider).toBeDefined();
 			} catch (err) {
-				// Expected: OpenCode server not available in test.
-				// But should NOT be PROVIDER_NOT_FOUND.
 				if (err instanceof Error && "code" in err) {
 					expect((err as { code: string }).code).not.toBe("PROVIDER_NOT_FOUND");
 				}
