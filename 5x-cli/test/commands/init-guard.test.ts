@@ -156,36 +156,51 @@ describe("init managed-mode guard", () => {
 	});
 
 	test("init from main checkout without root DB: succeeds normally", async () => {
-		initRepo(tmp);
+		const testTmp = makeTmpDir();
+		try {
+			initRepo(testTmp);
 
-		const result = await runInit(tmp);
-		expect(result.exitCode).toBe(0);
-		expect(existsSync(join(tmp, "5x.toml"))).toBe(true);
-		expect(existsSync(join(tmp, ".5x"))).toBe(true);
+			const result = await runInit(testTmp);
+			expect(result.exitCode).toBe(0);
+			expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+			expect(existsSync(join(testTmp, ".5x"))).toBe(true);
+		} finally {
+			rmSync(testTmp, { recursive: true, force: true });
+		}
 	});
 
 	test("init from subdirectory of main checkout scaffolds at repo root", async () => {
-		initRepo(tmp);
-		const subDir = join(tmp, "src", "lib");
-		mkdirSync(subDir, { recursive: true });
+		const testTmp = makeTmpDir();
+		try {
+			initRepo(testTmp);
+			const subDir = join(testTmp, "src", "lib");
+			mkdirSync(subDir, { recursive: true });
 
-		const result = await runInit(subDir);
-		expect(result.exitCode).toBe(0);
-		// Config and .5x should be at the repo root, not in the subdirectory
-		expect(existsSync(join(tmp, "5x.toml"))).toBe(true);
-		expect(existsSync(join(tmp, ".5x"))).toBe(true);
-		// Should NOT create config in the subdirectory
-		expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
+			const result = await runInit(subDir);
+			expect(result.exitCode).toBe(0);
+			// Config and .5x should be at the repo root, not in the subdirectory
+			expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+			expect(existsSync(join(testTmp, ".5x"))).toBe(true);
+			// Should NOT create config in the subdirectory
+			expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
+		} finally {
+			rmSync(testTmp, { recursive: true, force: true });
+		}
 	});
 
 	test("init from subdirectory of managed main checkout succeeds", async () => {
-		initRepo(tmp);
-		createStateDb(tmp);
-		const subDir = join(tmp, "src");
-		mkdirSync(subDir, { recursive: true });
+		const testTmp = makeTmpDir();
+		try {
+			initRepo(testTmp);
+			createStateDb(testTmp);
+			const subDir = join(testTmp, "src");
+			mkdirSync(subDir, { recursive: true });
 
-		const result = await runInit(subDir);
-		// Should succeed — subdirectory of main checkout is allowed
-		expect(result.exitCode).toBe(0);
+			const result = await runInit(subDir);
+			// Should succeed — subdirectory of main checkout is allowed
+			expect(result.exitCode).toBe(0);
+		} finally {
+			rmSync(testTmp, { recursive: true, force: true });
+		}
 	});
 });
