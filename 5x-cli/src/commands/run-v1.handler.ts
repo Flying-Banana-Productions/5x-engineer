@@ -58,6 +58,7 @@ import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
+import { DB_FILENAME, normalizeDbPath } from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -388,7 +389,9 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 
 	const projectRoot = resolveProjectRoot();
 	const { config } = await loadConfig(projectRoot);
-	const db = getDb(projectRoot, config.db.path);
+	// Normalize db.path to directory semantics (backward compat: `.5x/5x.db` → `.5x`)
+	const dbRelPath = join(normalizeDbPath(config.db.path), DB_FILENAME);
+	const db = getDb(projectRoot, dbRelPath);
 	runMigrations(db);
 
 	const requestedWorktreePath =

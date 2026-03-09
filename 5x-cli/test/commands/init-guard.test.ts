@@ -163,4 +163,29 @@ describe("init managed-mode guard", () => {
 		expect(existsSync(join(tmp, "5x.toml"))).toBe(true);
 		expect(existsSync(join(tmp, ".5x"))).toBe(true);
 	});
+
+	test("init from subdirectory of main checkout scaffolds at repo root", async () => {
+		initRepo(tmp);
+		const subDir = join(tmp, "src", "lib");
+		mkdirSync(subDir, { recursive: true });
+
+		const result = await runInit(subDir);
+		expect(result.exitCode).toBe(0);
+		// Config and .5x should be at the repo root, not in the subdirectory
+		expect(existsSync(join(tmp, "5x.toml"))).toBe(true);
+		expect(existsSync(join(tmp, ".5x"))).toBe(true);
+		// Should NOT create config in the subdirectory
+		expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
+	});
+
+	test("init from subdirectory of managed main checkout succeeds", async () => {
+		initRepo(tmp);
+		createStateDb(tmp);
+		const subDir = join(tmp, "src");
+		mkdirSync(subDir, { recursive: true });
+
+		const result = await runInit(subDir);
+		// Should succeed — subdirectory of main checkout is allowed
+		expect(result.exitCode).toBe(0);
+	});
 });

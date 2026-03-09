@@ -286,4 +286,45 @@ describe("resolveLayeredConfig", () => {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
+
+	test("root config with invalid TOML: throws actionable error", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), "not valid { toml ][", "utf-8");
+
+			await expect(resolveLayeredConfig(tmp)).rejects.toThrow(
+				/Failed to load.*5x\.toml/,
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("nearest config with invalid TOML: throws actionable error", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[author]\nmodel = "root-model"\n`);
+			const subDir = join(tmp, "sub-project");
+			mkdirSync(subDir, { recursive: true });
+			writeFileSync(join(subDir, "5x.toml"), "not valid { toml ][", "utf-8");
+
+			await expect(resolveLayeredConfig(tmp, subDir)).rejects.toThrow(
+				/Failed to load.*5x\.toml/,
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("merged config with invalid schema: throws actionable error", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// maxStepsPerRun must be positive integer — string value should fail validation
+			writeToml(tmp, `maxStepsPerRun = -1\n`);
+
+			await expect(resolveLayeredConfig(tmp)).rejects.toThrow(/Invalid config/);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });
