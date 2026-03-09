@@ -341,6 +341,7 @@ export async function invokeAgent(
 	let resolvedWorktreePath: string | null = null;
 	let resolvedPlanPath: string | null = null;
 	let effectiveWorkdir: string | null = null;
+	let planPathInWorktreeExists = false;
 
 	if (controlPlane.mode !== "none") {
 		const dbRelPath = join(stateDir, DB_FILENAME);
@@ -379,6 +380,7 @@ export async function invokeAgent(
 			// Effective plan path — resolver already handles worktree re-rooting.
 			// Only use if no explicit --var plan_path=... was provided (checked later).
 			resolvedPlanPath = ctx.effectivePlanPath;
+			planPathInWorktreeExists = ctx.planPathInWorktreeExists;
 		}
 	}
 
@@ -629,7 +631,7 @@ export async function invokeAgent(
 		log_path: logPath,
 		// Phase 2: optional execution context fields for downstream pipelines
 		...(resolvedWorktreePath ? { worktree_path: resolvedWorktreePath } : {}),
-		...(resolvedPlanPath && resolvedWorktreePath
+		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists
 			? { worktree_plan_path: resolvedPlanPath }
 			: {}),
 	};
