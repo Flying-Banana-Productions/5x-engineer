@@ -544,11 +544,13 @@ const variables = pipeContext
 
 ## Phase 6: `--record` Flag on Invoke and Quality
 
+**Status:** Complete
+
 **Completion gate:** `5x invoke author author-next-phase --run R1 --record` auto-records using the template's `step_name`. `5x quality run --run R1 --record` auto-records as `quality:check`. Optional `--record-step` overrides the default. Recording uses `recordStepInternal()` (no double envelope). All tests pass.
 
 ### 6.1 Add `--record` to invoke (`src/commands/invoke.ts`)
 
-- [ ] Add args:
+- [x] Add args:
 
 ```typescript
 record: {
@@ -569,7 +571,7 @@ iteration: {
 },
 ```
 
-- [ ] Pass new params through to `InvokeParams`:
+- [x] Pass new params through to `InvokeParams`:
 
 ```typescript
 export interface InvokeParams {
@@ -583,7 +585,7 @@ export interface InvokeParams {
 
 ### 6.2 Auto-record in invoke handler (`src/commands/invoke.handler.ts`)
 
-- [ ] After `outputSuccess(output)`, if `params.record` is truthy, call `recordStepInternal()` (NOT `runV1Record()`):
+- [x] After `outputSuccess(output)`, if `params.record` is truthy, call `recordStepInternal()` (NOT `runV1Record()`):
 
 ```typescript
 if (params.record) {
@@ -622,11 +624,11 @@ if (params.record) {
 }
 ```
 
-- [ ] Import `recordStepInternal` from `run-v1.handler.ts`
+- [x] Import `recordStepInternal` from `run-v1.handler.ts`
 
 ### 6.3 Add `--record` and `--run` to quality (`src/commands/quality-v1.ts`)
 
-- [ ] Add args:
+- [x] Add args:
 
 ```typescript
 record: {
@@ -649,23 +651,23 @@ phase: {
 
 ### 6.4 Auto-record in quality handler (`src/commands/quality-v1.handler.ts`)
 
-- [ ] Accept new params (`record`, `recordStep`, `run`, `phase`) in the handler signature
-- [ ] After `outputSuccess(...)`, if `record` is truthy:
+- [x] Accept new params (`record`, `recordStep`, `run`, `phase`) in the handler signature
+- [x] After `outputSuccess(...)`, if `record` is truthy:
   - Validate `run` is provided (error: "--run is required when using --record")
   - Call `recordStepInternal()` with step_name from `recordStep` (defaulting to `"quality:check"`), result as the full quality data JSON
   - Wrap in try/catch with stderr warning on failure (same pattern as invoke)
 
 ### 6.5 Tests
 
-- [ ] Test: `invoke --record` auto-records using template's `step_name` (e.g., `author:implement` for `author-next-phase`)
-- [ ] Test: `invoke --record --record-step "custom:step"` overrides template's step_name
-- [ ] Test: `invoke --record` populates all metadata (session_id, model, duration, tokens, cost, log_path)
-- [ ] Test: `invoke --record --phase 1` passes phase to record
-- [ ] Test: `quality run --record --run R1` records with default step name "quality:check"
-- [ ] Test: `quality run --record --record-step "quality:gates" --run R1` uses custom step name
-- [ ] Test: `quality run --record` without `--run` errors
-- [ ] Test: `--record` still outputs JSON envelope to stdout (recording is a side effect, only one envelope)
-- [ ] Test: `--record` failure (e.g., run not found) does not suppress the invoke output — emits warning to stderr, sets non-zero exit code
+- [x] Test: `invoke --record` auto-records using template's `step_name` (e.g., `author:implement` for `author-next-phase`)
+- [x] Test: `invoke --record --record-step "custom:step"` overrides template's step_name
+- [x] Test: `invoke --record` populates all metadata (session_id, model, duration, tokens, cost, log_path)
+- [x] Test: `invoke --record --phase 1` passes phase to record
+- [x] Test: `quality run --record --run R1` records with default step name "quality:check"
+- [x] Test: `quality run --record --record-step "quality:gates" --run R1` uses custom step name
+- [x] Test: `quality run --record` without `--run` errors
+- [x] Test: `--record` still outputs JSON envelope to stdout (recording is a side effect, only one envelope)
+- [x] Test: `--record` failure (e.g., run not found) does not suppress the invoke output — emits warning to stderr, sets non-zero exit code
 
 ---
 

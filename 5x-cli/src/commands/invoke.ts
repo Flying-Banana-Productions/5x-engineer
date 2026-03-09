@@ -68,6 +68,24 @@ const sharedArgs = {
 		type: "string" as const,
 		description: "Override OpenCode server URL (external mode)",
 	},
+	record: {
+		type: "boolean" as const,
+		description:
+			"Auto-record the result as a run step (uses template's step_name)",
+	},
+	"record-step": {
+		type: "string" as const,
+		description:
+			"Override step name for recording (default: from template frontmatter)",
+	},
+	phase: {
+		type: "string" as const,
+		description: "Phase identifier (used with --record)",
+	},
+	iteration: {
+		type: "string" as const,
+		description: "Iteration number (used with --record)",
+	},
 };
 
 const authorCmd = defineCommand({
@@ -91,6 +109,12 @@ const authorCmd = defineCommand({
 			authorProvider: args["author-provider"] as string | undefined,
 			reviewerProvider: args["reviewer-provider"] as string | undefined,
 			opencodeUrl: args["opencode-url"] as string | undefined,
+			record: args.record as boolean | undefined,
+			recordStep: args["record-step"] as string | undefined,
+			phase: args.phase as string | undefined,
+			iteration: args.iteration
+				? Number.parseInt(args.iteration as string, 10)
+				: undefined,
 		}),
 });
 
@@ -115,6 +139,12 @@ const reviewerCmd = defineCommand({
 			authorProvider: args["author-provider"] as string | undefined,
 			reviewerProvider: args["reviewer-provider"] as string | undefined,
 			opencodeUrl: args["opencode-url"] as string | undefined,
+			record: args.record as boolean | undefined,
+			recordStep: args["record-step"] as string | undefined,
+			phase: args.phase as string | undefined,
+			iteration: args.iteration
+				? Number.parseInt(args.iteration as string, 10)
+				: undefined,
 		}),
 });
 

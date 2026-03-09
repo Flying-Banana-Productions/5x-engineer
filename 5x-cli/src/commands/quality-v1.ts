@@ -14,8 +14,33 @@ const runCmd = defineCommand({
 		name: "run",
 		description: "Execute configured quality gates",
 	},
-	args: {},
-	run: () => runQuality(),
+	args: {
+		record: {
+			type: "boolean" as const,
+			description:
+				'Auto-record the result as a run step (default step name: "quality:check")',
+		},
+		"record-step": {
+			type: "string" as const,
+			description:
+				'Override step name for recording (default: "quality:check")',
+		},
+		run: {
+			type: "string" as const,
+			description: "Run ID (required when using --record)",
+		},
+		phase: {
+			type: "string" as const,
+			description: "Phase identifier (used with --record)",
+		},
+	},
+	run: ({ args }) =>
+		runQuality({
+			record: args.record as boolean | undefined,
+			recordStep: args["record-step"] as string | undefined,
+			run: args.run as string | undefined,
+			phase: args.phase as string | undefined,
+		}),
 });
 
 export default defineCommand({
