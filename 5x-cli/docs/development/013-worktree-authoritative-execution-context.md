@@ -1,8 +1,8 @@
 # Feature: Worktree-Authoritative Execution Context
 
-**Version:** 1.0  
+**Version:** 1.2  
 **Created:** March 9, 2026  
-**Status:** Proposed
+**Status:** Proposed (revised)
 
 ## Overview
 
@@ -40,16 +40,35 @@ Desired behavior:
 - All run lifecycle + step recording stays in repo-root DB (`.5x/5x.db` from root config).
 - A worktree checkout does not need its own `.5x` state directory.
 
+**Authoritative control-plane resolution via git common-dir.**
+
+The root DB must be discoverable from any checkout context — root, nested linked worktrees, and externally attached worktrees (worktrees whose checkout path is outside the main repo directory tree).
+
+Resolution strategy for the canonical control-plane root:
+
+1. From cwd, resolve `git rev-parse --git-common-dir`.
+   - In the main checkout, this returns `.git` (same as `--git-dir`).
+   - In a linked worktree (including externally attached), this returns the path to the main repo's `.git` directory (e.g. `/home/user/main-repo/.git`).
+2. Derive the main repo root as the parent of the common-dir result (i.e. `dirname(commonDir)` when the result is an absolute path, or `resolve(gitDir, commonDir)` when relative).
+3. Look for `.5x/5x.db` under the derived main repo root. If it exists, that is the canonical control-plane DB (managed mode).
+4. If no `.5x/5x.db` exists at the main repo root but one exists at the current checkout root (i.e. `resolveProjectRoot()` found a local `.5x/5x.db`), that checkout is in isolated mode.
+5. If neither exists, the command is outside any 5x-managed context and falls through to existing behavior (init prompt, etc.).
+
+This replaces the current `resolveProjectRoot` → `resolveDbContext` chain as the entry point for control-plane resolution. `resolveProjectRoot` remains used for config discovery (e.g. `5x.toml`) but DB location is no longer derived from it.
+
+A new helper `resolveControlPlaneRoot(startDir?)` encapsulates this logic and is used by `resolveDbContext` and the run context resolver.
+
 **Two operating modes are supported (default + explicit isolated).**
 
-- **Managed mode (default):** run from repo root, use root `.5x/5x.db`, leverage plan->worktree mapping for execution context.
-- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout and operates there as standalone root; state is local to that worktree and can be discarded with it.
+- **Managed mode (default):** commands from any checkout (root or linked worktree) resolve the root `.5x/5x.db` via git common-dir. Run-scoped commands use plan→worktree mapping for execution context.
+- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout and operates there as standalone root; state is local to that worktree and can be discarded with it. Detected when the current checkout root has its own `.5x/5x.db` AND is not the git common-dir root.
 - No implicit cross-sync between managed and isolated DBs.
 
 **Run-scoped context resolution becomes first-class.**
 
 - Add shared resolver: `run_id -> run.plan_path -> plans.worktree_path/branch`.
-- Commands with `--run` can derive both effective working directory and effective plan path.
+- All commands with `--run` use the same resolver to derive both effective working directory and effective plan path.
+- Scope: `invoke`, `quality run`, `diff`, `run state`, `run record`, `run complete`, `run reopen`, and `run watch` all share this resolver.
 
 **Context precedence (strict).**
 
@@ -57,11 +76,21 @@ Desired behavior:
 2. If run has mapped worktree, use mapped worktree.
 3. Fallback to current command behavior (project root/cwd semantics).
 
+Note: `quality run` does not currently expose a `--workdir` flag. Phase 3 adds `--workdir` to `quality run` so the precedence model applies symmetrically.
+
 **Mode boundary is checkout-local.**
 
-- Command context resolution starts from the current checkout's project root (`resolveProjectRoot`).
-- If that root has its own `.5x/5x.db`, commands use it (isolated mode).
+- Command context resolution starts by resolving the control-plane root via `resolveControlPlaneRoot` (git common-dir approach).
+- If the current checkout has its own `.5x/5x.db` distinct from the common-dir root's DB, commands use it (isolated mode).
 - Managed mode behavior applies within whichever control-plane DB the command is currently using.
+
+**Missing worktree: fail closed for all commands.**
+
+When a run is mapped to a worktree and that worktree path is missing or unreadable on disk, all run-scoped commands fail with a clear error. There is no fallback to root execution or degraded mode. Rationale:
+
+- **Mutating commands** (`invoke`, `quality run`, `run record`, `run complete`): executing against the wrong checkout is worse than failing. Silently falling back to root would modify the wrong files while recording results against the intended run.
+- **Read-only commands** (`run state`, `run watch`, `diff --run`): returning data from the wrong checkout is misleading. The mapped worktree is part of the run's contract.
+- **Error contract:** return structured error `WORKTREE_MISSING` with the expected path and remediation guidance ("re-attach worktree or remove mapping").
 
 **Worktree command guardrails reduce foot-guns in isolated mode.**
 
@@ -83,17 +112,31 @@ Desired behavior:
 
 ## Proposed Implementation
 
-### Phase 1: Shared Run Context Resolver
+### Phase 1: Control-Plane Resolver + Run Context Resolver
 
-**Completion gate:** one helper resolves run-scoped worktree + effective plan path; used by multiple commands.
+**Completion gate:** (a) control-plane root is reliably resolved from any checkout context (root, nested worktree, externally attached worktree); (b) one helper resolves run-scoped worktree + effective plan path; both are used by multiple commands.
+
+#### 1a: Control-plane root resolver
+
+- [ ] Add `resolveControlPlaneRoot(startDir?)` helper (new module, e.g. `src/commands/control-plane.ts`).
+- [ ] Implementation:
+  - Run `git rev-parse --git-common-dir` from `startDir` (or cwd).
+  - Derive main repo root from the common-dir result (parent of absolute path, or resolved relative to git-dir).
+  - Check for `.5x/5x.db` at main repo root → managed mode.
+  - If no root DB, check current checkout root for local `.5x/5x.db` → isolated mode.
+  - Return `{ controlPlaneRoot, mode: 'managed' | 'isolated' | 'none' }`.
+- [ ] Update `resolveDbContext()` in `src/commands/context.ts` to use `resolveControlPlaneRoot` for DB path resolution instead of deriving DB path directly from `resolveProjectRoot`.
+- [ ] Add unit tests covering: root checkout, nested linked worktree, externally attached worktree (checkout outside repo tree), isolated mode (local `.5x/5x.db` in worktree), no-context fallback.
+
+#### 1b: Run execution context resolver
 
 - [ ] Add `resolveRunExecutionContext(runId, opts?)` helper (new module, e.g. `src/commands/run-context.ts`).
 - [ ] Inputs:
   - `runId` (required)
-  - `projectRoot` (resolved by caller or helper)
+  - `controlPlaneRoot` (from `resolveControlPlaneRoot`)
   - optional override for explicit workdir
 - [ ] Output shape:
-  - `projectRoot`
+  - `controlPlaneRoot`
   - `run` (`id`, `plan_path`, `status`)
   - `mappedWorktreePath | null`
   - `effectiveWorkingDirectory`
@@ -101,16 +144,19 @@ Desired behavior:
   - `planPathInWorktreeExists` (bool)
 - [ ] Canonical path logic:
   - derive repo-relative path from root `run.plan_path`
-  - if mapped worktree exists, join relative plan path into mapped worktree path
+  - if mapped worktree exists and is accessible on disk, join relative plan path into mapped worktree path
+  - if mapped worktree is expected but missing/unreadable, return structured error `WORKTREE_MISSING` with expected path and remediation guidance
   - if derived worktree plan file exists, use it as `effectivePlanPath`; else fallback to root plan path
-- [ ] Add lightweight unit tests for resolver edge cases.
+- [ ] Add lightweight unit tests for resolver edge cases (including missing worktree → error).
 
 Files:
 
-- `src/commands/run-context.ts` (new)
-- `src/commands/context.ts` (optional helper glue)
+- `src/commands/control-plane.ts` (new — control-plane root resolver)
+- `src/commands/run-context.ts` (new — run execution context resolver)
+- `src/commands/context.ts` (update `resolveDbContext` to use control-plane resolver)
 - `src/db/operations-v1.ts` / `src/db/operations.ts` (reuse existing APIs as needed)
-- `test/commands/*` (new resolver-focused tests or command integration tests)
+- `test/commands/control-plane.test.ts` (new — control-plane resolution tests)
+- `test/commands/run-context.test.ts` (new — run context resolver tests)
 
 ### Phase 2: `invoke` Auto-Resolve Workdir + Plan Path
 
@@ -133,25 +179,43 @@ Files:
 - `src/pipe.ts` (context extraction updates)
 - `src/commands/invoke.ts` (only if new flags needed; likely no changes)
 
-### Phase 3: Run-Scoped `quality` and `diff` Context
+### Phase 3: Run-Scoped `quality`, `diff`, and `run` Subcommand Context
 
-**Completion gate:** run-scoped quality/diff can execute against mapped worktree without manual cwd changes.
+**Completion gate:** all `--run`-addressed commands resolve the same control-plane DB and execute against mapped worktree when applicable.
+
+#### 3a: `quality run` and `diff`
 
 - [ ] `quality run`:
-  - add optional `--run`-aware context resolution
-  - if run mapped and no explicit workdir override mechanism exists, execute quality gates in mapped worktree directory
+  - add `--workdir` flag for explicit override (aligns with precedence model)
+  - add `--run`-aware context resolution via `resolveRunExecutionContext`
+  - if run mapped, execute quality gates in mapped worktree directory
   - keep recording into root DB by `run`
 - [ ] `diff`:
   - add optional `--run <id>`
   - when provided, resolve mapped worktree and run git diff in that directory
   - keep existing behavior unchanged when `--run` omitted
 
+#### 3b: `run` subcommands (`state`, `record`, `complete`, `reopen`, `watch`)
+
+All `run` subcommands that accept `--run` must use the control-plane resolver to open the correct DB, ensuring they never read/write a worktree-local DB when a root DB exists.
+
+- [ ] `run state --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. When run has mapped worktree, report worktree path in output.
+- [ ] `run record --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. Records always go to root DB.
+- [ ] `run complete --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
+- [ ] `run reopen --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
+- [ ] `run watch --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. Watch log path resolves relative to control-plane root.
+- [ ] `run list`: update to use `resolveControlPlaneRoot` for DB resolution (no `--run` flag, but must find root DB from any checkout context).
+
+Note: `run init` already uses a custom DB resolution flow (lock-first). It must also be updated to resolve the control-plane root via `resolveControlPlaneRoot` so that `run init` from a linked worktree creates the run in the root DB.
+
 Files:
 
 - `src/commands/quality-v1.handler.ts`
-- `src/commands/quality-v1.ts` (args)
+- `src/commands/quality-v1.ts` (args — add `--workdir`)
 - `src/commands/diff.handler.ts`
 - `src/commands/diff.ts` (args)
+- `src/commands/run-v1.handler.ts` (update all `--run` subcommands + `run init` + `run list`)
+- `src/commands/run-v1.ts` (if flag changes needed)
 
 ### Phase 4: `run init` + Pipe Context Enrichment
 
@@ -187,7 +251,7 @@ Files:
 
 **Completion gate:** high-risk worktree ops fail safely in linked-worktree context unless explicitly overridden.
 
-- [ ] Add linked-worktree context detector (shared utility, e.g. git common-dir vs git-dir check).
+- [ ] Use `resolveControlPlaneRoot` (from Phase 1a) as the linked-worktree context detector.
 - [ ] `worktree create`:
   - default: fail in linked-worktree context with `WORKTREE_CONTEXT_INVALID`
   - message: "Run from repository root checkout or pass --allow-nested"
@@ -200,9 +264,18 @@ Files:
 
 ## Test Matrix
 
+### Control-plane resolution
+
+- [ ] From root checkout: `resolveControlPlaneRoot` returns root path, managed mode.
+- [ ] From nested linked worktree (inside repo tree): resolves to root `.5x/5x.db`.
+- [ ] From externally attached worktree (checkout outside repo tree): resolves to root `.5x/5x.db` via git common-dir.
+- [ ] From isolated-mode worktree (`5x init` inside worktree): resolves to local `.5x/5x.db`, isolated mode.
+- [ ] From directory with no git context: returns mode `none`.
+
 ### Core behavior
 
 - [ ] `invoke --run` from repo root uses mapped worktree as provider working dir.
+- [ ] `invoke --run` from a linked worktree resolves root DB and uses mapped worktree.
 - [ ] `invoke --run --workdir <x>` uses explicit workdir (override).
 - [ ] `invoke --run` with explicit `--var plan_path=...` keeps explicit value.
 - [ ] `invoke --run` with no explicit `plan_path` uses mapped worktree plan path when present.
@@ -215,14 +288,45 @@ Files:
 ### Quality/diff
 
 - [ ] `quality run --run <id>` executes gates in mapped worktree and records against root DB run.
+- [ ] `quality run --run <id> --workdir <x>` uses explicit workdir (override).
 - [ ] `diff --run <id>` diffs mapped worktree.
 - [ ] `diff` without `--run` remains unchanged.
 
+### Run subcommands
+
+- [ ] `run state --run <id>` from linked worktree resolves root DB.
+- [ ] `run record --run <id>` from linked worktree writes to root DB.
+- [ ] `run complete --run <id>` from linked worktree writes to root DB.
+- [ ] `run reopen --run <id>` from linked worktree writes to root DB.
+- [ ] `run watch --run <id>` from linked worktree reads logs from root.
+- [ ] `run list` from linked worktree lists runs from root DB.
+- [ ] `run init` from linked worktree creates run in root DB.
+
 ### Error paths
 
-- [ ] mapped worktree missing on disk: clear error/warning path with fallback behavior where safe.
-- [ ] run not found: existing error contract preserved.
+- [ ] Mapped worktree missing on disk: all run-scoped commands fail with `WORKTREE_MISSING` error (no fallback).
+- [ ] `WORKTREE_MISSING` error includes expected path and remediation guidance.
+- [ ] Run not found: existing error contract preserved.
 - [ ] `worktree create` from linked-worktree context fails unless `--allow-nested`.
+
+### Externally attached worktree (end-to-end)
+
+- [ ] `invoke --run` from externally attached worktree resolves root DB and uses mapped worktree.
+- [ ] `quality run --run` from externally attached worktree resolves root DB and executes in mapped worktree.
+- [ ] `run state --run` from externally attached worktree resolves root DB.
+- [ ] `run init` from externally attached worktree creates run in root DB.
+- [ ] `run list` from externally attached worktree lists runs from root DB.
+
+### Isolated mode
+
+- [ ] `5x init` inside a linked worktree creates local `.5x/5x.db`; subsequent commands use local DB.
+- [ ] `5x init` inside an externally attached worktree creates local `.5x/5x.db`; subsequent commands use local DB.
+- [ ] Commands in isolated mode do not read/write the root DB.
+- [ ] `run init` in isolated mode creates run in local DB, not root DB.
+- [ ] `invoke --run` in isolated mode uses local DB run context.
+- [ ] `quality run --run` in isolated mode executes against local checkout.
+- [ ] Switching between isolated and managed mode: removing local `.5x/5x.db` restores managed-mode behavior.
+- [ ] `worktree attach/remove` from isolated mode emit context-aware warnings.
 
 ## Backward Compatibility
 
@@ -255,3 +359,30 @@ Files:
   - `5x diff --run <id>` inspects mapped worktree changes.
 - No `.5x/` directory is required in worktree checkouts for managed mode.
 - In isolated mode, `5x init` inside a worktree creates local `.5x/5x.db` and commands run entirely against that local state.
+
+## Revision History
+
+### v1.2 — March 9, 2026 (review: `.5x/runs/run_fef6a3ad86da/review.md`)
+
+Addressed review feedback. All items from the initial review were already incorporated in v1.1; v1.2 strengthens test coverage for remaining P2 gaps.
+
+- **P0.1** (control-plane resolution for attached worktrees): Verified — git common-dir strategy, `resolveControlPlaneRoot` helper, and externally attached worktree test cases were already present in v1.1.
+- **P1.1** (all `--run` commands share resolver): Verified — Phase 3b already covers `run state/record/complete/reopen/watch/list/init`. Scope line at Design Decisions §"Run-scoped context resolution" enumerates all commands.
+- **P1.2** (fail closed for missing worktree): Verified — "Missing worktree: fail closed for all commands" section already specifies no-fallback semantics for both mutating and read-only commands, with `WORKTREE_MISSING` error contract.
+- **P2.1** (`--workdir` for `quality run`): Verified — already specified in precedence note (line 79) and Phase 3a checklist.
+- **P2.2** (test matrix coverage): **Expanded.** Added "Externally attached worktree (end-to-end)" test section covering invoke, quality, run subcommands, and run init from externally attached worktrees. Expanded "Isolated mode" section with coverage for `5x init` in externally attached worktrees, run-scoped commands in isolated mode, and mode switching behavior.
+
+### v1.1 — March 9, 2026
+
+Initial revision incorporating human decisions on review feedback:
+
+- Added "Authoritative control-plane resolution via git common-dir" design section with 5-step resolution strategy.
+- Added `resolveControlPlaneRoot` helper to Phase 1a with implementation details.
+- Extended Phase 3 with §3b covering all `run` subcommands (`state`, `record`, `complete`, `reopen`, `watch`, `list`, `init`).
+- Added "Missing worktree: fail closed for all commands" design section with `WORKTREE_MISSING` error contract.
+- Added `--workdir` flag to `quality run` in Phase 3a.
+- Added control-plane resolution and run subcommand test matrix sections.
+
+### v1.0 — March 9, 2026
+
+Initial draft.
