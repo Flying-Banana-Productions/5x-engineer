@@ -512,31 +512,33 @@ const variables = pipeContext
 
 ## Phase 5: `--var key=@-` and `--var key=@path`
 
+**Status:** Complete
+
 **Completion gate:** `--var diff=@-` reads from stdin. `--var diff=@./file.txt` reads from file. Only one `@-` per invocation. All tests pass.
 
 ### 5.1 Extend `parseVars()` in `src/commands/invoke.handler.ts`
 
-- [ ] After splitting `key=value`, check if `value` starts with `@`:
+- [x] After splitting `key=value`, check if `value` starts with `@`:
   - `@-` -> read from stdin (`Bun.stdin.stream()` to EOF)
   - `@<path>` -> read from file (`readFileSync(resolve(path), "utf-8")`)
-- [ ] Enforce at most one `@-` var per invocation (error if multiple)
-- [ ] `parseVars()` becomes async (returns `Promise<Record<string, string>>`)
-- [ ] Update callers to await the result
+- [x] Enforce at most one `@-` var per invocation (error if multiple)
+- [x] `parseVars()` becomes async (returns `Promise<Record<string, string>>`)
+- [x] Update callers to await the result
 
 ### 5.2 Interaction with upstream context reading
 
-- [ ] In `invokeAgent()`, detect `@-` vars BEFORE deciding whether to read stdin for upstream context:
+- [x] In `invokeAgent()`, detect `@-` vars BEFORE deciding whether to read stdin for upstream context:
   - If any `--var` uses `@-`, stdin is consumed for that var — skip upstream envelope reading
   - If no `--var` uses `@-`, stdin is available for upstream context extraction (Phase 4 logic)
 
 ### 5.3 Tests
 
-- [ ] Test: `--var diff=@-` reads value from piped stdin
-- [ ] Test: `--var diff=@./test-fixture.txt` reads value from file
-- [ ] Test: `--var diff=@./nonexistent.txt` errors with clear message
-- [ ] Test: multiple `@-` vars errors ("only one --var can read from stdin")
-- [ ] Test: `@-` var prevents upstream context reading
-- [ ] Test: `@path` vars work alongside upstream context reading (no conflict)
+- [x] Test: `--var diff=@-` reads value from piped stdin
+- [x] Test: `--var diff=@./test-fixture.txt` reads value from file
+- [x] Test: `--var diff=@./nonexistent.txt` errors with clear message
+- [x] Test: multiple `@-` vars errors ("only one --var can read from stdin")
+- [x] Test: `@-` var prevents upstream context reading
+- [x] Test: `@path` vars work alongside upstream context reading (no conflict)
 
 ---
 

@@ -4,6 +4,7 @@
  * Framework-independent: no citty imports.
  */
 
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -87,16 +88,50 @@ interface InvokeResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Check whether any --var flags use `@-` (stdin) syntax.
+ * Must be called BEFORE parseVars() or readUpstreamEnvelope() to determine
+ * whether stdin is reserved for a template variable.
+ */
+export function hasStdinVarFlag(vars: string | string[] | undefined): boolean {
+	if (!vars) return false;
+	const items = Array.isArray(vars) ? vars : [vars];
+	return items.some((v) => {
+		const eqIdx = v.indexOf("=");
+		return eqIdx > 0 && v.slice(eqIdx + 1) === "@-";
+	});
+}
+
+/**
  * Parse --var key=value flags into a record.
  * Accepts a single string or array of strings (citty may collapse repeated flags).
+ *
+ * Supports:
+ *   --var key=value       (literal value)
+ *   --var key=@-          (read value from stdin)
+ *   --var key=@./path.txt (read value from file)
+ *
+ * At most one `@-` var is allowed per invocation.
  */
-function parseVars(
+async function parseVars(
 	vars: string | string[] | undefined,
-): Record<string, string> {
+): Promise<Record<string, string>> {
 	if (!vars) return {};
 	const items = Array.isArray(vars) ? vars : [vars];
 	if (items.length === 0) return {};
 	const result: Record<string, string> = {};
+
+	// Enforce at most one @- (stdin) var
+	let stdinVarCount = 0;
+	for (const v of items) {
+		const eqIdx = v.indexOf("=");
+		if (eqIdx > 0 && v.slice(eqIdx + 1) === "@-") {
+			stdinVarCount++;
+		}
+	}
+	if (stdinVarCount > 1) {
+		outputError("INVALID_ARGS", "Only one --var can read from stdin (@-)");
+	}
+
 	for (const v of items) {
 		const eqIdx = v.indexOf("=");
 		if (eqIdx <= 0) {
@@ -106,7 +141,26 @@ function parseVars(
 			);
 		}
 		const key = v.slice(0, eqIdx);
-		const value = v.slice(eqIdx + 1);
+		let value = v.slice(eqIdx + 1);
+
+		if (value === "@-") {
+			// Read from stdin
+			value = await new Response(Bun.stdin.stream()).text();
+		} else if (value.startsWith("@")) {
+			// Read from file — strip the @ prefix
+			const rawPath = value.slice(1);
+			const filePath = resolve(rawPath);
+			try {
+				value = readFileSync(filePath, "utf-8");
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				outputError(
+					"INVALID_ARGS",
+					`Failed to read file for --var ${key}=@${rawPath}: ${msg}`,
+				);
+			}
+		}
+
 		result[key] = value;
 	}
 	return result;
@@ -204,9 +258,7 @@ export async function invokeAgent(
 	// and no --var uses @- (which would consume stdin).
 	let pipeContext: PipeContext | undefined;
 
-	const hasStdinVar = Array.isArray(params.vars)
-		? params.vars.some((v) => v.includes("=@-"))
-		: (params.vars?.includes("=@-") ?? false);
+	const hasStdinVar = hasStdinVarFlag(params.vars);
 
 	if (!params.run && !hasStdinVar && isStdinPiped()) {
 		const upstream = await readUpstreamEnvelope();
@@ -269,7 +321,7 @@ export async function invokeAgent(
 		throw err;
 	}
 
-	const explicitVars = parseVars(params.vars);
+	const explicitVars = await parseVars(params.vars);
 	const mergedVars = pipeContext
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
