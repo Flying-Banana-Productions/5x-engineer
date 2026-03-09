@@ -1,6 +1,6 @@
 # Feature: Provider Process Lifecycle Cleanup
 
-**Version:** 3.0
+**Version:** 4.0
 **Created:** March 8, 2026
 **Status:** Draft
 **Priority:** High — causes OOM during extended automated runs
@@ -82,6 +82,30 @@ The exit handler is a safety net, not the primary path. The signal handlers are 
 3. In the sync `process.on("exit")` handler, call `process.kill(pid, "SIGKILL")` directly — this is synchronous and works in exit handlers.
 
 **Why not process-list diffing:** The v2 plan proposed snapshotting `opencode` PIDs before/after `createOpencode()` and diffing. This is too heuristic for a lifecycle primitive — it can misidentify the wrong process when multiple `opencode` instances start concurrently, when unrelated `opencode` processes already exist, or when the child exits/restarts during sampling. A false positive could `SIGKILL` the wrong process.
+
+**Patch workflow (addresses P2.1):**
+
+The project uses Bun, which does not natively support `patch-package`. The concrete workflow is:
+
+1. **Create the patch:** Run `bunx patch-package @opencode-ai/sdk` after making the edits to `node_modules/@opencode-ai/sdk/dist/server.js` and `node_modules/@opencode-ai/sdk/dist/server.d.ts`. This generates `patches/@opencode-ai+sdk+<version>.patch`.
+2. **Add `patch-package` as a dev dependency:** `bun add -d patch-package`.
+3. **Add a `postinstall` script to `package.json`:**
+   ```json
+   "scripts": {
+     "postinstall": "bunx patch-package"
+   }
+   ```
+   This ensures the patch is re-applied after every `bun install`, including in CI and fresh clones.
+4. **Pin the SDK version:** Change `"@opencode-ai/sdk": "^1.2.6"` to an exact version (e.g., `"@opencode-ai/sdk": "1.2.6"`) to prevent silent patch-breaking upgrades. Upgrades must be intentional and must verify patch compatibility.
+5. **CI validation:** The existing `bun test` step validates patch presence because Phase 2 includes a startup assertion that `server.pid` is a number (see Phase 2 completion gates). If the patch is missing or fails to apply, `postinstall` errors during `bun install` and the CI pipeline fails before tests run.
+
+**Files touched by patch workflow:**
+| File | Change |
+|------|--------|
+| `package.json` | Add `patch-package` to devDependencies, add `postinstall` script, pin SDK version |
+| `patches/@opencode-ai+sdk+<version>.patch` (new) | Generated patch file exposing `pid` on server handle |
+
+**Patch durability on SDK upgrades:** When `@opencode-ai/sdk` is upgraded, `patch-package` will warn if the patch no longer applies cleanly. The `postinstall` script will fail, blocking the install. The developer must then: (a) verify the new SDK version still needs the patch (check if upstream now exposes `pid`), and (b) regenerate the patch against the new version if still needed.
 
 **Alternative considered:** Using `AbortSignal` passed to the SDK. The SDK accepts `signal` in options but this only aborts the spawn itself, not a running process.
 
@@ -193,7 +217,7 @@ return {
 
 Corresponding type addition in `dist/server.d.ts` so TypeScript sees `server.pid: number`.
 
-**PID capture:** In `OpenCodeProvider.createManaged()`, read the PID directly from the server handle:
+**PID capture with startup assertion (addresses P2.2):** In `OpenCodeProvider.createManaged()`, read the PID directly from the server handle and assert its presence. If the SDK patch is missing or no longer applies after an upgrade, the assertion fails immediately at provider startup rather than silently falling back to no PID and weaker cleanup:
 ```typescript
 static async createManaged(opts?: {
   model?: string;
@@ -204,11 +228,23 @@ static async createManaged(opts?: {
     timeout: 15_000,
   });
 
+  // Fail fast if SDK patch is missing — do not silently degrade to no PID tracking
+  if (typeof server.pid !== "number") {
+    // Kill the server we just spawned (best-effort via SDK close) before throwing
+    try { server.close(); } catch {}
+    throw new Error(
+      "SDK patch missing: server.pid is not available. " +
+      "Run 'bun install' to apply patches, or regenerate the patch for the current SDK version."
+    );
+  }
+
   const provider = new OpenCodeProvider(client, server, opts?.model);
-  provider.childPid = server.pid;  // Clean ownership, no guessing
+  provider.childPid = server.pid;
   return provider;
 }
 ```
+
+This assertion serves as a runtime guard that catches patch drift. It is also covered by a dedicated test (see Phase 2 completion gates and test strategy).
 
 **SIGKILL escalation in close():**
 ```typescript
@@ -238,8 +274,12 @@ async close(): Promise<void> {
 
 **Completion gates:**
 - [ ] SDK patch applied and committed to `patches/` directory
+- [ ] `patch-package` added as devDependency with `postinstall` script in `package.json`
+- [ ] SDK version pinned to exact version (no `^` range) to prevent silent patch-breaking upgrades
+- [ ] `bun install` in a clean checkout applies the patch without errors
 - [ ] PID is read from `server.pid` for managed providers
 - [ ] PID is null for external providers (no spawn occurred)
+- [ ] Startup assertion: `createManaged()` throws if `server.pid` is not a number (patch missing/broken)
 - [ ] `close()` escalates to SIGKILL after 5s timeout when SIGTERM is insufficient
 - [ ] Sync exit handler successfully kills child via `process.kill(pid, "SIGKILL")`
 - [ ] Signal-driven cleanup (SIGINT/SIGTERM) now reliably kills child via sync exit handler even if async close is preempted
@@ -248,6 +288,8 @@ async close(): Promise<void> {
 - [ ] Test: sync exit handler kills tracked PID
 - [ ] Test: external provider close is a no-op (no PID, no kill)
 - [ ] Test: SIGINT triggers lifecycle cleanup and child is killed
+- [ ] Test: `createManaged()` throws with clear error message when `server.pid` is missing (simulates unpatched/broken SDK upgrade)
+- [ ] Test: `postinstall` patch application succeeds in CI (validated by `bun install` step in CI pipeline)
 
 ## Risk Assessment
 
@@ -255,7 +297,7 @@ async close(): Promise<void> {
 |-------|------|------------|
 | Phase 1 | Low | Small refactor; try/finally is strictly safer than scattered close calls |
 | Phase 1 | Signal cleanup incomplete | Accepted: Phase 1 signal handlers are best-effort without PID. Phase 2 closes this gap. |
-| Phase 2 | SDK patch maintenance | Patch is minimal (one line + type). Pin SDK version. Re-apply on upgrade. |
+| Phase 2 | SDK patch maintenance | Patch is minimal (one line + type). SDK version pinned to exact. `postinstall` re-applies on every install. `patch-package` fails loudly if patch drifts on SDK upgrade. Runtime assertion in `createManaged()` catches missing patch at startup. |
 | Phase 2 | SIGKILL escalation timing | 5s is generous; if too aggressive, processes lose state. Configurable constant. |
 | Both | SIGKILL/OOM orphaning | Out of scope. No in-process handler can run. Future: PID file reaper or supervisor. |
 
@@ -265,8 +307,9 @@ async close(): Promise<void> {
 |------|-------|--------|
 | `src/providers/lifecycle.ts` (new) | 1 | Provider registration, signal handlers, sync exit handler scaffolding |
 | `src/commands/invoke.handler.ts` | 1 | try/finally wrapper, remove manual close calls, register/unregister via lifecycle |
+| `package.json` | 2 | Add `patch-package` devDependency, add `postinstall` script, pin `@opencode-ai/sdk` to exact version |
 | `patches/@opencode-ai+sdk+*.patch` (new) | 2 | Expose `pid: proc.pid` on server handle returned by `createOpencode()` |
-| `src/providers/opencode.ts` | 2 | Read `server.pid`, store as `childPid`, SIGKILL escalation in `close()` |
+| `src/providers/opencode.ts` | 2 | Read `server.pid`, store as `childPid`, startup assertion for PID presence, SIGKILL escalation in `close()` |
 | `src/providers/lifecycle.ts` | 2 | Accept PID from provider, sync exit handler kills tracked PID |
 
 ## Test Strategy
@@ -280,10 +323,12 @@ async close(): Promise<void> {
 | Signal handler idempotency | 1 | Multiple registerProvider() calls don't stack duplicate signal handlers |
 | External provider unaffected | 1, 2 | External providers have no PID, close is no-op, no kill attempted |
 | PID read from server handle | 2 | `server.pid` is stored as `childPid` after `createOpencode()` |
+| Missing PID startup assertion | 2 | `createManaged()` throws descriptive error when `server.pid` is undefined (unpatched SDK) |
 | SIGKILL escalation | 2 | Process ignoring SIGTERM is killed after timeout |
 | Sync exit handler | 2 | process.on("exit") kills tracked PID synchronously |
 | Graceful shutdown | 2 | Process that exits on SIGTERM within 5s does not receive SIGKILL |
 | Signal + PID integration | 2 | SIGINT/SIGTERM triggers sync exit handler that kills child PID |
+| Patch application in CI | 2 | `bun install` applies SDK patch; `postinstall` step succeeds in clean checkout |
 
 ### Integration / manual verification
 
@@ -299,3 +344,4 @@ async close(): Promise<void> {
 | 1.0 | 2026-03-08 | Initial draft |
 | 2.0 | 2026-03-09 | Address initial review feedback. P0.1: replaced async-only exit cleanup with dual sync/async strategy. P1.1: added scope decisions for SIGKILL/OOM. P1.2: added PID tracking via process-list diffing. P1.3: added completion gates and test strategy. Moved cleanup to lifecycle module. Added DD1–DD4. |
 | 3.0 | 2026-03-09 | Address review addendum (2026-03-09). P0.1: corrected Phase 1 scope claims — Phase 1 only guarantees try/finally and normal-exit cleanup; signal cleanup is explicitly best-effort until Phase 2 provides PID tracking. P1.1: tightened DD2 — removed misleading process-group reliability claims; SIGKILL/OOM orphaning is now an explicit non-goal with clear rationale, deferring to PID-file reaper or supervisor in a future iteration. P1.2: replaced process-list diffing with local SDK patch (`patch-package`) to expose child PID directly from spawn — eliminates heuristic misidentification risk. P2.1: fixed API naming throughout — `createOpencode()` not `createOpencodeServer()` to match actual `@opencode-ai/sdk/v2` API surface. |
+| 4.0 | 2026-03-09 | Address v3 review addendum remaining concerns. P2.1: added concrete SDK patch workflow — `patch-package` devDependency, `postinstall` script, exact SDK version pinning, files touched, CI validation via `bun install` failure on patch drift. P2.2: added runtime startup assertion in `createManaged()` that throws if `server.pid` is missing (unpatched/broken SDK upgrade), preventing silent fallback to weaker cleanup. Added corresponding completion gates, test cases, and updated files-touched and risk tables. |
