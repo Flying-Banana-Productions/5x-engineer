@@ -76,9 +76,7 @@ describe("runMigrations", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			db.exec(
-				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/test.md', 'run')",
-			);
+			db.exec("INSERT INTO runs (id, plan_path) VALUES ('run1', '/test.md')");
 
 			db.exec(
 				`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)

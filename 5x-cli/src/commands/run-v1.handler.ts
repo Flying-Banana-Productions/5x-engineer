@@ -55,7 +55,6 @@ import { resolveDbContext } from "./context.js";
 
 export interface RunInitParams {
 	plan: string;
-	command?: string;
 	allowDirty?: boolean;
 }
 
@@ -253,7 +252,6 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	createRunV1(db, {
 		id: runId,
 		planPath,
-		command: params.command,
 		configJson: JSON.stringify({
 			maxStepsPerRun: getMaxStepsPerRun(
 				config as unknown as Record<string, unknown>,
@@ -306,7 +304,6 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		run: {
 			id: run.id,
 			plan_path: run.plan_path,
-			command: run.command,
 			status: run.status,
 			created_at: run.created_at,
 			updated_at: run.updated_at,
@@ -587,7 +584,6 @@ export async function runV1List(params: RunListParams): Promise<void> {
 		runs: runs.map((r) => ({
 			id: r.id,
 			plan_path: r.plan_path,
-			command: r.command,
 			status: r.status,
 			created_at: r.created_at,
 			updated_at: r.updated_at,

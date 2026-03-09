@@ -14,7 +14,6 @@ export interface PlanRow {
 export interface RunRow {
 	id: string;
 	plan_path: string;
-	command: string | null;
 	status: string;
 	config_json: string | null;
 	created_at: string;
@@ -24,7 +23,6 @@ export interface RunRow {
 export interface RunSummary {
 	id: string;
 	plan_path: string;
-	command: string | null;
 	status: string;
 	created_at: string;
 	updated_at: string;
@@ -111,13 +109,13 @@ export function getPlan(db: Database, planPath: string): PlanRow | null {
 
 export function createRun(
 	db: Database,
-	run: { id: string; planPath: string; command: string },
+	run: { id: string; planPath: string },
 ): void {
 	const canonical = canonicalizePlanPath(run.planPath);
 	db.query(
-		`INSERT INTO runs (id, plan_path, command)
-     VALUES (?1, ?2, ?3)`,
-	).run(run.id, canonical, run.command);
+		`INSERT INTO runs (id, plan_path)
+     VALUES (?1, ?2)`,
+	).run(run.id, canonical);
 }
 
 export function updateRunStatus(
@@ -143,18 +141,7 @@ export function getActiveRun(db: Database, planPath: string): RunRow | null {
 		.get(planPath) as RunRow | null;
 }
 
-export function getLatestRun(
-	db: Database,
-	planPath: string,
-	command?: string,
-): RunRow | null {
-	if (command) {
-		return db
-			.query(
-				"SELECT * FROM runs WHERE plan_path = ?1 AND command = ?2 ORDER BY rowid DESC LIMIT 1",
-			)
-			.get(planPath, command) as RunRow | null;
-	}
+export function getLatestRun(db: Database, planPath: string): RunRow | null {
 	return db
 		.query(
 			"SELECT * FROM runs WHERE plan_path = ?1 ORDER BY rowid DESC LIMIT 1",

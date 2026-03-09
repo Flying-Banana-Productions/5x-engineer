@@ -101,15 +101,14 @@ describe("plans", () => {
 
 describe("runs", () => {
 	test("create and get active run", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 		const run = unwrap(getActiveRun(db, "/plan.md"));
 		expect(run.id).toBe("run1");
 		expect(run.status).toBe("active");
-		expect(run.command).toBe("run");
 	});
 
 	test("update run status to completed", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 		updateRunStatus(db, "run1", "completed");
 
 		const run = unwrap(getLatestRun(db, "/plan.md"));
@@ -117,53 +116,18 @@ describe("runs", () => {
 	});
 
 	test("getActiveRun returns null after completion", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 		updateRunStatus(db, "run1", "completed");
 		expect(getActiveRun(db, "/plan.md")).toBeNull();
 	});
 
 	test("getLatestRun returns most recent", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "plan-review" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 		updateRunStatus(db, "run1", "completed");
-		createRun(db, { id: "run2", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run2", planPath: "/plan.md" });
 
 		const latest = unwrap(getLatestRun(db, "/plan.md"));
 		expect(latest.id).toBe("run2");
-	});
-
-	test("getLatestRun filters by command when provided", () => {
-		createRun(db, {
-			id: "run1",
-			planPath: "/plan.md",
-			command: "plan-review",
-		});
-		updateRunStatus(db, "run1", "completed");
-		createRun(db, {
-			id: "run2",
-			planPath: "/plan.md",
-			command: "run",
-		});
-
-		// Without filter: returns the latest (run2)
-		const latest = unwrap(getLatestRun(db, "/plan.md"));
-		expect(latest.id).toBe("run2");
-
-		// Filtered to plan-review: returns run1
-		const planReview = unwrap(getLatestRun(db, "/plan.md", "plan-review"));
-		expect(planReview.id).toBe("run1");
-
-		// Filtered to run: returns run2
-		const run = unwrap(getLatestRun(db, "/plan.md", "run"));
-		expect(run.id).toBe("run2");
-	});
-
-	test("getLatestRun with command filter returns null when no match", () => {
-		createRun(db, {
-			id: "run1",
-			planPath: "/plan.md",
-			command: "plan-review",
-		});
-		expect(getLatestRun(db, "/plan.md", "run")).toBeNull();
 	});
 });
 
@@ -171,7 +135,7 @@ describe("runs", () => {
 
 describe("reporting", () => {
 	test("getRunHistory returns runs with step counts", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 		recordStep(db, {
 			run_id: "run1",
 			step_name: "event:phase_start",
@@ -191,8 +155,8 @@ describe("reporting", () => {
 	});
 
 	test("getRunHistory filters by plan path", () => {
-		createRun(db, { id: "run1", planPath: "/plan-a.md", command: "run" });
-		createRun(db, { id: "run2", planPath: "/plan-b.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan-a.md" });
+		createRun(db, { id: "run2", planPath: "/plan-b.md" });
 
 		expect(getRunHistory(db, "/plan-a.md")).toHaveLength(1);
 		expect(getRunHistory(db, "/plan-b.md")).toHaveLength(1);
@@ -200,7 +164,7 @@ describe("reporting", () => {
 	});
 
 	test("getRunMetrics aggregates correctly", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 
 		recordStep(db, {
 			run_id: "run1",
@@ -302,8 +266,8 @@ describe("canonical path enforcement", () => {
 		writeFileSync(planFile, "# Test Plan\n");
 		const absolutePath = resolve(planFile);
 
-		createRun(db, { id: "run1", planPath: planFile, command: "run" });
-		createRun(db, { id: "run2", planPath: absolutePath, command: "run" });
+		createRun(db, { id: "run1", planPath: planFile });
+		createRun(db, { id: "run2", planPath: absolutePath });
 
 		const run1 = unwrap(getLatestRun(db, absolutePath));
 		expect(run1.plan_path).toBe(absolutePath);
@@ -320,7 +284,7 @@ describe("canonical path enforcement", () => {
 		const symlinkPath = join(tmp, "link-plan.md");
 		symlinkSync(planFile, symlinkPath);
 
-		createRun(db, { id: "run1", planPath: symlinkPath, command: "run" });
+		createRun(db, { id: "run1", planPath: symlinkPath });
 
 		const run = unwrap(getLatestRun(db, resolve(planFile)));
 		expect(run.plan_path).toBe(resolve(planFile));
@@ -331,7 +295,7 @@ describe("canonical path enforcement", () => {
 		writeFileSync(planFile, "# Test Plan\n");
 		const absolutePath = resolve(planFile);
 
-		createRun(db, { id: "run1", planPath: planFile, command: "run" });
+		createRun(db, { id: "run1", planPath: planFile });
 
 		const active = getActiveRun(db, absolutePath);
 		expect(active).not.toBeNull();
@@ -343,7 +307,7 @@ describe("canonical path enforcement", () => {
 
 describe("WAL concurrent access", () => {
 	test("can read while write transaction is open", () => {
-		createRun(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRun(db, { id: "run1", planPath: "/plan.md" });
 
 		db.exec("BEGIN IMMEDIATE");
 		recordStep(db, {

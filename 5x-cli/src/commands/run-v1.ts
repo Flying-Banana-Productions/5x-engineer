@@ -29,10 +29,6 @@ const initCmd = defineCommand({
 			description: "Path to implementation plan",
 			required: true,
 		},
-		command: {
-			type: "string",
-			description: "Command name (e.g. run, plan-review)",
-		},
 		"allow-dirty": {
 			type: "boolean",
 			description: "Allow dirty worktree",
@@ -42,7 +38,6 @@ const initCmd = defineCommand({
 	run: ({ args }) =>
 		runV1Init({
 			plan: args.plan as string,
-			command: args.command as string | undefined,
 			allowDirty: args["allow-dirty"] as boolean,
 		}),
 });

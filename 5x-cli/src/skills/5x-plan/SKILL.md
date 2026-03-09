@@ -101,7 +101,7 @@ To monitor progress in real-time, suggest the user run in a separate terminal:
 
 ### Step 1: Initialize
 
-Run `5x run init --plan $PLAN_PATH --command plan`.
+Run `5x run init --plan $PLAN_PATH`.
 
 If a run already exists (returned by init), call `5x run state --run $RUN`
 and skip to the appropriate step based on recorded history.

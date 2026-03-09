@@ -46,7 +46,6 @@ export interface RecordStepResult {
 export interface RunRowV1 {
 	id: string;
 	plan_path: string;
-	command: string | null;
 	status: string;
 	config_json: string | null;
 	created_at: string;
@@ -56,7 +55,6 @@ export interface RunRowV1 {
 export interface RunSummaryV1 {
 	id: string;
 	plan_path: string;
-	command: string | null;
 	status: string;
 	created_at: string;
 	updated_at: string;
@@ -255,15 +253,14 @@ export function createRunV1(
 	run: {
 		id: string;
 		planPath: string;
-		command?: string;
 		configJson?: string;
 	},
 ): void {
 	const canonical = canonicalizePlanPath(run.planPath);
 	db.query(
-		`INSERT INTO runs (id, plan_path, command, config_json)
-		 VALUES (?1, ?2, ?3, ?4)`,
-	).run(run.id, canonical, run.command ?? null, run.configJson ?? null);
+		`INSERT INTO runs (id, plan_path, config_json)
+		 VALUES (?1, ?2, ?3)`,
+	).run(run.id, canonical, run.configJson ?? null);
 }
 
 /**

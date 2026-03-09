@@ -120,13 +120,13 @@ describe("migration v4: fresh DB", () => {
 			// v1 columns present
 			expect(names).toContain("id");
 			expect(names).toContain("plan_path");
-			expect(names).toContain("command");
 			expect(names).toContain("status");
 			expect(names).toContain("config_json");
 			expect(names).toContain("created_at");
 			expect(names).toContain("updated_at");
 
 			// v0 columns removed
+			expect(names).not.toContain("command");
 			expect(names).not.toContain("current_state");
 			expect(names).not.toContain("current_phase");
 			expect(names).not.toContain("review_path");
@@ -143,9 +143,7 @@ describe("migration v4: fresh DB", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			db.exec(
-				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/test.md', 'run')",
-			);
+			db.exec("INSERT INTO runs (id, plan_path) VALUES ('run1', '/test.md')");
 
 			db.exec(
 				`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)
@@ -576,9 +574,7 @@ describe("migration v4: recordStep INSERT OR IGNORE semantics", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			db.exec(
-				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/plan.md', 'run')",
-			);
+			db.exec("INSERT INTO runs (id, plan_path) VALUES ('run1', '/plan.md')");
 
 			const first = recordStep(db, {
 				run_id: "run1",
@@ -618,9 +614,7 @@ describe("migration v4: recordStep INSERT OR IGNORE semantics", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			db.exec(
-				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/plan.md', 'run')",
-			);
+			db.exec("INSERT INTO runs (id, plan_path) VALUES ('run1', '/plan.md')");
 
 			const first = recordStep(db, {
 				run_id: "run1",
@@ -656,9 +650,7 @@ describe("migration v4: computeRunSummary", () => {
 				"../../src/db/operations-v1.js"
 			);
 
-			db.exec(
-				"INSERT INTO runs (id, plan_path, command) VALUES ('run1', '/plan.md', 'run')",
-			);
+			db.exec("INSERT INTO runs (id, plan_path) VALUES ('run1', '/plan.md')");
 
 			// Author steps with token costs
 			recordStep(db, {

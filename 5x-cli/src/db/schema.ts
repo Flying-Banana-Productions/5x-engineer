@@ -233,7 +233,6 @@ const migrations: Migration[] = [
 				CREATE TABLE runs_new (
 					id          TEXT PRIMARY KEY,
 					plan_path   TEXT NOT NULL,
-					command     TEXT,
 					status      TEXT NOT NULL DEFAULT 'active',
 					config_json TEXT,
 					created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -241,11 +240,10 @@ const migrations: Migration[] = [
 				)
 			`);
 			db.exec(`
-				INSERT INTO runs_new (id, plan_path, command, status, created_at, updated_at)
+				INSERT INTO runs_new (id, plan_path, status, created_at, updated_at)
 				SELECT
 					id,
 					plan_path,
-					command,
 					status,
 					started_at,
 					COALESCE(completed_at, started_at)

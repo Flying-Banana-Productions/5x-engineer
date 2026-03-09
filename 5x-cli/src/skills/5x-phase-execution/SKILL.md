@@ -108,15 +108,17 @@ To monitor progress in real-time, suggest the user run in a separate terminal:
 
 ### Step 0: Initialize
 
-    5x run init --plan $PLAN_PATH --command phase-execution
+    5x run init --plan $PLAN_PATH
 
-If resuming an existing run, call `5x run state --run $RUN` and skip to
-the appropriate point based on recorded history. Identify which phases
-are complete (steps with `step_name: "phase:complete"`) and which phase
-to start with.
+If resuming an existing run (including runs migrated from v0), call
+`5x run state --run $RUN` to review recorded history.
 
 Get the phase list: `5x plan phases $PLAN_PATH`
-Filter to phases not yet completed. Process them in order.
+
+**`plan phases` is the authoritative signal for phase completion** — it
+reports `done: true` when all checklist items are checked. Step records
+(`phase:complete`) are for auditing but may be incomplete for migrated
+v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 ### For each pending phase ($PHASE):
 

@@ -370,21 +370,18 @@ describe("createRunV1", () => {
 		expect(run).not.toBeNull();
 		expect(run?.id).toBe("run1");
 		expect(run?.status).toBe("active");
-		expect(run?.command).toBeNull();
 		expect(run?.config_json).toBeNull();
 	});
 
-	test("creates a run with all fields", () => {
+	test("creates a run with config", () => {
 		createRunV1(db, {
 			id: "run1",
 			planPath: "/plan.md",
-			command: "run",
 			configJson: '{"maxStepsPerRun":50}',
 		});
 
 		const run = getRunV1(db, "run1");
 		expect(run).not.toBeNull();
-		expect(run?.command).toBe("run");
 		expect(run?.config_json).toBe('{"maxStepsPerRun":50}');
 	});
 
@@ -408,7 +405,7 @@ describe("getRunV1", () => {
 
 describe("getActiveRunV1", () => {
 	test("finds active run for a plan", () => {
-		createRunV1(db, { id: "run1", planPath: "/plan.md", command: "run" });
+		createRunV1(db, { id: "run1", planPath: "/plan.md" });
 
 		const active = getActiveRunV1(db, "/plan.md");
 		expect(active).not.toBeNull();
@@ -479,8 +476,8 @@ describe("reopenRun", () => {
 
 describe("listRuns", () => {
 	test("lists all runs with step counts", () => {
-		createRunV1(db, { id: "run1", planPath: "/plan.md", command: "run" });
-		createRunV1(db, { id: "run2", planPath: "/plan.md", command: "run" });
+		createRunV1(db, { id: "run1", planPath: "/plan.md" });
+		createRunV1(db, { id: "run2", planPath: "/plan.md" });
 
 		recordStep(db, {
 			run_id: "run1",

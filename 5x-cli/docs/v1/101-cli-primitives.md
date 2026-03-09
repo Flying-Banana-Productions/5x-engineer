@@ -74,13 +74,12 @@ These primitives are not yet implemented. This document is an implementation-rea
 Create a new run for a plan.
 
 ```
-5x run init --plan <path> [--command <name>] [--allow-dirty]
+5x run init --plan <path> [--allow-dirty]
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--plan` | Yes | Path to plan markdown file |
-| `--command` | No | Workflow name (e.g., `plan-review`, `phase-execution`). Metadata only. |
 | `--allow-dirty` | No | Skip dirty working tree check. Default: fail if uncommitted changes exist. |
 
 **Returns:**
@@ -784,7 +783,6 @@ This records a new iteration rather than overwriting. The orchestrating agent se
 CREATE TABLE runs (
   id            TEXT PRIMARY KEY,        -- e.g., "run_abc123"
   plan_path     TEXT NOT NULL,           -- canonicalized plan path
-  command       TEXT,                    -- workflow name (metadata)
   status        TEXT NOT NULL DEFAULT 'active',  -- active|completed|aborted
   config_json   TEXT,                    -- snapshot of relevant config at run creation
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
