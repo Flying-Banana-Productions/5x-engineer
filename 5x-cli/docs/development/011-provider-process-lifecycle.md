@@ -1,6 +1,6 @@
 # Feature: Provider Process Lifecycle Cleanup
 
-**Version:** 2.0
+**Version:** 3.0
 **Created:** March 8, 2026
 **Status:** Draft
 **Priority:** High — causes OOM during extended automated runs
@@ -27,22 +27,19 @@ The OpenCode SDK's `server.close()` calls `proc.kill()` which sends SIGTERM (Nod
 
 `bin.ts` catches errors and calls `process.exit()` without any provider reference. No `process.on("exit")` handler is registered for provider cleanup. The provider instance is scoped to `invokeAgent()` and not accessible from the top-level error handler.
 
-### 5. No process group management
+### 5. No defense against parent hard-kill
 
-The child process is spawned without process group assignment. If the parent is killed with SIGKILL (which cannot be caught), the child is orphaned because the kernel has no group association to propagate the kill.
+If the parent is killed with SIGKILL (which cannot be caught) or by the OOM-killer, the child is orphaned. No in-process handler can address this — SIGKILL cannot be caught, and OOM kills are immediate. This root cause is acknowledged but explicitly out of scope for this iteration (see DD2 and Scope Decisions). Addressing it requires an external mechanism such as a PID-file reaper or supervisor.
 
 ## Scope Decisions
 
 ### In scope for this iteration
-- Pre-stream failure cleanup (try/finally)
-- Signal handler cleanup (SIGINT, SIGTERM) with both sync and async paths
-- SIGKILL escalation for stalled child processes
-- Process group management so kernel kills children when parent dies
-- PID tracking in-repo (independent of SDK)
+- **Phase 1:** Pre-stream failure cleanup (try/finally around provider lifecycle) and normal-exit cleanup. Signal handlers are scaffolded but only best-effort without PID tracking.
+- **Phase 2:** PID tracking via local SDK patch, SIGKILL escalation for stalled children, and fully effective signal cleanup (async graceful path + sync last-resort kill backed by tracked PID).
 
 ### Explicitly out of scope
-- OOM-killer orphaning: when the parent is OOM-killed, it receives SIGKILL which cannot be caught. Process group management (Phase 2) provides kernel-level coverage for this case — no application-level handler is possible. If process groups prove insufficient on some platforms, a separate external watchdog or PID-file reaper would be needed, which is out of scope for this iteration.
-- SDK upstream changes: all mitigations are implemented in-repo, wrapping the SDK. No SDK fork or contribution is required.
+- **SIGKILL/OOM orphan prevention:** when the parent is hard-killed (SIGKILL, OOM-killer), no in-process handler can run. This plan does not attempt to solve that class of orphaning. A future iteration could address it via a PID-file reaper, external supervisor process, or `prctl(PR_SET_PDEATHSIG)` on Linux. These are architectural additions beyond the scope of fixing the current leak paths. See DD2 for rationale.
+- **SDK upstream changes:** all mitigations are implemented in-repo. The SDK is patched locally to expose the child PID (see DD3); no upstream fork or contribution is required.
 
 ## Design Decisions
 
@@ -56,26 +53,35 @@ The child process is spawned without process group assignment. If the parent is 
 
 The exit handler is a safety net, not the primary path. The signal handlers are the primary graceful cleanup path.
 
-### DD2: Process group management (addresses P1.1)
+### DD2: SIGKILL/OOM orphaning is an explicit non-goal (addresses P1.1)
 
-**Problem:** If the parent is hard-killed (SIGKILL, OOM), no in-process handler can run. The child survives as an orphan.
+**Problem:** If the parent is hard-killed (SIGKILL, OOM-killer), no in-process handler can run. The child survives as an orphan.
 
-**Decision:** Spawn the child process in its own process group using the `detached: false` default behavior combined with the `process group` option. Specifically: when spawning via the SDK, we do NOT use `detached: true`. Instead, we rely on the default behavior where the child is in the same process group as the parent. On Linux, when the parent is killed, the terminal's process group receives the signal. For non-terminal contexts (e.g. automated pipelines), we additionally register the child PID with the lifecycle module so that the sync exit handler can `process.kill(pid, "SIGKILL")` as a fallback.
+**Decision:** This plan explicitly does not solve SIGKILL/OOM orphaning. No in-process mechanism (signal handlers, exit hooks, process groups) can reliably prevent orphaned children when the parent is hard-killed. This class of orphaning requires an external mechanism and is deferred to a future iteration.
 
-**Trade-off:** This does not cover the case where the parent is killed in a non-terminal context without a controlling terminal sending a group signal. For full coverage in those scenarios, an external reaper/watchdog process would be needed — that is out of scope (see Scope Decisions).
+**Note on process groups:** While the default Node.js `spawn()` behavior places the child in the parent's process group, this only helps when the terminal's job control delivers signals to the foreground process group (e.g., Ctrl-C). It does **not** help when the parent is killed directly (`kill -9 <pid>`) or by the OOM-killer, because those signals target a specific PID, not the process group. This plan does not rely on process-group behavior for cleanup correctness.
 
-### DD3: In-repo PID tracking and SIGKILL escalation (addresses P1.2)
+**Future options (not implemented here):**
+- **PID file + reaper:** write the child PID to a known file; a startup check or periodic reaper process cleans orphans.
+- **`prctl(PR_SET_PDEATHSIG)` (Linux):** request the kernel to send a signal to the child when the parent dies. Requires native bindings or an SDK change.
+- **External supervisor:** a lightweight watchdog that monitors the parent PID and kills children when it exits.
 
-**Problem:** The `@opencode-ai/sdk` returns `{ url, close() }` from `createOpencodeServer()`. The `close()` method calls `proc.kill()` (SIGTERM) but does not expose the child process PID or a force-kill API. The v1 plan proposed a `forceKill()` SDK method that doesn't exist.
+**Rationale for deferral:** the immediate OOM problem is caused by normal-path leaks (missing try/finally, no signal handlers for catchable signals), not by SIGKILL/OOM scenarios. Fixing the normal-path leaks in Phases 1-2 addresses the observed issue. SIGKILL/OOM orphan prevention is a hardening concern for a later iteration.
 
-**Decision:** Track the PID ourselves in-repo. The approach:
-1. Before calling `createOpencodeServer()`, snapshot the set of running `opencode` processes.
-2. After `createOpencodeServer()` returns, diff the process list to identify the new child PID. Alternatively, use the SDK's `spawn` event or parse `/proc` — the simplest reliable approach is to check `opencode` processes before/after.
-3. Store the PID in the provider instance and register it with the lifecycle module.
-4. In `close()`, call `server.close()` (SIGTERM via SDK), then poll for process exit up to 5s, then `process.kill(pid, "SIGKILL")` if still alive.
-5. In the sync `process.on("exit")` handler, call `process.kill(pid, "SIGKILL")` directly — this is synchronous and works in exit handlers.
+### DD3: Local SDK patch to expose child PID (addresses P1.2)
 
-**Alternative considered:** Patching `child_process.spawn` to intercept the PID. Rejected as fragile and coupling to SDK internals.
+**Problem:** The `@opencode-ai/sdk` returns `{ url, close() }` from `createOpencode()`. The returned `server` handle has a `close()` method that calls `proc.kill()` (SIGTERM) but does not expose the child process PID or a force-kill API.
+
+**Decision:** Patch the SDK locally (via `patch-package` or equivalent) to expose the child PID on the server handle. The SDK's internal spawn logic in `dist/server.js` already has the `proc` reference from `spawn()` — the patch adds `pid: proc.pid` to the returned server object. This gives us clean ownership of the child process with no guessing.
+
+**Patch scope:** One line in `dist/server.js` — change the return from `{ url, close() { proc.kill(); } }` to `{ url, pid: proc.pid, close() { proc.kill(); } }`. Corresponding type addition in `dist/server.d.ts`.
+
+**What this enables:**
+1. Store `server.pid` in the provider instance and register it with the lifecycle module.
+2. In `close()`, call `server.close()` (SIGTERM via SDK), then poll for process exit up to 5s, then `process.kill(pid, "SIGKILL")` if still alive.
+3. In the sync `process.on("exit")` handler, call `process.kill(pid, "SIGKILL")` directly — this is synchronous and works in exit handlers.
+
+**Why not process-list diffing:** The v2 plan proposed snapshotting `opencode` PIDs before/after `createOpencode()` and diffing. This is too heuristic for a lifecycle primitive — it can misidentify the wrong process when multiple `opencode` instances start concurrently, when unrelated `opencode` processes already exist, or when the child exits/restarts during sampling. A false positive could `SIGKILL` the wrong process.
 
 **Alternative considered:** Using `AbortSignal` passed to the SDK. The SDK accepts `signal` in options but this only aborts the spawn itself, not a running process.
 
@@ -93,9 +99,13 @@ The exit handler is a safety net, not the primary path. The signal handlers are 
 
 ## Proposed Mitigations
 
-### Phase 1: try/finally + lifecycle module (Quick fix)
+### Phase 1: try/finally + lifecycle module scaffolding (Quick fix)
 
 **Scope:** `src/commands/invoke.handler.ts`, `src/providers/lifecycle.ts` (new)
+
+**What Phase 1 solves:** Pre-stream failure cleanup and normal-exit cleanup only. The try/finally guarantees `provider.close()` is called on every code path through `invoke.handler.ts`, including early failures after provider creation. This eliminates the primary leak path observed in production (root cause #1).
+
+**What Phase 1 does NOT solve:** Signal-driven cleanup (SIGINT/SIGTERM) and SIGKILL escalation are **Phase 2 responsibilities**. Phase 1 scaffolds the lifecycle module and registers signal handlers, but without PID tracking these handlers are best-effort only. Specifically: if another handler (`src/db/connection.ts` or `src/lock.ts`) calls `process.exit()` before the lifecycle module's async `provider.close()` completes, the child leaks because the sync exit handler has no PID to kill. This is an accepted limitation of Phase 1 — Phase 2 closes the gap by adding PID tracking.
 
 **Changes:**
 - Create `src/providers/lifecycle.ts` with provider registration, signal handlers, and sync exit handler.
@@ -116,21 +126,25 @@ export function registerProvider(provider: AgentProvider, pid: number | null): v
   if (!handlersRegistered) {
     handlersRegistered = true;
 
-    // Sync last-resort: kill child if still alive when process exits
+    // Sync last-resort: kill child if still alive when process exits.
+    // In Phase 1 (trackedPid is null), this is a no-op.
+    // In Phase 2, this provides the critical safety net.
     process.on("exit", () => {
       if (trackedPid) {
         try { process.kill(trackedPid, "SIGKILL"); } catch {}
       }
     });
 
-    // Async graceful: close provider, then exit
+    // Async best-effort: close provider, then exit.
+    // This works when OUR handler runs first. If db/lock handlers
+    // call process.exit() before us, the async close is abandoned
+    // and we rely on the sync exit handler (effective in Phase 2).
     for (const sig of ["SIGINT", "SIGTERM"] as const) {
       process.on(sig, async () => {
         if (activeProvider) {
           await activeProvider.close().catch(() => {});
           activeProvider = null;
         }
-        // trackedPid is killed by the exit handler if close() didn't work
         process.exit(sig === "SIGINT" ? 130 : 143);
       });
     }
@@ -143,41 +157,58 @@ export function unregisterProvider(): void {
 }
 ```
 
-Handler ordering with existing db/lock signal handlers: all three modules register independent handlers on the same signals. Node.js invokes them in registration order. Since each handler calls `process.exit()`, the first handler to run will trigger the `"exit"` event, which runs all `process.on("exit")` handlers synchronously. The lifecycle module's exit handler kills the child PID. To ensure this works:
-- The lifecycle module's signal handlers must NOT call `process.exit()` before the provider is closed (the async close must complete first).
-- Since db/lock handlers also call `process.exit()`, we need lifecycle handlers to be registered BEFORE db/lock handlers, OR we need lifecycle cleanup to be in the `"exit"` handler (which always runs regardless of which signal handler calls `process.exit()`). Our design uses both: async close in signal handler + sync kill in exit handler, so even if a db/lock handler fires first and calls `process.exit()`, the exit handler still kills the PID.
+Handler ordering with existing db/lock signal handlers: all three modules register independent handlers on the same signals. Node.js invokes them in registration order. Since each handler calls `process.exit()`, the first handler to run triggers the `"exit"` event, which runs all `process.on("exit")` handlers synchronously. In Phase 1 (no PID), the sync exit handler is a no-op. In Phase 2 (PID tracked), the exit handler kills the child regardless of which signal handler triggered exit.
 
 **Completion gates:**
 - [ ] All manual `provider.close()` calls in `invoke.handler.ts` replaced by single try/finally
-- [ ] `lifecycle.ts` registers signal handlers idempotently (no duplicate registration across repeated invocations)
-- [ ] Signal handlers compose correctly with `db/connection.ts` and `lock.ts` handlers
+- [ ] `lifecycle.ts` module created with provider registration, signal handler scaffolding, and sync exit handler (PID-dependent, no-op in Phase 1)
+- [ ] Signal handlers registered idempotently (no duplicate registration across repeated invocations)
 - [ ] External provider mode (`OpenCodeProvider.createExternal()`) is unaffected — no PID tracking, no kill
 - [ ] Test: provider closes on pre-stream failures (throw between provider creation and invokeStreamed)
-- [ ] Test: SIGINT triggers lifecycle cleanup handler
+- [ ] Test: normal-exit paths (success, error) all invoke provider.close() exactly once
 - [ ] Test: no duplicate signal handler registration across multiple `invokeAgent()` calls in one process
 
-### Phase 2: PID tracking + SIGKILL escalation + process groups
+**Known limitation (resolved in Phase 2):** Signal-driven cleanup (SIGINT/SIGTERM) is best-effort only in Phase 1. The sync exit handler is a no-op without a tracked PID. If the lifecycle module's async signal handler does not complete before another handler calls `process.exit()`, the child leaks. Phase 2 adds PID tracking, making the sync exit handler effective and closing this gap.
 
-**Scope:** `src/providers/opencode.ts`, `src/providers/lifecycle.ts`
+### Phase 2: PID tracking via SDK patch + SIGKILL escalation
+
+**Scope:** `src/providers/opencode.ts`, `src/providers/lifecycle.ts`, SDK patch
+
+**What Phase 2 solves:** Signal-driven cleanup, SIGKILL escalation for stalled children, and the sync exit handler safety net. After Phase 2, all catchable termination paths (normal exit, SIGINT, SIGTERM) reliably kill the child process.
 
 **Changes:**
 
-**PID capture:** In `OpenCodeProvider.createManaged()`, capture the child PID:
-```typescript
-static async createManaged(): Promise<OpenCodeProvider> {
-  // Snapshot PIDs of existing opencode processes before spawn
-  const before = getOpencodeProcessIds();
-  const server = await createOpencodeServer(/* ... */);
-  const after = getOpencodeProcessIds();
-  const childPid = after.find(pid => !before.includes(pid)) ?? null;
+**SDK patch:** Patch `@opencode-ai/sdk` locally (via `patch-package` or `patches/` directory) to expose the child PID. The SDK's `dist/server.js` spawns the `opencode` process and captures it in a closure. The patch adds `pid: proc.pid` to the returned server handle:
 
-  const provider = new OpenCodeProvider(server);
-  provider.childPid = childPid;
+```javascript
+// In dist/server.js — patched return value
+return {
+  url,
+  pid: proc.pid,  // <-- added by patch
+  close() {
+    proc.kill();
+  },
+};
+```
+
+Corresponding type addition in `dist/server.d.ts` so TypeScript sees `server.pid: number`.
+
+**PID capture:** In `OpenCodeProvider.createManaged()`, read the PID directly from the server handle:
+```typescript
+static async createManaged(opts?: {
+  model?: string;
+}): Promise<OpenCodeProvider> {
+  const { client, server } = await createOpencode({
+    hostname: "127.0.0.1",
+    port: 0,
+    timeout: 15_000,
+  });
+
+  const provider = new OpenCodeProvider(client, server, opts?.model);
+  provider.childPid = server.pid;  // Clean ownership, no guessing
   return provider;
 }
 ```
-
-The `getOpencodeProcessIds()` helper reads from `/proc` on Linux or uses `pgrep` to find `opencode` process PIDs. This is a best-effort heuristic — if the diff finds zero or multiple new PIDs, we log a warning and fall back to no PID tracking (SDK's SIGTERM-only close).
 
 **SIGKILL escalation in close():**
 ```typescript
@@ -203,39 +234,40 @@ async close(): Promise<void> {
 }
 ```
 
-**Lifecycle integration:** `invoke.handler.ts` now calls `lifecycle.registerProvider(provider, provider.childPid)` after creation, giving the exit handler the PID for sync SIGKILL.
-
-**Process group note:** The default Node.js `spawn()` behavior already places the child in the same process group as the parent. This means terminal-initiated signals (SIGINT from Ctrl-C) are delivered to the entire group by the kernel. No code change is needed for this — it's the default. The value of our explicit PID tracking is for non-terminal contexts where the kernel doesn't send group signals (e.g., `kill <pid>` targeting only the parent).
+**Lifecycle integration:** `invoke.handler.ts` now calls `lifecycle.registerProvider(provider, provider.childPid)` after creation, giving the sync exit handler the PID for last-resort SIGKILL. This closes the Phase 1 limitation — the exit handler now works regardless of signal handler ordering.
 
 **Completion gates:**
-- [ ] PID is captured and stored for managed providers
+- [ ] SDK patch applied and committed to `patches/` directory
+- [ ] PID is read from `server.pid` for managed providers
 - [ ] PID is null for external providers (no spawn occurred)
 - [ ] `close()` escalates to SIGKILL after 5s timeout when SIGTERM is insufficient
 - [ ] Sync exit handler successfully kills child via `process.kill(pid, "SIGKILL")`
+- [ ] Signal-driven cleanup (SIGINT/SIGTERM) now reliably kills child via sync exit handler even if async close is preempted
 - [ ] Graceful case: child exits within 5s, no SIGKILL sent
 - [ ] Test: `close()` with a process that ignores SIGTERM is killed after escalation timeout
 - [ ] Test: sync exit handler kills tracked PID
 - [ ] Test: external provider close is a no-op (no PID, no kill)
-- [ ] Test: PID capture failure (race condition) degrades gracefully to SIGTERM-only
+- [ ] Test: SIGINT triggers lifecycle cleanup and child is killed
 
 ## Risk Assessment
 
 | Phase | Risk | Mitigation |
 |-------|------|------------|
 | Phase 1 | Low | Small refactor; try/finally is strictly safer than scattered close calls |
-| Phase 1 | Signal handler ordering | Exit handler is sync SIGKILL fallback, works regardless of which signal handler calls process.exit() first |
-| Phase 2 | PID capture heuristic | Best-effort diff of process list; failure degrades to SDK-only SIGTERM close, no worse than today |
+| Phase 1 | Signal cleanup incomplete | Accepted: Phase 1 signal handlers are best-effort without PID. Phase 2 closes this gap. |
+| Phase 2 | SDK patch maintenance | Patch is minimal (one line + type). Pin SDK version. Re-apply on upgrade. |
 | Phase 2 | SIGKILL escalation timing | 5s is generous; if too aggressive, processes lose state. Configurable constant. |
-| Phase 2 | Platform differences | `/proc`-based PID discovery is Linux-specific; macOS fallback via `pgrep`. CI runs on Linux. |
+| Both | SIGKILL/OOM orphaning | Out of scope. No in-process handler can run. Future: PID file reaper or supervisor. |
 
 ## Files Touched
 
 | File | Phase | Change |
 |------|-------|--------|
-| `src/providers/lifecycle.ts` (new) | 1 | Provider registration, signal handlers, sync exit handler |
+| `src/providers/lifecycle.ts` (new) | 1 | Provider registration, signal handlers, sync exit handler scaffolding |
 | `src/commands/invoke.handler.ts` | 1 | try/finally wrapper, remove manual close calls, register/unregister via lifecycle |
-| `src/providers/opencode.ts` | 2 | PID capture in createManaged(), SIGKILL escalation in close(), childPid field |
-| `src/providers/lifecycle.ts` | 2 | Accept PID from provider, use in sync exit handler |
+| `patches/@opencode-ai+sdk+*.patch` (new) | 2 | Expose `pid: proc.pid` on server handle returned by `createOpencode()` |
+| `src/providers/opencode.ts` | 2 | Read `server.pid`, store as `childPid`, SIGKILL escalation in `close()` |
+| `src/providers/lifecycle.ts` | 2 | Accept PID from provider, sync exit handler kills tracked PID |
 
 ## Test Strategy
 
@@ -244,12 +276,14 @@ async close(): Promise<void> {
 | Test | Phase | Validates |
 |------|-------|-----------|
 | Pre-stream failure cleanup | 1 | Throwing between provider creation and invokeStreamed still calls close() |
+| Normal-exit close | 1 | Success and error paths both call provider.close() exactly once |
 | Signal handler idempotency | 1 | Multiple registerProvider() calls don't stack duplicate signal handlers |
 | External provider unaffected | 1, 2 | External providers have no PID, close is no-op, no kill attempted |
+| PID read from server handle | 2 | `server.pid` is stored as `childPid` after `createOpencode()` |
 | SIGKILL escalation | 2 | Process ignoring SIGTERM is killed after timeout |
 | Sync exit handler | 2 | process.on("exit") kills tracked PID synchronously |
-| PID capture failure | 2 | Missing PID degrades gracefully, no throw |
 | Graceful shutdown | 2 | Process that exits on SIGTERM within 5s does not receive SIGKILL |
+| Signal + PID integration | 2 | SIGINT/SIGTERM triggers sync exit handler that kills child PID |
 
 ### Integration / manual verification
 
@@ -263,4 +297,5 @@ async close(): Promise<void> {
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-03-08 | Initial draft |
-| 2.0 | 2026-03-09 | Address review feedback from 011-provider-process-lifecycle.review.md. P0.1: replaced async-only exit cleanup with dual sync/async strategy — sync `process.kill(pid, SIGKILL)` in exit handler, async `provider.close()` in signal handlers. P1.1: added process group discussion and explicit scope decision — SIGKILL/OOM orphaning addressed via process groups + PID tracking; external watchdog out of scope. P1.2: SIGKILL escalation implemented in-repo by tracking PID ourselves via process-list diffing, wrapping SDK close() with timeout + escalation; no SDK changes required. P1.3: added concrete completion gates per phase and full test strategy table. P2: moved cleanup registry from invoke.handler.ts to new lifecycle module. Added Design Decisions section (DD1–DD4). |
+| 2.0 | 2026-03-09 | Address initial review feedback. P0.1: replaced async-only exit cleanup with dual sync/async strategy. P1.1: added scope decisions for SIGKILL/OOM. P1.2: added PID tracking via process-list diffing. P1.3: added completion gates and test strategy. Moved cleanup to lifecycle module. Added DD1–DD4. |
+| 3.0 | 2026-03-09 | Address review addendum (2026-03-09). P0.1: corrected Phase 1 scope claims — Phase 1 only guarantees try/finally and normal-exit cleanup; signal cleanup is explicitly best-effort until Phase 2 provides PID tracking. P1.1: tightened DD2 — removed misleading process-group reliability claims; SIGKILL/OOM orphaning is now an explicit non-goal with clear rationale, deferring to PID-file reaper or supervisor in a future iteration. P1.2: replaced process-list diffing with local SDK patch (`patch-package`) to expose child PID directly from spawn — eliminates heuristic misidentification risk. P2.1: fixed API naming throughout — `createOpencode()` not `createOpencodeServer()` to match actual `@opencode-ai/sdk/v2` API surface. |
