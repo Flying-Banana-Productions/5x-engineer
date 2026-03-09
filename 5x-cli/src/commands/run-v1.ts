@@ -92,17 +92,17 @@ const recordCmd = defineCommand({
 		stepName: {
 			type: "positional",
 			description: "Step name (e.g. author:impl:status)",
-			required: true,
+			required: false,
 		},
 		run: {
 			type: "string",
 			description: "Run ID",
-			required: true,
+			required: false,
 		},
 		result: {
 			type: "string",
 			description: 'Result JSON (raw string, "-" for stdin, "@path" for file)',
-			required: true,
+			required: false,
 		},
 		phase: { type: "string", description: "Phase identifier" },
 		iteration: { type: "string", description: "Iteration number" },
@@ -116,9 +116,9 @@ const recordCmd = defineCommand({
 	},
 	run: ({ args }) =>
 		runV1Record({
-			stepName: args.stepName as string,
-			run: args.run as string,
-			result: args.result as string,
+			stepName: args.stepName as string | undefined,
+			run: args.run as string | undefined,
+			result: args.result as string | undefined,
 			phase: args.phase as string | undefined,
 			iteration: args.iteration
 				? parseIntArg(args.iteration as string, "--iteration", {

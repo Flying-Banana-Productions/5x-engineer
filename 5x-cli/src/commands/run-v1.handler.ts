@@ -29,8 +29,19 @@ import {
 	registerLockCleanup,
 	releaseLock,
 } from "../lock.js";
-import { CliError, outputError, outputSuccess } from "../output.js";
+import {
+	CliError,
+	exitCodeForError,
+	outputError,
+	outputSuccess,
+} from "../output.js";
 import { canonicalizePlanPath } from "../paths.js";
+import {
+	extractInvokeMetadata,
+	extractPipeContext,
+	isStdinPiped,
+	readUpstreamEnvelope,
+} from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
 import type { AgentEvent } from "../providers/types.js";
 import { generateRunId, validateRunId } from "../run-id.js";
@@ -56,9 +67,9 @@ export interface RunStateParams {
 }
 
 export interface RunRecordParams {
-	stepName: string;
-	run: string;
-	result: string; // raw JSON string, "-" for stdin, "@path" for file
+	stepName?: string; // can come from pipe (template's step_name) or positional
+	run?: string; // can come from pipe
+	result?: string; // raw JSON string, "-" for stdin, "@path" for file; can come from pipe
 	phase?: string;
 	iteration?: number;
 	sessionId?: string;
@@ -84,6 +95,32 @@ export interface RunListParams {
 	plan?: string;
 	status?: string;
 	limit?: number;
+}
+
+// ---------------------------------------------------------------------------
+// RecordError — structured domain error for recording failures
+// ---------------------------------------------------------------------------
+
+/** Structured recording error — preserves code/detail without CLI side effects. */
+export class RecordError extends Error {
+	readonly code: string;
+	readonly detail?: unknown;
+
+	constructor(code: string, message: string, detail?: unknown) {
+		super(message);
+		this.name = "RecordError";
+		this.code = code;
+		this.detail = detail;
+	}
+}
+
+/** Result from recording a step (no CLI side effects). */
+export interface RecordStepResult {
+	step_id: number;
+	step_name: string;
+	phase: string | null;
+	iteration: number | null;
+	recorded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,16 +316,22 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	});
 }
 
-export async function runV1Record(params: RunRecordParams): Promise<void> {
+/**
+ * Record a step in the database. Pure persistence — no stdout, no CliError.
+ * Throws RecordError on validation failures (caller decides how to surface).
+ */
+export async function recordStepInternal(
+	params: RunRecordParams & { run: string; stepName: string; result: string },
+): Promise<RecordStepResult> {
 	const { config, db } = await resolveDbContext();
 
 	// Verify run exists and is active
 	const run = getRunV1(db, params.run);
 	if (!run) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+		throw new RecordError("RUN_NOT_FOUND", `Run ${params.run} not found`);
 	}
 	if (run.status !== "active") {
-		outputError(
+		throw new RecordError(
 			"RUN_NOT_ACTIVE",
 			`Run ${params.run} is ${run.status}, not active`,
 		);
@@ -309,31 +352,28 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 
 	const summary = computeRunSummary(db, params.run);
 	if (summary.total_steps >= maxSteps) {
-		outputError(
+		throw new RecordError(
 			"MAX_STEPS_EXCEEDED",
 			`Run has reached the maximum of ${maxSteps} steps`,
 			{ current_steps: summary.total_steps, max_steps: maxSteps },
 		);
 	}
 
-	// Read result JSON
-	const resultJson = await readResultJson(params.result);
-
 	// Validate JSON
 	try {
-		JSON.parse(resultJson);
+		JSON.parse(params.result);
 	} catch {
-		outputError("INVALID_JSON", "--result must be valid JSON", {
-			raw: resultJson.slice(0, 200),
+		throw new RecordError("INVALID_JSON", "--result must be valid JSON", {
+			raw: params.result.slice(0, 200),
 		});
 	}
 
-	const result = recordStep(db, {
+	const dbResult = recordStep(db, {
 		run_id: params.run,
 		step_name: params.stepName,
 		phase: params.phase,
 		iteration: params.iteration,
-		result_json: resultJson,
+		result_json: params.result,
 		session_id: params.sessionId,
 		model: params.model,
 		tokens_in: params.tokensIn,
@@ -343,13 +383,93 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 		log_path: params.logPath,
 	});
 
-	outputSuccess({
-		step_id: result.step_id,
-		step_name: result.step_name,
-		phase: result.phase,
-		iteration: result.iteration,
-		recorded: result.recorded,
-	});
+	return {
+		step_id: dbResult.step_id,
+		step_name: dbResult.step_name,
+		phase: dbResult.phase,
+		iteration: dbResult.iteration,
+		recorded: dbResult.recorded,
+	};
+}
+
+export async function runV1Record(params: RunRecordParams): Promise<void> {
+	// Track whether --result - was specified (consumes stdin for raw result)
+	const rawResult = params.result;
+	const stdinConsumedByResult = rawResult === "-";
+
+	// Resolve raw --result first (existing behavior: "-" for stdin, "@path" for file)
+	if (params.result) {
+		params.result = await readResultJson(params.result);
+	}
+
+	// If stdin is piped and not consumed by --result -, parse upstream envelope
+	if (!stdinConsumedByResult && isStdinPiped()) {
+		const upstream = await readUpstreamEnvelope();
+		if (upstream) {
+			const ctx = extractPipeContext(upstream.data);
+			const invoke = extractInvokeMetadata(upstream.data);
+
+			// Auto-populate from pipe context (CLI flags take precedence via ??=)
+			params.run ??= ctx.runId;
+			params.stepName ??= ctx.stepName;
+			params.phase ??= ctx.phase;
+
+			if (invoke) {
+				// Invoke envelope: extract result + all metadata
+				params.result ??= JSON.stringify(invoke.result);
+				params.sessionId ??= invoke.sessionId;
+				params.model ??= invoke.model;
+				params.durationMs ??= invoke.durationMs;
+				params.tokensIn ??= invoke.tokensIn;
+				params.tokensOut ??= invoke.tokensOut;
+				params.costUsd ??= invoke.costUsd;
+				params.logPath ??= invoke.logPath;
+			} else {
+				// Non-invoke envelope: use full data as result JSON
+				params.result ??= JSON.stringify(upstream.data);
+			}
+		}
+	}
+
+	// Validate required params are now resolved (after merge)
+	if (!params.run) {
+		outputError(
+			"INVALID_ARGS",
+			"--run is required (provide it or pipe from an upstream command)",
+		);
+	}
+	if (!params.stepName) {
+		outputError(
+			"INVALID_ARGS",
+			"Step name is required (provide it as a positional arg or pipe from invoke)",
+		);
+	}
+	if (!params.result) {
+		outputError(
+			"INVALID_ARGS",
+			"--result is required (provide it or pipe from an upstream command)",
+		);
+	}
+
+	try {
+		const result = await recordStepInternal({
+			...params,
+			run: params.run,
+			stepName: params.stepName,
+			result: params.result,
+		});
+		outputSuccess(result);
+	} catch (err) {
+		if (err instanceof RecordError) {
+			outputError(
+				err.code,
+				err.message,
+				err.detail,
+				exitCodeForError(err.code),
+			);
+		}
+		throw err;
+	}
 }
 
 export async function runV1Complete(params: RunCompleteParams): Promise<void> {

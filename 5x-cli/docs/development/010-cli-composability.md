@@ -307,11 +307,13 @@ interface InvokeResult {
 
 ## Phase 3: Smart Stdin in `run record`
 
+**Status:** Complete
+
 **Completion gate:** `5x invoke author author-next-phase --run R1 | 5x run record` works with zero additional flags — step name, result, metadata, and run_id all auto-extracted from pipe. `5x quality run | 5x run record "quality:check" --run R1` works — step name and run from CLI, result from pipe. CLI flags override piped values. All tests pass.
 
 ### 3.0 Extract `recordStepInternal()` from `runV1Record()` (`src/commands/run-v1.handler.ts`)
 
-- [ ] Define a structured domain error for recording failures. This preserves machine-readable error codes (`RUN_NOT_FOUND`, `RUN_NOT_ACTIVE`, `MAX_STEPS_EXCEEDED`, `INVALID_JSON`) without coupling to CLI output concerns (`CliError`, `outputError`, stdout):
+- [x] Define a structured domain error for recording failures. This preserves machine-readable error codes (`RUN_NOT_FOUND`, `RUN_NOT_ACTIVE`, `MAX_STEPS_EXCEEDED`, `INVALID_JSON`) without coupling to CLI output concerns (`CliError`, `outputError`, stdout):
 
 ```typescript
 /** Structured recording error — preserves code/detail without CLI side effects. */
@@ -328,7 +330,7 @@ export class RecordError extends Error {
 }
 ```
 
-- [ ] Extract a pure recording helper that performs DB validation + `recordStep()` and returns a structured result object, without calling `outputSuccess()`, `outputError()`, or throwing `CliError`. Throws `RecordError` on validation failures:
+- [x] Extract a pure recording helper that performs DB validation + `recordStep()` and returns a structured result object, without calling `outputSuccess()`, `outputError()`, or throwing `CliError`. Throws `RecordError` on validation failures:
 
 ```typescript
 /** Result from recording a step (no CLI side effects). */
@@ -349,18 +351,18 @@ export async function recordStepInternal(
 ): Promise<RecordStepResult>
 ```
 
-- [ ] `runV1Record()` becomes a thin CLI wrapper: calls `recordStepInternal()`, catches `RecordError` and maps to `outputError()` (preserving the existing `code`/`detail` contract), calls `outputSuccess()` with the result.
-- [ ] This helper is also used by Phase 6 (`--record` on invoke/quality). The `--record` caller catches `RecordError`, logs `err.code: err.message` to stderr, and sets `process.exitCode = 1`.
+- [x] `runV1Record()` becomes a thin CLI wrapper: calls `recordStepInternal()`, catches `RecordError` and maps to `outputError()` (preserving the existing `code`/`detail` contract), calls `outputSuccess()` with the result.
+- [x] This helper is also used by Phase 6 (`--record` on invoke/quality). The `--record` caller catches `RecordError`, logs `err.code: err.message` to stderr, and sets `process.exitCode = 1`.
 
 ### 3.1 Relax `run record` argument requirements (`src/commands/run-v1.ts`)
 
-- [ ] Change `stepName` positional from `required: true` to `required: false`
-- [ ] Change `result` from `required: true` to `required: false`
-- [ ] Change `run` from `required: true` to `required: false`
+- [x] Change `stepName` positional from `required: true` to `required: false`
+- [x] Change `result` from `required: true` to `required: false`
+- [x] Change `run` from `required: true` to `required: false`
 
 ### 3.2 Add pipe ingestion to `run record` handler (`src/commands/run-v1.handler.ts`)
 
-- [ ] Update `RunRecordParams`:
+- [x] Update `RunRecordParams`:
 
 ```typescript
 export interface RunRecordParams {
@@ -379,7 +381,7 @@ export interface RunRecordParams {
 }
 ```
 
-- [ ] At the top of `runV1Record()`, before any DB operations, read pipe when stdin is available. The condition is: stdin is piped AND `--result -` was not specified (since `-` consumes stdin for raw result). This is NOT gated on whether any particular field is present — the envelope is always parsed when stdin is available, and each field is merged individually. This ensures partial override scenarios work: `--result @./file.json` provides result from a file while `run_id` and `step_name` still come from the pipe.
+- [x] At the top of `runV1Record()`, before any DB operations, read pipe when stdin is available. The condition is: stdin is piped AND `--result -` was not specified (since `-` consumes stdin for raw result). This is NOT gated on whether any particular field is present — the envelope is always parsed when stdin is available, and each field is merged individually. This ensures partial override scenarios work: `--result @./file.json` provides result from a file while `run_id` and `step_name` still come from the pipe.
 
 ```typescript
 // Track whether --result - was specified (consumes stdin for raw result)
@@ -434,16 +436,16 @@ if (!params.result) {
 
 ### 3.3 Tests (`test/commands/run-record-pipe.test.ts` **NEW**)
 
-- [ ] Test: pipe invoke envelope -> record auto-extracts all fields (run_id, step_name, result, session_id, model, duration_ms, tokens, cost_usd, log_path)
-- [ ] Test: pipe quality envelope -> record uses JSON.stringify(data) as result, requires explicit step name and --run
-- [ ] Test: CLI flags override piped values (e.g., `--phase 2` overrides piped `phase: "1"`)
-- [ ] Test: positional step name overrides piped step_name
-- [ ] Test: error when stdin not piped and required params missing
-- [ ] Test: error when piped envelope is `ok: false`
-- [ ] Test: `--result @./file.json` with piped envelope -> result from file, run_id/step_name from pipe
-- [ ] Test: `--result -` consumes stdin for raw result (not envelope parsing)
-- [ ] Test: `--result '{"inline":"json"}'` with piped envelope -> result from inline, context from pipe
-- [ ] Test: pipe with explicit --run (partial override — run from CLI, result from pipe)
+- [x] Test: pipe invoke envelope -> record auto-extracts all fields (run_id, step_name, result, session_id, model, duration_ms, tokens, cost_usd, log_path)
+- [x] Test: pipe quality envelope -> record uses JSON.stringify(data) as result, requires explicit step name and --run
+- [x] Test: CLI flags override piped values (e.g., `--phase 2` overrides piped `phase: "1"`)
+- [x] Test: positional step name overrides piped step_name
+- [x] Test: error when stdin not piped and required params missing
+- [x] Test: error when piped envelope is `ok: false`
+- [x] Test: `--result @./file.json` with piped envelope -> result from file, run_id/step_name from pipe
+- [x] Test: `--result -` consumes stdin for raw result (not envelope parsing)
+- [x] Test: `--result '{"inline":"json"}'` with piped envelope -> result from inline, context from pipe
+- [x] Test: pipe with explicit --run (partial override — run from CLI, result from pipe)
 
 ---
 
