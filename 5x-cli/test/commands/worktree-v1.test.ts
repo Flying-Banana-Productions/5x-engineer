@@ -187,6 +187,79 @@ describe("5x worktree", () => {
 		}
 	});
 
+	test("attach: maps an existing git worktree path to a plan", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+
+			const manualPath = join(dir, ".5x", "worktrees", "manual-attach");
+			mkdirSync(join(dir, ".5x", "worktrees"), { recursive: true });
+			const wtCreate = Bun.spawnSync(
+				["git", "worktree", "add", manualPath, "-b", "5x/001-test-feature"],
+				{
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			expect(wtCreate.exitCode).toBe(0);
+
+			const result = await run5x(dir, [
+				"worktree",
+				"attach",
+				"--plan",
+				planPath,
+				"--path",
+				manualPath,
+			]);
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as {
+				attached: boolean;
+				worktree_path: string;
+				branch: string;
+			};
+			expect(payload.attached).toBe(true);
+			expect(payload.worktree_path).toBe(manualPath);
+			expect(payload.branch).toBe("5x/001-test-feature");
+
+			const listResult = await run5x(dir, ["worktree", "list"]);
+			const listData = parseJson(listResult.stdout);
+			const listed = (
+				listData.data as { worktrees: Array<{ worktree_path: string }> }
+			).worktrees;
+			expect(listed.some((w) => w.worktree_path === manualPath)).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("attach: returns WORKTREE_INVALID for non-worktree path", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const invalidPath = join(dir, "not-a-worktree");
+			mkdirSync(invalidPath, { recursive: true });
+
+			const result = await run5x(dir, [
+				"worktree",
+				"attach",
+				"--plan",
+				planPath,
+				"--path",
+				invalidPath,
+			]);
+			expect(result.exitCode).toBe(1);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as { code: string }).code).toBe("WORKTREE_INVALID");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("remove: removes an existing worktree", async () => {
 		const dir = makeTmpDir();
 		try {

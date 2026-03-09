@@ -62,7 +62,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
 | **Quality** | `quality run` | Execute quality gates |
 | **Inspection** | `plan phases`, `diff` | Read plan structure, inspect git changes |
-| **Worktree** | `worktree create`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
+| **Worktree** | `worktree create`, `worktree attach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
 
 ---
@@ -71,16 +71,18 @@ These primitives are not yet implemented. This document is an implementation-rea
 
 ### `5x run init`
 
-Create a new run for a plan.
+Create a new run for a plan (or resume an existing one).
 
 ```
-5x run init --plan <path> [--allow-dirty]
+5x run init --plan <path> [--allow-dirty] [--worktree [<path>]]
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--plan` | Yes | Path to plan markdown file |
 | `--allow-dirty` | No | Skip dirty working tree check. Default: fail if uncommitted changes exist. |
+| `--worktree` | No | Ensure a plan worktree exists before run init. Auto-resolves existing mapping/candidate, otherwise creates default worktree. |
+| `--worktree <path>` | No | Attach an explicit existing worktree path before run init. Equivalent to `--worktree --worktree-path <path>`. |
 
 **Returns:**
 
@@ -102,6 +104,8 @@ Create a new run for a plan.
 - Acquires a file-based plan lock (`.5x/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen. Uses the same lock mechanism as v0 (`src/lock.ts`).
 - Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0.
 - Canonicalizes the plan path for DB identity (worktree-safe).
+- Validates that the plan path exists; otherwise returns `PLAN_NOT_FOUND`.
+- When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `.5x/worktrees/<slug>-<hash>` path.
 
 ---
 
@@ -518,6 +522,19 @@ Remove a worktree.
 ```
 
 Removes the git worktree and cleans up the branch. `--force` removes even if the worktree has uncommitted changes.
+
+### `5x worktree attach`
+
+Attach an existing git worktree path to a plan mapping.
+
+```
+5x worktree attach --plan <path> --path <worktree-path>
+```
+
+Behavior:
+- Validates that `--path` exists and is a git worktree in the current repository
+- Stores `plan_path -> worktree_path + branch` association in `plans`
+- Returns attached metadata (`attached: true`, `worktree_path`, `branch`)
 
 ### `5x worktree list`
 

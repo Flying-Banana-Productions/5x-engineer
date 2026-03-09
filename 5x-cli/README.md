@@ -162,7 +162,8 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 ### Run Lifecycle
 
 ```bash
-5x run init --plan <path> [--allow-dirty]     # Start or resume a run for a plan
+5x run init --plan <path> [--allow-dirty] [--worktree [<path>]]
+                                                # Start/resume run; optionally ensure/attach worktree
 5x run state --run <id>                        # Get run state, steps, and summary
 5x run record [step] [--run <id>] [--result '{}'] [--phase <p>] [--iteration <n>]
 5x run complete --run <id> [--status aborted]  # Complete or abort a run
@@ -228,9 +229,12 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 
 ```bash
 5x worktree create --plan <path> [--branch <name>]   # Create isolated git worktree
+5x worktree attach --plan <path> --path <worktree>   # Attach existing git worktree to plan
 5x worktree remove --plan <path> [--force]            # Remove worktree
 5x worktree list                                      # List active worktrees
 ```
+
+`run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path.
 
 ## Configuration
 

@@ -34,11 +34,24 @@ const initCmd = defineCommand({
 			description: "Allow dirty worktree",
 			default: false,
 		},
+		worktree: {
+			type: "boolean",
+			description:
+				"Ensure a plan worktree exists (use --worktree-path for explicit path)",
+			default: false,
+		},
+		"worktree-path": {
+			type: "string",
+			description:
+				"Explicit worktree path to attach (or use --worktree <path> shorthand)",
+		},
 	},
 	run: ({ args }) =>
 		runV1Init({
 			plan: args.plan as string,
 			allowDirty: args["allow-dirty"] as boolean,
+			worktree: args.worktree as boolean,
+			worktreePath: args["worktree-path"] as string | undefined,
 		}),
 });
 

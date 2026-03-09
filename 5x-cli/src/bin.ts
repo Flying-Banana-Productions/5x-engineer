@@ -28,6 +28,22 @@ import { version } from "./version.js";
 	}
 }
 
+// Support shorthand: `5x run init --worktree <path>`.
+// Normalize to: `5x run init --worktree --worktree-path <path>` so citty can parse.
+{
+	const args = process.argv;
+	const runIdx = args.indexOf("run");
+	if (runIdx !== -1 && args[runIdx + 1] === "init") {
+		for (let i = runIdx + 2; i < args.length; i += 1) {
+			if (args[i] !== "--worktree") continue;
+			const next = args[i + 1];
+			if (!next || next.startsWith("-")) continue;
+			args.splice(i + 1, 0, "--worktree-path");
+			i += 1;
+		}
+	}
+}
+
 const main = defineCommand({
 	meta: {
 		name: "5x",

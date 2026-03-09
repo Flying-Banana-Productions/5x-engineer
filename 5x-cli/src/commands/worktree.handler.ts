@@ -14,6 +14,7 @@ import {
 	deleteBranch,
 	hasUncommittedChanges,
 	isBranchMerged,
+	isBranchRelevant,
 	listWorktrees,
 	removeWorktree,
 	runWorktreeSetupCommand,
@@ -34,6 +35,11 @@ export interface WorktreeCreateParams {
 export interface WorktreeRemoveParams {
 	plan: string;
 	force?: boolean;
+}
+
+export interface WorktreeAttachParams {
+	plan: string;
+	path: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +128,64 @@ export async function worktreeCreate(
 		data.warnings = warnings;
 	}
 	outputSuccess(data);
+}
+
+export async function worktreeAttach(
+	params: WorktreeAttachParams,
+): Promise<void> {
+	const planPath = resolve(params.plan);
+	if (!existsSync(planPath)) {
+		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+			path: planPath,
+		});
+	}
+
+	const canonical = canonicalizePlanPath(planPath);
+	const wtPath = resolve(params.path);
+
+	if (!existsSync(wtPath)) {
+		outputError("WORKTREE_NOT_FOUND", `Worktree path not found: ${wtPath}`, {
+			path: wtPath,
+		});
+	}
+
+	const { projectRoot, db } = await resolveDbContext();
+	let gitWorktrees: Array<{ path: string; branch: string }> = [];
+	try {
+		gitWorktrees = await listWorktrees(projectRoot);
+	} catch (err) {
+		outputError(
+			"WORKTREE_ERROR",
+			`Failed to list git worktrees: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	const match = gitWorktrees.find((w) => w.path === wtPath);
+	if (!match) {
+		outputError(
+			"WORKTREE_INVALID",
+			`Path is not a git worktree in this repository: ${wtPath}`,
+			{ path: wtPath },
+		);
+	}
+
+	upsertPlan(db, {
+		planPath: canonical,
+		worktreePath: wtPath,
+		branch: match.branch,
+	});
+
+	const warning = isBranchRelevant(match.branch, canonical)
+		? undefined
+		: `Branch "${match.branch}" does not appear related to plan "${canonical}"`;
+
+	outputSuccess({
+		plan_path: canonical,
+		worktree_path: wtPath,
+		branch: match.branch,
+		attached: true,
+		...(warning ? { warning } : {}),
+	});
 }
 
 export async function worktreeRemove(

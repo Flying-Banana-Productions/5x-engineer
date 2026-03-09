@@ -8,6 +8,7 @@
 
 import { defineCommand } from "citty";
 import {
+	worktreeAttach,
 	worktreeCreate,
 	worktreeList,
 	worktreeRemove,
@@ -60,6 +61,30 @@ const removeCmd = defineCommand({
 		}),
 });
 
+const attachCmd = defineCommand({
+	meta: {
+		name: "attach",
+		description: "Attach an existing git worktree to a plan",
+	},
+	args: {
+		plan: {
+			type: "string",
+			description: "Path to implementation plan",
+			required: true,
+		},
+		path: {
+			type: "string",
+			description: "Path to existing git worktree",
+			required: true,
+		},
+	},
+	run: ({ args }) =>
+		worktreeAttach({
+			plan: args.plan as string,
+			path: args.path as string,
+		}),
+});
+
 const listCmd = defineCommand({
 	meta: {
 		name: "list",
@@ -76,6 +101,7 @@ export default defineCommand({
 	},
 	subCommands: {
 		create: () => Promise.resolve(createCmd),
+		attach: () => Promise.resolve(attachCmd),
 		remove: () => Promise.resolve(removeCmd),
 		list: () => Promise.resolve(listCmd),
 	},

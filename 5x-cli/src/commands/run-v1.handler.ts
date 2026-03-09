@@ -4,10 +4,13 @@
  * Framework-independent: no citty imports.
  */
 
+import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
+import { getPlan, upsertPlan } from "../db/operations.js";
 import {
 	completeRun,
 	computeRunSummary,
@@ -22,7 +25,14 @@ import {
 	type StepRow,
 } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
-import { checkGitSafety } from "../git.js";
+import {
+	branchNameFromPlan,
+	checkGitSafety,
+	createWorktree,
+	isBranchRelevant,
+	listWorktrees,
+	runWorktreeSetupCommand,
+} from "../git.js";
 import {
 	acquireLock,
 	isLocked,
@@ -56,6 +66,8 @@ import { resolveDbContext } from "./context.js";
 export interface RunInitParams {
 	plan: string;
 	allowDirty?: boolean;
+	worktree?: boolean;
+	worktreePath?: string;
 }
 
 export interface RunStateParams {
@@ -167,6 +179,183 @@ function getMaxStepsPerRun(config: Record<string, unknown>): number {
 	return 50; // default
 }
 
+type WorktreeAction = "reused" | "attached" | "created";
+
+interface WorktreeInitResult {
+	action: WorktreeAction;
+	worktree_path: string;
+	branch: string;
+	warnings?: string[];
+}
+
+function deriveDefaultWorktreeDir(
+	projectRoot: string,
+	planPath: string,
+): string {
+	const slug = planPath.replace(/^.*\//, "").replace(/\.md$/, "");
+	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
+	return join(projectRoot, ".5x", "worktrees", `${slug}-${hash}`);
+}
+
+async function ensureRunWorktree(
+	db: Database,
+	projectRoot: string,
+	planPath: string,
+	explicitPath: string | undefined,
+	postCreateHook: string | undefined,
+): Promise<WorktreeInitResult> {
+	const gitWorktrees = await listWorktrees(projectRoot);
+
+	if (explicitPath) {
+		const absPath = resolve(explicitPath);
+		const match = gitWorktrees.find((w) => w.path === absPath);
+		if (!match) {
+			if (!existsSync(absPath)) {
+				outputError(
+					"WORKTREE_NOT_FOUND",
+					`Worktree path not found: ${absPath}`,
+					{
+						path: absPath,
+					},
+				);
+			}
+			outputError(
+				"WORKTREE_INVALID",
+				`Path is not a git worktree in this repository: ${absPath}`,
+				{ path: absPath },
+			);
+		}
+
+		upsertPlan(db, {
+			planPath,
+			worktreePath: absPath,
+			branch: match.branch,
+		});
+
+		return {
+			action: "attached",
+			worktree_path: absPath,
+			branch: match.branch,
+		};
+	}
+
+	const existing = getPlan(db, planPath);
+	if (existing?.worktree_path) {
+		const match = gitWorktrees.find((w) => w.path === existing.worktree_path);
+		if (match) {
+			return {
+				action: "reused",
+				worktree_path: match.path,
+				branch: match.branch,
+			};
+		}
+	}
+
+	const expectedBranch = branchNameFromPlan(planPath);
+	const cwd = resolve(".");
+	const cwdWorktree = gitWorktrees.find((w) => w.path === cwd);
+	if (
+		cwdWorktree &&
+		(cwdWorktree.branch === expectedBranch ||
+			isBranchRelevant(cwdWorktree.branch, planPath))
+	) {
+		upsertPlan(db, {
+			planPath,
+			worktreePath: cwdWorktree.path,
+			branch: cwdWorktree.branch,
+		});
+		return {
+			action: "attached",
+			worktree_path: cwdWorktree.path,
+			branch: cwdWorktree.branch,
+		};
+	}
+
+	const candidates = gitWorktrees.filter(
+		(w) => w.branch === expectedBranch || isBranchRelevant(w.branch, planPath),
+	);
+
+	if (candidates.length === 1) {
+		const candidate = candidates[0] as { path: string; branch: string };
+		upsertPlan(db, {
+			planPath,
+			worktreePath: candidate.path,
+			branch: candidate.branch,
+		});
+		return {
+			action: "attached",
+			worktree_path: candidate.path,
+			branch: candidate.branch,
+		};
+	}
+
+	if (candidates.length > 1) {
+		outputError(
+			"WORKTREE_AMBIGUOUS",
+			`Multiple matching worktrees found for plan: ${planPath}`,
+			{
+				plan_path: planPath,
+				expected_branch: expectedBranch,
+				candidates: candidates.map((w) => ({
+					worktree_path: w.path,
+					branch: w.branch,
+				})),
+			},
+		);
+	}
+
+	const branch = expectedBranch;
+	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath);
+
+	const existingByPath = gitWorktrees.find((w) => w.path === wtPath);
+	if (existingByPath) {
+		upsertPlan(db, {
+			planPath,
+			worktreePath: wtPath,
+			branch: existingByPath.branch,
+		});
+		return {
+			action: "attached",
+			worktree_path: wtPath,
+			branch: existingByPath.branch,
+		};
+	}
+
+	if (existsSync(wtPath)) {
+		outputError(
+			"WORKTREE_INVALID",
+			`Default worktree path exists but is not registered in git: ${wtPath}`,
+			{ path: wtPath },
+		);
+	}
+
+	await createWorktree(projectRoot, branch, wtPath);
+
+	const warnings: string[] = [];
+	if (postCreateHook) {
+		try {
+			await runWorktreeSetupCommand(wtPath, postCreateHook);
+		} catch (err) {
+			const msg = `postCreate hook failed: ${err instanceof Error ? err.message : String(err)}`;
+			process.stderr.write(`Warning: ${msg}\n`);
+			warnings.push(msg);
+		}
+	}
+
+	upsertPlan(db, {
+		planPath,
+		worktreePath: wtPath,
+		branch,
+	});
+
+	return {
+		action: "created",
+		worktree_path: wtPath,
+		branch,
+		...(warnings.length > 0 ? { warnings } : {}),
+	};
+}
+
 function formatStep(step: StepRow) {
 	return {
 		id: step.id,
@@ -191,8 +380,26 @@ function formatStep(step: StepRow) {
 
 export async function runV1Init(params: RunInitParams): Promise<void> {
 	const planPath = canonicalizePlanPath(params.plan);
+	if (!existsSync(planPath)) {
+		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+			path: planPath,
+		});
+	}
+
 	const projectRoot = resolveProjectRoot();
 	const { config } = await loadConfig(projectRoot);
+	const db = getDb(projectRoot, config.db.path);
+	runMigrations(db);
+
+	const requestedWorktreePath =
+		params.worktreePath && params.worktreePath.trim().length > 0
+			? params.worktreePath
+			: undefined;
+	if (requestedWorktreePath && !params.worktree) {
+		outputError("INVALID_ARGS", "--worktree-path requires --worktree", {
+			worktree_path: requestedWorktreePath,
+		});
+	}
 
 	// 1. Lock-first invariant: acquire plan lock before checking for active run
 	const lockResult = acquireLock(projectRoot, planPath);
@@ -207,68 +414,87 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// 2. Check git safety (release lock on failure)
-	if (!params.allowDirty) {
-		try {
-			const safety = await checkGitSafety(projectRoot);
-			if (!safety.safe) {
-				releaseLock(projectRoot, planPath);
-				outputError(
-					"DIRTY_WORKTREE",
-					"Worktree has uncommitted changes. Use --allow-dirty to override.",
-					{
-						untracked_files: safety.untrackedFiles,
-						branch: safety.branch,
-					},
-				);
-			}
-		} catch (err) {
-			// Re-throw CliError (from outputError above), only catch git failures
-			if (err instanceof CliError) throw err;
-			// Not a git repo or git not available — skip safety check
+	let lockCleanupRegistered = false;
+
+	try {
+		let worktreeResult: WorktreeInitResult | undefined;
+		if (params.worktree) {
+			worktreeResult = await ensureRunWorktree(
+				db,
+				projectRoot,
+				planPath,
+				requestedWorktreePath,
+				config.worktree?.postCreate,
+			);
 		}
-	}
 
-	// 3. Open DB and run migrations
-	const db = getDb(projectRoot, config.db.path);
-	runMigrations(db);
+		// 2. Check git safety
+		if (!params.allowDirty) {
+			try {
+				const safety = await checkGitSafety(projectRoot);
+				if (!safety.safe) {
+					outputError(
+						"DIRTY_WORKTREE",
+						"Worktree has uncommitted changes. Use --allow-dirty to override.",
+						{
+							untracked_files: safety.untrackedFiles,
+							branch: safety.branch,
+						},
+					);
+				}
+			} catch (err) {
+				// Re-throw CliError (from outputError above), only catch git failures
+				if (err instanceof CliError) throw err;
+				// Not a git repo or git not available — skip safety check
+			}
+		}
 
-	// 4. Idempotent: return existing active run if one exists
-	const existing = getActiveRunV1(db, planPath);
-	if (existing) {
-		registerLockCleanup(projectRoot, planPath);
-		outputSuccess({
-			run_id: existing.id,
-			plan_path: existing.plan_path,
-			status: existing.status,
-			created_at: existing.created_at,
-			resumed: true,
+		// 3. Idempotent: return existing active run if one exists
+		const existing = getActiveRunV1(db, planPath);
+		if (existing) {
+			registerLockCleanup(projectRoot, planPath);
+			lockCleanupRegistered = true;
+			outputSuccess({
+				run_id: existing.id,
+				plan_path: existing.plan_path,
+				status: existing.status,
+				created_at: existing.created_at,
+				resumed: true,
+				...(worktreeResult ? { worktree: worktreeResult } : {}),
+			});
+			return;
+		}
+
+		// 4. Create new run
+		const runId = generateRunId();
+		createRunV1(db, {
+			id: runId,
+			planPath,
+			configJson: JSON.stringify({
+				maxStepsPerRun: getMaxStepsPerRun(
+					config as unknown as Record<string, unknown>,
+				),
+			}),
 		});
-		return;
+
+		registerLockCleanup(projectRoot, planPath);
+		lockCleanupRegistered = true;
+
+		const run = getRunV1(db, runId);
+		outputSuccess({
+			run_id: runId,
+			plan_path: run?.plan_path ?? planPath,
+			status: "active",
+			created_at: run?.created_at ?? new Date().toISOString(),
+			resumed: false,
+			...(worktreeResult ? { worktree: worktreeResult } : {}),
+		});
+	} catch (err) {
+		if (!lockCleanupRegistered) {
+			releaseLock(projectRoot, planPath);
+		}
+		throw err;
 	}
-
-	// 5. Create new run
-	const runId = generateRunId();
-	createRunV1(db, {
-		id: runId,
-		planPath,
-		configJson: JSON.stringify({
-			maxStepsPerRun: getMaxStepsPerRun(
-				config as unknown as Record<string, unknown>,
-			),
-		}),
-	});
-
-	registerLockCleanup(projectRoot, planPath);
-
-	const run = getRunV1(db, runId);
-	outputSuccess({
-		run_id: runId,
-		plan_path: run?.plan_path ?? planPath,
-		status: "active",
-		created_at: run?.created_at ?? new Date().toISOString(),
-		resumed: false,
-	});
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
