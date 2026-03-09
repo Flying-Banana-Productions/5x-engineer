@@ -17,6 +17,9 @@ import authorProcessPlanReviewRaw from "./author-process-plan-review.md" with {
 };
 import reviewerCommitRaw from "./reviewer-commit.md" with { type: "text" };
 import reviewerPlanRaw from "./reviewer-plan.md" with { type: "text" };
+import reviewerPlanContinuedRaw from "./reviewer-plan-continued.md" with {
+	type: "text",
+};
 
 /**
  * Template metadata parsed from YAML frontmatter.
@@ -52,6 +55,7 @@ const TEMPLATES: Record<string, string> = {
 	"author-process-plan-review": authorProcessPlanReviewRaw,
 	"author-process-impl-review": authorProcessImplReviewRaw,
 	"reviewer-plan": reviewerPlanRaw,
+	"reviewer-plan-continued": reviewerPlanContinuedRaw,
 	"reviewer-commit": reviewerCommitRaw,
 };
 
@@ -100,6 +104,7 @@ const STEP_NAME_FALLBACKS: Record<string, string> = {
 	"author-process-plan-review": "author:fix-review",
 	"author-process-impl-review": "author:fix-review",
 	"reviewer-plan": "reviewer:review",
+	"reviewer-plan-continued": "reviewer:review",
 	"reviewer-commit": "reviewer:review",
 };
 

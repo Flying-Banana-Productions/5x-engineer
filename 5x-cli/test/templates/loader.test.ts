@@ -295,7 +295,7 @@ describe("reviewer-commit template", () => {
 });
 
 describe("listTemplates", () => {
-	test("returns all 6 templates", () => {
+	test("returns all 7 templates", () => {
 		const templates = listTemplates();
 		const names = templates.map((t) => t.name);
 		expect(names).toContain("author-generate-plan");
@@ -303,8 +303,9 @@ describe("listTemplates", () => {
 		expect(names).toContain("author-process-plan-review");
 		expect(names).toContain("author-process-impl-review");
 		expect(names).toContain("reviewer-plan");
+		expect(names).toContain("reviewer-plan-continued");
 		expect(names).toContain("reviewer-commit");
-		expect(templates.length).toBe(6);
+		expect(templates.length).toBe(7);
 	});
 
 	test("all templates have version 1", () => {

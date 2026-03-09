@@ -332,7 +332,20 @@ export async function invokeAgent(
 	setTemplateOverrideDir(templateDir);
 
 	// 1. Resolve and render template
-	const templateName = params.template;
+	// When resuming a session, prefer a "-continued" variant of the template
+	// if one exists. The continued variant is shorter (saves tokens) since
+	// the full instructions are already in the session context.
+	let templateName = params.template;
+	if (params.session) {
+		const continuedName = `${templateName}-continued`;
+		try {
+			loadTemplate(continuedName);
+			templateName = continuedName;
+		} catch {
+			// No continued variant — use the full template
+		}
+	}
+
 	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
 	try {
 		const loaded = loadTemplate(templateName);
@@ -423,9 +436,12 @@ export async function invokeAgent(
 	const showReasoning = params.showReasoning ?? false;
 	const forceStderr = params.stderr ?? false;
 
+	// CLI --timeout takes precedence, then config [author].timeout / [reviewer].timeout
+	const configTimeout =
+		typeof roleConfig?.timeout === "number" ? roleConfig.timeout : undefined;
 	const runOpts: RunOptions = {
 		outputSchema: outputSchema as Record<string, unknown>,
-		timeout: params.timeoutSeconds,
+		timeout: params.timeoutSeconds ?? configTimeout,
 	};
 
 	// 6. Invoke agent
