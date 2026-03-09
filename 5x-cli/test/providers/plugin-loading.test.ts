@@ -452,9 +452,10 @@ describe("ProviderPlugin contract validation", () => {
 describe("bundled opencode provider", () => {
 	test("opencode provider works via direct import (not plugin path)", async () => {
 		const config = createMockConfig("opencode");
+		let provider: Awaited<ReturnType<typeof createProvider>> | undefined;
 
 		try {
-			const provider = await createProvider(
+			provider = await createProvider(
 				"author",
 				config as Parameters<typeof createProvider>[1],
 			);
@@ -462,15 +463,13 @@ describe("bundled opencode provider", () => {
 			// The OpenCode provider should be instantiated directly, not via dynamic import
 			expect(provider).toBeDefined();
 			expect(typeof provider.startSession).toBe("function");
-
-			await provider.close().catch(() => {
-				// Close may fail in managed mode without server, that's OK for this test
-			});
 		} catch (err) {
 			// In CI or environments without opencode on PATH, managed mode fails.
 			// Verify it's the expected "not on PATH" error, not a factory bug.
 			const msg = err instanceof Error ? err.message : String(err);
 			expect(msg).toContain("opencode");
+		} finally {
+			await provider?.close().catch(() => {});
 		}
 	});
 });

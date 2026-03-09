@@ -667,14 +667,17 @@ describe("invoke", () => {
 			// but it should NOT throw PROVIDER_NOT_FOUND — it should be the
 			// bundled OpenCode provider path.
 			const { createProvider } = await import("../../src/providers/factory.js");
+			let provider: Awaited<ReturnType<typeof createProvider>> | undefined;
 			try {
-				await createProvider("author", config);
+				provider = await createProvider("author", config);
 			} catch (err) {
 				// Expected: OpenCode server not available in test.
 				// But should NOT be PROVIDER_NOT_FOUND.
 				if (err instanceof Error && "code" in err) {
 					expect((err as { code: string }).code).not.toBe("PROVIDER_NOT_FOUND");
 				}
+			} finally {
+				await provider?.close().catch(() => {});
 			}
 		});
 
