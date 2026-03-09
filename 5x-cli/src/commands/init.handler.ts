@@ -14,6 +14,7 @@ import {
 	DEFAULT_REVIEW_TEMPLATE,
 } from "../templates/default-artifacts.js";
 import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
+import { resolveControlPlaneRoot } from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -153,6 +154,22 @@ function ensureGitignore(projectRoot: string): {
 export async function initScaffold(params: InitParams): Promise<void> {
 	const projectRoot = resolve(".");
 	const force = Boolean(params.force);
+
+	// Managed-mode guard: block `5x init` from a linked worktree when the
+	// main repo is already 5x-managed. No escape hatch — `--force` only
+	// overwrites config/templates, it does not bypass this guard.
+	const controlPlane = resolveControlPlaneRoot(projectRoot);
+	if (controlPlane.mode === "managed") {
+		// Check if we're in a linked worktree (cwd is not the control-plane root)
+		const normalizedCwd = resolve(projectRoot);
+		const normalizedRoot = resolve(controlPlane.controlPlaneRoot);
+		if (normalizedCwd !== normalizedRoot) {
+			throw new Error(
+				`This worktree is managed by the control-plane at \`${controlPlane.controlPlaneRoot}\`. ` +
+					"Run `5x init` from the main checkout if you need to re-initialize.",
+			);
+		}
+	}
 
 	// 1. Generate config file (TOML format)
 	const configPath = join(projectRoot, "5x.toml");

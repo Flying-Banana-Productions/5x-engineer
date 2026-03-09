@@ -393,5 +393,184 @@ export async function loadConfig(
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Config layering (Phase 1c)
+// ---------------------------------------------------------------------------
+
+export interface LayeredConfigResult {
+	config: FiveXConfig;
+	rootConfigPath: string | null;
+	nearestConfigPath: string | null;
+	isLayered: boolean;
+}
+
+/**
+ * Deep merge two plain objects. `override` fields take precedence.
+ *
+ * Merge semantics:
+ * - **Objects:** deep field-level merge. Nested fields from `base` are
+ *   preserved when not present in `override`.
+ * - **Arrays:** replace. Override array replaces base array entirely.
+ * - **Primitives:** override wins.
+ */
+function deepMerge(
+	base: Record<string, unknown>,
+	override: Record<string, unknown>,
+): Record<string, unknown> {
+	const result: Record<string, unknown> = { ...base };
+
+	for (const key of Object.keys(override)) {
+		const baseVal = base[key];
+		const overVal = override[key];
+
+		if (Array.isArray(overVal)) {
+			// Arrays: replace entirely
+			result[key] = overVal;
+		} else if (isRecord(overVal) && isRecord(baseVal)) {
+			// Objects: deep merge
+			result[key] = deepMerge(baseVal, overVal);
+		} else {
+			// Primitives, null, undefined: override wins
+			result[key] = overVal;
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Load raw config from a config file path.
+ * Returns the raw parsed object, or null if the file doesn't exist.
+ */
+async function loadRawConfig(configPath: string): Promise<unknown> {
+	if (configPath.endsWith(".toml")) {
+		const text = readFileSync(configPath, "utf-8");
+		return parseToml(text);
+	}
+	const module = await import(configPath);
+	return module.default ?? module;
+}
+
+/**
+ * Resolve a layered config from root and nearest config files.
+ *
+ * Config resolution is anchored to the **plan's location** in the project
+ * structure, not to cwd. This eliminates ambient context drift while
+ * allowing sub-project-specific overrides.
+ *
+ * Merge semantics: Zod defaults ← root config ← nearest config overrides.
+ * - Objects: deep field-level merge.
+ * - Arrays: replace (nearest array replaces root array entirely).
+ * - `db` section: always from root config (or Zod defaults). Nearest
+ *   config `db` is ignored with a warning.
+ *
+ * @param controlPlaneRoot - Root of the control-plane (where root config lives).
+ * @param contextDir - Optional directory for nearest config discovery.
+ *   If omitted or same as controlPlaneRoot, only root config is used.
+ * @param warn - Warning output function (for `db` override warnings).
+ */
+export async function resolveLayeredConfig(
+	controlPlaneRoot: string,
+	contextDir?: string,
+	warn: (...args: unknown[]) => void = console.error,
+): Promise<LayeredConfigResult> {
+	// Discover root config
+	const rootConfigPath = discoverConfigFile(controlPlaneRoot);
+	let rootRaw: unknown = null;
+
+	if (rootConfigPath) {
+		try {
+			rootRaw = await loadRawConfig(rootConfigPath);
+		} catch {
+			// Config parse error — fall through to defaults
+		}
+	}
+
+	// Discover nearest config (only if contextDir is different from root)
+	let nearestConfigPath: string | null = null;
+	let nearestRaw: unknown = null;
+
+	if (contextDir) {
+		const resolvedContext = resolve(contextDir);
+		const resolvedRoot = resolve(controlPlaneRoot);
+
+		if (resolvedContext !== resolvedRoot) {
+			nearestConfigPath = discoverConfigFile(resolvedContext);
+
+			// Only use nearest if it's a different file from root
+			if (
+				nearestConfigPath &&
+				rootConfigPath &&
+				resolve(nearestConfigPath) === resolve(rootConfigPath)
+			) {
+				nearestConfigPath = null;
+			}
+
+			if (nearestConfigPath) {
+				try {
+					nearestRaw = await loadRawConfig(nearestConfigPath);
+				} catch {
+					nearestConfigPath = null;
+				}
+			}
+		}
+	}
+
+	// Merge: Zod defaults ← root ← nearest
+	let mergedRaw: unknown;
+	const isLayered = nearestRaw !== null;
+
+	if (rootRaw && nearestRaw && isRecord(rootRaw) && isRecord(nearestRaw)) {
+		// Check for db override in nearest config — emit warning and strip
+		if ("db" in nearestRaw) {
+			warn(
+				`Warning: "db" section in ${nearestConfigPath} is ignored. ` +
+					"DB path is always resolved from the root config.",
+			);
+			const { db: _db, ...nearestWithoutDb } = nearestRaw;
+			mergedRaw = deepMerge(rootRaw, nearestWithoutDb);
+		} else {
+			mergedRaw = deepMerge(rootRaw, nearestRaw);
+		}
+	} else if (rootRaw) {
+		mergedRaw = rootRaw;
+	} else if (nearestRaw) {
+		// No root config, sub-project config only
+		if (isRecord(nearestRaw) && "db" in nearestRaw) {
+			warn(
+				`Warning: "db" section in ${nearestConfigPath} is ignored. ` +
+					"DB path is always resolved from the root config.",
+			);
+			const { db: _db, ...nearestWithoutDb } = nearestRaw;
+			mergedRaw = nearestWithoutDb;
+		} else {
+			mergedRaw = nearestRaw;
+		}
+	} else {
+		mergedRaw = {};
+	}
+
+	// Parse through Zod to fill defaults
+	const result = FiveXConfigSchema.safeParse(mergedRaw);
+	if (!result.success) {
+		// Fallback to defaults on parse error
+		return {
+			config: FiveXConfigSchema.parse({}),
+			rootConfigPath,
+			nearestConfigPath,
+			isLayered,
+		};
+	}
+
+	const config = applyDeprecatedAliases(result.data, mergedRaw);
+
+	return {
+		config,
+		rootConfigPath,
+		nearestConfigPath,
+		isLayered,
+	};
+}
+
 // Re-export for shared use
 export { discoverConfigFile, FiveXConfigSchema };
