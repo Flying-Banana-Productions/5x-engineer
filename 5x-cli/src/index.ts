@@ -1,70 +1,52 @@
-// Public API exports
+// Public API exports — v1
 
-export { AgentCancellationError, AgentTimeoutError } from "./agents/errors.js";
-export { createAndVerifyAdapter } from "./agents/factory.js";
-export { OpenCodeAdapter } from "./agents/opencode.js";
-// Agents
-export type {
-	AdapterConfig,
-	AgentAdapter,
-	AuthorStatus,
-	InvokeOptions,
-	InvokeResult,
-	InvokeStatus,
-	InvokeVerdict,
-	ReviewerVerdict,
-	VerdictItem,
-} from "./agents/types.js";
+// Config
 export type { FiveXConfig } from "./config.js";
 export { defineConfig, loadConfig } from "./config.js";
-// DB
+// DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
+// DB — operations (valid on v4 schema: runs, plans, steps tables)
 export type {
-	AgentResultInput,
-	AgentResultRow,
 	PlanRow,
-	QualityResultInput,
-	QualityResultRow,
-	RunEventRow,
 	RunMetrics,
 	RunRow,
 	RunSummary,
 } from "./db/operations.js";
 export {
-	appendRunEvent,
 	createRun,
 	getActiveRun,
-	getAgentResults,
-	getLastRunEvent,
 	getLatestRun,
-	getLatestStatus,
-	getLatestVerdict,
-	getMaxIterationForPhase,
 	getPlan,
-	getQualityAttemptCount,
-	getQualityResults,
-	getRunEvents,
 	getRunHistory,
 	getRunMetrics,
-	getStepResult,
-	hasCompletedStep,
 	updateRunStatus,
-	upsertAgentResult,
 	upsertPlan,
-	upsertQualityResult,
 } from "./db/operations.js";
+// DB — v1 step-based operations
+export type {
+	RecordStepInput,
+	RecordStepResult,
+	RunRowV1,
+	RunSummaryComputed,
+	RunSummaryV1,
+	StepRow,
+} from "./db/operations-v1.js";
+export {
+	completeRun,
+	computeRunSummary,
+	createRunV1,
+	getActiveRunV1,
+	getLatestStep,
+	getRunV1,
+	getSteps,
+	getStepsByPhase,
+	listRuns,
+	nextIteration,
+	recordStep,
+	reopenRun,
+} from "./db/operations-v1.js";
 export { getSchemaVersion, runMigrations } from "./db/schema.js";
 // Gates
-export type {
-	EscalationResponse,
-	PhaseSummary,
-} from "./gates/human.js";
-export {
-	escalationGate,
-	phaseGate,
-	resumeGate,
-	staleLockGate,
-} from "./gates/human.js";
 export type { QualityCommandResult, QualityResult } from "./gates/quality.js";
 export { runQualityGates } from "./gates/quality.js";
 // Git
@@ -87,29 +69,25 @@ export {
 	removeWorktree,
 	runWorktreeSetupCommand,
 } from "./git.js";
-export type { LockInfo, LockResult } from "./lock.js";
 // Lock
+export type { LockInfo, LockResult, ReleaseLockResult } from "./lock.js";
 export {
 	acquireLock,
+	forceReleaseLock,
 	isLocked,
 	registerLockCleanup,
 	releaseLock,
 } from "./lock.js";
-// Orchestrator
-export type {
-	PhaseExecutionOptions,
-	PhaseExecutionResult,
-} from "./orchestrator/phase-execution-loop.js";
-export { runPhaseExecutionLoop } from "./orchestrator/phase-execution-loop.js";
-export type {
-	EscalationEvent,
-	PlanReviewLoopOptions,
-	PlanReviewResult,
-} from "./orchestrator/plan-review-loop.js";
+// Output helpers (v1 JSON envelope)
+export type { ErrorEnvelope, JsonEnvelope, SuccessEnvelope } from "./output.js";
 export {
-	resolveReviewPath,
-	runPlanReviewLoop,
-} from "./orchestrator/plan-review-loop.js";
+	CliError,
+	jsonStringify,
+	outputError,
+	outputSuccess,
+	setPrettyPrint,
+} from "./output.js";
+// Parsers
 export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
 export { parsePlan } from "./parsers/plan.js";
 export type { ReviewSummary } from "./parsers/review.js";
@@ -118,6 +96,7 @@ export { parseReviewSummary } from "./parsers/review.js";
 export { canonicalizePlanPath } from "./paths.js";
 // Project root
 export { findGitRoot, resolveProjectRoot } from "./project-root.js";
+// Protocol
 export {
 	AuthorStatusSchema,
 	assertAuthorStatus,
@@ -125,6 +104,27 @@ export {
 	isStructuredOutputError,
 	ReviewerVerdictSchema,
 } from "./protocol.js";
+// Providers — v1
+export {
+	createProvider,
+	InvalidProviderError,
+	ProviderNotFoundError,
+} from "./providers/factory.js";
+export {
+	AgentCancellationError,
+	AgentTimeoutError,
+	OpenCodeProvider,
+} from "./providers/opencode.js";
+export type {
+	AgentEvent,
+	AgentProvider,
+	AgentSession,
+	ProviderPlugin,
+	ResumeOptions,
+	RunOptions,
+	RunResult,
+	SessionOptions,
+} from "./providers/types.js";
 // Templates
 export type {
 	RenderedTemplate,

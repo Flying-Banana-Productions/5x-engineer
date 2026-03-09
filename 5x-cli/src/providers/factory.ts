@@ -1,0 +1,172 @@
+/**
+ * Provider factory — resolves provider config and instantiates the correct provider.
+ *
+ * - For "opencode": uses direct import (bundled provider, no plugin indirection).
+ * - For any other name: dynamically imports an npm package by convention:
+ *   - Short names → `@5x-ai/provider-{name}`
+ *   - Full package names (starting with @) → used as-is
+ *
+ * The config schema (Phase 8) ensures `config[role].provider` always has a value
+ * (defaults to "opencode" via Zod). `config.opencode.url` is optional — when
+ * absent, the bundled OpenCode provider uses managed (local) mode.
+ */
+
+import type { FiveXConfig } from "../config.js";
+import { OpenCodeProvider } from "./opencode.js";
+import type { AgentProvider, ProviderPlugin } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Error types (using simple classes until Phase 3 CliError is available)
+// ---------------------------------------------------------------------------
+
+export class ProviderNotFoundError extends Error {
+	readonly code = "PROVIDER_NOT_FOUND";
+	readonly exitCode = 2;
+
+	constructor(providerName: string, packageName: string) {
+		super(
+			`Provider "${providerName}" not found. Install it with:\n` +
+				`  npm install ${packageName}\n\n` +
+				`Or if using bun:\n` +
+				`  bun add ${packageName}`,
+		);
+		this.name = "ProviderNotFoundError";
+	}
+}
+
+export class InvalidProviderError extends Error {
+	readonly code = "INVALID_PROVIDER";
+	readonly exitCode = 2;
+
+	constructor(_providerName: string, packageName: string) {
+		super(
+			`Provider package "${packageName}" does not export a valid ProviderPlugin.\n` +
+				`Expected: { name: string, create: (config?) => Promise<AgentProvider> }\n` +
+				`Got a default export that is missing the required 'create' function.`,
+		);
+		this.name = "InvalidProviderError";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugin resolution
+// ---------------------------------------------------------------------------
+
+export function resolvePackageName(providerName: string): string {
+	if (providerName.startsWith("@")) {
+		return providerName;
+	}
+	return `@5x-ai/provider-${providerName}`;
+}
+
+export async function loadPlugin(
+	providerName: string,
+): Promise<ProviderPlugin> {
+	const packageName = resolvePackageName(providerName);
+
+	let mod: Record<string, unknown>;
+	try {
+		mod = (await import(packageName)) as Record<string, unknown>;
+	} catch (err) {
+		// Bun's ResolveMessage is NOT an instanceof Error, so check message on any object.
+		const message =
+			err instanceof Error
+				? err.message
+				: typeof (err as Record<string, unknown>)?.message === "string"
+					? ((err as Record<string, unknown>).message as string)
+					: String(err);
+		const code =
+			typeof (err as Record<string, unknown>)?.code === "string"
+				? ((err as Record<string, unknown>).code as string)
+				: "";
+
+		if (
+			message.includes("Cannot find module") ||
+			message.includes("Cannot find package") ||
+			message.includes("Module not found") ||
+			code === "ERR_MODULE_NOT_FOUND"
+		) {
+			throw new ProviderNotFoundError(providerName, packageName);
+		}
+		throw err;
+	}
+
+	const plugin = mod.default as ProviderPlugin | undefined;
+	if (
+		!plugin ||
+		typeof plugin !== "object" ||
+		typeof plugin.create !== "function"
+	) {
+		throw new InvalidProviderError(providerName, packageName);
+	}
+
+	return plugin;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a provider for the given role based on config.
+ *
+ * Reads `config[role].provider` (always present, defaults to "opencode")
+ * and dispatches to the bundled OpenCode provider or an external plugin.
+ */
+export async function createProvider(
+	role: "author" | "reviewer",
+	config: FiveXConfig,
+): Promise<AgentProvider> {
+	const roleConfig = config[role];
+	const providerName = roleConfig.provider;
+
+	if (providerName === "opencode") {
+		return createOpenCodeProvider(config, roleConfig);
+	}
+
+	// External plugin via dynamic import
+	const pluginConfig = getPluginConfig(providerName, config);
+	const plugin = await loadPlugin(providerName);
+	return plugin.create(pluginConfig);
+}
+
+/**
+ * Create the bundled OpenCode provider (managed or external).
+ */
+async function createOpenCodeProvider(
+	config: FiveXConfig,
+	roleConfig: { provider: string; model?: string; timeout?: number },
+): Promise<AgentProvider> {
+	const url = config.opencode.url;
+	const model = roleConfig.model;
+
+	if (url) {
+		// External mode: connect to running server
+		return OpenCodeProvider.createExternal(url, { model });
+	}
+
+	// Managed mode: spawn local server
+	const provider = await OpenCodeProvider.createManaged({ model });
+	await provider.verify();
+	return provider;
+}
+
+/**
+ * Extract plugin-specific config from the top-level config.
+ * E.g. if provider is "codex", looks for config.codex.
+ */
+function getPluginConfig(
+	providerName: string,
+	config: FiveXConfig,
+): Record<string, unknown> | undefined {
+	const raw = config as Record<string, unknown>;
+	const pluginConfig = raw[providerName];
+	if (
+		pluginConfig != null &&
+		typeof pluginConfig === "object" &&
+		!Array.isArray(pluginConfig)
+	) {
+		return pluginConfig as Record<string, unknown>;
+	}
+	return undefined;
+}

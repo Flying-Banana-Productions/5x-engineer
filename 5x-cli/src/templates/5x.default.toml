@@ -1,0 +1,54 @@
+# 5x Configuration
+# https://github.com/5x-engineer/5x-cli
+
+# Maximum steps per automated run (safety guardrail)
+maxStepsPerRun = 50
+
+# Maximum review iterations before stopping
+maxReviewIterations = 5
+
+# Maximum quality gate retry attempts
+maxQualityRetries = 3
+
+# Maximum automated retries on failure
+maxAutoRetries = 3
+
+# Commands run after author implementation and before reviewer pass.
+# Any failing command triggers quality-retry behavior.
+qualityGates = [
+  # "bun test",
+  # "bun run lint",
+  # "bun run build",
+]
+
+# Author agent configuration (default provider: opencode)
+[author]
+# provider = "opencode"
+# model = "anthropic/claude-sonnet-4-6"
+# timeout = 900
+
+# Reviewer agent configuration (default provider: opencode)
+[reviewer]
+# provider = "opencode"
+# model = "anthropic/claude-sonnet-4-6"
+# timeout = 900
+
+# Optional hook run after creating a new worktree
+[worktree]
+# postCreate = "bun install"
+
+# Paths are relative to repository root unless absolute
+[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+# planReviews = "docs/development/reviews/plans"
+# runReviews = "docs/development/reviews/impl"
+archive = "docs/archive"
+
+[paths.templates]
+plan = ".5x/templates/implementation-plan-template.md"
+review = ".5x/templates/review-template.md"
+
+# SQLite database location for run history and state
+[db]
+path = ".5x/5x.db"

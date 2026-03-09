@@ -32,11 +32,22 @@ import type { OpencodeClient } from "@opencode-ai/sdk/v2";
 
 // Attach startup can be slow enough that immediate focus attempts fail.
 // Retry for several seconds so early gate/session switches are visible.
-const SELECT_SESSION_RETRY_DELAYS_MS = [0, 80, 160, 320, 500, 800, 1200];
-const ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS = 1000;
-const ATTACHED_TUI_API_TIMEOUT_MS = 750;
-const EXTERNAL_TUI_API_TIMEOUT_MS = 250;
-const EXTERNAL_TUI_SYNC_INTERVAL_MS = 500;
+const DEFAULT_SELECT_SESSION_RETRY_DELAYS_MS = [
+	0, 80, 160, 320, 500, 800, 1200,
+];
+const DEFAULT_ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS = 1000;
+const DEFAULT_ATTACHED_TUI_API_TIMEOUT_MS = 750;
+const DEFAULT_EXTERNAL_TUI_API_TIMEOUT_MS = 250;
+const DEFAULT_EXTERNAL_TUI_SYNC_INTERVAL_MS = 500;
+
+/** Overridable timing constants — used by tests to avoid real clock waits. */
+export interface TuiTimingConfig {
+	selectSessionRetryDelays?: number[];
+	attachedRetryInterval?: number;
+	attachedApiTimeout?: number;
+	externalApiTimeout?: number;
+	externalSyncInterval?: number;
+}
 
 type ExternalEvent = { type?: string; properties?: Record<string, unknown> };
 
@@ -126,6 +137,9 @@ export interface CreateTuiControllerOptions {
 	 * Determined by the command layer's TTY detection + flag logic.
 	 */
 	enabled: boolean;
+
+	/** @internal Override timing constants for tests. */
+	timing?: TuiTimingConfig;
 }
 
 function traceController(
@@ -175,7 +189,12 @@ function createExternalController(
 	serverUrl: string,
 	workdir: string,
 	trace?: (event: string, data?: unknown) => void,
+	timing?: TuiTimingConfig,
 ): TuiController {
+	const EXTERNAL_TUI_API_TIMEOUT_MS =
+		timing?.externalApiTimeout ?? DEFAULT_EXTERNAL_TUI_API_TIMEOUT_MS;
+	const EXTERNAL_TUI_SYNC_INTERVAL_MS =
+		timing?.externalSyncInterval ?? DEFAULT_EXTERNAL_TUI_SYNC_INTERVAL_MS;
 	let _reachable = false;
 	let _killed = false;
 	let _lastSessionId: string | undefined;
@@ -431,7 +450,15 @@ function createActiveController(
 	client: OpencodeClient,
 	respawn?: (sessionID: string, directory?: string) => SpawnResult,
 	trace?: (event: string, data?: unknown) => void,
+	timing?: TuiTimingConfig,
 ): TuiController {
+	const ATTACHED_TUI_API_TIMEOUT_MS =
+		timing?.attachedApiTimeout ?? DEFAULT_ATTACHED_TUI_API_TIMEOUT_MS;
+	const SELECT_SESSION_RETRY_DELAYS_MS =
+		timing?.selectSessionRetryDelays ?? DEFAULT_SELECT_SESSION_RETRY_DELAYS_MS;
+	const ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS =
+		timing?.attachedRetryInterval ??
+		DEFAULT_ATTACHED_SELECT_SESSION_RETRY_INTERVAL_MS;
 	let proc = initialProc;
 	let _active = true;
 	let _exitInfo: TuiExitInfo | undefined;
@@ -705,6 +732,7 @@ export function createTuiController(
 		opts.serverUrl,
 		opts.workdir,
 		opts.trace,
+		opts.timing,
 	);
 }
 
@@ -721,8 +749,9 @@ export function createTuiController(
 export function _createActiveControllerForTest(
 	proc: { exited: Promise<number | undefined>; kill(): void },
 	client: OpencodeClient,
+	timing?: TuiTimingConfig,
 ): TuiController {
-	return createActiveController(proc, client);
+	return createActiveController(proc, client, undefined, undefined, timing);
 }
 
 export { createNoopController as _createNoopControllerForTest };

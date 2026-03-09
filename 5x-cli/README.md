@@ -1,19 +1,36 @@
 # 5x CLI
 
-`5x-cli` automates a practical author/reviewer loop for implementation plans:
+A toolbelt of CLI primitives for AI-assisted implementation workflows. Manages run lifecycle, agent invocation, quality gates, and human interaction -- designed to be driven by an orchestrating agent loaded with a skill, or composed in scripts.
 
-- Generate a plan from a PRD/TDD (`5x plan`)
-- Review/fix the plan until approved (`5x plan-review`)
-- Execute phases with quality gates + re-review (`5x run`)
+## How It Works
 
-It is built for Bun and uses OpenCode under the hood for agent execution.
+5x uses a three-layer architecture:
+
+```
+Layer 3: Orchestrating Agent (Claude Code, OpenCode, ...)
+         Loaded with a 5x skill (.md). Makes workflow decisions.
+              |
+              |  calls CLI commands as tools
+              v
+Layer 2: 5x CLI (this tool)
+         Stateless primitives returning JSON envelopes.
+         Manages persistence (SQLite), logging, sub-agent invocation.
+              |
+              |  5x invoke author/reviewer
+              v
+Layer 1: Sub-Agents (Workers)
+         Author and reviewer agents. Pluggable providers.
+         Currently ships with OpenCode provider.
+```
+
+The CLI does not decide what to do next -- it provides building blocks. Orchestration logic lives in **skills**: markdown documents loaded into your agent session that describe the workflow (which commands to run, when to retry, when to ask the human).
 
 ## Requirements
 
-- Bun `>=1.1.0`
-- Git repository (recommended; some safety checks and worktree features depend on it)
-- `opencode` installed and available on `PATH`
-- Provider API keys configured for the models you use (for example via `.env` / `.env.local`)
+- [Bun](https://bun.sh) >= 1.1.0
+- Git repository (recommended; safety checks and worktree features depend on it)
+- [OpenCode](https://opencode.ai) installed and on `PATH` (for sub-agent invocation)
+- Provider API keys configured for the models you use (e.g., via `.env` / `.env.local`)
 
 ## Install
 
@@ -29,37 +46,269 @@ Verify:
 
 ## Quick Start
 
+### Option A: With an Agent Harness
+
+This is the intended workflow. Your agent (OpenCode, Claude Code, etc.) loads a 5x skill and drives the CLI.
+
 1. Initialize in your repo:
 
 ```bash
 5x init
 ```
 
-2. Update `5x.config.js` (models, quality gates, paths).
+2. Edit `5x.toml` -- set your models, quality gates, and paths.
 
-3. Generate a plan from a PRD/TDD markdown file:
-
-```bash
-5x plan docs/product/123-prd-example.md
-```
-
-4. Review and iterate on that plan:
+3. Install skills so your agent can discover them:
 
 ```bash
-5x plan-review docs/development/001-impl-example.md
+5x skills install project            # installs to .agents/skills/
+# or for a specific agent client:
+5x skills install project --install-root .opencode
 ```
 
-5. Execute implementation phases:
+4. Start your agent session and load the skill:
 
 ```bash
-5x run docs/development/001-impl-example.md
+# Example with OpenCode:
+opencode
+# Then in the session, load the 5x-plan skill and point it at your PRD:
+# "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
 ```
 
-Use `--auto` for unattended loops and `--ci` for non-interactive permission auto-approval.
+The skill guides the agent through the full workflow: plan generation, review cycles, phase execution with quality gates.
 
-## Expected Plan Format
+5. Monitor progress from another terminal:
 
-Plan files should be markdown with phase headings and checklists. Example:
+```bash
+5x run watch --run <run-id> --human-readable
+```
+
+### Option B: Bash Scripting
+
+Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.
+
+```bash
+# Pipe-composed: run_id and plan_path flow from init to invoke automatically
+5x run init --plan docs/development/001-impl-example.md | \
+  5x invoke author author-next-phase --var phase_number=1 --record
+```
+
+For workflows that need branching logic, capture the envelope and use `jq`:
+
+```bash
+PLAN="docs/development/001-impl-example.md"
+RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
+
+# --record auto-records using the template's step_name
+AUTHOR_OUT=$(5x invoke author author-next-phase --run "$RUN_ID" --record \
+  --var "plan_path=$PLAN" --var phase_number=1)
+RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
+
+# Quality output piped to run record (step name + run from CLI flags)
+5x quality run | 5x run record "quality:check" --run "$RUN_ID"
+
+5x run complete --run "$RUN_ID"
+```
+
+See [`examples/author-review-loop.sh`](examples/author-review-loop.sh) for a full working script with error handling and review-fix cycles.
+
+## Upgrading from v0.2.0
+
+v1 is a ground-up redesign. The high-level orchestrator commands (`5x plan`, `5x plan-review`, `5x run <plan>`) have been removed. Orchestration now lives in agent skills, not TypeScript state machines.
+
+**What changed:**
+
+- **Commands replaced:** `5x plan`, `5x plan-review`, `5x run <plan>`, `5x status` are gone. Use the v1 primitives (`run init/state/record/complete`, `invoke author/reviewer`, `quality run`, etc.) via skills or scripts.
+- **Flags removed:** `--auto`, `--ci`, `--tui-listen` no longer exist. Non-interactive behavior is handled by `5x prompt` commands with `--default` values. Skills decide retry/escalation logic.
+- **Config:** `maxAutoIterations` is deprecated (still accepted with a warning). Use `maxStepsPerRun` instead. New fields: `author.provider`, `reviewer.provider` for pluggable agent backends.
+- **Database:** Schema migrated from v0 tables (`agent_results`, `quality_results`, `run_events`) to a unified `steps` journal. In-progress v0 runs are marked aborted on first migration. No manual migration needed.
+- **Output:** All commands return structured JSON envelopes to stdout. Streaming commands (`run watch`) are documented exceptions.
+
+For the full architecture rationale, see [`docs/v1/100-architecture.md`](docs/v1/100-architecture.md).
+
+## Skills
+
+Skills are markdown documents that teach an agent how to drive the 5x workflow. Three are bundled:
+
+| Skill | Purpose |
+| --- | --- |
+| `5x-plan` | Generate an implementation plan from a PRD/TDD, then review/fix until approved |
+| `5x-plan-review` | Run iterative review/fix cycles on an existing plan |
+| `5x-phase-execution` | Execute phases: author, quality gates, code review, fix loops |
+
+### Installing Skills
+
+```bash
+# Project-level (committed to repo, any agent can discover them):
+5x skills install project
+
+# User-level (global, in ~/.agents/skills/):
+5x skills install user
+
+# For a specific agent client directory:
+5x skills install project --install-root .claude
+```
+
+Skills follow the [agentskills.io](https://agentskills.io) convention. Once installed, agents that support skill discovery will find them automatically.
+
+### Customizing
+
+Skills are plain markdown. After `5x init`, find them in `.5x/skills/` -- edit freely. The installed copies in `.agents/skills/` are what agents actually load; re-run `5x skills install` after editing to update them.
+
+## Commands
+
+All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": false, "error": {"code": "...", "message": "..."} }` on failure. Use `--help` on any command for full flag details.
+
+### Run Lifecycle
+
+```bash
+5x run init --plan <path> [--allow-dirty] [--worktree [<path>]]
+                                                # Start/resume run; optionally ensure/attach worktree
+5x run state --run <id>                        # Get run state, steps, and summary
+5x run record [step] [--run <id>] [--result '{}'] [--phase <p>] [--iteration <n>]
+5x run complete --run <id> [--status aborted]  # Complete or abort a run
+5x run reopen --run <id>                       # Re-activate a completed/aborted run
+5x run list [--plan <path>] [--status active]  # List runs
+5x run watch --run <id> [--human-readable]     # Tail agent logs in real-time
+```
+
+`run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations). When piping from `invoke`, step name, run ID, result, and metadata are auto-extracted: `5x invoke ... | 5x run record`.
+
+### Agent Invocation
+
+```bash
+5x invoke author <template> [--run <id>] [--var key=value ...] [--record]
+5x invoke reviewer <template> [--run <id>] [--var key=value ...] [--record]
+```
+
+Invokes a sub-agent with a prompt template. The author returns `AuthorStatus` (`result: complete | needs_human | failed`), the reviewer returns `ReviewerVerdict` (`readiness: ready | ready_with_corrections | not_ready`).
+
+Key flags:
+- `--run` -- run ID (optional when piping from an upstream command)
+- `--var key=value` -- template variables (repeatable). Supports `--var key=@path` (read from file) and `--var key=@-` (read from stdin)
+- `--record` / `--record-step` -- auto-record the result as a run step using the template's `step_name`
+- `--phase`, `--iteration` -- metadata for `--record`
+- `--session` -- resume an existing session (auto-selects an abbreviated prompt template if a `-continued` variant exists)
+- `--model` (override config), `--timeout` (seconds), `--quiet` (suppress stderr), `--stderr` (force stderr in non-TTY)
+
+Templates are resolved from `.5x/templates/prompts/` (user overrides) then bundled defaults.
+
+### Quality Gates
+
+```bash
+5x quality run [--record --run <id>]    # Execute quality gates, optionally auto-record
+```
+
+Runs each command in `qualityGates` from config sequentially. Returns `{ passed: bool, results: [...] }`. With `--record`, the result is auto-recorded as a `quality:check` step. Can also pipe to `run record`: `5x quality run | 5x run record "quality:check" --run <id>`.
+
+### Inspection
+
+```bash
+5x plan phases <path>                   # Parse plan into phases with progress
+5x diff [--since <ref>] [--stat]        # Git diff (working tree or since ref)
+```
+
+### Human Interaction
+
+```bash
+5x prompt choose <message> --options a,b,c [--default a]
+5x prompt confirm <message> [--default yes]
+5x prompt input <message> [--multiline]
+```
+
+When stdin is not a TTY: returns `--default` if provided, otherwise exits with code 3 (`NON_INTERACTIVE`). This makes scripts safe by default.
+
+### Setup
+
+```bash
+5x init [--force]                                    # Scaffold config, templates, skills
+5x skills install <project|user> [--install-root <dir>] [--force]
+```
+
+### Worktrees
+
+```bash
+5x worktree create --plan <path> [--branch <name>]   # Create isolated git worktree
+5x worktree attach --plan <path> --path <worktree>   # Attach existing git worktree to plan
+5x worktree remove --plan <path> [--force]            # Remove worktree
+5x worktree list                                      # List active worktrees
+```
+
+`run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path.
+
+## Configuration
+
+`5x init` creates `5x.toml`. Auto-discovered by walking up from the working directory. (`5x.config.js` / `.mjs` are also supported for backward compatibility.)
+
+```toml
+# 5x.toml
+
+maxStepsPerRun = 50    # Hard limit on steps per run (prevents runaway loops)
+
+# Shell commands run by `5x quality run`
+qualityGates = [
+  "bun test --concurrent --dots",
+  "bun run lint",
+  "bun run typecheck",
+]
+
+[author]
+provider = "opencode"                  # "opencode" (default) or plugin name
+model = "anthropic/claude-sonnet-4-6"
+timeout = 300                          # Inactivity timeout in seconds
+
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-sonnet-4-6"
+timeout = 120
+
+[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+archive = "docs/archive"
+
+[paths.templates]
+plan = ".5x/templates/implementation-plan-template.md"
+review = ".5x/templates/review-template.md"
+
+[db]
+path = ".5x/5x.db"
+
+[worktree]
+postCreate = "bun install"
+```
+
+## Output Contract
+
+### JSON Envelope
+
+```jsonc
+// Success (exit 0):
+{ "ok": true, "data": { ... } }
+
+// Error (exit 1-7):
+{ "ok": false, "error": { "code": "RUN_NOT_FOUND", "message": "...", "detail": { ... } } }
+```
+
+Output is compact JSON when piped, pretty-printed when stdout is a TTY. Override with `--pretty` or `--no-pretty`. Streaming commands (`run watch`) write NDJSON lines or human-readable text to stdout instead of envelopes.
+
+### Exit Codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | General error |
+| 2 | Resource not found (template, plan, provider) |
+| 3 | Non-interactive / EOF (TTY required, no default provided) |
+| 4 | Plan locked by another process |
+| 5 | Dirty worktree |
+| 6 | Max steps exceeded |
+| 7 | Invalid structured output from agent |
+| 130 | Interrupted (SIGINT) |
+
+## Plan Format
+
+Plan files are markdown with phase headings and checklists:
 
 ```md
 # Add Example Feature
@@ -82,128 +331,35 @@ Plan files should be markdown with phase headings and checklists. Example:
 - [ ] Add integration tests
 ```
 
-`5x status` uses this structure to compute progress.
-
-## Configuration
-
-`5x` auto-discovers `5x.config.js` (or `5x.config.mjs`) by walking up from the current directory.
-
-```js
-/** @type {import('5x-cli').FiveXConfig} */
-export default {
-  author: {
-    model: "opencode/kimi-k2.5",
-    timeout: 120,
-  },
-  reviewer: {
-    model: "openai/gpt-5.2",
-    timeout: 120,
-  },
-  qualityGates: [
-    "bun test --concurrent --dots",
-    "bun run lint",
-    "bun run typecheck"
-  ],
-  worktree: {
-    postCreate: "bun install"
-  },
-  paths: {
-    plans: "docs/development",
-    reviews: "docs/development/reviews",
-    archive: "docs/archive",
-    templates: {
-      plan: ".5x/templates/implementation-plan-template.md",
-      review: ".5x/templates/review-template.md"
-    }
-  },
-  db: {
-    path: ".5x/5x.db"
-  },
-  maxReviewIterations: 5,
-  maxQualityRetries: 3,
-  maxAutoIterations: 10,
-  maxAutoRetries: 3,
-};
-```
-
-## Commands
-
-- `5x init`
-  - Bootstraps `5x.config.js`
-  - Creates `.5x/` and default templates
-  - Adds `.5x/` to `.gitignore`
-- `5x plan <prd-path>`
-  - Generates a new `NNN-impl-*.md` plan by default
-  - Use `--out` to override path
-- `5x plan-review <plan-path>`
-  - Runs reviewer/author loop on the plan
-  - Reuses existing review file when possible
-- `5x run <plan-path>`
-  - Executes phases (author -> quality gates -> reviewer -> fix loops)
-  - Supports `--worktree` for isolated execution
-- `5x status <plan-path>`
-  - Shows markdown checklist progress
-  - Shows active/latest DB run state when available
-- `5x worktree status <plan-path>`
-  - Shows associated worktree/branch
-- `5x worktree cleanup <plan-path> [--delete-branch] [--force]`
-  - Removes plan worktree and optionally branch (if merged)
-
-## Common Flags
-
-- `--auto`: skip some interactive gates; still escalates human-required items
-- `--ci`: non-interactive mode; auto-approves all tool permissions
-- `--tui-listen`: enable external TUI attach integration (default: off; `--no-tui-listen` forces off)
-- `--allow-dirty`: bypass clean-working-tree guard
-- `--quiet`: suppress formatted agent output (logs still written)
-- `--show-reasoning`: display reasoning stream inline
-- `--debug-trace` (`run`, `plan-review`): write detailed lifecycle traces to `.5x/debug`
-
-### Flag Interactions (`--tui-listen`)
-
-| `--tui-listen` | Where prompts/gates run | CLI stream output | `--show-reasoning` effect |
-| --- | --- | --- | --- |
-| disabled (default) | CLI terminal | Normal headless output | Visible in CLI output |
-| enabled | CLI terminal | CLI output still active | Visible in CLI output |
-
-`--tui-listen` is observability-only (session focus + notifications). Human decisions are always entered in the CLI terminal.
-
-Precedence:
-
-- `--quiet` overrides TUI listening (forces headless output behavior).
-- `--auto` (`run` / `plan-review`) changes loop control with or without TUI listening: skips normal human gates, still escalates `human_required`, and auto-continues escalations with no guidance (best judgment) up to retry limits before aborting.
+`5x plan phases` uses this structure to extract phase metadata and checklist progress.
 
 ## Runtime Artifacts
 
 `5x` writes local state under `.5x/`:
 
-- `.5x/5x.db`: SQLite run state
-- `.5x/logs/<run-id>/`: per-agent NDJSON event logs
-- `.5x/locks/`: plan-level lock files
-- `.5x/worktrees/`: optional isolated git worktrees
-- `.5x/templates/`: default editable plan/review templates
-
-Agent logs can include sensitive code/context. Keep `.5x/` out of version control.
-
-## CI / Headless Usage
-
-For unattended runs:
-
-```bash
-5x plan-review docs/development/001-impl-example.md --auto --ci
-5x run docs/development/001-impl-example.md --auto --ci
 ```
+.5x/
+  5x.db                          # SQLite: runs, steps, plans
+  logs/<run-id>/agent-NNN.ndjson # Per-agent NDJSON event logs (0o700)
+  locks/<hash>.lock              # Plan-level lock files
+  worktrees/                     # Isolated git worktrees
+  templates/                     # Editable plan, review, and prompt templates
+  skills/                        # Bundled skill source (internal)
+```
+
+Logs may contain sensitive code and context. Keep `.5x/` out of version control (added to `.gitignore` by `5x init`).
 
 ## Troubleshooting
 
-- `OpenCode server failed to start`
-  - Ensure `opencode` is installed and on `PATH`.
-- `Working tree has uncommitted changes`
-  - Commit/stash, or pass `--allow-dirty` if intentional.
-- Non-interactive prompt errors
-  - Use `--auto` and/or `--ci` depending on command.
-- No progress shown in `5x status`
-  - Confirm plan file uses `## Phase N: ...` headings and markdown checklists.
+| Problem | Fix |
+| --- | --- |
+| `OpenCode server failed to start` | Ensure `opencode` is installed and on `PATH` |
+| `Working tree has uncommitted changes` | Commit/stash, or pass `--allow-dirty` |
+| `NON_INTERACTIVE` exit code 3 | Provide `--default` on prompt commands, or run in a TTY |
+| `PLAN_LOCKED` | Another process holds the lock. Wait for it, or check for stale locks in `.5x/locks/` |
+| `MAX_STEPS_EXCEEDED` | Increase `maxStepsPerRun` in config, or investigate why the run is looping |
+| No phases found by `5x plan phases` | Ensure plan uses `## Phase N: ...` headings with markdown checklists |
+| Agent output not visible during `invoke` | stderr streaming is TTY-gated. Use `--stderr` to force it, or run `5x run watch` in another terminal |
 
 ## License
 

@@ -1,9 +1,12 @@
 /**
  * Git operations, safety invariants, and worktree support.
  *
- * All functions shell out to `git` via `Bun.spawn` / `Bun.spawnSync` and
- * parse text output. No libgit2 bindings.
+ * All functions shell out to `git` via the subprocess module and parse text
+ * output. No libgit2 bindings. Tests mock `subprocess.execGit` to avoid
+ * spawning real processes.
  */
+
+import { subprocess } from "./utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,33 +37,7 @@ async function run(
 	args: string[],
 	workdir: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const proc = Bun.spawn(["git", ...args], {
-		cwd: workdir,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
-}
-
-function _runSync(
-	args: string[],
-	workdir: string,
-): { stdout: string; stderr: string; exitCode: number } {
-	const result = Bun.spawnSync(["git", ...args], {
-		cwd: workdir,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	return {
-		stdout: result.stdout.toString().trim(),
-		stderr: result.stderr.toString().trim(),
-		exitCode: result.exitCode,
-	};
+	return subprocess.execGit(args, workdir);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,25 +187,31 @@ export async function commitFiles(
 
 /**
  * Run a shell command in a worktree after creation.
- * Stdout/stderr are inherited so setup progress is visible to users.
+ *
+ * **stdout is redirected to stderr** so hook output never contaminates
+ * the JSON envelope that the calling command writes to stdout.
+ * stderr is inherited directly.
  */
 export async function runWorktreeSetupCommand(
 	workdir: string,
 	command: string,
-): Promise<void> {
-	const proc = Bun.spawn(["sh", "-c", command], {
-		cwd: workdir,
-		stdin: "inherit",
-		stdout: "inherit",
-		stderr: "inherit",
-	});
+): Promise<{ stdout: string; stderr: string }> {
+	const { stdout, stderr, exitCode } = await subprocess.execShell(
+		command,
+		workdir,
+	);
 
-	const exitCode = await proc.exited;
+	// Forward hook output to stderr so it remains observable
+	if (stdout) process.stderr.write(stdout);
+	if (stderr) process.stderr.write(stderr);
+
 	if (exitCode !== 0) {
 		throw new Error(
 			`Worktree setup command failed (exit ${exitCode}): ${command}`,
 		);
 	}
+
+	return { stdout, stderr };
 }
 
 /** Check if a branch exists locally. */

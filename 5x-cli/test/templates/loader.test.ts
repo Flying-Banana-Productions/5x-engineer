@@ -6,6 +6,7 @@ import {
 	getDefaultTemplateRaw,
 	listTemplates,
 	loadTemplate,
+	parseTemplate,
 	renderBody,
 	renderTemplate,
 	setTemplateOverrideDir,
@@ -294,7 +295,7 @@ describe("reviewer-commit template", () => {
 });
 
 describe("listTemplates", () => {
-	test("returns all 6 templates", () => {
+	test("returns all 7 templates", () => {
 		const templates = listTemplates();
 		const names = templates.map((t) => t.name);
 		expect(names).toContain("author-generate-plan");
@@ -302,14 +303,150 @@ describe("listTemplates", () => {
 		expect(names).toContain("author-process-plan-review");
 		expect(names).toContain("author-process-impl-review");
 		expect(names).toContain("reviewer-plan");
+		expect(names).toContain("reviewer-plan-continued");
 		expect(names).toContain("reviewer-commit");
-		expect(templates.length).toBe(6);
+		expect(templates.length).toBe(7);
 	});
 
 	test("all templates have version 1", () => {
 		const templates = listTemplates();
 		for (const t of templates) {
 			expect(t.version).toBe(1);
+		}
+	});
+});
+
+describe("template stepName", () => {
+	const expectedStepNames: Record<string, string> = {
+		"author-generate-plan": "author:generate-plan",
+		"author-next-phase": "author:implement",
+		"author-process-plan-review": "author:fix-review",
+		"author-process-impl-review": "author:fix-review",
+		"reviewer-plan": "reviewer:review",
+		"reviewer-commit": "reviewer:review",
+	};
+
+	test("all bundled templates have correct stepName in parsed metadata", () => {
+		for (const [name, expectedStep] of Object.entries(expectedStepNames)) {
+			const { metadata } = loadTemplate(name);
+			expect(metadata.stepName).toBe(expectedStep);
+		}
+	});
+
+	test("renderTemplate includes stepName in result", () => {
+		const result = renderTemplate("author-next-phase", {
+			plan_path: "/path/to/plan.md",
+			phase_number: "1",
+			user_notes: "test notes",
+		});
+		expect(result.stepName).toBe("author:implement");
+	});
+
+	test("on-disk override missing step_name for known template uses fallback and warns", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "tmpl-step-"));
+		try {
+			// Write override WITHOUT step_name
+			writeFileSync(
+				join(tmpDir, "author-next-phase.md"),
+				[
+					"---",
+					"name: author-next-phase",
+					"version: 1",
+					"variables:",
+					"  - plan_path",
+					"  - phase_number",
+					"  - user_notes",
+					"---",
+					"CUSTOM BODY {{plan_path}} {{phase_number}} {{user_notes}}",
+				].join("\n"),
+			);
+
+			// Capture stderr
+			const origStderr = console.error;
+			const stderrLines: string[] = [];
+			console.error = (...args: unknown[]) => {
+				stderrLines.push(args.map(String).join(" "));
+			};
+
+			try {
+				setTemplateOverrideDir(tmpDir);
+				const { metadata } = loadTemplate("author-next-phase");
+
+				// Should use fallback
+				expect(metadata.stepName).toBe("author:implement");
+				// Should have warned
+				expect(stderrLines.some((l) => l.includes('missing "step_name"'))).toBe(
+					true,
+				);
+				expect(stderrLines.some((l) => l.includes("5x init --force"))).toBe(
+					true,
+				);
+			} finally {
+				console.error = origStderr;
+				setTemplateOverrideDir(null);
+			}
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown template name with no step_name has stepName null, no warning", () => {
+		// parseTemplate is exported for testing — call it directly with an
+		// unknown template name (not in STEP_NAME_FALLBACKS) and no step_name
+		// in frontmatter. stepName should be null and no warning emitted.
+		const raw = [
+			"---",
+			"name: custom-template",
+			"version: 1",
+			"variables:",
+			"  - some_var",
+			"---",
+			"Custom body {{some_var}}",
+		].join("\n");
+
+		const origStderr = console.error;
+		const stderrLines: string[] = [];
+		console.error = (...args: unknown[]) => {
+			stderrLines.push(args.map(String).join(" "));
+		};
+		try {
+			const result = parseTemplate(raw, "custom-template");
+			expect(result.metadata.stepName).toBeNull();
+			// No warning should have been emitted for unknown template names
+			expect(stderrLines.some((l) => l.includes('missing "step_name"'))).toBe(
+				false,
+			);
+		} finally {
+			console.error = origStderr;
+		}
+	});
+
+	test("template with invalid step_name (empty string) throws", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "tmpl-step-"));
+		try {
+			writeFileSync(
+				join(tmpDir, "author-next-phase.md"),
+				[
+					"---",
+					"name: author-next-phase",
+					"version: 1",
+					"variables:",
+					"  - plan_path",
+					"  - phase_number",
+					"  - user_notes",
+					'step_name: ""',
+					"---",
+					"BODY {{plan_path}} {{phase_number}} {{user_notes}}",
+				].join("\n"),
+			);
+
+			setTemplateOverrideDir(tmpDir);
+			expect(() => loadTemplate("author-next-phase")).toThrow(
+				/"step_name" must be a non-empty string/,
+			);
+		} finally {
+			setTemplateOverrideDir(null);
+			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	});
 });

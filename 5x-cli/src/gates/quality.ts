@@ -253,19 +253,29 @@ export async function runSingleCommand(
 		const stdoutDone = drainStream(proc.stdout, logStream, stdoutCapture);
 		const stderrDone = drainStream(proc.stderr, logStream, stderrCapture);
 
-		// Race subprocess against timeout
-		const timeoutPromise = new Promise<"timeout">((resolve) =>
-			setTimeout(() => resolve("timeout"), timeout),
-		);
+		// Race subprocess against timeout.
+		// The timer is unref()'d so it does not keep the event loop alive
+		// after the CLI command completes (important for standalone `5x quality run`).
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+		const timeoutPromise = new Promise<"timeout">((resolve) => {
+			timeoutHandle = setTimeout(() => resolve("timeout"), timeout);
+			timeoutHandle.unref();
+		});
 		const exitPromise = proc.exited;
 		const race = await Promise.race([exitPromise, timeoutPromise]);
+		if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
 		if (race === "timeout") {
 			proc.kill("SIGTERM");
+			let killHandle: ReturnType<typeof setTimeout> | undefined;
 			await Promise.race([
 				proc.exited,
-				new Promise((r) => setTimeout(r, 2000)),
+				new Promise((r) => {
+					killHandle = setTimeout(r, 2000);
+					killHandle.unref();
+				}),
 			]);
+			if (killHandle !== undefined) clearTimeout(killHandle);
 			try {
 				proc.kill("SIGKILL");
 			} catch {

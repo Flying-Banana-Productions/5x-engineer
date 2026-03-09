@@ -22,6 +22,7 @@
     "planning",
     "review"
   ],
+  "workspaces": ["packages/*"],
   "files": [
     "src"
   ],
@@ -45,10 +46,13 @@
     "bun": ">=1.1.0"
   },
   "devDependencies": {
+    "@5x-ai/provider-invalid": "workspace:*",
+    "@5x-ai/provider-sample": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@decimalturn/toml-patch": "^1.0.2",
     "@opencode-ai/sdk": "^1.2.6",
     "citty": "^0.1.6",
     "dotenv": "^16.6.1",

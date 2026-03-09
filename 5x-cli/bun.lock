@@ -5,6 +5,7 @@
     "": {
       "name": "5x-cli",
       "dependencies": {
+        "@decimalturn/toml-patch": "^1.0.2",
         "@opencode-ai/sdk": "^1.2.6",
         "citty": "^0.1.6",
         "dotenv": "^16.6.1",
@@ -12,12 +13,36 @@
         "zod": "^3.24.0",
       },
       "devDependencies": {
+        "@5x-ai/provider-invalid": "workspace:*",
+        "@5x-ai/provider-sample": "workspace:*",
         "@types/bun": "latest",
         "typescript": "^5.7.0",
       },
     },
+    "packages/provider-invalid": {
+      "name": "@5x-ai/provider-invalid",
+      "version": "0.0.1",
+      "peerDependencies": {
+        "@5x-ai/5x-cli": "file:../..",
+      },
+    },
+    "packages/provider-sample": {
+      "name": "@5x-ai/provider-sample",
+      "version": "0.0.1",
+      "peerDependencies": {
+        "@5x-ai/5x-cli": "file:../..",
+      },
+    },
   },
   "packages": {
+    "@5x-ai/5x-cli": ["5x-cli@root:", {}],
+
+    "@5x-ai/provider-invalid": ["@5x-ai/provider-invalid@workspace:packages/provider-invalid"],
+
+    "@5x-ai/provider-sample": ["@5x-ai/provider-sample@workspace:packages/provider-sample"],
+
+    "@decimalturn/toml-patch": ["@decimalturn/toml-patch@1.0.2", "", {}, "sha512-01B6HMCc/jsyzkKUktESt6GwYOoQPJydae2OEeMw9SKBHuzzEb/pFtgBXfv27/dmmJNu6IXnT2MQ+TgjGURdgg=="],
+
     "@opencode-ai/sdk": ["@opencode-ai/sdk@1.2.6", "", {}, "sha512-dWMF8Aku4h7fh8sw5tQ2FtbqRLbIFT8FcsukpxTird49ax7oUXP+gzqxM/VdxHjfksQvzLBjLZyMdDStc5g7xA=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],

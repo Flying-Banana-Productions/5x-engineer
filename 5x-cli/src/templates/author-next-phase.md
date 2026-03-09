@@ -2,6 +2,7 @@
 name: author-next-phase
 version: 1
 variables: [plan_path, phase_number, user_notes]
+step_name: "author:implement"
 ---
 
 You are implementing phase {{phase_number}} of the implementation plan at `{{plan_path}}`.
@@ -39,6 +40,10 @@ You are implementing phase {{phase_number}} of the implementation plan at `{{pla
 ## User Notes
 
 {{user_notes}}
+
+## Non-Interactive Execution
+
+You are running as a subprocess in an automated pipeline. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human input, return with `result: "needs_human"` and explain what you need in the `reason` field.
 
 ## Completion
 

@@ -17,6 +17,9 @@ import authorProcessPlanReviewRaw from "./author-process-plan-review.md" with {
 };
 import reviewerCommitRaw from "./reviewer-commit.md" with { type: "text" };
 import reviewerPlanRaw from "./reviewer-plan.md" with { type: "text" };
+import reviewerPlanContinuedRaw from "./reviewer-plan-continued.md" with {
+	type: "text",
+};
 
 /**
  * Template metadata parsed from YAML frontmatter.
@@ -25,6 +28,7 @@ export interface TemplateMetadata {
 	name: string;
 	version: number;
 	variables: string[];
+	stepName: string | null; // Semantic step name for run recording; null if not declared
 }
 
 /**
@@ -33,6 +37,7 @@ export interface TemplateMetadata {
 export interface RenderedTemplate {
 	name: string;
 	prompt: string;
+	stepName: string | null; // From frontmatter; null if not declared
 }
 
 /**
@@ -50,6 +55,7 @@ const TEMPLATES: Record<string, string> = {
 	"author-process-plan-review": authorProcessPlanReviewRaw,
 	"author-process-impl-review": authorProcessImplReviewRaw,
 	"reviewer-plan": reviewerPlanRaw,
+	"reviewer-plan-continued": reviewerPlanContinuedRaw,
 	"reviewer-commit": reviewerCommitRaw,
 };
 
@@ -87,6 +93,21 @@ export function getDefaultTemplateRaw(name: string): string {
 	return raw;
 }
 
+/**
+ * Canonical step_name fallback map for known bundled templates.
+ * Used when on-disk overrides scaffolded before step_name was added
+ * are missing the field in their frontmatter.
+ */
+const STEP_NAME_FALLBACKS: Record<string, string> = {
+	"author-generate-plan": "author:generate-plan",
+	"author-next-phase": "author:implement",
+	"author-process-plan-review": "author:fix-review",
+	"author-process-impl-review": "author:fix-review",
+	"reviewer-plan": "reviewer:review",
+	"reviewer-plan-continued": "reviewer:review",
+	"reviewer-commit": "reviewer:review",
+};
+
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const ESCAPED_BRACES_RE = /\\\{\{/g;
 const VARIABLE_RE = /\{\{([a-z_]+)\}\}/g;
@@ -95,8 +116,14 @@ const ESCAPED_SENTINEL = "\x00LBRACE\x00";
 /**
  * Parse YAML frontmatter from a raw template string.
  * Returns metadata and the body (everything after frontmatter).
+ *
+ * Exported for direct testing of step_name fallback/null behavior
+ * with arbitrary template names outside the TEMPLATES registry.
  */
-function parseTemplate(raw: string, templateName: string): ParsedTemplate {
+export function parseTemplate(
+	raw: string,
+	templateName: string,
+): ParsedTemplate {
 	const match = FRONTMATTER_RE.exec(raw);
 	if (!match) {
 		throw new Error(
@@ -158,11 +185,33 @@ function parseTemplate(raw: string, templateName: string): ParsedTemplate {
 		);
 	}
 
+	// Extract step_name from frontmatter
+	let stepName: string | null = null;
+	if (fm.step_name !== undefined) {
+		if (typeof fm.step_name !== "string" || !fm.step_name) {
+			throw new Error(
+				`Template "${templateName}" frontmatter "step_name" must be a non-empty string.`,
+			);
+		}
+		stepName = fm.step_name;
+	} else {
+		// Fallback for known templates missing step_name (pre-existing scaffolded copies)
+		const fallback = STEP_NAME_FALLBACKS[templateName];
+		if (fallback) {
+			console.error(
+				`Warning: Template "${templateName}" is missing "step_name" in frontmatter. Using default "${fallback}". Run "5x init --force" to update your templates.`,
+			);
+			stepName = fallback;
+		}
+		// For unknown template names, stepName stays null
+	}
+
 	return {
 		metadata: {
 			name: fm.name,
 			version: fm.version,
 			variables: fm.variables as string[],
+			stepName,
 		},
 		body,
 	};
@@ -302,6 +351,7 @@ export function renderTemplate(
 	return {
 		name: metadata.name,
 		prompt,
+		stepName: metadata.stepName,
 	};
 }
 
