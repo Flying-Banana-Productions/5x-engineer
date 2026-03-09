@@ -520,7 +520,7 @@ const variables = pipeContext
 
 - [x] After splitting `key=value`, check if `value` starts with `@`:
   - `@-` -> read from stdin (`Bun.stdin.stream()` to EOF)
-  - `@<path>` -> read from file (`readFileSync(resolve(path), "utf-8")`)
+  - `@./path` or `@/abs/path` -> read from file (`readFileSync(resolve(path), "utf-8")`) — only triggered when `@` is followed by `.` or `/`, preserving backward compatibility for literal `@`-prefixed values like `@username`
 - [x] Enforce at most one `@-` var per invocation (error if multiple)
 - [x] `parseVars()` becomes async (returns `Promise<Record<string, string>>`)
 - [x] Update callers to await the result

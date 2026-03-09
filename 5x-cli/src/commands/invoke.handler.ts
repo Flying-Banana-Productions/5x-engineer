@@ -107,13 +107,30 @@ export function hasStdinVarFlag(vars: string | string[] | undefined): boolean {
 }
 
 /**
+ * Check whether a --var value is a file reference (@./path or @/abs/path).
+ * Returns true only when the value starts with `@` followed by `.` or `/`,
+ * which unambiguously indicates a file path. Literal `@`-prefixed values
+ * like `@username` return false and are passed through unchanged.
+ */
+function isFileReference(value: string): boolean {
+	if (value.length < 2 || value[0] !== "@") return false;
+	const ch = value[1];
+	return ch === "." || ch === "/";
+}
+
+/**
  * Parse --var key=value flags into a record.
  * Accepts a single string or array of strings (citty may collapse repeated flags).
  *
  * Supports:
  *   --var key=value       (literal value)
  *   --var key=@-          (read value from stdin)
- *   --var key=@./path.txt (read value from file)
+ *   --var key=@./path.txt (read value from relative file)
+ *   --var key=@/abs/path  (read value from absolute file)
+ *
+ * File-read is only triggered when the value after `@` starts with `.` or `/`
+ * (i.e., looks like a file path). Literal values like `--var key=@username`
+ * are passed through unchanged, preserving backward compatibility.
  *
  * At most one `@-` var is allowed per invocation.
  */
@@ -151,8 +168,10 @@ async function parseVars(
 		if (value === "@-") {
 			// Read from stdin
 			value = await new Response(Bun.stdin.stream()).text();
-		} else if (value.startsWith("@")) {
-			// Read from file — strip the @ prefix
+		} else if (isFileReference(value)) {
+			// Read from file — strip the @ prefix.
+			// Only triggered for path-like values (@./relative or @/absolute),
+			// NOT for literal @-prefixed values like @username.
 			const rawPath = value.slice(1);
 			const filePath = resolve(rawPath);
 			try {

@@ -98,6 +98,9 @@ fi
 # 5. Review loop
 # ---------------------------------------------------------------------------
 
+# Ensure the review output directory exists before the first reviewer write
+mkdir -p .5x/reviews
+
 for i in $(seq 1 "$MAX_REVIEW_CYCLES"); do
   echo "--- Review cycle $i/$MAX_REVIEW_CYCLES ---"
 

@@ -47,3 +47,16 @@ Action: `auto_fix`.
 **P1 recommended**
 - [x] Keep `--record` validation and failure handling off stdout after the primary envelope has been written.
 - [x] Ensure `quality run --record` records the empty-gates success result too.
+
+## Addendum (2026-03-08) — Follow-up review for `4b1693b`
+
+### What's Addressed
+
+- `src/commands/invoke.handler.ts:487` now keeps post-success `--record` validation on stderr and sets `process.exitCode`, so missing step-name cases no longer emit a second stdout envelope.
+- `src/commands/quality-v1.handler.ts:36` centralizes post-success recording behavior in `autoRecord()`, and `src/commands/quality-v1.handler.ts:80` now applies it to the empty-gates early-return path too.
+- `test/commands/invoke-record.test.ts:462` and `test/commands/quality-record.test.ts:371` add coverage for the stdout-corruption regression; `test/commands/quality-record.test.ts:403` covers the empty-gates recording path.
+- Local verification passed: `bun test test/commands/invoke-record.test.ts test/commands/quality-record.test.ts`.
+
+### Remaining Concerns
+
+- None. The follow-up commit closes the prior P1 gaps, matches the Phase 6 plan contract, and is ready to treat as complete.

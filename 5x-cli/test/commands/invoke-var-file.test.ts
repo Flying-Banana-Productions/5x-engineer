@@ -367,6 +367,111 @@ describe("--var key=@path (file read)", () => {
 	);
 });
 
+describe("--var key=@literal (backward compat — literal @-prefixed values)", () => {
+	test(
+		"--var user_notes=@username passes literal @username without file read",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				const result = await run5x(projectRoot, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=@username",
+				]);
+
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.run_id).toBe(runId);
+
+				// Verify @username was passed as a literal value, not treated as a file
+				const logPath = data.log_path as string;
+				const echoedPrompt = readEchoedPromptFromLog(logPath);
+				expect(echoedPrompt).toContain("@username");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--var user_notes=@mention with no file prefix passes literal value",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				const result = await run5x(projectRoot, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=@abc123",
+				]);
+
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify @abc123 was passed literally
+				const logPath = data.log_path as string;
+				const echoedPrompt = readEchoedPromptFromLog(logPath);
+				expect(echoedPrompt).toContain("@abc123");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--var user_notes=@ (bare @) passes literal value",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				const result = await run5x(projectRoot, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=@",
+				]);
+
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
 describe("--var key=@- (stdin read)", () => {
 	test(
 		"--var user_notes=@- reads value from piped stdin and reaches rendered prompt",
