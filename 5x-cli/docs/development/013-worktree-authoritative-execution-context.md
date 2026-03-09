@@ -1,6 +1,6 @@
 # Feature: Worktree-Authoritative Execution Context
 
-**Version:** 1.2  
+**Version:** 1.3  
 **Created:** March 9, 2026  
 **Status:** Proposed (revised)
 
@@ -18,7 +18,7 @@ Desired behavior:
 - Worktree mapping is authoritative for execution when a run is mapped.
 - `invoke`/`quality`/`diff` can resolve execution context by `run_id` without requiring manual `cd` or manual `--workdir`.
 - No `.5x` folder is required in worktrees.
-- Manual isolated workflow remains supported: users may `5x init` inside a worktree and keep run history local to that checkout.
+- Manual isolated workflow remains supported: users may `5x init` inside a worktree whose parent repo is not 5x-managed, keeping run history local to that checkout.
 
 ## Goals
 
@@ -46,13 +46,18 @@ The root DB must be discoverable from any checkout context — root, nested link
 
 Resolution strategy for the canonical control-plane root:
 
-1. From cwd, resolve `git rev-parse --git-common-dir`.
-   - In the main checkout, this returns `.git` (same as `--git-dir`).
-   - In a linked worktree (including externally attached), this returns the path to the main repo's `.git` directory (e.g. `/home/user/main-repo/.git`).
-2. Derive the main repo root as the parent of the common-dir result (i.e. `dirname(commonDir)` when the result is an absolute path, or `resolve(gitDir, commonDir)` when relative).
-3. Look for `.5x/5x.db` under the derived main repo root. If it exists, that is the canonical control-plane DB (managed mode).
-4. If no `.5x/5x.db` exists at the main repo root but one exists at the current checkout root (i.e. `resolveProjectRoot()` found a local `.5x/5x.db`), that checkout is in isolated mode.
-5. If neither exists, the command is outside any 5x-managed context and falls through to existing behavior (init prompt, etc.).
+1. From cwd, resolve both `git rev-parse --git-dir` and `git rev-parse --git-common-dir`.
+   - `--git-dir` returns the `.git` directory for the current checkout (e.g. `.git` in main checkout, or `.git/worktrees/<name>` / an absolute path for linked worktrees).
+   - `--git-common-dir` returns the shared `.git` directory. In the main checkout this equals `--git-dir`. In a linked worktree (including externally attached), it returns the path to the main repo's `.git` directory.
+2. Derive an absolute path for common-dir:
+   - If `--git-common-dir` returns an absolute path, use it directly.
+   - If `--git-common-dir` returns a relative path (starts with `.` or `..`), resolve it relative to the absolute path of `--git-dir`. This handles git's default behavior where common-dir is expressed relative to the worktree's git-dir.
+3. Derive the main repo root as the parent of the resolved common-dir (i.e. `dirname(absoluteCommonDir)`).
+4. Look for `.5x/5x.db` under the derived main repo root. **If it exists, that is the canonical control-plane DB (managed mode). This always wins — even if the current checkout also has a local `.5x/5x.db`.**
+5. If no `.5x/5x.db` exists at the main repo root, check the current checkout root for a local `.5x/5x.db`. If found, that checkout is in isolated mode.
+6. If neither exists, the command is outside any 5x-managed context and falls through to existing behavior (init prompt, etc.).
+
+**Root DB always wins.** When the git common-dir root has `.5x/5x.db`, all checkouts (root, nested worktree, externally attached worktree) use that DB regardless of whether the current checkout also has a local `.5x/5x.db`. Isolated mode is only possible when the common-dir root does NOT have a `.5x` DB — i.e., the user ran `5x init` in a worktree checkout that is not backed by a 5x-managed main repo.
 
 This replaces the current `resolveProjectRoot` → `resolveDbContext` chain as the entry point for control-plane resolution. `resolveProjectRoot` remains used for config discovery (e.g. `5x.toml`) but DB location is no longer derived from it.
 
@@ -60,8 +65,8 @@ A new helper `resolveControlPlaneRoot(startDir?)` encapsulates this logic and is
 
 **Two operating modes are supported (default + explicit isolated).**
 
-- **Managed mode (default):** commands from any checkout (root or linked worktree) resolve the root `.5x/5x.db` via git common-dir. Run-scoped commands use plan→worktree mapping for execution context.
-- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout and operates there as standalone root; state is local to that worktree and can be discarded with it. Detected when the current checkout root has its own `.5x/5x.db` AND is not the git common-dir root.
+- **Managed mode (default):** commands from any checkout (root or linked worktree) resolve the root `.5x/5x.db` via git common-dir. Run-scoped commands use plan→worktree mapping for execution context. When the root DB exists, it is always authoritative — a local `.5x/5x.db` in a worktree checkout is ignored.
+- **Isolated mode (explicit):** user runs `5x init` in a worktree checkout whose git common-dir root does NOT have `.5x/5x.db`. The local `.5x/5x.db` becomes the control-plane DB; state is local to that worktree and can be discarded with it. If a root DB is later created (e.g. via `5x init` in the main checkout), subsequent commands from the worktree will switch to managed mode and use the root DB.
 - No implicit cross-sync between managed and isolated DBs.
 
 **Run-scoped context resolution becomes first-class.**
@@ -78,11 +83,12 @@ A new helper `resolveControlPlaneRoot(startDir?)` encapsulates this logic and is
 
 Note: `quality run` does not currently expose a `--workdir` flag. Phase 3 adds `--workdir` to `quality run` so the precedence model applies symmetrically.
 
-**Mode boundary is checkout-local.**
+**Mode boundary follows strict precedence.**
 
 - Command context resolution starts by resolving the control-plane root via `resolveControlPlaneRoot` (git common-dir approach).
-- If the current checkout has its own `.5x/5x.db` distinct from the common-dir root's DB, commands use it (isolated mode).
-- Managed mode behavior applies within whichever control-plane DB the command is currently using.
+- If the git common-dir root has `.5x/5x.db`, that DB is used (managed mode). Any local `.5x/5x.db` in the current checkout is ignored.
+- If the git common-dir root does NOT have `.5x/5x.db` but the current checkout has one, that local DB is used (isolated mode).
+- This means a worktree cannot operate in isolated mode while its parent repo is 5x-managed. To use isolated mode, the main repo must not have been initialized with `5x init`.
 
 **Missing worktree: fail closed for all commands.**
 
@@ -120,9 +126,10 @@ When a run is mapped to a worktree and that worktree path is missing or unreadab
 
 - [ ] Add `resolveControlPlaneRoot(startDir?)` helper (new module, e.g. `src/commands/control-plane.ts`).
 - [ ] Implementation:
-  - Run `git rev-parse --git-common-dir` from `startDir` (or cwd).
-  - Derive main repo root from the common-dir result (parent of absolute path, or resolved relative to git-dir).
-  - Check for `.5x/5x.db` at main repo root → managed mode.
+  - Run both `git rev-parse --git-dir` and `git rev-parse --git-common-dir` from `startDir` (or cwd).
+  - Resolve common-dir to an absolute path: if already absolute, use directly; if relative (starts with `.` or `..`), resolve relative to the absolute path of git-dir.
+  - Derive main repo root as `dirname(absoluteCommonDir)`.
+  - Check for `.5x/5x.db` at main repo root → managed mode (always wins, even if local `.5x/5x.db` exists).
   - If no root DB, check current checkout root for local `.5x/5x.db` → isolated mode.
   - Return `{ controlPlaneRoot, mode: 'managed' | 'isolated' | 'none' }`.
 - [ ] Update `resolveDbContext()` in `src/commands/context.ts` to use `resolveControlPlaneRoot` for DB path resolution instead of deriving DB path directly from `resolveProjectRoot`.
@@ -269,7 +276,9 @@ Files:
 - [ ] From root checkout: `resolveControlPlaneRoot` returns root path, managed mode.
 - [ ] From nested linked worktree (inside repo tree): resolves to root `.5x/5x.db`.
 - [ ] From externally attached worktree (checkout outside repo tree): resolves to root `.5x/5x.db` via git common-dir.
-- [ ] From isolated-mode worktree (`5x init` inside worktree): resolves to local `.5x/5x.db`, isolated mode.
+- [ ] From worktree with local `.5x/5x.db` but root DB also exists: resolves to root `.5x/5x.db` (managed mode wins).
+- [ ] From worktree with local `.5x/5x.db` and no root DB: resolves to local `.5x/5x.db`, isolated mode.
+- [ ] Relative `--git-common-dir` result: resolved correctly relative to `--git-dir` absolute path.
 - [ ] From directory with no git context: returns mode `none`.
 
 ### Core behavior
@@ -319,21 +328,24 @@ Files:
 
 ### Isolated mode
 
-- [ ] `5x init` inside a linked worktree creates local `.5x/5x.db`; subsequent commands use local DB.
-- [ ] `5x init` inside an externally attached worktree creates local `.5x/5x.db`; subsequent commands use local DB.
-- [ ] Commands in isolated mode do not read/write the root DB.
+Isolated mode only applies when the git common-dir root does NOT have `.5x/5x.db`.
+
+- [ ] `5x init` inside a worktree whose parent repo has no `.5x/5x.db` creates local `.5x/5x.db`; subsequent commands use local DB (isolated mode).
+- [ ] `5x init` inside an externally attached worktree whose parent repo has no `.5x/5x.db` creates local `.5x/5x.db` (isolated mode).
+- [ ] Commands in isolated mode do not read/write the root DB (because it doesn't exist).
 - [ ] `run init` in isolated mode creates run in local DB, not root DB.
 - [ ] `invoke --run` in isolated mode uses local DB run context.
 - [ ] `quality run --run` in isolated mode executes against local checkout.
-- [ ] Switching between isolated and managed mode: removing local `.5x/5x.db` restores managed-mode behavior.
+- [ ] Root DB creation overrides isolated mode: if `5x init` is later run in the main checkout, subsequent commands from the worktree switch to managed mode and use the root DB (local `.5x/5x.db` is ignored).
 - [ ] `worktree attach/remove` from isolated mode emit context-aware warnings.
+- [ ] When root DB exists AND local `.5x/5x.db` exists, commands always use root DB (managed mode wins).
 
 ## Backward Compatibility
 
 - Existing workflows that explicitly `cd` into worktree keep working.
 - Existing workflows using explicit `--workdir` keep working.
 - Existing JSON envelope fields remain; new fields are additive.
-- Manual isolated workflows (`5x init` inside worktree, local `.5x`) remain supported.
+- Manual isolated workflows (`5x init` inside worktree, local `.5x`) remain supported when the parent repo is not 5x-managed.
 
 ## Risks and Mitigations
 
@@ -347,9 +359,10 @@ Files:
 ## Rollout
 
 1. Implement Phase 1-2 (resolver + invoke).
-2. Land Phase 3 (`quality`/`diff` run-scoped behavior).
+2. Land Phase 3 (`quality`/`diff` + all `run` subcommands: `state`, `record`, `complete`, `reopen`, `watch`, `list`, `init`).
 3. Land Phase 4-5 (envelope enrichment + skills/docs).
-4. Run full test suite + typecheck + lint.
+4. Land Phase 6 (worktree command guards).
+5. Run full test suite + typecheck + lint.
 
 ## Acceptance Criteria
 
@@ -358,9 +371,18 @@ Files:
   - `5x quality run --run <id>` executes in mapped worktree and records to root run DB.
   - `5x diff --run <id>` inspects mapped worktree changes.
 - No `.5x/` directory is required in worktree checkouts for managed mode.
-- In isolated mode, `5x init` inside a worktree creates local `.5x/5x.db` and commands run entirely against that local state.
+- In isolated mode (parent repo not 5x-managed), `5x init` inside a worktree creates local `.5x/5x.db` and commands run entirely against that local state.
+- When root DB exists, it always wins: a local `.5x/5x.db` in a worktree is ignored in favor of the root DB.
 
 ## Revision History
+
+### v1.3 — March 9, 2026 (review addendum: `.5x/runs/run_fef6a3ad86da/review.md`)
+
+Addressed three remaining concerns from the review addendum (2026-03-09):
+
+- **Mode precedence inconsistency (addendum concern 1):** Resolved conflicting statements about managed-vs-isolated mode. Established single authoritative rule: root DB always wins. When git common-dir root has `.5x/5x.db`, it is used regardless of local `.5x/5x.db` in the current checkout. Isolated mode is ONLY possible when the common-dir root does NOT have a `.5x` DB. Updated: resolution algorithm (step 4), "Two operating modes" section, "Mode boundary" section (renamed to "Mode boundary follows strict precedence"), isolated mode test matrix, backward compat, acceptance criteria, and overview.
+- **Git path resolution gap (addendum concern 2):** Resolution algorithm now explicitly captures both `git rev-parse --git-dir` and `git rev-parse --git-common-dir`. Relative common-dir results are resolved relative to the absolute path of git-dir. Updated: resolution algorithm (steps 1-2), Phase 1a implementation checklist, and added relative path resolution test case to control-plane test matrix.
+- **Rollout misalignment (addendum concern 3):** Rollout section Phase 3 now explicitly lists all `run` subcommands (`state`, `record`, `complete`, `reopen`, `watch`, `list`, `init`) alongside `quality`/`diff`. Added Phase 6 (worktree command guards) as a rollout step.
 
 ### v1.2 — March 9, 2026 (review: `.5x/runs/run_fef6a3ad86da/review.md`)
 
