@@ -64,6 +64,10 @@ Provide an overall readiness assessment:
 - **ready_with_corrections**: Implementation needs corrections but they are all mechanical (auto_fix).
 - **not_ready**: Implementation has fundamental issues requiring human decisions or significant rework.
 
+## Non-Interactive Execution
+
+You are running as a subprocess in an automated pipeline. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human judgment on an issue, classify it as `human_required` in your review items — the orchestrator will escalate it.
+
 ## Completion
 
 Write your review to `{{review_path}}` and return when done. The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.

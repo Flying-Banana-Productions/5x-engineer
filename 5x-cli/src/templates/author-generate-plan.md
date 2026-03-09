@@ -40,6 +40,10 @@ You are implementing the 5x workflow. Generate an implementation plan from the p
 - Design decisions should be documented with rationale.
 - Test strategy should cover unit, integration, and edge cases.
 
+## Non-Interactive Execution
+
+You are running as a subprocess in an automated pipeline. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human input, return with `result: "needs_human"` and explain what you need in the `reason` field.
+
 ## Completion
 
 Write the plan to `{{plan_path}}` and return when done. You will be asked to report the outcome of your work in a structured format when you complete.
