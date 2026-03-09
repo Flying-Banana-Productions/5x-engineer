@@ -140,3 +140,80 @@ The v1.6 revision addresses the remaining issues from the v1.5 addendum. The pla
 - If the JS/MJS bootstrap contract is resolved and the config-discovery boundary is fixed, the remaining issues here look mechanical.
 
 **Readiness:** Not ready
+
+## Addendum (2026-03-09) - Commit `1bb1427` re-review
+
+### What's Addressed
+
+- The control-plane bootstrap gap called out in the last review is now closed for the supported config file set. `readDbPathFromConfig()` stops on the first discovered config file and extracts literal `db.path` values from `5x.toml`, `5x.config.js`, and `5x.config.mjs`, so managed worktrees no longer silently fall back to `.5x` when the root repo keeps its DB path in JS/MJS config (`5x-cli/src/commands/control-plane.ts:85`).
+- The added tests cover the new bootstrap cases and the precedence rule that matters here: JS config, MJS config, TOML-over-JS precedence, and "first config wins even when TOML omits `db.path`" (`5x-cli/test/commands/control-plane.test.ts:280`).
+- Local verification passes: `bun test 5x-cli/test/commands/control-plane.test.ts 5x-cli/test/config-layering.test.ts` (32 pass).
+
+### Remaining Concerns
+
+- None for this change set. The previously open JS/MJS bootstrap issue is addressed, and I do not see a new blocker introduced by `1bb1427`.
+
+### Assessment
+
+- Correctness is improved in the right place: the control-plane resolver now honors the same config filename precedence the rest of the config system uses during bootstrap.
+- Architecture stays consistent with the Phase 1 design: the fix remains localized to the bootstrap helper and tightens coverage rather than adding more cwd-specific branching.
+- Test strategy is adequate for this delta: the new cases exercise both new config formats and the precedence behavior that previously regressed.
+
+**Readiness:** Ready
+
+## Addendum (2026-03-09) - Commit `41abb41` re-review
+
+### What's Addressed
+
+- The Phase 2 envelope bug is fixed. `invoke` now only emits `worktree_plan_path` when `resolveRunExecutionContext()` confirmed that the derived plan path actually exists in the mapped worktree (`5x-cli/src/commands/invoke.handler.ts:344`, `5x-cli/src/commands/invoke.handler.ts:634`).
+- That behavior matches the plan contract more closely: downstream consumers no longer get a misleading `worktree_plan_path` that actually points back at the control-plane checkout.
+- Focused verification passes locally: `bun test 5x-cli/test/commands/invoke-worktree.test.ts` (10 pass).
+
+### Remaining Concerns
+
+- **P1.1 - Control-plane bootstrap still ignores JS/MJS `db.path` overrides.** This commit fixes the output-envelope correctness issue, but it does not change the unresolved bootstrap contract in `5x-cli/src/commands/control-plane.ts:85`. The resolver still falls back to `.5x` when the authoritative root config is `5x.config.js` or `5x.config.mjs`, so a managed repo with a custom JS/MJS `db.path` can still be misdetected from a worktree. That remains a correctness and plan-compliance gap requiring an explicit product/architecture decision: either support JS/MJS bootstrap or narrow the supported bootstrap contract to TOML-only. **Action:** `human_required`
+
+### Assessment
+
+- The shipped fix is correct and closes the previously raised `worktree_plan_path` issue without widening behavior.
+- Phase 2 is still not ready to mark complete because the broader control-plane bootstrap contract remains unresolved in shipped code.
+
+**Readiness:** Not ready
+
+## Addendum (2026-03-09) - Commit `36bd2a4` Phase 2 review
+
+### What's Addressed
+
+- `invoke` now resolves the control-plane and run execution context before starting the provider, which is the right architectural shape for Phase 2.
+- Log and template override paths are now rooted under `controlPlaneRoot/stateDir`, matching the Phase 2 artifact-rooting requirement.
+- The follow-on commit `c484f93` improves `init` test isolation and keeps the Phase 1 guard coverage stable under repeated subprocess runs.
+
+### Remaining Concerns
+
+- **P1.1 - `worktree_plan_path` can point at the root checkout instead of the mapped worktree.** `resolveRunExecutionContext()` intentionally falls back to the root `plan_path` when the plan file is absent in the mapped worktree (`5x-cli/src/commands/run-context.ts:184`), but `invoke` still emits that value as `worktree_plan_path` whenever any worktree mapping exists (`5x-cli/src/commands/invoke.handler.ts:632`). That makes the envelope lie about where the plan lives and can mislead downstream pipe consumers that treat `worktree_plan_path` as a worktree-local path. Only emit `worktree_plan_path` when the derived worktree plan path actually exists, and add a regression test for the mapped-worktree/missing-plan-file case. **Action:** `auto_fix`
+- **P1.2 - Control-plane bootstrap still ignores JS/MJS `db.path` overrides.** This phase builds more behavior on top of `resolveControlPlaneRoot()`, but the bootstrap helper still only reads `db.path` from `5x.toml` and silently falls back to `.5x` for `5x.config.js` / `5x.config.mjs` (`5x-cli/src/commands/control-plane.ts:85`, `5x-cli/src/commands/control-plane.ts:107`). In a managed repo that keeps its authoritative DB path in JS config, `invoke --run` from a worktree can still resolve the wrong control-plane and reintroduce split-brain behavior. This remains a product/architecture contract gap: either support JS/MJS bootstrap or explicitly narrow the supported bootstrap contract and documentation. **Action:** `human_required`
+
+### Assessment
+
+- Phase 2 is mostly implemented in the right places, and the focused tests that were added here pass locally (`bun test test/commands/invoke-worktree.test.ts`, `bun test test/commands/init-guard.test.ts`).
+- I do not consider the phase ready to advance yet: one shipped envelope bug remains, and the previously-raised bootstrap contract gap still blocks full correctness for managed worktrees.
+
+**Readiness:** Not ready
+
+## Addendum (2026-03-09) - Commit `c484f93` re-review
+
+### What's Addressed
+
+- The new test changes remove the shared temp-root dependency from the three subprocess-heavy `init` scenarios that were most likely to interfere under repeated execution, and the focused `bun test 5x-cli/test/commands/init-guard.test.ts` run passes locally.
+- The added per-test temp directories preserve the intended assertions around repo-root scaffolding and managed-checkout behavior without changing product code.
+
+### Remaining Concerns
+
+- **P1.1 - Control-plane bootstrap still ignores JS/MJS `db.path` overrides.** This commit is test-only and does not change the bootstrap contract in `5x-cli/src/commands/control-plane.ts:85`. The resolver still falls back to `.5x` whenever the authoritative root config is `5x.config.js` or `5x.config.mjs`, so a managed repo with a custom JS/MJS `db.path` can still be misdetected from a worktree. That remains a plan-compliance and correctness gap requiring a product/architecture decision: either support JS/MJS `db.path` during bootstrap or explicitly narrow the supported bootstrap contract to TOML-only. **Action:** `human_required`
+
+### Assessment
+
+- This commit improves test isolation, but it does not materially change phase readiness because the unresolved bootstrap contract remains in shipped code.
+- Phase 1 still should not be considered complete until the JS/MJS bootstrap behavior is resolved and documented.
+
+**Readiness:** Not ready
