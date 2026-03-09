@@ -11,6 +11,12 @@ import {
 	loadConfig,
 } from "../config.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
+import {
+	extractPipeContext,
+	isStdinPiped,
+	type PipeContext,
+	readUpstreamEnvelope,
+} from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
 import {
 	type AuthorStatus,
@@ -49,7 +55,7 @@ export type InvokeRole = "author" | "reviewer";
 
 export interface InvokeParams {
 	template: string;
-	run: string;
+	run?: string;
 	vars?: string | string[];
 	model?: string;
 	workdir?: string;
@@ -194,9 +200,28 @@ export async function invokeAgent(
 	role: InvokeRole,
 	params: InvokeParams,
 ): Promise<void> {
+	// Read upstream context from stdin when --run is not provided
+	// and no --var uses @- (which would consume stdin).
+	let pipeContext: PipeContext | undefined;
+
+	const hasStdinVar = Array.isArray(params.vars)
+		? params.vars.some((v) => v.includes("=@-"))
+		: (params.vars?.includes("=@-") ?? false);
+
+	if (!params.run && !hasStdinVar && isStdinPiped()) {
+		const upstream = await readUpstreamEnvelope();
+		if (upstream) {
+			pipeContext = extractPipeContext(upstream.data);
+			params.run ??= pipeContext.runId;
+		}
+	}
+
 	// Validate --run (required) — reject path traversal
 	if (!params.run) {
-		outputError("INVALID_ARGS", "--run is required for invoke commands");
+		outputError(
+			"INVALID_ARGS",
+			"--run is required (provide it or pipe from an upstream command)",
+		);
 	}
 	validateRunId(params.run);
 
@@ -245,9 +270,12 @@ export async function invokeAgent(
 	}
 
 	const explicitVars = parseVars(params.vars);
+	const mergedVars = pipeContext
+		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
+		: explicitVars;
 	const variables = resolveInvokeTemplateVariables(
 		templateMetadata.variables,
-		explicitVars,
+		mergedVars,
 		config,
 		projectRoot,
 	);

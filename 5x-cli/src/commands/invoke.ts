@@ -18,8 +18,8 @@ const sharedArgs = {
 	},
 	run: {
 		type: "string" as const,
-		description: "Run ID (required — used for NDJSON log directory)",
-		required: true as const,
+		description: "Run ID (provide via flag or pipe from upstream command)",
+		required: false as const,
 	},
 	var: {
 		type: "string" as const,
@@ -79,7 +79,7 @@ const authorCmd = defineCommand({
 	run: ({ args }) =>
 		invokeAgent("author", {
 			template: args.template as string,
-			run: args.run as string,
+			run: args.run as string | undefined,
 			vars: args.var as string | string[] | undefined,
 			model: args.model as string | undefined,
 			workdir: args.workdir as string | undefined,
@@ -103,7 +103,7 @@ const reviewerCmd = defineCommand({
 	run: ({ args }) =>
 		invokeAgent("reviewer", {
 			template: args.template as string,
-			run: args.run as string,
+			run: args.run as string | undefined,
 			vars: args.var as string | string[] | undefined,
 			model: args.model as string | undefined,
 			workdir: args.workdir as string | undefined,

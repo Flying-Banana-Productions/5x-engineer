@@ -451,16 +451,18 @@ if (!params.result) {
 
 ## Phase 4: Invoke Reads Upstream Context from Stdin
 
+**Status:** Complete
+
 **Completion gate:** `5x run init --plan plan.md | 5x invoke author author-next-phase --var phase_number=1` works without `--run`. Template variable `plan_path` is auto-populated from upstream `data.plan_path`. All tests pass.
 
 ### 4.1 Relax `--run` requirement in invoke (`src/commands/invoke.ts`)
 
-- [ ] Change `run` arg from `required: true` to `required: false`
-- [ ] Handler will validate that `run` is resolved (from flag or stdin) before proceeding
+- [x] Change `run` arg from `required: true` to `required: false`
+- [x] Handler will validate that `run` is resolved (from flag or stdin) before proceeding
 
 ### 4.2 Add upstream context reading to invoke handler (`src/commands/invoke.handler.ts`)
 
-- [ ] At the top of `invokeAgent()`, before `validateRunId()`:
+- [x] At the top of `invokeAgent()`, before `validateRunId()`:
 
 ```typescript
 let pipeContext: PipeContext | undefined;
@@ -485,7 +487,7 @@ if (!params.run) {
 validateRunId(params.run);
 ```
 
-- [ ] When parsing template variables, merge pipe context vars as fallbacks:
+- [x] When parsing template variables, merge pipe context vars as fallbacks:
 
 ```typescript
 const explicitVars = parseVars(params.vars);
@@ -496,15 +498,15 @@ const variables = pipeContext
 
 ### 4.3 Tests (`test/commands/invoke-pipe.test.ts` **NEW**)
 
-- [ ] Test: pipe run init envelope -> invoke picks up `data.run_id` as --run
-- [ ] Test: pipe run init envelope -> invoke auto-injects `data.plan_path` as template variable
-- [ ] Test: explicit `--var plan_path=other.md` overrides piped `data.plan_path`
-- [ ] Test: explicit `--run R2` overrides piped `data.run_id`
-- [ ] Test: error when no --run and stdin is not piped
-- [ ] Test: `--var key=@-` prevents upstream context reading (stdin consumed for var)
-- [ ] Test: non-string data fields are not injected as template vars
-- [ ] Test: values with newlines in data fields are skipped for template var injection
-- [ ] Test: excluded metadata keys (session_id, log_path, etc.) are not injected as template vars
+- [x] Test: pipe run init envelope -> invoke picks up `data.run_id` as --run
+- [x] Test: pipe run init envelope -> invoke auto-injects `data.plan_path` as template variable
+- [x] Test: explicit `--var plan_path=other.md` overrides piped `data.plan_path`
+- [x] Test: explicit `--run R2` overrides piped `data.run_id`
+- [x] Test: error when no --run and stdin is not piped
+- [x] Test: `--var key=@-` prevents upstream context reading (stdin consumed for var)
+- [x] Test: non-string data fields are not injected as template vars
+- [x] Test: values with newlines in data fields are skipped for template var injection
+- [x] Test: excluded metadata keys (session_id, log_path, etc.) are not injected as template vars
 
 ---
 
