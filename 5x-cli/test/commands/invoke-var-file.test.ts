@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hasStdinVarFlag } from "../../src/commands/invoke.handler.js";
@@ -72,10 +72,11 @@ async function setupProjectWithRun(dir: string): Promise<{
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
 
-	// Configure sample provider with valid structured output
+	// Configure sample provider with echo enabled so we can verify
+	// that loaded @- and @path content reaches the rendered prompt.
 	writeFileSync(
 		join(dir, "5x.toml"),
-		'[author]\nprovider = "sample"\nmodel = "sample/test-model"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
+		'[author]\nprovider = "sample"\nmodel = "sample/test-model"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = true\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
 	);
 
 	// Initial commit so worktree is clean
@@ -168,6 +169,23 @@ function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+/**
+ * Read the NDJSON log file and return the echoed prompt text.
+ * The sample provider (echo=true) writes text events as
+ * `[SampleProvider echo] <rendered prompt>`.
+ * Returns the full text delta from the first "text" event.
+ */
+function readEchoedPromptFromLog(logPath: string): string {
+	const lines = readFileSync(logPath, "utf-8").trim().split("\n");
+	for (const line of lines) {
+		const entry = JSON.parse(line) as Record<string, unknown>;
+		if (entry.type === "text" && typeof entry.delta === "string") {
+			return entry.delta;
+		}
+	}
+	throw new Error(`No text event found in log: ${logPath}`);
+}
+
 /** Build a mock run init envelope for piping. */
 function makeRunInitEnvelope(
 	runId: string,
@@ -227,7 +245,7 @@ describe("hasStdinVarFlag", () => {
 
 describe("--var key=@path (file read)", () => {
 	test(
-		"--var user_notes=@./fixture.txt reads value from file",
+		"--var user_notes=@./fixture.txt reads value from file and reaches rendered prompt",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -255,6 +273,12 @@ describe("--var key=@path (file read)", () => {
 				expect(json.ok).toBe(true);
 				const data = json.data as Record<string, unknown>;
 				expect(data.run_id).toBe(runId);
+
+				// Verify the file content actually reached the rendered prompt
+				// by reading the NDJSON log (sample provider echoes the prompt)
+				const logPath = data.log_path as string;
+				const echoedPrompt = readEchoedPromptFromLog(logPath);
+				expect(echoedPrompt).toContain("These are notes from a file");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -298,7 +322,7 @@ describe("--var key=@path (file read)", () => {
 	);
 
 	test(
-		"@path vars work alongside upstream context reading (no conflict)",
+		"@path vars work alongside upstream context reading and content reaches prompt",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -330,6 +354,11 @@ describe("--var key=@path (file read)", () => {
 				const data = json.data as Record<string, unknown>;
 				// run_id should come from piped upstream envelope
 				expect(data.run_id).toBe(runId);
+
+				// Verify the file content reached the rendered prompt
+				const logPath = data.log_path as string;
+				const echoedPrompt = readEchoedPromptFromLog(logPath);
+				expect(echoedPrompt).toContain("Notes from file");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -340,7 +369,7 @@ describe("--var key=@path (file read)", () => {
 
 describe("--var key=@- (stdin read)", () => {
 	test(
-		"--var user_notes=@- reads value from piped stdin",
+		"--var user_notes=@- reads value from piped stdin and reaches rendered prompt",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -371,6 +400,12 @@ describe("--var key=@- (stdin read)", () => {
 				expect(json.ok).toBe(true);
 				const data = json.data as Record<string, unknown>;
 				expect(data.run_id).toBe(runId);
+
+				// Verify the stdin content actually reached the rendered prompt
+				// by reading the NDJSON log (sample provider echoes the prompt)
+				const logPath = data.log_path as string;
+				const echoedPrompt = readEchoedPromptFromLog(logPath);
+				expect(echoedPrompt).toContain("These are notes from stdin");
 			} finally {
 				cleanupDir(dir);
 			}
