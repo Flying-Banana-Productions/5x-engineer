@@ -1,6 +1,6 @@
 # Feature: Worktree-Authoritative Execution Context
 
-**Version:** 1.3  
+**Version:** 1.4  
 **Created:** March 9, 2026  
 **Status:** Proposed (revised)
 
@@ -111,6 +111,32 @@ When a run is mapped to a worktree and that worktree path is missing or unreadab
 - For `invoke --run R`, if run plan is mapped to worktree, effective `plan_path` var should point to the plan file under that worktree (when present).
 - Explicit `--var plan_path=...` still wins.
 
+**Plan-path-anchored config layering for monorepo sub-projects.**
+
+The single root DB model creates a problem for monorepos: `5x.toml` at the repo root is a global config, so `paths.*`, `qualityGates`, and other per-project settings have no sub-project scoping. A monorepo with a `5x-cli/` sub-project that has its own `docs/development/reviews/` directory cannot manage those reviews separately from the repo root config.
+
+Two approaches were evaluated:
+
+1. **Config layering** — multiple `5x.toml` files, nearest-to-context wins for overrides, single root DB unchanged.
+2. **Project/workspace concept in DB** — new `projects` table, plans/runs scoped to a project, per-project config stored in DB.
+
+Option 1 was selected. It has fewer edge cases, no DB schema changes, no migration, and a smaller blast radius. Option 2's main advantage (explicit project scope in DB) can be approximated by deriving project context from `plan_path` at query time, and added incrementally if needed later.
+
+Design:
+
+- Config resolution is anchored to the **plan's location** in the project structure, not to cwd. This eliminates ambient context drift while allowing sub-project-specific overrides.
+- The `contextDir` used for config discovery depends on the command type:
+  - **Creation commands** (no plan yet): cwd — determines where new plans/reviews land.
+  - **Plan-scoped commands** (plan exists): `dirname(plan_path)`.
+  - **Run-scoped commands** (`--run`): `dirname(effectivePlanPath)` from `resolveRunExecutionContext`.
+  - **Global commands** (`run list`, unscoped): `controlPlaneRoot` — root config only.
+- **Root config** is discovered from `controlPlaneRoot`. **Nearest config** is discovered by walking up from `contextDir`. If they are different files, nearest config provides overrides.
+- Merge semantics: Zod defaults ← root config ← nearest config overrides.
+  - **Objects**: deep field-level merge. Sub-project inherits unset fields from root. Example: root sets `author.model = "claude-opus"`, sub-project sets only `author.timeout = 300` → sub-project gets `{ model: "claude-opus", timeout: 300 }`.
+  - **Arrays**: replace. Sub-project array replaces root array entirely. Example: sub-project sets `qualityGates = ["pytest"]` → only `["pytest"]`, not appended to root gates.
+  - **`db` section**: always from root config (or Zod defaults). Nearest config `db` is ignored with a warning. Rationale: `db.path` must align with worktree-authoritative control-plane resolution; sub-project override would create split-brain DB state.
+- **Everything except `db` is overridable** at the sub-project level: `author`, `reviewer`, `opencode`, `qualityGates`, `worktree`, `paths`, and all limits (`maxStepsPerRun`, `maxReviewIterations`, `maxQualityRetries`, `maxAutoRetries`).
+
 **Skill/orchestration ergonomics.**
 
 - Skill docs should use `run init --worktree` so mappings are established early.
@@ -165,6 +191,38 @@ Files:
 - `test/commands/control-plane.test.ts` (new — control-plane resolution tests)
 - `test/commands/run-context.test.ts` (new — run context resolver tests)
 
+#### 1c: Plan-path-anchored config layering
+
+**Completion gate:** config resolution returns the correct layered config for any plan/run context, independent of cwd. Sub-project `5x.toml` overrides are merged correctly with root config.
+
+- [ ] Add `resolveLayeredConfig(controlPlaneRoot, contextDir?)` helper in `src/config.ts`.
+- [ ] Implementation:
+  - Discover **root config**: `discoverConfigFile(controlPlaneRoot)`. Load and parse if found.
+  - If `contextDir` provided and differs from `controlPlaneRoot`, discover **nearest config**: `discoverConfigFile(contextDir)`. Load and parse if found and is a different file from root config.
+  - Merge: Zod defaults ← root config ← nearest config overrides.
+  - Objects: deep field-level merge (nearest config inherits unset fields from root).
+  - Arrays: replace (nearest config array replaces root array entirely).
+  - `db` section: always from root config (or Zod defaults). If nearest config contains `db`, emit warning and ignore.
+  - Return `{ config: FiveXConfig, rootConfigPath: string | null, nearestConfigPath: string | null, isLayered: boolean }`.
+- [ ] Update `resolveProjectContext()` in `src/commands/context.ts` to accept optional `contextDir` parameter and use `resolveLayeredConfig` instead of plain `loadConfig` when `contextDir` is provided.
+- [ ] Update `resolveDbContext()` to pass `contextDir` through to `resolveProjectContext()`.
+- [ ] Add unit tests covering:
+  - Root config only (no sub-project config): existing behavior preserved, `isLayered = false`.
+  - Sub-project config overrides `paths.*`: correct merge, root paths replaced.
+  - Sub-project config overrides `qualityGates`: array replace, not append.
+  - Sub-project config sets `author.timeout` only: inherits `author.model` from root (deep merge).
+  - Sub-project config sets `db.path`: ignored with warning, root DB path used.
+  - No root config, sub-project config only: sub-project provides all settings, Zod defaults fill gaps.
+  - No config at all: Zod defaults returned, `isLayered = false`.
+  - `contextDir` inside sub-project: walks up and finds nearest `5x.toml`.
+  - `contextDir` at repo root: finds root `5x.toml` only, no layering.
+
+Files:
+
+- `src/config.ts` (new `resolveLayeredConfig` function + deep merge logic)
+- `src/commands/context.ts` (update `resolveProjectContext` / `resolveDbContext` to accept `contextDir`)
+- `test/config-layering.test.ts` (new — config layering tests)
+
 ### Phase 2: `invoke` Auto-Resolve Workdir + Plan Path
 
 **Completion gate:** `invoke --run` works from root cwd and still executes in mapped worktree by default.
@@ -172,6 +230,7 @@ Files:
 - [ ] Update `invoke.handler.ts`:
   - when `params.run` present and `params.workdir` absent, call resolver and set provider `workingDirectory` to resolved worktree directory.
   - when resolver returns effective mapped plan path, inject it as default for `plan_path` variable resolution.
+  - pass `dirname(effectivePlanPath)` as `contextDir` to config resolution so layered config is plan-anchored (Phase 1c).
 - [ ] Preserve explicit precedence:
   - explicit `--workdir` wins over mapping
   - explicit `--var plan_path=...` wins over resolver defaults
@@ -196,6 +255,7 @@ Files:
   - add `--workdir` flag for explicit override (aligns with precedence model)
   - add `--run`-aware context resolution via `resolveRunExecutionContext`
   - if run mapped, execute quality gates in mapped worktree directory
+  - pass `dirname(effectivePlanPath)` as `contextDir` to config resolution (Phase 1c) so `qualityGates` are resolved from the correct sub-project config
   - keep recording into root DB by `run`
 - [ ] `diff`:
   - add optional `--run <id>`
@@ -213,7 +273,7 @@ All `run` subcommands that accept `--run` must use the control-plane resolver to
 - [ ] `run watch --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. Watch log path resolves relative to control-plane root.
 - [ ] `run list`: update to use `resolveControlPlaneRoot` for DB resolution (no `--run` flag, but must find root DB from any checkout context).
 
-Note: `run init` already uses a custom DB resolution flow (lock-first). It must also be updated to resolve the control-plane root via `resolveControlPlaneRoot` so that `run init` from a linked worktree creates the run in the root DB.
+Note: `run init` already uses a custom DB resolution flow (lock-first). It must also be updated to resolve the control-plane root via `resolveControlPlaneRoot` so that `run init` from a linked worktree creates the run in the root DB. Config should be resolved with `contextDir = dirname(canonicalPlanPath)` (Phase 1c) so run config inherits the correct sub-project settings.
 
 Files:
 
@@ -326,6 +386,21 @@ Files:
 - [ ] `run init` from externally attached worktree creates run in root DB.
 - [ ] `run list` from externally attached worktree lists runs from root DB.
 
+### Config layering
+
+- [ ] Root config only (no sub-project `5x.toml`): `resolveLayeredConfig` returns root config, `isLayered = false`.
+- [ ] Sub-project `5x.toml` overrides `paths.*`: merged config uses sub-project paths, root config for everything else.
+- [ ] Sub-project `5x.toml` overrides `qualityGates`: sub-project array replaces root array (not appended).
+- [ ] Sub-project `5x.toml` sets only `author.timeout`: merged config has root `author.model` + sub-project `author.timeout` (deep field-level merge).
+- [ ] Sub-project `5x.toml` sets `db.path`: ignored with warning, root `db.path` used.
+- [ ] No root config, sub-project config only: sub-project provides all settings, Zod defaults fill gaps.
+- [ ] No config at all: Zod defaults returned, `isLayered = false`.
+- [ ] `invoke --run` for plan under sub-project: config resolved from sub-project `5x.toml`, not root.
+- [ ] `quality run --run` for plan under sub-project: `qualityGates` from sub-project config.
+- [ ] `run init` for plan under sub-project: run config uses sub-project settings.
+- [ ] Plan creation from sub-project cwd: `paths.*` from nearest `5x.toml` determine output location.
+- [ ] Plan creation from repo root cwd: root `5x.toml` paths used (no sub-project overlay).
+
 ### Isolated mode
 
 Isolated mode only applies when the git common-dir root does NOT have `.5x/5x.db`.
@@ -352,17 +427,21 @@ Isolated mode only applies when the git common-dir root does NOT have `.5x/5x.db
 - **Risk:** path canonicalization bugs across root/worktree paths.
   - **Mitigation:** centralized resolver + focused tests around relative path derivation.
 - **Risk:** mixed root/worktree configs if both contain `5x.toml`.
-  - **Mitigation:** for run-scoped commands, root resolution is derived from run DB context, not ambient cwd.
+  - **Mitigation:** for run-scoped commands, root resolution is derived from run DB context, not ambient cwd. Config layering (Phase 1c) formalizes precedence: root config is base, nearest-to-plan config provides overrides with deep merge.
 - **Risk:** commands without `--run` remain ambiguous from root cwd.
   - **Mitigation:** keep behavior explicit; only run-scoped auto-resolution is automatic.
+- **Risk:** config layering merge semantics surprise users (e.g. array replace vs append).
+  - **Mitigation:** arrays replace (not append) — predictable and consistent. Document merge semantics in user docs (Phase 5). Emit `isLayered` flag in resolver output so commands can surface which config files are active.
 
 ## Rollout
 
-1. Implement Phase 1-2 (resolver + invoke).
-2. Land Phase 3 (`quality`/`diff` + all `run` subcommands: `state`, `record`, `complete`, `reopen`, `watch`, `list`, `init`).
-3. Land Phase 4-5 (envelope enrichment + skills/docs).
-4. Land Phase 6 (worktree command guards).
-5. Run full test suite + typecheck + lint.
+1. Implement Phase 1a-1b (control-plane resolver + run context resolver).
+2. Implement Phase 1c (config layering).
+3. Land Phase 2 (invoke auto-resolve with layered config).
+4. Land Phase 3 (`quality`/`diff` + all `run` subcommands: `state`, `record`, `complete`, `reopen`, `watch`, `list`, `init` — all with `contextDir` threading).
+5. Land Phase 4-5 (envelope enrichment + skills/docs — document config layering semantics).
+6. Land Phase 6 (worktree command guards).
+7. Run full test suite + typecheck + lint.
 
 ## Acceptance Criteria
 
@@ -373,8 +452,27 @@ Isolated mode only applies when the git common-dir root does NOT have `.5x/5x.db
 - No `.5x/` directory is required in worktree checkouts for managed mode.
 - In isolated mode (parent repo not 5x-managed), `5x init` inside a worktree creates local `.5x/5x.db` and commands run entirely against that local state.
 - When root DB exists, it always wins: a local `.5x/5x.db` in a worktree is ignored in favor of the root DB.
+- In a monorepo with sub-project `5x.toml` (e.g. `5x-cli/5x.toml`):
+  - Plans under the sub-project use the sub-project's `paths.*`, `qualityGates`, and other config.
+  - Plans under the repo root use the root `5x.toml` config (or Zod defaults if none).
+  - All runs are stored in the single root `.5x/5x.db` regardless of which sub-project config is active.
+  - Sub-project `db` overrides are ignored; root DB is always authoritative.
 
 ## Revision History
+
+### v1.4 — March 9, 2026
+
+Added plan-path-anchored config layering for monorepo sub-project support:
+
+- **Problem:** single root DB model makes `5x.toml` config global — `paths.*`, `qualityGates`, and other per-project settings cannot be scoped to sub-projects (e.g. `5x-cli/` within a broader monorepo).
+- **Approach selection:** evaluated config layering (multiple `5x.toml` files, nearest-to-context wins) vs project/workspace concept in DB (new `projects` table). Selected config layering — fewer edge cases, no DB schema changes, smaller blast radius.
+- **Design:** config resolution anchored to plan's location (not cwd) eliminates ambient context drift. `contextDir` varies by command type: cwd for creation, `dirname(plan_path)` for plan-scoped, `dirname(effectivePlanPath)` for run-scoped, `controlPlaneRoot` for global.
+- **Merge semantics:** Zod defaults ← root config ← nearest config. Objects: deep field-level merge. Arrays: replace. `db` section: always from root (sub-project override ignored with warning).
+- **Overridable scope:** everything except `db`. Includes `author`, `reviewer`, `opencode`, `qualityGates`, `worktree`, `paths`, and all limits.
+- Added Phase 1c (config layering implementation) between existing Phase 1b and Phase 2.
+- Updated Phases 2-3 to note `contextDir` threading requirement for command handlers.
+- Added config layering test matrix section.
+- Updated Risks, Rollout, and Acceptance Criteria sections.
 
 ### v1.3 — March 9, 2026 (review addendum: `.5x/runs/run_fef6a3ad86da/review.md`)
 
