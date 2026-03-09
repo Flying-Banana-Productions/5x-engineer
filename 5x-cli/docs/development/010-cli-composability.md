@@ -673,16 +673,18 @@ phase: {
 
 ## Phase 7: Update Example Script
 
+**Status:** Complete
+
 **Completion gate:** `examples/author-review-loop.sh` uses new composability features. Script is shorter and clearer. Still functions correctly.
 
 ### 7.1 Rewrite `examples/author-review-loop.sh`
 
-- [ ] Remove the `unwrap()` helper function (no longer needed for recording)
-- [ ] Use `--record` on invoke calls where possible
-- [ ] Use pipe pattern for quality -> record
-- [ ] Keep `jq` for branching logic (inspecting `.data.result.result` to decide next action) — this is the correct tool for value extraction in shell scripts
-- [ ] Add comments showing the composability patterns being used
-- [ ] Update the header comment to reference 5x.toml instead of 5x.config.js
+- [x] Remove the `unwrap()` helper function (no longer needed for recording)
+- [x] Use `--record` on invoke calls where possible
+- [x] Use pipe pattern for quality -> record
+- [x] Keep `jq` for branching logic (inspecting `.data.result.result` to decide next action) — this is the correct tool for value extraction in shell scripts
+- [x] Add comments showing the composability patterns being used
+- [x] Update the header comment to reference 5x.toml instead of 5x.config.js
 
 ### 7.2 Before/after comparison
 
