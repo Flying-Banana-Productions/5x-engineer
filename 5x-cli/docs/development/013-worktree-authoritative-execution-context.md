@@ -342,11 +342,11 @@ Files:
 
 **Completion gate:** downstream commands receive run/worktree context directly from `run init` output.
 
-- [ ] Extend `run init` success payload to include top-level context fields when worktree is known:
+- [x] Extend `run init` success payload to include top-level context fields when worktree is known:
   - `worktree_path`
   - `worktree_plan_path` (derived path in mapped worktree)
-- [ ] Update pipe context extraction rules to capture these fields as safe template defaults where applicable.
-- [ ] Ensure compatibility with existing envelope consumers.
+- [x] Update pipe context extraction rules to capture these fields as safe template defaults where applicable.
+- [x] Ensure compatibility with existing envelope consumers.
 
 Files:
 

@@ -203,6 +203,39 @@ interface WorktreeInitResult {
 }
 
 /**
+ * Phase 4: Derive top-level `worktree_path` and `worktree_plan_path` fields
+ * for the `run init` success payload. These fields sit alongside the nested
+ * `worktree` object so that `extractPipeContext` (which reads top-level keys)
+ * can propagate worktree context to downstream pipe consumers without having
+ * to dive into nested structures.
+ *
+ * `worktree_plan_path` is the plan file path re-rooted into the mapped
+ * worktree. It is only included when the plan file actually exists there.
+ */
+function deriveWorktreeContextFields(
+	worktreeResult: WorktreeInitResult | undefined,
+	planPath: string,
+	controlPlaneRoot: string,
+): { worktree_path?: string; worktree_plan_path?: string } {
+	if (!worktreeResult) return {};
+
+	const fields: { worktree_path?: string; worktree_plan_path?: string } = {
+		worktree_path: worktreeResult.worktree_path,
+	};
+
+	// Derive worktree-relative plan path and include only if the file exists
+	const relPlanPath = relative(controlPlaneRoot, planPath);
+	if (!relPlanPath.startsWith("..") && !isAbsolute(relPlanPath)) {
+		const worktreePlanPath = join(worktreeResult.worktree_path, relPlanPath);
+		if (existsSync(worktreePlanPath)) {
+			fields.worktree_plan_path = worktreePlanPath;
+		}
+	}
+
+	return fields;
+}
+
+/**
  * Phase 3b: `stateDir` parameter anchors worktree path to
  * `<projectRoot>/<stateDir>/worktrees/` instead of `<projectRoot>/.5x/worktrees/`.
  */
@@ -521,6 +554,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				created_at: existing.created_at,
 				resumed: true,
 				...(worktreeResult ? { worktree: worktreeResult } : {}),
+				// Phase 4: top-level worktree context for downstream pipe consumers
+				...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
 			});
 			return;
 		}
@@ -548,6 +583,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			created_at: run?.created_at ?? new Date().toISOString(),
 			resumed: false,
 			...(worktreeResult ? { worktree: worktreeResult } : {}),
+			// Phase 4: top-level worktree context for downstream pipe consumers
+			...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
 		});
 	} catch (err) {
 		if (!lockCleanupRegistered) {
