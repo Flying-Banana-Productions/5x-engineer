@@ -16,12 +16,13 @@ review/fix cycles until the plan is approved.
 ## Prerequisites
 
 - A PRD or TDD document exists at a known path
-- The project has a 5x config file (5x.config.js) or uses defaults
+- The project has a 5x config file (`5x.toml`) or uses defaults
 - A plan template exists (config paths.templates.plan)
+- Plans must live under the repository root (the control-plane root)
 
 ## Tools
 
-- `5x run init --plan <path>` — create or resume a run
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
@@ -92,7 +93,9 @@ Recovery for handling.
 
 ### Monitoring agent progress
 
-Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
+Sub-agent invocations (`5x invoke`) write NDJSON logs under the
+control-plane root's state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`).
+Logs are always anchored to the root, even when executing in a worktree.
 To monitor progress in real-time, suggest the user run in a separate terminal:
 
     5x run watch --run <run-id> --human-readable
@@ -101,7 +104,12 @@ To monitor progress in real-time, suggest the user run in a separate terminal:
 
 ### Step 1: Initialize
 
-Run `5x run init --plan $PLAN_PATH`.
+Run `5x run init --plan $PLAN_PATH --worktree`.
+
+The `--worktree` flag ensures an isolated git worktree is resolved or
+created for this plan. All subsequent `--run`-scoped commands
+(`invoke`, `quality run`, `diff`) automatically execute in the mapped
+worktree — no manual `cd` or `--workdir` is needed.
 
 If a run already exists (returned by init), call `5x run state --run $RUN`
 and skip to the appropriate step based on recorded history.

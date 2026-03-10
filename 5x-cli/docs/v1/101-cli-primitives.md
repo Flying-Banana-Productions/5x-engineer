@@ -93,19 +93,24 @@ Create a new run for a plan (or resume an existing one).
     "run_id": "run_abc123",
     "plan_path": "docs/development/001-impl-feature.md",
     "status": "active",
-    "created_at": "2026-03-04T10:00:00Z"
+    "created_at": "2026-03-04T10:00:00Z",
+    "worktree_path": "/path/to/repo/.5x/worktrees/001-impl-feature",
+    "worktree_plan_path": "/path/to/repo/.5x/worktrees/001-impl-feature/docs/development/001-impl-feature.md"
   }
 }
 ```
 
+The `worktree_path` and `worktree_plan_path` fields are present when the run is mapped to a worktree. These fields are included in the pipe context for downstream commands.
+
 **Behavior:**
 
 - Checks for an existing active run for this plan. If found, returns it instead of creating a new one (idempotent).
-- Acquires a file-based plan lock (`.5x/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen. Uses the same lock mechanism as v0 (`src/lock.ts`).
+- Acquires a file-based plan lock under the control-plane root's state directory (`<controlPlaneRoot>/<stateDir>/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen.
 - Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0.
-- Canonicalizes the plan path for DB identity (worktree-safe).
+- Canonicalizes the plan path for DB identity (worktree-safe). **Validates that the plan path is under `controlPlaneRoot`** — external plans are rejected with `PLAN_OUTSIDE_CONTROL_PLANE`.
 - Validates that the plan path exists; otherwise returns `PLAN_NOT_FOUND`.
-- When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `.5x/worktrees/<slug>-<hash>` path.
+- When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
+- Run state is always stored in the control-plane root DB, regardless of which checkout the command is run from.
 
 ---
 
@@ -271,7 +276,7 @@ Invoke the author sub-agent with a prompt template.
 | `--run` | Yes | Run ID (for logging and metadata) |
 | `--var` | No | Template variable substitution (repeatable) |
 | `--model` | No | Model override. Falls back to config `author.model`. |
-| `--workdir` | No | Working directory for tool execution. Defaults to project root. |
+| `--workdir` | No | Working directory for tool execution. Defaults to project root. When `--run` is mapped to a worktree, auto-resolves to the mapped worktree unless `--workdir` is explicitly provided. |
 | `--session` | No | Existing session ID to continue (for multi-turn interactions) |
 | `--timeout` | No | Timeout in seconds. Falls back to config `author.timeout`. |
 
@@ -294,14 +299,22 @@ Invoke the author sub-agent with a prompt template.
     "duration_ms": 45000,
     "tokens": { "in": 8500, "out": 3200 },
     "cost_usd": 0.12,
-    "log_path": ".5x/logs/run_abc123/agent-001.ndjson"
+    "log_path": ".5x/logs/run_abc123/agent-001.ndjson",
+    "worktree_path": "/path/to/repo/.5x/worktrees/001-impl-feature",
+    "worktree_plan_path": "/path/to/repo/.5x/worktrees/001-impl-feature/docs/development/001-impl-feature.md"
   }
 }
 ```
 
+The `worktree_path` and `worktree_plan_path` fields are present when the run is mapped to a worktree.
+
+**Worktree-aware execution:**
+
+When `--run` is provided and the run is mapped to a worktree, `invoke` automatically sets the working directory to the mapped worktree. The plan path variable (`plan_path`) is re-rooted into the worktree when the plan file exists there. Explicit `--workdir` overrides the automatic resolution. Explicit `--var plan_path=...` overrides the re-rooted plan path.
+
 **Template resolution:**
 
-The `template` argument is the full template name (without `.md` extension). The CLI looks for `{template}.md` in the user override directory (`.5x/templates/prompts/`), then falls back to bundled templates. No role prefix is added — the template name is used as-is.
+The `template` argument is the full template name (without `.md` extension). The CLI looks for `{template}.md` in the user override directory (`<controlPlaneRoot>/<stateDir>/templates/prompts/`), then falls back to bundled templates. No role prefix is added — the template name is used as-is.
 
 Bundled templates follow the naming convention `{role}-{action}` (e.g., `author-generate-plan`, `reviewer-plan`). When invoking, pass the full name:
 
@@ -394,8 +407,14 @@ Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author
 Execute configured quality gates.
 
 ```
-5x quality run [--config <path>]
+5x quality run [--config <path>] [--run <id>] [--workdir <path>]
 ```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--config` | No | Path to config file |
+| `--run` | No | Run ID. When provided and the run is mapped to a worktree, quality gates execute in the mapped worktree. Config is resolved from the plan's location for correct sub-project `qualityGates`. |
+| `--workdir` | No | Explicit working directory override. Takes precedence over worktree mapping. |
 
 Reads `qualityGates` from config (array of shell commands). Executes each sequentially with a 5-minute timeout per command.
 
@@ -450,13 +469,14 @@ Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"
 Get a git diff relative to a reference.
 
 ```
-5x diff [--since <ref>] [--stat]
+5x diff [--since <ref>] [--stat] [--run <id>]
 ```
 
 | Flag | Description |
 |---|---|
 | `--since` | Git ref to diff against (commit, branch, tag). Required — no default. The skill should always pass an explicit ref (e.g., the commit hash from the author result). If omitted, diffs the working tree against HEAD (unstaged + staged changes only). |
 | `--stat` | Include diffstat summary. |
+| `--run` | Run ID. When provided and the run is mapped to a worktree, the diff is computed in the mapped worktree directory. |
 
 **Returns:**
 
@@ -545,6 +565,24 @@ List active worktrees.
 ```
 
 Returns an array of `{ plan_path, worktree_path, branch }` for all active worktrees.
+
+### Control-plane model
+
+The root repository's `.5x/` directory is the single control-plane for all state. All artifacts — DB, logs, locks, worktrees, templates, debug traces — are anchored to the control-plane root (`<controlPlaneRoot>/<stateDir>/`), not to the ambient working directory or worktree checkout.
+
+**Resolution:** The control-plane root is resolved via `git rev-parse --git-common-dir`. Commands run from any linked worktree (including externally attached worktrees outside the repo tree) automatically find the root state DB.
+
+**No `.5x/` in worktrees:** Worktree checkouts do not need their own `.5x/` directory. All state is managed at the root. This eliminates split-brain scenarios where run history diverges between root and worktree.
+
+**Worktree-aware execution:** When a run is mapped to a worktree (via `run init --worktree`), all `--run`-scoped commands automatically resolve the mapped worktree as the execution context:
+- `invoke --run` sets the working directory to the mapped worktree
+- `quality run --run` executes quality gates in the mapped worktree
+- `diff --run` computes diffs in the mapped worktree
+- All state (DB writes, logs, locks) stays in the root control-plane
+
+Explicit `--workdir` always overrides automatic worktree resolution.
+
+**Isolated mode:** If `5x init` is run in a worktree whose parent repo is not 5x-managed (no root `.5x/5x.db`), a local state DB is created. State is local to that worktree. If the parent repo is later initialized, commands from the worktree switch to managed mode and use the root DB. `5x init` from a linked worktree is blocked when the parent repo is already 5x-managed.
 
 ---
 
@@ -712,9 +750,9 @@ The `--quiet` flag can also be provided as a function in programmatic use, enabl
 
 Every `5x invoke` call writes a full NDJSON log regardless of `--quiet` or `--show-reasoning` settings.
 
-**Path:** `.5x/logs/<run_id>/agent-<seq>.ndjson`
+**Path:** `<controlPlaneRoot>/<stateDir>/logs/<run_id>/agent-<seq>.ndjson`
 
-Where `<seq>` is a zero-padded sequential counter (001, 002, ...) per run, incremented on each `5x invoke` call. This is NOT the step table ID — it's a local file counter.
+Where `<seq>` is a zero-padded sequential counter (001, 002, ...) per run, incremented on each `5x invoke` call. This is NOT the step table ID — it's a local file counter. Log paths are always anchored to the control-plane root, even when `invoke` is run from a linked worktree.
 
 **Content:** One JSON object per line. ALL normalized events are written — text, reasoning, tool calls, tool output, usage, errors. Nothing is filtered.
 
@@ -916,7 +954,7 @@ These constraints are **not overridable by the skill or agent**. They are safety
 
 ## 13. Configuration
 
-v1 reuses the existing `5x.config.js` / `5x.config.mjs` format. The primary change is per-role provider configuration.
+v1 reuses the existing `5x.config.js` / `5x.config.mjs` format (or `5x.toml`). The primary change is per-role provider configuration.
 
 ```javascript
 export default {
@@ -946,7 +984,30 @@ export default {
   opencode: {
     url: "http://localhost:4096",   // optional: connect to existing OpenCode server
   },
+
+  // DB configuration
+  db: {
+    path: ".5x",              // directory path (DB file is always 5x.db within this directory)
+  },
 };
+```
+
+**`db.path` semantics:** `db.path` is a directory path, not a file path. The canonical DB file is always `5x.db` within this directory. Legacy file-style values (e.g. `.5x/5x.db`) are normalized automatically — if the value ends with `5x.db`, the filename is stripped and the parent directory is used.
+
+### Config layering (monorepo support)
+
+In monorepos, sub-projects can have their own `5x.toml` that provides overrides. Config resolution is anchored to the plan's location:
+
+- **Creation commands** (no plan yet): config discovered from cwd.
+- **Plan-scoped commands** (plan exists): config discovered from `dirname(plan_path)`.
+- **Run-scoped commands** (`--run`): config discovered from `dirname(effectivePlanPath)`.
+- **Global commands** (`run list`, etc.): root config only.
+
+Merge semantics (Zod defaults ← root config ← nearest config):
+
+- **Objects:** deep field-level merge. Sub-project inherits unset fields from root.
+- **Arrays:** replace. Sub-project array replaces root array entirely.
+- **`db` section:** always from root config. Sub-project `db` overrides are ignored.
 ```
 
 **Provider-specific notes:**

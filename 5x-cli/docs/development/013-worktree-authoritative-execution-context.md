@@ -359,14 +359,14 @@ Files:
 
 **Completion gate:** root-start orchestration guidance is worktree-aware and accurate.
 
-- [ ] Update skill docs to use `run init --worktree` and rely on run-scoped context:
+- [x] Update skill docs to use `run init --worktree` and rely on run-scoped context:
   - `src/skills/5x-plan/SKILL.md`
   - `src/skills/5x-plan-review/SKILL.md`
   - `src/skills/5x-phase-execution/SKILL.md`
-- [ ] Update user docs:
+- [x] Update user docs:
   - `README.md`
   - `docs/v1/101-cli-primitives.md`
-- [ ] Document no-worktree-`.5x` requirement and root control-plane model.
+- [x] Document no-worktree-`.5x` requirement and root control-plane model.
 
 ### Phase 6: Worktree Command Guards (Mode-Aware UX)
 

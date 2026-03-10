@@ -141,6 +141,27 @@ The v1.6 revision addresses the remaining issues from the v1.5 addendum. The pla
 
 **Readiness:** Not ready
 
+## Addendum (2026-03-09) - Commit `5366302` Phase 4 review
+
+### What's Addressed
+
+- `run init` now emits top-level `worktree_path` alongside the existing nested `worktree` object, which matches the Phase 4 requirement to make pipe context extraction work without teaching `extractPipeContext()` about nested payloads (`5x-cli/src/commands/run-v1.handler.ts:215`, `5x-cli/src/commands/run-v1.handler.ts:550`, `5x-cli/src/commands/run-v1.handler.ts:579`).
+- `worktree_plan_path` is derived conservatively and only emitted when the re-rooted plan file actually exists in the mapped worktree, preserving the Phase 2 fix that avoided advertising a root-checkout path as a worktree-local plan (`5x-cli/src/commands/run-v1.handler.ts:226`).
+- Regression coverage is adequate for this delta: the subprocess tests cover fresh and resumed `run init --worktree` flows, the no-worktree path, and the optional `worktree_plan_path` behavior; pipe parsing tests cover both enriched and legacy envelopes (`5x-cli/test/commands/run-init-worktree.test.ts:179`, `5x-cli/test/commands/invoke-pipe.test.ts:463`).
+- Local verification passes: `bun test 5x-cli/test/commands/run-init-worktree.test.ts 5x-cli/test/commands/invoke-pipe.test.ts` (18 pass).
+
+### Remaining Concerns
+
+- None for this change set. The implementation matches the Phase 4 plan slice and does not reopen the earlier control-plane/worktree-path issues.
+
+### Assessment
+
+- Correctness looks good: downstream pipe consumers can now receive worktree context directly from `run init`, and the emitted fields remain additive/backward compatible.
+- Architecture stays consistent with the plan: the change is localized to `run init` payload shaping, leaving shared pipe parsing behavior simple.
+- Test strategy is proportionate to the delta and covers the important compatibility edges.
+
+**Readiness:** Ready
+
 ## Addendum (2026-03-09) - Commit `1bb1427` re-review
 
 ### What's Addressed
