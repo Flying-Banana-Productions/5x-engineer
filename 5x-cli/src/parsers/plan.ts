@@ -24,7 +24,7 @@ export interface ChecklistItem {
 }
 
 const PHASE_HEADING_RE = /^(#{2,3})\s+Phase\s+(\d+(?:\.\d+)?)[:\s]+(.+)$/;
-const CHECKLIST_RE = /^-\s+\[([ xX])\]\s+(.+)$/;
+const CHECKLIST_RE = /^(?:-|\d+\.)\s+\[([ xX])\]\s+(.+)$/;
 // Sub-heading items: ### P1.1 — Title [x] or ### Task name [ ]
 const SUBHEADING_ITEM_RE = /^#{3,}\s+(.+?)\s*\[([xX ])\]\s*$/;
 const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;

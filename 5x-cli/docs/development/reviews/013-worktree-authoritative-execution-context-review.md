@@ -141,6 +141,26 @@ The v1.6 revision addresses the remaining issues from the v1.5 addendum. The pla
 
 **Readiness:** Not ready
 
+## Addendum (2026-03-10) - Commit `075fffc` re-review
+
+### What's Addressed
+
+- The Phase 6 subprocess tests no longer share a module-level temp repo/worktree fixture. Each test now allocates and tears down its own repo and external worktree roots, which removes the cross-test mutation that was making this suite unsafe under `bun test --concurrent` (`5x-cli/test/commands/worktree-guards.test.ts:28`, `5x-cli/test/commands/worktree-guards.test.ts:107`, `5x-cli/test/commands/worktree-guards.test.ts:120`).
+- Cleanup now happens in the same test scope that created the temp directories, so failed or slow sibling tests cannot race on shared `externalDirs` / `tmp` globals anymore. That is the right isolation model for this subprocess-heavy git/worktree coverage.
+- Local verification passes: `bun test --concurrent 5x-cli/test/commands/worktree-guards.test.ts` (12 pass).
+
+### Remaining Concerns
+
+- None for this change set. The update is narrowly scoped to test isolation and matches the concurrency-safety goal without weakening the Phase 6 assertions.
+
+### Assessment
+
+- Correctness looks good: the same worktree guard behaviors are still covered, but the suite is now reliable under concurrent execution.
+- Architecture is consistent with the rest of the test suite's direction: temp filesystem state is owned per test instead of through shared module globals.
+- Test strategy is appropriate for the delta because it directly exercises the failure mode this commit claims to fix.
+
+**Readiness:** Ready
+
 ## Addendum (2026-03-09) - Commit `5366302` Phase 4 review
 
 ### What's Addressed

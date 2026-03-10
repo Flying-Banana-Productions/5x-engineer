@@ -283,6 +283,193 @@ describe("5x plan phases", () => {
 		}
 	});
 
+	test("reads plan from mapped worktree when mapping exists", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProject(dir);
+
+			// Write a plan in the root with Phase 1 unchecked
+			const planDir = join(dir, "docs");
+			mkdirSync(planDir, { recursive: true });
+			const planPath = join(planDir, "plan.md");
+			writeFileSync(
+				planPath,
+				`# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n- [ ] Task B\n`,
+			);
+
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			// Create a fake worktree directory with the plan fully checked
+			const wtDir = join(dir, ".5x", "worktrees", "wt1");
+			const wtPlanDir = join(wtDir, "docs");
+			mkdirSync(wtPlanDir, { recursive: true });
+			writeFileSync(
+				join(wtPlanDir, "plan.md"),
+				`# Plan\n\n## Phase 1: Setup\n\n- [x] Task A\n- [x] Task B\n`,
+			);
+
+			// Set up the DB with a plan→worktree mapping
+			const { getDb } = await import("../../src/db/connection.js");
+			const { runMigrations } = await import("../../src/db/schema.js");
+			const { upsertPlan } = await import("../../src/db/operations.js");
+			const { _resetForTest } = await import("../../src/db/connection.js");
+
+			const db = getDb(dir, ".5x/5x.db");
+			runMigrations(db);
+			upsertPlan(db, { planPath, worktreePath: wtDir });
+			db.close();
+			_resetForTest();
+
+			const result = await run5x(dir, ["plan", "phases", planPath]);
+			expect(result.exitCode).toBe(0);
+
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as {
+				phases: Array<{ done: boolean; checklist_done: number }>;
+				filePaths: { root: string; worktree?: string };
+			};
+
+			// Should read from worktree copy (fully checked)
+			expect(payload.phases[0]?.done).toBe(true);
+			expect(payload.phases[0]?.checklist_done).toBe(2);
+
+			// filePaths should include both root and worktree
+			expect(payload.filePaths.root).toBe(planPath);
+			expect(payload.filePaths.worktree).toBe(join(wtPlanDir, "plan.md"));
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("falls back to original path when worktree copy does not exist", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProject(dir);
+
+			const planDir = join(dir, "docs");
+			mkdirSync(planDir, { recursive: true });
+			const planPath = join(planDir, "plan.md");
+			writeFileSync(planPath, `# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`);
+
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			// Create worktree dir but WITHOUT the plan file
+			const wtDir = join(dir, ".5x", "worktrees", "wt1");
+			mkdirSync(wtDir, { recursive: true });
+
+			// Set up the DB with mapping to a worktree that lacks the plan
+			const { getDb } = await import("../../src/db/connection.js");
+			const { runMigrations } = await import("../../src/db/schema.js");
+			const { upsertPlan } = await import("../../src/db/operations.js");
+			const { _resetForTest } = await import("../../src/db/connection.js");
+
+			const db = getDb(dir, ".5x/5x.db");
+			runMigrations(db);
+			upsertPlan(db, { planPath, worktreePath: wtDir });
+			db.close();
+			_resetForTest();
+
+			const result = await run5x(dir, ["plan", "phases", planPath]);
+			expect(result.exitCode).toBe(0);
+
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as {
+				phases: Array<{ done: boolean; checklist_done: number }>;
+				filePaths: { root: string; worktree?: string };
+			};
+
+			// Should read from root (unchecked)
+			expect(payload.phases[0]?.done).toBe(false);
+			expect(payload.phases[0]?.checklist_done).toBe(0);
+
+			// filePaths should have root only, no worktree
+			expect(payload.filePaths.root).toBe(planPath);
+			expect(payload.filePaths.worktree).toBeUndefined();
+
+			// No re-mapping note since worktree copy doesn't exist
+			expect(result.stderr).not.toContain("reading plan from mapped worktree");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("no re-mapping when plan has no worktree mapping", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProject(dir);
+
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, `# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`);
+
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			// Set up DB with plan but NO worktree mapping
+			const { getDb } = await import("../../src/db/connection.js");
+			const { runMigrations } = await import("../../src/db/schema.js");
+			const { upsertPlan } = await import("../../src/db/operations.js");
+			const { _resetForTest } = await import("../../src/db/connection.js");
+
+			const db = getDb(dir, ".5x/5x.db");
+			runMigrations(db);
+			upsertPlan(db, { planPath });
+			db.close();
+			_resetForTest();
+
+			const result = await run5x(dir, ["plan", "phases", planPath]);
+			expect(result.exitCode).toBe(0);
+
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as {
+				filePaths: { root: string; worktree?: string };
+			};
+
+			// filePaths should have root only
+			expect(payload.filePaths.root).toBe(planPath);
+			expect(payload.filePaths.worktree).toBeUndefined();
+
+			// No re-mapping note
+			expect(result.stderr).not.toContain("reading plan from mapped worktree");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("handles sub-phase numbering", async () => {
 		const dir = makeTmpDir();
 		try {
