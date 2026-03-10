@@ -372,17 +372,17 @@ Files:
 
 **Completion gate:** high-risk worktree ops fail safely in linked-worktree context unless explicitly overridden.
 
-- [ ] Use `resolveControlPlaneRoot` (from Phase 1a) as the linked-worktree context detector.
-- [ ] `worktree create`:
+- [x] Use `resolveControlPlaneRoot` (from Phase 1a) as the linked-worktree context detector.
+- [x] `worktree create`:
   - default: fail in linked-worktree context with `WORKTREE_CONTEXT_INVALID`
   - message: "Run from repository root checkout or pass --allow-nested"
   - optional escape hatch: `--allow-nested`
-- [ ] `worktree remove`:
+- [x] `worktree remove`:
   - prevent removing current checkout worktree; return explicit error
   - keep existing force semantics for dirty checks
-- [ ] Add warning banners for isolated-mode operations that update local DB mappings only.
-- [ ] **Legacy split-brain detection:** when `resolveControlPlaneRoot` finds a root state DB (managed mode) AND the current checkout also has a local `<stateDir>/5x.db`, emit a startup warning: "Local state DB at `<localPath>` is being ignored — using control-plane DB at `<rootPath>`. Local runs/mappings are not visible in managed mode." This alerts users who may have accumulated worktree-local state from pre-fix behavior. Warning is emitted once per command invocation via stderr, not repeated for sub-operations.
-- [ ] Update docs/help text for mode expectations.
+- [x] Add warning banners for isolated-mode operations that update local DB mappings only.
+- [x] **Legacy split-brain detection:** when `resolveControlPlaneRoot` finds a root state DB (managed mode) AND the current checkout also has a local `<stateDir>/5x.db`, emit a startup warning: "Local state DB at `<localPath>` is being ignored — using control-plane DB at `<rootPath>`. Local runs/mappings are not visible in managed mode." This alerts users who may have accumulated worktree-local state from pre-fix behavior. Warning is emitted once per command invocation via stderr, not repeated for sub-operations.
+- [x] Update docs/help text for mode expectations.
 
 ## Test Matrix
 
