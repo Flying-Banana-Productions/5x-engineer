@@ -71,6 +71,7 @@ import {
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import { resolveRunExecutionContext } from "./run-context.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -415,20 +416,19 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	const stateDir = controlPlane.stateDir;
 	const lockOpts: LockDirOpts = { stateDir };
 
-	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot.
-	// This ensures stored plan_path values are re-rootable into mapped worktrees.
-	if (controlPlane.mode !== "none") {
-		const relPath = relative(projectRoot, planPath);
-		if (relPath.startsWith("..") || isAbsolute(relPath)) {
-			outputError(
-				"PLAN_OUTSIDE_CONTROL_PLANE",
-				`Plan path \`${planPath}\` is outside the repository root \`${projectRoot}\`. Move the plan under the repository root.`,
-				{
-					plan_path: planPath,
-					control_plane_root: projectRoot,
-				},
-			);
-		}
+	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
+	// (or projectRoot in none mode). This ensures stored plan_path values
+	// are re-rootable into mapped worktrees.
+	const relPath = relative(projectRoot, planPath);
+	if (relPath.startsWith("..") || isAbsolute(relPath)) {
+		outputError(
+			"PLAN_OUTSIDE_CONTROL_PLANE",
+			`Plan path \`${planPath}\` is outside the repository root \`${projectRoot}\`. Move the plan under the repository root.`,
+			{
+				plan_path: planPath,
+				control_plane_root: projectRoot,
+			},
+		);
 	}
 
 	// Config resolution: use plan-path-anchored layering (Phase 1c) when
@@ -558,7 +558,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { db } = await resolveDbContext();
+	const { db, controlPlane } = await resolveDbContext();
 
 	// Resolve run by ID or plan path
 	let run: RunRowV1 | null = null;
@@ -573,6 +573,22 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 
 	if (!run) {
 		outputError("RUN_NOT_FOUND", "Run not found");
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. If the mapped worktree is missing,
+	// fail with WORKTREE_MISSING instead of silently returning data from
+	// the wrong checkout context.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, run.id, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
 	}
 
 	// Build step query options
@@ -611,7 +627,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 export async function recordStepInternal(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 ): Promise<RecordStepResult> {
-	const { config, db } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext();
 
 	// Verify run exists and is active
 	const run = getRunV1(db, params.run);
@@ -623,6 +639,23 @@ export async function recordStepInternal(
 			"RUN_NOT_ACTIVE",
 			`Run ${params.run} is ${run.status}, not active`,
 		);
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Recording steps against a run with
+	// a missing worktree is a drift risk — fail with WORKTREE_MISSING.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			throw new RecordError(
+				ctxResult.error.code,
+				ctxResult.error.message,
+				ctxResult.error.detail,
+			);
+		}
 	}
 
 	// Enforce maxStepsPerRun (guard against corrupt config_json)
@@ -769,6 +802,21 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
 	}
 
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Completing a run with a missing
+	// worktree means the run's state may be inconsistent.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+	}
+
 	const status = params.status ?? "completed";
 	if (status !== "completed" && status !== "aborted") {
 		outputError("INVALID_STATUS", '--status must be "completed" or "aborted"');
@@ -827,6 +875,22 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 	if (!run) {
 		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
 	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Reopening a run with a missing
+	// worktree should fail rather than allow drift.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+	}
+
 	if (run.status === "active") {
 		outputError("RUN_ALREADY_ACTIVE", `Run ${params.run} is already active`);
 	}
@@ -922,6 +986,24 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 				"RUN_NOT_FOUND",
 				`Run '${params.run}' not found (no DB entry and no log directory)`,
 			);
+		}
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Watching logs from a run with a
+	// missing worktree is misleading — fail with WORKTREE_MISSING.
+	if (run) {
+		const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+		if (controlPlaneRoot) {
+			const ctxResult = resolveRunExecutionContext(db, params.run, {
+				controlPlaneRoot,
+				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+			});
+			if (!ctxResult.ok) {
+				outputError(ctxResult.error.code, ctxResult.error.message, {
+					detail: ctxResult.error.detail,
+				});
+			}
 		}
 	}
 

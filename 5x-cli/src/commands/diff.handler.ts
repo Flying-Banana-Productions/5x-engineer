@@ -76,33 +76,38 @@ export async function runDiff(params: DiffParams): Promise<void> {
 	if (params.run) {
 		const controlPlane = resolveControlPlaneRoot();
 
-		if (controlPlane.mode !== "none") {
-			const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
-			const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
-			try {
-				runMigrations(db);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				throw new Error(
-					`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-				);
-			}
-
-			const ctxResult = resolveRunExecutionContext(db, params.run, {
-				controlPlaneRoot: controlPlane.controlPlaneRoot,
-			});
-
-			if (!ctxResult.ok) {
-				outputError(ctxResult.error.code, ctxResult.error.message, {
-					detail: ctxResult.error.detail,
-				});
-			}
-
-			projectRoot = ctxResult.context.effectiveWorkingDirectory;
-		} else {
-			// No control-plane DB — fall through to normal behavior
-			projectRoot = resolveProjectRoot();
+		if (controlPlane.mode === "none") {
+			// Phase 3 fix: --run was explicitly provided but no control-plane DB
+			// exists. This is a hard error — silently falling through to cwd-based
+			// diff would violate the run-scoped contract.
+			outputError(
+				"NO_CONTROL_PLANE",
+				`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
+			);
 		}
+
+		const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
+		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot: controlPlane.controlPlaneRoot,
+		});
+
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+
+		projectRoot = ctxResult.context.effectiveWorkingDirectory;
 	} else {
 		projectRoot = resolveProjectRoot();
 	}

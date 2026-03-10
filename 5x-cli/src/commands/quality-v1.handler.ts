@@ -100,42 +100,50 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 	if (params.run) {
 		const controlPlane = resolveControlPlaneRoot(params.workdir);
 
-		if (controlPlane.mode !== "none") {
-			controlPlaneRoot = controlPlane.controlPlaneRoot;
-			stateDir = controlPlane.stateDir;
-
-			const dbRelPath = join(stateDir, DB_FILENAME);
-			const db = getDb(controlPlaneRoot, dbRelPath);
-			try {
-				runMigrations(db);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				throw new Error(
-					`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-				);
-			}
-
-			const ctxResult = resolveRunExecutionContext(db, params.run, {
-				controlPlaneRoot,
-				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
-			});
-
-			if (!ctxResult.ok) {
-				if (ctxResult.error.code !== "RUN_NOT_FOUND") {
-					outputError(ctxResult.error.code, ctxResult.error.message, {
-						detail: ctxResult.error.detail,
-					});
-				}
-				// RUN_NOT_FOUND: fall through — use normal resolution
-			} else {
-				const ctx = ctxResult.context;
-				effectiveWorkdir = params.workdir
-					? resolve(params.workdir)
-					: ctx.effectiveWorkingDirectory;
-				// Use plan path directory for config layering
-				configContextDir = dirname(ctx.effectivePlanPath);
-			}
+		if (controlPlane.mode === "none") {
+			// Phase 3 fix: --run was explicitly provided but no control-plane DB
+			// exists. This is a hard error — silently falling through to cwd-based
+			// execution would violate the run-scoped contract.
+			outputError(
+				"NO_CONTROL_PLANE",
+				`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
+			);
 		}
+
+		controlPlaneRoot = controlPlane.controlPlaneRoot;
+		stateDir = controlPlane.stateDir;
+
+		const dbRelPath = join(stateDir, DB_FILENAME);
+		const db = getDb(controlPlaneRoot, dbRelPath);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+		});
+
+		// Phase 3 fix: all run-context errors are hard errors, including
+		// RUN_NOT_FOUND. A typo in the run ID should not silently execute
+		// quality gates against the current cwd.
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+
+		const ctx = ctxResult.context;
+		effectiveWorkdir = params.workdir
+			? resolve(params.workdir)
+			: ctx.effectiveWorkingDirectory;
+		// Use plan path directory for config layering
+		configContextDir = dirname(ctx.effectivePlanPath);
 	}
 
 	// Resolve project context — use layered config if we have a contextDir

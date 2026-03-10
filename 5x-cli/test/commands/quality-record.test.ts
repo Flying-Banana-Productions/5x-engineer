@@ -334,13 +334,16 @@ describe("quality run --record", () => {
 	);
 
 	test(
-		"recording failure emits warning to stderr and sets non-zero exit code",
+		"non-existent --run fails with RUN_NOT_FOUND (run-scoped hard error)",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot } = await setupProjectWithRun(dir);
 
-				// Use a non-existent run ID so recording fails
+				// Use a non-existent run ID — Phase 3 fix: this is now a hard
+				// error (RUN_NOT_FOUND) instead of falling through to cwd-based
+				// quality execution. A typo in the run ID should not silently
+				// execute against the wrong tree.
 				const result = await run5x(projectRoot, [
 					"quality",
 					"run",
@@ -349,18 +352,11 @@ describe("quality run --record", () => {
 					"run_nonexistent_xyz",
 				]);
 
-				// The primary quality envelope should still be on stdout
-				// (quality gates run independently of recording)
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true);
-				const data = json.data as Record<string, unknown>;
-				expect(data.passed).toBe(true);
-
-				// stderr should contain a warning about recording failure
-				expect(result.stderr).toContain("Warning: failed to record step");
-
-				// Exit code should be non-zero due to recording failure
-				expect(result.exitCode).not.toBe(0);
+				expect(json.ok).toBe(false);
+				expect((json.error as Record<string, unknown>).code).toBe(
+					"RUN_NOT_FOUND",
+				);
 			} finally {
 				cleanupDir(dir);
 			}
