@@ -1008,7 +1008,6 @@ Merge semantics (Zod defaults ← root config ← nearest config):
 - **Objects:** deep field-level merge. Sub-project inherits unset fields from root.
 - **Arrays:** replace. Sub-project array replaces root array entirely.
 - **`db` section:** always from root config. Sub-project `db` overrides are ignored.
-```
 
 **Provider-specific notes:**
 
