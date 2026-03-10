@@ -22,13 +22,27 @@ export interface LockResult {
 	stale?: boolean;
 }
 
-function lockDir(projectRoot: string): string {
-	return join(projectRoot, ".5x", "locks");
+/**
+ * Lock directory options. When `stateDir` is provided, locks are created
+ * under `<projectRoot>/<stateDir>/locks` instead of `<projectRoot>/.5x/locks`.
+ * This allows callers to anchor locks to `controlPlaneRoot/stateDir` (Phase 3c).
+ */
+export interface LockDirOpts {
+	stateDir?: string;
 }
 
-function lockPath(projectRoot: string, planPath: string): string {
+function lockDir(projectRoot: string, opts?: LockDirOpts): string {
+	const sd = opts?.stateDir ?? ".5x";
+	return join(projectRoot, sd, "locks");
+}
+
+function lockPath(
+	projectRoot: string,
+	planPath: string,
+	opts?: LockDirOpts,
+): string {
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 16);
-	return join(lockDir(projectRoot), `${hash}.lock`);
+	return join(lockDir(projectRoot, opts), `${hash}.lock`);
 }
 
 function isPidAlive(pid: number): boolean {
@@ -51,13 +65,14 @@ function isPidAlive(pid: number): boolean {
 function findExistingLock(
 	projectRoot: string,
 	canonicalPlanPath: string,
+	opts?: LockDirOpts,
 ): { path: string; info: LockInfo | null } | null {
-	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
+	const canonicalPath = lockPath(projectRoot, canonicalPlanPath, opts);
 	if (existsSync(canonicalPath)) {
 		return { path: canonicalPath, info: readLockFile(canonicalPath) };
 	}
 
-	const dir = lockDir(projectRoot);
+	const dir = lockDir(projectRoot, opts);
 	if (!existsSync(dir)) return null;
 
 	for (const entry of readdirSync(dir)) {
@@ -94,17 +109,25 @@ function readLockFile(path: string): LockInfo | null {
  * Attempt to acquire a plan-level lock. If a lock exists for a dead process,
  * it is treated as stale and stolen. Returns whether the lock was acquired
  * and details about any existing lock.
+ *
+ * @param projectRoot - Base directory (typically controlPlaneRoot)
+ * @param planPath - Plan path to lock
+ * @param opts - Optional: `stateDir` to anchor locks under a custom state directory
  */
-export function acquireLock(projectRoot: string, planPath: string): LockResult {
+export function acquireLock(
+	projectRoot: string,
+	planPath: string,
+	opts?: LockDirOpts,
+): LockResult {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
-	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
-	const dir = lockDir(projectRoot);
+	const canonicalPath = lockPath(projectRoot, canonicalPlanPath, opts);
+	const dir = lockDir(projectRoot, opts);
 
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
 
-	const existingLock = findExistingLock(projectRoot, canonicalPlanPath);
+	const existingLock = findExistingLock(projectRoot, canonicalPlanPath, opts);
 	if (existingLock) {
 		const existing = existingLock.info;
 		if (!existing) {
@@ -161,14 +184,19 @@ export interface ReleaseLockResult {
  * Returns whether the lock was actually released.
  *
  * Use `forceReleaseLock()` if you need to remove a lock regardless of owner.
+ *
+ * @param projectRoot - Base directory (typically controlPlaneRoot)
+ * @param planPath - Plan path whose lock to release
+ * @param opts - Optional: `stateDir` to anchor locks under a custom state directory
  */
 export function releaseLock(
 	projectRoot: string,
 	planPath: string,
+	opts?: LockDirOpts,
 ): ReleaseLockResult {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
-	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
-	const existing = findExistingLock(projectRoot, canonicalPlanPath);
+	const canonicalPath = lockPath(projectRoot, canonicalPlanPath, opts);
+	const existing = findExistingLock(projectRoot, canonicalPlanPath, opts);
 
 	if (!existing) {
 		return { released: true, reason: "not_locked" };
@@ -201,11 +229,19 @@ export function releaseLock(
 /**
  * Force-release a plan lock regardless of ownership.
  * Use sparingly — this bypasses the ownership safety check.
+ *
+ * @param projectRoot - Base directory (typically controlPlaneRoot)
+ * @param planPath - Plan path whose lock to force-release
+ * @param opts - Optional: `stateDir` to anchor locks under a custom state directory
  */
-export function forceReleaseLock(projectRoot: string, planPath: string): void {
+export function forceReleaseLock(
+	projectRoot: string,
+	planPath: string,
+	opts?: LockDirOpts,
+): void {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
-	const canonicalPath = lockPath(projectRoot, canonicalPlanPath);
-	const existing = findExistingLock(projectRoot, canonicalPlanPath);
+	const canonicalPath = lockPath(projectRoot, canonicalPlanPath, opts);
+	const existing = findExistingLock(projectRoot, canonicalPlanPath, opts);
 	removeLockFiles(canonicalPath, existing?.path);
 }
 
@@ -222,13 +258,20 @@ function removeLockFiles(canonicalPath: string, existingPath?: string): void {
 	}
 }
 
-/** Check if a plan is currently locked. */
+/**
+ * Check if a plan is currently locked.
+ *
+ * @param projectRoot - Base directory (typically controlPlaneRoot)
+ * @param planPath - Plan path to check
+ * @param opts - Optional: `stateDir` to anchor locks under a custom state directory
+ */
 export function isLocked(
 	projectRoot: string,
 	planPath: string,
+	opts?: LockDirOpts,
 ): { locked: boolean; info?: LockInfo; stale?: boolean } {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
-	const existing = findExistingLock(projectRoot, canonicalPlanPath);
+	const existing = findExistingLock(projectRoot, canonicalPlanPath, opts);
 	if (!existing) return { locked: false };
 
 	const info = existing.info;
@@ -246,13 +289,18 @@ export function isLocked(
 /**
  * Register process exit handlers that release the lock on exit,
  * SIGINT, and SIGTERM.
+ *
+ * @param projectRoot - Base directory (typically controlPlaneRoot)
+ * @param planPath - Plan path whose lock to clean up
+ * @param opts - Optional: `stateDir` to anchor locks under a custom state directory
  */
 export function registerLockCleanup(
 	projectRoot: string,
 	planPath: string,
+	opts?: LockDirOpts,
 ): void {
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
-	const cleanup = () => releaseLock(projectRoot, canonicalPlanPath);
+	const cleanup = () => releaseLock(projectRoot, canonicalPlanPath, opts);
 	process.on("exit", cleanup);
 	process.on("SIGINT", () => {
 		cleanup();

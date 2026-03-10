@@ -46,13 +46,23 @@ export interface WorktreeAttachParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Derive worktree directory path from plan path.
+/**
+ * Derive worktree directory path from plan path.
  * Uses basename + a short hash of the full canonical path to avoid collisions
- * when plans in different directories share the same filename. */
-function worktreeDir(projectRoot: string, planPath: string): string {
+ * when plans in different directories share the same filename.
+ *
+ * Phase 3c: anchored to `<projectRoot>/<stateDir>/worktrees/` instead of
+ * `<projectRoot>/.5x/worktrees/`. The `stateDir` defaults to `.5x` for
+ * backward compatibility.
+ */
+function worktreeDir(
+	projectRoot: string,
+	planPath: string,
+	stateDir = ".5x",
+): string {
 	const slug = basename(planPath).replace(/\.md$/, "");
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
-	return join(projectRoot, ".5x", "worktrees", `${slug}-${hash}`);
+	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +82,8 @@ export async function worktreeCreate(
 	}
 
 	const canonical = canonicalizePlanPath(planPath);
-	const { projectRoot, config, db } = await resolveDbContext();
+	const { projectRoot, config, db, controlPlane } = await resolveDbContext();
+	const stateDir = controlPlane?.stateDir ?? ".5x";
 
 	// Check if worktree already exists for this plan
 	const existingPlan = getPlan(db, canonical);
@@ -86,8 +97,9 @@ export async function worktreeCreate(
 	}
 
 	// Determine branch name and worktree path
+	// Phase 3c: anchor worktree path to controlPlaneRoot/stateDir
 	const branch = params.branch || branchNameFromPlan(canonical);
-	const wtPath = worktreeDir(projectRoot, canonical);
+	const wtPath = worktreeDir(projectRoot, canonical, stateDir);
 
 	// Create the worktree
 	try {

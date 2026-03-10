@@ -33,6 +33,11 @@ const runCmd = defineCommand({
 			type: "string" as const,
 			description: "Phase identifier (used with --record)",
 		},
+		workdir: {
+			type: "string" as const,
+			description:
+				"Working directory override (aligns with invoke --workdir precedence model)",
+		},
 	},
 	run: ({ args }) =>
 		runQuality({
@@ -40,6 +45,7 @@ const runCmd = defineCommand({
 			recordStep: args["record-step"] as string | undefined,
 			run: args.run as string | undefined,
 			phase: args.phase as string | undefined,
+			workdir: args.workdir as string | undefined,
 		}),
 });
 

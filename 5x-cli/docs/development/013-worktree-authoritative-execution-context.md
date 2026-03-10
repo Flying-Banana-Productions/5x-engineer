@@ -289,14 +289,14 @@ Files:
 
 #### 3a: `quality run` and `diff`
 
-- [ ] `quality run`:
+- [x] `quality run`:
   - add `--workdir` flag for explicit override (aligns with precedence model)
   - add `--run`-aware context resolution via `resolveRunExecutionContext`
   - if run mapped, execute quality gates in mapped worktree directory
   - pass `dirname(effectivePlanPath)` as `contextDir` to config resolution (Phase 1c) so `qualityGates` are resolved from the correct sub-project config
   - **re-anchor log path:** `join(controlPlaneRoot, stateDir, "logs", runId)` instead of `join(projectRoot, ".5x", "logs", runId)`
   - keep recording into root DB by `run`
-- [ ] `diff`:
+- [x] `diff`:
   - add optional `--run <id>`
   - when provided, resolve mapped worktree and run git diff in that directory
   - keep existing behavior unchanged when `--run` omitted
@@ -305,13 +305,13 @@ Files:
 
 All `run` subcommands that accept `--run` must use the control-plane resolver to open the correct DB, ensuring they never read/write a worktree-local DB when a root DB exists.
 
-- [ ] `run state --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. When run has mapped worktree, report worktree path in output.
-- [ ] `run record --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. Records always go to root DB.
-- [ ] `run complete --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
-- [ ] `run reopen --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
-- [ ] `run watch --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. **Re-anchor log path:** `join(controlPlaneRoot, stateDir, "logs", params.run)` instead of `join(projectRoot, ".5x", "logs", params.run)`.
-- [ ] `run list`: update to use `resolveControlPlaneRoot` for DB resolution (no `--run` flag, but must find root DB from any checkout context).
-- [ ] `run init`: **re-anchor worktree default path:** `join(controlPlaneRoot, stateDir, "worktrees", ...)` instead of `join(projectRoot, ".5x", "worktrees", ...)`.
+- [x] `run state --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. When run has mapped worktree, report worktree path in output.
+- [x] `run record --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. Records always go to root DB.
+- [x] `run complete --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
+- [x] `run reopen --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution.
+- [x] `run watch --run <id>`: update to use `resolveControlPlaneRoot` for DB resolution. **Re-anchor log path:** `join(controlPlaneRoot, stateDir, "logs", params.run)` instead of `join(projectRoot, ".5x", "logs", params.run)`.
+- [x] `run list`: update to use `resolveControlPlaneRoot` for DB resolution (no `--run` flag, but must find root DB from any checkout context).
+- [x] `run init`: **re-anchor worktree default path:** `join(controlPlaneRoot, stateDir, "worktrees", ...)` instead of `join(projectRoot, ".5x", "worktrees", ...)`.
 
 Note: `run init` already uses a custom DB resolution flow (lock-first). It must also be updated to resolve the control-plane root via `resolveControlPlaneRoot` so that `run init` from a linked worktree creates the run in the root DB. Config should be resolved with `contextDir = dirname(canonicalPlanPath)` (Phase 1c) so run config inherits the correct sub-project settings.
 
@@ -319,11 +319,11 @@ Note: `run init` already uses a custom DB resolution flow (lock-first). It must 
 
 #### 3c: Cross-cutting artifact path re-anchoring
 
-- [ ] **`lock.ts`:** update lock directory from `join(projectRoot, ".5x", "locks")` to `join(controlPlaneRoot, stateDir, "locks")`. The `controlPlaneRoot` and `stateDir` must be threaded through from the calling context (run handlers already have it from Phase 3b).
-- [ ] **`worktree.handler.ts`:** update default worktree creation path from `join(projectRoot, ".5x", "worktrees", ...)` to `join(controlPlaneRoot, stateDir, "worktrees", ...)`.
-- [ ] **`debug/trace.ts`:** update debug output directory from `join(projectRoot, ".5x", "debug")` to `join(controlPlaneRoot, stateDir, "debug")`.
-- [ ] **`init.handler.ts`:** template scaffolding path already uses `projectRoot` which equals `controlPlaneRoot` when running from main checkout (init is blocked from managed worktrees by Phase 1a guard). No change needed — but add a comment documenting this invariant.
-- [ ] Add tests verifying artifact paths resolve under `controlPlaneRoot` when commands are run from a linked worktree.
+- [x] **`lock.ts`:** update lock directory from `join(projectRoot, ".5x", "locks")` to `join(controlPlaneRoot, stateDir, "locks")`. The `controlPlaneRoot` and `stateDir` must be threaded through from the calling context (run handlers already have it from Phase 3b).
+- [x] **`worktree.handler.ts`:** update default worktree creation path from `join(projectRoot, ".5x", "worktrees", ...)` to `join(controlPlaneRoot, stateDir, "worktrees", ...)`.
+- [x] **`debug/trace.ts`:** update debug output directory from `join(projectRoot, ".5x", "debug")` to `join(controlPlaneRoot, stateDir, "debug")`.
+- [x] **`init.handler.ts`:** template scaffolding path already uses `projectRoot` which equals `controlPlaneRoot` when running from main checkout (init is blocked from managed worktrees by Phase 1a guard). No change needed — but add a comment documenting this invariant.
+- [x] Add tests verifying artifact paths resolve under `controlPlaneRoot` when commands are run from a linked worktree.
 
 Files:
 

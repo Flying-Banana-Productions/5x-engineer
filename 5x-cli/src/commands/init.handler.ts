@@ -39,6 +39,12 @@ function generateTomlConfig(): string {
 	return defaultTomlConfig;
 }
 
+/**
+ * Phase 3c invariant: template scaffolding uses `projectRoot` which equals
+ * `controlPlaneRoot` when running from the main checkout. Init is blocked
+ * from managed worktrees by the Phase 1a guard above, so template paths
+ * always resolve under the correct control-plane root. No re-anchoring needed.
+ */
 function ensureTemplateFiles(
 	projectRoot: string,
 	force: boolean,

@@ -1,7 +1,7 @@
 /**
  * v1 Diff command — citty adapter.
  *
- * `5x diff [--since <ref>] [--stat]`
+ * `5x diff [--since <ref>] [--stat] [--run <id>]`
  *
  * Business logic lives in diff.handler.ts.
  */
@@ -25,10 +25,16 @@ export default defineCommand({
 			description: "Include diffstat summary",
 			default: false,
 		},
+		run: {
+			type: "string",
+			description:
+				"Run ID — resolve mapped worktree and diff in that directory",
+		},
 	},
 	run: ({ args }) =>
 		runDiff({
 			since: args.since as string | undefined,
 			stat: args.stat as boolean | undefined,
+			run: args.run as string | undefined,
 		}),
 });
