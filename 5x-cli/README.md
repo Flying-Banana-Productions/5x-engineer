@@ -236,6 +236,8 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 
 `run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path.
 
+**Worktree-aware execution:** When a run is mapped to a worktree, all `--run`-scoped commands (`invoke`, `quality run`, `diff`) automatically resolve the mapped worktree as their execution context. No `cd` or `--workdir` is needed. No `.5x/` directory is required in worktree checkouts — all state stays in the root control-plane.
+
 ## Configuration
 
 `5x init` creates `5x.toml`. Auto-discovered by walking up from the working directory. (`5x.config.js` / `.mjs` are also supported for backward compatibility.)
@@ -272,11 +274,13 @@ plan = ".5x/templates/implementation-plan-template.md"
 review = ".5x/templates/review-template.md"
 
 [db]
-path = ".5x/5x.db"
+path = ".5x"    # Directory path (DB file is always 5x.db within this directory)
 
 [worktree]
 postCreate = "bun install"
 ```
+
+**Config layering:** In monorepos, sub-projects can have their own `5x.toml` that overrides the root config. Config resolution is anchored to the plan's location — run-scoped commands use `dirname(plan_path)` to find the nearest `5x.toml`. Objects merge deeply (sub-project inherits unset fields from root), arrays replace entirely, and `db` settings always come from the root config.
 
 ## Output Contract
 
@@ -335,7 +339,7 @@ Plan files are markdown with phase headings and checklists:
 
 ## Runtime Artifacts
 
-`5x` writes local state under `.5x/`:
+`5x` writes local state under `.5x/` in the **control-plane root** (the main repository root):
 
 ```
 .5x/
@@ -345,7 +349,14 @@ Plan files are markdown with phase headings and checklists:
   worktrees/                     # Isolated git worktrees
   templates/                     # Editable plan, review, and prompt templates
   skills/                        # Bundled skill source (internal)
+  debug/                         # Debug traces
 ```
+
+**Control-plane model:** The root repository's `.5x/` directory is the single source of truth. All artifacts — DB, logs, locks, worktrees, templates — are anchored to this root, regardless of which checkout (root or linked worktree) a command is run from. Worktree checkouts do not need their own `.5x/` directory.
+
+The control-plane root is resolved via `git rev-parse --git-common-dir`, so commands run from any linked worktree (including externally attached worktrees) automatically find the root state DB.
+
+**Isolated mode:** If you run `5x init` in a worktree checkout whose parent repo is *not* 5x-managed (no root `.5x/5x.db`), a local state DB is created in that checkout. This is isolated mode — state is local to that worktree. If a root DB is later created, subsequent commands from the worktree switch to managed mode and use the root DB.
 
 Logs may contain sensitive code and context. Keep `.5x/` out of version control (added to `.gitignore` by `5x init`).
 

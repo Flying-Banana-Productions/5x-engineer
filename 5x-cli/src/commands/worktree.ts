@@ -29,18 +29,25 @@ const createCmd = defineCommand({
 			type: "string",
 			description: "Branch name (default: derived from plan filename)",
 		},
+		"allow-nested": {
+			type: "boolean",
+			description: "Allow creating a worktree from a linked-worktree context",
+			default: false,
+		},
 	},
 	run: ({ args }) =>
 		worktreeCreate({
 			plan: args.plan as string,
 			branch: args.branch as string | undefined,
+			allowNested: args["allow-nested"] as boolean | undefined,
 		}),
 });
 
 const removeCmd = defineCommand({
 	meta: {
 		name: "remove",
-		description: "Remove a worktree for a plan",
+		description:
+			"Remove a worktree for a plan. Cannot remove the worktree you are currently inside.",
 	},
 	args: {
 		plan: {
@@ -97,7 +104,8 @@ const listCmd = defineCommand({
 export default defineCommand({
 	meta: {
 		name: "worktree",
-		description: "Manage git worktrees for plan execution",
+		description:
+			"Manage git worktrees for plan execution. In managed mode, run from the main checkout; worktree create is blocked from linked worktrees unless --allow-nested is passed.",
 	},
 	subCommands: {
 		create: () => Promise.resolve(createCmd),

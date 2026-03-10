@@ -157,6 +157,6 @@ Completed examples showing what the templates look like after going through the 
 
 ## Further thoughts
 
-- Teams can scale with this process but also individuals can go wide on compartmentalized plans; use git worktree for isolation. Personally, I don't feel super productive with constant context switching, so I tend to stick to a single stream.
+- Teams can scale with this process but also individuals can go wide on compartmentalized plans; use `5x run init --worktree` for git worktree isolation. The CLI automatically resolves worktree context for all run-scoped commands — no manual `cd` or `--workdir` needed. All state stays in the root repository's `.5x/` directory; worktree checkouts need no local state.
 - This process is model and harness agnostic. Don't get too comfortable as the landscape is constantly changing and shifting.
 - This article will be obsolete within the year, a curious artifact of the agentic coding revolution.

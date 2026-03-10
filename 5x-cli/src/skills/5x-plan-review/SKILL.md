@@ -15,12 +15,12 @@ approved by the reviewer or the human overrides.
 
 ## Prerequisites
 
-- An implementation plan exists at a known path
+- An implementation plan exists at a known path (under the repository root)
 - The plan parses successfully (`5x plan phases` returns phases)
 
 ## Tools
 
-- `5x run init --plan <path>` — create or resume a run
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
@@ -92,7 +92,9 @@ Recovery for handling.
 
 ### Monitoring agent progress
 
-Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
+Sub-agent invocations (`5x invoke`) write NDJSON logs under the
+control-plane root's state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`).
+Logs are always anchored to the root, even when executing in a worktree.
 To monitor progress in real-time, suggest the user run in a separate terminal:
 
     5x run watch --run <run-id> --human-readable

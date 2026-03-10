@@ -176,4 +176,126 @@ describe("5x run init --worktree", () => {
 			cleanupDir(dir);
 		}
 	});
+
+	// Phase 4: top-level worktree context fields for pipe consumers
+
+	test("run init --worktree includes top-level worktree_path in success payload", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as Record<string, unknown>;
+
+			// Top-level worktree_path must be present alongside nested worktree object
+			expect(typeof payload.worktree_path).toBe("string");
+			expect(payload.worktree_path).toBeTruthy();
+
+			// Nested worktree object must still be present (backward compat)
+			const wt = payload.worktree as {
+				worktree_path: string;
+			};
+			expect(wt.worktree_path).toBe(payload.worktree_path as string);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("run init --worktree includes worktree_plan_path when plan exists in worktree", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as Record<string, unknown>;
+
+			// The worktree is a git worktree of the same repo — plan file should
+			// exist there, so worktree_plan_path should be present
+			if (payload.worktree_plan_path !== undefined) {
+				expect(typeof payload.worktree_plan_path).toBe("string");
+				const wtPlanPath = payload.worktree_plan_path as string;
+				expect(existsSync(wtPlanPath)).toBe(true);
+				// Must be under the worktree path
+				expect(wtPlanPath.startsWith(payload.worktree_path as string)).toBe(
+					true,
+				);
+			}
+			// If plan doesn't exist in worktree (e.g. uncommitted), field is absent — acceptable
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("run init without --worktree omits worktree_path and worktree_plan_path", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const result = await run5x(dir, ["run", "init", "--plan", planPath]);
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			const payload = data.data as Record<string, unknown>;
+
+			// No worktree context when --worktree is not used
+			expect(payload.worktree).toBeUndefined();
+			expect(payload.worktree_path).toBeUndefined();
+			expect(payload.worktree_plan_path).toBeUndefined();
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("resumed run with --worktree includes top-level worktree context fields", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+
+			// First init creates the run
+			const first = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(first.exitCode).toBe(0);
+			const firstData = parseJson(first.stdout);
+			expect((firstData.data as Record<string, unknown>).resumed).toBe(false);
+
+			// Second init resumes
+			const second = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(second.exitCode).toBe(0);
+			const secondData = parseJson(second.stdout);
+			const payload = secondData.data as Record<string, unknown>;
+			expect(payload.resumed).toBe(true);
+
+			// Top-level worktree_path must be present on resumed run too
+			expect(typeof payload.worktree_path).toBe("string");
+			expect(payload.worktree_path).toBeTruthy();
+		} finally {
+			cleanupDir(dir);
+		}
+	});
 });

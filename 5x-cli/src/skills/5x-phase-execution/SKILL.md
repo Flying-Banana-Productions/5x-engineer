@@ -16,25 +16,26 @@ optional fix cycles.
 
 ## Prerequisites
 
-- An approved implementation plan exists at a known path
+- An approved implementation plan exists at a known path (under the repository root)
 - The plan parses into phases (`5x plan phases` returns phases)
 - Quality gates are configured (if any)
-- Git working tree is clean, or a worktree has been created (`5x worktree create`)
+- Git working tree is clean, or a worktree will be created via `run init --worktree`
 
 ## Tools
 
-- `5x run init --plan <path>` — create or resume a run
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
 - `5x run state --run <id>` — check what's been done
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x run reopen --run <id>` — reopen a completed/aborted run
-- `5x invoke author <template> --run <id> --var key=val` — invoke author
-- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer
-- `5x quality run` — run quality gates
+- `5x invoke author <template> --run <id> --var key=val` — invoke author (auto-resolves worktree when `--run` is mapped)
+- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer (auto-resolves worktree when `--run` is mapped)
+- `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
-- `5x diff --since <ref>` — inspect changes
-- `5x worktree create --plan <path>` — create isolated worktree
+- `5x diff --run <id>` — inspect changes in mapped worktree
+- `5x diff --since <ref>` — inspect changes (without run context)
+- `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
@@ -99,16 +100,39 @@ Recovery for handling.
 
 ### Monitoring agent progress
 
-Sub-agent invocations (`5x invoke`) write NDJSON logs to `.5x/logs/<run-id>/`.
+Sub-agent invocations (`5x invoke`) write NDJSON logs under the
+control-plane root's state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`).
+Logs are always anchored to the root, even when executing in a worktree.
 To monitor progress in real-time, suggest the user run in a separate terminal:
 
     5x run watch --run <run-id> --human-readable
+
+### Worktree-aware execution
+
+When a run is mapped to a worktree (via `run init --worktree`), all
+`--run`-scoped commands automatically resolve the mapped worktree as
+their execution context. You do **not** need to `cd` into the worktree
+or pass `--workdir` — the CLI resolves the correct working directory
+from the run's worktree mapping.
+
+- `invoke --run` executes the sub-agent in the mapped worktree
+- `quality run --run` runs quality gates in the mapped worktree
+- `diff --run` diffs the mapped worktree
+- All state (run records, logs, locks) stays in the root control-plane DB
+
+Explicit `--workdir` still overrides the automatic resolution if needed.
+No `.5x/` directory is required in worktree checkouts.
 
 ## Workflow
 
 ### Step 0: Initialize
 
-    5x run init --plan $PLAN_PATH
+    5x run init --plan $PLAN_PATH --worktree
+
+The `--worktree` flag ensures an isolated git worktree is resolved or
+created for this plan. The worktree mapping is stored in the root DB,
+and all subsequent `--run`-scoped commands automatically execute in
+that worktree.
 
 If resuming an existing run (including runs migrated from v0), call
 `5x run state --run $RUN` to review recorded history.
@@ -154,7 +178,8 @@ Capture $COMMIT from the result for the reviewer.
 
     5x quality run --record --run $RUN --phase $PHASE
 
-`--record` auto-records as `quality:check`.
+`--record` auto-records as `quality:check`. When `--run` is mapped to
+a worktree, quality gates execute in the mapped worktree automatically.
 
 Check the result:
 - `passed: true` — continue to Step 3.
@@ -280,7 +305,7 @@ Report to the human: all phases implemented and reviewed.
 
 ### After author implementation (Step 1):
 - AuthorStatus.commit must be present (non-empty string)
-- `5x diff --since $COMMIT~1` must show a non-empty diff
+- `5x diff --run $RUN --since $COMMIT~1` must show a non-empty diff (auto-resolves worktree)
 - Changed files should relate to the current phase (check against plan)
 
 ### After quality gates (Step 2):

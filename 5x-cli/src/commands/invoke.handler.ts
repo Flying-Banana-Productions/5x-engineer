@@ -2,15 +2,24 @@
  * Invoke command handler — business logic for agent invocation.
  *
  * Framework-independent: no citty imports.
+ *
+ * Phase 2 (013-worktree-authoritative-execution-context):
+ * When `--run` is present, the handler uses the run context resolver to
+ * auto-resolve the effective working directory and plan path from the
+ * run's worktree mapping. Artifact paths (logs, template overrides) are
+ * anchored to `controlPlaneRoot/stateDir` rather than `projectRoot/.5x`.
  */
 
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
 	type FiveXConfig,
 	loadConfig,
+	resolveLayeredConfig,
 } from "../config.js";
+import { getDb } from "../db/connection.js";
+import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import {
 	extractPipeContext,
@@ -47,6 +56,8 @@ import {
 	setTemplateOverrideDir,
 } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
+import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +97,10 @@ interface InvokeResult {
 	tokens: { in: number; out: number };
 	cost_usd: number | null;
 	log_path: string;
+	/** Mapped worktree path (if run is mapped to a worktree). */
+	worktree_path?: string;
+	/** Effective plan path in the worktree (if resolved). */
+	worktree_plan_path?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +316,70 @@ export async function invokeAgent(
 	}
 	validateRunId(params.run);
 
-	const projectRoot = resolveProjectRoot(params.workdir);
+	// -----------------------------------------------------------------------
+	// Phase 2: Resolve control-plane root and run execution context.
+	//
+	// When --run is present and --workdir is absent, use the run context
+	// resolver to auto-resolve the effective working directory and plan path
+	// from the run's worktree mapping.
+	//
+	// Context precedence (strict):
+	//   1. Explicit --workdir wins over mapping.
+	//   2. If run has mapped worktree, use mapped worktree.
+	//   3. Fallback to controlPlaneRoot.
+	// -----------------------------------------------------------------------
+
+	const controlPlane = resolveControlPlaneRoot(params.workdir);
+	const projectRoot =
+		controlPlane.mode !== "none"
+			? controlPlane.controlPlaneRoot
+			: resolveProjectRoot(params.workdir);
+	const stateDir = controlPlane.stateDir;
+
+	// Run context resolution — resolves worktree mapping + effective plan path.
+	// Only attempted when we have a control-plane DB to query against.
+	let resolvedWorktreePath: string | null = null;
+	let resolvedPlanPath: string | null = null;
+	let effectiveWorkdir: string | null = null;
+	let planPathInWorktreeExists = false;
+
+	if (controlPlane.mode !== "none") {
+		const dbRelPath = join(stateDir, DB_FILENAME);
+		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot: controlPlane.controlPlaneRoot,
+			explicitWorkdir: params.workdir
+				? resolve(projectRoot, params.workdir)
+				: undefined,
+		});
+
+		if (!ctxResult.ok) {
+			// All run-context errors are hard errors, including RUN_NOT_FOUND.
+			// Consistent with quality/diff/run handlers: a typo or stale run ID
+			// should not silently execute against the wrong context.
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		} else {
+			const ctx = ctxResult.context;
+			resolvedWorktreePath = ctx.mappedWorktreePath;
+			effectiveWorkdir = ctx.effectiveWorkingDirectory;
+
+			// Effective plan path — resolver already handles worktree re-rooting.
+			// Only use if no explicit --var plan_path=... was provided (checked later).
+			resolvedPlanPath = ctx.effectivePlanPath;
+			planPathInWorktreeExists = ctx.planPathInWorktreeExists;
+		}
+	}
 
 	// Collect CLI-override provider names so loadConfig can suppress
 	// unknown-key warnings for matching top-level config keys.
@@ -313,10 +391,27 @@ export async function invokeAgent(
 		cliProviderNames.add(params.reviewerProvider.trim());
 	}
 
-	const { config: baseConfig } = await loadConfig(
-		projectRoot,
-		cliProviderNames.size > 0 ? cliProviderNames : undefined,
-	);
+	// Config resolution: use plan-path-anchored layering (Phase 1c) when
+	// we have a resolved plan path, so config is scoped to the plan's
+	// sub-project (e.g. monorepo sub-directory with its own 5x.toml).
+	const configContextDir = resolvedPlanPath
+		? dirname(resolvedPlanPath)
+		: undefined;
+
+	let baseConfig: FiveXConfig;
+	if (configContextDir) {
+		const result = await resolveLayeredConfig(
+			controlPlane.controlPlaneRoot,
+			configContextDir,
+		);
+		baseConfig = result.config;
+	} else {
+		const result = await loadConfig(
+			projectRoot,
+			cliProviderNames.size > 0 ? cliProviderNames : undefined,
+		);
+		baseConfig = result.config;
+	}
 
 	// Apply CLI overrides — these are authoritative and take precedence
 	const config = applyModelOverrides(baseConfig, {
@@ -327,8 +422,13 @@ export async function invokeAgent(
 		opencodeUrl: params.opencodeUrl,
 	});
 
-	// Set up template override directory
-	const templateDir = join(projectRoot, ".5x", "templates", "prompts");
+	// Set up template override directory — anchored to controlPlaneRoot/stateDir
+	const templateDir = join(
+		controlPlane.mode !== "none" ? controlPlane.controlPlaneRoot : projectRoot,
+		stateDir,
+		"templates",
+		"prompts",
+	);
 	setTemplateOverrideDir(templateDir);
 
 	// 1. Resolve and render template
@@ -362,6 +462,17 @@ export async function invokeAgent(
 	const mergedVars = pipeContext
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
+
+	// Phase 2: inject resolved plan path as default for plan_path variable.
+	// Explicit --var plan_path=... wins over resolver default.
+	if (
+		resolvedPlanPath &&
+		!mergedVars.plan_path &&
+		templateMetadata.variables.includes("plan_path")
+	) {
+		mergedVars.plan_path = resolvedPlanPath;
+	}
+
 	const variables = resolveInvokeTemplateVariables(
 		templateMetadata.variables,
 		mergedVars,
@@ -390,10 +501,11 @@ export async function invokeAgent(
 	}
 
 	// 3. Start or resume session
-	// Resolve workdir relative to projectRoot (not process.cwd)
+	// Phase 2: use resolved worktree workdir when available.
+	// Explicit --workdir wins, then mapped worktree, then projectRoot.
 	const workdir = params.workdir
 		? resolve(projectRoot, params.workdir)
-		: projectRoot;
+		: (effectiveWorkdir ?? projectRoot);
 	const roleConfig = config[role] as Record<string, unknown>;
 	const model =
 		params.model ??
@@ -417,7 +529,10 @@ export async function invokeAgent(
 	}
 
 	// 4. Prepare log path (--run is required and already validated)
-	const logDir = join(projectRoot, ".5x", "logs", params.run);
+	// Phase 2: anchor log dir to controlPlaneRoot/stateDir instead of projectRoot/.5x
+	const logBase =
+		controlPlane.mode !== "none" ? controlPlane.controlPlaneRoot : projectRoot;
+	const logDir = join(logBase, stateDir, "logs", params.run);
 	const logPath = prepareLogPath(logDir);
 
 	// 4b. Write session metadata as first NDJSON line (log-only, not an AgentEvent)
@@ -499,7 +614,7 @@ export async function invokeAgent(
 	// 8. Close provider
 	await provider.close().catch(() => {});
 
-	// 9. Return result
+	// 9. Return result — include worktree context for downstream pipelines
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: rendered.stepName,
@@ -511,6 +626,11 @@ export async function invokeAgent(
 		tokens: runResult.tokens,
 		cost_usd: runResult.costUsd ?? null,
 		log_path: logPath,
+		// Phase 2: optional execution context fields for downstream pipelines
+		...(resolvedWorktreePath ? { worktree_path: resolvedWorktreePath } : {}),
+		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists
+			? { worktree_plan_path: resolvedPlanPath }
+			: {}),
 	};
 
 	outputSuccess(output);

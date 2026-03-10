@@ -38,6 +38,12 @@ export function createDebugTraceLogger(opts: {
 	projectRoot: string;
 	command: string;
 	label?: string;
+	/**
+	 * State directory (relative to projectRoot, or absolute). Default: `.5x`.
+	 * Debug traces are written under `<projectRoot>/<stateDir>/debug/`.
+	 * Phase 3c: anchored to controlPlaneRoot/stateDir instead of projectRoot/.5x.
+	 */
+	stateDir?: string;
 }): DebugTraceLogger {
 	if (!opts.enabled) {
 		return {
@@ -46,7 +52,8 @@ export function createDebugTraceLogger(opts: {
 		};
 	}
 
-	const dir = join(opts.projectRoot, ".5x", "debug");
+	const sd = opts.stateDir ?? ".5x";
+	const dir = join(opts.projectRoot, sd, "debug");
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
 	const ts = new Date().toISOString().replace(/[:.]/g, "-");

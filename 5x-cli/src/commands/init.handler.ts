@@ -14,6 +14,10 @@ import {
 	DEFAULT_REVIEW_TEMPLATE,
 } from "../templates/default-artifacts.js";
 import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
+import {
+	resolveCheckoutRoot,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -35,6 +39,12 @@ function generateTomlConfig(): string {
 	return defaultTomlConfig;
 }
 
+/**
+ * Phase 3c invariant: template scaffolding uses `projectRoot` which equals
+ * `controlPlaneRoot` when running from the main checkout. Init is blocked
+ * from managed worktrees by the Phase 1a guard above, so template paths
+ * always resolve under the correct control-plane root. No re-anchoring needed.
+ */
 function ensureTemplateFiles(
 	projectRoot: string,
 	force: boolean,
@@ -151,8 +161,31 @@ function ensureGitignore(projectRoot: string): {
 // ---------------------------------------------------------------------------
 
 export async function initScaffold(params: InitParams): Promise<void> {
-	const projectRoot = resolve(".");
 	const force = Boolean(params.force);
+
+	// Managed-mode guard: block `5x init` from a linked worktree when the
+	// main repo is already 5x-managed. No escape hatch — `--force` only
+	// overwrites config/templates, it does not bypass this guard.
+	// Compare the git checkout root (not raw cwd) against controlPlaneRoot
+	// so that running `5x init` from a subdirectory of the main checkout
+	// is correctly recognized as "main checkout" and allowed.
+	const controlPlane = resolveControlPlaneRoot(resolve("."));
+	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	if (controlPlane.mode === "managed") {
+		const normalizedCheckout = checkoutRoot ? resolve(checkoutRoot) : null;
+		const normalizedRoot = resolve(controlPlane.controlPlaneRoot);
+		if (normalizedCheckout !== normalizedRoot) {
+			throw new Error(
+				`This worktree is managed by the control-plane at \`${controlPlane.controlPlaneRoot}\`. ` +
+					"Run `5x init` from the main checkout if you need to re-initialize.",
+			);
+		}
+	}
+
+	// Scaffold at the checkout root (or cwd if outside git), not the raw cwd.
+	// This ensures `5x init` from a subdirectory still creates `.5x/` and
+	// `5x.toml` at the repository root.
+	const projectRoot = checkoutRoot ?? resolve(".");
 
 	// 1. Generate config file (TOML format)
 	const configPath = join(projectRoot, "5x.toml");

@@ -2,6 +2,12 @@
  * Worktree command handlers — business logic for git worktree management.
  *
  * Framework-independent: no citty imports.
+ *
+ * Phase 6 guards:
+ * - `worktree create` fails in linked-worktree context unless `--allow-nested`.
+ * - `worktree remove` prevents removing the current checkout worktree.
+ * - `worktree attach/remove` emit warnings in isolated mode.
+ * - Legacy split-brain detection warns when root DB shadows a local state DB.
  */
 
 import { createHash } from "node:crypto";
@@ -22,6 +28,12 @@ import {
 import { outputError, outputSuccess } from "../output.js";
 import { canonicalizePlanPath } from "../paths.js";
 import { resolveDbContext } from "./context.js";
+import {
+	type ControlPlaneResult,
+	DB_FILENAME,
+	resolveCheckoutRoot,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -30,6 +42,8 @@ import { resolveDbContext } from "./context.js";
 export interface WorktreeCreateParams {
 	plan: string;
 	branch?: string;
+	/** Allow creating a worktree from a linked-worktree context (nested). */
+	allowNested?: boolean;
 }
 
 export interface WorktreeRemoveParams {
@@ -46,13 +60,77 @@ export interface WorktreeAttachParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Derive worktree directory path from plan path.
+/**
+ * Derive worktree directory path from plan path.
  * Uses basename + a short hash of the full canonical path to avoid collisions
- * when plans in different directories share the same filename. */
-function worktreeDir(projectRoot: string, planPath: string): string {
+ * when plans in different directories share the same filename.
+ *
+ * Phase 3c: anchored to `<projectRoot>/<stateDir>/worktrees/` instead of
+ * `<projectRoot>/.5x/worktrees/`. The `stateDir` defaults to `.5x` for
+ * backward compatibility.
+ */
+function worktreeDir(
+	projectRoot: string,
+	planPath: string,
+	stateDir = ".5x",
+): string {
 	const slug = basename(planPath).replace(/\.md$/, "");
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
-	return join(projectRoot, ".5x", "worktrees", `${slug}-${hash}`);
+	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
+}
+
+/**
+ * Detect if the current checkout is a linked worktree (not the main checkout).
+ * Returns true if the checkout root differs from the control-plane root.
+ */
+function isLinkedWorktreeContext(controlPlane: ControlPlaneResult): boolean {
+	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	if (!checkoutRoot) return false;
+	return resolve(checkoutRoot) !== resolve(controlPlane.controlPlaneRoot);
+}
+
+/**
+ * Emit a split-brain warning to stderr when a root state DB (managed mode)
+ * shadows a local state DB in the current checkout. Emitted once per command
+ * invocation — callers should invoke this at most once.
+ */
+export function emitSplitBrainWarning(controlPlane: ControlPlaneResult): void {
+	if (controlPlane.mode !== "managed") return;
+
+	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	if (!checkoutRoot) return;
+	if (resolve(checkoutRoot) === resolve(controlPlane.controlPlaneRoot)) return;
+
+	// Check if the checkout also has a local state DB
+	const localStateDir = join(checkoutRoot, controlPlane.stateDir);
+	const localDbPath = join(localStateDir, DB_FILENAME);
+	if (!existsSync(localDbPath)) return;
+
+	const rootDbPath = join(
+		controlPlane.controlPlaneRoot,
+		controlPlane.stateDir,
+		DB_FILENAME,
+	);
+	process.stderr.write(
+		`Warning: Local state DB at \`${localDbPath}\` is being ignored — using control-plane DB at \`${rootDbPath}\`. ` +
+			"Local runs/mappings are not visible in managed mode.\n",
+	);
+}
+
+/**
+ * Emit a warning when worktree operations run in isolated mode, alerting
+ * that DB mappings will only be stored in the local (worktree-scoped) DB.
+ */
+function emitIsolatedModeWarning(
+	controlPlane: ControlPlaneResult,
+	operation: string,
+): void {
+	if (controlPlane.mode !== "isolated") return;
+	process.stderr.write(
+		`Warning: Running \`worktree ${operation}\` in isolated mode. ` +
+			"DB mappings are stored in the local worktree-scoped DB only and " +
+			"will not be visible from the main checkout.\n",
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +149,36 @@ export async function worktreeCreate(
 		});
 	}
 
+	// Phase 6: linked-worktree guard — prevent accidental nested worktree
+	// creation from a linked-worktree context. Use --allow-nested to bypass.
+	const controlPlane = resolveControlPlaneRoot(resolve("."));
+	if (
+		!params.allowNested &&
+		controlPlane.mode !== "none" &&
+		isLinkedWorktreeContext(controlPlane)
+	) {
+		outputError(
+			"WORKTREE_CONTEXT_INVALID",
+			"Cannot create worktree from a linked-worktree context. " +
+				'Run from the repository root checkout or pass "--allow-nested".',
+			{
+				controlPlaneRoot: controlPlane.controlPlaneRoot,
+				hint: "--allow-nested",
+			},
+		);
+	}
+
+	// Phase 6: split-brain detection
+	emitSplitBrainWarning(controlPlane);
+
 	const canonical = canonicalizePlanPath(planPath);
-	const { projectRoot, config, db } = await resolveDbContext();
+	const {
+		projectRoot,
+		config,
+		db,
+		controlPlane: cp,
+	} = await resolveDbContext();
+	const stateDir = cp?.stateDir ?? ".5x";
 
 	// Check if worktree already exists for this plan
 	const existingPlan = getPlan(db, canonical);
@@ -86,8 +192,9 @@ export async function worktreeCreate(
 	}
 
 	// Determine branch name and worktree path
+	// Phase 3c: anchor worktree path to controlPlaneRoot/stateDir
 	const branch = params.branch || branchNameFromPlan(canonical);
-	const wtPath = worktreeDir(projectRoot, canonical);
+	const wtPath = worktreeDir(projectRoot, canonical, stateDir);
 
 	// Create the worktree
 	try {
@@ -149,6 +256,11 @@ export async function worktreeAttach(
 		});
 	}
 
+	// Phase 6: isolated-mode and split-brain warnings
+	const cpEarly = resolveControlPlaneRoot(resolve("."));
+	emitIsolatedModeWarning(cpEarly, "attach");
+	emitSplitBrainWarning(cpEarly);
+
 	const { projectRoot, db } = await resolveDbContext();
 	let gitWorktrees: Array<{ path: string; branch: string }> = [];
 	try {
@@ -193,6 +305,12 @@ export async function worktreeRemove(
 ): Promise<void> {
 	const planPath = resolve(params.plan);
 	const canonical = canonicalizePlanPath(planPath);
+
+	// Phase 6: isolated-mode and split-brain warnings
+	const cpEarly = resolveControlPlaneRoot(resolve("."));
+	emitIsolatedModeWarning(cpEarly, "remove");
+	emitSplitBrainWarning(cpEarly);
+
 	const { projectRoot, db } = await resolveDbContext();
 
 	const plan = getPlan(db, canonical);
@@ -201,6 +319,17 @@ export async function worktreeRemove(
 	}
 
 	const wtPath = plan.worktree_path as string;
+
+	// Phase 6: prevent removing current checkout worktree
+	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	if (checkoutRoot && resolve(checkoutRoot) === resolve(wtPath)) {
+		outputError(
+			"WORKTREE_SELF_REMOVE",
+			"Cannot remove the worktree you are currently inside. " +
+				"Switch to the main checkout first.",
+			{ worktree_path: wtPath },
+		);
+	}
 
 	// If directory doesn't exist, just clear the DB and return
 	if (!existsSync(wtPath)) {
@@ -264,6 +393,10 @@ export async function worktreeRemove(
 }
 
 export async function worktreeList(): Promise<void> {
+	// Phase 6: split-brain detection (list is safe in all modes, but still warn)
+	const cpEarly = resolveControlPlaneRoot(resolve("."));
+	emitSplitBrainWarning(cpEarly);
+
 	const { projectRoot, db } = await resolveDbContext();
 
 	// Get all plans that have worktree associations

@@ -2,13 +2,25 @@
  * Quality gate command handler — business logic for quality gate execution.
  *
  * Framework-independent: no citty imports.
+ *
+ * Phase 3a (013-worktree-authoritative-execution-context):
+ * When `--run` is present, the handler uses the run context resolver to
+ * auto-resolve the effective working directory from the run's worktree
+ * mapping. Quality gates execute in the mapped worktree and config is
+ * resolved from the plan's sub-project via `contextDir` (Phase 1c).
+ * Log paths are anchored to `controlPlaneRoot/stateDir`.
  */
 
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { resolveLayeredConfig } from "../config.js";
+import { getDb } from "../db/connection.js";
+import { runMigrations } from "../db/schema.js";
 import { runQualityGates } from "../gates/quality.js";
-import { outputSuccess } from "../output.js";
+import { outputError, outputSuccess } from "../output.js";
 import { resolveProjectContext } from "./context.js";
+import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +32,7 @@ export interface QualityParams {
 	recordStep?: string;
 	run?: string;
 	phase?: string;
+	workdir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +87,90 @@ async function autoRecord(
 // ---------------------------------------------------------------------------
 
 export async function runQuality(params: QualityParams = {}): Promise<void> {
-	const { projectRoot, config } = await resolveProjectContext();
+	// -----------------------------------------------------------------------
+	// Phase 3a: When --run is present, resolve control-plane root and run
+	// execution context to determine effective workdir and plan path for
+	// config resolution (Phase 1c contextDir threading).
+	// -----------------------------------------------------------------------
+	let effectiveWorkdir: string | undefined;
+	let controlPlaneRoot: string | undefined;
+	let stateDir = ".5x";
+	let configContextDir: string | undefined;
 
-	const commands = config.qualityGates;
-	if (commands.length === 0) {
+	if (params.run) {
+		const controlPlane = resolveControlPlaneRoot(params.workdir);
+
+		if (controlPlane.mode === "none") {
+			// Phase 3 fix: --run was explicitly provided but no control-plane DB
+			// exists. This is a hard error — silently falling through to cwd-based
+			// execution would violate the run-scoped contract.
+			outputError(
+				"NO_CONTROL_PLANE",
+				`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
+			);
+		}
+
+		controlPlaneRoot = controlPlane.controlPlaneRoot;
+		stateDir = controlPlane.stateDir;
+
+		const dbRelPath = join(stateDir, DB_FILENAME);
+		const db = getDb(controlPlaneRoot, dbRelPath);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+		});
+
+		// Phase 3 fix: all run-context errors are hard errors, including
+		// RUN_NOT_FOUND. A typo in the run ID should not silently execute
+		// quality gates against the current cwd.
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+
+		const ctx = ctxResult.context;
+		effectiveWorkdir = params.workdir
+			? resolve(params.workdir)
+			: ctx.effectiveWorkingDirectory;
+		// Use plan path directory for config layering
+		configContextDir = dirname(ctx.effectivePlanPath);
+	}
+
+	// Resolve project context — use layered config if we have a contextDir
+	let projectRoot: string;
+	let qualityGates: string[];
+
+	if (configContextDir && controlPlaneRoot) {
+		// Phase 1c: plan-path-anchored config layering
+		const result = await resolveLayeredConfig(
+			controlPlaneRoot,
+			configContextDir,
+		);
+		projectRoot = effectiveWorkdir ?? controlPlaneRoot;
+		qualityGates = result.config.qualityGates;
+	} else if (effectiveWorkdir) {
+		// Explicit workdir but no config context (unlikely, but handle)
+		const ctx = await resolveProjectContext({ startDir: effectiveWorkdir });
+		projectRoot = effectiveWorkdir;
+		qualityGates = ctx.config.qualityGates;
+	} else {
+		// Default: resolve from cwd
+		const ctx = await resolveProjectContext({ startDir: params.workdir });
+		projectRoot = ctx.projectRoot;
+		qualityGates = ctx.config.qualityGates;
+	}
+
+	if (qualityGates.length === 0) {
 		const qualityData = {
 			passed: true,
 			results: [],
@@ -92,11 +185,13 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 	}
 
 	// Use a temporary run context for logging purposes
-	const runId = `quality-${Date.now()}`;
-	const logDir = join(projectRoot, ".5x", "logs", runId);
+	const runId = params.run ?? `quality-${Date.now()}`;
+	// Phase 3a: re-anchor log path to controlPlaneRoot/stateDir
+	const logBase = controlPlaneRoot ?? projectRoot;
+	const logDir = join(logBase, stateDir, "logs", runId);
 	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
-	const result = await runQualityGates(commands, projectRoot, {
+	const result = await runQualityGates(qualityGates, projectRoot, {
 		runId,
 		logDir,
 		phase: "0",

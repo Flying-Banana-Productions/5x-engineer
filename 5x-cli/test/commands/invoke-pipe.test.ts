@@ -460,6 +460,54 @@ describe("invoke pipe ingestion", () => {
 		expect(ctx.templateVars).not.toHaveProperty("arrow_value");
 	});
 
+	// Phase 4: worktree context propagation via pipe
+
+	test("pipe run init envelope with worktree_path → extractPipeContext extracts worktree fields", async () => {
+		const { extractPipeContext } = await import("../../src/pipe.js");
+
+		// Simulate a run init envelope with Phase 4 top-level worktree fields
+		const ctx = extractPipeContext({
+			run_id: "run_abc123",
+			plan_path: "/project/docs/plan.md",
+			status: "active",
+			resumed: false,
+			worktree_path: "/project/.5x/worktrees/plan-abc",
+			worktree_plan_path: "/project/.5x/worktrees/plan-abc/docs/plan.md",
+			worktree: {
+				action: "created",
+				worktree_path: "/project/.5x/worktrees/plan-abc",
+				branch: "5x/plan",
+			},
+		});
+
+		// worktree fields extracted into PipeContext
+		expect(ctx.worktreePath).toBe("/project/.5x/worktrees/plan-abc");
+		expect(ctx.worktreePlanPath).toBe(
+			"/project/.5x/worktrees/plan-abc/docs/plan.md",
+		);
+		// These are excluded from templateVars
+		expect(ctx.templateVars).not.toHaveProperty("worktree_path");
+		expect(ctx.templateVars).not.toHaveProperty("worktree_plan_path");
+		// Nested worktree object is not a string, so not in templateVars
+		expect(ctx.templateVars).not.toHaveProperty("worktree");
+	});
+
+	test("pipe envelope without worktree fields → extractPipeContext omits worktree context (backward compat)", async () => {
+		const { extractPipeContext } = await import("../../src/pipe.js");
+
+		// Simulate a run init envelope without --worktree
+		const ctx = extractPipeContext({
+			run_id: "run_def456",
+			plan_path: "/project/docs/plan.md",
+			status: "active",
+			resumed: false,
+		});
+
+		expect(ctx.worktreePath).toBeUndefined();
+		expect(ctx.worktreePlanPath).toBeUndefined();
+		expect(ctx.runId).toBe("run_def456");
+	});
+
 	test("excluded metadata keys (session_id, log_path, etc.) are not injected as template vars", async () => {
 		const { extractPipeContext } = await import("../../src/pipe.js");
 

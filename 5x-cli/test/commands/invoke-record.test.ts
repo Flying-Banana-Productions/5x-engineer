@@ -416,13 +416,14 @@ describe("invoke --record", () => {
 	);
 
 	test(
-		"recording failure does not suppress invoke output — emits warning to stderr, sets non-zero exit code",
+		"invoke --run with missing run ID fails closed with RUN_NOT_FOUND",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot, planPath } = await setupProjectWithRun(dir);
 
-				// Use a non-existent run ID for --record so recording fails
+				// Use a non-existent run ID — invoke must fail closed,
+				// consistent with quality/diff/run handlers.
 				const fakeRunId = "run_nonexistent_12345";
 				const result = await run5x(projectRoot, [
 					"invoke",
@@ -439,18 +440,14 @@ describe("invoke --record", () => {
 					"user_notes=test",
 				]);
 
-				// The primary envelope should still be valid JSON on stdout
-				// (invoke itself should succeed, only recording should fail)
+				// Must be a hard error — ok:false with RUN_NOT_FOUND
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true);
-				const data = json.data as Record<string, unknown>;
-				expect(data.run_id).toBe(fakeRunId);
-				expect(data.result).toBeDefined();
+				expect(json.ok).toBe(false);
+				expect(json.error).toBeDefined();
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("RUN_NOT_FOUND");
 
-				// stderr should contain a warning about recording failure
-				expect(result.stderr).toContain("Warning: failed to record step");
-
-				// Exit code should be non-zero due to recording failure
+				// Exit code should be non-zero
 				expect(result.exitCode).not.toBe(0);
 			} finally {
 				cleanupDir(dir);

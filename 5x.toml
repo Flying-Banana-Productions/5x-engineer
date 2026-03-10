@@ -2,7 +2,7 @@
 # https://github.com/5x-engineer/5x-cli
 
 # Maximum steps per automated run (safety guardrail)
-maxStepsPerRun = 100
+maxStepsPerRun = 50
 
 # Maximum review iterations before stopping
 maxReviewIterations = 5
@@ -42,11 +42,11 @@ model = "openai/gpt-5.4"
 
 # Paths are relative to repository root unless absolute
 [paths]
-plans = "docs/development"
-reviews = "docs/development/reviews"
+plans = "5x-cli/docs/development"
+reviews = "5x-cli/docs/development/reviews"
 # planReviews = "docs/development/reviews/plans"
 # runReviews = "docs/development/reviews/impl"
-archive = "docs/archive"
+archive = "5x-cli/docs/archive"
 
 [paths.templates]
 plan = ".5x/templates/implementation-plan-template.md"

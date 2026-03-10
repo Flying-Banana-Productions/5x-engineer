@@ -2,13 +2,20 @@
  * Run v1 command handlers — business logic for run lifecycle management.
  *
  * Framework-independent: no citty imports.
+ *
+ * Phase 3b (013-worktree-authoritative-execution-context):
+ * All run subcommands use `resolveControlPlaneRoot` (via `resolveDbContext`)
+ * for DB resolution, ensuring they never read/write a worktree-local DB
+ * when a root DB exists. Artifact paths (logs, locks, worktrees) are
+ * anchored to `controlPlaneRoot/stateDir`. `run init` validates that plan
+ * paths are under `controlPlaneRoot`.
  */
 
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { loadConfig } from "../config.js";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import {
@@ -36,6 +43,7 @@ import {
 import {
 	acquireLock,
 	isLocked,
+	type LockDirOpts,
 	registerLockCleanup,
 	releaseLock,
 } from "../lock.js";
@@ -58,6 +66,12 @@ import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
+import {
+	DB_FILENAME,
+	normalizeDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
+import { resolveRunExecutionContext } from "./run-context.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -188,13 +202,51 @@ interface WorktreeInitResult {
 	warnings?: string[];
 }
 
+/**
+ * Phase 4: Derive top-level `worktree_path` and `worktree_plan_path` fields
+ * for the `run init` success payload. These fields sit alongside the nested
+ * `worktree` object so that `extractPipeContext` (which reads top-level keys)
+ * can propagate worktree context to downstream pipe consumers without having
+ * to dive into nested structures.
+ *
+ * `worktree_plan_path` is the plan file path re-rooted into the mapped
+ * worktree. It is only included when the plan file actually exists there.
+ */
+function deriveWorktreeContextFields(
+	worktreeResult: WorktreeInitResult | undefined,
+	planPath: string,
+	controlPlaneRoot: string,
+): { worktree_path?: string; worktree_plan_path?: string } {
+	if (!worktreeResult) return {};
+
+	const fields: { worktree_path?: string; worktree_plan_path?: string } = {
+		worktree_path: worktreeResult.worktree_path,
+	};
+
+	// Derive worktree-relative plan path and include only if the file exists
+	const relPlanPath = relative(controlPlaneRoot, planPath);
+	if (!relPlanPath.startsWith("..") && !isAbsolute(relPlanPath)) {
+		const worktreePlanPath = join(worktreeResult.worktree_path, relPlanPath);
+		if (existsSync(worktreePlanPath)) {
+			fields.worktree_plan_path = worktreePlanPath;
+		}
+	}
+
+	return fields;
+}
+
+/**
+ * Phase 3b: `stateDir` parameter anchors worktree path to
+ * `<projectRoot>/<stateDir>/worktrees/` instead of `<projectRoot>/.5x/worktrees/`.
+ */
 function deriveDefaultWorktreeDir(
 	projectRoot: string,
 	planPath: string,
+	stateDir = ".5x",
 ): string {
 	const slug = planPath.replace(/^.*\//, "").replace(/\.md$/, "");
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
-	return join(projectRoot, ".5x", "worktrees", `${slug}-${hash}`);
+	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }
 
 async function ensureRunWorktree(
@@ -203,6 +255,7 @@ async function ensureRunWorktree(
 	planPath: string,
 	explicitPath: string | undefined,
 	postCreateHook: string | undefined,
+	stateDir = ".5x",
 ): Promise<WorktreeInitResult> {
 	const gitWorktrees = await listWorktrees(projectRoot);
 
@@ -305,7 +358,7 @@ async function ensureRunWorktree(
 	}
 
 	const branch = expectedBranch;
-	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath);
+	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath, stateDir);
 
 	const existingByPath = gitWorktrees.find((w) => w.path === wtPath);
 	if (existingByPath) {
@@ -386,9 +439,47 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		});
 	}
 
-	const projectRoot = resolveProjectRoot();
-	const { config } = await loadConfig(projectRoot);
-	const db = getDb(projectRoot, config.db.path);
+	// Phase 3b: resolve control-plane root for DB location.
+	// `run init` from a linked worktree creates the run in the root DB.
+	const controlPlane = resolveControlPlaneRoot();
+	const projectRoot =
+		controlPlane.mode !== "none"
+			? controlPlane.controlPlaneRoot
+			: resolveProjectRoot();
+	const stateDir = controlPlane.stateDir;
+	const lockOpts: LockDirOpts = { stateDir };
+
+	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
+	// (or projectRoot in none mode). This ensures stored plan_path values
+	// are re-rootable into mapped worktrees.
+	const relPath = relative(projectRoot, planPath);
+	if (relPath.startsWith("..") || isAbsolute(relPath)) {
+		outputError(
+			"PLAN_OUTSIDE_CONTROL_PLANE",
+			`Plan path \`${planPath}\` is outside the repository root \`${projectRoot}\`. Move the plan under the repository root.`,
+			{
+				plan_path: planPath,
+				control_plane_root: projectRoot,
+			},
+		);
+	}
+
+	// Config resolution: use plan-path-anchored layering (Phase 1c) when
+	// we have a control-plane root, so config is scoped to the plan's
+	// sub-project context.
+	let config: Awaited<ReturnType<typeof loadConfig>>["config"];
+	if (controlPlane.mode !== "none") {
+		const contextDir = dirname(planPath);
+		const result = await resolveLayeredConfig(projectRoot, contextDir);
+		config = result.config;
+	} else {
+		const result = await loadConfig(projectRoot);
+		config = result.config;
+	}
+
+	// Normalize db.path to directory semantics (backward compat: `.5x/5x.db` → `.5x`)
+	const dbRelPath = join(normalizeDbPath(config.db.path), DB_FILENAME);
+	const db = getDb(projectRoot, dbRelPath);
 	runMigrations(db);
 
 	const requestedWorktreePath =
@@ -402,7 +493,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	}
 
 	// 1. Lock-first invariant: acquire plan lock before checking for active run
-	const lockResult = acquireLock(projectRoot, planPath);
+	// Phase 3c: pass stateDir to anchor locks under controlPlaneRoot/stateDir
+	const lockResult = acquireLock(projectRoot, planPath, lockOpts);
 	if (!lockResult.acquired) {
 		outputError(
 			"PLAN_LOCKED",
@@ -425,6 +517,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				planPath,
 				requestedWorktreePath,
 				config.worktree?.postCreate,
+				stateDir,
 			);
 		}
 
@@ -452,7 +545,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
-			registerLockCleanup(projectRoot, planPath);
+			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
 			outputSuccess({
 				run_id: existing.id,
@@ -461,6 +554,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				created_at: existing.created_at,
 				resumed: true,
 				...(worktreeResult ? { worktree: worktreeResult } : {}),
+				// Phase 4: top-level worktree context for downstream pipe consumers
+				...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
 			});
 			return;
 		}
@@ -477,7 +572,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}),
 		});
 
-		registerLockCleanup(projectRoot, planPath);
+		registerLockCleanup(projectRoot, planPath, lockOpts);
 		lockCleanupRegistered = true;
 
 		const run = getRunV1(db, runId);
@@ -488,17 +583,19 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			created_at: run?.created_at ?? new Date().toISOString(),
 			resumed: false,
 			...(worktreeResult ? { worktree: worktreeResult } : {}),
+			// Phase 4: top-level worktree context for downstream pipe consumers
+			...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
 		});
 	} catch (err) {
 		if (!lockCleanupRegistered) {
-			releaseLock(projectRoot, planPath);
+			releaseLock(projectRoot, planPath, lockOpts);
 		}
 		throw err;
 	}
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { db } = await resolveDbContext();
+	const { db, controlPlane } = await resolveDbContext();
 
 	// Resolve run by ID or plan path
 	let run: RunRowV1 | null = null;
@@ -515,6 +612,22 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		outputError("RUN_NOT_FOUND", "Run not found");
 	}
 
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. If the mapped worktree is missing,
+	// fail with WORKTREE_MISSING instead of silently returning data from
+	// the wrong checkout context.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, run.id, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+	}
+
 	// Build step query options
 	const stepOpts: { sinceStepId?: number; tail?: number } = {};
 	if (params.sinceStep !== undefined) {
@@ -526,6 +639,10 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	const steps = getSteps(db, run.id, stepOpts);
 	const summary = computeRunSummary(db, run.id);
 
+	// Phase 3b: report worktree path when run has a mapped worktree
+	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
+	const worktreePath = plan?.worktree_path || null;
+
 	outputSuccess({
 		run: {
 			id: run.id,
@@ -533,6 +650,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			status: run.status,
 			created_at: run.created_at,
 			updated_at: run.updated_at,
+			...(worktreePath ? { worktree_path: worktreePath } : {}),
 		},
 		steps: steps.map(formatStep),
 		summary,
@@ -546,7 +664,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 export async function recordStepInternal(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 ): Promise<RecordStepResult> {
-	const { config, db } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext();
 
 	// Verify run exists and is active
 	const run = getRunV1(db, params.run);
@@ -558,6 +676,23 @@ export async function recordStepInternal(
 			"RUN_NOT_ACTIVE",
 			`Run ${params.run} is ${run.status}, not active`,
 		);
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Recording steps against a run with
+	// a missing worktree is a drift risk — fail with WORKTREE_MISSING.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			throw new RecordError(
+				ctxResult.error.code,
+				ctxResult.error.message,
+				ctxResult.error.detail,
+			);
+		}
 	}
 
 	// Enforce maxStepsPerRun (guard against corrupt config_json)
@@ -696,11 +831,27 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 }
 
 export async function runV1Complete(params: RunCompleteParams): Promise<void> {
-	const { projectRoot, db } = await resolveDbContext();
+	const { projectRoot, db, controlPlane } = await resolveDbContext();
+	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 
 	const run = getRunV1(db, params.run);
 	if (!run) {
 		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Completing a run with a missing
+	// worktree means the run's state may be inconsistent.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
 	}
 
 	const status = params.status ?? "completed";
@@ -710,8 +861,9 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 
 	// Enforce lock ownership: the plan must either be unlocked, locked by us,
 	// or locked by a dead process. If another live PID holds the lock, refuse.
+	// Phase 3b: pass stateDir to isLocked for correct lock directory resolution
 	if (run.plan_path) {
-		const lockStatus = isLocked(projectRoot, run.plan_path);
+		const lockStatus = isLocked(projectRoot, run.plan_path, lockOpts);
 		if (
 			lockStatus.locked &&
 			!lockStatus.stale &&
@@ -740,8 +892,9 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 	completeRun(db, params.run, status);
 
 	// Release plan lock (ownership-safe: only releases if we own it or it's stale)
+	// Phase 3b: pass stateDir to releaseLock
 	if (run.plan_path) {
-		releaseLock(projectRoot, run.plan_path);
+		releaseLock(projectRoot, run.plan_path, lockOpts);
 	}
 
 	outputSuccess({
@@ -752,19 +905,37 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 }
 
 export async function runV1Reopen(params: RunReopenParams): Promise<void> {
-	const { projectRoot, db } = await resolveDbContext();
+	const { projectRoot, db, controlPlane } = await resolveDbContext();
+	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 
 	const run = getRunV1(db, params.run);
 	if (!run) {
 		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
 	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Reopening a run with a missing
+	// worktree should fail rather than allow drift.
+	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+	if (controlPlaneRoot) {
+		const ctxResult = resolveRunExecutionContext(db, params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
+		}
+	}
+
 	if (run.status === "active") {
 		outputError("RUN_ALREADY_ACTIVE", `Run ${params.run} is already active`);
 	}
 
 	// Enforce lock ownership: if the plan is locked by another live PID, refuse.
+	// Phase 3b: pass stateDir to isLocked for correct lock directory resolution
 	if (run.plan_path) {
-		const lockStatus = isLocked(projectRoot, run.plan_path);
+		const lockStatus = isLocked(projectRoot, run.plan_path, lockOpts);
 		if (
 			lockStatus.locked &&
 			!lockStatus.stale &&
@@ -834,11 +1005,13 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	validateRunId(params.run);
 
 	// Validate run exists — try DB first, fall back to log dir existence
-	const { projectRoot, db } = await resolveDbContext({
+	const { projectRoot, db, controlPlane } = await resolveDbContext({
 		startDir: params.workdir,
 	});
 	const run = getRunV1(db, params.run);
-	const logDir = join(projectRoot, ".5x", "logs", params.run);
+	// Phase 3b: re-anchor log path to controlPlaneRoot/stateDir
+	const stateDir = controlPlane?.stateDir ?? ".5x";
+	const logDir = join(projectRoot, stateDir, "logs", params.run);
 
 	if (!run) {
 		if (existsSync(logDir)) {
@@ -850,6 +1023,24 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 				"RUN_NOT_FOUND",
 				`Run '${params.run}' not found (no DB entry and no log directory)`,
 			);
+		}
+	}
+
+	// Phase 3 fix: validate run-scoped context via shared resolver to honor
+	// the fail-closed worktree contract. Watching logs from a run with a
+	// missing worktree is misleading — fail with WORKTREE_MISSING.
+	if (run) {
+		const controlPlaneRoot = controlPlane?.controlPlaneRoot;
+		if (controlPlaneRoot) {
+			const ctxResult = resolveRunExecutionContext(db, params.run, {
+				controlPlaneRoot,
+				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+			});
+			if (!ctxResult.ok) {
+				outputError(ctxResult.error.code, ctxResult.error.message, {
+					detail: ctxResult.error.detail,
+				});
+			}
 		}
 	}
 
