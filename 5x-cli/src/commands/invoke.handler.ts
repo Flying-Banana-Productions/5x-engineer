@@ -363,15 +363,12 @@ export async function invokeAgent(
 		});
 
 		if (!ctxResult.ok) {
-			// Run context resolution failed — output structured error.
-			// RUN_NOT_FOUND is non-fatal for invoke (run may not exist in DB yet
-			// if created externally); other errors are fatal.
-			if (ctxResult.error.code !== "RUN_NOT_FOUND") {
-				outputError(ctxResult.error.code, ctxResult.error.message, {
-					detail: ctxResult.error.detail,
-				});
-			}
-			// RUN_NOT_FOUND: fall through — use projectRoot as workdir
+			// All run-context errors are hard errors, including RUN_NOT_FOUND.
+			// When --run is provided and the run cannot be resolved, invoke must
+			// fail closed — same contract as quality/diff/run handlers.
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
 		} else {
 			const ctx = ctxResult.context;
 			resolvedWorktreePath = ctx.mappedWorktreePath;

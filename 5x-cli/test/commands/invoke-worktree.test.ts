@@ -9,7 +9,7 @@
  * - Artifact paths (logs, template overrides) anchor to controlPlaneRoot/stateDir
  * - Output envelope includes worktree_path and worktree_plan_path when mapped
  * - invoke still works for unmapped runs
- * - invoke still works when run not found in DB (non-fatal for RUN_NOT_FOUND)
+ * - invoke --run fails closed when run not found in DB (RUN_NOT_FOUND is fatal)
  *
  * Uses integration-level tests with the sample provider for end-to-end validation.
  */
@@ -399,14 +399,16 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 	);
 
 	test(
-		"invoke --run with run not found in DB still works (non-fatal)",
+		"invoke --run with run not found in DB fails with RUN_NOT_FOUND",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
 				initDb(dir);
 
-				// Don't insert any run — the handler should gracefully handle RUN_NOT_FOUND
+				// Don't insert any run — the handler must fail closed when --run
+				// is provided but the run cannot be resolved (same contract as
+				// quality/diff/run handlers).
 				const result = await run5x(dir, [
 					"invoke",
 					"author",
@@ -422,13 +424,9 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 				]);
 
 				const json = parseJson(result.stdout);
-				// Should succeed — RUN_NOT_FOUND is non-fatal for invoke
-				expect(json.ok).toBe(true);
-				const data = json.data as Record<string, unknown>;
-				expect(data.run_id).toBe("run_nonexistent");
-				// No worktree fields since run wasn't found
-				expect(data.worktree_path).toBeUndefined();
-				expect(data.worktree_plan_path).toBeUndefined();
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("RUN_NOT_FOUND");
 			} finally {
 				cleanupDir(dir);
 			}
