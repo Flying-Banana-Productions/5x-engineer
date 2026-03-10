@@ -399,18 +399,17 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 	);
 
 	test(
-		"invoke --run with run not found in DB is a soft failure — invoke still succeeds",
+		"invoke --run with run not found in DB fails closed with RUN_NOT_FOUND",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
 				initDb(dir);
 
-				// Don't insert any run — RUN_NOT_FOUND is a soft error in invoke
-				// because the run context is an optimization (worktree/plan-path
-				// enrichment). The invoke itself should still succeed. Other
-				// errors like WORKTREE_MISSING remain hard because they indicate
-				// a real safety issue (wrong workdir).
+				// Don't insert any run — RUN_NOT_FOUND is now a hard error in
+				// invoke, consistent with quality/diff/run handlers. A typo or
+				// stale run ID should not silently execute against the wrong
+				// context.
 				const result = await run5x(dir, [
 					"invoke",
 					"author",
@@ -426,9 +425,10 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 				]);
 
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true);
-				const data = json.data as Record<string, unknown>;
-				expect(data.run_id).toBe("run_nonexistent");
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("RUN_NOT_FOUND");
+				expect(result.exitCode).not.toBe(0);
 			} finally {
 				cleanupDir(dir);
 			}

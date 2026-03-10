@@ -363,20 +363,12 @@ export async function invokeAgent(
 		});
 
 		if (!ctxResult.ok) {
-			if (ctxResult.error.code === "RUN_NOT_FOUND") {
-				// RUN_NOT_FOUND is a soft failure in invoke: the run context is
-				// an optimization (worktree/plan-path enrichment). The run ID is
-				// still forwarded for recording, which handles its own
-				// RUN_NOT_FOUND as a non-fatal warning. This keeps invoke usable
-				// when --run references a run that hasn't been persisted yet or
-				// lives in a different DB (e.g. recording-only flows).
-				// Other errors (PLAN_PATH_INVALID, WORKTREE_MISSING) remain hard
-				// because they indicate a real safety issue (wrong workdir).
-			} else {
-				outputError(ctxResult.error.code, ctxResult.error.message, {
-					detail: ctxResult.error.detail,
-				});
-			}
+			// All run-context errors are hard errors, including RUN_NOT_FOUND.
+			// Consistent with quality/diff/run handlers: a typo or stale run ID
+			// should not silently execute against the wrong context.
+			outputError(ctxResult.error.code, ctxResult.error.message, {
+				detail: ctxResult.error.detail,
+			});
 		} else {
 			const ctx = ctxResult.context;
 			resolvedWorktreePath = ctx.mappedWorktreePath;
