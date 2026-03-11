@@ -1,6 +1,6 @@
 # Feature: Harness-Native Subagent Orchestration
 
-**Version:** 1.2  
+**Version:** 1.3  
 **Created:** March 10, 2026  
 **Status:** Proposed
 
@@ -84,30 +84,34 @@ Desired behavior:
 - These commands become the stable bridge between native harness orchestration
   and 5x's workflow contract.
 
-**`5x template render` is run-aware and outputs a specified JSON envelope to stdout.**
+**`5x template render` is run-aware and outputs a standard `outputSuccess` envelope to stdout.**
 
 - `template render` accepts `--run <id>` and, when provided, performs
   run/worktree context resolution mirroring the logic in `invoke.handler.ts`
   lines 332–381.
-- All structured output is written to stdout as a single JSON object.
-- The envelope schema is:
+- All structured output is written to stdout using the standard `outputSuccess()`
+  wrapper, consistent with all other `5x` commands. The output shape is:
 
   ```json
   {
-    "template": "reviewer-plan",
-    "selected_template": "reviewer-plan-continued",
-    "step_name": "reviewer:review",
-    "prompt": "<rendered markdown>",
-    "declared_variables": ["plan_path", "review_path"],
-    "run_id": "run_abc123",
-    "plan_path": "/abs/path/to/plan.md",
-    "worktree_root": "/abs/path/to/worktree"
+    "ok": true,
+    "data": {
+      "template": "reviewer-plan",
+      "selected_template": "reviewer-plan-continued",
+      "step_name": "reviewer:review",
+      "prompt": "<rendered markdown>",
+      "declared_variables": ["plan_path", "review_path"],
+      "run_id": "run_abc123",
+      "plan_path": "/abs/path/to/plan.md",
+      "worktree_root": "/abs/path/to/worktree"
+    }
   }
   ```
 
-- `run_id`, `plan_path`, and `worktree_root` are only included when `--run`
-  is passed. Without `--run`, the envelope contains `template`,
+- `run_id`, `plan_path`, and `worktree_root` are only included in `data` when
+  `--run` is passed. Without `--run`, `data` contains `template`,
   `selected_template`, `step_name`, `prompt`, and `declared_variables` only.
+- Errors use the standard `outputError()` wrapper.
 
 **Native subagents receive the effective working directory via prompt text
 (primary) and agent profile `cwd` (secondary).**
@@ -143,6 +147,37 @@ Desired behavior:
   separate `5x run record` calls after every validation.
 - `--require-commit` defaults to `true` for author validation, matching
   existing `5x invoke` behavior. Use `--no-require-commit` to opt out.
+
+**`5x protocol validate` auto-detects input format (raw vs `outputSuccess` envelope).**
+
+- Native subagents return raw structured JSON (the `AuthorStatus` or
+  `ReviewerVerdict` object directly). The `5x invoke` fallback returns the
+  standard `outputSuccess()` envelope: `{ "ok": true, "data": { ... } }` with
+  the structured result nested at `.data.result`.
+- Rather than requiring callers to pre-extract the result, `5x protocol validate`
+  auto-detects the format: if the parsed JSON contains an `ok` field, the command
+  unwraps `.data.result` before schema validation; otherwise the input is treated
+  as raw structured JSON.
+- This makes `5x protocol validate` the universal validation entry point for both
+  paths without requiring format-specific flags or skill prose to extract nested
+  fields.
+
+**Known limitation: fallback recording via `5x protocol validate --record` loses
+provider session metadata.**
+
+- When the fallback path uses `5x invoke` without `--record` and then records via
+  `5x protocol validate --record`, the recorded step will be missing metadata
+  that `5x invoke --record` normally captures from the provider session:
+  `session_id`, `model`, `duration_ms`, `tokens.in`, `tokens.out`, and `cost_usd`
+  (see `invoke.handler.ts:651–663`). `5x protocol validate` has no provider
+  session to extract this metadata from.
+- For v1, this is acceptable — the structured result, step name, phase, and
+  iteration are the critical recording fields. The session/cost metadata is
+  informational and not consumed by downstream quality gates or workflow logic.
+- If session metadata in fallback recordings becomes important in the future,
+  the skill prose could extract these fields from the `5x invoke` output envelope
+  and pass them to `5x protocol validate` via additional flags, but this adds
+  complexity and is deferred.
 
 **Task prompts stay universal; harness agent profiles carry role/process mechanics.**
 
@@ -235,14 +270,20 @@ its final JSON result without invoking a provider.
 - [ ] Make `template render` mirror continued-template selection: when a caller
       passes `--session` and `<template>-continued` exists, render the continued
       variant automatically and expose the selected template name in output.
-- [ ] Output a JSON envelope to stdout with the fields: `template`,
+- [ ] Output a standard `outputSuccess()` envelope to stdout (consistent with all
+      other `5x` commands) with `data` containing the fields: `template`,
       `selected_template`, `step_name`, `prompt`, `declared_variables`, and
-      (when `--run` is passed) `run_id`, `plan_path`, `worktree_root`.
+      (when `--run` is passed) `run_id`, `plan_path`, `worktree_root`. Use
+      `outputError()` for error cases.
 - [ ] Extract shared variable-resolution logic from `invoke.handler.ts` into a
       reusable helper owned by the template/render path.
 - [ ] Add `5x protocol validate <author|reviewer>` command and handler.
 - [ ] Accept JSON from stdin or `--input`, validate against the existing schemas
       in `src/protocol.ts`, and return the validated payload in a JSON envelope.
+- [ ] Auto-detect input format: if the parsed JSON contains an `ok` field, unwrap
+      `.data.result` before schema validation (this handles the `outputSuccess()`
+      envelope from `5x invoke` fallback); otherwise treat the input as raw
+      structured JSON (this handles native subagent output).
 - [ ] Support `--require-commit` for author validation. Default to `true` for
       author role to match existing `5x invoke` behavior; use
       `--no-require-commit` to opt out.
@@ -427,11 +468,11 @@ The following sequence is the reference pattern that all skill rewrites should
 follow for delegated steps:
 
 ```bash
-# 1. Render the prompt
+# 1. Render the prompt (output follows standard outputSuccess envelope)
 RENDERED=$(5x template render reviewer-plan --run $RUN \
   --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH)
-PROMPT=$(echo "$RENDERED" | jq -r '.prompt')
-STEP=$(echo "$RENDERED" | jq -r '.step_name')
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
 # 2. Detect native agent (project scope first, then user scope)
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
@@ -508,8 +549,8 @@ and does not regress the existing `5x invoke` path.
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), post-render `## Context` block injection, stdout JSON output |
-| Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step`/`--phase`/`--iteration` combined validation-and-record flow, stdin/input parsing |
+| Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), post-render `## Context` block injection, standard `outputSuccess()` envelope wrapping, `outputError()` for error cases |
+| Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step`/`--phase`/`--iteration` combined validation-and-record flow, stdin/input parsing, auto-detect raw vs `outputSuccess` envelope input (unwraps `.data.result` when `ok` field is present) |
 | Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion |
 | Integration | `test/commands/init-opencode.test.ts` | `5x init opencode <scope>` installs both skills and agents correctly, prerequisite check for `.5x/`/`5x.toml`, `5x init --force` compatibility |
 | Regression | existing `invoke` tests | Fallback transport still works with shared helpers; refactoring is a pure extraction with no invoke test assertion changes |
@@ -558,6 +599,29 @@ and does not regress the existing `5x invoke` path.
 - Adding separate 5x config fields for plan-author vs code-author model choice.
 
 ## Revision History
+
+### v1.3 — March 10, 2026
+
+Addresses re-review feedback from
+`014-harness-native-subagent-orchestration.review.md` (Addendum, March 10, 2026
+— Re-review of v1.2).
+
+- **P1.6:** `5x protocol validate` now auto-detects input format. If the parsed
+  JSON contains an `ok` field, the command unwraps `.data.result` before schema
+  validation (handling `outputSuccess()` envelopes from `5x invoke` fallback);
+  otherwise treats input as raw structured JSON (handling native subagent output).
+  Added to Design Decisions, Phase 1 checklist, and Tests table.
+- **P2.8:** Documented session metadata loss as a known limitation. When the
+  fallback records via `5x protocol validate --record` instead of
+  `5x invoke --record`, the recorded step will be missing `session_id`, `model`,
+  `duration_ms`, `tokens.in`, `tokens.out`, and `cost_usd`. This is acceptable
+  for v1 as the critical recording fields (structured result, step name, phase,
+  iteration) are preserved. Added to Design Decisions.
+- **P2.9:** `5x template render` now uses the standard `outputSuccess()` wrapper
+  (consistent with all other `5x` commands) rather than bare JSON. Updated the
+  envelope schema in Design Decisions, Phase 1 checklist output item, the
+  canonical delegation example in Phase 4 (`.data.prompt`, `.data.step_name`),
+  and the Tests table.
 
 ### v1.2 — March 10, 2026
 
