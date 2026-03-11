@@ -999,6 +999,7 @@ export interface RunWatchParams {
 	showReasoning?: boolean;
 	noReplay?: boolean;
 	workdir?: string;
+	pollInterval?: number;
 }
 
 export async function runV1Watch(params: RunWatchParams): Promise<void> {
@@ -1068,6 +1069,7 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 		dir: logDir,
 		signal: controller.signal,
 		startAtEnd: params.noReplay,
+		pollInterval: params.pollInterval,
 	});
 
 	const humanReadable = params.humanReadable ?? false;

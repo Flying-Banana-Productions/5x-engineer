@@ -64,12 +64,17 @@ async function runInit(
 	const proc = Bun.spawn(["bun", "run", BIN, "init", ...extraArgs], {
 		cwd,
 		env,
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const stdout = await new Response(proc.stdout).text();
-	const stderr = await new Response(proc.stderr).text();
-	const exitCode = await proc.exited;
+	const timer = setTimeout(() => proc.kill("SIGINT"), 10000);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	clearTimeout(timer);
 	return { stdout, stderr, exitCode };
 }
 

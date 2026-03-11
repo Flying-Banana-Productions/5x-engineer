@@ -259,6 +259,10 @@ const watchCmd = defineCommand({
 			type: "string" as const,
 			description: "Project root override",
 		},
+		"poll-interval": {
+			type: "string" as const,
+			description: "Poll interval in ms (for testing)",
+		},
 	},
 	run: ({ args }) =>
 		runV1Watch({
@@ -267,6 +271,9 @@ const watchCmd = defineCommand({
 			showReasoning: args["show-reasoning"] as boolean,
 			noReplay: args["tail-only"] as boolean,
 			workdir: args.workdir as string | undefined,
+			pollInterval: args["poll-interval"]
+				? Number(args["poll-interval"])
+				: undefined,
 		}),
 });
 

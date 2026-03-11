@@ -487,14 +487,21 @@ describe("commands from linked worktree", () => {
 				// Create log file at root so watch has something to read
 				const logDir = join(tmp, ".5x", "logs", runId);
 				mkdirSync(logDir, { recursive: true });
-				writeFileSync(join(logDir, "test.log"), "test log content\n");
+				writeFileSync(
+					join(logDir, "agent-001.ndjson"),
+					'{"type":"system","subtype":"init"}\n',
+				);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "watch-branch");
 				git(["worktree", "add", linkedWt, "-b", "watch-branch"], tmp);
 
 				// run watch exits quickly if no active process — just verify it resolves
 				// the correct DB and doesn't error with DB_NOT_FOUND or similar
-				const result = await run5x(linkedWt, ["run", "watch", "--run", runId]);
+				const result = await run5x(
+					linkedWt,
+					["run", "watch", "--run", runId, "--poll-interval", "10"],
+					500,
+				);
 
 				// Watch may exit 0 or 1 depending on whether there's an active log,
 				// but it should NOT fail with a DB resolution error
