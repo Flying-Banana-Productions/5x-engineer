@@ -11,14 +11,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { outputError, outputSuccess } from "../output.js";
-import {
-	type AuthorStatus,
-	assertAuthorStatus,
-	assertReviewerVerdict,
-	isStructuredOutputError,
-	type ReviewerVerdict,
-} from "../protocol.js";
 import { validateRunId } from "../run-id.js";
+import { validateStructuredOutput } from "./protocol-helpers.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -125,46 +119,38 @@ export async function protocolValidate(
 	const structured = extractResult(parsed);
 
 	// -----------------------------------------------------------------------
-	// Validate structured output
+	// Validate structured output (shared helper)
 	// -----------------------------------------------------------------------
+	const validated = validateStructuredOutput(structured, role, {
+		requireCommit: params.requireCommit,
+		context: `protocol validate ${role}`,
+	});
 
-	// Check for StructuredOutputError first
-	if (isStructuredOutputError(structured)) {
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			"Input contains a structured output error",
-			{ raw: structured },
-		);
-	}
-
-	if (!structured || typeof structured !== "object") {
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			`Input is not a valid structured object for ${role}`,
-			{ raw: structured ?? null },
-		);
-	}
-
-	try {
-		if (role === "author") {
-			// --require-commit defaults to true for author
-			const requireCommit = params.requireCommit !== false;
-			assertAuthorStatus(
-				structured as AuthorStatus,
-				`protocol validate ${role}`,
-				{
-					requireCommit,
-				},
-			);
-		} else {
-			assertReviewerVerdict(
-				structured as ReviewerVerdict,
-				`protocol validate ${role}`,
+	// -----------------------------------------------------------------------
+	// Validate --record prerequisites BEFORE outputSuccess().
+	//
+	// validateRunId() calls outputError() on failure, which writes a JSON
+	// envelope to stdout. If we called outputSuccess() first, stdout would
+	// contain two JSON envelopes — breaking the single-envelope contract
+	// and misleading orchestrators into treating a failed call as successful.
+	// -----------------------------------------------------------------------
+	let recordStepName: string | undefined;
+	if (params.record) {
+		if (!params.run) {
+			outputError(
+				"INVALID_ARGS",
+				"--record requires --run. Provide --run <id> when using --record.",
 			);
 		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		outputError("INVALID_STRUCTURED_OUTPUT", message, { raw: structured });
+		validateRunId(params.run);
+
+		if (!params.step) {
+			outputError(
+				"INVALID_ARGS",
+				"--record requires --step. Provide --step <name> when using --record.",
+			);
+		}
+		recordStepName = params.step;
 	}
 
 	// -----------------------------------------------------------------------
@@ -173,32 +159,24 @@ export async function protocolValidate(
 	outputSuccess({
 		role,
 		valid: true,
-		result: structured,
+		result: validated,
 	});
 
 	// -----------------------------------------------------------------------
 	// Combined validate + record (optional)
+	//
+	// Prerequisites are already validated above. The actual recording is a
+	// side effect — errors go to stderr (never outputError, which would
+	// write a second envelope to stdout).
 	// -----------------------------------------------------------------------
-	if (params.record) {
-		if (!params.run) {
-			console.error("Warning: --record requires --run. Skipping recording.");
-			process.exitCode = 1;
-			return;
-		}
-		validateRunId(params.run);
-
-		const stepName = params.step;
-		if (!stepName) {
-			console.error("Warning: --record requires --step. Skipping recording.");
-			process.exitCode = 1;
-			return;
-		}
-
+	if (params.record && recordStepName) {
 		try {
 			await recordStepInternal({
-				run: params.run,
-				stepName,
-				result: JSON.stringify(structured),
+				// params.run is guaranteed non-null here: prerequisite check above
+				// calls outputError() (which exits) when --run is absent.
+				run: params.run as string,
+				stepName: recordStepName,
+				result: JSON.stringify(validated),
 				phase: params.phase,
 				iteration: params.iteration,
 			});

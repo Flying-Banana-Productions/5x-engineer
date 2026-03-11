@@ -658,7 +658,7 @@ describe("5x protocol validate --record", () => {
 	);
 
 	test(
-		"--record without --run warns and sets non-zero exit",
+		"--record without --run fails with error envelope (not double-output)",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -674,12 +674,12 @@ describe("5x protocol validate --record", () => {
 					input,
 				);
 
-				// Validation itself succeeds (exit 0 from outputSuccess),
-				// but recording warning sets process.exitCode = 1
-				// Note: since outputSuccess already wrote, exitCode comes from the process
+				expect(result.exitCode).not.toBe(0);
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true); // validation passed
-				expect(result.stderr).toContain("--record requires --run");
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+				expect(error.message).toContain("--record requires --run");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -688,7 +688,7 @@ describe("5x protocol validate --record", () => {
 	);
 
 	test(
-		"--record without --step warns and sets non-zero exit",
+		"--record without --step fails with error envelope (not double-output)",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -708,9 +708,51 @@ describe("5x protocol validate --record", () => {
 					input,
 				);
 
+				expect(result.exitCode).not.toBe(0);
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true); // validation passed
-				expect(result.stderr).toContain("--record requires --step");
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+				expect(error.message).toContain("--record requires --step");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--record with invalid run id fails with error (no stdout corruption)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const input = JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				});
+
+				const result = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--record",
+						"--run",
+						"../bad-traversal",
+						"--step",
+						"test",
+					],
+					input,
+				);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = parseJson(result.stdout);
+				// Should be a single error envelope, not success + error
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
 			} finally {
 				cleanupDir(dir);
 			}

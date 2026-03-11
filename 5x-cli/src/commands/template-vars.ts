@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { outputError } from "../output.js";
+import { loadTemplate, renderTemplate } from "../templates/loader.js";
 
 // ---------------------------------------------------------------------------
 // Stdin var detection
@@ -155,5 +156,92 @@ export function resolveInternalTemplateVariables(
 	return {
 		...internalVars,
 		...explicitVars,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Shared template resolution + rendering
+// ---------------------------------------------------------------------------
+
+export interface ResolveAndRenderOptions {
+	templateName: string;
+	session?: string;
+	explicitVars: Record<string, string>;
+	resolvedPlanPath: string | null;
+	config: Pick<FiveXConfig, "paths">;
+	projectRoot: string;
+}
+
+export interface ResolvedTemplate {
+	originalTemplateName: string;
+	selectedTemplateName: string;
+	metadata: ReturnType<typeof loadTemplate>["metadata"];
+	prompt: string;
+	stepName: string | null;
+	variables: Record<string, string>;
+}
+
+/**
+ * Shared continued-template selection, loading, variable resolution, and
+ * rendering. Used by both `5x template render` and `5x invoke` to avoid
+ * reimplementing the same logic in two places.
+ */
+export function resolveAndRenderTemplate(
+	opts: ResolveAndRenderOptions,
+): ResolvedTemplate {
+	const { templateName: requestedName, session, config, projectRoot } = opts;
+
+	// Continued-template selection: when a session is active and a "-continued"
+	// variant exists, use it (saves tokens since context is already loaded).
+	let templateName = requestedName;
+	if (session) {
+		const continuedName = `${templateName}-continued`;
+		try {
+			loadTemplate(continuedName);
+			templateName = continuedName;
+		} catch {
+			// No continued variant — use the full template
+		}
+	}
+
+	// Load template metadata
+	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
+	try {
+		const loaded = loadTemplate(templateName);
+		templateMetadata = loaded.metadata;
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		if (message.includes("Unknown template") || message.includes("not found")) {
+			outputError("TEMPLATE_NOT_FOUND", message);
+		}
+		throw err;
+	}
+
+	// Inject resolved plan path as default for plan_path variable
+	const vars = { ...opts.explicitVars };
+	if (
+		opts.resolvedPlanPath &&
+		!vars.plan_path &&
+		templateMetadata.variables.includes("plan_path")
+	) {
+		vars.plan_path = opts.resolvedPlanPath;
+	}
+
+	const variables = resolveInternalTemplateVariables(
+		templateMetadata.variables,
+		vars,
+		config,
+		projectRoot,
+	);
+
+	const rendered = renderTemplate(templateName, variables);
+
+	return {
+		originalTemplateName: requestedName,
+		selectedTemplateName: templateName,
+		metadata: templateMetadata,
+		prompt: rendered.prompt,
+		stepName: rendered.stepName,
+		variables,
 	};
 }

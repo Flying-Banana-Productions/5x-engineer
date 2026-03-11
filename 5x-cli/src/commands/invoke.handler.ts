@@ -26,15 +26,7 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import {
-	type AuthorStatus,
-	AuthorStatusSchema,
-	assertAuthorStatus,
-	assertReviewerVerdict,
-	isStructuredOutputError,
-	type ReviewerVerdict,
-	ReviewerVerdictSchema,
-} from "../protocol.js";
+import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
 import { createProvider } from "../providers/factory.js";
 import {
 	appendLogLine,
@@ -48,19 +40,16 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import { validateRunId } from "../run-id.js";
-import {
-	loadTemplate,
-	renderTemplate,
-	setTemplateOverrideDir,
-} from "../templates/loader.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import { validateStructuredOutput } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 import {
 	hasStdinVarFlag,
 	parseVars,
-	resolveInternalTemplateVariables,
+	resolveAndRenderTemplate,
 } from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
@@ -309,55 +298,21 @@ export async function invokeAgent(
 	);
 	setTemplateOverrideDir(templateDir);
 
-	// 1. Resolve and render template
-	// When resuming a session, prefer a "-continued" variant of the template
-	// if one exists. The continued variant is shorter (saves tokens) since
-	// the full instructions are already in the session context.
-	let templateName = params.template;
-	if (params.session) {
-		const continuedName = `${templateName}-continued`;
-		try {
-			loadTemplate(continuedName);
-			templateName = continuedName;
-		} catch {
-			// No continued variant — use the full template
-		}
-	}
-
-	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
-	try {
-		const loaded = loadTemplate(templateName);
-		templateMetadata = loaded.metadata;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (message.includes("Unknown template") || message.includes("not found")) {
-			outputError("TEMPLATE_NOT_FOUND", message);
-		}
-		throw err;
-	}
-
+	// 1. Resolve and render template (shared helper)
 	const explicitVars = await parseVars(params.vars);
 	const mergedVars = pipeContext
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
 
-	// Phase 2: inject resolved plan path as default for plan_path variable.
-	// Explicit --var plan_path=... wins over resolver default.
-	if (
-		resolvedPlanPath &&
-		!mergedVars.plan_path &&
-		templateMetadata.variables.includes("plan_path")
-	) {
-		mergedVars.plan_path = resolvedPlanPath;
-	}
-
-	const variables = resolveInternalTemplateVariables(
-		templateMetadata.variables,
-		mergedVars,
+	const resolved = resolveAndRenderTemplate({
+		templateName: params.template,
+		session: params.session,
+		explicitVars: mergedVars,
+		resolvedPlanPath,
 		config,
 		projectRoot,
-	);
-	const rendered = renderTemplate(templateName, variables);
+	});
+	const { variables } = resolved;
 
 	// 2. Create provider
 	let provider: AgentProvider;
@@ -420,7 +375,7 @@ export async function invokeAgent(
 	appendSessionStart(logPath, {
 		type: "session_start",
 		role,
-		template: templateName,
+		template: resolved.selectedTemplateName,
 		run: params.run,
 		phase_number: variables.phase_number,
 	});
@@ -445,7 +400,7 @@ export async function invokeAgent(
 	try {
 		runResult = await invokeStreamed(
 			session,
-			rendered.prompt,
+			resolved.prompt,
 			runOpts,
 			logPath,
 			quiet,
@@ -457,40 +412,11 @@ export async function invokeAgent(
 		throw err;
 	}
 
-	// 7. Validate structured output
-	const structured = runResult.structured;
-
-	// Check for StructuredOutputError BEFORE the object guard — real error
-	// payloads are typically objects and would fall through to assert* otherwise.
-	if (isStructuredOutputError(structured)) {
-		await provider.close().catch(() => {});
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			"Agent returned a structured output error",
-			{ raw: structured },
-		);
-	}
-
-	if (!structured || typeof structured !== "object") {
-		await provider.close().catch(() => {});
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			`Agent did not return valid structured output for ${role}`,
-			{ raw: structured ?? null },
-		);
-	}
-
-	try {
-		if (role === "author") {
-			assertAuthorStatus(structured as AuthorStatus, `invoke ${role}`);
-		} else {
-			assertReviewerVerdict(structured as ReviewerVerdict, `invoke ${role}`);
-		}
-	} catch (err) {
-		await provider.close().catch(() => {});
-		const message = err instanceof Error ? err.message : String(err);
-		outputError("INVALID_STRUCTURED_OUTPUT", message, { raw: structured });
-	}
+	// 7. Validate structured output (shared helper)
+	const structured = validateStructuredOutput(runResult.structured, role, {
+		context: `invoke ${role}`,
+		onError: () => provider.close().catch(() => {}),
+	});
 
 	// 8. Close provider
 	await provider.close().catch(() => {});
@@ -498,7 +424,7 @@ export async function invokeAgent(
 	// 9. Return result — include worktree context for downstream pipelines
 	const output: InvokeResult = {
 		run_id: params.run,
-		step_name: rendered.stepName,
+		step_name: resolved.stepName,
 		phase: variables.phase_number ?? null,
 		model,
 		result: structured,
@@ -521,7 +447,7 @@ export async function invokeAgent(
 	// All errors from here must go to stderr — never outputError() (which would
 	// write a second JSON envelope to stdout, corrupting the stream).
 	if (params.record) {
-		const stepName = params.recordStep ?? rendered.stepName;
+		const stepName = params.recordStep ?? resolved.stepName;
 		if (!stepName) {
 			console.error(
 				"Warning: --record requires a step name. Provide --record-step or add step_name to the template frontmatter.",

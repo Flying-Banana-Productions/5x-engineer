@@ -14,17 +14,10 @@ import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { validateRunId } from "../run-id.js";
-import {
-	loadTemplate,
-	renderTemplate,
-	setTemplateOverrideDir,
-} from "../templates/loader.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
-import {
-	parseVars,
-	resolveInternalTemplateVariables,
-} from "./template-vars.js";
+import { parseVars, resolveAndRenderTemplate } from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -141,61 +134,18 @@ export async function templateRender(
 	setTemplateOverrideDir(templateDir);
 
 	// -----------------------------------------------------------------------
-	// Continued-template selection (mirrors invoke.handler.ts logic)
-	// -----------------------------------------------------------------------
-	let templateName = params.template;
-	const originalTemplateName = templateName;
-	if (params.session) {
-		const continuedName = `${templateName}-continued`;
-		try {
-			loadTemplate(continuedName);
-			templateName = continuedName;
-		} catch {
-			// No continued variant — use the full template
-		}
-	}
-
-	// -----------------------------------------------------------------------
-	// Load template metadata
-	// -----------------------------------------------------------------------
-	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
-	try {
-		const loaded = loadTemplate(templateName);
-		templateMetadata = loaded.metadata;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (message.includes("Unknown template") || message.includes("not found")) {
-			outputError("TEMPLATE_NOT_FOUND", message);
-		}
-		throw err;
-	}
-
-	// -----------------------------------------------------------------------
-	// Parse and resolve variables
+	// Resolve and render template (shared helper)
 	// -----------------------------------------------------------------------
 	const explicitVars = await parseVars(params.vars);
-
-	// Inject resolved plan path as default for plan_path variable
-	if (
-		resolvedPlanPath &&
-		!explicitVars.plan_path &&
-		templateMetadata.variables.includes("plan_path")
-	) {
-		explicitVars.plan_path = resolvedPlanPath;
-	}
-
-	const variables = resolveInternalTemplateVariables(
-		templateMetadata.variables,
+	const resolved = resolveAndRenderTemplate({
+		templateName: params.template,
+		session: params.session,
 		explicitVars,
+		resolvedPlanPath,
 		config,
 		projectRoot,
-	);
-
-	// -----------------------------------------------------------------------
-	// Render template
-	// -----------------------------------------------------------------------
-	const rendered = renderTemplate(templateName, variables);
-	let prompt = rendered.prompt;
+	});
+	let prompt = resolved.prompt;
 
 	// -----------------------------------------------------------------------
 	// Post-render: append ## Context block when --run resolves a worktree
@@ -208,11 +158,11 @@ export async function templateRender(
 	// Build output envelope
 	// -----------------------------------------------------------------------
 	const output: TemplateRenderOutput = {
-		template: originalTemplateName,
-		selected_template: templateName,
-		step_name: rendered.stepName,
+		template: resolved.originalTemplateName,
+		selected_template: resolved.selectedTemplateName,
+		step_name: resolved.stepName,
 		prompt,
-		declared_variables: templateMetadata.variables,
+		declared_variables: resolved.metadata.variables,
 		// Run-aware fields
 		...(params.run ? { run_id: params.run } : {}),
 		...(resolvedPlanPath && params.run ? { plan_path: resolvedPlanPath } : {}),

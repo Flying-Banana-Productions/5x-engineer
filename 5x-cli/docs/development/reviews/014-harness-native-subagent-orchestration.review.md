@@ -608,3 +608,64 @@ consistent:
   limitation is documented with a deferred enhancement path.
 
 **Readiness:** Ready — the plan can proceed to implementation as-is.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `a7a5c84`
+
+### What's Addressed
+
+Phase 1 is mostly implemented as planned.
+
+- `5x template render` landed with run-aware rendering, continued-template
+  selection, standard `outputSuccess()` envelope output, and post-render
+  `## Context` block injection in `5x-cli/src/commands/template.handler.ts`.
+- `5x protocol validate` landed with stdin / `--input` support, raw-vs-envelope
+  auto-detection, author/reviewer schema validation, and combined record flags
+  in `5x-cli/src/commands/protocol.handler.ts`.
+- `5x invoke` kept passing its regression suite after the extraction, and the
+  new command coverage is strong: `5x-cli/test/commands/template-render.test.ts`,
+  `5x-cli/test/commands/protocol-validate.test.ts`, and the existing invoke
+  tests all pass locally.
+
+### Remaining Concerns
+
+#### P1.7 — `protocol validate --record` can corrupt stdout with a second JSON envelope
+
+`5x-cli/src/commands/protocol.handler.ts:173` writes the success envelope before
+recording preconditions are fully validated. If `--record` is used with an
+invalid run id, `validateRunId()` at `5x-cli/src/commands/protocol.handler.ts:188`
+throws after success output has already been emitted, so stdout contains both a
+success envelope and an error envelope. Repro: `5x protocol validate author
+--record --run ../bad --step test`.
+
+This breaks the machine-readable single-envelope contract and can mislead the
+orchestrator into treating a failed validate+record call as successful.
+
+Recommendation: validate all `--record` prerequisites (`--run`, run id format,
+`--step`) before calling `outputSuccess()`, and add a regression test for the
+invalid-run-id case.
+
+#### P2.10 — Phase 1 did not actually extract shared render/validate helpers for `invoke`
+
+The plan called for `invoke.handler.ts` to reuse extracted render/validate
+helpers so native and fallback paths share one contract. This commit extracts
+shared variable parsing in `5x-cli/src/commands/template-vars.ts`, but
+`5x-cli/src/commands/invoke.handler.ts:312`-`5x-cli/src/commands/invoke.handler.ts:360`
+still reimplements template selection / rendering flow, and
+`5x-cli/src/commands/invoke.handler.ts:460`-`5x-cli/src/commands/invoke.handler.ts:493`
+still reimplements structured-output validation.
+
+Functionally this works today, but it leaves the exact drift risk Phase 1 was
+meant to remove. A later contract change will need to be updated in two places.
+
+Recommendation: factor a shared render helper and a shared validate helper out
+of the new command handlers, then have both `template render` / `protocol
+validate` and `invoke` call those helpers.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — Phase 1 is substantively complete and
+the test strategy is good, but one correctness issue remains in the new
+validate+record path and the planned invoke/helper consolidation is incomplete.
+Both are mechanical fixes. Phase 2 should wait until P1.7 is fixed.
