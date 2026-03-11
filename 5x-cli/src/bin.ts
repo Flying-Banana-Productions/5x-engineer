@@ -58,6 +58,8 @@ const main = defineCommand({
 		diff: () => import("./commands/diff.js").then((m) => m.default),
 		prompt: () => import("./commands/prompt.js").then((m) => m.default),
 		init: () => import("./commands/init.js").then((m) => m.default),
+		template: () => import("./commands/template.js").then((m) => m.default),
+		protocol: () => import("./commands/protocol.js").then((m) => m.default),
 		skills: () => import("./commands/skills.js").then((m) => m.default),
 		upgrade: () => import("./commands/upgrade.js").then((m) => m.default),
 		worktree: () => import("./commands/worktree.js").then((m) => m.default),

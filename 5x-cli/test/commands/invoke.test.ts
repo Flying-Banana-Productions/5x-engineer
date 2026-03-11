@@ -240,12 +240,12 @@ describe("invoke", () => {
 
 		test("invoke resolves plan template path internally", async () => {
 			const { FiveXConfigSchema } = await import("../../src/config.js");
-			const { resolveInvokeTemplateVariables } = await import(
-				"../../src/commands/invoke.handler.js"
+			const { resolveInternalTemplateVariables } = await import(
+				"../../src/commands/template-vars.js"
 			);
 
 			const config = FiveXConfigSchema.parse({});
-			const vars = resolveInvokeTemplateVariables(
+			const vars = resolveInternalTemplateVariables(
 				["prd_path", "plan_path", "plan_template_path"],
 				{
 					prd_path: "docs/requirements.md",
@@ -262,12 +262,12 @@ describe("invoke", () => {
 
 		test("invoke resolves review template path internally", async () => {
 			const { FiveXConfigSchema } = await import("../../src/config.js");
-			const { resolveInvokeTemplateVariables } = await import(
-				"../../src/commands/invoke.handler.js"
+			const { resolveInternalTemplateVariables } = await import(
+				"../../src/commands/template-vars.js"
 			);
 
 			const config = FiveXConfigSchema.parse({});
-			const vars = resolveInvokeTemplateVariables(
+			const vars = resolveInternalTemplateVariables(
 				["commit_hash", "review_path", "plan_path", "review_template_path"],
 				{
 					commit_hash: "abc123",
@@ -285,12 +285,12 @@ describe("invoke", () => {
 
 		test("explicit template path vars override internal defaults", async () => {
 			const { FiveXConfigSchema } = await import("../../src/config.js");
-			const { resolveInvokeTemplateVariables } = await import(
-				"../../src/commands/invoke.handler.js"
+			const { resolveInternalTemplateVariables } = await import(
+				"../../src/commands/template-vars.js"
 			);
 
 			const config = FiveXConfigSchema.parse({});
-			const vars = resolveInvokeTemplateVariables(
+			const vars = resolveInternalTemplateVariables(
 				["prd_path", "plan_path", "plan_template_path", "review_template_path"],
 				{
 					prd_path: "docs/requirements.md",

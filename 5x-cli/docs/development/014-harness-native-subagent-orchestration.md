@@ -255,11 +255,11 @@ provider session metadata.**
 **Completion gate:** 5x can render any author/reviewer task prompt and validate
 its final JSON result without invoking a provider.
 
-- [ ] Add `5x template render <template>` command and handler.
-- [ ] Support the same variable sources as `5x invoke`: repeated `--var`, `@file`,
+- [x] Add `5x template render <template>` command and handler.
+- [x] Support the same variable sources as `5x invoke`: repeated `--var`, `@file`,
       `@-`, internal template variables, and run/worktree-aware plan path
       resolution.
-- [ ] Accept `--run <id>` on `template render` and perform run/worktree context
+- [x] Accept `--run <id>` on `template render` and perform run/worktree context
       resolution (mirroring `invoke.handler.ts` lines 332–381). When `--run` is
       passed, include `run_id`, `plan_path`, and `worktree_root` in the output
       envelope. Append a `## Context` block (containing the effective working
@@ -267,35 +267,35 @@ its final JSON result without invoking a provider.
       not the `{{var}}` template variable mechanism — so native subagents receive
       the working directory in their instructions without requiring changes to
       template frontmatter.
-- [ ] Make `template render` mirror continued-template selection: when a caller
+- [x] Make `template render` mirror continued-template selection: when a caller
       passes `--session` and `<template>-continued` exists, render the continued
       variant automatically and expose the selected template name in output.
-- [ ] Output a standard `outputSuccess()` envelope to stdout (consistent with all
+- [x] Output a standard `outputSuccess()` envelope to stdout (consistent with all
       other `5x` commands) with `data` containing the fields: `template`,
       `selected_template`, `step_name`, `prompt`, `declared_variables`, and
       (when `--run` is passed) `run_id`, `plan_path`, `worktree_root`. Use
       `outputError()` for error cases.
-- [ ] Extract shared variable-resolution logic from `invoke.handler.ts` into a
+- [x] Extract shared variable-resolution logic from `invoke.handler.ts` into a
       reusable helper owned by the template/render path.
-- [ ] Add `5x protocol validate <author|reviewer>` command and handler.
-- [ ] Accept JSON from stdin or `--input`, validate against the existing schemas
+- [x] Add `5x protocol validate <author|reviewer>` command and handler.
+- [x] Accept JSON from stdin or `--input`, validate against the existing schemas
       in `src/protocol.ts`, and return the validated payload in a JSON envelope.
-- [ ] Auto-detect input format: if the parsed JSON contains an `ok` field, unwrap
+- [x] Auto-detect input format: if the parsed JSON contains an `ok` field, unwrap
       `.data.result` before schema validation (this handles the `outputSuccess()`
       envelope from `5x invoke` fallback); otherwise treat the input as raw
       structured JSON (this handles native subagent output).
-- [ ] Support `--require-commit` for author validation. Default to `true` for
+- [x] Support `--require-commit` for author validation. Default to `true` for
       author role to match existing `5x invoke` behavior; use
       `--no-require-commit` to opt out.
-- [ ] Support `--run <id>`, `--record`, `--step <name>`, `--phase <name>`, and
+- [x] Support `--run <id>`, `--record`, `--step <name>`, `--phase <name>`, and
       `--iteration <number>` on `5x protocol validate` so validation and recording
       are combined in one command, preserving the ergonomics of `5x invoke --record`.
       `--phase` and `--iteration` are passed through to `recordStepInternal()` to
       maintain phase/iteration metadata in recorded steps.
-- [ ] Refactor `invoke.handler.ts` to reuse the extracted render/validate helpers
+- [x] Refactor `invoke.handler.ts` to reuse the extracted render/validate helpers
       so native and fallback execution share one contract. This is a pure
       extraction — existing invoke test assertions must not change.
-- [ ] Add unit tests for render output, internal variable resolution,
+- [x] Add unit tests for render output, internal variable resolution,
       continued-template selection, stdin/file variable expansion, run-aware
       envelope fields, post-render `## Context` block injection, reviewer validation,
       author validation, author-commit enforcement, and combined
