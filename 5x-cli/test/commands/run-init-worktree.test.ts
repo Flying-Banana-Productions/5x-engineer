@@ -261,6 +261,188 @@ describe("5x run init --worktree", () => {
 		}
 	});
 
+	// WTI-010: --worktree-path without --worktree → INVALID_ARGS
+	test("returns INVALID_ARGS when --worktree-path used without --worktree", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree-path",
+				join(dir, "some-path"),
+			]);
+			expect(result.exitCode).toBe(1);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as { code: string }).code).toBe("INVALID_ARGS");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	// WTI-006: explicit worktree path does not exist → WORKTREE_NOT_FOUND
+	test("returns WORKTREE_NOT_FOUND for non-existent --worktree-path", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+				"--worktree-path",
+				join(dir, "nonexistent"),
+			]);
+			expect(result.exitCode).toBe(1);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as { code: string }).code).toBe("WORKTREE_NOT_FOUND");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	// WTI-007: explicit worktree path exists but is not a git worktree → WORKTREE_INVALID
+	test("returns WORKTREE_INVALID for plain directory --worktree-path", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+			const plainDir = join(dir, "plain-dir");
+			mkdirSync(plainDir, { recursive: true });
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+				"--worktree-path",
+				plainDir,
+			]);
+			expect(result.exitCode).toBe(1);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			expect((data.error as { code: string }).code).toBe("WORKTREE_INVALID");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	// WTI-004: existing mapped worktree from prior run → action = "reused"
+	test("reuses existing mapped worktree on subsequent run init", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+
+			// First init creates the worktree
+			const first = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(first.exitCode).toBe(0);
+			const firstData = parseJson(first.stdout);
+			const firstPayload = firstData.data as {
+				run_id: string;
+				worktree: { action: string; worktree_path: string };
+			};
+			expect(firstPayload.worktree.action).toBe("created");
+			const createdPath = firstPayload.worktree.worktree_path;
+
+			// Complete the first run so the next init creates a new run
+			const complete = await run5x(dir, [
+				"run",
+				"complete",
+				"--run",
+				firstPayload.run_id,
+			]);
+			expect(complete.exitCode).toBe(0);
+
+			// Second init should reuse the mapped worktree
+			const second = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(second.exitCode).toBe(0);
+			const secondData = parseJson(second.stdout);
+			expect(secondData.ok).toBe(true);
+			const secondPayload = secondData.data as {
+				run_id: string;
+				resumed: boolean;
+				worktree: { action: string; worktree_path: string; branch: string };
+			};
+			expect(secondPayload.resumed).toBe(false);
+			expect(secondPayload.worktree.action).toBe("reused");
+			expect(secondPayload.worktree.worktree_path).toBe(createdPath);
+			expect(secondPayload.worktree.branch).toBe("5x/001-test-feature");
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	// WTI-005: multiple matching worktrees → WORKTREE_AMBIGUOUS
+	test("returns WORKTREE_AMBIGUOUS when multiple worktrees match plan", async () => {
+		const dir = makeTmpDir();
+		try {
+			const { planPath } = setupProject(dir);
+
+			// Create two worktrees with branches that match the plan slug
+			const wt1 = join(dir, ".5x", "worktrees", "wt1");
+			const wt2 = join(dir, ".5x", "worktrees", "wt2");
+			mkdirSync(join(dir, ".5x", "worktrees"), { recursive: true });
+
+			const add1 = Bun.spawnSync(
+				["git", "worktree", "add", wt1, "-b", "5x/001-test-feature"],
+				{
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			expect(add1.exitCode).toBe(0);
+
+			const add2 = Bun.spawnSync(
+				["git", "worktree", "add", wt2, "-b", "feat/001-test-feature"],
+				{
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				},
+			);
+			expect(add2.exitCode).toBe(0);
+
+			// run init --worktree with no explicit path and no prior DB mapping
+			const result = await run5x(dir, [
+				"run",
+				"init",
+				"--plan",
+				planPath,
+				"--worktree",
+			]);
+			expect(result.exitCode).toBe(1);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(false);
+			const error = data.error as {
+				code: string;
+				detail: { candidates: unknown[] };
+			};
+			expect(error.code).toBe("WORKTREE_AMBIGUOUS");
+			expect(error.detail.candidates.length).toBe(2);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("resumed run with --worktree includes top-level worktree context fields", async () => {
 		const dir = makeTmpDir();
 		try {
