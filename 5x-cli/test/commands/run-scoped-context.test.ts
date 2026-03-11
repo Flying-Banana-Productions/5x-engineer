@@ -469,6 +469,34 @@ describe("diff --run error paths", () => {
 });
 
 // ===========================================================================
+// Subprocess tests: diff without --run backward compatibility
+// ===========================================================================
+
+describe("diff without --run backward compat", () => {
+	test("diff without --run remains unchanged (produces diff output)", async () => {
+		const dir = makeTmpDir();
+		try {
+			const projectRoot = setupProject(dir);
+
+			// Create a tracked file change so diff has output
+			writeFileSync(join(projectRoot, "README.md"), "# Modified\n");
+
+			const result = await run5x(projectRoot, ["diff"]);
+
+			// diff without --run should succeed (exit 0)
+			expect(result.exitCode).toBe(0);
+			const data = parseJson(result.stdout);
+			expect(data.ok).toBe(true);
+			// Should NOT require --run and should NOT return RUN_NOT_FOUND
+			const error = data.error as Record<string, unknown> | undefined;
+			expect(error).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+// ===========================================================================
 // Subprocess tests: quality run --run error paths
 // ===========================================================================
 

@@ -173,6 +173,37 @@ describe("resolveRunExecutionContext", () => {
 		}
 	});
 
+	test("WORKTREE_MISSING error includes expected path and remediation guidance text", () => {
+		const planPath = join(tmp, "docs", "plan.md");
+		mkdirSync(join(tmp, "docs"), { recursive: true });
+		writeFileSync(planPath, "# Plan\n");
+
+		const missingWtPath = join(tmpdir(), `5x-wt-msg-${Date.now()}`);
+		createPlan(planPath, missingWtPath);
+		createRun(planPath);
+
+		const result = resolveRunExecutionContext(db, "run_test123456", {
+			controlPlaneRoot: tmp,
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.code).toBe("WORKTREE_MISSING");
+			// Error detail must include the actual missing path
+			expect(result.error.detail?.path).toBe(missingWtPath);
+			// Remediation must mention re-attach or remove
+			const remediation = result.error.detail?.remediation as string;
+			expect(remediation).toBeTruthy();
+			expect(
+				remediation.includes("re-attach") ||
+					remediation.includes("remove") ||
+					remediation.includes("Re-attach") ||
+					remediation.includes("Remove"),
+			).toBe(true);
+			// Error message should be descriptive
+			expect(result.error.message).toBeTruthy();
+		}
+	});
+
 	test("explicit workdir overrides worktree mapping", () => {
 		const planPath = join(tmp, "docs", "plan.md");
 		mkdirSync(join(tmp, "docs"), { recursive: true });

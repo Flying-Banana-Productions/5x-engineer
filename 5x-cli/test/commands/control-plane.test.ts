@@ -337,4 +337,30 @@ describe("resolveControlPlaneRoot", () => {
 		// Should use default ".5x", not "js-state", because TOML takes precedence
 		expect(result.stateDir).toBe(".5x");
 	});
+
+	test("db.path read from root config only, not nearest sub-project config", () => {
+		initRepo(tmp);
+		// Root config uses default db.path (no [db] section)
+		writeConfig(tmp, `[author]\nmodel = "test"\n`);
+		createStateDb(tmp, ".5x");
+
+		// Sub-project has its own 5x.toml with a different db.path
+		const subDir = join(tmp, "sub-project");
+		mkdirSync(subDir, { recursive: true });
+		writeFileSync(
+			join(subDir, "5x.toml"),
+			`[db]\npath = "sub-state"\n`,
+			"utf-8",
+		);
+		// Create a state DB at the sub-project's db.path (should be irrelevant)
+		mkdirSync(join(tmp, "sub-state"), { recursive: true });
+		writeFileSync(join(tmp, "sub-state", "5x.db"), "");
+
+		// Resolve from sub-project directory — should still use root db.path
+		const result = resolveControlPlaneRoot(subDir);
+		expect(result.mode).toBe("managed");
+		expect(result.controlPlaneRoot).toBe(resolve(tmp));
+		// stateDir should be from root config (default ".5x"), not sub-project's "sub-state"
+		expect(result.stateDir).toBe(".5x");
+	});
 });
