@@ -41,7 +41,7 @@ function cleanupDir(dir: string): void {
 	} catch {}
 }
 
-/** Create a minimal project with git repo + .5x state DB. */
+/** Create a minimal project with git repo, 5x init (DB + templates), and sample provider config. */
 function setupProject(dir: string): string {
 	// Init git repo
 	Bun.spawnSync(["git", "init"], {
@@ -63,22 +63,26 @@ function setupProject(dir: string): string {
 		stderr: "pipe",
 	});
 
-	// Create .5x directory
-	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
-
-	// Default to sample provider
-	writeFileSync(
-		join(dir, "5x.toml"),
-		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
-	);
-
-	// Create plan
+	// Create plan (must exist before 5x init so .5x/ directory is populated)
 	const planDir = join(dir, "docs", "development");
 	mkdirSync(planDir, { recursive: true });
 	writeFileSync(
 		join(planDir, "test-plan.md"),
 		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
+	);
+
+	// Run 5x init to create .5x/, DB, .gitignore, templates
+	Bun.spawnSync(["bun", "run", BIN, "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	// Overwrite 5x.toml with sample provider config
+	writeFileSync(
+		join(dir, "5x.toml"),
+		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
 	);
 
 	// Initial commit
@@ -96,20 +100,6 @@ function setupProject(dir: string): string {
 	});
 
 	return dir;
-}
-
-/**
- * Initialize the .5x DB with migrations by running a trivial command
- * that triggers DB init, then insert test data directly.
- */
-function initDb(dir: string): void {
-	// Run 5x run list to trigger DB creation + migrations
-	Bun.spawnSync(["bun", "run", BIN, "run", "list"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdout: "pipe",
-		stderr: "pipe",
-	});
 }
 
 function insertRun(dir: string, runId: string, planPath: string): void {
@@ -176,7 +166,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const runId = "run_no_wt_test";
@@ -217,7 +206,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const wtDir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				// Create plan file in both root and worktree
 				const planPath = join(dir, "docs", "development", "test-plan.md");
@@ -268,7 +256,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const wtDir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
@@ -315,7 +302,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const wtDir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
@@ -363,7 +349,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const runId = "run_log_path_test";
@@ -404,7 +389,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				// Don't insert any run — RUN_NOT_FOUND is now a hard error in
 				// invoke, consistent with quality/diff/run handlers. A typo or
@@ -442,7 +426,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
-				initDb(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const missingWtPath = join(tmpdir(), `5x-missing-wt-${Date.now()}`);

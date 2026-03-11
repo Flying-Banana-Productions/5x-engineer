@@ -6,6 +6,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { closeDb, getDb } from "../db/connection.js";
+import { runMigrations } from "../db/schema.js";
 import defaultTomlConfig from "../templates/5x.default.toml" with {
 	type: "text",
 };
@@ -15,6 +17,7 @@ import {
 } from "../templates/default-artifacts.js";
 import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
 import {
+	DB_FILENAME,
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
@@ -214,6 +217,18 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		console.log("  Created .5x/ directory");
 	} else {
 		console.log("  Skipped .5x/ directory (already exists)");
+	}
+
+	// 2a. Create state DB with schema migrations
+	const dbPath = join(".5x", DB_FILENAME);
+	const dbFullPath = join(dotFiveXDir, DB_FILENAME);
+	if (!existsSync(dbFullPath)) {
+		const db = getDb(projectRoot, dbPath);
+		runMigrations(db);
+		closeDb();
+		console.log(`  Created ${dbPath}`);
+	} else {
+		console.log(`  Skipped ${dbPath} (already exists)`);
 	}
 
 	const templateResult = ensureTemplateFiles(projectRoot, force);

@@ -64,12 +64,6 @@ function initRepo(dir: string): void {
 function setupProject(dir: string): string {
 	initRepo(dir);
 
-	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(
-		join(dir, "5x.toml"),
-		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
-	);
-
 	const planDir = join(dir, "docs", "development");
 	mkdirSync(planDir, { recursive: true });
 	writeFileSync(
@@ -77,18 +71,23 @@ function setupProject(dir: string): string {
 		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
-	git(["add", "-A"], dir);
-	git(["commit", "-m", "add project files"], dir);
-	return dir;
-}
-
-function initDb(dir: string): void {
-	Bun.spawnSync(["bun", "run", BIN, "run", "list"], {
+	// Run 5x init to create .5x/, DB, .gitignore, templates
+	Bun.spawnSync(["bun", "run", BIN, "init"], {
 		cwd: dir,
 		env,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
+
+	// Overwrite 5x.toml with sample provider config
+	writeFileSync(
+		join(dir, "5x.toml"),
+		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
+	);
+
+	git(["add", "-A"], dir);
+	git(["commit", "-m", "add project files"], dir);
+	return dir;
 }
 
 function insertRun(dir: string, runId: string, planPath: string): void {
@@ -180,7 +179,6 @@ describe("commands from linked worktree", () => {
 			const wtDir = makeTmpDir("5x-lwc-wt");
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_from_wt_test";
@@ -232,7 +230,6 @@ describe("commands from linked worktree", () => {
 			const explicitDir = makeTmpDir("5x-lwc-explicit");
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_workdir_test";
@@ -319,8 +316,6 @@ describe("commands from linked worktree", () => {
 			const tmp = makeTmpDir();
 			try {
 				setupProject(tmp);
-				// Ensure DB exists by running list
-				initDb(tmp);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "init-branch");
 				git(["worktree", "add", linkedWt, "-b", "init-branch"], tmp);
@@ -520,7 +515,6 @@ describe("commands from linked worktree", () => {
 			const wtDir = makeTmpDir("5x-lwc-diffwt");
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_diff_happy";
@@ -704,7 +698,6 @@ describe("artifact paths from linked worktree", () => {
 			const tmp = makeTmpDir();
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_log_wt_test";
@@ -756,7 +749,6 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const externalDir = makeTmpDir("5x-lwc-ext");
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_ext_invoke";
@@ -824,7 +816,6 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const externalDir = makeTmpDir("5x-lwc-ext-init");
 			try {
 				setupProject(tmp);
-				initDb(tmp);
 
 				const extWt = join(externalDir, "wt");
 				git(["worktree", "add", extWt, "-b", "ext-init-branch"], tmp);

@@ -410,7 +410,7 @@ describe("diff --run error paths", () => {
 		try {
 			const projectRoot = setupProject(dir);
 
-			// Initialize DB (run init to create DB)
+			// Establish the control plane (creates DB via run init)
 			await initRun(projectRoot);
 
 			const result = await run5x(projectRoot, [
@@ -506,7 +506,7 @@ describe("quality run --run error paths", () => {
 		try {
 			const projectRoot = setupProject(dir);
 
-			// Initialize DB
+			// Establish the control plane (creates DB via run init)
 			await initRun(projectRoot);
 
 			const result = await run5x(projectRoot, [

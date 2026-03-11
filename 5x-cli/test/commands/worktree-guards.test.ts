@@ -126,7 +126,6 @@ describe("worktree create linked-worktree guard", () => {
 			const planPath = createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			const wtPath = join(externalDir, "wt");
 			git(["worktree", "add", wtPath, "-b", "guard-branch"], tmp);
@@ -158,7 +157,6 @@ describe("worktree create linked-worktree guard", () => {
 			const planPath = createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			const wtPath = join(externalDir, "wt");
 			git(["worktree", "add", wtPath, "-b", "nested-branch"], tmp);
@@ -188,7 +186,6 @@ describe("worktree create linked-worktree guard", () => {
 			const planPath = createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			const result = await run5x(tmp, [
 				"worktree",
@@ -252,7 +249,6 @@ describe("worktree remove self-remove guard", () => {
 			const planPath = createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 			const createResult = await run5x(tmp, [
 				"worktree",
 				"create",
@@ -290,7 +286,6 @@ describe("worktree remove self-remove guard", () => {
 			const planPath = createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 			const createResult = await run5x(tmp, [
 				"worktree",
 				"create",
@@ -335,7 +330,6 @@ describe("legacy split-brain detection", () => {
 			createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			const wtPath = join(externalDir, "wt");
 			git(["worktree", "add", wtPath, "-b", "split-branch"], tmp);
@@ -365,7 +359,6 @@ describe("legacy split-brain detection", () => {
 			createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			const wtPath = join(externalDir, "wt");
 			git(["worktree", "add", wtPath, "-b", "clean-branch"], tmp);
@@ -388,7 +381,6 @@ describe("legacy split-brain detection", () => {
 			createPlan(tmp);
 
 			await run5x(tmp, ["init"]);
-			await run5x(tmp, ["worktree", "list"]);
 
 			// Run worktree list from main checkout
 			const result = await run5x(tmp, ["worktree", "list"]);
@@ -418,7 +410,6 @@ describe("isolated-mode warnings", () => {
 
 			// Initialize 5x in worktree (no root DB → isolated mode)
 			await run5x(wtPath, ["init"]);
-			await run5x(wtPath, ["worktree", "list"]);
 
 			// Create another worktree to attach
 			const anotherWt = join(externalDir, "wt2");
@@ -454,7 +445,6 @@ describe("isolated-mode warnings", () => {
 
 			// Initialize 5x in worktree (no root DB → isolated mode)
 			await run5x(wtPath, ["init"]);
-			await run5x(wtPath, ["worktree", "list"]);
 
 			// worktree remove for a plan with no worktree will fail with
 			// WORKTREE_NOT_FOUND, but the warning should still be emitted
