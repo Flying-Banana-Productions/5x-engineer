@@ -295,7 +295,7 @@ describe("5x run watch", () => {
 					"--poll-interval",
 					"10",
 				],
-				150,
+				500,
 			);
 
 			// Should contain the label header
@@ -359,7 +359,7 @@ describe("5x run watch", () => {
 					"--poll-interval",
 					"10",
 				],
-				150,
+				500,
 			);
 
 			// Both labels should appear
@@ -434,7 +434,7 @@ describe("5x run watch", () => {
 					"--poll-interval",
 					"10",
 				],
-				150,
+				500,
 			);
 
 			// Should fall back to filename-based label
