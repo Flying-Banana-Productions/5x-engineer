@@ -1,6 +1,6 @@
 # Feature: Harness-Native Subagent Orchestration
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Created:** March 10, 2026  
 **Status:** Proposed
 
@@ -112,10 +112,19 @@ Desired behavior:
 **Native subagents receive the effective working directory via prompt text
 (primary) and agent profile `cwd` (secondary).**
 
-- When `5x template render` resolves a worktree root via `--run`, it injects an
-  `{{effective_workdir}}` variable into the rendered prompt so the native
-  subagent sees the correct directory in its instructions. This is the primary
-  mechanism and is harness-agnostic.
+- When `5x template render` resolves a worktree root via `--run`, it appends a
+  `## Context` block to the already-rendered prompt string after `renderBody()`
+  returns, bypassing the `{{var}}` template variable mechanism entirely. No
+  changes to existing template frontmatter are needed. The block is only appended
+  when `--run` resolves a worktree root:
+
+  ```markdown
+  ## Context
+
+  - Effective working directory: /abs/path/to/worktree
+  ```
+
+  This post-render concatenation is the primary mechanism and is harness-agnostic.
 - As a belt-and-suspenders secondary layer, OpenCode agent profiles (Phase 2)
   should set a `cwd` frontmatter field if OpenCode supports it, so the harness
   itself can set the working directory when launching the subagent.
@@ -124,8 +133,12 @@ Desired behavior:
 
 **`5x protocol validate` supports combined validation and recording.**
 
-- `5x protocol validate` accepts `--run <id>`, `--record`, and `--step <name>`
-  flags so validation and recording can be combined in one command.
+- `5x protocol validate` accepts `--run <id>`, `--record`, `--step <name>`,
+  `--phase <name>`, and `--iteration <number>` flags so validation and recording
+  can be combined in one command.
+- `--phase` and `--iteration` are passed through to `recordStepInternal()`,
+  matching the existing metadata that `5x invoke --record` supports
+  (`invoke.handler.ts:655–656`).
 - This preserves the ergonomics of `5x invoke --record` — skills need not issue
   separate `5x run record` calls after every validation.
 - `--require-commit` defaults to `true` for author validation, matching
@@ -214,8 +227,11 @@ its final JSON result without invoking a provider.
 - [ ] Accept `--run <id>` on `template render` and perform run/worktree context
       resolution (mirroring `invoke.handler.ts` lines 332–381). When `--run` is
       passed, include `run_id`, `plan_path`, and `worktree_root` in the output
-      envelope. Inject `{{effective_workdir}}` into the rendered prompt text so
-      native subagents receive the working directory in their instructions.
+      envelope. Append a `## Context` block (containing the effective working
+      directory) to the rendered prompt string via post-render concatenation —
+      not the `{{var}}` template variable mechanism — so native subagents receive
+      the working directory in their instructions without requiring changes to
+      template frontmatter.
 - [ ] Make `template render` mirror continued-template selection: when a caller
       passes `--session` and `<template>-continued` exists, render the continued
       variant automatically and expose the selected template name in output.
@@ -230,15 +246,17 @@ its final JSON result without invoking a provider.
 - [ ] Support `--require-commit` for author validation. Default to `true` for
       author role to match existing `5x invoke` behavior; use
       `--no-require-commit` to opt out.
-- [ ] Support `--run <id>`, `--record`, and `--step <name>` on
-      `5x protocol validate` so validation and recording are combined in one
-      command, preserving the ergonomics of `5x invoke --record`.
+- [ ] Support `--run <id>`, `--record`, `--step <name>`, `--phase <name>`, and
+      `--iteration <number>` on `5x protocol validate` so validation and recording
+      are combined in one command, preserving the ergonomics of `5x invoke --record`.
+      `--phase` and `--iteration` are passed through to `recordStepInternal()` to
+      maintain phase/iteration metadata in recorded steps.
 - [ ] Refactor `invoke.handler.ts` to reuse the extracted render/validate helpers
       so native and fallback execution share one contract. This is a pure
       extraction — existing invoke test assertions must not change.
 - [ ] Add unit tests for render output, internal variable resolution,
       continued-template selection, stdin/file variable expansion, run-aware
-      envelope fields, `{{effective_workdir}}` injection, reviewer validation,
+      envelope fields, post-render `## Context` block injection, reviewer validation,
       author validation, author-commit enforcement, and combined
       validate-and-record flow.
 
@@ -252,6 +270,11 @@ plus bundled OpenCode agent templates and correct project/user path mapping.
       installs. Reference OpenCode documentation or source as evidence before
       writing the installer. If the paths differ, update all references in this
       plan accordingly.
+- [ ] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
+      `readFile` vs `Read`) against OpenCode's tool registry or source before
+      finalizing `allowedTools`/`disallowedTools` in agent templates. If the
+      assumed names in the skeletons above are incorrect, update them. Silently
+      mismatched tool names would cause restrictions to not apply.
 - [ ] Add a small harness registry describing install locations for supported
       harnesses, starting with OpenCode.
 - [ ] Model both `project` and `user` roots explicitly so OpenCode can target
@@ -264,8 +287,8 @@ plus bundled OpenCode agent templates and correct project/user path mapping.
       the concrete target.
 - [ ] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
       secondary mechanism for communicating the effective working directory to
-      native subagents (the primary mechanism is `{{effective_workdir}}` in the
-      rendered prompt text from Phase 1).
+      native subagents (the primary mechanism is the post-render `## Context`
+      block appended to the rendered prompt text from Phase 1).
 - [ ] Ensure the reviewer template denies direct file edits while still allowing
       read-only investigation commands.
 - [ ] Make agent template rendering parameterized by current 5x config so model
@@ -285,7 +308,8 @@ templates. All three use `mode: subagent`. Model fields are included only when
 the corresponding 5x config role model is set; otherwise they are omitted so
 OpenCode inherits the primary agent's model.
 
-`5x-reviewer`:
+`5x-reviewer` _(tool names are assumed — verify against OpenCode's tool registry
+in Phase 2 before finalizing)_:
 
 ```markdown
 ---
@@ -415,19 +439,25 @@ if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
   # 3a. Launch native subagent (harness provides child session)
   RESULT=<native subagent result JSON>
 else
-  # 3b. Fallback to 5x invoke
-  RESULT=$(5x invoke reviewer reviewer-plan --run $RUN --record ...)
+  # 3b. Fallback to 5x invoke (NOTE: --record is intentionally omitted here
+  #     so that 5x protocol validate --record is the single recording point
+  #     for both native and fallback paths, avoiding double-recording)
+  RESULT=$(5x invoke reviewer reviewer-plan --run $RUN ...)
 fi
 
-# 4. Validate + record (combined)
-echo "$RESULT" | 5x protocol validate reviewer --run $RUN --record --step $STEP
+# 4. Validate + record (combined — universal for both paths)
+echo "$RESULT" | 5x protocol validate reviewer \
+  --run $RUN --record --step $STEP --phase $PHASE --iteration $ITERATION
 ```
 
 This example uses bash syntax for clarity. In practice, the delegation logic
 appears as natural-language instructions in skill prose that the orchestrating
 agent interprets — the agent calls these commands as tool invocations, not as a
 literal shell script. The key properties are: render first, detect before
-choosing a path, validate and record in one command.
+choosing a path, validate and record in one command. The fallback `5x invoke`
+call intentionally omits `--record` so that `5x protocol validate --record` is
+the single recording point for both native and fallback paths — this avoids
+double-validation and double-recording in the fallback case.
 
 ### Phase 5: Docs, Compatibility Notes, and End-to-End Verification
 
@@ -478,8 +508,8 @@ and does not regress the existing `5x invoke` path.
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), `{{effective_workdir}}` injection, stdout JSON output |
-| Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step` combined validation-and-record flow, stdin/input parsing |
+| Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), post-render `## Context` block injection, stdout JSON output |
+| Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step`/`--phase`/`--iteration` combined validation-and-record flow, stdin/input parsing |
 | Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion |
 | Integration | `test/commands/init-opencode.test.ts` | `5x init opencode <scope>` installs both skills and agents correctly, prerequisite check for `.5x/`/`5x.toml`, `5x init --force` compatibility |
 | Regression | existing `invoke` tests | Fallback transport still works with shared helpers; refactoring is a pure extraction with no invoke test assertion changes |
@@ -529,6 +559,31 @@ and does not regress the existing `5x invoke` path.
 
 ## Revision History
 
+### v1.2 — March 10, 2026
+
+Addresses re-review feedback from
+`014-harness-native-subagent-orchestration.review.md` (Addendum 2).
+
+- **P1.5:** Replaced `{{effective_workdir}}` template variable injection with
+  post-render string concatenation. `5x template render` now appends a
+  `## Context` block to the rendered prompt after `renderBody()` returns,
+  bypassing the `{{var}}` mechanism entirely. No changes to existing template
+  frontmatter are needed. Updated Design Decisions, Phase 1 checklist, Phase 2
+  checklist, Tests table, and v1.1 revision entry to use "appended Context block"
+  language instead of `{{effective_workdir}}`.
+- **P2.5:** Fixed canonical delegation example in Phase 4 to avoid
+  double-validation/double-recording. The fallback `5x invoke` call now
+  intentionally omits `--record`; `5x protocol validate --record` is the single
+  recording point for both native and fallback paths. Added explanatory note.
+- **P2.6:** Added `--phase <name>` and `--iteration <number>` flags to
+  `5x protocol validate` in Design Decisions and Phase 1 checklist, matching the
+  existing metadata supported by `5x invoke --record` (`invoke.handler.ts:655–656`).
+  Updated canonical delegation example and Tests table to reflect all five flags.
+- **P2.7:** Annotated agent template skeletons in Phase 2 as "assumed names —
+  verify against OpenCode tool registry in Phase 2." Added a new Phase 2
+  checklist item requiring verification of OpenCode's exact tool naming
+  convention before finalizing `allowedTools`/`disallowedTools`.
+
 ### v1.1 — March 10, 2026
 
 Addresses review feedback from `014-harness-native-subagent-orchestration.review.md`
@@ -539,7 +594,7 @@ Addresses review feedback from `014-harness-native-subagent-orchestration.review
   `plan_path`, `worktree_root` included only when `--run` is passed. Output goes
   to stdout.
 - **P0.2:** Effective working directory communicated via two layers: primary is
-  `{{effective_workdir}}` injected into rendered prompt text; secondary is `cwd`
+  a `## Context` block appended to rendered prompt text; secondary is `cwd`
   frontmatter in OpenCode agent profiles. Both layers documented in Design
   Decisions and reflected in Phase 1/Phase 2 checklists.
 - **P1.1:** Phase 3 now specifies citty parent-with-subcommands pattern (same as
