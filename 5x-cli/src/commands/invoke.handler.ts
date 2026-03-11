@@ -27,7 +27,6 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import { resolveProjectRoot } from "../project-root.js";
 import {
 	type AuthorStatus,
 	AuthorStatusSchema,
@@ -330,20 +329,27 @@ export async function invokeAgent(
 	// -----------------------------------------------------------------------
 
 	const controlPlane = resolveControlPlaneRoot(params.workdir);
-	const projectRoot =
-		controlPlane.mode !== "none"
-			? controlPlane.controlPlaneRoot
-			: resolveProjectRoot(params.workdir);
+
+	if (controlPlane.mode === "none") {
+		// --run is always required for invoke, and without a control-plane DB
+		// the run can never be validated. Fail closed — consistent with
+		// quality/diff handlers.
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+
+	const projectRoot = controlPlane.controlPlaneRoot;
 	const stateDir = controlPlane.stateDir;
 
 	// Run context resolution — resolves worktree mapping + effective plan path.
-	// Only attempted when we have a control-plane DB to query against.
 	let resolvedWorktreePath: string | null = null;
 	let resolvedPlanPath: string | null = null;
 	let effectiveWorkdir: string | null = null;
 	let planPathInWorktreeExists = false;
 
-	if (controlPlane.mode !== "none") {
+	{
 		const dbRelPath = join(stateDir, DB_FILENAME);
 		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
 		try {
@@ -357,9 +363,7 @@ export async function invokeAgent(
 
 		const ctxResult = resolveRunExecutionContext(db, params.run, {
 			controlPlaneRoot: controlPlane.controlPlaneRoot,
-			explicitWorkdir: params.workdir
-				? resolve(projectRoot, params.workdir)
-				: undefined,
+			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
 		});
 
 		if (!ctxResult.ok) {
@@ -424,7 +428,7 @@ export async function invokeAgent(
 
 	// Set up template override directory — anchored to controlPlaneRoot/stateDir
 	const templateDir = join(
-		controlPlane.mode !== "none" ? controlPlane.controlPlaneRoot : projectRoot,
+		controlPlane.controlPlaneRoot,
 		stateDir,
 		"templates",
 		"prompts",
@@ -504,7 +508,7 @@ export async function invokeAgent(
 	// Phase 2: use resolved worktree workdir when available.
 	// Explicit --workdir wins, then mapped worktree, then projectRoot.
 	const workdir = params.workdir
-		? resolve(projectRoot, params.workdir)
+		? resolve(params.workdir)
 		: (effectiveWorkdir ?? projectRoot);
 	const roleConfig = config[role] as Record<string, unknown>;
 	const model =
@@ -529,10 +533,13 @@ export async function invokeAgent(
 	}
 
 	// 4. Prepare log path (--run is required and already validated)
-	// Phase 2: anchor log dir to controlPlaneRoot/stateDir instead of projectRoot/.5x
-	const logBase =
-		controlPlane.mode !== "none" ? controlPlane.controlPlaneRoot : projectRoot;
-	const logDir = join(logBase, stateDir, "logs", params.run);
+	// Anchor log dir to controlPlaneRoot/stateDir.
+	const logDir = join(
+		controlPlane.controlPlaneRoot,
+		stateDir,
+		"logs",
+		params.run,
+	);
 	const logPath = prepareLogPath(logDir);
 
 	// 4b. Write session metadata as first NDJSON line (log-only, not an AgentEvent)

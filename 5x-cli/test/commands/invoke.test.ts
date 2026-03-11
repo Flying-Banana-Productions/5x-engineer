@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runMigrations } from "../../src/db/schema.js";
 import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
@@ -69,8 +70,12 @@ function setupProject(dir: string): string {
 		stderr: "pipe",
 	});
 
-	// Create .5x directory and gitignore it
+	// Create .5x directory with migrated DB and gitignore it
 	mkdirSync(join(dir, ".5x"), { recursive: true });
+	const { Database } = require("bun:sqlite");
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	runMigrations(db);
+	db.close();
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
 
 	// Default to sample provider so tests don't spawn a real opencode server.
@@ -129,6 +134,21 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 
 function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+/**
+ * Insert a run row into the project DB so invoke's run-context resolver
+ * can find it. Uses the default plan path created by setupProject.
+ */
+function insertRun(dir: string, runId: string): void {
+	const { Database } = require("bun:sqlite");
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	const planPath = join(dir, "docs", "development", "test-plan.md");
+	db.query("INSERT OR IGNORE INTO runs (id, plan_path) VALUES (?1, ?2)").run(
+		runId,
+		planPath,
+	);
+	db.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +453,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_test123");
 					const result = await run5x(dir, [
 						"invoke",
 						"author",
@@ -461,6 +482,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_test123");
 					const result = await run5x(dir, [
 						"invoke",
 						"author",
@@ -486,6 +508,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_test123");
 					// author-next-phase requires plan_path, phase_id, plan_content, implementation_status
 					// Only provide some of them
 					const result = await run5x(dir, [
@@ -811,6 +834,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_test789");
 					// Pass --session flag — the command should parse it.
 					// It will fail because the provider can't connect, but
 					// the flag should be recognized.
@@ -907,6 +931,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_abc123");
 					// This will fail later (no provider), but should NOT fail on run_id validation
 					const result = await run5x(dir, [
 						"invoke",
@@ -1104,6 +1129,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_test123");
 					// Will fail on provider, but should NOT fail on timeout validation
 					const result = await run5x(dir, [
 						"invoke",
@@ -1168,6 +1194,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_stderr_test1");
 
 					// Configure sample provider so we get predictable streaming events
 					writeFileSync(
@@ -1208,6 +1235,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_stderr_test2");
 
 					// Configure sample provider
 					writeFileSync(
@@ -1247,6 +1275,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_stderr_test3");
 					writeFileSync(
 						join(dir, "5x.toml"),
 						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n',
@@ -1339,6 +1368,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_enrich_test");
 					// Configure sample provider to return valid AuthorStatus structured output
 					// TOML uses inline table syntax for the structured object
 					writeFileSync(
@@ -1389,6 +1419,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_phase_null_test");
 					writeFileSync(
 						join(dir, "5x.toml"),
 						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\n',
@@ -1431,6 +1462,7 @@ describe("invoke", () => {
 				const dir = makeTmpDir();
 				try {
 					setupProject(dir);
+					insertRun(dir, "run_stepname_test");
 					writeFileSync(
 						join(dir, "5x.toml"),
 						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nreadiness = "ready"\nitems = []\n',

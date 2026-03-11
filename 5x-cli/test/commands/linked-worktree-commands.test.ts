@@ -227,19 +227,22 @@ describe("commands from linked worktree", () => {
 		"invoke --run --workdir from linked worktree uses explicit workdir override",
 		async () => {
 			const tmp = makeTmpDir();
-			const explicitDir = makeTmpDir("5x-lwc-explicit");
 			try {
 				setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_workdir_test";
 				// Map to a missing worktree — if --workdir is respected,
-				// WORKTREE_MISSING should NOT fire
+				// WORKTREE_MISSING should NOT fire because explicitWorkdir
+				// takes priority in resolveRunExecutionContext.
 				const missingWt = join(tmpdir(), `5x-lwc-missing-${Date.now()}`);
 				insertPlan(tmp, planPath, missingWt);
 				insertRun(tmp, runId, planPath);
 
-				// Copy plan to explicit dir so sample provider can work
+				// explicitDir is inside the repo so control-plane resolution
+				// still finds the root DB (managed mode) and the run-context
+				// resolver actually exercises the --workdir override path.
+				const explicitDir = join(tmp, "explicit-workdir");
 				mkdirSync(join(explicitDir, "docs", "development"), {
 					recursive: true,
 				});
@@ -268,13 +271,13 @@ describe("commands from linked worktree", () => {
 				]);
 
 				const json = parseJson(result.stdout);
-				// Should NOT fail with WORKTREE_MISSING — explicit --workdir overrides
-				if (!json.ok) {
-					const error = json.error as { code: string };
-					expect(error.code).not.toBe("WORKTREE_MISSING");
-				}
+				// --workdir overrides the mapped (missing) worktree, so
+				// WORKTREE_MISSING must not fire.
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.run_id).toBe(runId);
 			} finally {
-				cleanup([explicitDir, tmp]);
+				cleanup([tmp]);
 			}
 		},
 		{ timeout: 30000 },
