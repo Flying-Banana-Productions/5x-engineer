@@ -126,7 +126,7 @@ with zero failures. No behavioral changes to tests — only hardening.
 an optional `startDir` parameter. Existing tests still pass. No behavioral
 changes to CLI output.
 
-- [ ] Refactor `src/commands/init.handler.ts` — `initScaffold()`:
+- [x] Refactor `src/commands/init.handler.ts` — `initScaffold()`:
   - Add `startDir?: string` to `InitParams` interface
   - Replace `resolve(".")` on lines 175–176 and 191 with `resolve(params.startDir ?? ".")`
   ```ts
@@ -146,7 +146,7 @@ changes to CLI output.
   }
   ```
 
-- [ ] Refactor `src/commands/harness.handler.ts` — `harnessInstall()`:
+- [x] Refactor `src/commands/harness.handler.ts` — `harnessInstall()`:
   - Add `startDir?: string` to `HarnessInstallParams` interface
   - Replace `resolve(".")` on lines 53–54 with `resolve(params.startDir ?? ".")`
   ```ts
@@ -166,7 +166,7 @@ changes to CLI output.
   }
   ```
 
-- [ ] Refactor `src/commands/worktree.handler.ts`:
+- [x] Refactor `src/commands/worktree.handler.ts`:
   - Add `startDir?: string` to `WorktreeCreateParams`, `WorktreeRemoveParams`, `WorktreeAttachParams`, and `worktreeList()` (which currently takes no params — change to `worktreeList(params?: { startDir?: string })`)
   - Replace `resolve(".")` at 7 call sites (lines 87, 100, 154, 260, 310, 324, 397) with the `startDir` parameter threaded through
   - For `isLinkedWorktreeContext()` — change signature to accept `startDir` parameter:
@@ -193,7 +193,7 @@ changes to CLI output.
   ```
   - Thread `params.startDir` through `worktreeCreate`, `worktreeAttach`, `worktreeRemove`, `worktreeList`
 
-- [ ] Refactor `src/commands/upgrade.handler.ts` — `runUpgrade()`:
+- [x] Refactor `src/commands/upgrade.handler.ts` — `runUpgrade()`:
   - Add `startDir?: string` to `UpgradeParams` interface
   - Replace `resolve(".")` on line 325 with `resolve(params.startDir ?? ".")`
   ```ts
@@ -208,8 +208,8 @@ changes to CLI output.
   }
   ```
 
-- [ ] Verify no citty command definition files changed (they pass no `startDir`, getting the default).
-- [ ] Run `bun test --concurrent` — all tests pass unchanged.
+- [x] Verify no citty command definition files changed (they pass no `startDir`, getting the default).
+- [x] Run `bun test --concurrent` — all tests pass unchanged.
 
 ## Phase 3: Create Directory Structure and Move Tests
 

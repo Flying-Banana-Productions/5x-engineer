@@ -33,6 +33,8 @@ import {
 
 export interface UpgradeParams {
 	force?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +324,7 @@ function refreshTemplates(projectRoot: string, force: boolean): string[] {
 // ---------------------------------------------------------------------------
 
 export async function runUpgrade(params: UpgradeParams): Promise<void> {
-	const projectRoot = resolve(".");
+	const projectRoot = resolve(params.startDir ?? ".");
 	const force = Boolean(params.force);
 
 	console.log("5x upgrade\n");

@@ -28,6 +28,8 @@ import {
 
 export interface InitParams {
 	force?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,7 @@ function ensureGitignore(projectRoot: string): {
 
 export async function initScaffold(params: InitParams): Promise<void> {
 	const force = Boolean(params.force);
+	const cwd = resolve(params.startDir ?? ".");
 
 	// Managed-mode guard: block `5x init` from a linked worktree when the
 	// main repo is already 5x-managed. No escape hatch — `--force` only
@@ -172,8 +175,8 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	// Compare the git checkout root (not raw cwd) against controlPlaneRoot
 	// so that running `5x init` from a subdirectory of the main checkout
 	// is correctly recognized as "main checkout" and allowed.
-	const controlPlane = resolveControlPlaneRoot(resolve("."));
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	const controlPlane = resolveControlPlaneRoot(cwd);
+	const checkoutRoot = resolveCheckoutRoot(cwd);
 	if (controlPlane.mode === "managed") {
 		const normalizedCheckout = checkoutRoot ? resolve(checkoutRoot) : null;
 		const normalizedRoot = resolve(controlPlane.controlPlaneRoot);
@@ -188,7 +191,7 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	// Scaffold at the checkout root (or cwd if outside git), not the raw cwd.
 	// This ensures `5x init` from a subdirectory still creates `.5x/` and
 	// `5x.toml` at the repository root.
-	const projectRoot = checkoutRoot ?? resolve(".");
+	const projectRoot = checkoutRoot ?? cwd;
 
 	// 1. Generate config file (TOML format)
 	const configPath = join(projectRoot, "5x.toml");

@@ -26,6 +26,8 @@ export interface HarnessInstallParams {
 	scope?: string;
 	/** Whether to overwrite existing files. */
 	force?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,8 +52,9 @@ export async function harnessInstall(
 	const scope = resolveScope(params.scope, plugin.supportedScopes, name);
 
 	// 3. Determine project root
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
-	const projectRoot = checkoutRoot ?? resolve(".");
+	const cwd = resolve(params.startDir ?? ".");
+	const checkoutRoot = resolveCheckoutRoot(cwd);
+	const projectRoot = checkoutRoot ?? cwd;
 
 	// 4. Project scope prerequisite: control-plane state DB must exist
 	if (scope === "project") {
