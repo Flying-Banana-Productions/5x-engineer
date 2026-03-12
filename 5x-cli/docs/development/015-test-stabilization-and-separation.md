@@ -1,6 +1,6 @@
 # Test Stabilization and Unit/Integration Separation
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 12, 2026
 **Status:** Draft
 
@@ -14,11 +14,11 @@ systemic — 31 files spawn subprocesses, 8 are missing `cleanGitEnv()`, and
 there is no separation between unit and integration tests.
 
 This plan refactors the test suite to:
-1. Add `startDir` parameters to 4 handler files (14 call sites) so handlers
+1. Add `startDir` parameters to 3 handler files (13 call sites) so handlers
    can be tested directly without `process.chdir()` or subprocess overhead.
 2. Create a `test/unit/` and `test/integration/` directory structure.
 3. Move the 37 existing pure unit test files into `test/unit/`.
-4. Convert 3 high-feasibility subprocess test files to direct-call unit tests.
+4. Convert 2 high-feasibility subprocess test files to direct-call unit tests.
 5. Stabilize the remaining integration tests with `cleanGitEnv()`,
    `stdin: "ignore"`, and per-test `timeout:` options.
 6. Document testing conventions in `5x-cli/AGENTS.md`.
@@ -29,8 +29,12 @@ This plan refactors the test suite to:
 the default.** This preserves backward compatibility — CLI adapter code
 (citty command definitions) passes no argument, getting the current
 behavior. Tests pass an explicit temp directory. The parameter is added to
-the top-level exported handler functions, not to internal helpers that
-already accept path parameters.
+the top-level exported handler functions in `init.handler.ts`,
+`worktree.handler.ts`, and `upgrade.handler.ts` (3 files, 13 call sites).
+`run-v1.handler.ts` is excluded — it has only 1 partially convertible call
+site, and the relative-path semantics for `plan`/`worktreePath` inputs
+under a non-default `startDir` are underspecified. It can be revisited in
+a follow-up if `run-v1` tests need stabilization.
 
 **Reorganize into `test/unit/` and `test/integration/` while preserving
 subdirectory structure.** The current `test/commands/init.test.ts` becomes
@@ -49,9 +53,21 @@ is preserved and avoids confusion during review.
 ensures tests pass in their current location. The directory restructuring
 (Phase 3) is then a pure rename operation with no behavioral changes.
 
-**Convert only "high feasibility" test files.** The PRD identifies 3 files
-where the handler is already exported and all tests can call it directly:
-`init-opencode.test.ts`, `init.test.ts`, `skills-install.test.ts`. The 4
+**Unit tests assert on return values and side effects, not console
+output.** Converted unit tests must verify behavior through return values,
+filesystem side effects (files written, config created), and DB records —
+never by capturing or mocking `console.log`/`console.error`. Tests that
+need to assert on CLI-facing output (exit codes, JSON envelopes, stderr
+progress messages, formatted output) remain as integration tests. This
+avoids the concurrency-unsafe global mutation patterns that `test/setup.ts`
+documents and eliminates the need for logging injection seams.
+
+**Convert only "high feasibility" test files.** Two files have handlers
+already exported and tests that primarily assert filesystem side effects:
+`init.test.ts` and `init-opencode.test.ts`. `skills-install.test.ts` is
+kept as an integration test — its tests exercise command-level behavior
+(scope resolution, `--install-root`, stderr progress, success envelope)
+that cannot be meaningfully validated without the CLI layer. The 4
 "partial" conversions are deferred — they require deeper refactoring and
 the risk/reward is lower.
 
@@ -104,7 +120,8 @@ with zero failures. No behavioral changes to tests — only hardening.
 
 ## Phase 2: Refactor Handlers for Direct Testability
 
-**Completion gate:** All 4 handler files accept an optional `startDir`
+**Completion gate:** All 3 handler files (`init.handler.ts`,
+`worktree.handler.ts`, `upgrade.handler.ts`) accept an optional `startDir`
 parameter. Existing tests still pass. No behavioral changes to CLI output.
 
 - [ ] Refactor `src/commands/init.handler.ts` — `initOpencode()`:
@@ -172,26 +189,6 @@ parameter. Existing tests still pass. No behavioral changes to CLI output.
   ```
   - Thread `params.startDir` through `worktreeCreate`, `worktreeAttach`, `worktreeRemove`, `worktreeList`
 
-- [ ] Refactor `src/commands/run-v1.handler.ts` — `ensureRunWorktree()`:
-  - Replace `resolve(".")` on line 308 with a `startDir` parameter passed from the caller
-  - Modify the `ensureRunWorktree` call in `runV1Init` to pass `startDir` through
-  ```ts
-  // In ensureRunWorktree, add startDir parameter:
-  async function ensureRunWorktree(
-    db: Database,
-    projectRoot: string,
-    planPath: string,
-    explicitPath: string | undefined,
-    postCreateHook: string | undefined,
-    stateDir?: string,
-    startDir?: string,  // NEW
-  ): Promise<WorktreeInitResult> {
-    // ... line 308:
-    const cwd = resolve(startDir ?? ".");
-    // ... rest unchanged
-  }
-  ```
-
 - [ ] Refactor `src/commands/upgrade.handler.ts` — `runUpgrade()`:
   - Add `startDir?: string` to `UpgradeParams` interface
   - Replace `resolve(".")` on line 325 with `resolve(params.startDir ?? ".")`
@@ -216,6 +213,8 @@ parameter. Existing tests still pass. No behavioral changes to CLI output.
 exist. All test files are in the correct location. `bun test` discovers
 and runs all tests. `bun test test/unit/` and `bun test test/integration/`
 each run independently.
+
+- [ ] Revalidate the test file inventory before moving files. Run `find test/ -name '*.test.ts' | sort` and compare against the file lists in this plan. Reconcile any discrepancies (files added/removed since the plan was written). Update the unit/integration move lists below if the actual file set differs from what is documented.
 
 - [ ] Create directory structure:
   ```
@@ -267,12 +266,13 @@ each run independently.
   - `test/lock.test.ts` → `test/integration/lock.test.ts`
   - `test/pipe.test.ts` → `test/integration/pipe.test.ts`
 
-- [ ] Update all relative import paths in moved test files. Each file's imports to `../../src/...` will change depth based on new location:
-  - Files at `test/unit/*.test.ts` and `test/integration/*.test.ts`: `../../src/` stays the same (still two levels up from `5x-cli/`)
-  - Files at `test/unit/commands/*.test.ts` and `test/integration/commands/*.test.ts`: `../../src/` → `../../../src/` (one deeper)
-  - Files at `test/unit/db/*.test.ts`, `test/unit/gates/*.test.ts`, etc.: `../../src/` → `../../../src/` (one deeper)
-  - Helper imports: `../helpers/clean-env.js` → `../../helpers/clean-env.js` (for files in subdirectories)
-  - `test/helpers/watch-error-harness.ts` and `test/helpers/pipe-read-helper.ts` — update any imports in integration tests that reference them
+- [ ] Audit and update all relative import paths in moved test files. Do NOT rely on path-depth heuristics — inspect actual imports in each file:
+  - For each moved file, extract all `import`/`require()` statements and dynamic `import()` calls
+  - Compute the new relative path from the file's destination to the imported target
+  - Top-level files moving from `test/*.test.ts` to `test/unit/*.test.ts`: these currently import from `../src/` — after the move, the depth increases by one, so paths become `../../src/`
+  - Files in subdirectories moving from `test/commands/*.test.ts` to `test/unit/commands/*.test.ts` (or `test/integration/commands/`): these currently import from `../../src/` — after the move, paths become `../../../src/`
+  - Helper imports: `../helpers/` → `../../helpers/` (for files that gain one directory level)
+  - Validate: after all import rewrites, run `bun test --dry-run` or equivalent to confirm no import resolution errors before running the full suite
 
 - [ ] Verify `bun test` runs all tests (total count unchanged).
 - [ ] Verify `bun test test/unit/` runs only unit tests.
@@ -281,15 +281,19 @@ each run independently.
 
 ## Phase 4: Convert High-Feasibility Tests to Unit Tests
 
-**Completion gate:** 3 test files converted from subprocess-based
-integration tests to direct-call unit tests. Test assertions preserved.
-Total test count unchanged. All converted tests pass under `--concurrent`.
+**Completion gate:** 2 test files converted from subprocess-based
+integration tests to direct-call unit tests. Converted tests assert only
+on return values and filesystem side effects (files written, config
+created) — never on console output. Tests that need CLI-output assertions
+remain as integration tests. Total test count unchanged. All converted
+tests pass under `--concurrent`.
 
 - [ ] Convert `test/integration/commands/init.test.ts` — the "5x init" describe block (tests 1–8) currently spawns `bun run BIN init`:
   - Import `initScaffold` directly from `../../../src/commands/init.handler.js`
   - Replace `runInit(tmp)` calls with `await initScaffold({ startDir: tmp })` + `await initScaffold({ force: true, startDir: tmp })`
-  - Capture console output by temporarily replacing `console.log` within each test (scoped, not global) or by checking filesystem side effects directly (preferred — most assertions already check `existsSync` and `readFileSync`)
-  - Move the converted file to `test/unit/commands/init.test.ts`
+  - All assertions must verify filesystem side effects (`existsSync`, `readFileSync`, file contents) — do NOT capture or mock `console.log`/`console.error`
+  - Any tests that currently assert on CLI stdout/stderr text or exit codes stay in `test/integration/commands/init.test.ts` as integration tests
+  - Move the converted tests to `test/unit/commands/init.test.ts`
   - The `ensureGitignore`, `generateTomlConfig`, and `ensureTemplateFiles` describe blocks are already unit tests (direct function calls) — move these as-is
 
 - [ ] Convert `test/integration/commands/init-opencode.test.ts`:
@@ -298,14 +302,11 @@ Total test count unchanged. All converted tests pass under `--concurrent`.
   - Replace `runInit(tmp)` in `bootstrapProject()` with `await initScaffold({ startDir: tmp })`
   - The "fails with clear error" tests: replace subprocess exit code checks with `expect(async () => await initOpencode(...)).toThrow()`
   - The "idempotent" test: call `initOpencode` twice directly — no subprocess timeout issue
-  - Move the converted file to `test/unit/commands/init-opencode.test.ts`
+  - All assertions must verify filesystem side effects and thrown errors — do NOT capture or mock console output
+  - Any tests that assert on CLI stdout/stderr text, exit codes, or HOME-dependent behavior that requires process-wide env mutation stay in `test/integration/commands/init-opencode.test.ts`
+  - Move the converted tests to `test/unit/commands/init-opencode.test.ts`
 
-- [ ] Convert `test/integration/commands/skills-install.test.ts`:
-  - Import `installSkillFiles` from `../../../src/harnesses/installer.js` and `listSkills`/`listSkillNames` from `../../../src/skills/loader.js`
-  - Replace `runSkillsInstall(tmp, "project")` with direct `installSkillFiles(targetDir, skills, force)` calls
-  - The tests primarily assert filesystem side effects (`existsSync`, `readFileSync`) — these work identically with direct calls
-  - The "JSON envelope" and "--pretty" tests remain integration tests (they test the CLI output format) — keep those in `test/integration/`
-  - Move the converted tests to `test/unit/commands/skills-install.test.ts`; keep CLI-envelope tests as `test/integration/commands/skills-install.test.ts`
+- [ ] `test/integration/commands/skills-install.test.ts` — **no conversion**. This file exercises command-level behavior (scope resolution, `--install-root`, stderr progress messages, success envelope) that requires the CLI layer. It stays as an integration test with `cleanGitEnv()` + `stdin: "ignore"` hygiene applied in Phase 1.
 
 - [ ] Verify total test count is unchanged after conversions.
 - [ ] Run `bun test --concurrent` — all pass.
@@ -338,11 +339,10 @@ Contents reviewed for accuracy against the final directory structure.
 |------|--------|
 | `src/commands/init.handler.ts` | Add `startDir` to `InitParams` and `InitOpencodeParams`; replace 5 `resolve(".")` calls |
 | `src/commands/worktree.handler.ts` | Add `startDir` to param interfaces and helpers; replace 7 `resolve(".")` calls |
-| `src/commands/run-v1.handler.ts` | Thread `startDir` through `ensureRunWorktree()`; replace 1 `resolve(".")` call |
 | `src/commands/upgrade.handler.ts` | Add `startDir` to `UpgradeParams`; replace 1 `resolve(".")` call |
-| `test/commands/init.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert to unit test and move |
-| `test/commands/init-opencode.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert to unit test and move |
-| `test/commands/skills-install.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then partially convert and split |
+| `test/commands/init.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert side-effect tests to unit tests and move |
+| `test/commands/init-opencode.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert side-effect tests to unit tests and move |
+| `test/commands/skills-install.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:` (stays as integration test — no conversion) |
 | `test/commands/prompt.test.ts` | Add `cleanGitEnv()`, `timeout:` (stdin already "pipe") |
 | `test/commands/upgrade.test.ts` | Add `cleanGitEnv()`, `timeout:` |
 | `test/bin-pretty.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:` |
@@ -368,12 +368,12 @@ Contents reviewed for accuracy against the final directory structure.
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/unit/commands/init.test.ts` | `initScaffold()` creates config, .5x/, .gitignore directly |
-| Unit | `test/unit/commands/init-opencode.test.ts` | `initOpencode()` installs skills/agents directly |
-| Unit | `test/unit/commands/skills-install.test.ts` | `installSkillFiles()` creates/skips/overwrites directly |
+| Unit | `test/unit/commands/init.test.ts` | `initScaffold()` creates config, .5x/, .gitignore via filesystem side effects |
+| Unit | `test/unit/commands/init-opencode.test.ts` | `initOpencode()` installs skills/agents via filesystem side effects |
 | Integration | `test/integration/commands/isolated-mode.test.ts` | Full isolated-mode CLI flow with worktrees |
-| Integration | `test/integration/commands/init-opencode.test.ts` | Legacy CLI compatibility tests (bare `5x init --force`) |
-| Integration | `test/integration/commands/skills-install.test.ts` | CLI JSON envelope output format |
+| Integration | `test/integration/commands/init.test.ts` | Tests asserting CLI stdout/stderr/exit codes (if any) |
+| Integration | `test/integration/commands/init-opencode.test.ts` | HOME-dependent and CLI-output tests |
+| Integration | `test/integration/commands/skills-install.test.ts` | Scope resolution, --install-root, stderr progress, JSON envelope |
 | Stability | All integration tests | 10 consecutive `bun test --concurrent` passes |
 
 ## Not In Scope
@@ -384,6 +384,9 @@ Contents reviewed for accuracy against the final directory structure.
 - Modifying pre-commit or pre-push hooks
 - Parallelism tuning (e.g., `--concurrency N`)
 - Converting "partial feasibility" test files (`template-render`, `config-layering-integration`, `run-scoped-context`, `prompt`)
+- Adding `startDir` to `run-v1.handler.ts` (1 call site; relative-path semantics for `plan`/`worktreePath` are underspecified — revisit in a follow-up)
+- Converting `skills-install.test.ts` to unit tests (tests exercise command-level behavior requiring the CLI layer)
+- Adding logging injection seams for console output capture
 - Modifying `test/setup.ts` preload behavior
 
 ## Estimated Timeline
@@ -391,13 +394,37 @@ Contents reviewed for accuracy against the final directory structure.
 | Phase | Effort | Description |
 |-------|--------|-------------|
 | Phase 1 | 1 day | Stabilize integration tests (cleanGitEnv, stdin, timeout) |
-| Phase 2 | 1 day | Refactor 4 handler files with startDir parameter |
+| Phase 2 | 1 day | Refactor 3 handler files with startDir parameter |
 | Phase 3 | 1–2 days | Create directory structure, move 68 files, fix imports |
-| Phase 4 | 1–2 days | Convert 3 test files to direct-call unit tests |
+| Phase 4 | 1–2 days | Convert 2 test files to direct-call unit tests |
 | Phase 5 | 0.5 day | Write AGENTS.md |
 | **Total** | **4.5–6.5 days** | |
 
 ## Revision History
+
+### v1.1 (March 12, 2026) — Address review feedback
+
+Review: `reviews/015-test-stabilization-and-separation.review.md`
+
+- **P0.1** — Phase 4 conversion strategy now explicit: unit tests assert on
+  return values and filesystem side effects only. Tests needing console output
+  or exit code assertions stay as integration tests. No logging injection seams.
+- **P1.1** — `skills-install.test.ts` stays as an integration test (exercises
+  command-level behavior: scope resolution, `--install-root`, stderr progress,
+  success envelope). Phase 1 hygiene (`cleanGitEnv` + `stdin: "ignore"`) still
+  applied. Phase 4 converts 2 files, not 3.
+- **P1.2** — `run-v1.handler.ts` removed from Phase 2 `startDir` refactoring.
+  Only 1 call site with partial convertibility; relative-path semantics for
+  `plan`/`worktreePath` are underspecified. Deferred to follow-up. Phase 2 now
+  covers 3 handler files (13 call sites), not 4 (14).
+- **P1.3** — Phase 3 import path guidance replaced with an audit-based approach:
+  inspect actual imports in each moved file rather than relying on depth
+  heuristics. Noted that top-level `test/*.test.ts` files import from `../src/`
+  (not `../../src/`), so the move adds one level.
+- **P2.1** — Added a pre-move inventory revalidation step at the start of
+  Phase 3 to reconcile actual test files against the plan's file lists.
+- Updated Files Touched table, Tests table, Design Decisions, Not In Scope,
+  estimated timeline, and overview counts for consistency.
 
 ### v1.0 (March 12, 2026) — Initial draft
 
