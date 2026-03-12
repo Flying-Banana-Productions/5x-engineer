@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { outputError, outputSuccess } from "../output.js";
 import { validateRunId } from "../run-id.js";
-import { validateStructuredOutput } from "./protocol-helpers.js";
+import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ export async function protocolValidate(
 	// -----------------------------------------------------------------------
 	// Validate structured output (shared helper)
 	// -----------------------------------------------------------------------
-	const validated = validateStructuredOutput(structured, role, {
+	const validated = validateStructuredOutputOrThrow(structured, role, {
 		requireCommit: params.requireCommit,
 		context: `protocol validate ${role}`,
 	});

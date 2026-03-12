@@ -413,10 +413,20 @@ export async function invokeAgent(
 	}
 
 	// 7. Validate structured output (shared helper)
-	const structured = validateStructuredOutput(runResult.structured, role, {
+	//    Use the result-based API so we can await provider.close() before
+	//    emitting the error envelope. The previous pattern called outputError()
+	//    directly from the shared helper, which threw CliError before the async
+	//    provider.close() could complete — potentially orphaning subprocesses.
+	const validation = validateStructuredOutput(runResult.structured, role, {
 		context: `invoke ${role}`,
-		onError: () => provider.close().catch(() => {}),
 	});
+
+	if (!validation.ok) {
+		await provider.close().catch(() => {});
+		outputError(validation.code, validation.message, validation.detail);
+	}
+
+	const structured = validation.value;
 
 	// 8. Close provider
 	await provider.close().catch(() => {});

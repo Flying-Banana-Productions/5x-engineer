@@ -31,46 +31,50 @@ export interface ValidateOptions {
 	 * "protocol validate author").
 	 */
 	context: string;
-
-	/**
-	 * Optional cleanup callback invoked before outputError (e.g. to close
-	 * a provider). Not awaited — callers that need async cleanup should
-	 * wrap this function.
-	 */
-	onError?: () => void;
 }
+
+// ---------------------------------------------------------------------------
+// Result type — allows callers to perform async cleanup before exiting
+// ---------------------------------------------------------------------------
+
+export type ValidationResult =
+	| { ok: true; value: AuthorStatus | ReviewerVerdict }
+	| { ok: false; code: string; message: string; detail?: unknown };
 
 /**
  * Validate a structured output value against the author or reviewer protocol.
  *
- * On validation failure, calls `outputError()` (which exits the process via
- * CliError). On success, returns the validated structured object.
+ * Returns a discriminated result so callers can perform async cleanup (e.g.
+ * awaiting `provider.close()`) before emitting error output. This avoids
+ * the previous pattern where `outputError()` threw immediately, preventing
+ * async cleanup callbacks from completing.
  */
 export function validateStructuredOutput(
 	structured: unknown,
 	role: ValidateRole,
 	opts: ValidateOptions,
-): AuthorStatus | ReviewerVerdict {
+): ValidationResult {
 	// Check for StructuredOutputError BEFORE the object guard — real error
 	// payloads are typically objects and would fall through to assert* otherwise.
 	if (isStructuredOutputError(structured)) {
-		opts.onError?.();
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			role === "author"
-				? "Agent returned a structured output error"
-				: "Input contains a structured output error",
-			{ raw: structured },
-		);
+		return {
+			ok: false,
+			code: "INVALID_STRUCTURED_OUTPUT",
+			message:
+				role === "author"
+					? "Agent returned a structured output error"
+					: "Input contains a structured output error",
+			detail: { raw: structured },
+		};
 	}
 
 	if (!structured || typeof structured !== "object") {
-		opts.onError?.();
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			`${role === "author" ? "Agent did not return" : "Input is not"} a valid structured object for ${role}`,
-			{ raw: structured ?? null },
-		);
+		return {
+			ok: false,
+			code: "INVALID_STRUCTURED_OUTPUT",
+			message: `${role === "author" ? "Agent did not return" : "Input is not"} a valid structured object for ${role}`,
+			detail: { raw: structured ?? null },
+		};
 	}
 
 	try {
@@ -83,10 +87,33 @@ export function validateStructuredOutput(
 			assertReviewerVerdict(structured as ReviewerVerdict, opts.context);
 		}
 	} catch (err) {
-		opts.onError?.();
 		const message = err instanceof Error ? err.message : String(err);
-		outputError("INVALID_STRUCTURED_OUTPUT", message, { raw: structured });
+		return {
+			ok: false,
+			code: "INVALID_STRUCTURED_OUTPUT",
+			message,
+			detail: { raw: structured },
+		};
 	}
 
-	return structured as AuthorStatus | ReviewerVerdict;
+	return { ok: true, value: structured as AuthorStatus | ReviewerVerdict };
+}
+
+/**
+ * Convenience wrapper: validate structured output and emit `outputError()`
+ * on failure. Use this in callers that have no async cleanup to perform
+ * (e.g. `protocol.handler.ts`). Callers that need async cleanup before
+ * exiting (e.g. `invoke.handler.ts` with provider.close()) should use
+ * `validateStructuredOutput()` directly and handle the failure branch.
+ */
+export function validateStructuredOutputOrThrow(
+	structured: unknown,
+	role: ValidateRole,
+	opts: ValidateOptions,
+): AuthorStatus | ReviewerVerdict {
+	const result = validateStructuredOutput(structured, role, opts);
+	if (!result.ok) {
+		outputError(result.code, result.message, result.detail);
+	}
+	return result.value;
 }

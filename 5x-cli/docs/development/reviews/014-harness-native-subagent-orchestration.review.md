@@ -669,3 +669,56 @@ validate` and `invoke` call those helpers.
 the test strategy is good, but one correctness issue remains in the new
 validate+record path and the planned invoke/helper consolidation is incomplete.
 Both are mechanical fixes. Phase 2 should wait until P1.7 is fixed.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `28a73df`
+
+### What's Addressed
+
+This follow-up commit addresses the two items from the prior implementation
+review.
+
+- **P1.7 (double stdout envelope):** Resolved. `5x-cli/src/commands/protocol.handler.ts`
+  now validates `--record` prerequisites before `outputSuccess()`, and
+  `5x-cli/test/commands/protocol-validate.test.ts` adds the invalid-run-id
+  regression case.
+- **P2.10 (shared helper extraction):** Resolved. Template selection/rendering is
+  now centralized in `5x-cli/src/commands/template-vars.ts` via
+  `resolveAndRenderTemplate()`, and structured-output validation is centralized
+  in `5x-cli/src/commands/protocol-helpers.ts` via `validateStructuredOutput()`.
+  `5x-cli/src/commands/invoke.handler.ts`, `5x-cli/src/commands/template.handler.ts`,
+  and `5x-cli/src/commands/protocol.handler.ts` all use those helpers.
+- Local verification passed: `bun test test/commands/protocol-validate.test.ts`,
+  `bun test test/commands/template-render.test.ts`, and
+  `bun test test/commands/invoke.test.ts test/commands/invoke-var-file.test.ts`.
+
+### Remaining Concerns
+
+#### P1.8 — Invalid structured-output failures no longer await provider cleanup
+
+The new shared validator intentionally does not await cleanup callbacks:
+`5x-cli/src/commands/protocol-helpers.ts:36`-`5x-cli/src/commands/protocol-helpers.ts:40`.
+`5x-cli/src/commands/invoke.handler.ts:416`-`5x-cli/src/commands/invoke.handler.ts:419`
+passes `onError: () => provider.close().catch(() => {})`, which starts async
+cleanup and then immediately throws via `outputError()`. `bin.ts` converts that
+throw into a process exit, so the provider close is no longer guaranteed to
+finish before exit on invalid structured output.
+
+Before this refactor, `invoke.handler.ts` awaited `provider.close()` on every
+structured-output validation failure path. The new behavior can leave provider
+subprocesses or transport resources orphaned in exactly the failure mode where
+cleanup matters most.
+
+Recommendation: keep the shared validation logic, but move the actual
+`outputError()` calls back behind an invoke-local wrapper that can `await
+provider.close()` first, or change the shared helper to return a structured
+failure result instead of throwing directly so callers can perform awaited
+cleanup before emitting the envelope.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the prior Phase 1 issues are fixed and
+the helper extraction now matches the plan, but the refactor introduced one
+mechanical cleanup regression in the invoke error path. Fix that before moving
+to Phase 2.
