@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { initScaffold } from "../../../src/commands/init.handler.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -42,23 +43,26 @@ function cleanupDir(dir: string): void {
 }
 
 /** Create a minimal project with git repo, 5x init (DB + templates), and sample provider config. */
-function setupProject(dir: string): string {
+async function setupProject(dir: string): Promise<string> {
 	// Init git repo
 	Bun.spawnSync(["git", "init"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.name", "Test"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -71,13 +75,8 @@ function setupProject(dir: string): string {
 		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
-	// Run 5x init to create .5x/, DB, .gitignore, templates
-	Bun.spawnSync(["bun", "run", BIN, "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	// Run 5x init directly (no subprocess) to create .5x/, DB, .gitignore, templates
+	await initScaffold({ startDir: dir });
 
 	// Overwrite 5x.toml with sample provider config
 	writeFileSync(
@@ -89,12 +88,14 @@ function setupProject(dir: string): string {
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "commit", "-m", "init"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -143,11 +144,13 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
+	const timer = setTimeout(() => proc.kill("SIGINT"), 20000);
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
+	clearTimeout(timer);
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
@@ -165,7 +168,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const runId = "run_no_wt_test";
@@ -205,7 +208,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			const wtDir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				// Create plan file in both root and worktree
 				const planPath = join(dir, "docs", "development", "test-plan.md");
@@ -255,7 +258,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			const wtDir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
@@ -301,7 +304,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 			const dir = makeTmpDir();
 			const wtDir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
@@ -348,7 +351,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const runId = "run_log_path_test";
@@ -388,7 +391,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				// Don't insert any run — RUN_NOT_FOUND is now a hard error in
 				// invoke, consistent with quality/diff/run handlers. A typo or
@@ -425,7 +428,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				setupProject(dir);
+				await setupProject(dir);
 
 				const planPath = join(dir, "docs", "development", "test-plan.md");
 				const missingWtPath = join(tmpdir(), `5x-missing-wt-${Date.now()}`);
