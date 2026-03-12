@@ -77,7 +77,7 @@ the risk/reward is lower.
 **Completion gate:** `bun test --concurrent` passes 10 consecutive times
 with zero failures. No behavioral changes to tests — only hardening.
 
-- [ ] Add `cleanGitEnv()` import and usage to the 8 files that are missing it:
+- [x] Add `cleanGitEnv()` import and usage to the 8 files that are missing it:
   - `test/commands/init.test.ts` — add `import { cleanGitEnv }` from `../helpers/clean-env.js`, pass `env: cleanGitEnv()` to `Bun.spawn` in `runInit()` helper (line 33)
   - `test/commands/harness.test.ts` — add `cleanGitEnv()` to `runCmd()` (line 53); replace `{ ...process.env, ...env }` with `{ ...cleanGitEnv(), ...env }`
   - `test/commands/prompt.test.ts` — add `cleanGitEnv()` to all `Bun.spawn` calls
@@ -86,7 +86,7 @@ with zero failures. No behavioral changes to tests — only hardening.
   - `test/bin-pretty.test.ts` — add `cleanGitEnv()` to `Bun.spawn` calls
   - `test/lock.test.ts` — add `cleanGitEnv()` to `Bun.spawn` calls (spawns `sleep`, low risk but consistent)
   - `test/pipe.test.ts` — add `cleanGitEnv()` to `Bun.spawn` calls
-- [ ] Add `stdin: "ignore"` to all `Bun.spawn` calls that don't intentionally use stdin:
+- [x] Add `stdin: "ignore"` to all `Bun.spawn` calls that don't intentionally use stdin:
   - `test/commands/init.test.ts` — `runInit()` (line 33)
   - `test/commands/harness.test.ts` — `runCmd()` (line 53)
   - `test/commands/skills-install.test.ts` — `runSkillsInstall()` (line 36)
@@ -95,7 +95,7 @@ with zero failures. No behavioral changes to tests — only hardening.
   - `test/lock.test.ts` — `Bun.spawn` for `sleep`
   - Skip `test/commands/prompt.test.ts` (uses `stdin: "pipe"` intentionally)
   - Skip `test/pipe.test.ts` (uses `stdin: "pipe"` intentionally)
-- [ ] Add per-test `timeout:` option to all 22 subprocess-spawning test files missing it. Use `{ timeout: 15000 }` as the default (matching `bunfig.toml`), and `{ timeout: 30000 }` for tests with multiple sequential subprocess spawns:
+- [x] Add per-test `timeout:` option to all 22 subprocess-spawning test files missing it. Use `{ timeout: 15000 }` as the default (matching `bunfig.toml`), and `{ timeout: 30000 }` for tests with multiple sequential subprocess spawns:
   - `test/commands/control-plane.test.ts` — 15000
   - `test/commands/diff.test.ts` — 15000
   - `test/commands/init-guard.test.ts` — 15000
@@ -116,8 +116,8 @@ with zero failures. No behavioral changes to tests — only hardening.
   - `test/bin-pretty.test.ts` — 15000
   - `test/lock.test.ts` — 15000
   - `test/pipe.test.ts` — 15000
-- [ ] Verify `isolated-mode.test.ts` already has all three hardening patterns (confirmed: `cleanGitEnv`, `stdin: "ignore"`, `timeout: 30000`). No changes needed.
-- [ ] Run `bun test --concurrent` 10 times in a loop. All must pass.
+- [x] Verify `isolated-mode.test.ts` already has all three hardening patterns (confirmed: `cleanGitEnv`, `stdin: "ignore"`, `timeout: 30000`). No changes needed.
+- [x] Run `bun test --concurrent` 10 times in a loop. All must pass.
 
 ## Phase 2: Refactor Handlers for Direct Testability
 
