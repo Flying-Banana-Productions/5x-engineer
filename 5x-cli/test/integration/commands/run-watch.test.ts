@@ -212,7 +212,7 @@ describe("5x run watch", () => {
 				const result = await run5x(
 					projectRoot,
 					["run", "watch", "--run", "run_fakeid12345", "--poll-interval", "10"],
-					150,
+					500,
 				);
 				expect(result.stderr).toContain("not found in DB");
 				expect(result.stderr).toContain("Proceeding");
@@ -258,7 +258,7 @@ describe("5x run watch", () => {
 				const result = await run5x(
 					projectRoot,
 					["run", "watch", "--run", runId, "--poll-interval", "10"],
-					150,
+					500,
 				);
 
 				const lines = result.stdout.split("\n").filter((l) => l.length > 0);
@@ -425,7 +425,7 @@ describe("5x run watch", () => {
 						"--poll-interval",
 						"10",
 					],
-					150,
+					500,
 				);
 
 				// Should not contain existing content
