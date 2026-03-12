@@ -551,10 +551,9 @@ describe("5x run lifecycle", () => {
 				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
 					.run_id as string;
 
-				// The default maxStepsPerRun is 50. Let's directly insert 50 steps
-				// via the DB to avoid running 50 CLI commands.
-				// Instead, we'll use a smaller config. We need to modify the run's
-				// config_json to have a lower max.
+				// Set maxStepsPerRun=3 and insert 3 dummy steps directly via DB
+				// to avoid 3 subprocess spawns (the previous loop was the timeout
+				// culprit under concurrent execution).
 				const { getDb } = await import("../../../src/db/connection.js");
 				const { _resetForTest, closeDb } = await import(
 					"../../../src/db/connection.js"
@@ -563,24 +562,16 @@ describe("5x run lifecycle", () => {
 				db.exec(
 					`UPDATE runs SET config_json = '{"maxStepsPerRun":3}' WHERE id = '${runId}'`,
 				);
+				for (let i = 0; i < 3; i++) {
+					db.exec(
+						`INSERT INTO steps (run_id, step_name, iteration, result_json)
+						 VALUES ('${runId}', 'step-${i}', 1, '{}')`,
+					);
+				}
 				closeDb();
 				_resetForTest();
 
-				// Record 3 steps (at the limit)
-				for (let i = 0; i < 3; i++) {
-					const r = await run5x(projectRoot, [
-						"run",
-						"record",
-						`step-${i}`,
-						"--run",
-						runId,
-						"--result",
-						"{}",
-					]);
-					expect(r.exitCode).toBe(0);
-				}
-
-				// 4th step should fail
+				// 4th step should fail — this is the only subprocess we need
 				const overflow = await run5x(projectRoot, [
 					"run",
 					"record",
@@ -780,18 +771,23 @@ describe("5x run lifecycle", () => {
 				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
 					.run_id as string;
 
-				// Record 5 steps
+				// Insert 5 steps directly via DB — avoids 5 subprocess spawns.
+				// This test is exercising --tail, not run record.
+				const { getDb: getDbTail } = await import(
+					"../../../src/db/connection.js"
+				);
+				const { _resetForTest: resetTail, closeDb: closeDbTail } = await import(
+					"../../../src/db/connection.js"
+				);
+				const dbTail = getDbTail(projectRoot);
 				for (let i = 0; i < 5; i++) {
-					await run5x(projectRoot, [
-						"run",
-						"record",
-						`step-${i}`,
-						"--run",
-						runId,
-						"--result",
-						`{"i":${i}}`,
-					]);
+					dbTail.exec(
+						`INSERT INTO steps (run_id, step_name, iteration, result_json)
+						 VALUES ('${runId}', 'step-${i}', 1, '{"i":${i}}')`,
+					);
 				}
+				closeDbTail();
+				resetTail();
 
 				// State with --tail 2
 				const result = await run5x(projectRoot, [
@@ -835,38 +831,29 @@ describe("5x run lifecycle", () => {
 				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
 					.run_id as string;
 
-				// Record 3 steps and capture the first step_id
-				const r1 = await run5x(projectRoot, [
-					"run",
-					"record",
-					"step-a",
-					"--run",
-					runId,
-					"--result",
-					"{}",
-				]);
-				const firstStepId = (
-					parseJson(r1.stdout).data as Record<string, unknown>
-				).step_id as number;
-
-				await run5x(projectRoot, [
-					"run",
-					"record",
-					"step-b",
-					"--run",
-					runId,
-					"--result",
-					"{}",
-				]);
-				await run5x(projectRoot, [
-					"run",
-					"record",
-					"step-c",
-					"--run",
-					runId,
-					"--result",
-					"{}",
-				]);
+				// Insert 3 steps directly via DB — avoids 3 subprocess spawns.
+				// This test exercises --since-step, not run record.
+				const { getDb: getDbSince } = await import(
+					"../../../src/db/connection.js"
+				);
+				const { _resetForTest: resetSince, closeDb: closeDbSince } =
+					await import("../../../src/db/connection.js");
+				const dbSince = getDbSince(projectRoot);
+				for (const name of ["step-a", "step-b", "step-c"]) {
+					dbSince.exec(
+						`INSERT INTO steps (run_id, step_name, iteration, result_json)
+						 VALUES ('${runId}', '${name}', 1, '{}')`,
+					);
+				}
+				const firstStepRow = dbSince
+					.query<{ id: number }, []>(
+						`SELECT id FROM steps WHERE run_id = '${runId}' ORDER BY id LIMIT 1`,
+					)
+					.get();
+				expect(firstStepRow).toBeDefined();
+				const firstStepId = firstStepRow?.id ?? 0;
+				closeDbSince();
+				resetSince();
 
 				// State with --since-step (first step id)
 				const result = await run5x(projectRoot, [
