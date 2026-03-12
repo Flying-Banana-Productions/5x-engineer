@@ -80,29 +80,3 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 		};
 	},
 };
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
-
-/** Registry of all supported harness location resolvers. */
-const HARNESS_REGISTRY: Record<string, HarnessLocationResolver> = {
-	opencode: opencodeLocationResolver,
-};
-
-/**
- * Look up the location resolver for a named harness.
- * Returns the resolver, or undefined if the harness is not supported.
- */
-export function getHarnessLocationResolver(
-	harness: string,
-): HarnessLocationResolver | undefined {
-	return HARNESS_REGISTRY[harness];
-}
-
-/**
- * List all supported harness names.
- */
-export function listSupportedHarnesses(): string[] {
-	return Object.keys(HARNESS_REGISTRY);
-}

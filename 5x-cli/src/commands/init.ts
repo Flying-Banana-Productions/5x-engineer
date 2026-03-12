@@ -1,41 +1,17 @@
 /**
  * Init command — citty adapter.
  *
- * Parent command with subcommands pattern (same as `skills` command).
+ * Leaf command (no subcommands). Runs `initScaffold` to set up the 5x
+ * control plane in the current project.
  *
- * - Bare `5x init [--force]` runs `initScaffold` via the parent `run` handler.
- * - `5x init opencode <user|project>` is a subcommand for harness-native installs.
+ * Harness integrations (OpenCode, Claude Code, etc.) are installed via
+ * `5x harness install <name>` — see harness.ts.
  *
  * Business logic lives in init.handler.ts.
  */
 
 import { defineCommand } from "citty";
-import { initOpencode, initScaffold } from "./init.handler.js";
-
-const opencodeCmd = defineCommand({
-	meta: {
-		name: "opencode",
-		description: "Install 5x skills and native subagent profiles for OpenCode",
-	},
-	args: {
-		scope: {
-			type: "positional" as const,
-			description:
-				"Install scope: user (~/.config/opencode/) or project (.opencode/)",
-			required: true as const,
-		},
-		force: {
-			type: "boolean" as const,
-			description: "Overwrite existing skill and agent files",
-			default: false,
-		},
-	},
-	run: ({ args }) =>
-		initOpencode({
-			scope: args.scope as "user" | "project",
-			force: args.force as boolean | undefined,
-		}),
-});
+import { initScaffold } from "./init.handler.js";
 
 export default defineCommand({
 	meta: {
@@ -48,9 +24,6 @@ export default defineCommand({
 			description: "Overwrite existing config file",
 			default: false,
 		},
-	},
-	subCommands: {
-		opencode: () => Promise.resolve(opencodeCmd),
 	},
 	run: ({ args }) =>
 		initScaffold({

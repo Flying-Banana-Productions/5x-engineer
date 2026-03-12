@@ -9,10 +9,10 @@ import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-	getHarnessLocationResolver,
-	listSupportedHarnesses,
-	opencodeLocationResolver,
-} from "../../src/harnesses/locations.js";
+	listBundledHarnesses,
+	loadHarnessPlugin,
+} from "../../src/harnesses/factory.js";
+import { opencodeLocationResolver } from "../../src/harnesses/locations.js";
 import {
 	listAgentTemplates,
 	renderAgentTemplate,
@@ -20,26 +20,30 @@ import {
 } from "../../src/harnesses/opencode/loader.js";
 
 // ---------------------------------------------------------------------------
+// Factory tests
+// ---------------------------------------------------------------------------
+
+describe("Harness factory", () => {
+	test("lists opencode as a bundled harness", () => {
+		const harnesses = listBundledHarnesses();
+		expect(harnesses).toContain("opencode");
+	});
+
+	test("loadHarnessPlugin resolves the bundled opencode plugin", async () => {
+		const plugin = await loadHarnessPlugin("opencode");
+		expect(plugin).toBeDefined();
+		expect(plugin.name).toBe("opencode");
+		expect(plugin.supportedScopes).toContain("project");
+		expect(plugin.supportedScopes).toContain("user");
+		expect(typeof plugin.install).toBe("function");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Location resolution tests
 // ---------------------------------------------------------------------------
 
 describe("OpenCode location resolver", () => {
-	test("lists opencode as a supported harness", () => {
-		const harnesses = listSupportedHarnesses();
-		expect(harnesses).toContain("opencode");
-	});
-
-	test("getHarnessLocationResolver returns resolver for opencode", () => {
-		const resolver = getHarnessLocationResolver("opencode");
-		expect(resolver).toBeDefined();
-		expect(resolver?.name).toBe("opencode");
-	});
-
-	test("getHarnessLocationResolver returns undefined for unknown harness", () => {
-		const resolver = getHarnessLocationResolver("nonexistent-harness");
-		expect(resolver).toBeUndefined();
-	});
-
 	test("project scope resolves to .opencode/agents/ and .opencode/skills/", () => {
 		const projectRoot = "/home/user/my-project";
 		const locations = opencodeLocationResolver.resolve("project", projectRoot);

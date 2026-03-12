@@ -6,16 +6,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig } from "../config.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
-import {
-	installAgentFiles,
-	installSkillFiles,
-} from "../harnesses/installer.js";
-import { opencodeLocationResolver } from "../harnesses/locations.js";
-import { renderAgentTemplates } from "../harnesses/opencode/loader.js";
-import { listSkills } from "../skills/loader.js";
 import defaultTomlConfig from "../templates/5x.default.toml" with {
 	type: "text",
 };
@@ -35,11 +27,6 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface InitParams {
-	force?: boolean;
-}
-
-export interface InitOpencodeParams {
-	scope: "user" | "project";
 	force?: boolean;
 }
 
@@ -176,106 +163,6 @@ function ensureGitignore(projectRoot: string): {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/**
- * Install 5x skills and OpenCode native subagent profiles for use with the
- * OpenCode harness.
- *
- * For project scope, installs into `.opencode/skills/` and `.opencode/agents/`.
- * For user scope, installs into `~/.config/opencode/skills/` and
- * `~/.config/opencode/agents/`.
- *
- * Project scope requires `.5x/` and `5x.toml` to already exist (i.e., `5x init`
- * must have been run first).
- */
-export async function initOpencode(params: InitOpencodeParams): Promise<void> {
-	const { scope, force = false } = params;
-
-	if (scope !== "user" && scope !== "project") {
-		throw new Error(`Invalid scope "${scope}". Must be "user" or "project".`);
-	}
-
-	// Determine project root for the install (used for project scope and config loading)
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
-	const projectRoot = checkoutRoot ?? resolve(".");
-
-	// Project scope prerequisite check: .5x/ and 5x.toml must already exist.
-	if (scope === "project") {
-		const dotFiveXDir = join(projectRoot, ".5x");
-		const configPath = join(projectRoot, "5x.toml");
-
-		if (!existsSync(dotFiveXDir) || !existsSync(configPath)) {
-			throw new Error(
-				"5x project not initialized. Run `5x init` first before installing OpenCode assets.",
-			);
-		}
-	}
-
-	// Resolve install locations
-	const locations = opencodeLocationResolver.resolve(scope, projectRoot);
-
-	// Load config to extract model settings for agent template rendering.
-	// If config cannot be loaded (e.g. user scope without a nearby config),
-	// fall back to empty config so model fields are simply omitted.
-	let authorModel: string | undefined;
-	let reviewerModel: string | undefined;
-	try {
-		const { config } = await loadConfig(projectRoot);
-		authorModel = config.author?.model?.trim() || undefined;
-		reviewerModel = config.reviewer?.model?.trim() || undefined;
-	} catch {
-		// Config load failure is non-fatal for user scope — agent templates
-		// will be rendered without model fields (OpenCode inherits the primary model).
-	}
-
-	// Install skills
-	const skills = listSkills();
-	const skillsResult = installSkillFiles(locations.skillsDir, skills, force);
-
-	const skillsDisplay =
-		scope === "user" ? "~/.config/opencode/skills/" : ".opencode/skills/";
-
-	for (const name of skillsResult.created) {
-		console.log(`  Created ${skillsDisplay}${name}`);
-	}
-	for (const name of skillsResult.overwritten) {
-		console.log(`  Overwrote ${skillsDisplay}${name}`);
-	}
-	for (const name of skillsResult.skipped) {
-		console.log(`  Skipped ${skillsDisplay}${name} (already exists)`);
-	}
-
-	// Install agent profiles
-	const agentTemplates = renderAgentTemplates({ authorModel, reviewerModel });
-	const agentsResult = installAgentFiles(
-		locations.agentsDir,
-		agentTemplates,
-		force,
-	);
-
-	const agentsDisplay =
-		scope === "user" ? "~/.config/opencode/agents/" : ".opencode/agents/";
-
-	for (const name of agentsResult.created) {
-		console.log(`  Created ${agentsDisplay}${name}`);
-	}
-	for (const name of agentsResult.overwritten) {
-		console.log(`  Overwrote ${agentsDisplay}${name}`);
-	}
-	for (const name of agentsResult.skipped) {
-		console.log(`  Skipped ${agentsDisplay}${name} (already exists)`);
-	}
-
-	if (scope === "project") {
-		console.log(
-			"  OpenCode project install complete. Start 5x-orchestrator in OpenCode to begin.",
-		);
-	} else {
-		console.log(
-			"  OpenCode user install complete. Start 5x-orchestrator in any OpenCode project.",
-		);
-	}
-}
-
 export async function initScaffold(params: InitParams): Promise<void> {
 	const force = Boolean(params.force);
 
@@ -383,7 +270,7 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		"  Run '5x skills install project' to install skills for agent clients",
 	);
 	console.log(
-		"  Run '5x init opencode project' to install native OpenCode skills and subagent profiles",
+		"  Run '5x harness install opencode --scope project' to install native OpenCode skills and subagent profiles",
 	);
 }
 

@@ -1,15 +1,15 @@
 /**
- * Integration tests for `5x init opencode <user|project>`.
- *
- * Phase 3 (014-harness-native-subagent-orchestration).
+ * Integration tests for `5x harness install` and `5x harness list`.
  *
  * Covers:
- * - `5x init opencode project` writes both skills and agents
- * - `5x init opencode project` fails with clear error when `.5x/` or `5x.toml` is absent
- * - `5x init opencode user` resolves the correct global config paths
- * - `--force` overwrite behavior
+ * - `5x harness install opencode --scope project` writes skills and agents
+ * - `5x harness install opencode --scope project` fails when control plane absent
+ * - `5x harness install opencode --scope user` resolves correct global paths
+ * - --force overwrite behavior
  * - Idempotent re-run behavior (skipped on second run)
- * - Legacy `5x init --force` still works without arguments (compatibility)
+ * - --scope validation (required when ambiguous, auto-inferred when single)
+ * - `5x harness list` output
+ * - Unknown harness name error
  */
 
 import { describe, expect, test } from "bun:test";
@@ -34,7 +34,7 @@ const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 function makeTmpDir(): string {
 	const dir = join(
 		homedir(),
-		`.5x-init-opencode-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		`.5x-harness-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 	);
 	mkdirSync(dir, { recursive: true });
 	return dir;
@@ -46,12 +46,12 @@ function cleanupDir(dir: string): void {
 	} catch {}
 }
 
-async function runInit(
+async function runCmd(
 	cwd: string,
-	extraArgs: string[] = [],
+	args: string[],
 	env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const proc = Bun.spawn(["bun", "run", BIN, "init", ...extraArgs], {
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
@@ -63,62 +63,40 @@ async function runInit(
 	return { stdout, stderr, exitCode };
 }
 
-async function runInitOpencode(
+async function runInit(
 	cwd: string,
-	scope: string,
+	extraArgs: string[] = [],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	return runCmd(cwd, ["init", ...extraArgs]);
+}
+
+async function runHarnessInstall(
+	cwd: string,
+	name: string,
 	extraArgs: string[] = [],
 	env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const proc = Bun.spawn(
-		["bun", "run", BIN, "init", "opencode", scope, ...extraArgs],
-		{
-			cwd,
-			stdout: "pipe",
-			stderr: "pipe",
-			env: { ...process.env, ...env },
-		},
-	);
-	const stdout = await new Response(proc.stdout).text();
-	const stderr = await new Response(proc.stderr).text();
-	const exitCode = await proc.exited;
-	return { stdout, stderr, exitCode };
+	return runCmd(cwd, ["harness", "install", name, ...extraArgs], env);
 }
 
 /**
- * Bootstrap a minimal 5x project in a temp dir (writes 5x.toml and .5x/).
- * Used for project-scope tests that require the prerequisite check to pass.
+ * Bootstrap a minimal 5x project in a temp dir (writes 5x.toml, .5x/, 5x.db).
  */
 async function bootstrapProject(dir: string): Promise<void> {
 	await runInit(dir);
 }
 
 // ---------------------------------------------------------------------------
-// Legacy compatibility: bare `5x init --force` still works
+// `5x harness list`
 // ---------------------------------------------------------------------------
 
-describe("5x init --force (legacy compatibility)", () => {
-	test("bare 5x init --force works without arguments", async () => {
+describe("5x harness list", () => {
+	test("lists bundled harnesses", async () => {
 		const tmp = makeTmpDir();
 		try {
-			// First init
-			const first = await runInit(tmp);
-			expect(first.exitCode).toBe(0);
-
-			// Force re-init
-			const { stdout, exitCode } = await runInit(tmp, ["--force"]);
+			const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
 			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Overwrote 5x.toml");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
-
-	test("bare 5x init still prints opencode hint", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const { stdout, exitCode } = await runInit(tmp);
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("5x init opencode project");
+			expect(stdout).toContain("opencode");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -126,15 +104,18 @@ describe("5x init --force (legacy compatibility)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `5x init opencode project`
+// `5x harness install opencode --scope project`
 // ---------------------------------------------------------------------------
 
-describe("5x init opencode project", () => {
+describe("5x harness install opencode --scope project", () => {
 	test("installs all bundled skills under .opencode/skills/", async () => {
 		const tmp = makeTmpDir();
 		try {
 			await bootstrapProject(tmp);
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 
 			expect(exitCode).toBe(0);
 
@@ -142,8 +123,8 @@ describe("5x init opencode project", () => {
 			for (const name of skillNames) {
 				const skillPath = join(tmp, ".opencode", "skills", name, "SKILL.md");
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`.opencode/skills/${name}/SKILL.md`);
 			}
+			expect(stdout).toContain("Created skill:");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -153,7 +134,10 @@ describe("5x init opencode project", () => {
 		const tmp = makeTmpDir();
 		try {
 			await bootstrapProject(tmp);
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 
 			expect(exitCode).toBe(0);
 
@@ -161,8 +145,8 @@ describe("5x init opencode project", () => {
 			for (const name of agentNames) {
 				const agentPath = join(tmp, ".opencode", "agents", `${name}.md`);
 				expect(existsSync(agentPath)).toBe(true);
-				expect(stdout).toContain(`.opencode/agents/${name}.md`);
 			}
+			expect(stdout).toContain("Created agent:");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -172,7 +156,10 @@ describe("5x init opencode project", () => {
 		const tmp = makeTmpDir();
 		try {
 			await bootstrapProject(tmp);
-			const { exitCode } = await runInitOpencode(tmp, "project");
+			const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 			expect(exitCode).toBe(0);
 
 			const skillsDir = join(tmp, ".opencode", "skills");
@@ -195,41 +182,13 @@ describe("5x init opencode project", () => {
 		}
 	});
 
-	test("fails with clear error when .5x/ is absent", async () => {
+	test("fails when control plane state DB is absent", async () => {
 		const tmp = makeTmpDir();
 		try {
-			// Write 5x.toml but NOT .5x/
-			writeFileSync(join(tmp, "5x.toml"), "[author]\n", "utf-8");
-
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
-
-			expect(exitCode).not.toBe(0);
-			// The error is emitted via the JSON error envelope on stdout
-			expect(stdout).toContain("5x init");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
-
-	test("fails with clear error when 5x.toml is absent", async () => {
-		const tmp = makeTmpDir();
-		try {
-			// Create .5x/ but NOT 5x.toml
-			mkdirSync(join(tmp, ".5x"), { recursive: true });
-
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
-
-			expect(exitCode).not.toBe(0);
-			expect(stdout).toContain("5x init");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
-
-	test("fails with clear error when neither .5x/ nor 5x.toml exists", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 
 			expect(exitCode).not.toBe(0);
 			expect(stdout).toContain("5x init");
@@ -244,15 +203,20 @@ describe("5x init opencode project", () => {
 			await bootstrapProject(tmp);
 
 			// First run
-			const first = await runInitOpencode(tmp, "project");
+			const first = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 			expect(first.exitCode).toBe(0);
 
 			// Second run (no --force)
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project");
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 			expect(exitCode).toBe(0);
 			expect(stdout).not.toContain("Created");
 			expect(stdout).not.toContain("Overwrote");
-			// All files should be reported as skipped
 			expect(stdout).toContain("Skipped");
 		} finally {
 			cleanupDir(tmp);
@@ -265,7 +229,10 @@ describe("5x init opencode project", () => {
 			await bootstrapProject(tmp);
 
 			// First install
-			const first = await runInitOpencode(tmp, "project");
+			const first = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
+			]);
 			expect(first.exitCode).toBe(0);
 			expect(first.stdout).toContain("Created");
 
@@ -274,7 +241,9 @@ describe("5x init opencode project", () => {
 			writeFileSync(skillPath, "# custom content", "utf-8");
 
 			// Second run with --force
-			const { stdout, exitCode } = await runInitOpencode(tmp, "project", [
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"project",
 				"--force",
 			]);
 			expect(exitCode).toBe(0);
@@ -291,20 +260,22 @@ describe("5x init opencode project", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `5x init opencode user`
+// `5x harness install opencode --scope user`
 // ---------------------------------------------------------------------------
 
-describe("5x init opencode user", () => {
+describe("5x harness install opencode --scope user", () => {
 	test("installs skills under ~/.config/opencode/skills/", async () => {
 		const tmp = makeTmpDir();
-		// Use a custom HOME to avoid polluting the real user's opencode config
 		const fakeHome = join(tmp, "fake-home");
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
-			const { stdout, exitCode } = await runInitOpencode(tmp, "user", [], {
-				HOME: fakeHome,
-			});
+			const { exitCode } = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 
 			expect(exitCode).toBe(0);
 
@@ -319,7 +290,6 @@ describe("5x init opencode user", () => {
 					"SKILL.md",
 				);
 				expect(existsSync(skillPath)).toBe(true);
-				expect(stdout).toContain(`~/.config/opencode/skills/${name}/SKILL.md`);
 			}
 		} finally {
 			cleanupDir(tmp);
@@ -332,9 +302,12 @@ describe("5x init opencode user", () => {
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
-			const { stdout, exitCode } = await runInitOpencode(tmp, "user", [], {
-				HOME: fakeHome,
-			});
+			const { exitCode } = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 
 			expect(exitCode).toBe(0);
 
@@ -348,23 +321,25 @@ describe("5x init opencode user", () => {
 					`${name}.md`,
 				);
 				expect(existsSync(agentPath)).toBe(true);
-				expect(stdout).toContain(`~/.config/opencode/agents/${name}.md`);
 			}
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("user scope does NOT require .5x/ or 5x.toml to exist", async () => {
+	test("user scope does NOT require control plane", async () => {
 		const tmp = makeTmpDir();
 		const fakeHome = join(tmp, "fake-home");
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
 			// No 5x init done — no .5x/ or 5x.toml
-			const { exitCode } = await runInitOpencode(tmp, "user", [], {
-				HOME: fakeHome,
-			});
+			const { exitCode } = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 			expect(exitCode).toBe(0);
 		} finally {
 			cleanupDir(tmp);
@@ -377,9 +352,12 @@ describe("5x init opencode user", () => {
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
-			const { exitCode } = await runInitOpencode(tmp, "user", [], {
-				HOME: fakeHome,
-			});
+			const { exitCode } = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 			expect(exitCode).toBe(0);
 
 			// Must NOT install to ~/.opencode/
@@ -400,14 +378,20 @@ describe("5x init opencode user", () => {
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
-			// First run
-			const first = await runInitOpencode(tmp, "user", [], { HOME: fakeHome });
+			const first = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 			expect(first.exitCode).toBe(0);
 
-			// Second run
-			const { stdout, exitCode } = await runInitOpencode(tmp, "user", [], {
-				HOME: fakeHome,
-			});
+			const { stdout, exitCode } = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 			expect(exitCode).toBe(0);
 			expect(stdout).not.toContain("Created");
 			expect(stdout).not.toContain("Overwrote");
@@ -423,8 +407,12 @@ describe("5x init opencode user", () => {
 		mkdirSync(fakeHome, { recursive: true });
 
 		try {
-			// First run
-			const first = await runInitOpencode(tmp, "user", [], { HOME: fakeHome });
+			const first = await runHarnessInstall(
+				tmp,
+				"opencode",
+				["--scope", "user"],
+				{ HOME: fakeHome },
+			);
 			expect(first.exitCode).toBe(0);
 
 			// Tamper with an agent file
@@ -438,10 +426,10 @@ describe("5x init opencode user", () => {
 			writeFileSync(agentPath, "# tampered", "utf-8");
 
 			// Force overwrite
-			const { stdout, exitCode } = await runInitOpencode(
+			const { stdout, exitCode } = await runHarnessInstall(
 				tmp,
-				"user",
-				["--force"],
+				"opencode",
+				["--scope", "user", "--force"],
 				{ HOME: fakeHome },
 			);
 			expect(exitCode).toBe(0);
@@ -450,6 +438,95 @@ describe("5x init opencode user", () => {
 			const restored = readFileSync(agentPath, "utf-8");
 			expect(restored).not.toBe("# tampered");
 			expect(restored).toContain("5x-reviewer");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Scope validation
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — scope validation", () => {
+	test("fails when --scope is omitted for multi-scope harness", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode");
+
+			expect(exitCode).not.toBe(0);
+			expect(stdout).toContain("--scope");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("fails when --scope has invalid value", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
+				"--scope",
+				"global",
+			]);
+
+			expect(exitCode).not.toBe(0);
+			expect(stdout).toContain("Invalid scope");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Unknown harness
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — unknown harness", () => {
+	test("fails with install instructions for unknown harness", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { stdout, exitCode } = await runHarnessInstall(
+				tmp,
+				"nonexistent-harness",
+				["--scope", "project"],
+			);
+
+			expect(exitCode).not.toBe(0);
+			expect(stdout).toContain("not found");
+			expect(stdout).toContain("@5x-ai/harness-nonexistent-harness");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Legacy compatibility: bare `5x init --force` still works
+// ---------------------------------------------------------------------------
+
+describe("5x init (no subcommands)", () => {
+	test("bare 5x init --force works without arguments", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const first = await runInit(tmp);
+			expect(first.exitCode).toBe(0);
+
+			const { stdout, exitCode } = await runInit(tmp, ["--force"]);
+			expect(exitCode).toBe(0);
+			expect(stdout).toContain("Overwrote 5x.toml");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("bare 5x init prints harness install hint", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { stdout, exitCode } = await runInit(tmp);
+			expect(exitCode).toBe(0);
+			expect(stdout).toContain("5x harness install opencode");
 		} finally {
 			cleanupDir(tmp);
 		}
