@@ -645,16 +645,17 @@ describe("5x protocol validate --record", () => {
 				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(true);
 
-				// Verify the step was recorded by checking run state
-				const stateResult = await run5x(dir, ["run", "state", "--run", runId]);
-				const stateJson = parseJson(stateResult.stdout);
-				expect(stateJson.ok).toBe(true);
-				const stateData = stateJson.data as Record<string, unknown>;
-				const steps = stateData.steps as Array<Record<string, unknown>>;
-				expect(steps.length).toBeGreaterThan(0);
-				const lastStep = steps[steps.length - 1] as Record<string, unknown>;
-				expect(lastStep.step_name).toBe("author:implement");
-				expect(lastStep.phase).toBe("Phase 1");
+				// Verify the step was recorded by reading DB directly (no subprocess)
+				const db = new Database(join(dir, ".5x", "5x.db"));
+				const steps = db
+					.query(
+						"SELECT step_name, phase FROM steps WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+					)
+					.all(runId) as Array<{ step_name: string; phase: string }>;
+				db.close();
+				expect(steps.length).toBe(1);
+				expect(steps[0]!.step_name).toBe("author:implement");
+				expect(steps[0]!.phase).toBe("Phase 1");
 			} finally {
 				cleanupDir(dir);
 			}
