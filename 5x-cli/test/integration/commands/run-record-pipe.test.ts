@@ -41,18 +41,21 @@ async function setupProjectWithRun(dir: string): Promise<{
 	Bun.spawnSync(["git", "init"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "config", "user.name", "Test"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -74,12 +77,14 @@ async function setupProjectWithRun(dir: string): Promise<{
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	Bun.spawnSync(["git", "commit", "-m", "init"], {
 		cwd: dir,
 		env: cleanGitEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});

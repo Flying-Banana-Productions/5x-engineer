@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { initScaffold } from "../../../src/commands/init.handler.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
@@ -40,6 +41,7 @@ function git(args: string[], cwd: string): string {
 	const result = Bun.spawnSync(["git", ...args], {
 		cwd,
 		env,
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -61,7 +63,7 @@ function initRepo(dir: string): void {
 	git(["commit", "-m", "initial"], dir);
 }
 
-function setupProject(dir: string): string {
+async function setupProject(dir: string): Promise<string> {
 	initRepo(dir);
 
 	const planDir = join(dir, "docs", "development");
@@ -71,13 +73,8 @@ function setupProject(dir: string): string {
 		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
-	// Run 5x init to create .5x/, DB, .gitignore, templates
-	Bun.spawnSync(["bun", "run", BIN, "init"], {
-		cwd: dir,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	// Run 5x init directly (no subprocess) to create .5x/, DB, .gitignore, templates
+	await initScaffold({ startDir: dir });
 
 	// Overwrite 5x.toml with sample provider config
 	writeFileSync(
@@ -178,7 +175,7 @@ describe("commands from linked worktree", () => {
 			const tmp = makeTmpDir();
 			const wtDir = makeTmpDir("5x-lwc-wt");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_from_wt_test";
@@ -228,7 +225,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_workdir_test";
@@ -288,7 +285,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				// Create a run via root
 				const runId = await initRun(tmp);
@@ -318,7 +315,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "init-branch");
 				git(["worktree", "add", linkedWt, "-b", "init-branch"], tmp);
@@ -353,7 +350,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "state-branch");
@@ -378,7 +375,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "complete-branch");
@@ -412,7 +409,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				// Complete from root first
@@ -445,7 +442,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				const linkedWt = join(tmp, ".5x", "worktrees", "record-branch");
@@ -484,7 +481,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				// Create log file at root so watch has something to read
@@ -524,7 +521,7 @@ describe("commands from linked worktree", () => {
 			const tmp = makeTmpDir();
 			const wtDir = makeTmpDir("5x-lwc-diffwt");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_diff_happy";
@@ -562,7 +559,7 @@ describe("commands from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				// qualityGates MUST appear before any [section] headers in TOML
 				writeFileSync(
 					join(tmp, "5x.toml"),
@@ -678,7 +675,7 @@ describe("artifact paths from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 
 				// Create a worktree through the CLI
@@ -707,7 +704,7 @@ describe("artifact paths from linked worktree", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_log_wt_test";
@@ -758,7 +755,7 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const tmp = makeTmpDir();
 			const externalDir = makeTmpDir("5x-lwc-ext");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const planPath = join(tmp, "docs", "development", "test-plan.md");
 				const runId = "run_ext_invoke";
@@ -799,7 +796,7 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const tmp = makeTmpDir();
 			const externalDir = makeTmpDir("5x-lwc-ext-state");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				const extWt = join(externalDir, "wt");
@@ -825,7 +822,7 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const tmp = makeTmpDir();
 			const externalDir = makeTmpDir("5x-lwc-ext-init");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 
 				const extWt = join(externalDir, "wt");
 				git(["worktree", "add", extWt, "-b", "ext-init-branch"], tmp);
@@ -860,7 +857,7 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const tmp = makeTmpDir();
 			const externalDir = makeTmpDir("5x-lwc-ext-list");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				const runId = await initRun(tmp);
 
 				const extWt = join(externalDir, "wt");
@@ -886,7 +883,7 @@ describe("commands from externally attached worktree (E2E)", () => {
 			const tmp = makeTmpDir();
 			const externalDir = makeTmpDir("5x-lwc-ext-qual");
 			try {
-				setupProject(tmp);
+				await setupProject(tmp);
 				// qualityGates MUST appear before any [section] headers in TOML
 				writeFileSync(
 					join(tmp, "5x.toml"),

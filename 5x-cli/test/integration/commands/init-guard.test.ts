@@ -32,6 +32,7 @@ function git(args: string[], cwd: string): void {
 	const result = Bun.spawnSync(["git", ...args], {
 		cwd,
 		env,
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});
