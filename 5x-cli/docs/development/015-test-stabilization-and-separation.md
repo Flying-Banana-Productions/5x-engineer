@@ -163,7 +163,7 @@ parameter. Existing tests still pass. No behavioral changes to CLI output.
   ```
 
 - [ ] Refactor `src/commands/worktree.handler.ts`:
-  - Add `startDir?: string` to `WorktreeCreateParams`, `WorktreeRemoveParams`, `WorktreeAttachParams`
+  - Add `startDir?: string` to `WorktreeCreateParams`, `WorktreeRemoveParams`, `WorktreeAttachParams`, and `worktreeList()` (which currently takes no params — change to `worktreeList(params?: { startDir?: string })`)
   - Replace `resolve(".")` at 7 call sites (lines 87, 100, 154, 260, 310, 324, 397) with the `startDir` parameter threaded through
   - For `isLinkedWorktreeContext()` — change signature to accept `startDir` parameter:
   ```ts
@@ -401,6 +401,15 @@ Contents reviewed for accuracy against the final directory structure.
 | **Total** | **4.5–6.5 days** | |
 
 ## Revision History
+
+### v1.2 (March 12, 2026) — Address re-review feedback
+
+Review addendum: `reviews/015-test-stabilization-and-separation.review.md`
+
+- **P2.2** — Explicitly added `worktreeList()` to the Phase 2 `startDir`
+  refactoring checklist. `worktreeList()` currently takes no parameters;
+  the plan now specifies changing it to
+  `worktreeList(params?: { startDir?: string })`.
 
 ### v1.1 (March 12, 2026) — Address review feedback
 
