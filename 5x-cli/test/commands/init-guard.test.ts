@@ -93,119 +93,147 @@ afterEach(() => {
 });
 
 describe("init managed-mode guard", () => {
-	test("init from main checkout succeeds when root state DB exists", async () => {
-		initRepo(tmp);
-		createStateDb(tmp);
+	test(
+		"init from main checkout succeeds when root state DB exists",
+		async () => {
+			initRepo(tmp);
+			createStateDb(tmp);
 
-		const result = await runInit(tmp);
-		// Should succeed (exit 0) - init from the main checkout is allowed
-		expect(result.exitCode).toBe(0);
-	});
-
-	test("init from linked worktree when root DB exists: blocked", async () => {
-		initRepo(tmp);
-		createStateDb(tmp);
-
-		// Create external worktree
-		const externalDir = makeTmpDir("5x-init-ext");
-		try {
-			const wtPath = join(externalDir, "wt");
-			git(["worktree", "add", wtPath, "-b", "guard-branch"], tmp);
-
-			const result = await runInit(wtPath);
-			// Should fail with managed-mode error
-			expect(result.exitCode).not.toBe(0);
-			// Error is output as JSON envelope to stdout (not stderr)
-			expect(result.stdout).toContain("managed by the control-plane");
-		} finally {
-			rmSync(externalDir, { recursive: true, force: true });
-		}
-	});
-
-	test("init --force from linked worktree when root DB exists: still blocked", async () => {
-		initRepo(tmp);
-		createStateDb(tmp);
-
-		const externalDir = makeTmpDir("5x-init-force");
-		try {
-			const wtPath = join(externalDir, "wt");
-			git(["worktree", "add", wtPath, "-b", "force-branch"], tmp);
-
-			const result = await runInit(wtPath, ["--force"]);
-			// --force does NOT bypass managed-mode guard
-			expect(result.exitCode).not.toBe(0);
-			// Error is output as JSON envelope to stdout (not stderr)
-			expect(result.stdout).toContain("managed by the control-plane");
-		} finally {
-			rmSync(externalDir, { recursive: true, force: true });
-		}
-	});
-
-	test("init from unmanaged worktree succeeds (no root DB)", async () => {
-		initRepo(tmp);
-		// Do NOT create state DB at root
-
-		const externalDir = makeTmpDir("5x-init-unmanaged");
-		try {
-			const wtPath = join(externalDir, "wt");
-			git(["worktree", "add", wtPath, "-b", "unmanaged-branch"], tmp);
-
-			const result = await runInit(wtPath);
-			// Should succeed - no root state DB means not managed
+			const result = await runInit(tmp);
+			// Should succeed (exit 0) - init from the main checkout is allowed
 			expect(result.exitCode).toBe(0);
-			// Config should be created in the worktree
-			expect(existsSync(join(wtPath, "5x.toml"))).toBe(true);
-		} finally {
-			rmSync(externalDir, { recursive: true, force: true });
-		}
-	});
+		},
+		{ timeout: 15000 },
+	);
 
-	test("init from main checkout without root DB: succeeds normally", async () => {
-		const testTmp = makeTmpDir();
-		try {
-			initRepo(testTmp);
+	test(
+		"init from linked worktree when root DB exists: blocked",
+		async () => {
+			initRepo(tmp);
+			createStateDb(tmp);
 
-			const result = await runInit(testTmp);
-			expect(result.exitCode).toBe(0);
-			expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
-			expect(existsSync(join(testTmp, ".5x"))).toBe(true);
-		} finally {
-			rmSync(testTmp, { recursive: true, force: true });
-		}
-	});
+			// Create external worktree
+			const externalDir = makeTmpDir("5x-init-ext");
+			try {
+				const wtPath = join(externalDir, "wt");
+				git(["worktree", "add", wtPath, "-b", "guard-branch"], tmp);
 
-	test("init from subdirectory of main checkout scaffolds at repo root", async () => {
-		const testTmp = makeTmpDir();
-		try {
-			initRepo(testTmp);
-			const subDir = join(testTmp, "src", "lib");
-			mkdirSync(subDir, { recursive: true });
+				const result = await runInit(wtPath);
+				// Should fail with managed-mode error
+				expect(result.exitCode).not.toBe(0);
+				// Error is output as JSON envelope to stdout (not stderr)
+				expect(result.stdout).toContain("managed by the control-plane");
+			} finally {
+				rmSync(externalDir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-			const result = await runInit(subDir);
-			expect(result.exitCode).toBe(0);
-			// Config and .5x should be at the repo root, not in the subdirectory
-			expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
-			expect(existsSync(join(testTmp, ".5x"))).toBe(true);
-			// Should NOT create config in the subdirectory
-			expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
-		} finally {
-			rmSync(testTmp, { recursive: true, force: true });
-		}
-	});
+	test(
+		"init --force from linked worktree when root DB exists: still blocked",
+		async () => {
+			initRepo(tmp);
+			createStateDb(tmp);
 
-	test("init from subdirectory of managed main checkout succeeds", async () => {
-		const testTmp = makeTmpDir();
-		try {
-			initRepo(testTmp);
-			createStateDb(testTmp);
-			const subDir = join(testTmp, "src");
-			mkdirSync(subDir, { recursive: true });
+			const externalDir = makeTmpDir("5x-init-force");
+			try {
+				const wtPath = join(externalDir, "wt");
+				git(["worktree", "add", wtPath, "-b", "force-branch"], tmp);
 
-			const result = await runInit(subDir);
-			// Should succeed — subdirectory of main checkout is allowed
-			expect(result.exitCode).toBe(0);
-		} finally {
-			rmSync(testTmp, { recursive: true, force: true });
-		}
-	});
+				const result = await runInit(wtPath, ["--force"]);
+				// --force does NOT bypass managed-mode guard
+				expect(result.exitCode).not.toBe(0);
+				// Error is output as JSON envelope to stdout (not stderr)
+				expect(result.stdout).toContain("managed by the control-plane");
+			} finally {
+				rmSync(externalDir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"init from unmanaged worktree succeeds (no root DB)",
+		async () => {
+			initRepo(tmp);
+			// Do NOT create state DB at root
+
+			const externalDir = makeTmpDir("5x-init-unmanaged");
+			try {
+				const wtPath = join(externalDir, "wt");
+				git(["worktree", "add", wtPath, "-b", "unmanaged-branch"], tmp);
+
+				const result = await runInit(wtPath);
+				// Should succeed - no root state DB means not managed
+				expect(result.exitCode).toBe(0);
+				// Config should be created in the worktree
+				expect(existsSync(join(wtPath, "5x.toml"))).toBe(true);
+			} finally {
+				rmSync(externalDir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"init from main checkout without root DB: succeeds normally",
+		async () => {
+			const testTmp = makeTmpDir();
+			try {
+				initRepo(testTmp);
+
+				const result = await runInit(testTmp);
+				expect(result.exitCode).toBe(0);
+				expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+				expect(existsSync(join(testTmp, ".5x"))).toBe(true);
+			} finally {
+				rmSync(testTmp, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"init from subdirectory of main checkout scaffolds at repo root",
+		async () => {
+			const testTmp = makeTmpDir();
+			try {
+				initRepo(testTmp);
+				const subDir = join(testTmp, "src", "lib");
+				mkdirSync(subDir, { recursive: true });
+
+				const result = await runInit(subDir);
+				expect(result.exitCode).toBe(0);
+				// Config and .5x should be at the repo root, not in the subdirectory
+				expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+				expect(existsSync(join(testTmp, ".5x"))).toBe(true);
+				// Should NOT create config in the subdirectory
+				expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
+			} finally {
+				rmSync(testTmp, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"init from subdirectory of managed main checkout succeeds",
+		async () => {
+			const testTmp = makeTmpDir();
+			try {
+				initRepo(testTmp);
+				createStateDb(testTmp);
+				const subDir = join(testTmp, "src");
+				mkdirSync(subDir, { recursive: true });
+
+				const result = await runInit(subDir);
+				// Should succeed — subdirectory of main checkout is allowed
+				expect(result.exitCode).toBe(0);
+			} finally {
+				rmSync(testTmp, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
 });

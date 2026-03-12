@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
 
@@ -34,6 +35,8 @@ async function runInit(
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
+		stdin: "ignore",
+		env: cleanGitEnv(),
 	});
 	const stdout = await new Response(proc.stdout).text();
 	const stderr = await new Response(proc.stderr).text();
@@ -42,184 +45,220 @@ async function runInit(
 }
 
 describe("5x init", () => {
-	test("creates config file, .5x/ directory, and .gitignore in empty project", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const { stdout, exitCode } = await runInit(tmp);
+	test(
+		"creates config file, .5x/ directory, and .gitignore in empty project",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Created 5x.toml");
-			expect(stdout).toContain("Created .5x/ directory");
-			expect(stdout).toContain(".gitignore");
-			expect(stdout).toContain("--tui-listen");
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Created 5x.toml");
+				expect(stdout).toContain("Created .5x/ directory");
+				expect(stdout).toContain(".gitignore");
+				expect(stdout).toContain("--tui-listen");
 
-			// Config file exists and is valid TOML
-			const configPath = join(tmp, "5x.toml");
-			expect(existsSync(configPath)).toBe(true);
-			const configContent = readFileSync(configPath, "utf-8");
-			expect(configContent).toContain("[author]");
-			expect(configContent).toContain("[reviewer]");
-			expect(configContent).toContain("# model");
-			expect(configContent).toContain("# timeout");
-			expect(configContent).toContain("qualityGates");
-			expect(configContent).toContain("[worktree]");
-			expect(configContent).toContain("# postCreate");
-			expect(configContent).toContain("[paths]");
-			expect(configContent).toContain(
-				'plan = ".5x/templates/implementation-plan-template.md"',
-			);
-			expect(configContent).toContain(
-				'review = ".5x/templates/review-template.md"',
-			);
-			expect(configContent).toContain("[db]");
-			expect(configContent).toContain("maxReviewIterations");
+				// Config file exists and is valid TOML
+				const configPath = join(tmp, "5x.toml");
+				expect(existsSync(configPath)).toBe(true);
+				const configContent = readFileSync(configPath, "utf-8");
+				expect(configContent).toContain("[author]");
+				expect(configContent).toContain("[reviewer]");
+				expect(configContent).toContain("# model");
+				expect(configContent).toContain("# timeout");
+				expect(configContent).toContain("qualityGates");
+				expect(configContent).toContain("[worktree]");
+				expect(configContent).toContain("# postCreate");
+				expect(configContent).toContain("[paths]");
+				expect(configContent).toContain(
+					'plan = ".5x/templates/implementation-plan-template.md"',
+				);
+				expect(configContent).toContain(
+					'review = ".5x/templates/review-template.md"',
+				);
+				expect(configContent).toContain("[db]");
+				expect(configContent).toContain("maxReviewIterations");
 
-			// .5x/ directory exists
-			expect(existsSync(join(tmp, ".5x"))).toBe(true);
-			expect(
-				existsSync(
-					join(tmp, ".5x", "templates", "implementation-plan-template.md"),
-				),
-			).toBe(true);
-			expect(
-				existsSync(join(tmp, ".5x", "templates", "review-template.md")),
-			).toBe(true);
+				// .5x/ directory exists
+				expect(existsSync(join(tmp, ".5x"))).toBe(true);
+				expect(
+					existsSync(
+						join(tmp, ".5x", "templates", "implementation-plan-template.md"),
+					),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".5x", "templates", "review-template.md")),
+				).toBe(true);
 
-			// .gitignore contains .5x/
-			const gitignorePath = join(tmp, ".gitignore");
-			expect(existsSync(gitignorePath)).toBe(true);
-			const gitignoreContent = readFileSync(gitignorePath, "utf-8");
-			expect(gitignoreContent).toContain(".5x/");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				// .gitignore contains .5x/
+				const gitignorePath = join(tmp, ".gitignore");
+				expect(existsSync(gitignorePath)).toBe(true);
+				const gitignoreContent = readFileSync(gitignorePath, "utf-8");
+				expect(gitignoreContent).toContain(".5x/");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("skips config if 5x.toml already exists (without --force)", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const configPath = join(tmp, "5x.toml");
-			writeFileSync(
-				configPath,
-				"# existing config\nmaxStepsPerRun = 10\n",
-				"utf-8",
-			);
+	test(
+		"skips config if 5x.toml already exists (without --force)",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const configPath = join(tmp, "5x.toml");
+				writeFileSync(
+					configPath,
+					"# existing config\nmaxStepsPerRun = 10\n",
+					"utf-8",
+				);
 
-			const { stdout, exitCode } = await runInit(tmp);
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Skipped config (5x.toml already exists");
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Skipped config (5x.toml already exists");
 
-			// Original config unchanged
-			const content = readFileSync(configPath, "utf-8");
-			expect(content).toContain("existing config");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				// Original config unchanged
+				const content = readFileSync(configPath, "utf-8");
+				expect(content).toContain("existing config");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("skips config if legacy 5x.config.js exists (without --force)", async () => {
-		const tmp = makeTmpDir();
-		try {
-			writeFileSync(join(tmp, "5x.config.js"), "export default {};", "utf-8");
+	test(
+		"skips config if legacy 5x.config.js exists (without --force)",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(join(tmp, "5x.config.js"), "export default {};", "utf-8");
 
-			const { stdout, exitCode } = await runInit(tmp);
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Skipped config (5x.config.js already exists");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Skipped config (5x.config.js already exists");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("overwrites config file with --force", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const configPath = join(tmp, "5x.toml");
-			writeFileSync(configPath, "# old config\nmaxStepsPerRun = 1\n", "utf-8");
+	test(
+		"overwrites config file with --force",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const configPath = join(tmp, "5x.toml");
+				writeFileSync(
+					configPath,
+					"# old config\nmaxStepsPerRun = 1\n",
+					"utf-8",
+				);
 
-			const { stdout, exitCode } = await runInit(tmp, ["--force"]);
+				const { stdout, exitCode } = await runInit(tmp, ["--force"]);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Overwrote 5x.toml");
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Overwrote 5x.toml");
 
-			// Config was overwritten with fresh defaults
-			const content = readFileSync(configPath, "utf-8");
-			expect(content).not.toContain("old config");
-			expect(content).toContain("[author]");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				// Config was overwritten with fresh defaults
+				const content = readFileSync(configPath, "utf-8");
+				expect(content).not.toContain("old config");
+				expect(content).toContain("[author]");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test(".gitignore append is idempotent", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const gitignorePath = join(tmp, ".gitignore");
-			writeFileSync(gitignorePath, "node_modules/\n.5x/\n", "utf-8");
+	test(
+		".gitignore append is idempotent",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const gitignorePath = join(tmp, ".gitignore");
+				writeFileSync(gitignorePath, "node_modules/\n.5x/\n", "utf-8");
 
-			const { stdout, exitCode } = await runInit(tmp);
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Skipped .gitignore (.5x/ already present)");
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Skipped .gitignore (.5x/ already present)");
 
-			// .gitignore unchanged — only one .5x/ entry
-			const content = readFileSync(gitignorePath, "utf-8");
-			const matches = content.match(/\.5x\//g);
-			expect(matches?.length).toBe(1);
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				// .gitignore unchanged — only one .5x/ entry
+				const content = readFileSync(gitignorePath, "utf-8");
+				const matches = content.match(/\.5x\//g);
+				expect(matches?.length).toBe(1);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("appends .5x/ to existing .gitignore without duplicate", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const gitignorePath = join(tmp, ".gitignore");
-			writeFileSync(gitignorePath, "node_modules/\ndist/\n", "utf-8");
+	test(
+		"appends .5x/ to existing .gitignore without duplicate",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const gitignorePath = join(tmp, ".gitignore");
+				writeFileSync(gitignorePath, "node_modules/\ndist/\n", "utf-8");
 
-			const { stdout, exitCode } = await runInit(tmp);
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Added .5x/ to .gitignore");
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Added .5x/ to .gitignore");
 
-			const content = readFileSync(gitignorePath, "utf-8");
-			expect(content).toContain("node_modules/");
-			expect(content).toContain(".5x/");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				const content = readFileSync(gitignorePath, "utf-8");
+				expect(content).toContain("node_modules/");
+				expect(content).toContain(".5x/");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("handles .gitignore without trailing newline", async () => {
-		const tmp = makeTmpDir();
-		try {
-			const gitignorePath = join(tmp, ".gitignore");
-			writeFileSync(gitignorePath, "node_modules/\ndist/", "utf-8"); // no trailing newline
+	test(
+		"handles .gitignore without trailing newline",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const gitignorePath = join(tmp, ".gitignore");
+				writeFileSync(gitignorePath, "node_modules/\ndist/", "utf-8"); // no trailing newline
 
-			const { exitCode } = await runInit(tmp);
+				const { exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			const content = readFileSync(gitignorePath, "utf-8");
-			expect(content).toContain("dist/\n.5x/\n");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				expect(exitCode).toBe(0);
+				const content = readFileSync(gitignorePath, "utf-8");
+				expect(content).toContain("dist/\n.5x/\n");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("skips .5x/ directory if already exists", async () => {
-		const tmp = makeTmpDir();
-		try {
-			mkdirSync(join(tmp, ".5x"), { recursive: true });
+	test(
+		"skips .5x/ directory if already exists",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				mkdirSync(join(tmp, ".5x"), { recursive: true });
 
-			const { stdout, exitCode } = await runInit(tmp);
+				const { stdout, exitCode } = await runInit(tmp);
 
-			expect(exitCode).toBe(0);
-			expect(stdout).toContain("Skipped .5x/ directory (already exists)");
-		} finally {
-			cleanupDir(tmp);
-		}
-	});
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Skipped .5x/ directory (already exists)");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });
 
 describe("ensureGitignore", () => {

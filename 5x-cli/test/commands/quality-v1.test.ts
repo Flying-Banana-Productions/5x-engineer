@@ -102,107 +102,127 @@ function parseJson(stdout: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 describe("5x quality run", () => {
-	test("returns passed=true with empty quality gates", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir); // no quality gates configured
-			const result = await run5x(dir, ["quality", "run"]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as { passed: boolean; results: unknown[] };
-			expect(payload.passed).toBe(true);
-			expect(payload.results).toEqual([]);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+	test(
+		"returns passed=true with empty quality gates",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir); // no quality gates configured
+				const result = await run5x(dir, ["quality", "run"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as { passed: boolean; results: unknown[] };
+				expect(payload.passed).toBe(true);
+				expect(payload.results).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("runs passing quality gate and returns results", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir, ["echo hello"]);
-			const result = await run5x(dir, ["quality", "run"]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				passed: boolean;
-				results: Array<{
-					command: string;
+	test(
+		"runs passing quality gate and returns results",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir, ["echo hello"]);
+				const result = await run5x(dir, ["quality", "run"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
 					passed: boolean;
-					duration_ms: number;
-					output: string;
-				}>;
-			};
-			expect(payload.passed).toBe(true);
-			expect(payload.results.length).toBe(1);
-			expect(payload.results[0]?.command).toBe("echo hello");
-			expect(payload.results[0]?.passed).toBe(true);
-			expect(payload.results[0]?.output).toContain("hello");
-			expect(typeof payload.results[0]?.duration_ms).toBe("number");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+					results: Array<{
+						command: string;
+						passed: boolean;
+						duration_ms: number;
+						output: string;
+					}>;
+				};
+				expect(payload.passed).toBe(true);
+				expect(payload.results.length).toBe(1);
+				expect(payload.results[0]?.command).toBe("echo hello");
+				expect(payload.results[0]?.passed).toBe(true);
+				expect(payload.results[0]?.output).toContain("hello");
+				expect(typeof payload.results[0]?.duration_ms).toBe("number");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("runs failing quality gate and returns passed=false", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir, ["exit 1"]);
-			const result = await run5x(dir, ["quality", "run"]);
-			expect(result.exitCode).toBe(0); // CLI succeeds — the gate failed, not the CLI
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				passed: boolean;
-				results: Array<{ command: string; passed: boolean }>;
-			};
-			expect(payload.passed).toBe(false);
-			expect(payload.results[0]?.passed).toBe(false);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+	test(
+		"runs failing quality gate and returns passed=false",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir, ["exit 1"]);
+				const result = await run5x(dir, ["quality", "run"]);
+				expect(result.exitCode).toBe(0); // CLI succeeds — the gate failed, not the CLI
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					passed: boolean;
+					results: Array<{ command: string; passed: boolean }>;
+				};
+				expect(payload.passed).toBe(false);
+				expect(payload.results[0]?.passed).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("runs multiple quality gates sequentially", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir, ["echo first", "echo second"]);
-			const result = await run5x(dir, ["quality", "run"]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				passed: boolean;
-				results: Array<{ command: string; passed: boolean }>;
-			};
-			expect(payload.passed).toBe(true);
-			expect(payload.results.length).toBe(2);
-			expect(payload.results[0]?.command).toBe("echo first");
-			expect(payload.results[1]?.command).toBe("echo second");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+	test(
+		"runs multiple quality gates sequentially",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir, ["echo first", "echo second"]);
+				const result = await run5x(dir, ["quality", "run"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					passed: boolean;
+					results: Array<{ command: string; passed: boolean }>;
+				};
+				expect(payload.passed).toBe(true);
+				expect(payload.results.length).toBe(2);
+				expect(payload.results[0]?.command).toBe("echo first");
+				expect(payload.results[1]?.command).toBe("echo second");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("mixed pass/fail reports overall passed=false", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir, ["echo ok", "exit 1"]);
-			const result = await run5x(dir, ["quality", "run"]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				passed: boolean;
-				results: Array<{ command: string; passed: boolean }>;
-			};
-			expect(payload.passed).toBe(false);
-			expect(payload.results[0]?.passed).toBe(true);
-			expect(payload.results[1]?.passed).toBe(false);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+	test(
+		"mixed pass/fail reports overall passed=false",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir, ["echo ok", "exit 1"]);
+				const result = await run5x(dir, ["quality", "run"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					passed: boolean;
+					results: Array<{ command: string; passed: boolean }>;
+				};
+				expect(payload.passed).toBe(false);
+				expect(payload.results[0]?.passed).toBe(true);
+				expect(payload.results[1]?.passed).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });

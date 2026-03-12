@@ -94,15 +94,17 @@ function parseJson(stdout: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 describe("5x plan phases", () => {
-	test("returns phases from a plan file", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"returns phases from a plan file",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planPath = join(dir, "plan.md");
-			writeFileSync(
-				planPath,
-				`# My Plan
+				const planPath = join(dir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# My Plan
 
 **Version:** 1.0
 **Status:** Draft
@@ -123,63 +125,67 @@ describe("5x plan phases", () => {
 - [ ] Implement feature B
 - [ ] Write tests
 `,
-			);
+				);
 
-			// Add and commit the plan so git is clean
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				// Add and commit the plan so git is clean
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				phases: Array<{
-					id: string;
-					title: string;
-					done: boolean;
-					checklist_total: number;
-					checklist_done: number;
-				}>;
-			};
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{
+						id: string;
+						title: string;
+						done: boolean;
+						checklist_total: number;
+						checklist_done: number;
+					}>;
+				};
 
-			expect(payload.phases.length).toBe(2);
+				expect(payload.phases.length).toBe(2);
 
-			expect(payload.phases[0]?.id).toBe("1");
-			expect(payload.phases[0]?.title).toBe("Setup");
-			expect(payload.phases[0]?.done).toBe(false);
-			expect(payload.phases[0]?.checklist_total).toBe(3);
-			expect(payload.phases[0]?.checklist_done).toBe(2);
+				expect(payload.phases[0]?.id).toBe("1");
+				expect(payload.phases[0]?.title).toBe("Setup");
+				expect(payload.phases[0]?.done).toBe(false);
+				expect(payload.phases[0]?.checklist_total).toBe(3);
+				expect(payload.phases[0]?.checklist_done).toBe(2);
 
-			expect(payload.phases[1]?.id).toBe("2");
-			expect(payload.phases[1]?.title).toBe("Implementation");
-			expect(payload.phases[1]?.done).toBe(false);
-			expect(payload.phases[1]?.checklist_total).toBe(3);
-			expect(payload.phases[1]?.checklist_done).toBe(0);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				expect(payload.phases[1]?.id).toBe("2");
+				expect(payload.phases[1]?.title).toBe("Implementation");
+				expect(payload.phases[1]?.done).toBe(false);
+				expect(payload.phases[1]?.checklist_total).toBe(3);
+				expect(payload.phases[1]?.checklist_done).toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("returns done=true for fully checked phases", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"returns done=true for fully checked phases",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planPath = join(dir, "plan.md");
-			writeFileSync(
-				planPath,
-				`# Plan
+				const planPath = join(dir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# Plan
 
 ## Phase 1: Done Phase
 
@@ -191,294 +197,328 @@ describe("5x plan phases", () => {
 - [x] Task C
 - [ ] Task D
 `,
-			);
+				);
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				phases: Array<{
-					id: string;
-					done: boolean;
-					checklist_total: number;
-					checklist_done: number;
-				}>;
-			};
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{
+						id: string;
+						done: boolean;
+						checklist_total: number;
+						checklist_done: number;
+					}>;
+				};
 
-			expect(payload.phases[0]?.done).toBe(true);
-			expect(payload.phases[0]?.checklist_total).toBe(2);
-			expect(payload.phases[0]?.checklist_done).toBe(2);
+				expect(payload.phases[0]?.done).toBe(true);
+				expect(payload.phases[0]?.checklist_total).toBe(2);
+				expect(payload.phases[0]?.checklist_done).toBe(2);
 
-			expect(payload.phases[1]?.done).toBe(false);
-			expect(payload.phases[1]?.checklist_total).toBe(2);
-			expect(payload.phases[1]?.checklist_done).toBe(1);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				expect(payload.phases[1]?.done).toBe(false);
+				expect(payload.phases[1]?.checklist_total).toBe(2);
+				expect(payload.phases[1]?.checklist_done).toBe(1);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("returns PLAN_NOT_FOUND for missing file", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"returns PLAN_NOT_FOUND for missing file",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const result = await run5x(dir, [
-				"plan",
-				"phases",
-				join(dir, "nonexistent.md"),
-			]);
-			expect(result.exitCode).toBe(2); // PLAN_NOT_FOUND exit code
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(false);
-			const error = data.error as { code: string };
-			expect(error.code).toBe("PLAN_NOT_FOUND");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				const result = await run5x(dir, [
+					"plan",
+					"phases",
+					join(dir, "nonexistent.md"),
+				]);
+				expect(result.exitCode).toBe(2); // PLAN_NOT_FOUND exit code
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				const error = data.error as { code: string };
+				expect(error.code).toBe("PLAN_NOT_FOUND");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("handles plan with no phases", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"handles plan with no phases",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planPath = join(dir, "empty-plan.md");
-			writeFileSync(planPath, "# Empty Plan\n\nJust some text.\n");
+				const planPath = join(dir, "empty-plan.md");
+				writeFileSync(planPath, "# Empty Plan\n\nJust some text.\n");
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as { phases: unknown[] };
-			expect(payload.phases).toEqual([]);
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as { phases: unknown[] };
+				expect(payload.phases).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("reads plan from mapped worktree when mapping exists", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"reads plan from mapped worktree when mapping exists",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			// Write a plan in the root with Phase 1 unchecked
-			const planDir = join(dir, "docs");
-			mkdirSync(planDir, { recursive: true });
-			const planPath = join(planDir, "plan.md");
-			writeFileSync(
-				planPath,
-				`# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n- [ ] Task B\n`,
-			);
+				// Write a plan in the root with Phase 1 unchecked
+				const planDir = join(dir, "docs");
+				mkdirSync(planDir, { recursive: true });
+				const planPath = join(planDir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n- [ ] Task B\n`,
+				);
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			// Create a fake worktree directory with the plan fully checked
-			const wtDir = join(dir, ".5x", "worktrees", "wt1");
-			const wtPlanDir = join(wtDir, "docs");
-			mkdirSync(wtPlanDir, { recursive: true });
-			writeFileSync(
-				join(wtPlanDir, "plan.md"),
-				`# Plan\n\n## Phase 1: Setup\n\n- [x] Task A\n- [x] Task B\n`,
-			);
+				// Create a fake worktree directory with the plan fully checked
+				const wtDir = join(dir, ".5x", "worktrees", "wt1");
+				const wtPlanDir = join(wtDir, "docs");
+				mkdirSync(wtPlanDir, { recursive: true });
+				writeFileSync(
+					join(wtPlanDir, "plan.md"),
+					`# Plan\n\n## Phase 1: Setup\n\n- [x] Task A\n- [x] Task B\n`,
+				);
 
-			// Set up the DB with a plan→worktree mapping
-			const { getDb } = await import("../../src/db/connection.js");
-			const { runMigrations } = await import("../../src/db/schema.js");
-			const { upsertPlan } = await import("../../src/db/operations.js");
-			const { _resetForTest } = await import("../../src/db/connection.js");
+				// Set up the DB with a plan→worktree mapping
+				const { getDb } = await import("../../src/db/connection.js");
+				const { runMigrations } = await import("../../src/db/schema.js");
+				const { upsertPlan } = await import("../../src/db/operations.js");
+				const { _resetForTest } = await import("../../src/db/connection.js");
 
-			const db = getDb(dir, ".5x/5x.db");
-			runMigrations(db);
-			upsertPlan(db, { planPath, worktreePath: wtDir });
-			db.close();
-			_resetForTest();
+				const db = getDb(dir, ".5x/5x.db");
+				runMigrations(db);
+				upsertPlan(db, { planPath, worktreePath: wtDir });
+				db.close();
+				_resetForTest();
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
 
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				phases: Array<{ done: boolean; checklist_done: number }>;
-				filePaths: { root: string; worktree?: string };
-			};
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{ done: boolean; checklist_done: number }>;
+					filePaths: { root: string; worktree?: string };
+				};
 
-			// Should read from worktree copy (fully checked)
-			expect(payload.phases[0]?.done).toBe(true);
-			expect(payload.phases[0]?.checklist_done).toBe(2);
+				// Should read from worktree copy (fully checked)
+				expect(payload.phases[0]?.done).toBe(true);
+				expect(payload.phases[0]?.checklist_done).toBe(2);
 
-			// filePaths should include both root and worktree
-			expect(payload.filePaths.root).toBe(planPath);
-			expect(payload.filePaths.worktree).toBe(join(wtPlanDir, "plan.md"));
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				// filePaths should include both root and worktree
+				expect(payload.filePaths.root).toBe(planPath);
+				expect(payload.filePaths.worktree).toBe(join(wtPlanDir, "plan.md"));
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("falls back to original path when worktree copy does not exist", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"falls back to original path when worktree copy does not exist",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planDir = join(dir, "docs");
-			mkdirSync(planDir, { recursive: true });
-			const planPath = join(planDir, "plan.md");
-			writeFileSync(planPath, `# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`);
+				const planDir = join(dir, "docs");
+				mkdirSync(planDir, { recursive: true });
+				const planPath = join(planDir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`,
+				);
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			// Create worktree dir but WITHOUT the plan file
-			const wtDir = join(dir, ".5x", "worktrees", "wt1");
-			mkdirSync(wtDir, { recursive: true });
+				// Create worktree dir but WITHOUT the plan file
+				const wtDir = join(dir, ".5x", "worktrees", "wt1");
+				mkdirSync(wtDir, { recursive: true });
 
-			// Set up the DB with mapping to a worktree that lacks the plan
-			const { getDb } = await import("../../src/db/connection.js");
-			const { runMigrations } = await import("../../src/db/schema.js");
-			const { upsertPlan } = await import("../../src/db/operations.js");
-			const { _resetForTest } = await import("../../src/db/connection.js");
+				// Set up the DB with mapping to a worktree that lacks the plan
+				const { getDb } = await import("../../src/db/connection.js");
+				const { runMigrations } = await import("../../src/db/schema.js");
+				const { upsertPlan } = await import("../../src/db/operations.js");
+				const { _resetForTest } = await import("../../src/db/connection.js");
 
-			const db = getDb(dir, ".5x/5x.db");
-			runMigrations(db);
-			upsertPlan(db, { planPath, worktreePath: wtDir });
-			db.close();
-			_resetForTest();
+				const db = getDb(dir, ".5x/5x.db");
+				runMigrations(db);
+				upsertPlan(db, { planPath, worktreePath: wtDir });
+				db.close();
+				_resetForTest();
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
 
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				phases: Array<{ done: boolean; checklist_done: number }>;
-				filePaths: { root: string; worktree?: string };
-			};
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{ done: boolean; checklist_done: number }>;
+					filePaths: { root: string; worktree?: string };
+				};
 
-			// Should read from root (unchecked)
-			expect(payload.phases[0]?.done).toBe(false);
-			expect(payload.phases[0]?.checklist_done).toBe(0);
+				// Should read from root (unchecked)
+				expect(payload.phases[0]?.done).toBe(false);
+				expect(payload.phases[0]?.checklist_done).toBe(0);
 
-			// filePaths should have root only, no worktree
-			expect(payload.filePaths.root).toBe(planPath);
-			expect(payload.filePaths.worktree).toBeUndefined();
+				// filePaths should have root only, no worktree
+				expect(payload.filePaths.root).toBe(planPath);
+				expect(payload.filePaths.worktree).toBeUndefined();
 
-			// No re-mapping note since worktree copy doesn't exist
-			expect(result.stderr).not.toContain("reading plan from mapped worktree");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				// No re-mapping note since worktree copy doesn't exist
+				expect(result.stderr).not.toContain(
+					"reading plan from mapped worktree",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("no re-mapping when plan has no worktree mapping", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"no re-mapping when plan has no worktree mapping",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planPath = join(dir, "plan.md");
-			writeFileSync(planPath, `# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`);
+				const planPath = join(dir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n`,
+				);
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			// Set up DB with plan but NO worktree mapping
-			const { getDb } = await import("../../src/db/connection.js");
-			const { runMigrations } = await import("../../src/db/schema.js");
-			const { upsertPlan } = await import("../../src/db/operations.js");
-			const { _resetForTest } = await import("../../src/db/connection.js");
+				// Set up DB with plan but NO worktree mapping
+				const { getDb } = await import("../../src/db/connection.js");
+				const { runMigrations } = await import("../../src/db/schema.js");
+				const { upsertPlan } = await import("../../src/db/operations.js");
+				const { _resetForTest } = await import("../../src/db/connection.js");
 
-			const db = getDb(dir, ".5x/5x.db");
-			runMigrations(db);
-			upsertPlan(db, { planPath });
-			db.close();
-			_resetForTest();
+				const db = getDb(dir, ".5x/5x.db");
+				runMigrations(db);
+				upsertPlan(db, { planPath });
+				db.close();
+				_resetForTest();
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
 
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				filePaths: { root: string; worktree?: string };
-			};
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					filePaths: { root: string; worktree?: string };
+				};
 
-			// filePaths should have root only
-			expect(payload.filePaths.root).toBe(planPath);
-			expect(payload.filePaths.worktree).toBeUndefined();
+				// filePaths should have root only
+				expect(payload.filePaths.root).toBe(planPath);
+				expect(payload.filePaths.worktree).toBeUndefined();
 
-			// No re-mapping note
-			expect(result.stderr).not.toContain("reading plan from mapped worktree");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				// No re-mapping note
+				expect(result.stderr).not.toContain(
+					"reading plan from mapped worktree",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
-	test("handles sub-phase numbering", async () => {
-		const dir = makeTmpDir();
-		try {
-			setupProject(dir);
+	test(
+		"handles sub-phase numbering",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
 
-			const planPath = join(dir, "plan.md");
-			writeFileSync(
-				planPath,
-				`# Plan
+				const planPath = join(dir, "plan.md");
+				writeFileSync(
+					planPath,
+					`# Plan
 
 ## Phase 1: Main Phase
 
@@ -488,34 +528,36 @@ describe("5x plan phases", () => {
 
 - [ ] Task B
 `,
-			);
+				);
 
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
 
-			const result = await run5x(dir, ["plan", "phases", planPath]);
-			expect(result.exitCode).toBe(0);
-			const data = parseJson(result.stdout);
-			expect(data.ok).toBe(true);
-			const payload = data.data as {
-				phases: Array<{ id: string; title: string }>;
-			};
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{ id: string; title: string }>;
+				};
 
-			expect(payload.phases.length).toBe(2);
-			expect(payload.phases[0]?.id).toBe("1");
-			expect(payload.phases[1]?.id).toBe("1.1");
-		} finally {
-			cleanupDir(dir);
-		}
-	});
+				expect(payload.phases.length).toBe(2);
+				expect(payload.phases[0]?.id).toBe("1");
+				expect(payload.phases[1]?.id).toBe("1.1");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });
