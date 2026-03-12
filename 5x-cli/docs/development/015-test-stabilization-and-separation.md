@@ -218,9 +218,9 @@ exist. All test files are in the correct location. `bun test` discovers
 and runs all tests. `bun test test/unit/` and `bun test test/integration/`
 each run independently.
 
-- [ ] Revalidate the test file inventory before moving files. Run `find test/ -name '*.test.ts' | sort` and compare against the file lists in this plan. Reconcile any discrepancies (files added/removed since the plan was written). Update the unit/integration move lists below if the actual file set differs from what is documented.
+- [x] Revalidate the test file inventory before moving files. Run `find test/ -name '*.test.ts' | sort` and compare against the file lists in this plan. Reconcile any discrepancies (files added/removed since the plan was written). Update the unit/integration move lists below if the actual file set differs from what is documented.
 
-- [ ] Create directory structure:
+- [x] Create directory structure:
   ```
   test/
   ├── unit/
@@ -240,7 +240,7 @@ each run independently.
   └── setup.ts        (stays — preload for all tests)
   ```
 
-- [ ] Move 37 pure unit test files to `test/unit/` preserving subdirectory structure. Use `git mv` for each:
+- [x] Move 37 pure unit test files to `test/unit/` preserving subdirectory structure. Use `git mv` for each:
   - `test/config.test.ts` → `test/unit/config.test.ts`
   - `test/config-layering.test.ts` → `test/unit/config-layering.test.ts`
   - `test/config-v1.test.ts` → `test/unit/config-v1.test.ts`
@@ -264,13 +264,13 @@ each run independently.
   - `test/tui/*.test.ts` → `test/unit/tui/*.test.ts` (3 files)
   - `test/utils/*.test.ts` → `test/unit/utils/*.test.ts` (5 files)
 
-- [ ] Move 31 integration test files to `test/integration/` preserving subdirectory structure:
+- [x] Move 31 integration test files to `test/integration/` preserving subdirectory structure:
   - `test/commands/*.test.ts` (remaining 28 files after unit extractions) → `test/integration/commands/`
   - `test/bin-pretty.test.ts` → `test/integration/bin-pretty.test.ts`
   - `test/lock.test.ts` → `test/integration/lock.test.ts`
   - `test/pipe.test.ts` → `test/integration/pipe.test.ts`
 
-- [ ] Audit and update all relative import paths in moved test files. Do NOT rely on path-depth heuristics — inspect actual imports in each file:
+- [x] Audit and update all relative import paths in moved test files. Do NOT rely on path-depth heuristics — inspect actual imports in each file:
   - For each moved file, extract all `import`/`require()` statements and dynamic `import()` calls
   - Compute the new relative path from the file's destination to the imported target
   - Top-level files moving from `test/*.test.ts` to `test/unit/*.test.ts`: these currently import from `../src/` — after the move, the depth increases by one, so paths become `../../src/`
@@ -278,10 +278,10 @@ each run independently.
   - Helper imports: `../helpers/` → `../../helpers/` (for files that gain one directory level)
   - Validate: after all import rewrites, run `bun test --dry-run` or equivalent to confirm no import resolution errors before running the full suite
 
-- [ ] Verify `bun test` runs all tests (total count unchanged).
-- [ ] Verify `bun test test/unit/` runs only unit tests.
-- [ ] Verify `bun test test/integration/` runs only integration tests.
-- [ ] Verify `bun test test/unit/` completes in <5s.
+- [x] Verify `bun test` runs all tests (total count unchanged).
+- [x] Verify `bun test test/unit/` runs only unit tests.
+- [x] Verify `bun test test/integration/` runs only integration tests.
+- [x] Verify `bun test test/unit/` completes in <5s.
 
 ## Phase 4: Convert High-Feasibility Tests to Unit Tests
 
