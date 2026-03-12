@@ -34,12 +34,13 @@ describe("skill loader — Phase 4 rewrites", () => {
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
-		expect(names.length).toBe(3);
+		// Do not hard-code total count — new skills may be added
+		expect(names.length).toBeGreaterThanOrEqual(3);
 	});
 
-	test("listSkills returns metadata for all three skills", () => {
+	test("listSkills returns metadata for all expected skills", () => {
 		const skills = listSkills();
-		expect(skills.length).toBe(3);
+		expect(skills.length).toBeGreaterThanOrEqual(3);
 		for (const skill of skills) {
 			expect(skill.name).toBeTruthy();
 			expect(skill.description).toBeTruthy();
@@ -79,26 +80,46 @@ describe("5x-plan skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection (project scope first)", () => {
+	test("documents native agent detection order: project scope before user scope before fallback", () => {
 		const content = getDefaultSkillRaw("5x-plan");
-		expect(content).toContain(".opencode/agents/");
+		// Find the "Native agent detection order" section
+		const sectionIdx = content.indexOf("Native agent detection order");
+		expect(sectionIdx).toBeGreaterThan(-1);
+		// Extract from that section onward for positional checks
+		const section = content.slice(sectionIdx);
+		const projectIdx = section.indexOf(".opencode/agents/");
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const fallbackIdx = section.indexOf("5x invoke");
+		// All three must be present in the section
+		expect(projectIdx).toBeGreaterThan(-1);
+		expect(userIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(-1);
+		// Order within the section: project scope → user scope → fallback
+		expect(projectIdx).toBeLessThan(userIdx);
+		expect(userIdx).toBeLessThan(fallbackIdx);
 	});
 
-	test("documents user scope fallback path", () => {
-		const content = getDefaultSkillRaw("5x-plan");
-		expect(content).toContain("~/.config/opencode/agents/");
-	});
-
-	test("preserves 5x invoke as fallback", () => {
+	test("preserves 5x invoke as last-resort fallback", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toContain("5x invoke");
 		// Fallback label should appear
 		expect(content).toContain("Fallback");
+		// In the detection order section, 5x invoke appears after user scope
+		const sectionIdx = content.indexOf("Native agent detection order");
+		const section = content.slice(sectionIdx);
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const invokeIdx = section.indexOf("5x invoke");
+		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-plan-author native agent name", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toContain("5x-plan-author");
+	});
+
+	test("references 5x-orchestrator agent name", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).toContain("5x-orchestrator");
 	});
 
 	test("treats session reuse as optional", () => {
@@ -131,15 +152,34 @@ describe("5x-plan-review skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection order", () => {
+	test("documents native agent detection order: project scope before user scope before fallback", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
-		expect(content).toContain(".opencode/agents/");
-		expect(content).toContain("~/.config/opencode/agents/");
+		// Find the "Native agent detection order" section
+		const sectionIdx = content.indexOf("Native agent detection order");
+		expect(sectionIdx).toBeGreaterThan(-1);
+		// Extract from that section onward for positional checks
+		const section = content.slice(sectionIdx);
+		const projectIdx = section.indexOf(".opencode/agents/");
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const fallbackIdx = section.indexOf("5x invoke");
+		// All three must be present in the section
+		expect(projectIdx).toBeGreaterThan(-1);
+		expect(userIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(-1);
+		// Order within the section: project scope → user scope → fallback
+		expect(projectIdx).toBeLessThan(userIdx);
+		expect(userIdx).toBeLessThan(fallbackIdx);
 	});
 
-	test("preserves 5x invoke as fallback", () => {
+	test("preserves 5x invoke as last-resort fallback", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x invoke");
+		// In the detection order section, 5x invoke appears after user scope
+		const sectionIdx = content.indexOf("Native agent detection order");
+		const section = content.slice(sectionIdx);
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const invokeIdx = section.indexOf("5x invoke");
+		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-reviewer native agent name", () => {
@@ -150,6 +190,11 @@ describe("5x-plan-review skill — native-first delegation", () => {
 	test("references 5x-plan-author native agent name", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x-plan-author");
+	});
+
+	test("references 5x-orchestrator agent name", () => {
+		const content = getDefaultSkillRaw("5x-plan-review");
+		expect(content).toContain("5x-orchestrator");
 	});
 
 	test("treats session reuse as optional", () => {
@@ -188,15 +233,36 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection order", () => {
+	test("documents native agent detection order: project scope before user scope before fallback", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
-		expect(content).toContain(".opencode/agents/");
-		expect(content).toContain("~/.config/opencode/agents/");
+		// Find the "Native agent detection order" section
+		const sectionIdx = content.indexOf("Native agent detection order");
+		expect(sectionIdx).toBeGreaterThan(-1);
+		// Extract from that section onward for positional checks
+		const section = content.slice(sectionIdx);
+		const projectIdx = section.indexOf(".opencode/agents/");
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const fallbackIdx = section.indexOf("5x invoke");
+		// All three must be present in the section
+		expect(projectIdx).toBeGreaterThan(-1);
+		expect(userIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(-1);
+		// Order within the section: project scope → user scope → fallback
+		expect(projectIdx).toBeLessThan(userIdx);
+		expect(userIdx).toBeLessThan(fallbackIdx);
 	});
 
-	test("preserves 5x invoke as fallback", () => {
+	test("preserves 5x invoke as last-resort fallback", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x invoke");
+		// Fallback section must be documented
+		expect(content).toContain("Fallback");
+		// In the detection order section, 5x invoke appears after user scope
+		const sectionIdx = content.indexOf("Native agent detection order");
+		const section = content.slice(sectionIdx);
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const invokeIdx = section.indexOf("5x invoke");
+		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-code-author native agent name", () => {
@@ -207,6 +273,11 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 	test("references 5x-reviewer native agent name", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x-reviewer");
+	});
+
+	test("references 5x-orchestrator agent name", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		expect(content).toContain("5x-orchestrator");
 	});
 
 	test("treats session reuse as optional", () => {

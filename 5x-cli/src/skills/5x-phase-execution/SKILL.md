@@ -71,9 +71,16 @@ to `5x invoke` when no native agent is found.
 2. User scope: `~/.config/opencode/agents/<name>.md`
 3. Fallback: `5x invoke`
 
-**OpenCode native agent names:**
+**Installed OpenCode agent names:**
+- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
 - `5x-code-author` — implements code changes from approved plans
 - `5x-reviewer` — performs code review and produces structured verdicts
+
+**Native agent detection order:**
+
+1. Project scope: `.opencode/agents/<name>.md`
+2. User scope: `~/.config/opencode/agents/<name>.md`
+3. Fallback: `5x invoke`
 
 **Native-first delegation pattern (example: author implement phase):**
 

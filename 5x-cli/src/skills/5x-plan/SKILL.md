@@ -59,6 +59,12 @@ Sub-agent tasks (author and reviewer work) should be delegated using the
 is available, run it if so, then validate and record the result. Fall back
 to `5x invoke` when no native agent is found.
 
+**Installed OpenCode agent names:**
+- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
+- `5x-plan-author` — generates and revises implementation plans
+- `5x-code-author` — implements code changes from approved plans
+- `5x-reviewer` — performs quality review and produces structured verdicts
+
 **Native agent detection order:**
 
 1. Project scope: `.opencode/agents/<name>.md`
