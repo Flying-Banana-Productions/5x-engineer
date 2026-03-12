@@ -316,6 +316,60 @@ describe("5x-orchestrator template content", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Model YAML escaping
+// ---------------------------------------------------------------------------
+
+describe("renderAgentTemplates — model YAML escaping", () => {
+	test("escapes double-quotes in model string", () => {
+		const rendered = renderAgentTemplates({
+			reviewerModel: 'vendor/"quoted-model"',
+		});
+		const reviewer = rendered.find((t) => t.name === "5x-reviewer");
+		expect(reviewer?.content).toContain('model: "vendor/\\"quoted-model\\""');
+	});
+
+	test("escapes backslashes in model string", () => {
+		const rendered = renderAgentTemplates({
+			reviewerModel: "vendor\\model",
+		});
+		const reviewer = rendered.find((t) => t.name === "5x-reviewer");
+		expect(reviewer?.content).toContain('model: "vendor\\\\model"');
+	});
+
+	test("escapes newlines in model string", () => {
+		const rendered = renderAgentTemplates({
+			authorModel: "vendor/model\ninjected",
+		});
+		const codeAuthor = rendered.find((t) => t.name === "5x-code-author");
+		expect(codeAuthor?.content).toContain('model: "vendor/model\\ninjected"');
+		// The raw newline must not appear in the frontmatter value
+		expect(codeAuthor?.content).not.toContain(
+			'model: "vendor/model\ninjected"',
+		);
+	});
+
+	test("escapes carriage returns in model string", () => {
+		const rendered = renderAgentTemplates({
+			reviewerModel: "vendor/model\r\ninjected",
+		});
+		const reviewer = rendered.find((t) => t.name === "5x-reviewer");
+		expect(reviewer?.content).toContain('model: "vendor/model\\r\\ninjected"');
+	});
+
+	test("escapes combined special characters in model string", () => {
+		// Input: backslash + double-quote + mid-string newline (not trimmed away)
+		const rendered = renderAgentTemplates({
+			authorModel: 'vendor\\\n"<model>"',
+		});
+		const planAuthor = rendered.find((t) => t.name === "5x-plan-author");
+		// Expected YAML value: vendor\\<escaped-newline>\"<model>\"
+		expect(planAuthor?.content).toContain(
+			'model: "vendor\\\\\\n\\"<model>\\""',
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // No cwd field (OpenCode does not support it)
 // ---------------------------------------------------------------------------
 

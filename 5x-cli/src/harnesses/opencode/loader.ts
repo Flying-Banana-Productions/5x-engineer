@@ -95,6 +95,24 @@ const AGENT_TEMPLATES: AgentTemplateMetadata[] = [
 // ---------------------------------------------------------------------------
 
 /**
+ * Escape a string for use as a YAML double-quoted scalar value and wrap it
+ * in double-quotes. Escapes backslashes, double-quotes, newlines, and
+ * carriage returns so that the resulting YAML is always valid, even when the
+ * input contains special characters.
+ */
+function yamlQuote(value: string): string {
+	return (
+		'"' +
+		value
+			.replace(/\\/g, "\\\\")
+			.replace(/"/g, '\\"')
+			.replace(/\n/g, "\\n")
+			.replace(/\r/g, "\\r") +
+		'"'
+	);
+}
+
+/**
  * Inject a `model:` line into an agent template's YAML frontmatter when
  * a model is provided. The injection happens immediately after the opening
  * `---` delimiter, before the existing frontmatter fields.
@@ -106,7 +124,7 @@ function injectModel(raw: string, model: string | undefined): string {
 	if (!model) return raw;
 
 	// Match the opening --- delimiter and inject model immediately after
-	return raw.replace(/^(---\r?\n)/, `$1model: "${model}"\n`);
+	return raw.replace(/^(---\r?\n)/, `$1model: ${yamlQuote(model)}\n`);
 }
 
 // ---------------------------------------------------------------------------
