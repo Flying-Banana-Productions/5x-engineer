@@ -472,29 +472,29 @@ recovery procedures. Follow them closely.
 **Completion gate:** users can install all required OpenCode-native 5x assets in
 one command without disturbing the existing repository scaffolding flow.
 
-- [ ] Restructure `init.ts` using citty's parent-with-subcommands pattern (same
+- [x] Restructure `init.ts` using citty's parent-with-subcommands pattern (same
       pattern as the existing `skills` command). The existing flat `init` handler
       is preserved as the no-arg/default `run` handler on the parent command.
       `5x init opencode` is registered as a `subCommands` entry on the parent.
       Bare `5x init [--force]` continues to run `initScaffold` via the parent's
       `run` handler (which fires only when no subcommand matches).
-- [ ] Add `5x init opencode <user|project>` as a new subcommand path.
-- [ ] `5x init opencode project` requires `.5x/` and `5x.toml` to already exist
+- [x] Add `5x init opencode <user|project>` as a new subcommand path.
+- [x] `5x init opencode project` requires `.5x/` and `5x.toml` to already exist
       (i.e., `5x init` must have been run first). Add a prerequisite check that
       exits with a clear error message if these are absent.
-- [ ] Support `--force` for overwriting installed agent and skill files.
-- [ ] For project scope, install:
+- [x] Support `--force` for overwriting installed agent and skill files.
+- [x] For project scope, install:
       - skills under `.opencode/skills/`
       - agents under `.opencode/agents/`
-- [ ] For user scope, install:
+- [x] For user scope, install:
       - skills under `~/.config/opencode/skills/`
       - agents under `~/.config/opencode/agents/`
-- [ ] Reuse the existing control-plane safeguards where appropriate so running
+- [x] Reuse the existing control-plane safeguards where appropriate so running
       `5x init opencode project` from a managed linked worktree still resolves to
       the checkout root intended for project-local assets.
-- [ ] Update `5x init` success messaging to mention the native OpenCode install
+- [x] Update `5x init` success messaging to mention the native OpenCode install
       path alongside the generic skills install path.
-- [ ] Add integration tests covering:
+- [x] Add integration tests covering:
       - legacy `5x init` scaffolding still works (compatibility test that
         `5x init --force` works without arguments),
       - `5x init opencode project` writes both skills and agents,
