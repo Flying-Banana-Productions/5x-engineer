@@ -292,7 +292,7 @@ created) — never on console output. Tests that need CLI-output assertions
 remain as integration tests. Total test count unchanged. All converted
 tests pass under `--concurrent`.
 
-- [ ] Convert `test/integration/commands/init.test.ts` — the "5x init" describe block (tests 1–8) currently spawns `bun run BIN init`:
+- [x] Convert `test/integration/commands/init.test.ts` — the "5x init" describe block (tests 1–8) currently spawns `bun run BIN init`:
   - Import `initScaffold` directly from `../../../src/commands/init.handler.js`
   - Replace `runInit(tmp)` calls with `await initScaffold({ startDir: tmp })` + `await initScaffold({ force: true, startDir: tmp })`
   - All assertions must verify filesystem side effects (`existsSync`, `readFileSync`, file contents) — do NOT capture or mock `console.log`/`console.error`
@@ -300,7 +300,7 @@ tests pass under `--concurrent`.
   - Move the converted tests to `test/unit/commands/init.test.ts`
   - The `ensureGitignore`, `generateTomlConfig`, and `ensureTemplateFiles` describe blocks are already unit tests (direct function calls) — move these as-is
 
-- [ ] Convert `test/integration/commands/harness.test.ts`:
+- [x] Convert `test/integration/commands/harness.test.ts`:
   - Import `harnessInstall` directly from `../../../src/commands/harness.handler.js`
   - Replace `runHarnessInstall(tmp, "opencode", ["--scope", "project"])` with `await harnessInstall({ name: "opencode", scope: "project", startDir: tmp })`
   - Replace `runInit(tmp)` in `bootstrapProject()` with `await initScaffold({ startDir: tmp })`
@@ -310,10 +310,10 @@ tests pass under `--concurrent`.
   - Any tests that assert on CLI stdout/stderr text, exit codes, or HOME-dependent behavior that requires process-wide env mutation stay in `test/integration/commands/harness.test.ts`
   - Move the converted tests to `test/unit/commands/harness.test.ts`
 
-- [ ] `test/integration/commands/skills-install.test.ts` — **no conversion**. This file exercises command-level behavior (scope resolution, `--install-root`, stderr progress messages, success envelope) that requires the CLI layer. It stays as an integration test with `cleanGitEnv()` + `stdin: "ignore"` hygiene applied in Phase 1.
+- [x] `test/integration/commands/skills-install.test.ts` — **no conversion**. This file exercises command-level behavior (scope resolution, `--install-root`, stderr progress messages, success envelope) that requires the CLI layer. It stays as an integration test with `cleanGitEnv()` + `stdin: "ignore"` hygiene applied in Phase 1.
 
-- [ ] Verify total test count is unchanged after conversions.
-- [ ] Run `bun test --concurrent` — all pass.
+- [x] Verify total test count is unchanged after conversions.
+- [x] Run `bun test --concurrent` — all pass.
 
 ## Phase 5: Document Testing Conventions
 

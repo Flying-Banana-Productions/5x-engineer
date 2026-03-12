@@ -1,15 +1,18 @@
 /**
  * Integration tests for `5x harness install` and `5x harness list`.
  *
+ * Tests that assert on filesystem side effects via direct handler calls
+ * have been moved to test/unit/commands/harness.test.ts (Phase 4).
+ *
+ * Remaining tests require the CLI layer (stdout/stderr/exit-code assertions)
+ * or HOME-dependent behavior that requires process-wide env mutation.
+ *
  * Covers:
- * - `5x harness install opencode --scope project` writes skills and agents
- * - `5x harness install opencode --scope project` fails when control plane absent
- * - `5x harness install opencode --scope user` resolves correct global paths
- * - --force overwrite behavior
- * - Idempotent re-run behavior (skipped on second run)
- * - --scope validation (required when ambiguous, auto-inferred when single)
  * - `5x harness list` output
+ * - `5x harness install opencode --scope user` resolves correct global paths
+ * - --scope validation (required when ambiguous, auto-inferred when single)
  * - Unknown harness name error
+ * - Legacy `5x init` bare command
  */
 
 import { describe, expect, test } from "bun:test";
@@ -101,192 +104,6 @@ describe("5x harness list", () => {
 				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
 				expect(exitCode).toBe(0);
 				expect(stdout).toContain("opencode");
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-});
-
-// ---------------------------------------------------------------------------
-// `5x harness install opencode --scope project`
-// ---------------------------------------------------------------------------
-
-describe("5x harness install opencode --scope project", () => {
-	test(
-		"installs all bundled skills under .opencode/skills/",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				await bootstrapProject(tmp);
-				const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-
-				expect(exitCode).toBe(0);
-
-				const skillNames = listSkillNames();
-				for (const name of skillNames) {
-					const skillPath = join(tmp, ".opencode", "skills", name, "SKILL.md");
-					expect(existsSync(skillPath)).toBe(true);
-				}
-				expect(stdout).toContain("Created skill:");
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-
-	test(
-		"installs all bundled agent profiles under .opencode/agents/",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				await bootstrapProject(tmp);
-				const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-
-				expect(exitCode).toBe(0);
-
-				const agentNames = listAgentTemplates().map((a) => a.name);
-				for (const name of agentNames) {
-					const agentPath = join(tmp, ".opencode", "agents", `${name}.md`);
-					expect(existsSync(agentPath)).toBe(true);
-				}
-				expect(stdout).toContain("Created agent:");
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-
-	test(
-		"installs 3 skills and 4 agents (3 subagents + 1 orchestrator)",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				await bootstrapProject(tmp);
-				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-				expect(exitCode).toBe(0);
-
-				const skillsDir = join(tmp, ".opencode", "skills");
-				const agentsDir = join(tmp, ".opencode", "agents");
-
-				const skillNames = listSkillNames();
-				expect(skillNames).toHaveLength(3);
-
-				const agentNames = listAgentTemplates().map((a) => a.name);
-				expect(agentNames).toHaveLength(4);
-
-				for (const name of skillNames) {
-					expect(existsSync(join(skillsDir, name, "SKILL.md"))).toBe(true);
-				}
-				for (const name of agentNames) {
-					expect(existsSync(join(agentsDir, `${name}.md`))).toBe(true);
-				}
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-
-	test(
-		"fails when control plane state DB is absent",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-
-				expect(exitCode).not.toBe(0);
-				expect(stdout).toContain("5x init");
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-
-	test(
-		"idempotent: second run without --force skips all files",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				await bootstrapProject(tmp);
-
-				// First run
-				const first = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-				expect(first.exitCode).toBe(0);
-
-				// Second run (no --force)
-				const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-				expect(exitCode).toBe(0);
-				expect(stdout).not.toContain("Created");
-				expect(stdout).not.toContain("Overwrote");
-				expect(stdout).toContain("Skipped");
-			} finally {
-				cleanupDir(tmp);
-			}
-		},
-		{ timeout: 15000 },
-	);
-
-	test(
-		"--force overwrites existing skill and agent files",
-		async () => {
-			const tmp = makeTmpDir();
-			try {
-				await bootstrapProject(tmp);
-
-				// First install
-				const first = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-				]);
-				expect(first.exitCode).toBe(0);
-				expect(first.stdout).toContain("Created");
-
-				// Overwrite existing content in one skill file
-				const skillPath = join(
-					tmp,
-					".opencode",
-					"skills",
-					"5x-plan",
-					"SKILL.md",
-				);
-				writeFileSync(skillPath, "# custom content", "utf-8");
-
-				// Second run with --force
-				const { stdout, exitCode } = await runHarnessInstall(tmp, "opencode", [
-					"--scope",
-					"project",
-					"--force",
-				]);
-				expect(exitCode).toBe(0);
-				expect(stdout).toContain("Overwrote");
-
-				// File should be restored to bundled content
-				const restored = readFileSync(skillPath, "utf-8");
-				expect(restored).not.toBe("# custom content");
-				expect(restored).toContain("5x-plan");
 			} finally {
 				cleanupDir(tmp);
 			}
