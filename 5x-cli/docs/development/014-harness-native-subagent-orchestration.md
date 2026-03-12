@@ -203,19 +203,28 @@ provider session metadata.**
   agentskills-compatible layouts, but do not depend on it for OpenCode user
   installs.
 
-**OpenCode gets three custom subagents with stable names.**
+**OpenCode gets three custom subagents and a primary orchestrator with stable names.**
 
 - Install three subagent profiles:
   - `5x-plan-author`
   - `5x-code-author`
   - `5x-reviewer`
-- All are `mode: subagent`.
+- All subagents are `mode: subagent`.
 - `5x-reviewer` is read-only for file modifications (enforced via
   `allowedTools` / `disallowedTools` in the agent frontmatter).
 - The author agents allow edits and bash, following current 5x author behavior.
 - Agent profiles set `cwd` frontmatter if supported by OpenCode, as a secondary
   mechanism for working directory communication (see prompt-text primary
   mechanism above).
+- Install one primary orchestrator profile:
+  - `5x-orchestrator`
+- `5x-orchestrator` is `mode: primary` with file write/edit tools disabled. It
+  delegates all code changes to native sub-agents and guides the human through
+  workflow decision points. Its prompt body defines the orchestrator's role,
+  skill-loading behavior, delegation pattern (render → sub-agent → validate),
+  state tracking, human interaction guidance, and recovery principles.
+- The orchestrator omits the `model` field so it inherits whatever model the
+  user selects in the harness before prompting.
 - Installed files remain user-editable so model changes and prompt tuning do not
   require new 5x config schema in v1.
 
@@ -322,10 +331,15 @@ plus bundled OpenCode agent templates and correct project/user path mapping.
       `.opencode/...` for project installs and `~/.config/opencode/...` for user
       installs.
 - [ ] Add bundled OpenCode agent templates in source control for:
-      `5x-plan-author`, `5x-code-author`, and `5x-reviewer`.
+      `5x-plan-author`, `5x-code-author`, `5x-reviewer`, and `5x-orchestrator`.
 - [ ] Define prompt, tool, permission, mode, description, and optional model
       frontmatter for each OpenCode agent template using the skeletons below as
       the concrete target.
+- [ ] Define the `5x-orchestrator` prompt body covering: role definition,
+      skill-loading instructions (5x-plan, 5x-plan-review, 5x-phase-execution),
+      native delegation pattern (template render → sub-agent → protocol validate),
+      state tracking, human decision guidance, verification, and recovery
+      principles.
 - [ ] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
       secondary mechanism for communicating the effective working directory to
       native subagents (the primary mechanism is the post-render `## Context`
@@ -385,6 +399,62 @@ mode: subagent
 ---
 ```
 
+`5x-orchestrator`:
+
+```markdown
+---
+name: 5x-orchestrator
+description: Primary orchestrator for 5x plan generation, review, and phased implementation
+mode: primary
+tools:
+  write: false
+  edit: false
+---
+
+You are the 5x orchestrator. You manage structured software engineering
+workflows by delegating to native sub-agents and guiding the human
+through decision points. You never write or edit code directly.
+
+## How you work
+
+You follow **skills** — structured workflow documents that define each
+process step by step. Always load the relevant skill before starting a
+workflow:
+
+- **5x-plan**: Generate an implementation plan from a requirements doc
+- **5x-plan-review**: Run review/fix cycles on a plan until approved
+- **5x-phase-execution**: Execute approved plan phases through author
+  implementation, quality gates, and code review
+
+Skills are your source of truth for workflow steps, invariants, and
+recovery procedures. Follow them closely.
+
+## Key principles
+
+1. **Delegate, don't implement.** Render task prompts with
+   `5x template render`, launch the appropriate native sub-agent
+   (5x-plan-author, 5x-code-author, or 5x-reviewer), and validate
+   results with `5x protocol validate --record`. The skills describe
+   each delegation step in detail.
+
+2. **Track state.** Use `5x run state --run <id>` and
+   `5x plan phases <path>` to know where a run stands before acting.
+   Always check state when resuming a workflow.
+
+3. **Guide human decisions.** When a workflow requires human input
+   (review escalation, phase gate, override), present the situation
+   with enough context for the human to decide. Include your
+   recommendation when you have one.
+
+4. **Verify before proceeding.** After each sub-agent completes, check
+   the result against the skill's invariants — author produced a
+   commit, diff is non-empty, quality gates pass.
+
+5. **Recover gracefully.** When sub-agents fail or produce invalid
+   results, follow the skill's recovery section. Retry once with a
+   fresh session before escalating.
+```
+
 ### Phase 3: Add `5x init opencode <user|project>`
 
 **Completion gate:** users can install all required OpenCode-native 5x assets in
@@ -436,9 +506,9 @@ available.
   - run the prompt in a native subagent if available,
   - validate the final JSON with `5x protocol validate --record`,
   - fall back to `5x invoke` if no native agent is found.
-- [ ] Document the preferred OpenCode agent names (`5x-plan-author`,
-      `5x-code-author`, `5x-reviewer`) and the fallback path when they are not
-      present.
+- [ ] Document the preferred OpenCode agent names (`5x-orchestrator`,
+      `5x-plan-author`, `5x-code-author`, `5x-reviewer`) and the fallback path
+      when subagent profiles are not present.
 - [ ] In the fallback guidance, preserve `5x invoke` as the last-resort path so
       older environments and unsupported harnesses still work.
 - [ ] Update skill prose to treat session reuse as optional/best effort.
@@ -551,7 +621,7 @@ and does not regress the existing `5x invoke` path.
 |------|-------|-----------|
 | Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), post-render `## Context` block injection, standard `outputSuccess()` envelope wrapping, `outputError()` for error cases |
 | Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step`/`--phase`/`--iteration` combined validation-and-record flow, stdin/input parsing, auto-detect raw vs `outputSuccess` envelope input (unwraps `.data.result` when `ok` field is present) |
-| Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion |
+| Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion, orchestrator prompt body rendering and `tools` frontmatter |
 | Integration | `test/commands/init-opencode.test.ts` | `5x init opencode <scope>` installs both skills and agents correctly, prerequisite check for `.5x/`/`5x.toml`, `5x init --force` compatibility |
 | Regression | existing `invoke` tests | Fallback transport still works with shared helpers; refactoring is a pure extraction with no invoke test assertion changes |
 | Manual | OpenCode TUI workflow | Native child sessions, custom subagent usage, JSON validation, run recording, fallback behavior |
@@ -574,10 +644,10 @@ and does not regress the existing `5x invoke` path.
 - `5x protocol validate author --require-commit` and
   `5x protocol validate reviewer` enforce the same structured contracts used by
   `5x invoke` today.
-- `5x init opencode project` installs 5x skills and 3 custom subagents under
-  `.opencode/`.
-- `5x init opencode user` installs 5x skills and 3 custom subagents under
-  `~/.config/opencode/`.
+- `5x init opencode project` installs 5x skills, 3 custom subagents, and 1
+    primary orchestrator under `.opencode/`.
+- `5x init opencode user` installs 5x skills, 3 custom subagents, and 1
+    primary orchestrator under `~/.config/opencode/`.
 - The bundled skills instruct OpenCode-capable orchestrators to use native
   subagents first, then fall back safely.
 - The task prompts remain shared across native and fallback execution paths.

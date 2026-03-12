@@ -722,3 +722,37 @@ cleanup before emitting the envelope.
 the helper extraction now matches the plan, but the refactor introduced one
 mechanical cleanup regression in the invoke error path. Fix that before moving
 to Phase 2.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `3940db1`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 1 concern from the prior
+review.
+
+- **P1.8 (await provider cleanup):** Resolved. `5x-cli/src/commands/protocol-helpers.ts`
+  now returns a discriminated validation result, and `5x-cli/src/commands/invoke.handler.ts`
+  awaits `provider.close()` before calling `outputError()` on invalid structured
+  output.
+- The split between result-based and throwing validation APIs is appropriate for
+  the architecture: `5x-cli/src/commands/invoke.handler.ts` uses the result form
+  where async cleanup is required, while `5x-cli/src/commands/protocol.handler.ts`
+  uses `validateStructuredOutputOrThrow()` where no async teardown is needed.
+- Test coverage is now stronger for the shared validation layer. New unit tests
+  in `5x-cli/test/commands/protocol-helpers.test.ts` cover both success/failure
+  result behavior and the cleanup-oriented regression path.
+- Local verification passed: `bun test test/commands/protocol-helpers.test.ts`,
+  `bun test test/commands/protocol-validate.test.ts test/commands/template-render.test.ts`,
+  and `bun test test/commands/invoke.test.ts test/commands/invoke-var-file.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 1. The implementation now matches the Phase 1
+ plan: shared render and validation helpers are extracted, stdout contract issues
+ are fixed, and invoke preserves awaited cleanup on validation failure.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 1 is complete and ready for the next phase.
