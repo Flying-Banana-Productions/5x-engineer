@@ -106,7 +106,7 @@ function injectModel(raw: string, model: string | undefined): string {
 	if (!model) return raw;
 
 	// Match the opening --- delimiter and inject model immediately after
-	return raw.replace(/^(---\r?\n)/, `$1model: ${model}\n`);
+	return raw.replace(/^(---\r?\n)/, `$1model: "${model}"\n`);
 }
 
 // ---------------------------------------------------------------------------

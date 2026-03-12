@@ -149,7 +149,7 @@ describe("renderAgentTemplates — model injection", () => {
 
 		const reviewer = rendered.find((t) => t.name === "5x-reviewer");
 		expect(reviewer).toBeDefined();
-		expect(reviewer?.content).toContain("model: anthropic/claude-sonnet-4-5");
+		expect(reviewer?.content).toContain('model: "anthropic/claude-sonnet-4-5"');
 	});
 
 	test("injects author model into 5x-plan-author when authorModel is set", () => {
@@ -159,7 +159,7 @@ describe("renderAgentTemplates — model injection", () => {
 
 		const planAuthor = rendered.find((t) => t.name === "5x-plan-author");
 		expect(planAuthor).toBeDefined();
-		expect(planAuthor?.content).toContain("model: anthropic/claude-opus-4-5");
+		expect(planAuthor?.content).toContain('model: "anthropic/claude-opus-4-5"');
 	});
 
 	test("injects author model into 5x-code-author when authorModel is set", () => {
@@ -169,7 +169,7 @@ describe("renderAgentTemplates — model injection", () => {
 
 		const codeAuthor = rendered.find((t) => t.name === "5x-code-author");
 		expect(codeAuthor).toBeDefined();
-		expect(codeAuthor?.content).toContain("model: anthropic/claude-opus-4-5");
+		expect(codeAuthor?.content).toContain('model: "anthropic/claude-opus-4-5"');
 	});
 
 	test("orchestrator never gets a model field even when models are configured", () => {
@@ -195,7 +195,7 @@ describe("renderAgentTemplates — model injection", () => {
 		// reviewer is guaranteed non-null by toBeDefined() above
 		const lines = reviewer?.content.split("\n") ?? [];
 		expect(lines[0]).toBe("---");
-		expect(lines[1]).toBe("model: anthropic/claude-sonnet-4-5");
+		expect(lines[1]).toBe('model: "anthropic/claude-sonnet-4-5"');
 	});
 
 	test("empty string model is treated as absent (no model injection)", () => {
@@ -230,7 +230,7 @@ describe("renderAgentTemplate — single template", () => {
 		const result = renderAgentTemplate("5x-reviewer", {
 			reviewerModel: "openai/gpt-5",
 		});
-		expect(result?.content).toContain("model: openai/gpt-5");
+		expect(result?.content).toContain('model: "openai/gpt-5"');
 	});
 });
 
@@ -239,14 +239,17 @@ describe("renderAgentTemplate — single template", () => {
 // ---------------------------------------------------------------------------
 
 describe("5x-reviewer template content", () => {
-	test("reviewer frontmatter disables write and edit tools", () => {
+	test("reviewer frontmatter has no tool restrictions", () => {
 		const result = renderAgentTemplate("5x-reviewer", {});
 		expect(result).toBeDefined();
 
 		const content = result?.content;
-		// Must disable write and edit
-		expect(content).toContain("write: false");
-		expect(content).toContain("edit: false");
+		// Reviewer has no allowedTools/disallowedTools restrictions
+		expect(content).not.toContain("allowedTools");
+		expect(content).not.toContain("disallowedTools");
+		// No write:false or edit:false in the reviewer frontmatter
+		expect(content).not.toContain("write: false");
+		expect(content).not.toContain("edit: false");
 	});
 
 	test("reviewer uses correct OpenCode tool names (not legacy names)", () => {

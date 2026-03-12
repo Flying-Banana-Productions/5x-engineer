@@ -210,8 +210,10 @@ provider session metadata.**
   - `5x-code-author`
   - `5x-reviewer`
 - All subagents are `mode: subagent`.
-- `5x-reviewer` is read-only for file modifications (enforced via
-  `allowedTools` / `disallowedTools` in the agent frontmatter).
+- `5x-reviewer` has no tool restrictions. The read-only intent (do not fix
+  the work being reviewed) is behavioral guidance in the prompt, not enforced
+  via `allowedTools` / `disallowedTools`. The reviewer needs bash for
+  investigation and write/edit to produce review documents.
 - The author agents allow edits and bash, following current 5x author behavior.
 - Agent profiles set `cwd` frontmatter if supported by OpenCode, as a secondary
   mechanism for working directory communication (see prompt-text primary
@@ -323,14 +325,12 @@ plus bundled OpenCode agent templates and correct project/user path mapping.
       **Verified (March 2026):** OpenCode docs confirm `.opencode/agents/` for
       project scope and `~/.config/opencode/agents/` for user scope (XDG-style).
 - [x] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
-      `readFile` vs `Read`) against OpenCode's tool registry or source before
-      finalizing `allowedTools`/`disallowedTools` in agent templates. If the
-      assumed names in the skeletons above are incorrect, update them. Silently
-      mismatched tool names would cause restrictions to not apply.
+      `readFile` vs `Read`) against OpenCode's tool registry or source.
       **Verified (March 2026):** OpenCode uses `write`, `edit`, `bash`, `read`,
       `grep`, `glob`, `list`, `webfetch` — NOT `read_file`/`write_file`/
-      `run_terminal_cmd`/`list_directory` (those are Claude Code names). Templates
-      updated to use the correct `tools: { write: false, edit: false }` format.
+      `run_terminal_cmd`/`list_directory` (those are Claude Code names). The
+      `5x-reviewer` has no tool restrictions (see design decision above); the
+      `5x-orchestrator` uses `tools: { write: false, edit: false }`.
       OpenCode does NOT support a `cwd` frontmatter field (see below).
 - [x] Add a small harness registry describing install locations for supported
       harnesses, starting with OpenCode.
@@ -354,8 +354,8 @@ plus bundled OpenCode agent templates and correct project/user path mapping.
       **Decision:** OpenCode does NOT support a `cwd` frontmatter field (verified
       against official docs, March 2026). No `cwd` field is included. The primary
       mechanism (post-render `## Context` block from Phase 1) is the only path.
-- [x] Ensure the reviewer template denies direct file edits while still allowing
-      read-only investigation commands.
+- [x] Ensure the reviewer template has no tool restrictions; read-only intent
+      is enforced via prompt-level guidance only.
 - [x] Make agent template rendering parameterized by current 5x config so model
       fields can be included or omitted deterministically.
 - [x] Add installer helpers for writing both skills and agents with
@@ -373,19 +373,21 @@ templates. All three use `mode: subagent`. Model fields are included only when
 the corresponding 5x config role model is set; otherwise they are omitted so
 OpenCode inherits the primary agent's model.
 
-`5x-reviewer` _(tool names are assumed — verify against OpenCode's tool registry
-in Phase 2 before finalizing)_:
+`5x-reviewer`:
 
 ```markdown
 ---
 name: 5x-reviewer
-description: 5x quality reviewer — read-only investigation and structured verdict
+description: 5x quality reviewer — investigation and structured verdict
 model: <omit or from [reviewer].model>
 mode: subagent
-allowedTools: [read_file, search_files, run_terminal_cmd, list_directory]
-disallowedTools: [write_file, edit_file, delete_file]
 ---
 ```
+
+No `allowedTools`/`disallowedTools` restrictions. The reviewer has unrestricted
+tool access (bash, read, write, edit, etc.) so it can investigate the codebase
+and produce review documents. The read-only constraint (do not fix work being
+reviewed) is behavioral, enforced only via prompt-level guidance.
 
 `5x-plan-author`:
 
@@ -702,6 +704,20 @@ Addresses re-review feedback from
   envelope schema in Design Decisions, Phase 1 checklist output item, the
   canonical delegation example in Phase 4 (`.data.prompt`, `.data.step_name`),
   and the Tests table.
+
+### v1.3 — March 11, 2026
+
+Addresses Phase 2 review items P1.9 and P1.10.
+
+- **P1.9:** Fixed YAML frontmatter model injection escaping. `injectModel()` in
+  `src/harnesses/opencode/loader.ts` now wraps the model value in double quotes
+  (`model: "..."`) so YAML-significant characters (colons, slashes) in model
+  strings cannot break the frontmatter or inject extra keys.
+- **P1.10:** Removed `allowedTools`/`disallowedTools` and `tools: { write: false,
+  edit: false }` from `5x-reviewer.md`. The reviewer has no tool restrictions;
+  the read-only intent (do not fix the work being reviewed) is behavioral guidance
+  in the reviewer's prompt, not enforced via frontmatter. Updated Design Decisions,
+  Phase 2 checklist, agent template skeleton, and unit tests accordingly.
 
 ### v1.2 — March 10, 2026
 
