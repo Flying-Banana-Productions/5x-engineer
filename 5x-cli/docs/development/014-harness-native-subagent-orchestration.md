@@ -510,25 +510,25 @@ one command without disturbing the existing repository scaffolding flow.
 default path, with explicit fallback to `5x invoke` when native agents are not
 available.
 
-- [ ] Rewrite `5x-plan`, `5x-plan-review`, and `5x-phase-execution` skill docs.
-- [ ] Replace "always run `5x invoke` as a subprocess" guidance with a new
+- [x] Rewrite `5x-plan`, `5x-plan-review`, and `5x-phase-execution` skill docs.
+- [x] Replace "always run `5x invoke` as a subprocess" guidance with a new
       delegation pattern:
   - render the task prompt with `5x template render`,
   - detect whether a native agent is installed (see detection order below),
   - run the prompt in a native subagent if available,
   - validate the final JSON with `5x protocol validate --record`,
   - fall back to `5x invoke` if no native agent is found.
-- [ ] Document the preferred OpenCode agent names (`5x-orchestrator`,
+- [x] Document the preferred OpenCode agent names (`5x-orchestrator`,
       `5x-plan-author`, `5x-code-author`, `5x-reviewer`) and the fallback path
       when subagent profiles are not present.
-- [ ] In the fallback guidance, preserve `5x invoke` as the last-resort path so
+- [x] In the fallback guidance, preserve `5x invoke` as the last-resort path so
       older environments and unsupported harnesses still work.
-- [ ] Update skill prose to treat session reuse as optional/best effort.
-- [ ] Remove or rewrite subprocess-only wording in the shared task templates so
+- [x] Update skill prose to treat session reuse as optional/best effort.
+- [x] Remove or rewrite subprocess-only wording in the shared task templates so
       native subagents are not told they are external subprocesses.
-- [ ] Keep the structured outcome contract identical to today: author returns
+- [x] Keep the structured outcome contract identical to today: author returns
       `AuthorStatus`, reviewer returns `ReviewerVerdict`.
-- [ ] Add focused tests for any template text or loader behavior changed by this
+- [x] Add focused tests for any template text or loader behavior changed by this
       phase.
 
 **Native agent detection order:**

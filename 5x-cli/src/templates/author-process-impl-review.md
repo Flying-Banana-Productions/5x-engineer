@@ -45,7 +45,7 @@ This is a **code implementation** task. You are fixing issues in the source code
 
 ## Non-Interactive Execution
 
-You are running as a subprocess in an automated pipeline. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human input, return with `result: "needs_human"` and explain what you need in the `reason` field.
+You are running as a delegated non-interactive workflow. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human input, return with `result: "needs_human"` and explain what you need in the `reason` field.
 
 ## Completion
 
