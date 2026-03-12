@@ -756,3 +756,134 @@ No remaining concerns for Phase 1. The implementation now matches the Phase 1
 ### Updated Readiness Assessment
 
 **Readiness:** Ready — Phase 1 is complete and ready for the next phase.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `a8b8200`
+
+### What's Addressed
+
+Phase 2 is largely in place and matches the plan's intended scope.
+
+- A reusable harness install-location registry landed in
+  `5x-cli/src/harnesses/locations.ts`, with explicit project vs user path
+  mapping for OpenCode.
+- Harness-agnostic asset installers landed in
+  `5x-cli/src/harnesses/installer.ts`, covering both agents and skills with
+  created/overwritten/skipped summaries.
+- Bundled OpenCode agent templates landed in
+  `5x-cli/src/harnesses/opencode/`, and model-aware rendering is centralized in
+  `5x-cli/src/harnesses/opencode/loader.ts`.
+- Local verification passed: `bun test test/harnesses/installer.test.ts test/harnesses/opencode.test.ts`.
+
+### Remaining Concerns
+
+#### P1.9 — Model frontmatter injection is not escaped
+
+`5x-cli/src/harnesses/opencode/loader.ts:105`-`5x-cli/src/harnesses/opencode/loader.ts:109`
+injects the configured model with raw string interpolation:
+`model: ${model}`. But `5x-cli/src/config.ts:6`-`5x-cli/src/config.ts:12`
+accepts arbitrary model strings. A model containing a newline, `#`, or other
+YAML-significant content can break the generated frontmatter or inject extra
+keys into the installed agent definition.
+
+This is a mechanical correctness/safety bug in the template renderer.
+
+Recommendation: serialize the inserted value as YAML-safe text (or validate
+model strings against a stricter character set) before writing agent files, and
+add a regression test with a model containing YAML-special characters.
+
+#### P1.10 — `5x-reviewer` is not actually enforced as read-only
+
+The plan's Phase 2 contract says the reviewer should be read-only for file
+modifications via agent frontmatter. But `5x-cli/src/harnesses/opencode/5x-reviewer.md:5`
+only disables `write` and `edit`, while `5x-cli/src/harnesses/opencode/5x-reviewer.md:17`
+still instructs the agent to use `bash`. That leaves an obvious escape hatch:
+the reviewer can still modify or delete files through shell commands.
+
+So the current template does not actually satisfy the read-only guarantee the
+plan claims; it relies on prompt obedience rather than harness-enforced policy.
+
+Recommendation: make an explicit product/architecture call on which invariant
+matters more for v1:
+
+- disable `bash` and accept reduced investigation capability, or
+- keep `bash` and weaken the plan/docs to say reviewer edits are prevented only
+  for first-class file tools, not all filesystem mutation paths.
+
+### Updated Readiness Assessment
+
+**Readiness:** Not ready — Phase 2 is close, but the reviewer safety contract is
+not actually enforced and needs a human design decision. The model-frontmatter
+escaping issue is mechanical and should be fixed alongside that decision.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `6dce50b`
+
+### What's Addressed
+
+This follow-up commit resolves the Phase 2 design mismatch from the prior
+review and partially addresses the model-frontmatter issue.
+
+- **P1.10 (reviewer restrictions):** Addressed via an explicit design change.
+  `5x-cli/docs/development/014-harness-native-subagent-orchestration.md` now
+  states that `5x-reviewer` has no tool restrictions and that the "do not fix
+  the work being reviewed" rule is behavioral guidance, not a harness-enforced
+  policy. The template in `5x-cli/src/harnesses/opencode/5x-reviewer.md` now
+  matches that contract.
+- Harness tests still pass locally after the update:
+  `bun test test/harnesses/opencode.test.ts test/harnesses/installer.test.ts`.
+
+### Remaining Concerns
+
+#### P1.11 — YAML escaping is still incomplete for quoted model values
+
+`5x-cli/src/harnesses/opencode/loader.ts:109` changed from raw interpolation to
+`model: "${model}"`, which fixes the simple unquoted-scalar case but does not
+actually escape YAML-special characters inside the quoted string. A configured
+model containing `"`, `\\`, or embedded newlines can still break frontmatter or
+change the parsed value.
+
+Because `5x-cli/src/config.ts:6`-`5x-cli/src/config.ts:12` still accepts
+arbitrary model strings, this remains a correctness/safety bug in generated
+agent files.
+
+Recommendation: use real YAML string escaping/serialization for the inserted
+value (or validate model names against a strict safe character set), and add a
+regression test covering embedded quotes and newline characters.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the prior human-decision item is now
+resolved by an explicit plan/implementation alignment, and the remaining issue
+is a mechanical escaping bug in the renderer.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `c85c79e`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 2 concern from the prior
+review.
+
+- **P1.11 (YAML escaping):** Resolved. `5x-cli/src/harnesses/opencode/loader.ts`
+  now routes model strings through `yamlQuote()`, which escapes backslashes,
+  double quotes, newlines, and carriage returns before injecting the `model:`
+  line into agent frontmatter.
+- Test coverage now exercises the previously missing edge cases in
+  `5x-cli/test/harnesses/opencode.test.ts`, including embedded quotes,
+  backslashes, newlines, carriage returns, and mixed special characters.
+- Local verification passed: `bun test test/harnesses/opencode.test.ts test/harnesses/installer.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 2.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 2 now matches the updated plan: install location
+resolution, installer helpers, bundled OpenCode templates, model-aware
+rendering, and the agreed reviewer contract are all in place with adequate unit
+coverage.
