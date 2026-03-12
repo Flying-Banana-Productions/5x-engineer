@@ -55,26 +55,30 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
                     │  Layer 3: Orchestrating Agent + Skill  │
                     │                                       │
                     │  The user's own agent session (Claude  │
-                    │  Code, OpenCode, etc.) loaded with a   │
-                    │  5x skill. Makes workflow decisions,   │
-                    │  handles recovery, uses judgment.      │
+                    │  Code, OpenCode 5x-orchestrator, etc.) │
+                    │  loaded with a 5x skill. Makes workflow│
+                    │  decisions, handles recovery, judgment. │
                     └──────────────────┬────────────────────┘
                                        │ calls CLI commands
                     ┌──────────────────▼────────────────────┐
                     │  Layer 2: 5x CLI Toolbelt              │
                     │                                       │
-                    │  Stateless primitives: invoke agents,  │
+                    │  Stateless primitives: render prompts, │
+                    │  validate results, invoke agents,      │
                     │  record steps, run quality gates,      │
                     │  query state. Handles persistence,     │
                     │  idempotency, sub-agent lifecycle.     │
                     └──────────────────┬────────────────────┘
-                                       │ manages
+                                       │ native subagents (preferred)
+                                       │ or 5x invoke (fallback)
                     ┌──────────────────▼────────────────────┐
                     │  Layer 1: Sub-Agents (Workers)         │
                     │                                       │
-                    │  Author: implements code, fixes issues │
-                    │  Reviewer: reviews plans and commits   │
-                    │  Managed by CLI via provider interface. │
+                    │  Preferred: native harness subagents   │
+                    │   (5x-plan-author, 5x-code-author,     │
+                    │    5x-reviewer) — visible in TUI       │
+                    │  Fallback: 5x invoke via provider      │
+                    │   (OpenCode provider ships by default) │
                     └───────────────────────────────────────┘
 ```
 
@@ -93,12 +97,28 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 - Enforces hard constraints (not suggestions): max steps per run, required human gates, structured output validation
 - Handles structured output extraction internally (provider-specific, transparent to callers)
 - Each command is independently useful — no implicit ordering or required sequences
-- Pluggable provider architecture for sub-agent invocation (see Section 6)
+- Pluggable provider architecture for sub-agent invocation (see Section 7)
 - Specified fully in `101-cli-primitives.md`
+
+Key primitives for native subagent orchestration:
+
+- **`5x template render`** — renders a task prompt with run/worktree context, continued-template selection, and variable injection. Returns a `outputSuccess()` envelope with the rendered prompt, declared variables, and (when `--run` is passed) resolved `run_id`, `plan_path`, and `worktree_root`. Appends a `## Context` block with the effective working directory when a worktree is resolved.
+- **`5x protocol validate`** — validates `AuthorStatus` or `ReviewerVerdict` JSON from stdin or `--input`. Auto-detects raw native subagent output vs `outputSuccess()` envelope from `5x invoke`. With `--record`, records the validated result as a run step (one-command validation and recording).
+- **`5x invoke`** — fallback transport: invokes a sub-agent via provider, validates structured output, optionally records. Remains fully supported; skills fall back to it automatically when native agents are not installed.
 
 ### Layer 1 — Sub-Agents (Workers)
 
-- Author and reviewer agents invoked via `5x invoke`
+**Preferred path — native harness subagents:**
+
+- Author and reviewer agents run as native child sessions in the harness (e.g., OpenCode `5x-plan-author`, `5x-code-author`, `5x-reviewer`)
+- Orchestrating agent calls `5x template render` to produce the task prompt, then launches the native subagent with that prompt
+- Orchestrating agent calls `5x protocol validate --record` to validate and record structured output
+- Native sessions are visible in the harness TUI as first-class child sessions
+- Install native agent profiles with `5x init opencode project` or `5x init opencode user`
+
+**Fallback path — `5x invoke` via provider:**
+
+- Author and reviewer agents invoked via `5x invoke` when native subagents are not installed
 - Run in isolated sessions managed by the configured **agent provider**
 - Provider handles tool execution, session management, and process lifecycle internally
 - Each invocation gets a fresh session (or explicit session continuation)
@@ -107,7 +127,69 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 
 ---
 
-## 4. Comparison to v0
+## 4. Native-First Subagent Orchestration
+
+Skills prefer native subagents over `5x invoke` when the harness exposes both.
+The detection order is:
+
+1. **Project scope:** `.opencode/agents/<name>.md`
+2. **User scope:** `~/.config/opencode/agents/<name>.md`
+3. **Fallback:** `5x invoke`
+
+Skills check project scope first, then user scope. If neither file exists, the
+skill falls back to `5x invoke`. This order is documented in skill prose so the
+orchestrating agent follows it consistently.
+
+### Canonical Delegation Pattern
+
+```bash
+# 1. Render the prompt
+RENDERED=$(5x template render reviewer-plan --run $RUN \
+  --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH)
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+
+# 2. Detect native agent
+if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
+  RESULT=<native subagent result JSON>
+else
+  # Fallback: omit --record so validate is the single recording point
+  RESULT=$(5x invoke reviewer reviewer-plan --run $RUN ... 2>/dev/null)
+fi
+
+# 3. Validate + record (universal for both paths)
+echo "$RESULT" | 5x protocol validate reviewer \
+  --run $RUN --record --step $STEP --phase $PHASE --iteration $ITERATION
+```
+
+### OpenCode Harness Support
+
+OpenCode is the first supported harness with a native installer. Four agent
+profiles are bundled:
+
+| Agent | Mode | Role |
+|---|---|---|
+| `5x-orchestrator` | primary | Loads skills, delegates to subagents, guides human |
+| `5x-plan-author` | subagent | Generates and revises implementation plans |
+| `5x-code-author` | subagent | Implements code changes from approved plans |
+| `5x-reviewer` | subagent | Performs quality review and produces structured verdicts |
+
+Install with:
+
+```bash
+5x init opencode project   # .opencode/skills/ + .opencode/agents/
+5x init opencode user      # ~/.config/opencode/skills/ + ~/.config/opencode/agents/
+```
+
+> **Path note:** OpenCode uses `~/.config/opencode/` (XDG-style) for user-scope
+> assets, **not** `~/.opencode/`. The `user` scope installer writes to the
+> correct path automatically. Do not use `~/.opencode/` — OpenCode will not
+> discover assets there.
+
+---
+
+## 5. Comparison to v0
 
 | Aspect | v0 (current) | v1 (proposed) |
 |---|---|---|
@@ -138,7 +220,7 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 
 ---
 
-## 5. Scope
+## 6. Scope
 
 ### In scope for v1
 
@@ -162,7 +244,7 @@ The full CLI toolbelt to support these skills (specified fully in `101-cli-primi
 
 ---
 
-## 6. Provider Architecture
+## 7. Provider Architecture
 
 Sub-agent invocation is abstracted behind a provider interface. The CLI doesn't know or care how agents execute work — it delegates to a configured provider. This decouples 5x from any single agent runtime.
 
@@ -193,7 +275,7 @@ Sub-agent invocation is abstracted behind a provider interface. The CLI doesn't 
    in-process  (wraps CLI)  in-process
 ```
 
-### 6.1 Provider Interface
+### 7.1 Provider Interface
 
 ```typescript
 interface AgentProvider {
@@ -244,7 +326,7 @@ type AgentEvent =
 
 7 types, 4 methods. This is the entire abstraction between the CLI and any agent runtime. Each provider maps its native event format to `AgentEvent`; the CLI renders and logs normalized events without provider-specific knowledge. See `101-cli-primitives.md`, Section 9 for the full output and monitoring specification.
 
-### 6.2 v1 Providers
+### 7.2 v1 Providers
 
 **OpenCode** — via `@opencode-ai/sdk`, two modes.
 
@@ -278,7 +360,7 @@ API mapping:
 - Process lifecycle: fully in-process, no external dependencies
 - Auth: Anthropic API key, or Bedrock/Vertex AI/Azure credentials
 
-### 6.3 Provider Comparison
+### 7.3 Provider Comparison
 
 | Capability | OpenCode | Codex | Claude Agent |
 |---|---|---|---|
@@ -292,7 +374,7 @@ API mapping:
 | **Models** | Any (via OpenCode routing) | OpenAI models | Anthropic (direct, Bedrock, Vertex, Azure) |
 | **Process model** | SDK-managed | SDK wraps CLI process | In-process |
 
-### 6.4 Provider Lifecycle
+### 7.4 Provider Lifecycle
 
 No background server management at the 5x level. Each provider handles its own lifecycle:
 
@@ -302,7 +384,7 @@ No background server management at the 5x level. Each provider handles its own l
 
 Each `5x invoke` CLI invocation instantiates the provider, uses it for the single agent call, and closes it on exit. No PID files, no daemons, no idle timeouts. If 5x is used as a library (in-process), the caller may cache and reuse provider instances across multiple invocations.
 
-### 6.5 Per-Role Configuration
+### 7.5 Per-Role Configuration
 
 Different roles can use different providers and models:
 
@@ -338,7 +420,7 @@ export default {
 }
 ```
 
-### 6.6 Provider Taxonomy and Future Extensibility
+### 7.6 Provider Taxonomy and Future Extensibility
 
 Providers fall into three categories. v1 implements Category 1 only.
 
@@ -358,7 +440,7 @@ Spawn a coding agent CLI in non-interactive mode, capture output. A base class i
 
 Direct model API calls (Anthropic SDK, Google GenAI, OpenAI SDK) with a 5x-managed tool execution loop and built-in tool set (read_file, write_file, edit_file, shell, etc.). This is the most universal but requires building a minimal agent harness. Deferred unless there is demand or a specific optimization opportunity.
 
-### 6.7 Migration from v0 AgentAdapter
+### 7.7 Migration from v0 AgentAdapter
 
 The current v0 agent interface (`AgentAdapter` in `src/agents/types.ts`) maps to the v1 provider interface as follows:
 
@@ -375,7 +457,7 @@ The current v0 agent interface (`AgentAdapter` in `src/agents/types.ts`) maps to
 
 The existing OpenCode adapter (`src/agents/opencode.ts`) becomes the first `AgentProvider` implementation. The SSE event router from v0 (`src/utils/event-router.ts`) is reused as the `AgentEvent` mapping layer for the OpenCode provider.
 
-### 6.8 Logging Format
+### 7.8 Logging Format
 
 v1 writes **normalized `AgentEvent` NDJSON only**. Raw provider-native events are not persisted separately. Each provider maps its native events to `AgentEvent` before emission; the CLI logs what it receives. This ensures consistent log format across all providers and simplifies tooling that reads logs.
 
@@ -385,7 +467,7 @@ The v0 approach of logging raw OpenCode SSE events is replaced. Existing v0 log 
 
 ---
 
-## 7. Migration Strategy
+## 8. Migration Strategy
 
 **Clean break.** When v1 ships, v0 orchestrator commands are removed — no coexistence period:
 

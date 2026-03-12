@@ -587,22 +587,22 @@ double-validation and double-recording in the fallback case.
 **Completion gate:** the native-first OpenCode workflow is documented, tested,
 and does not regress the existing `5x invoke` path.
 
-- [ ] Update `README.md` quick-start instructions to show:
+- [x] Update `README.md` quick-start instructions to show:
       - generic skill install,
       - `5x init opencode project`,
       - native subagent expectations,
       - `5x invoke` as fallback.
-- [ ] Update architecture/docs files that currently describe `5x invoke` as the
+- [x] Update architecture/docs files that currently describe `5x invoke` as the
       only subagent execution path.
-- [ ] Document the OpenCode user-scope path difference explicitly so users do not
+- [x] Document the OpenCode user-scope path difference explicitly so users do not
       assume `~/.opencode/...` is correct.
-- [ ] Add an end-to-end test plan for manual verification in OpenCode:
+- [x] Add an end-to-end test plan for manual verification in OpenCode:
       - custom agents installed,
       - skill discovers them,
       - native child sessions appear in the TUI,
       - validated JSON result records correctly,
       - fallback to `5x invoke` still works when custom agents are absent.
-- [ ] Run lint, typecheck, and the full affected test suite.
+- [x] Run lint, typecheck, and the full affected test suite.
 
 ## Files Touched
 

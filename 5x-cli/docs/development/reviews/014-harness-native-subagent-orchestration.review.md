@@ -887,3 +887,134 @@ No remaining concerns for Phase 2.
 resolution, installer helpers, bundled OpenCode templates, model-aware
 rendering, and the agreed reviewer contract are all in place with adequate unit
 coverage.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `f19316d`
+
+### What's Addressed
+
+Phase 3 is implemented cleanly and matches the plan's intended scope.
+
+- `5x-cli/src/commands/init.ts` now uses the expected citty parent-with-subcommands
+  shape, preserving bare `5x init` while adding `5x init opencode <user|project>`.
+- `5x-cli/src/commands/init.handler.ts` adds the OpenCode installer flow with the
+  planned project prerequisite check, project-vs-user path resolution, `--force`
+  behavior, and updated success messaging that points users to the native install path.
+- `5x-cli/test/commands/init-opencode.test.ts` covers the key compatibility and
+  integration cases: legacy init behavior, project/user installs, prerequisite failures,
+  idempotency, and overwrite behavior.
+- Local verification passed: `bun test test/commands/init-opencode.test.ts test/commands/init.test.ts test/commands/init-guard.test.ts test/commands/run-init-worktree.test.ts test/commands/init-skills.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 3.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — the Phase 3 `init opencode` flow is correct, consistent with
+the Phase 2 harness abstractions, and sufficiently covered to proceed to Phase 4.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `8ae000c`
+
+### What's Addressed
+
+Phase 4 is largely implemented and the main workflow rewrite landed in the right
+places.
+
+- The bundled skills now describe the native-first delegation flow: render via
+  `5x template render`, prefer native OpenCode subagents, validate/record via
+  `5x protocol validate`, and keep `5x invoke` as fallback in
+  `5x-cli/src/skills/5x-plan/SKILL.md`,
+  `5x-cli/src/skills/5x-plan-review/SKILL.md`, and
+  `5x-cli/src/skills/5x-phase-execution/SKILL.md`.
+- The shared task templates were updated to transport-neutral wording in
+  `5x-cli/src/templates/author-generate-plan.md`,
+  `5x-cli/src/templates/author-next-phase.md`,
+  `5x-cli/src/templates/author-process-plan-review.md`,
+  `5x-cli/src/templates/author-process-impl-review.md`,
+  `5x-cli/src/templates/reviewer-plan.md`,
+  `5x-cli/src/templates/reviewer-plan-continued.md`, and
+  `5x-cli/src/templates/reviewer-commit.md`.
+- Focused regression coverage was added in
+  `5x-cli/test/skills/skill-content.test.ts`, and local verification passed:
+  `bun test test/skills/skill-content.test.ts`.
+
+### Remaining Concerns
+
+#### P1.12 — Phase 4 does not actually document all preferred OpenCode agent names
+
+The Phase 4 checklist in the plan explicitly requires the shipped skills to
+document the preferred OpenCode agent names: `5x-orchestrator`,
+`5x-plan-author`, `5x-code-author`, and `5x-reviewer`
+(`5x-cli/docs/development/014-harness-native-subagent-orchestration.md:521`).
+The rewritten skills document the three subagents, but none of them mention
+`5x-orchestrator` at all.
+
+That leaves the implementation slightly out of contract with the approved plan,
+and the plan's Phase 4 checklist is currently overstated.
+
+Recommendation: add a short note in the skill docs that these workflows are
+intended to run under the `5x-orchestrator` primary agent when available, while
+keeping the existing fallback guidance unchanged.
+
+#### P2.11 — Phase 4 regression tests are too string-based and miss key contract checks
+
+`5x-cli/test/skills/skill-content.test.ts` gives useful smoke coverage, but it
+mainly checks for substring presence rather than the higher-value Phase 4
+contracts. For example, the "detection order" assertions only prove both paths
+are mentioned, not that project scope is preferred over user scope; the suite
+does not assert `5x-orchestrator` documentation at all; and it hard-codes the
+total skill count with `expect(names.length).toBe(3)` /
+`expect(skills.length).toBe(3)`, which will fail for unrelated future skill
+additions.
+
+This is not a functional bug in the current commit, but it leaves the new Phase
+4 behavior under-protected and creates avoidable test brittleness.
+
+Recommendation: tighten the assertions around ordered detection/fallback
+guidance, add explicit coverage for the required agent-name documentation, and
+avoid exact repository-wide skill counts unless the product intentionally caps
+them.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the Phase 4 rewrite is substantively in
+place, but one plan-compliance item is still missing and the new regression
+coverage should be strengthened before declaring the phase complete and moving to
+Phase 5. Both remaining issues are mechanical.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `7586d00`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 4 concerns from the prior
+review.
+
+- **P1.12 (missing `5x-orchestrator` docs):** Resolved. The skill docs now name
+  the installed OpenCode agents, including `5x-orchestrator`, in
+  `5x-cli/src/skills/5x-plan/SKILL.md`,
+  `5x-cli/src/skills/5x-plan-review/SKILL.md`, and
+  `5x-cli/src/skills/5x-phase-execution/SKILL.md`.
+- **P2.11 (shallow/brittle tests):** Resolved. `5x-cli/test/skills/skill-content.test.ts`
+  now avoids hard-coding the total bundled skill count, adds explicit coverage
+  for `5x-orchestrator`, and strengthens the detection-order/fallback checks by
+  asserting project-scope → user-scope → fallback ordering inside the relevant
+  sections.
+- Local verification passed: `bun test test/skills/skill-content.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 4. The prior plan-compliance gap is closed, and
+the focused regression coverage is now adequate for the documentation/template
+surface changed in this phase.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 4 now matches the approved plan closely enough to
+proceed to Phase 5. The native-first skill guidance, transport-neutral template
+wording, and focused regression tests are all in place.
