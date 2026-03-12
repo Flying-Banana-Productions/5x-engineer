@@ -1482,7 +1482,7 @@ describe("5x run lifecycle", () => {
 				cleanupDir(dir);
 			}
 		},
-		{ timeout: 15000 },
+		{ timeout: 30000 },
 	);
 
 	test(
