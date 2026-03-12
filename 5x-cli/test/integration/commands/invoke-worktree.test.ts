@@ -136,7 +136,11 @@ interface CmdResult {
 	exitCode: number;
 }
 
-async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
+async function run5x(
+	cwd: string,
+	args: string[],
+	timeoutMs = 20000,
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		env: cleanGitEnv(),
@@ -144,7 +148,7 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const timer = setTimeout(() => proc.kill("SIGINT"), 20000);
+	const timer = setTimeout(() => proc.kill("SIGINT"), timeoutMs);
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
@@ -163,45 +167,6 @@ function parseJson(stdout: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 describe("invoke Phase 2: worktree auto-resolve", () => {
-	test(
-		"invoke --run with no worktree mapping works normally",
-		async () => {
-			const dir = makeTmpDir();
-			try {
-				await setupProject(dir);
-
-				const planPath = join(dir, "docs", "development", "test-plan.md");
-				const runId = "run_no_wt_test";
-				insertRun(dir, runId, planPath);
-
-				const result = await run5x(dir, [
-					"invoke",
-					"author",
-					"author-next-phase",
-					"--var",
-					`plan_path=${planPath}`,
-					"--var",
-					"phase_number=1",
-					"--var",
-					"user_notes=test",
-					"--run",
-					runId,
-				]);
-
-				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(true);
-				const data = json.data as Record<string, unknown>;
-				expect(data.run_id).toBe(runId);
-				// No worktree fields when not mapped
-				expect(data.worktree_path).toBeUndefined();
-				expect(data.worktree_plan_path).toBeUndefined();
-			} finally {
-				cleanupDir(dir);
-			}
-		},
-		{ timeout: 30000 },
-	);
-
 	test(
 		"invoke --run with mapped worktree includes worktree fields in output",
 		async () => {

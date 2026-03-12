@@ -19,6 +19,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initScaffold } from "../../../src/commands/init.handler.js";
+import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -620,5 +623,122 @@ describe("invoke — enriched output fields (unit)", () => {
 			review_template_path: "t.md",
 		});
 		expect(r3.stepName).toBe("reviewer:review");
+	});
+});
+
+// ===========================================================================
+// Worktree envelope fields (Phase 2)
+// ===========================================================================
+
+describe("invoke — worktree envelope fields (unit)", () => {
+	test("output omits worktree_path and worktree_plan_path when no worktree mapping", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Setup: git repo, 5x init, plan file
+			Bun.spawnSync(["git", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "config", "user.name", "Test"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			const planDir = join(dir, "docs", "development");
+			mkdirSync(planDir, { recursive: true });
+			writeFileSync(
+				join(planDir, "test-plan.md"),
+				"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
+			);
+
+			// 5x init
+			await initScaffold({ startDir: dir });
+
+			// Create run directly in DB (no subprocess)
+			const { Database } = await import("bun:sqlite");
+			const dbPath = join(dir, ".5x", "5x.db");
+			const db = new Database(dbPath);
+			const planPath = join(dir, "docs", "development", "test-plan.md");
+			const runId = "run_test_no_wt";
+			db.exec(
+				`INSERT INTO runs (id, plan_path, status, config_json, created_at, updated_at)
+				 VALUES ('${runId}', '${planPath}', 'active', '{}', datetime('now'), datetime('now'))`,
+			);
+			db.close();
+
+			// Config using sample provider (direct import, no dynamic resolution contention)
+			writeFileSync(
+				join(dir, "5x.toml"),
+				'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n',
+			);
+
+			// Commit so worktree is clean
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+
+			// Capture stdout from invokeAgent
+			const originalLog = console.log;
+			let capturedOutput = "";
+			console.log = (msg: string) => {
+				capturedOutput = msg;
+			};
+
+			// Change to temp dir so resolveControlPlaneRoot() finds the right DB
+			const originalCwd = process.cwd();
+			process.chdir(dir);
+
+			try {
+				// Call invokeAgent directly (single subprocess spawn avoided)
+				await invokeAgent("author", {
+					template: "author-next-phase",
+					run: runId,
+					vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=test"],
+					quiet: true, // suppress stderr streaming
+				});
+			} finally {
+				process.chdir(originalCwd);
+			}
+
+			// Restore console.log
+			console.log = originalLog;
+
+			// Parse and verify envelope
+			const envelope = JSON.parse(capturedOutput) as {
+				ok: boolean;
+				data: Record<string, unknown>;
+			};
+			expect(envelope.ok).toBe(true);
+			expect(envelope.data.run_id).toBe(runId);
+			// Key assertion: no worktree fields when not mapped
+			expect(envelope.data.worktree_path).toBeUndefined();
+			expect(envelope.data.worktree_plan_path).toBeUndefined();
+		} finally {
+			cleanupDir(dir);
+		}
 	});
 });
