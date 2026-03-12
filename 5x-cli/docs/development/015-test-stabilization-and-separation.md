@@ -1,6 +1,6 @@
 # Test Stabilization and Unit/Integration Separation
 
-**Version:** 1.1
+**Version:** 1.3
 **Created:** March 12, 2026
 **Status:** Draft
 
@@ -9,12 +9,12 @@
 The 5x-cli test suite has 68 test files (~1200 tests) that all run under
 `bun test --concurrent`. Three tests fail intermittently due to subprocess
 contention: `isolated-mode.test.ts` (git commit failures/SIGINT timeouts),
-and `init-opencode.test.ts` (cold-start timeout). The root cause is
+and `harness.test.ts` (cold-start timeout). The root cause is
 systemic — 31 files spawn subprocesses, 8 are missing `cleanGitEnv()`, and
 there is no separation between unit and integration tests.
 
 This plan refactors the test suite to:
-1. Add `startDir` parameters to 3 handler files (13 call sites) so handlers
+1. Add `startDir` parameters to 4 handler files (12 call sites) so handlers
    can be tested directly without `process.chdir()` or subprocess overhead.
 2. Create a `test/unit/` and `test/integration/` directory structure.
 3. Move the 37 existing pure unit test files into `test/unit/`.
@@ -30,11 +30,12 @@ the default.** This preserves backward compatibility — CLI adapter code
 (citty command definitions) passes no argument, getting the current
 behavior. Tests pass an explicit temp directory. The parameter is added to
 the top-level exported handler functions in `init.handler.ts`,
-`worktree.handler.ts`, and `upgrade.handler.ts` (3 files, 13 call sites).
-`run-v1.handler.ts` is excluded — it has only 1 partially convertible call
-site, and the relative-path semantics for `plan`/`worktreePath` inputs
-under a non-default `startDir` are underspecified. It can be revisited in
-a follow-up if `run-v1` tests need stabilization.
+`harness.handler.ts`, `worktree.handler.ts`, and `upgrade.handler.ts`
+(4 files, 12 call sites). `run-v1.handler.ts` is excluded — it has only 1
+partially convertible call site, and the relative-path semantics for
+`plan`/`worktreePath` inputs under a non-default `startDir` are
+underspecified. It can be revisited in a follow-up if `run-v1` tests need
+stabilization.
 
 **Reorganize into `test/unit/` and `test/integration/` while preserving
 subdirectory structure.** The current `test/commands/init.test.ts` becomes
@@ -64,7 +65,7 @@ documents and eliminates the need for logging injection seams.
 
 **Convert only "high feasibility" test files.** Two files have handlers
 already exported and tests that primarily assert filesystem side effects:
-`init.test.ts` and `init-opencode.test.ts`. `skills-install.test.ts` is
+`init.test.ts` and `harness.test.ts`. `skills-install.test.ts` is
 kept as an integration test — its tests exercise command-level behavior
 (scope resolution, `--install-root`, stderr progress, success envelope)
 that cannot be meaningfully validated without the CLI layer. The 4
@@ -78,7 +79,7 @@ with zero failures. No behavioral changes to tests — only hardening.
 
 - [ ] Add `cleanGitEnv()` import and usage to the 8 files that are missing it:
   - `test/commands/init.test.ts` — add `import { cleanGitEnv }` from `../helpers/clean-env.js`, pass `env: cleanGitEnv()` to `Bun.spawn` in `runInit()` helper (line 33)
-  - `test/commands/init-opencode.test.ts` — add `cleanGitEnv()` to `runInit()` (line 54) and `runInitOpencode()` (line 72); replace `{ ...process.env, ...env }` with `{ ...cleanGitEnv(), ...env }`
+  - `test/commands/harness.test.ts` — add `cleanGitEnv()` to `runCmd()` (line 53); replace `{ ...process.env, ...env }` with `{ ...cleanGitEnv(), ...env }`
   - `test/commands/prompt.test.ts` — add `cleanGitEnv()` to all `Bun.spawn` calls
   - `test/commands/skills-install.test.ts` — add `cleanGitEnv()` to `runSkillsInstall()` (line 36); replace `{ ...process.env, ...env }` with `{ ...cleanGitEnv(), ...env }`
   - `test/commands/upgrade.test.ts` — add `cleanGitEnv()` to `Bun.spawn` calls
@@ -87,7 +88,7 @@ with zero failures. No behavioral changes to tests — only hardening.
   - `test/pipe.test.ts` — add `cleanGitEnv()` to `Bun.spawn` calls
 - [ ] Add `stdin: "ignore"` to all `Bun.spawn` calls that don't intentionally use stdin:
   - `test/commands/init.test.ts` — `runInit()` (line 33)
-  - `test/commands/init-opencode.test.ts` — `runInit()` (line 54) and `runInitOpencode()` (line 72)
+  - `test/commands/harness.test.ts` — `runCmd()` (line 53)
   - `test/commands/skills-install.test.ts` — `runSkillsInstall()` (line 36)
   - `test/commands/control-plane.test.ts` — all `Bun.spawnSync` git calls
   - `test/bin-pretty.test.ts` — all `Bun.spawn` calls
@@ -98,7 +99,7 @@ with zero failures. No behavioral changes to tests — only hardening.
   - `test/commands/control-plane.test.ts` — 15000
   - `test/commands/diff.test.ts` — 15000
   - `test/commands/init-guard.test.ts` — 15000
-  - `test/commands/init-opencode.test.ts` — 15000
+  - `test/commands/harness.test.ts` — 15000
   - `test/commands/init.test.ts` — 15000
   - `test/commands/plan-v1.test.ts` — 15000
   - `test/commands/prompt.test.ts` — 15000
@@ -120,31 +121,14 @@ with zero failures. No behavioral changes to tests — only hardening.
 
 ## Phase 2: Refactor Handlers for Direct Testability
 
-**Completion gate:** All 3 handler files (`init.handler.ts`,
-`worktree.handler.ts`, `upgrade.handler.ts`) accept an optional `startDir`
-parameter. Existing tests still pass. No behavioral changes to CLI output.
-
-- [ ] Refactor `src/commands/init.handler.ts` — `initOpencode()`:
-  - Add `startDir?: string` to `InitOpencodeParams` interface
-  - Replace `resolve(".")` on lines 198–199 with `resolve(params.startDir ?? ".")`
-  ```ts
-  export interface InitOpencodeParams {
-    scope: "user" | "project";
-    force?: boolean;
-    startDir?: string;  // NEW — defaults to resolve(".")
-  }
-
-  export async function initOpencode(params: InitOpencodeParams): Promise<void> {
-    const cwd = resolve(params.startDir ?? ".");
-    const checkoutRoot = resolveCheckoutRoot(cwd);
-    const projectRoot = checkoutRoot ?? cwd;
-    // ... rest unchanged
-  }
-  ```
+**Completion gate:** All 4 handler files (`init.handler.ts`,
+`harness.handler.ts`, `worktree.handler.ts`, `upgrade.handler.ts`) accept
+an optional `startDir` parameter. Existing tests still pass. No behavioral
+changes to CLI output.
 
 - [ ] Refactor `src/commands/init.handler.ts` — `initScaffold()`:
   - Add `startDir?: string` to `InitParams` interface
-  - Replace `resolve(".")` on lines 288–289 and 304 with `resolve(params.startDir ?? ".")`
+  - Replace `resolve(".")` on lines 175–176 and 191 with `resolve(params.startDir ?? ".")`
   ```ts
   export interface InitParams {
     force?: boolean;
@@ -156,7 +140,27 @@ parameter. Existing tests still pass. No behavioral changes to CLI output.
     const cwd = resolve(params.startDir ?? ".");
     const controlPlane = resolveControlPlaneRoot(cwd);
     const checkoutRoot = resolveCheckoutRoot(cwd);
-    // ... line 304:
+    // ... line 191:
+    const projectRoot = checkoutRoot ?? cwd;
+    // ... rest unchanged
+  }
+  ```
+
+- [ ] Refactor `src/commands/harness.handler.ts` — `harnessInstall()`:
+  - Add `startDir?: string` to `HarnessInstallParams` interface
+  - Replace `resolve(".")` on lines 53–54 with `resolve(params.startDir ?? ".")`
+  ```ts
+  export interface HarnessInstallParams {
+    name: string;
+    scope?: string;
+    force?: boolean;
+    startDir?: string;  // NEW — defaults to resolve(".")
+  }
+
+  export async function harnessInstall(params: HarnessInstallParams): Promise<void> {
+    // ...
+    const cwd = resolve(params.startDir ?? ".");
+    const checkoutRoot = resolveCheckoutRoot(cwd);
     const projectRoot = checkoutRoot ?? cwd;
     // ... rest unchanged
   }
@@ -296,15 +300,15 @@ tests pass under `--concurrent`.
   - Move the converted tests to `test/unit/commands/init.test.ts`
   - The `ensureGitignore`, `generateTomlConfig`, and `ensureTemplateFiles` describe blocks are already unit tests (direct function calls) — move these as-is
 
-- [ ] Convert `test/integration/commands/init-opencode.test.ts`:
-  - Import `initOpencode` directly from `../../../src/commands/init.handler.js`
-  - Replace `runInitOpencode(tmp, "project")` with `await initOpencode({ scope: "project", startDir: tmp })`
+- [ ] Convert `test/integration/commands/harness.test.ts`:
+  - Import `harnessInstall` directly from `../../../src/commands/harness.handler.js`
+  - Replace `runHarnessInstall(tmp, "opencode", ["--scope", "project"])` with `await harnessInstall({ name: "opencode", scope: "project", startDir: tmp })`
   - Replace `runInit(tmp)` in `bootstrapProject()` with `await initScaffold({ startDir: tmp })`
-  - The "fails with clear error" tests: replace subprocess exit code checks with `expect(async () => await initOpencode(...)).toThrow()`
-  - The "idempotent" test: call `initOpencode` twice directly — no subprocess timeout issue
+  - The "fails when control plane absent" test: replace subprocess exit code check with `expect(async () => await harnessInstall(...)).toThrow()`
+  - The "idempotent" test: call `harnessInstall` twice directly — no subprocess timeout issue
   - All assertions must verify filesystem side effects and thrown errors — do NOT capture or mock console output
-  - Any tests that assert on CLI stdout/stderr text, exit codes, or HOME-dependent behavior that requires process-wide env mutation stay in `test/integration/commands/init-opencode.test.ts`
-  - Move the converted tests to `test/unit/commands/init-opencode.test.ts`
+  - Any tests that assert on CLI stdout/stderr text, exit codes, or HOME-dependent behavior that requires process-wide env mutation stay in `test/integration/commands/harness.test.ts`
+  - Move the converted tests to `test/unit/commands/harness.test.ts`
 
 - [ ] `test/integration/commands/skills-install.test.ts` — **no conversion**. This file exercises command-level behavior (scope resolution, `--install-root`, stderr progress messages, success envelope) that requires the CLI layer. It stays as an integration test with `cleanGitEnv()` + `stdin: "ignore"` hygiene applied in Phase 1.
 
@@ -337,11 +341,12 @@ Contents reviewed for accuracy against the final directory structure.
 
 | File | Change |
 |------|--------|
-| `src/commands/init.handler.ts` | Add `startDir` to `InitParams` and `InitOpencodeParams`; replace 5 `resolve(".")` calls |
+| `src/commands/init.handler.ts` | Add `startDir` to `InitParams`; replace 3 `resolve(".")` calls |
+| `src/commands/harness.handler.ts` | Add `startDir` to `HarnessInstallParams`; replace 2 `resolve(".")` calls |
 | `src/commands/worktree.handler.ts` | Add `startDir` to param interfaces and helpers; replace 7 `resolve(".")` calls |
 | `src/commands/upgrade.handler.ts` | Add `startDir` to `UpgradeParams`; replace 1 `resolve(".")` call |
 | `test/commands/init.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert side-effect tests to unit tests and move |
-| `test/commands/init-opencode.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert side-effect tests to unit tests and move |
+| `test/commands/harness.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:`; then convert side-effect tests to unit tests and move |
 | `test/commands/skills-install.test.ts` | Add `cleanGitEnv()`, `stdin: "ignore"`, `timeout:` (stays as integration test — no conversion) |
 | `test/commands/prompt.test.ts` | Add `cleanGitEnv()`, `timeout:` (stdin already "pipe") |
 | `test/commands/upgrade.test.ts` | Add `cleanGitEnv()`, `timeout:` |
@@ -369,10 +374,10 @@ Contents reviewed for accuracy against the final directory structure.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/commands/init.test.ts` | `initScaffold()` creates config, .5x/, .gitignore via filesystem side effects |
-| Unit | `test/unit/commands/init-opencode.test.ts` | `initOpencode()` installs skills/agents via filesystem side effects |
+| Unit | `test/unit/commands/harness.test.ts` | `harnessInstall()` installs harness configs via filesystem side effects |
 | Integration | `test/integration/commands/isolated-mode.test.ts` | Full isolated-mode CLI flow with worktrees |
 | Integration | `test/integration/commands/init.test.ts` | Tests asserting CLI stdout/stderr/exit codes (if any) |
-| Integration | `test/integration/commands/init-opencode.test.ts` | HOME-dependent and CLI-output tests |
+| Integration | `test/integration/commands/harness.test.ts` | HOME-dependent and CLI-output tests |
 | Integration | `test/integration/commands/skills-install.test.ts` | Scope resolution, --install-root, stderr progress, JSON envelope |
 | Stability | All integration tests | 10 consecutive `bun test --concurrent` passes |
 
@@ -394,13 +399,26 @@ Contents reviewed for accuracy against the final directory structure.
 | Phase | Effort | Description |
 |-------|--------|-------------|
 | Phase 1 | 1 day | Stabilize integration tests (cleanGitEnv, stdin, timeout) |
-| Phase 2 | 1 day | Refactor 3 handler files with startDir parameter |
+| Phase 2 | 1 day | Refactor 4 handler files with startDir parameter |
 | Phase 3 | 1–2 days | Create directory structure, move 68 files, fix imports |
 | Phase 4 | 1–2 days | Convert 2 test files to direct-call unit tests |
 | Phase 5 | 0.5 day | Write AGENTS.md |
 | **Total** | **4.5–6.5 days** | |
 
 ## Revision History
+
+### v1.3 (March 12, 2026) — Align with harness refactor (fefffe76b1)
+
+- Overview and Phase 2 now reflect 4 handler files (12 call sites), not 3
+  (13). `harness.handler.ts` added; `initOpencode()` removed.
+- `harness.handler.ts` Phase 2 entry updated: 2 `resolve(".")` calls
+  (lines 53–54), not 1.
+- Files Touched table: removed stale `InitOpencodeParams` reference,
+  renamed `init-opencode.test.ts` → `harness.test.ts`, added
+  `harness.handler.ts` row.
+- Tests table: replaced `initOpencode()` / `init-opencode.test.ts`
+  references with `harnessInstall()` / `harness.test.ts`.
+- Timeline Phase 2: "4 handler files" (was "3").
 
 ### v1.2 (March 12, 2026) — Address re-review feedback
 
