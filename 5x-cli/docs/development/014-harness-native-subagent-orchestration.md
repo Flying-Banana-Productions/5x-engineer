@@ -315,44 +315,54 @@ its final JSON result without invoking a provider.
 **Completion gate:** the codebase has a reusable harness asset installer model,
 plus bundled OpenCode agent templates and correct project/user path mapping.
 
-- [ ] Verify that `.opencode/agents/` is the correct agent discovery path for
+- [x] Verify that `.opencode/agents/` is the correct agent discovery path for
       OpenCode project installs, and `~/.config/opencode/agents/` for user
       installs. Reference OpenCode documentation or source as evidence before
       writing the installer. If the paths differ, update all references in this
       plan accordingly.
-- [ ] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
+      **Verified (March 2026):** OpenCode docs confirm `.opencode/agents/` for
+      project scope and `~/.config/opencode/agents/` for user scope (XDG-style).
+- [x] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
       `readFile` vs `Read`) against OpenCode's tool registry or source before
       finalizing `allowedTools`/`disallowedTools` in agent templates. If the
       assumed names in the skeletons above are incorrect, update them. Silently
       mismatched tool names would cause restrictions to not apply.
-- [ ] Add a small harness registry describing install locations for supported
+      **Verified (March 2026):** OpenCode uses `write`, `edit`, `bash`, `read`,
+      `grep`, `glob`, `list`, `webfetch` — NOT `read_file`/`write_file`/
+      `run_terminal_cmd`/`list_directory` (those are Claude Code names). Templates
+      updated to use the correct `tools: { write: false, edit: false }` format.
+      OpenCode does NOT support a `cwd` frontmatter field (see below).
+- [x] Add a small harness registry describing install locations for supported
       harnesses, starting with OpenCode.
-- [ ] Model both `project` and `user` roots explicitly so OpenCode can target
+- [x] Model both `project` and `user` roots explicitly so OpenCode can target
       `.opencode/...` for project installs and `~/.config/opencode/...` for user
       installs.
-- [ ] Add bundled OpenCode agent templates in source control for:
+- [x] Add bundled OpenCode agent templates in source control for:
       `5x-plan-author`, `5x-code-author`, `5x-reviewer`, and `5x-orchestrator`.
-- [ ] Define prompt, tool, permission, mode, description, and optional model
+- [x] Define prompt, tool, permission, mode, description, and optional model
       frontmatter for each OpenCode agent template using the skeletons below as
       the concrete target.
-- [ ] Define the `5x-orchestrator` prompt body covering: role definition,
+- [x] Define the `5x-orchestrator` prompt body covering: role definition,
       skill-loading instructions (5x-plan, 5x-plan-review, 5x-phase-execution),
       native delegation pattern (template render → sub-agent → protocol validate),
       state tracking, human decision guidance, verification, and recovery
       principles.
-- [ ] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
+- [x] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
       secondary mechanism for communicating the effective working directory to
       native subagents (the primary mechanism is the post-render `## Context`
       block appended to the rendered prompt text from Phase 1).
-- [ ] Ensure the reviewer template denies direct file edits while still allowing
+      **Decision:** OpenCode does NOT support a `cwd` frontmatter field (verified
+      against official docs, March 2026). No `cwd` field is included. The primary
+      mechanism (post-render `## Context` block from Phase 1) is the only path.
+- [x] Ensure the reviewer template denies direct file edits while still allowing
       read-only investigation commands.
-- [ ] Make agent template rendering parameterized by current 5x config so model
+- [x] Make agent template rendering parameterized by current 5x config so model
       fields can be included or omitted deterministically.
-- [ ] Add installer helpers for writing both skills and agents with
+- [x] Add installer helpers for writing both skills and agents with
       `created/overwritten/skipped` reporting matching existing command style.
-- [ ] Keep the existing `skills install` command backward-compatible; do not
+- [x] Keep the existing `skills install` command backward-compatible; do not
       change its output contract in this phase.
-- [ ] Add unit tests covering OpenCode location resolution, agent template
+- [x] Add unit tests covering OpenCode location resolution, agent template
       rendering with and without configured models, and correct file generation
       for project vs user scope.
 
