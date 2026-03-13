@@ -23,7 +23,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/skills/loader.js";
@@ -37,8 +37,8 @@ const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
 function makeTmpDir(): string {
 	const dir = join(
-		homedir(),
-		`.5x-harness-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		tmpdir(),
+		`5x-harness-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 	);
 	mkdirSync(dir, { recursive: true });
 	return dir;
@@ -153,6 +153,51 @@ describe("5x harness list", () => {
 				expect(opencode.scopes.project.files).toContain(
 					"skills/5x-plan/SKILL.md",
 				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"uses fake HOME for user-scope list state",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = join(tmp, "fake-home");
+			mkdirSync(fakeHome, { recursive: true });
+			try {
+				const install = await runHarnessInstall(
+					tmp,
+					"opencode",
+					["--scope", "user"],
+					{ HOME: fakeHome },
+				);
+				expect(install.exitCode).toBe(0);
+
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"], {
+					HOME: fakeHome,
+				});
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.user.installed).toBe(true);
+				expect(opencode.scopes.user.files).toContain("skills/5x-plan/SKILL.md");
+				expect(
+					existsSync(
+						join(
+							fakeHome,
+							".config",
+							"opencode",
+							"skills",
+							"5x-plan",
+							"SKILL.md",
+						),
+					),
+				).toBe(true);
 			} finally {
 				cleanupDir(tmp);
 			}

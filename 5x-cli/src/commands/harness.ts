@@ -49,7 +49,7 @@ const listCmd = defineCommand({
 		name: "list",
 		description: "List available harness integrations",
 	},
-	run: () => harnessList(),
+	run: () => harnessList({ homeDir: process.env.HOME }),
 });
 
 const uninstallCmd = defineCommand({

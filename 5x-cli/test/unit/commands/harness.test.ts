@@ -377,19 +377,36 @@ describe("harnessUninstall --scope user", () => {
 		const fakeHome = join(tmp, "fake-home");
 		mkdirSync(fakeHome, { recursive: true });
 
-		// User scope resolution depends on homedir(), which we can't override
-		// via startDir alone. User-scope integration tests are in the integration
-		// test file. Here we just verify scope validation works.
 		try {
+			await harnessInstall({
+				name: "opencode",
+				scope: "user",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			const userSkillPath = join(
+				fakeHome,
+				".config",
+				"opencode",
+				"skills",
+				"5x-plan",
+				"SKILL.md",
+			);
+			expect(existsSync(userSkillPath)).toBe(true);
+
 			const output = await harnessUninstall({
 				name: "opencode",
 				scope: "user",
 				startDir: tmp,
+				homeDir: fakeHome,
 			});
 
 			expect(output.harnessName).toBe("opencode");
 			expect(output.scopes.user).toBeDefined();
 			expect(output.scopes.project).toBeUndefined();
+			expect(output.scopes.user?.skills.removed).toContain("5x-plan/SKILL.md");
+			expect(existsSync(userSkillPath)).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -403,16 +420,48 @@ describe("harnessUninstall --scope user", () => {
 describe("harnessUninstall --all", () => {
 	test("processes both supported scopes", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			await harnessInstall({
+				name: "opencode",
+				scope: "user",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
 			const output = await harnessUninstall({
 				name: "opencode",
 				all: true,
 				startDir: tmp,
+				homeDir: fakeHome,
 			});
 
 			expect(output.harnessName).toBe("opencode");
 			expect(output.scopes.project).toBeDefined();
 			expect(output.scopes.user).toBeDefined();
+			expect(output.scopes.project?.skills.removed).toContain(
+				"5x-plan/SKILL.md",
+			);
+			expect(output.scopes.user?.skills.removed).toContain("5x-plan/SKILL.md");
+			expect(
+				existsSync(
+					join(
+						fakeHome,
+						".config",
+						"opencode",
+						"skills",
+						"5x-plan",
+						"SKILL.md",
+					),
+				),
+			).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -420,6 +469,8 @@ describe("harnessUninstall --all", () => {
 
 	test("outside a git repo uses cwd as project root", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
 			await bootstrapProject(tmp);
 			await harnessInstall({
@@ -442,6 +493,7 @@ describe("harnessUninstall --all", () => {
 				name: "opencode",
 				all: true,
 				startDir: tmp,
+				homeDir: fakeHome,
 			});
 
 			expect(output.scopes.project).toBeDefined();
@@ -519,14 +571,19 @@ describe("harnessUninstall validation", () => {
 describe("buildHarnessListData", () => {
 	test("lists bundled harness with correct source label", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
-			const output = await buildHarnessListData(tmp);
+			const output = await buildHarnessListData(tmp, fakeHome);
 
 			expect(output.harnesses.length).toBeGreaterThanOrEqual(1);
 			const opencode = output.harnesses.find((h) => h.name === "opencode");
 			expect(opencode).toBeDefined();
-			expect(opencode!.source).toBe("bundled");
-			expect(opencode!.description).toBeTruthy();
+			if (!opencode) {
+				throw new Error("Expected opencode harness in list output");
+			}
+			expect(opencode.source).toBe("bundled");
+			expect(opencode.description).toBeTruthy();
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -534,6 +591,8 @@ describe("buildHarnessListData", () => {
 
 	test("shows installed state when files exist on disk", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
 			await bootstrapProject(tmp);
 			await harnessInstall({
@@ -542,12 +601,15 @@ describe("buildHarnessListData", () => {
 				startDir: tmp,
 			});
 
-			const output = await buildHarnessListData(tmp);
+			const output = await buildHarnessListData(tmp, fakeHome);
 			const opencode = output.harnesses.find((h) => h.name === "opencode");
 			expect(opencode).toBeDefined();
-			expect(opencode!.scopes.project).toBeDefined();
-			expect(opencode!.scopes.project!.installed).toBe(true);
-			expect(opencode!.scopes.project!.files.length).toBeGreaterThan(0);
+			if (!opencode?.scopes.project) {
+				throw new Error("Expected project scope for opencode");
+			}
+			expect(opencode.scopes.project).toBeDefined();
+			expect(opencode.scopes.project.installed).toBe(true);
+			expect(opencode.scopes.project.files.length).toBeGreaterThan(0);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -555,13 +617,18 @@ describe("buildHarnessListData", () => {
 
 	test("shows not-installed state when files are absent", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
-			const output = await buildHarnessListData(tmp);
+			const output = await buildHarnessListData(tmp, fakeHome);
 			const opencode = output.harnesses.find((h) => h.name === "opencode");
 			expect(opencode).toBeDefined();
-			expect(opencode!.scopes.project).toBeDefined();
-			expect(opencode!.scopes.project!.installed).toBe(false);
-			expect(opencode!.scopes.project!.files).toHaveLength(0);
+			if (!opencode?.scopes.project) {
+				throw new Error("Expected project scope for opencode");
+			}
+			expect(opencode.scopes.project).toBeDefined();
+			expect(opencode.scopes.project.installed).toBe(false);
+			expect(opencode.scopes.project.files).toHaveLength(0);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -569,14 +636,19 @@ describe("buildHarnessListData", () => {
 
 	test("reports not-installed for project scope in plain directory", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
 			// No git repo, no harness files — project root falls back to cwd
-			const output = await buildHarnessListData(tmp);
+			const output = await buildHarnessListData(tmp, fakeHome);
 			const opencode = output.harnesses.find((h) => h.name === "opencode");
 			expect(opencode).toBeDefined();
-			expect(opencode!.scopes.project).toBeDefined();
-			expect(opencode!.scopes.project!.installed).toBe(false);
-			expect(opencode!.scopes.project!.files).toHaveLength(0);
+			if (!opencode?.scopes.project) {
+				throw new Error("Expected project scope for opencode");
+			}
+			expect(opencode.scopes.project).toBeDefined();
+			expect(opencode.scopes.project.installed).toBe(false);
+			expect(opencode.scopes.project.files).toHaveLength(0);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -584,6 +656,8 @@ describe("buildHarnessListData", () => {
 
 	test("file list matches expected managed files", async () => {
 		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
 		try {
 			await bootstrapProject(tmp);
 			await harnessInstall({
@@ -592,11 +666,14 @@ describe("buildHarnessListData", () => {
 				startDir: tmp,
 			});
 
-			const output = await buildHarnessListData(tmp);
+			const output = await buildHarnessListData(tmp, fakeHome);
 			const opencode = output.harnesses.find((h) => h.name === "opencode");
 			expect(opencode).toBeDefined();
+			if (!opencode?.scopes.project) {
+				throw new Error("Expected project scope for opencode");
+			}
 
-			const projectFiles = opencode!.scopes.project!.files;
+			const projectFiles = opencode.scopes.project.files;
 
 			// Check skill files
 			const skillNames = listSkillNames();
@@ -612,6 +689,44 @@ describe("buildHarnessListData", () => {
 
 			// Total count should match skills + agents
 			expect(projectFiles).toHaveLength(skillNames.length + agentNames.length);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("checks user scope against provided fake home only", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await harnessInstall({
+				name: "opencode",
+				scope: "user",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			const output = await buildHarnessListData(tmp, fakeHome);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			if (!opencode?.scopes.user) {
+				throw new Error("Expected user scope for opencode");
+			}
+			expect(opencode.scopes.user).toBeDefined();
+			expect(opencode.scopes.user.installed).toBe(true);
+			expect(opencode.scopes.user.files).toContain("skills/5x-plan/SKILL.md");
+			expect(
+				existsSync(
+					join(
+						fakeHome,
+						".config",
+						"opencode",
+						"skills",
+						"5x-plan",
+						"SKILL.md",
+					),
+				),
+			).toBe(true);
 		} finally {
 			cleanupDir(tmp);
 		}

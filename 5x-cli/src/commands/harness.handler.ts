@@ -79,6 +79,8 @@ export interface HarnessListOutput {
 export interface HarnessListParams {
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	homeDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +158,7 @@ export async function harnessInstall(
 export async function harnessList(
 	params?: HarnessListParams,
 ): Promise<HarnessListOutput> {
-	const output = await buildHarnessListData(params?.startDir);
+	const output = await buildHarnessListData(params?.startDir, params?.homeDir);
 	printListSummary(output);
 	outputSuccess(output);
 	return output;
@@ -168,6 +170,7 @@ export async function harnessList(
  */
 export async function buildHarnessListData(
 	startDir?: string,
+	homeDir?: string,
 ): Promise<HarnessListOutput> {
 	const cwd = resolve(startDir ?? ".");
 	const projectRoot = resolveCheckoutRoot(cwd) ?? cwd;
@@ -183,7 +186,7 @@ export async function buildHarnessListData(
 		const scopes: Partial<Record<HarnessScope, HarnessScopeStatus>> = {};
 
 		for (const scope of plugin.supportedScopes) {
-			const locations = plugin.locations.resolve(scope, projectRoot);
+			const locations = plugin.locations.resolve(scope, projectRoot, homeDir);
 			const files: string[] = [];
 
 			// Check skill files
