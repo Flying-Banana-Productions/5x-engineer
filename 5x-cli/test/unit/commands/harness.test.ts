@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessInstall } from "../../../src/commands/harness.handler.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
+import { isValidPlugin } from "../../../src/harnesses/factory.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/skills/loader.js";
 
@@ -205,5 +206,68 @@ describe("harnessInstall --scope project", () => {
 		} finally {
 			cleanupDir(tmp);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isValidPlugin — duck-type validation
+// ---------------------------------------------------------------------------
+
+describe("isValidPlugin", () => {
+	const validPlugin = {
+		name: "test",
+		description: "A test plugin",
+		supportedScopes: ["project"],
+		locations: { resolve: () => ({ agentsDir: "", skillsDir: "" }) },
+		describe: () => ({ skillNames: [], agentNames: [] }),
+		install: async () => ({
+			skills: { created: [], overwritten: [], skipped: [] },
+			agents: { created: [], overwritten: [], skipped: [] },
+		}),
+		uninstall: async () => ({
+			skills: { removed: [], notFound: [] },
+			agents: { removed: [], notFound: [] },
+		}),
+	};
+
+	test("accepts a fully valid plugin", () => {
+		expect(isValidPlugin(validPlugin)).toBe(true);
+	});
+
+	test("rejects plugin missing locations", () => {
+		const { locations, ...incomplete } = validPlugin;
+		expect(isValidPlugin(incomplete)).toBe(false);
+	});
+
+	test("rejects plugin missing describe", () => {
+		const { describe: _d, ...incomplete } = validPlugin;
+		expect(isValidPlugin(incomplete)).toBe(false);
+	});
+
+	test("rejects plugin missing uninstall", () => {
+		const { uninstall, ...incomplete } = validPlugin;
+		expect(isValidPlugin(incomplete)).toBe(false);
+	});
+
+	test("rejects plugin missing install", () => {
+		const { install, ...incomplete } = validPlugin;
+		expect(isValidPlugin(incomplete)).toBe(false);
+	});
+
+	test("rejects plugin with locations missing resolve()", () => {
+		const badLocations = { ...validPlugin, locations: {} };
+		expect(isValidPlugin(badLocations)).toBe(false);
+	});
+
+	test("rejects null", () => {
+		expect(isValidPlugin(null)).toBe(false);
+	});
+
+	test("rejects undefined", () => {
+		expect(isValidPlugin(undefined)).toBe(false);
+	});
+
+	test("rejects non-object", () => {
+		expect(isValidPlugin("string")).toBe(false);
 	});
 });

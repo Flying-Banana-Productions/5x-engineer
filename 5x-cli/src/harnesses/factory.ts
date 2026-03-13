@@ -73,18 +73,33 @@ export function resolvePackageName(harnessName: string): string {
 // Plugin loading
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Loaded plugin wrapper
+// ---------------------------------------------------------------------------
+
+/** A loaded harness plugin with source metadata. */
+export interface LoadedHarnessPlugin {
+	plugin: HarnessPlugin;
+	source: "bundled" | "external";
+}
+
 /**
  * Validate that a loaded module default export satisfies the HarnessPlugin
  * shape (duck-type check).
  */
-function isValidPlugin(obj: unknown): obj is HarnessPlugin {
+export function isValidPlugin(obj: unknown): obj is HarnessPlugin {
 	if (!obj || typeof obj !== "object") return false;
 	const p = obj as Record<string, unknown>;
 	return (
 		typeof p.name === "string" &&
 		typeof p.description === "string" &&
 		Array.isArray(p.supportedScopes) &&
-		typeof p.install === "function"
+		typeof p.install === "function" &&
+		typeof p.uninstall === "function" &&
+		typeof p.describe === "function" &&
+		p.locations != null &&
+		typeof p.locations === "object" &&
+		typeof (p.locations as Record<string, unknown>).resolve === "function"
 	);
 }
 
@@ -92,11 +107,13 @@ function isValidPlugin(obj: unknown): obj is HarnessPlugin {
  * Load a harness plugin by name.
  *
  * Tries external package first, falls back to bundled if the external
- * module is not installed.
+ * module is not installed. Returns a `LoadedHarnessPlugin` that wraps
+ * the plugin with a `source` field indicating whether it was loaded
+ * from an external package or the bundled registry.
  */
 export async function loadHarnessPlugin(
 	harnessName: string,
-): Promise<HarnessPlugin> {
+): Promise<LoadedHarnessPlugin> {
 	const packageName = resolvePackageName(harnessName);
 
 	// Try external package first (allows third-party overrides of bundled)
@@ -107,7 +124,7 @@ export async function loadHarnessPlugin(
 		if (!isValidPlugin(plugin)) {
 			throw new InvalidHarnessError(harnessName, packageName);
 		}
-		return plugin;
+		return { plugin, source: "external" };
 	} catch (err) {
 		// Check if the error is "module not found"
 		const message =
@@ -136,7 +153,7 @@ export async function loadHarnessPlugin(
 		const bundledLoader = BUNDLED_HARNESSES[harnessName];
 		if (bundledLoader) {
 			const mod = await bundledLoader();
-			return mod.default;
+			return { plugin: mod.default, source: "bundled" };
 		}
 
 		throw new HarnessNotFoundError(harnessName, packageName);

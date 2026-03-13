@@ -16,7 +16,8 @@
  */
 
 import type { SkillMetadata } from "../skills/loader.js";
-import type { InstallSummary } from "./installer.js";
+import type { InstallSummary, UninstallSummary } from "./installer.js";
+import type { HarnessLocations } from "./locations.js";
 
 // ---------------------------------------------------------------------------
 // Scope
@@ -54,6 +55,32 @@ export interface HarnessInstallResult {
 	agents: InstallSummary;
 }
 
+// ---------------------------------------------------------------------------
+// Describe / Uninstall
+// ---------------------------------------------------------------------------
+
+/** Names of managed skills and agents for a harness plugin. */
+export interface HarnessDescription {
+	skillNames: string[];
+	agentNames: string[];
+}
+
+/** Context provided to a harness plugin's uninstall function. */
+export interface HarnessUninstallContext {
+	/** Target scope for this uninstall. */
+	scope: HarnessScope;
+	/** Absolute path to the project root (git checkout root or cwd). */
+	projectRoot: string;
+}
+
+/** Result returned by a harness plugin's uninstall function. */
+export interface HarnessUninstallResult {
+	/** Summary of uninstalled skill files. */
+	skills: UninstallSummary;
+	/** Summary of uninstalled agent profile files. */
+	agents: UninstallSummary;
+}
+
 /**
  * A harness plugin that can install skills and agent profiles for
  * a specific AI coding harness.
@@ -65,6 +92,14 @@ export interface HarnessPlugin {
 	readonly description: string;
 	/** Scopes this harness supports. Drives --scope validation. */
 	readonly supportedScopes: HarnessScope[];
+	/** Path resolver for harness install locations. */
+	readonly locations: {
+		resolve(scope: HarnessScope, projectRoot: string): HarnessLocations;
+	};
+	/** Return names of managed skills and agents. */
+	describe(): HarnessDescription;
 	/** Install skills and agent profiles for this harness. */
 	install(ctx: HarnessInstallContext): Promise<HarnessInstallResult>;
+	/** Uninstall skills and agent profiles for this harness. */
+	uninstall(ctx: HarnessUninstallContext): Promise<HarnessUninstallResult>;
 }

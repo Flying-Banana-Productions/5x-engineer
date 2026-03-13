@@ -46,7 +46,7 @@ export async function harnessInstall(
 	const { name, force = false } = params;
 
 	// 1. Load the harness plugin
-	const plugin = await loadHarnessPlugin(name);
+	const { plugin } = await loadHarnessPlugin(name);
 
 	// 2. Resolve and validate scope
 	const scope = resolveScope(params.scope, plugin.supportedScopes, name);

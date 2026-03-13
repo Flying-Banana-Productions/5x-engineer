@@ -123,7 +123,7 @@ and preservation of user-created files.
 and `uninstall()`; the opencode plugin implements all three; existing install
 behavior is unchanged.
 
-- [ ] Add imports and types to `src/harnesses/types.ts`:
+- [x] Add imports and types to `src/harnesses/types.ts`:
       - Import `HarnessLocations` from `./locations.js`.
       - Import `UninstallSummary` from `./installer.js`.
       - Add `HarnessDescription` interface:
@@ -147,13 +147,13 @@ behavior is unchanged.
           agents: UninstallSummary;
         }
         ```
-- [ ] Extend `HarnessPlugin` interface with three new members:
+- [x] Extend `HarnessPlugin` interface with three new members:
       - `locations: { resolve(scope: HarnessScope, projectRoot: string): HarnessLocations }`
       - `describe(): HarnessDescription`
       - `uninstall(ctx: HarnessUninstallContext): Promise<HarnessUninstallResult>`
-- [ ] Update `isValidPlugin()` duck-type check in `src/harnesses/factory.ts` to
+- [x] Update `isValidPlugin()` duck-type check in `src/harnesses/factory.ts` to
       validate the new required members (`locations`, `describe`, `uninstall`).
-- [ ] Add `LoadedHarnessPlugin` type to `src/harnesses/factory.ts`:
+- [x] Add `LoadedHarnessPlugin` type to `src/harnesses/factory.ts`:
       ```ts
       interface LoadedHarnessPlugin {
         plugin: HarnessPlugin;
@@ -163,11 +163,11 @@ behavior is unchanged.
       Update `loadHarnessPlugin()` to return `LoadedHarnessPlugin` instead of
       bare `HarnessPlugin`. Set `source: "external"` when the dynamic import
       succeeds, `source: "bundled"` when falling back to the bundled registry.
-- [ ] Update callers of `loadHarnessPlugin()` in `src/commands/harness.handler.ts`
+- [x] Update callers of `loadHarnessPlugin()` in `src/commands/harness.handler.ts`
       to destructure `{ plugin, source }` from the result. The `source` field
       is used by `harnessList()` (Phase 4) and ignored by `harnessInstall()` and
       `harnessUninstall()` (which only need the plugin).
-- [ ] Implement on `src/harnesses/opencode/plugin.ts`:
+- [x] Implement on `src/harnesses/opencode/plugin.ts`:
       - `locations`: expose `opencodeLocationResolver` directly.
       - `describe()`: return skill names from `listSkillNames()` (from
         `src/skills/loader.ts`) and agent names from `listAgentTemplates()` (from
@@ -175,16 +175,16 @@ behavior is unchanged.
       - `uninstall()`: resolve locations via `this.locations.resolve()`, get
         names from `this.describe()`, call `uninstallSkillFiles()` and
         `uninstallAgentFiles()` from the installer, return combined result.
-- [ ] Verify existing install tests still pass — no behavioral changes to
+- [x] Verify existing install tests still pass — no behavioral changes to
       `install()`.
-- [ ] Add unit tests in `test/unit/harnesses/opencode.test.ts` (extend existing):
+- [x] Add unit tests in `test/unit/harnesses/opencode.test.ts` (extend existing):
       - `describe()` returns correct skill and agent name lists.
       - `uninstall()` removes installed files for both scopes, reports not-found
         for missing files, cleans empty directories.
-- [ ] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing):
+- [x] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing):
       - Verify `isValidPlugin()` rejects plugins missing `locations`, `describe`,
         or `uninstall`.
-- [ ] Add unit tests in `test/unit/harnesses/factory.test.ts` (new file) for
+- [x] Add unit tests in `test/unit/harnesses/factory.test.ts` (new file) for
       `LoadedHarnessPlugin.source`:
       - Loading a bundled harness (e.g. "opencode") when no external package is
         installed returns `source: "bundled"`.

@@ -6,18 +6,44 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../../../src/harnesses/factory.js";
+import {
+	installAgentFiles,
+	installSkillFiles,
+} from "../../../src/harnesses/installer.js";
 import { opencodeLocationResolver } from "../../../src/harnesses/locations.js";
 import {
 	listAgentTemplates,
 	renderAgentTemplate,
 	renderAgentTemplates,
 } from "../../../src/harnesses/opencode/loader.js";
+import opencodePlugin from "../../../src/harnesses/opencode/plugin.js";
+import { listSkillNames } from "../../../src/skills/loader.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeTmpDir(): string {
+	const dir = join(
+		tmpdir(),
+		`5x-opencode-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+function cleanupDir(dir: string): void {
+	try {
+		rmSync(dir, { recursive: true });
+	} catch {}
+}
 
 // ---------------------------------------------------------------------------
 // Factory tests
@@ -30,7 +56,7 @@ describe("Harness factory", () => {
 	});
 
 	test("loadHarnessPlugin resolves the bundled opencode plugin", async () => {
-		const plugin = await loadHarnessPlugin("opencode");
+		const { plugin } = await loadHarnessPlugin("opencode");
 		expect(plugin).toBeDefined();
 		expect(plugin.name).toBe("opencode");
 		expect(plugin.supportedScopes).toContain("project");
@@ -387,6 +413,138 @@ describe("agent templates — no cwd field", () => {
 		for (const tmpl of rendered) {
 			// cwd is not a supported OpenCode frontmatter field
 			expect(tmpl.content).not.toMatch(/^cwd:/m);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Plugin describe()
+// ---------------------------------------------------------------------------
+
+describe("opencode plugin describe()", () => {
+	test("returns correct skill names", () => {
+		const desc = opencodePlugin.describe();
+		const expectedSkills = listSkillNames();
+
+		expect(desc.skillNames).toEqual(expectedSkills);
+		expect(desc.skillNames).toContain("5x-plan");
+		expect(desc.skillNames).toContain("5x-plan-review");
+		expect(desc.skillNames).toContain("5x-phase-execution");
+	});
+
+	test("returns correct agent names", () => {
+		const desc = opencodePlugin.describe();
+		const expectedAgents = listAgentTemplates().map((t) => t.name);
+
+		expect(desc.agentNames).toEqual(expectedAgents);
+		expect(desc.agentNames).toContain("5x-reviewer");
+		expect(desc.agentNames).toContain("5x-plan-author");
+		expect(desc.agentNames).toContain("5x-code-author");
+		expect(desc.agentNames).toContain("5x-orchestrator");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Plugin uninstall()
+// ---------------------------------------------------------------------------
+
+describe("opencode plugin uninstall()", () => {
+	test("removes installed files for project scope", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const locations = opencodeLocationResolver.resolve("project", tmp);
+			const desc = opencodePlugin.describe();
+
+			// Install files first
+			installSkillFiles(
+				locations.skillsDir,
+				desc.skillNames.map((n) => ({ name: n, content: "content" })),
+				false,
+			);
+			installAgentFiles(
+				locations.agentsDir,
+				desc.agentNames.map((n) => ({ name: n, content: "content" })),
+				false,
+			);
+
+			// Verify installed
+			for (const name of desc.skillNames) {
+				expect(existsSync(join(locations.skillsDir, name, "SKILL.md"))).toBe(
+					true,
+				);
+			}
+
+			const result = await opencodePlugin.uninstall({
+				scope: "project",
+				projectRoot: tmp,
+			});
+
+			// Verify removed
+			expect(result.skills.removed.length).toBe(desc.skillNames.length);
+			expect(result.agents.removed.length).toBe(desc.agentNames.length);
+			expect(result.skills.notFound).toHaveLength(0);
+			expect(result.agents.notFound).toHaveLength(0);
+
+			for (const name of desc.skillNames) {
+				expect(existsSync(join(locations.skillsDir, name, "SKILL.md"))).toBe(
+					false,
+				);
+			}
+			for (const name of desc.agentNames) {
+				expect(existsSync(join(locations.agentsDir, `${name}.md`))).toBe(false);
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports not-found for missing files", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// Don't install anything — just uninstall
+			const result = await opencodePlugin.uninstall({
+				scope: "project",
+				projectRoot: tmp,
+			});
+
+			const desc = opencodePlugin.describe();
+			expect(result.skills.notFound.length).toBe(desc.skillNames.length);
+			expect(result.agents.notFound.length).toBe(desc.agentNames.length);
+			expect(result.skills.removed).toHaveLength(0);
+			expect(result.agents.removed).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("cleans empty directories after removal", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const locations = opencodeLocationResolver.resolve("project", tmp);
+			const desc = opencodePlugin.describe();
+
+			// Install files first
+			installSkillFiles(
+				locations.skillsDir,
+				desc.skillNames.map((n) => ({ name: n, content: "content" })),
+				false,
+			);
+			installAgentFiles(
+				locations.agentsDir,
+				desc.agentNames.map((n) => ({ name: n, content: "content" })),
+				false,
+			);
+
+			await opencodePlugin.uninstall({
+				scope: "project",
+				projectRoot: tmp,
+			});
+
+			// Both skills and agents dirs should be cleaned up
+			expect(existsSync(locations.skillsDir)).toBe(false);
+			expect(existsSync(locations.agentsDir)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
 		}
 	});
 });

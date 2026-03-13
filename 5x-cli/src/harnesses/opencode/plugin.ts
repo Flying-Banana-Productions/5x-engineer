@@ -9,19 +9,36 @@
  * having it installed in the project.
  */
 
-import { installAgentFiles, installSkillFiles } from "../installer.js";
+import { listSkillNames } from "../../skills/loader.js";
+import {
+	installAgentFiles,
+	installSkillFiles,
+	uninstallAgentFiles,
+	uninstallSkillFiles,
+} from "../installer.js";
 import { opencodeLocationResolver } from "../locations.js";
 import type {
+	HarnessDescription,
 	HarnessInstallContext,
 	HarnessInstallResult,
 	HarnessPlugin,
+	HarnessUninstallContext,
+	HarnessUninstallResult,
 } from "../types.js";
-import { renderAgentTemplates } from "./loader.js";
+import { listAgentTemplates, renderAgentTemplates } from "./loader.js";
 
 const opencodePlugin: HarnessPlugin = {
 	name: "opencode",
 	description: "Install 5x skills and native subagent profiles for OpenCode",
 	supportedScopes: ["project", "user"],
+
+	locations: opencodeLocationResolver,
+
+	describe(): HarnessDescription {
+		const skillNames = listSkillNames();
+		const agentNames = listAgentTemplates().map((t) => t.name);
+		return { skillNames, agentNames };
+	},
 
 	async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
 		const locations = opencodeLocationResolver.resolve(
@@ -46,6 +63,18 @@ const opencodePlugin: HarnessPlugin = {
 			agentTemplates,
 			ctx.force,
 		);
+
+		return { skills, agents };
+	},
+
+	async uninstall(
+		ctx: HarnessUninstallContext,
+	): Promise<HarnessUninstallResult> {
+		const locations = this.locations.resolve(ctx.scope, ctx.projectRoot);
+		const { skillNames, agentNames } = this.describe();
+
+		const skills = uninstallSkillFiles(locations.skillsDir, skillNames);
+		const agents = uninstallAgentFiles(locations.agentsDir, agentNames);
 
 		return { skills, agents };
 	},
