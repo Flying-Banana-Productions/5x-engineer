@@ -411,9 +411,9 @@ If $QUALITY_RETRIES > 2:
 
 Invoke author to fix quality failures:
 
-    5x invoke author author-process-impl-review --run $RUN \
-      --var review_path="" \
+    5x invoke author author-fix-quality --run $RUN \
       --var plan_path=$PLAN_PATH \
+      --var phase_number=$PHASE \
       --var user_notes="Quality gate failures: $FAILURES"
 
 Record: `5x run record "author:fix-quality" --run $RUN --phase $PHASE --result '<result>'`

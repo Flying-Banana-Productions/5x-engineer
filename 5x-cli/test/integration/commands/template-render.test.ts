@@ -772,6 +772,103 @@ describe("5x template render", () => {
 		{ timeout: 20000 },
 	);
 
+	// ---------------------------------------------------------------------------
+	// Phase 2: author-fix-quality template tests
+	// ---------------------------------------------------------------------------
+
+	test(
+		"renders author-fix-quality template with all required variables",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_quality_fix_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-fix-quality",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=2",
+					"--var",
+					"user_notes=Test failures in unit/commands",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				expect(data.template).toBe("author-fix-quality");
+				expect(data.selected_template).toBe("author-fix-quality");
+				expect(data.step_name).toBe("author:fix-quality");
+
+				const prompt = data.prompt as string;
+				expect(prompt).toContain("Phase 2");
+				expect(prompt).toContain("Test failures in unit/commands");
+				expect(prompt).toContain("quality remediation");
+				expect(prompt).toContain("quality gate failures");
+
+				// Should NOT contain review_path references since this template doesn't use it
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBeUndefined();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"author-fix-quality template does not require review_path variable",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_quality_fix_002";
+				insertRun(dir, runId, planPath);
+
+				// Verify that author-fix-quality does NOT auto-generate review_path
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-fix-quality",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=Lint errors in src/commands",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				const vars = data.variables as Record<string, string>;
+				// author-fix-quality should NOT have review_path in variables
+				expect(vars.review_path).toBeUndefined();
+
+				// But should have the required variables
+				expect(vars.plan_path).toBe(planPath);
+				expect(vars.phase_number).toBe("1");
+				expect(vars.user_notes).toBe("Lint errors in src/commands");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
 	test(
 		"fallback review_path uses run_id when phase is unavailable",
 		async () => {

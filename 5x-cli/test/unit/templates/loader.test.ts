@@ -209,6 +209,64 @@ describe("author-process-impl-review template", () => {
 	});
 });
 
+describe("author-fix-quality template", () => {
+	const vars = {
+		plan_path: "docs/development/001-impl-cli.md",
+		phase_number: "2",
+		user_notes: "Test failures in unit/commands",
+	};
+
+	test("renders with valid variables", () => {
+		const result = renderTemplate("author-fix-quality", vars);
+		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.prompt).toContain("Phase 2");
+		expect(result.prompt).toContain("Test failures in unit/commands");
+	});
+
+	test("includes completion section (no signal blocks)", () => {
+		const result = renderTemplate("author-fix-quality", vars);
+		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).not.toContain("5x:status");
+	});
+
+	test("is explicitly scoped to quality remediation (not code review)", () => {
+		const result = renderTemplate("author-fix-quality", vars);
+		expect(result.prompt).toContain("quality remediation");
+		expect(result.prompt).toContain("quality gate failures");
+		expect(result.prompt).not.toContain("review document");
+	});
+
+	test("instructs to fix tests, lint, and type errors", () => {
+		const result = renderTemplate("author-fix-quality", vars);
+		expect(result.prompt).toContain("Run all tests");
+		expect(result.prompt).toContain("lint");
+		expect(result.prompt).toContain("type");
+	});
+
+	test("does not require review_path variable", () => {
+		// author-fix-quality should NOT require review_path
+		const { metadata } = loadTemplate("author-fix-quality");
+		expect(metadata.variables).not.toContain("review_path");
+		expect(metadata.variables).toContain("plan_path");
+		expect(metadata.variables).toContain("phase_number");
+		expect(metadata.variables).toContain("user_notes");
+	});
+
+	test("has correct step_name for quality fixes", () => {
+		const { metadata } = loadTemplate("author-fix-quality");
+		expect(metadata.stepName).toBe("author:fix-quality");
+	});
+
+	test("errors on missing required variables", () => {
+		expect(() =>
+			renderTemplate("author-fix-quality", {
+				plan_path: "docs/development/001-impl-cli.md",
+				// missing phase_number and user_notes
+			}),
+		).toThrow(/missing required variables/);
+	});
+});
+
 describe("reviewer-plan template", () => {
 	const vars = {
 		plan_path: "docs/development/001-impl-cli.md",
