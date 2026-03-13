@@ -118,7 +118,6 @@ RESULT=$(5x invoke author author-generate-plan --run $RUN \
 ```
 
 Use `2>/dev/null` to discard stderr (streaming output) from your context.
-The user can monitor progress separately via `5x run watch`.
 
 ### Timeout layers
 
@@ -139,15 +138,6 @@ shell tool timeout generously (e.g., 10 minutes) as a safety net for
 catastrophic hangs. Let the invocation timeout handle normal operational
 control. An unexpectedly killed subprocess produces empty output — see
 Recovery for handling.
-
-### Monitoring agent progress
-
-`5x invoke` fallback writes NDJSON logs under the control-plane root's
-state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`). Logs are always
-anchored to the root, even when executing in a worktree. To monitor
-progress in real-time, suggest the user run in a separate terminal:
-
-    5x run watch --run <run-id> --human-readable
 
 ## Workflow
 

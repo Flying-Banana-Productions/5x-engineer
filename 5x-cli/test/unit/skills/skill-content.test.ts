@@ -300,6 +300,22 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toContain('readiness: "ready"');
 	});
 
+	test("documents checklist verification before recording phase:complete", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		// Must verify checklist completion via 5x plan phases BEFORE recording phase:complete
+		expect(content).toContain("5x plan phases $PLAN_PATH");
+		expect(content).toContain("done: true");
+		expect(content).toContain("phase:checklist_mismatch");
+	});
+
+	test("documents escalation on checklist mismatch (no auto-reinvoke)", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		// Must escalate to human when checklist not updated
+		expect(content).toMatch(/escalate|Escalate/);
+		expect(content).toMatch(/do NOT.*auto.reinvok|stop immediately/i);
+		expect(content).toMatch(/checklist mismatch|Checklist mismatch/i);
+	});
+
 	test("native subagent recovery section exists", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain(
@@ -309,8 +325,32 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Transport-neutral template language
+// Phase 4: run watch guidance removal
 // ---------------------------------------------------------------------------
+
+describe("Phase 4: run watch guidance removed from native-first skills", () => {
+	test("5x-plan skill does not mention run watch", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).not.toContain("run watch");
+	});
+
+	test("5x-plan-review skill does not mention run watch", () => {
+		const content = getDefaultSkillRaw("5x-plan-review");
+		expect(content).not.toContain("run watch");
+	});
+
+	test("5x-phase-execution skill does not mention run watch", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		expect(content).not.toContain("run watch");
+	});
+
+	test("5x invoke fallback is preserved in all skills", () => {
+		// 5x invoke should still be documented as fallback
+		expect(getDefaultSkillRaw("5x-plan")).toContain("5x invoke");
+		expect(getDefaultSkillRaw("5x-plan-review")).toContain("5x invoke");
+		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("5x invoke");
+	});
+});
 
 describe("task templates — transport-neutral language (Phase 4)", () => {
 	const templateNames = [

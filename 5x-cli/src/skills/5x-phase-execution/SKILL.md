@@ -120,8 +120,7 @@ subagents of the effective working directory.
 ### Fallback: 5x invoke
 
 When native agents are not installed, delegate using `5x invoke` as a
-subprocess. Use `2>/dev/null` to discard stderr (streaming output). The
-user can monitor progress separately via `5x run watch`.
+subprocess. Use `2>/dev/null` to discard stderr (streaming output).
 
 ### Timeout layers
 
@@ -141,15 +140,6 @@ Set your shell tool timeout generously (e.g., 10 minutes) as a safety
 net for catastrophic hangs. Let the invocation timeout handle normal
 operational control. An unexpectedly killed subprocess produces empty
 output — see Recovery for handling.
-
-### Monitoring agent progress
-
-`5x invoke` fallback writes NDJSON logs under the control-plane root's
-state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`). Logs are always
-anchored to the root, even when executing in a worktree. To monitor
-progress in real-time, suggest the user run in a separate terminal:
-
-    5x run watch --run <run-id> --human-readable
 
 ### Worktree-aware execution
 
@@ -381,7 +371,18 @@ Present the situation to the human:
 
 #### Step 6: Phase gate
 
-Record phase completion:
+Before recording phase completion, verify the checklist was updated:
+
+```bash
+# Verify checklist completion via the authoritative source
+PHASE_STATUS=$(5x plan phases $PLAN_PATH | jq -r ".phases[] | select(.number == $PHASE_NUMBER) | .done")
+```
+
+If `PHASE_STATUS` is not `true`:
+1. Record the mismatch: `5x run record "phase:checklist_mismatch" --run $RUN --phase $PHASE --result '{"phase":"$PHASE","reason":"checklist_not_updated"}'`
+2. Escalate to the human immediately — do NOT proceed with phase:complete
+
+If `PHASE_STATUS` is `true`, record phase completion:
 
     5x run record "phase:complete" --run $RUN --phase $PHASE --result '{"phase":"$PHASE"}'
 
@@ -418,11 +419,24 @@ Report to the human: all phases implemented and reviewed.
 - The author should not have reverted previous work
 
 ### Phase boundary:
-- `5x plan phases $PLAN_PATH` should show the completed phase's
-  checklist items as checked
+- BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm current phase shows `done: true`
+- If checklist is not updated, record `phase:checklist_mismatch` and escalate to human — do NOT record `phase:complete`
 - Phase count should not have changed since the run started
 
 ## Recovery
+
+### Checklist mismatch (verification failure)
+
+**Symptom:** Phase completes review/quality but `5x plan phases` shows `done: false` for the current phase.
+
+**Response:**
+1. Record `phase:checklist_mismatch` with phase number and reason
+2. Stop immediately — do NOT record `phase:complete`
+3. Escalate to the human with clear explanation:
+   "Phase $PHASE passed review and quality gates, but the plan checklist was not updated. The author must mark completed items with `[x]` in the plan before the phase can be recorded as complete."
+4. Wait for human guidance — do NOT auto-reinvoke the author
+
+This is an explicit failure mode. The audit trail must show `phase:checklist_mismatch` rather than a misleading `phase:complete`.
 
 ### Context loss (compaction)
 

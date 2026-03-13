@@ -106,8 +106,7 @@ reuse is unavailable or awkward, omit `--session` to start fresh.
 ### Fallback: 5x invoke
 
 When native agents are not installed, delegate using `5x invoke` as a
-subprocess. Use `2>/dev/null` to discard stderr (streaming output). The
-user can monitor progress separately via `5x run watch`.
+subprocess. Use `2>/dev/null` to discard stderr (streaming output).
 
 ### Timeout layers
 
@@ -127,14 +126,6 @@ Set your shell tool timeout generously (e.g., 10 minutes) as a safety
 net for catastrophic hangs. Let the invocation timeout handle normal
 operational control. An unexpectedly killed subprocess produces empty
 output — see Recovery for handling.
-
-### Monitoring agent progress
-
-`5x invoke` fallback writes NDJSON logs under the control-plane root's
-state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`). To monitor
-progress in real-time, suggest the user run in a separate terminal:
-
-    5x run watch --run <run-id> --human-readable
 
 ## Workflow
 

@@ -157,20 +157,20 @@ legacy native author payloads using `status`, normalize them to canonical
 records `phase:checklist_mismatch` when verification fails, and the native-first
 skills no longer mention `5x run watch`.
 
-- [ ] Update `src/skills/5x-phase-execution/SKILL.md` so the phase gate runs
+- [x] Update `src/skills/5x-phase-execution/SKILL.md` so the phase gate runs
       `5x plan phases $PLAN_PATH` BEFORE recording `phase:complete` and confirms
       the current phase reports `done: true`.
-- [ ] If the checklist is not updated, record `phase:checklist_mismatch` instead
+- [x] If the checklist is not updated, record `phase:checklist_mismatch` instead
       of `phase:complete`, stop immediately, and escalate to the human with a
       clear explanation instead of auto-reinvoking the author.
-- [ ] Reinforce this behavior in the skill's invariants/recovery sections so the
+- [x] Reinforce this behavior in the skill's invariants/recovery sections so the
       checklist mismatch is an explicit failure mode with its own audit event.
-- [ ] Remove `run watch` guidance from `src/skills/5x-plan/SKILL.md`,
+- [x] Remove `run watch` guidance from `src/skills/5x-plan/SKILL.md`,
       `src/skills/5x-plan-review/SKILL.md`, and
       `src/skills/5x-phase-execution/SKILL.md`.
-- [ ] Keep `5x invoke` fallback guidance intact, but avoid suggesting transport-
+- [x] Keep `5x invoke` fallback guidance intact, but avoid suggesting transport-
       specific monitoring behavior in the native-first path.
-- [ ] Update skill-content tests to assert the new checklist-verification
+- [x] Update skill-content tests to assert the new checklist-verification
       language and the absence of `run watch` guidance.
 
 ## Files Touched
