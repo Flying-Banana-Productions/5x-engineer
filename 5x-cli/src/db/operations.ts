@@ -105,6 +105,15 @@ export function getPlan(db: Database, planPath: string): PlanRow | null {
 		.get(planPath) as PlanRow | null;
 }
 
+export function listPlansByWorktreePath(
+	db: Database,
+	worktreePath: string,
+): PlanRow[] {
+	return db
+		.query("SELECT * FROM plans WHERE worktree_path = ?1 ORDER BY plan_path")
+		.all(worktreePath) as PlanRow[];
+}
+
 // --- Runs ---
 
 export function createRun(

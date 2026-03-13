@@ -50,13 +50,7 @@ function setupProject(dir: string): { planPath: string } {
 	});
 
 	// Create plan file
-	const planDir = join(dir, "docs", "development");
-	mkdirSync(planDir, { recursive: true });
-	const planPath = join(planDir, "001-test-feature.md");
-	writeFileSync(
-		planPath,
-		"# Test Feature Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
-	);
+	const planPath = addPlan(dir, "001-test-feature.md");
 
 	// Create .5x directory
 	mkdirSync(join(dir, ".5x"), { recursive: true });
@@ -79,6 +73,17 @@ function setupProject(dir: string): { planPath: string } {
 	});
 
 	return { planPath };
+}
+
+function addPlan(dir: string, filename: string): string {
+	const planDir = join(dir, "docs", "development");
+	mkdirSync(planDir, { recursive: true });
+	const planPath = join(planDir, filename);
+	writeFileSync(
+		planPath,
+		`# ${filename}\n\n## Phase 1: Setup\n\n- [ ] Do thing\n`,
+	);
+	return planPath;
 }
 
 interface CmdResult {
@@ -287,6 +292,114 @@ describe("5x worktree", () => {
 	);
 
 	test(
+		"detach: removes only the selected plan mapping",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const secondPlanPath = addPlan(dir, "002-detach-target.md");
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add second plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const createResult = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+				]);
+				const createData = parseJson(createResult.stdout);
+				const wtPath = (createData.data as { worktree_path: string })
+					.worktree_path;
+
+				const attachResult = await run5x(dir, [
+					"worktree",
+					"attach",
+					"--plan",
+					secondPlanPath,
+					"--path",
+					wtPath,
+				]);
+				expect(attachResult.exitCode).toBe(0);
+
+				const result = await run5x(dir, [
+					"worktree",
+					"detach",
+					"--plan",
+					secondPlanPath,
+				]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					detached: boolean;
+					plan_path: string;
+					worktree_path: null;
+					branch: null;
+					previous_worktree_path: string;
+				};
+				expect(payload.detached).toBe(true);
+				expect(payload.plan_path).toBe(secondPlanPath);
+				expect(payload.worktree_path).toBeNull();
+				expect(payload.branch).toBeNull();
+				expect(payload.previous_worktree_path).toBe(wtPath);
+				expect(existsSync(wtPath)).toBe(true);
+
+				const listResult = await run5x(dir, ["worktree", "list"]);
+				const listData = parseJson(listResult.stdout);
+				const listed = (
+					listData.data as {
+						worktrees: Array<{ plan_path: string; worktree_path: string }>;
+					}
+				).worktrees;
+				expect(listed).toHaveLength(1);
+				expect(listed[0]?.plan_path).toBe(planPath);
+				expect(listed[0]?.worktree_path).toBe(wtPath);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"detach: returns error for plan with no worktree",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+
+				const result = await run5x(dir, [
+					"worktree",
+					"detach",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(1);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				expect((data.error as { code: string }).code).toBe(
+					"WORKTREE_NOT_FOUND",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"remove: removes an existing worktree",
 		async () => {
 			const dir = makeTmpDir();
@@ -326,6 +439,79 @@ describe("5x worktree", () => {
 	);
 
 	test(
+		"remove: blocks deleting a worktree shared by multiple plans",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const secondPlanPath = addPlan(dir, "002-shared-plan.md");
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add shared plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const createResult = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+				]);
+				const createData = parseJson(createResult.stdout);
+				const wtPath = (createData.data as { worktree_path: string })
+					.worktree_path;
+
+				const attachResult = await run5x(dir, [
+					"worktree",
+					"attach",
+					"--plan",
+					secondPlanPath,
+					"--path",
+					wtPath,
+				]);
+				expect(attachResult.exitCode).toBe(0);
+
+				const result = await run5x(dir, [
+					"worktree",
+					"remove",
+					"--plan",
+					planPath,
+					"--force",
+				]);
+				expect(result.exitCode).toBe(1);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				const error = data.error as {
+					code: string;
+					detail?: {
+						reference_count?: number;
+						referencing_plans?: string[];
+					};
+				};
+				expect(error.code).toBe("WORKTREE_SHARED");
+				expect(error.detail?.reference_count).toBe(2);
+				expect(error.detail?.referencing_plans).toEqual([
+					planPath,
+					secondPlanPath,
+				]);
+				expect(existsSync(wtPath)).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"remove: returns error for plan with no worktree",
 		async () => {
 			const dir = makeTmpDir();
@@ -343,6 +529,67 @@ describe("5x worktree", () => {
 				expect(data.ok).toBe(false);
 				const error = data.error as { code: string };
 				expect(error.code).toBe("WORKTREE_NOT_FOUND");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"remove: blocks shared missing-directory cleanup until plans are detached",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const secondPlanPath = addPlan(dir, "002-missing-shared.md");
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add missing shared plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const createResult = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+				]);
+				const createData = parseJson(createResult.stdout);
+				const wtPath = (createData.data as { worktree_path: string })
+					.worktree_path;
+
+				const attachResult = await run5x(dir, [
+					"worktree",
+					"attach",
+					"--plan",
+					secondPlanPath,
+					"--path",
+					wtPath,
+				]);
+				expect(attachResult.exitCode).toBe(0);
+
+				rmSync(wtPath, { recursive: true });
+
+				const result = await run5x(dir, [
+					"worktree",
+					"remove",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(1);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				expect((data.error as { code: string }).code).toBe("WORKTREE_SHARED");
 			} finally {
 				cleanupDir(dir);
 			}

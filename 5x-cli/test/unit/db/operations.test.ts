@@ -11,6 +11,7 @@ import {
 	getPlan,
 	getRunHistory,
 	getRunMetrics,
+	listPlansByWorktreePath,
 	updateRunStatus,
 	upsertPlan,
 } from "../../../src/db/operations.js";
@@ -94,6 +95,30 @@ describe("plans", () => {
 		const plan = unwrap(getPlan(db, "/test/plan.md"));
 		expect(plan.worktree_path).toBe("/tmp/wt");
 		expect(plan.branch).toBe("5x/test");
+	});
+
+	test("listPlansByWorktreePath returns all plans mapped to the same worktree", () => {
+		upsertPlan(db, {
+			planPath: "/test/plan-a.md",
+			worktreePath: "/tmp/shared-wt",
+			branch: "5x/shared",
+		});
+		upsertPlan(db, {
+			planPath: "/test/plan-b.md",
+			worktreePath: "/tmp/shared-wt",
+			branch: "5x/shared",
+		});
+		upsertPlan(db, {
+			planPath: "/test/plan-c.md",
+			worktreePath: "/tmp/other-wt",
+			branch: "5x/other",
+		});
+
+		const plans = listPlansByWorktreePath(db, "/tmp/shared-wt");
+		expect(plans.map((plan) => plan.plan_path)).toEqual([
+			"/test/plan-a.md",
+			"/test/plan-b.md",
+		]);
 	});
 });
 

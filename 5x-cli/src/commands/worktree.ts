@@ -1,7 +1,7 @@
 /**
  * v1 Worktree management commands — citty adapter.
  *
- * Subcommands: create, remove, list
+ * Subcommands: create, attach, detach, remove, list
  *
  * Business logic lives in worktree.handler.ts.
  */
@@ -10,6 +10,7 @@ import { defineCommand } from "citty";
 import {
 	worktreeAttach,
 	worktreeCreate,
+	worktreeDetach,
 	worktreeList,
 	worktreeRemove,
 } from "./worktree.handler.js";
@@ -92,6 +93,25 @@ const attachCmd = defineCommand({
 		}),
 });
 
+const detachCmd = defineCommand({
+	meta: {
+		name: "detach",
+		description:
+			"Detach a plan from its worktree without deleting the worktree",
+	},
+	args: {
+		plan: {
+			type: "string",
+			description: "Path to implementation plan",
+			required: true,
+		},
+	},
+	run: ({ args }) =>
+		worktreeDetach({
+			plan: args.plan as string,
+		}),
+});
+
 const listCmd = defineCommand({
 	meta: {
 		name: "list",
@@ -110,6 +130,7 @@ export default defineCommand({
 	subCommands: {
 		create: () => Promise.resolve(createCmd),
 		attach: () => Promise.resolve(attachCmd),
+		detach: () => Promise.resolve(detachCmd),
 		remove: () => Promise.resolve(removeCmd),
 		list: () => Promise.resolve(listCmd),
 	},

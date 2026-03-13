@@ -390,11 +390,14 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 ```bash
 5x worktree create --plan <path> [--branch <name>]   # Create isolated git worktree
 5x worktree attach --plan <path> --path <worktree>   # Attach existing git worktree to plan
+5x worktree detach --plan <path>                     # Remove plan->worktree mapping only
 5x worktree remove --plan <path> [--force]            # Remove worktree
 5x worktree list                                      # List active worktrees
 ```
 
 `run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path.
+
+`worktree detach` reports the post-detach state (`worktree_path: null`, `branch: null`) and also includes `previous_worktree_path` / `previous_branch` for confirmation.
 
 **Worktree-aware execution:** When a run is mapped to a worktree, all `--run`-scoped commands (`invoke`, `quality run`, `diff`) automatically resolve the mapped worktree as their execution context. No `cd` or `--workdir` is needed. No `.5x/` directory is required in worktree checkouts — all state stays in the root control-plane.
 

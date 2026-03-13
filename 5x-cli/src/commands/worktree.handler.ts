@@ -6,14 +6,18 @@
  * Phase 6 guards:
  * - `worktree create` fails in linked-worktree context unless `--allow-nested`.
  * - `worktree remove` prevents removing the current checkout worktree.
- * - `worktree attach/remove` emit warnings in isolated mode.
+ * - `worktree attach/detach/remove` emit warnings in isolated mode.
  * - Legacy split-brain detection warns when root DB shadows a local state DB.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { getPlan, upsertPlan } from "../db/operations.js";
+import {
+	getPlan,
+	listPlansByWorktreePath,
+	upsertPlan,
+} from "../db/operations.js";
 import {
 	branchNameFromPlan,
 	createWorktree,
@@ -58,6 +62,12 @@ export interface WorktreeRemoveParams {
 export interface WorktreeAttachParams {
 	plan: string;
 	path: string;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
+}
+
+export interface WorktreeDetachParams {
+	plan: string;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
 }
@@ -334,6 +344,19 @@ export async function worktreeRemove(
 	}
 
 	const wtPath = plan.worktree_path as string;
+	const references = listPlansByWorktreePath(db, wtPath);
+	if (references.length > 1) {
+		outputError(
+			"WORKTREE_SHARED",
+			"Cannot remove a worktree while multiple plans still reference it. Detach the other plans first.",
+			{
+				worktree_path: wtPath,
+				reference_count: references.length,
+				referencing_plans: references.map((ref) => ref.plan_path),
+				hint: "Use `5x worktree detach --plan <path>` for all but one plan.",
+			},
+		);
+	}
 
 	// Phase 6: prevent removing current checkout worktree
 	const checkoutRoot = resolveCheckoutRoot(cwd);
@@ -404,6 +427,37 @@ export async function worktreeRemove(
 		worktree_path: wtPath,
 		removed: true,
 		branch_deleted: branchDeleted,
+	});
+}
+
+export async function worktreeDetach(
+	params: WorktreeDetachParams,
+): Promise<void> {
+	const planPath = resolve(params.plan);
+	const canonical = canonicalizePlanPath(planPath);
+
+	const cwd = resolve(params.startDir ?? ".");
+	const cpEarly = resolveControlPlaneRoot(cwd);
+	emitIsolatedModeWarning(cpEarly, "detach");
+	emitSplitBrainWarning(cpEarly, params.startDir);
+
+	const { db } = await resolveDbContext({ startDir: cwd });
+	const plan = getPlan(db, canonical);
+	if (!plan?.worktree_path) {
+		outputError("WORKTREE_NOT_FOUND", "No worktree associated with this plan");
+	}
+
+	const wtPath = plan.worktree_path as string;
+	const branch = plan.branch;
+	upsertPlan(db, { planPath: canonical, worktreePath: "", branch: "" });
+
+	outputSuccess({
+		plan_path: canonical,
+		worktree_path: null,
+		branch: null,
+		previous_worktree_path: wtPath,
+		previous_branch: branch,
+		detached: true,
 	});
 }
 

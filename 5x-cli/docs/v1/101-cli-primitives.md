@@ -62,7 +62,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
 | **Quality** | `quality run` | Execute quality gates |
 | **Inspection** | `plan phases`, `diff` | Read plan structure, inspect git changes |
-| **Worktree** | `worktree create`, `worktree attach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
+| **Worktree** | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
 
 ---
@@ -543,6 +543,8 @@ Remove a worktree.
 
 Removes the git worktree and cleans up the branch. `--force` removes even if the worktree has uncommitted changes.
 
+If multiple plans still reference the same worktree, `remove` fails with `WORKTREE_SHARED`. Detach the other plans first.
+
 ### `5x worktree attach`
 
 Attach an existing git worktree path to a plan mapping.
@@ -555,6 +557,35 @@ Behavior:
 - Validates that `--path` exists and is a git worktree in the current repository
 - Stores `plan_path -> worktree_path + branch` association in `plans`
 - Returns attached metadata (`attached: true`, `worktree_path`, `branch`)
+
+### `5x worktree detach`
+
+Detach a plan from its worktree mapping without deleting the git worktree.
+
+```
+5x worktree detach --plan <path>
+```
+
+Behavior:
+- Clears only that plan's `plan_path -> worktree_path + branch` association in `plans`
+- Does not run any git commands or delete the worktree directory
+- Use this before `worktree remove` when multiple plans share one worktree
+
+**Returns:**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "plan_path": "/path/to/plan.md",
+    "worktree_path": null,
+    "branch": null,
+    "previous_worktree_path": "/path/to/repo/.5x/worktrees/feature-abc123",
+    "previous_branch": "5x/feature",
+    "detached": true
+  }
+}
+```
 
 ### `5x worktree list`
 
