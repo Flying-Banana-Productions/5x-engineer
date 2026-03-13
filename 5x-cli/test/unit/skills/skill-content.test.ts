@@ -314,6 +314,7 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 
 describe("task templates — transport-neutral language (Phase 4)", () => {
 	const templateNames = [
+		"author-fix-quality",
 		"author-generate-plan",
 		"author-next-phase",
 		"author-process-plan-review",

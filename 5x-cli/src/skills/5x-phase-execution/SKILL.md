@@ -257,8 +257,8 @@ If $QUALITY_RETRIES > 2:
 Delegate fix to the code author using the native-first pattern:
 
 ```bash
-RENDERED=$(5x template render author-process-impl-review --run $RUN \
-  --var review_path="" --var plan_path=$PLAN_PATH \
+RENDERED=$(5x template render author-fix-quality --run $RUN \
+  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES")
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -267,13 +267,13 @@ if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
    [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
   RESULT=<launch native 5x-code-author subagent with PROMPT>
 else
-  RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-    --var review_path="" --var plan_path=$PLAN_PATH \
+  RESULT=$(5x invoke author author-fix-quality --run $RUN \
+    --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
     --var user_notes="Quality gate failures: $FAILURES" 2>/dev/null)
 fi
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step "author:fix-quality" --phase $PHASE
+  --run $RUN --record --step $STEP --phase $PHASE
 ```
 
 Loop back to Step 2.

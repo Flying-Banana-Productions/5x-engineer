@@ -117,17 +117,17 @@ auto-populate deterministic review paths from config defaults and implicit conte
 **Completion gate:** quality-retry author flows no longer pass `review_path=""`
 and use a dedicated prompt template that matches the actual task.
 
-- [ ] Add a new bundled template for author quality-fix work (for example,
+- [x] Add a new bundled template for author quality-fix work (for example,
       `author-fix-quality`) with its own `step_name` and variables tailored to
       quality failures rather than review documents.
-- [ ] Register the new template in `src/templates/loader.ts` and ensure it is
+- [x] Register the new template in `src/templates/loader.ts` and ensure it is
       available to both `5x template render` and `5x invoke`.
-- [ ] Update `src/skills/5x-phase-execution/SKILL.md` so the quality-retry path
+- [x] Update `src/skills/5x-phase-execution/SKILL.md` so the quality-retry path
       renders and invokes the new template instead of reusing
       `author-process-impl-review`.
-- [ ] Remove the `review_path=""` placeholder from all quality-fix examples and
+- [x] Remove the `review_path=""` placeholder from all quality-fix examples and
       fallback commands.
-- [ ] Add template-loading/rendering coverage for the new template and update any
+- [x] Add template-loading/rendering coverage for the new template and update any
       skill-content assertions that mention the old quality-fix pattern.
 
 ## Phase 3: Normalize Legacy Native Author Status Payloads
