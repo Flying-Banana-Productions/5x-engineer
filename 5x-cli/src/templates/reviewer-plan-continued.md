@@ -20,6 +20,12 @@ Follow the same review perspective, issue classification (`auto_fix` / `human_re
 
 You are running as a delegated non-interactive workflow. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.). If you need human judgment on an issue, classify it as `human_required` in your review items.
 
+
 ## Completion
 
-Write your updated review to `{{review_path}}` and return your structured verdict (readiness, items, summary).
+Write your updated review to `{{review_path}}`, commit the file, and return your structured verdict (readiness, items, summary):
+
+```
+git add {{review_path}}
+git commit -m "docs: update plan review for <plan name>"
+```

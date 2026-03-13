@@ -61,7 +61,14 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-Write your review to `{{review_path}}` and return when done. The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
+Write your review to `{{review_path}}` and commit the file before returning:
+
+```
+git add {{review_path}}
+git commit -m "docs: add plan review for <plan name>"
+```
+
+The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 
 Your structured response will include:
 - **readiness**: `ready`, `ready_with_corrections`, or `not_ready`
