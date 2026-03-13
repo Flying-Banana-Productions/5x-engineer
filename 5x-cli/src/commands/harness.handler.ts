@@ -32,6 +32,8 @@ export interface HarnessInstallParams {
 	force?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	homeDir?: string;
 }
 
 export interface HarnessUninstallParams {
@@ -43,6 +45,8 @@ export interface HarnessUninstallParams {
 	all?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	homeDir?: string;
 }
 
 /** Typed output from the uninstall data layer. */
@@ -135,6 +139,7 @@ export async function harnessInstall(
 		force,
 		skills,
 		config: { authorModel, reviewerModel },
+		homeDir: params.homeDir,
 	});
 
 	// 8. Report results
@@ -290,7 +295,11 @@ async function harnessUninstallCore(
 	// 6. Run uninstall for each scope
 	const scopes: Partial<Record<HarnessScope, HarnessUninstallResult>> = {};
 	for (const s of scopesToProcess) {
-		scopes[s] = await plugin.uninstall({ scope: s, projectRoot });
+		scopes[s] = await plugin.uninstall({
+			scope: s,
+			projectRoot,
+			homeDir: params.homeDir,
+		});
 	}
 
 	return { harnessName: name, scopes };

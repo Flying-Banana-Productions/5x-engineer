@@ -44,7 +44,11 @@ export interface HarnessLocations {
 export interface HarnessLocationResolver {
 	name: string;
 	/** Resolve install paths for the given scope. */
-	resolve(scope: HarnessScope, projectRoot: string): HarnessLocations;
+	resolve(
+		scope: HarnessScope,
+		projectRoot: string,
+		homeDir?: string,
+	): HarnessLocations;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +67,11 @@ export interface HarnessLocationResolver {
  */
 export const opencodeLocationResolver: HarnessLocationResolver = {
 	name: "opencode",
-	resolve(scope: HarnessScope, projectRoot: string): HarnessLocations {
+	resolve(
+		scope: HarnessScope,
+		projectRoot: string,
+		homeDir?: string,
+	): HarnessLocations {
 		if (scope === "project") {
 			const base = join(projectRoot, ".opencode");
 			return {
@@ -72,8 +80,9 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 			};
 		}
 
-		// user scope: XDG config directory
-		const base = join(homedir(), ".config", "opencode");
+		// user scope: XDG config directory (respect HOME env var for testability)
+		const home = homeDir ?? process.env.HOME ?? homedir();
+		const base = join(home, ".config", "opencode");
 		return {
 			agentsDir: join(base, "agents"),
 			skillsDir: join(base, "skills"),

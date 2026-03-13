@@ -45,6 +45,8 @@ export interface HarnessInstallContext {
 		authorModel?: string;
 		reviewerModel?: string;
 	};
+	/** Home directory override for user scope — defaults to process.env.HOME or homedir(). */
+	homeDir?: string;
 }
 
 /** Result returned by a harness plugin's install function. */
@@ -71,6 +73,8 @@ export interface HarnessUninstallContext {
 	scope: HarnessScope;
 	/** Absolute path to the project root (git checkout root or cwd). */
 	projectRoot: string;
+	/** Home directory override for user scope — defaults to process.env.HOME or homedir(). */
+	homeDir?: string;
 }
 
 /** Result returned by a harness plugin's uninstall function. */
@@ -94,7 +98,11 @@ export interface HarnessPlugin {
 	readonly supportedScopes: HarnessScope[];
 	/** Path resolver for harness install locations. */
 	readonly locations: {
-		resolve(scope: HarnessScope, projectRoot: string): HarnessLocations;
+		resolve(
+			scope: HarnessScope,
+			projectRoot: string,
+			homeDir?: string,
+		): HarnessLocations;
 	};
 	/** Return names of managed skills and agents. */
 	describe(): HarnessDescription;

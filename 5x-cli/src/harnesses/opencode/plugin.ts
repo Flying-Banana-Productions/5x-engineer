@@ -44,6 +44,7 @@ const opencodePlugin: HarnessPlugin = {
 		const locations = opencodeLocationResolver.resolve(
 			ctx.scope,
 			ctx.projectRoot,
+			ctx.homeDir,
 		);
 
 		// Install skills
@@ -70,7 +71,11 @@ const opencodePlugin: HarnessPlugin = {
 	async uninstall(
 		ctx: HarnessUninstallContext,
 	): Promise<HarnessUninstallResult> {
-		const locations = this.locations.resolve(ctx.scope, ctx.projectRoot);
+		const locations = this.locations.resolve(
+			ctx.scope,
+			ctx.projectRoot,
+			ctx.homeDir,
+		);
 		const { skillNames, agentNames } = this.describe();
 
 		const skills = uninstallSkillFiles(locations.skillsDir, skillNames);

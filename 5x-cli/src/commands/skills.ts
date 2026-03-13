@@ -38,6 +38,7 @@ const installCmd = defineCommand({
 			scope: args.scope as "user" | "project",
 			force: args.force as boolean | undefined,
 			installRoot: args["install-root"] as string | undefined,
+			homeDir: process.env.HOME,
 		}),
 });
 
@@ -64,6 +65,7 @@ const uninstallCmd = defineCommand({
 		skillsUninstall({
 			scope: args.scope as "all" | "user" | "project",
 			installRoot: args["install-root"] as string | undefined,
+			homeDir: process.env.HOME,
 		}),
 });
 

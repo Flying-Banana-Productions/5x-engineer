@@ -40,6 +40,7 @@ const installCmd = defineCommand({
 			name: args.name as string,
 			scope: args.scope as string | undefined,
 			force: args.force as boolean | undefined,
+			homeDir: process.env.HOME,
 		}),
 });
 
@@ -78,6 +79,7 @@ const uninstallCmd = defineCommand({
 			name: args.name as string,
 			scope: args.scope as string | undefined,
 			all: args.all as boolean | undefined,
+			homeDir: process.env.HOME,
 		}),
 });
 
