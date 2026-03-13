@@ -6,16 +6,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-	rmSync,
-} from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { skillsInstall, skillsUninstall } from "../../../src/commands/skills.handler.js";
+import {
+	skillsInstall,
+	skillsUninstall,
+} from "../../../src/commands/skills.handler.js";
 import { listSkillNames } from "../../../src/skills/loader.js";
 
 // ---------------------------------------------------------------------------
@@ -46,12 +43,18 @@ describe("skillsUninstall project scope", () => {
 		const tmp = makeTmpDir();
 		try {
 			// First install with startDir
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
 
 			// Verify files exist
 			const skillNames = listSkillNames();
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				expect(
+					existsSync(join(tmp, ".agents", "skills", name, "SKILL.md")),
+				).toBe(true);
 			}
 
 			// Uninstall
@@ -62,7 +65,9 @@ describe("skillsUninstall project scope", () => {
 
 			// Verify files removed
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				expect(
+					existsSync(join(tmp, ".agents", "skills", name, "SKILL.md")),
+				).toBe(false);
 			}
 
 			// Verify output
@@ -98,7 +103,11 @@ describe("skillsUninstall project scope", () => {
 		const tmp = makeTmpDir();
 		try {
 			// Install then uninstall with startDir
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
 			await skillsUninstall({ scope: "project", startDir: tmp });
 
 			// Verify directories are cleaned up
@@ -113,12 +122,18 @@ describe("skillsUninstall project scope", () => {
 		const tmp = makeTmpDir();
 		try {
 			// Install with custom root and startDir
-			await skillsInstall({ scope: "project", installRoot: ".claude", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".claude",
+				startDir: tmp,
+			});
 
 			// Verify files exist
 			const skillNames = listSkillNames();
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".claude", "skills", name, "SKILL.md"))).toBe(true);
+				expect(
+					existsSync(join(tmp, ".claude", "skills", name, "SKILL.md")),
+				).toBe(true);
 			}
 
 			// Uninstall with same custom root
@@ -130,7 +145,9 @@ describe("skillsUninstall project scope", () => {
 
 			// Verify files removed
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".claude", "skills", name, "SKILL.md"))).toBe(false);
+				expect(
+					existsSync(join(tmp, ".claude", "skills", name, "SKILL.md")),
+				).toBe(false);
 			}
 
 			expect(output.installRoot).toBe(".claude");
@@ -150,12 +167,18 @@ describe("skillsUninstall user scope", () => {
 		const fakeHome = makeTmpDir();
 		try {
 			// Install to fake home with homeDir override
-			await skillsInstall({ scope: "user", installRoot: ".agents", homeDir: fakeHome });
+			await skillsInstall({
+				scope: "user",
+				installRoot: ".agents",
+				homeDir: fakeHome,
+			});
 
 			// Verify files exist
 			const skillNames = listSkillNames();
 			for (const name of skillNames) {
-				expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				expect(
+					existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md")),
+				).toBe(true);
 			}
 
 			// Uninstall from fake home
@@ -166,7 +189,9 @@ describe("skillsUninstall user scope", () => {
 
 			// Verify files removed
 			for (const name of skillNames) {
-				expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				expect(
+					existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md")),
+				).toBe(false);
 			}
 
 			expect(output.scope).toBe("user");
@@ -184,7 +209,11 @@ describe("skillsUninstall user scope", () => {
 		const fakeHome = makeTmpDir();
 		try {
 			// Install then uninstall with homeDir override
-			await skillsInstall({ scope: "user", installRoot: ".agents", homeDir: fakeHome });
+			await skillsInstall({
+				scope: "user",
+				installRoot: ".agents",
+				homeDir: fakeHome,
+			});
 			await skillsUninstall({ scope: "user", homeDir: fakeHome });
 
 			// Verify directories are cleaned up
@@ -207,15 +236,27 @@ describe("skillsUninstall all scope", () => {
 		const fakeHome = makeTmpDir();
 		try {
 			// Install to both scopes with proper overrides
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
-			await skillsInstall({ scope: "user", installRoot: ".agents", homeDir: fakeHome });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
+			await skillsInstall({
+				scope: "user",
+				installRoot: ".agents",
+				homeDir: fakeHome,
+			});
 
 			const skillNames = listSkillNames();
 
 			// Verify both scopes have files
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(true);
-				expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				expect(
+					existsSync(join(tmp, ".agents", "skills", name, "SKILL.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md")),
+				).toBe(true);
 			}
 
 			// Uninstall all
@@ -227,8 +268,12 @@ describe("skillsUninstall all scope", () => {
 
 			// Verify both scopes are empty
 			for (const name of skillNames) {
-				expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(false);
-				expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				expect(
+					existsSync(join(tmp, ".agents", "skills", name, "SKILL.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md")),
+				).toBe(false);
 			}
 
 			expect(output.scope).toBe("all");
@@ -247,7 +292,11 @@ describe("skillsUninstall all scope", () => {
 		const fakeHome = makeTmpDir();
 		try {
 			// Only install to project scope with startDir
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
 
 			const skillNames = listSkillNames();
 
@@ -281,12 +330,20 @@ describe("skillsUninstall preserves user-created files", () => {
 		const tmp = makeTmpDir();
 		try {
 			// Install bundled skills with startDir
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
 
 			// Create a user-created skill directory with files
 			const customSkillDir = join(tmp, ".agents", "skills", "my-custom-skill");
 			mkdirSync(customSkillDir, { recursive: true });
-			writeFileSync(join(customSkillDir, "SKILL.md"), "# Custom Skill", "utf-8");
+			writeFileSync(
+				join(customSkillDir, "SKILL.md"),
+				"# Custom Skill",
+				"utf-8",
+			);
 			writeFileSync(join(customSkillDir, "extra.txt"), "extra file", "utf-8");
 
 			// Uninstall bundled skills
@@ -308,7 +365,11 @@ describe("skillsUninstall preserves user-created files", () => {
 		const tmp = makeTmpDir();
 		try {
 			// Install bundled skills with startDir
-			await skillsInstall({ scope: "project", installRoot: ".agents", startDir: tmp });
+			await skillsInstall({
+				scope: "project",
+				installRoot: ".agents",
+				startDir: tmp,
+			});
 
 			// Add an extra file to a bundled skill directory
 			const skillDir = join(tmp, ".agents", "skills", "5x-plan");

@@ -7,10 +7,10 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { removeDirIfEmpty } from "../harnesses/installer.js";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { listSkillNames, listSkills } from "../skills/loader.js";
-import { removeDirIfEmpty } from "../harnesses/installer.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -62,7 +62,13 @@ interface SkillsUninstallOutput {
 export async function skillsInstall(
 	params: SkillsInstallParams,
 ): Promise<void> {
-	const { scope, force = false, installRoot = ".agents", startDir, homeDir } = params;
+	const {
+		scope,
+		force = false,
+		installRoot = ".agents",
+		startDir,
+		homeDir,
+	} = params;
 
 	if (scope !== "user" && scope !== "project") {
 		outputError(
@@ -71,7 +77,8 @@ export async function skillsInstall(
 		);
 	}
 
-	const baseDir = scope === "user" ? (homeDir ?? homedir()) : resolveProjectRoot(startDir);
+	const baseDir =
+		scope === "user" ? (homeDir ?? homedir()) : resolveProjectRoot(startDir);
 	const skillsDir = join(baseDir, installRoot, "skills");
 
 	const skills = listSkills();
@@ -152,8 +159,9 @@ export async function skillsUninstall(
 		scope === "all" ? ["user", "project"] : [scope];
 
 	const skillNames = listSkillNames();
-	const scopes: Partial<Record<"user" | "project", SkillsUninstallScopeResult>> =
-		{};
+	const scopes: Partial<
+		Record<"user" | "project", SkillsUninstallScopeResult>
+	> = {};
 
 	// Process each scope
 	for (const scopeName of scopesToProcess) {

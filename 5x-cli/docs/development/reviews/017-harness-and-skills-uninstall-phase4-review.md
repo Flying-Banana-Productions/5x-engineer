@@ -44,3 +44,15 @@ The harness-list implementation itself is directionally good: the new data/outpu
 - [ ] Restore `5x.toml` path settings to the real repo artifact directories, or move the directories in the same change. (`auto_fix`)
 - [ ] Remove or justify the unrelated `5x.toml` workflow-config churn from this Phase 4 commit. (`human_required`)
 - [ ] Refresh the stale subcommand comment in `src/commands/harness.ts`. (`auto_fix`)
+
+## Addendum - commit `da40331b8e8b43b4b95576e1607bbfbbb08681f4`
+
+The requested follow-up fixes are now in place. `5x.toml` matches the intended repo workflow configuration again: the `5x-cli/docs/...` plan/review/archive paths are restored, the configured author/reviewer models are present, `maxAutoRetries` is back to `5`, and `qualityGates` again includes `bun run test`. `src/commands/harness.ts` also updates the module comment to mention the `uninstall` subcommand, resolving the stale documentation called out in the prior review.
+
+I do not see new issues in this fixup commit. The diff is narrowly scoped to restoring the previously approved `5x.toml` settings, refreshing the stale comment, and recording the original review artifact.
+
+**Readiness:** Ready - prior blockers are resolved; Phase 4 can be considered complete.
+
+## Addendum Items
+
+- None.
