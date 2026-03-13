@@ -8,7 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { outputError } from "../output.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
@@ -152,7 +152,7 @@ function generateReviewPath(
 	declaredVars: string[],
 	explicitVars: Record<string, string>,
 	config: Pick<FiveXConfig, "paths">,
-	_projectRoot: string,
+	projectRoot: string,
 	templateName: string,
 	runId?: string,
 	phase?: string,
@@ -171,8 +171,12 @@ function generateReviewPath(
 	// Generate filename based on context
 	let filename: string;
 	if (isPlanReview && planPath) {
-		// Use full plan basename (including relative path with separators replaced)
-		const planBasename = planPath.replace(/[/\\]/g, "-").replace(/\.md$/, "");
+		// Use plan path relative to project root for stable repo-relative identity
+		const relativePlanPath = relative(projectRoot, planPath);
+		// Normalize separators and remove .md extension
+		const planBasename = relativePlanPath
+			.replace(/[/\\]/g, "-")
+			.replace(/\.md$/, "");
 		filename = `${planBasename}-review.md`;
 	} else if (runId && phase) {
 		// Implementation review with phase context
