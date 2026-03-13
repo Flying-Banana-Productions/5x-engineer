@@ -387,3 +387,93 @@ describe("protocol validate --record arg validation (unit)", () => {
 		}
 	});
 });
+
+// ===========================================================================
+// Phase 3: Legacy author status normalization via handler (016-review-artifacts)
+// ===========================================================================
+
+describe("protocol validate author with legacy status payloads (Phase 3)", () => {
+	test("accepts legacy done status via file input and normalizes to complete", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				status: "done",
+				commit: "legacy123",
+				summary: "Legacy implementation complete",
+			});
+			// Should not throw — legacy payload is normalized and validated
+			await protocolValidate({ role: "author", input: inputPath });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("accepts legacy failed status with notes as reason fallback", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				status: "failed",
+				notes: "Build failed due to dependency conflict",
+			});
+			await protocolValidate({ role: "author", input: inputPath });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("accepts legacy needs_human status with summary as reason fallback", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				status: "needs_human",
+				summary: "Need architecture decision",
+			});
+			await protocolValidate({ role: "author", input: inputPath });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("validates normalized payload still requires commit for done status", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				status: "done",
+				// missing commit
+			});
+			await expect(
+				protocolValidate({ role: "author", input: inputPath }),
+			).rejects.toThrow(CliError);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("validates normalized payload still requires reason/notes for failed status", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				status: "failed",
+				// missing reason, notes, and summary
+			});
+			await expect(
+				protocolValidate({ role: "author", input: inputPath }),
+			).rejects.toThrow(CliError);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("preserves canonical result payload unchanged", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "canonical456",
+			});
+			await protocolValidate({ role: "author", input: inputPath });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});

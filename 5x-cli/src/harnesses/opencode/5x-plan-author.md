@@ -18,13 +18,13 @@ The JSON must conform to this schema:
 
 ```json
 {
-  "status": "done" | "failed" | "needs_human",
-  "summary": "<brief summary of what was done>",
+  "result": "complete" | "needs_human" | "failed",
   "commit": "<git commit hash if a commit was made, otherwise omit>",
+  "reason": "<required if result is needs_human or failed; brief explanation>",
   "notes": "<optional additional context>"
 }
 ```
 
-- `status: "done"` — task completed successfully; a commit was made if required.
-- `status: "failed"` — task could not be completed; explain in `notes`.
-- `status: "needs_human"` — human input is required; explain what is needed in `notes`.
+- `result: "complete"` — task completed successfully; a commit was made if required.
+- `result: "failed"` — task could not be completed; explain in `reason`.
+- `result: "needs_human"` — human input is required; explain what is needed in `reason`.

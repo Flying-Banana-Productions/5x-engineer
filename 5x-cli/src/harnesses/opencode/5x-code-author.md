@@ -19,19 +19,19 @@ The JSON must conform to this schema:
 
 ```json
 {
-  "status": "done" | "failed" | "needs_human",
-  "summary": "<brief summary of what was implemented>",
-  "commit": "<git commit hash — required when status is done>",
+  "result": "complete" | "needs_human" | "failed",
+  "commit": "<git commit hash — required when result is complete>",
+  "reason": "<required if result is needs_human or failed; brief explanation>",
   "notes": "<optional additional context>"
 }
 ```
 
-- `status: "done"` — implementation complete; a commit **must** be included.
-- `status: "failed"` — implementation could not be completed; explain in `notes`.
-- `status: "needs_human"` — human input is required; explain what is needed in `notes`.
+- `result: "complete"` — implementation complete; a commit **must** be included.
+- `result: "failed"` — implementation could not be completed; explain in `reason`.
+- `result: "needs_human"` — human input is required; explain what is needed in `reason`.
 
 ## Important
 
-You **must** make a git commit before reporting `status: "done"`. The `commit`
+You **must** make a git commit before reporting `result: "complete"`. The `commit`
 field must contain the full SHA of that commit. The orchestrator validates this
 with `5x protocol validate author --require-commit`.

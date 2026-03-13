@@ -17,6 +17,10 @@ import {
 	validateStructuredOutputOrThrow,
 } from "../../../src/commands/protocol-helpers.js";
 import { CliError } from "../../../src/output.js";
+import {
+	type AuthorStatus,
+	normalizeLegacyAuthorStatus,
+} from "../../../src/protocol.js";
 
 // ---------------------------------------------------------------------------
 // validateStructuredOutput — result-based API
@@ -219,5 +223,237 @@ describe("P1.8 regression — async cleanup before error output", () => {
 			opts,
 		);
 		expect(result.ok).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: Legacy author status normalization (016-review-artifacts)
+// ---------------------------------------------------------------------------
+
+describe("normalizeLegacyAuthorStatus", () => {
+	test("returns null for canonical payload with result field", () => {
+		const canonical: AuthorStatus = {
+			result: "complete",
+			commit: "abc123",
+		};
+		expect(normalizeLegacyAuthorStatus(canonical)).toBeNull();
+	});
+
+	test("returns null for non-object input", () => {
+		expect(normalizeLegacyAuthorStatus(null)).toBeNull();
+		expect(normalizeLegacyAuthorStatus("string")).toBeNull();
+		expect(normalizeLegacyAuthorStatus(123)).toBeNull();
+	});
+
+	test("returns null when status field is missing", () => {
+		expect(normalizeLegacyAuthorStatus({ result: "complete" })).toBeNull();
+	});
+
+	test("returns null for unrecognized status values", () => {
+		expect(normalizeLegacyAuthorStatus({ status: "unknown" })).toBeNull();
+		expect(normalizeLegacyAuthorStatus({ status: "success" })).toBeNull();
+	});
+
+	test("maps status: done → result: complete with commit", () => {
+		const legacy = {
+			status: "done",
+			commit: "abc123def",
+			notes: "Implementation finished",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized).toEqual({
+			result: "complete",
+			commit: "abc123def",
+			notes: "Implementation finished",
+		});
+	});
+
+	test("maps status: failed → result: failed with reason", () => {
+		const legacy = {
+			status: "failed",
+			reason: "Build error",
+			notes: "Additional context",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized).toEqual({
+			result: "failed",
+			reason: "Build error",
+			notes: "Additional context",
+		});
+	});
+
+	test("maps status: needs_human → result: needs_human with reason", () => {
+		const legacy = {
+			status: "needs_human",
+			reason: "Ambiguous requirements",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized).toEqual({
+			result: "needs_human",
+			reason: "Ambiguous requirements",
+		});
+	});
+
+	test("falls back to notes when reason is missing for failed status", () => {
+		const legacy = {
+			status: "failed",
+			notes: "Error details in notes",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized?.result).toBe("failed");
+		expect(normalized?.reason).toBe("Error details in notes");
+	});
+
+	test("falls back to summary when reason and notes are missing for needs_human", () => {
+		const legacy = {
+			status: "needs_human",
+			summary: "Need clarification on API design",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized?.result).toBe("needs_human");
+		expect(normalized?.reason).toBe("Need clarification on API design");
+	});
+
+	test("preserves explicit reason over notes/summary fallback", () => {
+		const legacy = {
+			status: "failed",
+			reason: "Primary reason",
+			notes: "Secondary notes",
+			summary: "Summary text",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized?.reason).toBe("Primary reason");
+	});
+
+	test("no reason fallback for complete status even with notes/summary", () => {
+		const legacy = {
+			status: "done",
+			commit: "abc123",
+			notes: "Some notes",
+			summary: "Summary text",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized?.result).toBe("complete");
+		expect(normalized?.reason).toBeUndefined();
+		expect(normalized?.notes).toBe("Some notes");
+	});
+
+	test("handles legacy payload with minimal fields (done + commit)", () => {
+		const legacy = {
+			status: "done",
+			commit: "deadbeef",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized).toEqual({
+			result: "complete",
+			commit: "deadbeef",
+		});
+	});
+
+	test("handles legacy payload without commit (not required during norm)", () => {
+		const legacy = {
+			status: "done",
+		};
+		const normalized = normalizeLegacyAuthorStatus(legacy);
+		expect(normalized).toEqual({
+			result: "complete",
+		});
+	});
+});
+
+describe("validateStructuredOutput with legacy status (Phase 3)", () => {
+	test("accepts legacy done status and normalizes to complete", () => {
+		const legacy = {
+			status: "done",
+			commit: "abc123",
+			summary: "Work done",
+		};
+		const result = validateStructuredOutput(legacy, "author", {
+			context: "test",
+			requireCommit: true,
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value).toEqual({
+				result: "complete",
+				commit: "abc123",
+				notes: "Work done",
+			});
+		}
+	});
+
+	test("accepts legacy failed status with notes as reason fallback", () => {
+		const legacy = {
+			status: "failed",
+			notes: "Build failed due to syntax error",
+		};
+		const result = validateStructuredOutput(legacy, "author", {
+			context: "test",
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const authorStatus = result.value as AuthorStatus;
+			expect(authorStatus.result).toBe("failed");
+			expect(authorStatus.reason).toBe("Build failed due to syntax error");
+		}
+	});
+
+	test("accepts legacy needs_human status with summary as reason fallback", () => {
+		const legacy = {
+			status: "needs_human",
+			summary: "Need design review",
+		};
+		const result = validateStructuredOutput(legacy, "author", {
+			context: "test",
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const authorStatus = result.value as AuthorStatus;
+			expect(authorStatus.result).toBe("needs_human");
+			expect(authorStatus.reason).toBe("Need design review");
+		}
+	});
+
+	test("still validates normalized payload (missing commit for complete)", () => {
+		const legacy = {
+			status: "done",
+			// missing commit
+		};
+		const result = validateStructuredOutput(legacy, "author", {
+			context: "test",
+			requireCommit: true,
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.message).toContain("commit");
+		}
+	});
+
+	test("still validates normalized payload (missing reason for failed)", () => {
+		const legacy = {
+			status: "failed",
+			// missing reason, notes, and summary
+		};
+		const result = validateStructuredOutput(legacy, "author", {
+			context: "test",
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.message).toContain("reason");
+		}
+	});
+
+	test("preserves canonical result payload unchanged", () => {
+		const canonical: AuthorStatus = {
+			result: "complete",
+			commit: "def456",
+		};
+		const result = validateStructuredOutput(canonical, "author", {
+			context: "test",
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value).toEqual(canonical);
+		}
 	});
 });

@@ -136,18 +136,18 @@ and use a dedicated prompt template that matches the actual task.
 legacy native author payloads using `status`, normalize them to canonical
 `AuthorStatus`, and continue enforcing commit/reason invariants.
 
-- [ ] Add an author-status normalization helper near the protocol contract code
+- [x] Add an author-status normalization helper near the protocol contract code
       (`src/protocol.ts` or `src/commands/protocol-helpers.ts`) so field alias
       handling is centralized.
-- [ ] Accept `status: "done"` as `result: "complete"` and map legacy
+- [x] Accept `status: "done"` as `result: "complete"` and map legacy
       `status: "failed" | "needs_human"` to canonical `result` values.
-- [ ] When normalizing non-complete legacy payloads, map `notes` and/or `summary`
+- [x] When normalizing non-complete legacy payloads, map `notes` and/or `summary`
       into `reason` if `reason` is absent so invariant checks still work.
-- [ ] Return the normalized canonical object from validation so downstream
+- [x] Return the normalized canonical object from validation so downstream
       recording/output uses `result`, not `status`.
-- [ ] Add unit coverage for `validateStructuredOutput()` and protocol validation
+- [x] Add unit coverage for `validateStructuredOutput()` and protocol validation
       with raw native payloads using `status`.
-- [ ] Update OpenCode author agent profile docs to emit canonical `result`
+- [x] Update OpenCode author agent profile docs to emit canonical `result`
       going forward, while keeping normalization for backward compatibility.
 
 ## Phase 4: Enforce Phase Checklist Verification and Simplify Skill Guidance

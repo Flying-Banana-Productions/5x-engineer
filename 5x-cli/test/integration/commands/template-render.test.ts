@@ -595,7 +595,7 @@ describe("5x template render", () => {
 
 				// Verify the prompt contains the auto-generated review path
 				const prompt = data.prompt as string;
-				expect(prompt).toContain(vars.review_path!);
+				expect(prompt).toContain(vars.review_path as string);
 			} finally {
 				cleanupDir(dir);
 			}

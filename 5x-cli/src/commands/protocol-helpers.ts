@@ -14,6 +14,7 @@ import {
 	assertAuthorStatus,
 	assertReviewerVerdict,
 	isStructuredOutputError,
+	normalizeLegacyAuthorStatus,
 	type ReviewerVerdict,
 } from "../protocol.js";
 
@@ -77,14 +78,24 @@ export function validateStructuredOutput(
 		};
 	}
 
+	// Normalize legacy author payloads (Phase 3, 016-review-artifacts)
+	// Native author agents may return { status: "done" } instead of canonical { result: "complete" }
+	let valueToValidate: AuthorStatus | ReviewerVerdict | unknown = structured;
+	if (role === "author") {
+		const normalized = normalizeLegacyAuthorStatus(structured);
+		if (normalized) {
+			valueToValidate = normalized;
+		}
+	}
+
 	try {
 		if (role === "author") {
 			const requireCommit = opts.requireCommit !== false;
-			assertAuthorStatus(structured as AuthorStatus, opts.context, {
+			assertAuthorStatus(valueToValidate as AuthorStatus, opts.context, {
 				requireCommit,
 			});
 		} else {
-			assertReviewerVerdict(structured as ReviewerVerdict, opts.context);
+			assertReviewerVerdict(valueToValidate as ReviewerVerdict, opts.context);
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -96,7 +107,7 @@ export function validateStructuredOutput(
 		};
 	}
 
-	return { ok: true, value: structured as AuthorStatus | ReviewerVerdict };
+	return { ok: true, value: valueToValidate as AuthorStatus | ReviewerVerdict };
 }
 
 /**
