@@ -29,8 +29,10 @@ optional fix cycles.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x run reopen --run <id>` — reopen a completed/aborted run
-- `5x invoke author <template> --run <id> --var key=val` — invoke author (auto-resolves worktree when `--run` is mapped)
-- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer (auto-resolves worktree when `--run` is mapped)
+- `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+- `5x invoke author <template> --run <id> --var key=val` — invoke author (fallback transport, auto-resolves worktree when `--run` is mapped)
+- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer (fallback transport, auto-resolves worktree when `--run` is mapped)
 - `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
 - `5x diff --run <id>` — inspect changes in mapped worktree
@@ -56,31 +58,73 @@ capabilities:
    is available. Pass `--default` to provide a fallback for non-interactive
    environments.
 
-### Invoking sub-agents
+### Delegating sub-agent work
 
-**CRITICAL: Always run `5x invoke` as a subprocess** (via your shell/bash
-tool), never as an inline tool call. Sub-agent sessions consume tens of
-thousands of tokens — running them inline floods your context window and
-wastes budget. Running as a subprocess keeps only the final JSON envelope
-(~500 bytes) in your context.
+Sub-agent tasks (author and reviewer work) should be delegated using the
+**native-first pattern**: render the prompt, detect whether a native agent
+is available, run it if so, then validate and record the result. Fall back
+to `5x invoke` when no native agent is found.
+
+**Native agent detection order:**
+
+1. Project scope: `.opencode/agents/<name>.md`
+2. User scope: `~/.config/opencode/agents/<name>.md`
+3. Fallback: `5x invoke`
+
+**Installed OpenCode agent names:**
+- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
+- `5x-code-author` — implements code changes from approved plans
+- `5x-reviewer` — performs code review and produces structured verdicts
+
+**Native agent detection order:**
+
+1. Project scope: `.opencode/agents/<name>.md`
+2. User scope: `~/.config/opencode/agents/<name>.md`
+3. Fallback: `5x invoke`
+
+**Native-first delegation pattern (example: author implement phase):**
 
 ```bash
-# Correct: subprocess captures only the JSON envelope
-RESULT=$(5x invoke author author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE 2>/dev/null)
+# 1. Render the prompt (includes run/worktree context via ## Context block)
+RENDERED=$(5x template render author-next-phase --run $RUN \
+  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER)
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-# Parse fields from the envelope
-COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit')
-STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
-SESSION=$(echo "$RESULT" | jq -r '.data.session_id')
+# 2. Detect native agent (project scope first, then user scope)
+if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
+  # 3a. Launch native subagent (harness provides child session)
+  RESULT=<native subagent result JSON>
+else
+  # 3b. Fallback to 5x invoke (omit --record; validate is the single record point)
+  RESULT=$(5x invoke author author-next-phase --run $RUN \
+    --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER 2>/dev/null)
+fi
+
+# 4. Validate + record (combined — universal for both paths)
+echo "$RESULT" | 5x protocol validate author \
+  --run $RUN --record --step $STEP --phase $PHASE
 ```
 
-Use `2>/dev/null` to discard stderr (streaming output) from your context.
-The user can monitor progress separately via `5x run watch`.
+**Session reuse** is optional and best-effort. Pass `--session
+$REVIEWER_SESSION` to `5x template render` when a session id is
+available; the command will automatically select a shorter
+continued-template variant if one exists. Omit `--session` to start
+a fresh session.
+
+The `## Context` block in the rendered prompt (appended by
+`5x template render` when `--run` resolves a worktree) informs native
+subagents of the effective working directory.
+
+### Fallback: 5x invoke
+
+When native agents are not installed, delegate using `5x invoke` as a
+subprocess. Use `2>/dev/null` to discard stderr (streaming output).
 
 ### Timeout layers
 
-Two independent timeouts apply to agent invocations:
+Two independent timeouts apply to `5x invoke` fallback invocations:
 
 1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
    in config, or `--timeout` CLI override): an inactivity timeout
@@ -92,20 +136,10 @@ Two independent timeouts apply to agent invocations:
    limit. This is a blunt circuit breaker — when it fires, the process
    is killed and you get empty or truncated output.
 
-These serve different purposes and cannot be cleanly aligned. Set your
-shell tool timeout generously (e.g., 10 minutes) as a safety net for
-catastrophic hangs. Let the invocation timeout handle normal operational
-control. An unexpectedly killed subprocess produces empty output — see
-Recovery for handling.
-
-### Monitoring agent progress
-
-Sub-agent invocations (`5x invoke`) write NDJSON logs under the
-control-plane root's state directory (e.g. `<repo-root>/.5x/logs/<run-id>/`).
-Logs are always anchored to the root, even when executing in a worktree.
-To monitor progress in real-time, suggest the user run in a separate terminal:
-
-    5x run watch --run <run-id> --human-readable
+Set your shell tool timeout generously (e.g., 10 minutes) as a safety
+net for catastrophic hangs. Let the invocation timeout handle normal
+operational control. An unexpectedly killed subprocess produces empty
+output — see Recovery for handling.
 
 ### Worktree-aware execution
 
@@ -119,6 +153,11 @@ from the run's worktree mapping.
 - `quality run --run` runs quality gates in the mapped worktree
 - `diff --run` diffs the mapped worktree
 - All state (run records, logs, locks) stays in the root control-plane DB
+
+For native subagents, the effective working directory is communicated
+via the `## Context` block in the rendered prompt (produced by
+`5x template render --run`). No additional `cd` or worktree setup is
+needed in skill prose.
 
 Explicit `--workdir` still overrides the automatic resolution if needed.
 No `.5x/` directory is required in worktree checkouts.
@@ -148,19 +187,29 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 Track $QUALITY_RETRIES = 0 (max 2).
 Track $REVIEW_ITERATIONS = 0 (max 3).
-Track $REVIEWER_SESSION = "" (for session reuse within this phase).
+Track $REVIEWER_SESSION = "" (for optional session reuse within this phase).
 
 #### Step 1: Author implements
 
-Invoke the author to implement the phase:
+Delegate to the code author using the native-first pattern:
 
-    5x invoke author author-next-phase --run $RUN \
-      --record --phase $PHASE \
-      --var plan_path=$PLAN_PATH \
-      --var phase_number=$PHASE_NUMBER
+```bash
+RENDERED=$(5x template render author-next-phase --run $RUN \
+  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER)
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-`--record` auto-records the step using the template's `step_name`
-(`author:implement`). No separate `5x run record` call is needed.
+if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
+  RESULT=<launch native 5x-code-author subagent with PROMPT>
+else
+  RESULT=$(5x invoke author author-next-phase --run $RUN \
+    --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER 2>/dev/null)
+fi
+
+echo "$RESULT" | 5x protocol validate author \
+  --run $RUN --record --step $STEP --phase $PHASE
+```
 
 Check the result:
 - `result: "complete"` with a commit hash — continue to Step 2.
@@ -195,35 +244,61 @@ If $QUALITY_RETRIES > 2:
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
 
-Invoke author to fix quality failures:
+Delegate fix to the code author using the native-first pattern:
 
-    5x invoke author author-process-impl-review --run $RUN \
-      --record --phase $PHASE --record-step "author:fix-quality" \
-      --var review_path="" \
-      --var plan_path=$PLAN_PATH \
-      --var user_notes="Quality gate failures: $FAILURES"
+```bash
+RENDERED=$(5x template render author-fix-quality --run $RUN \
+  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+  --var user_notes="Quality gate failures: $FAILURES")
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-`--record-step` overrides the template's default step name for this
-quality-fix context.
+if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
+  RESULT=<launch native 5x-code-author subagent with PROMPT>
+else
+  RESULT=$(5x invoke author author-fix-quality --run $RUN \
+    --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+    --var user_notes="Quality gate failures: $FAILURES" 2>/dev/null)
+fi
+
+echo "$RESULT" | 5x protocol validate author \
+  --run $RUN --record --step $STEP --phase $PHASE
+```
 
 Loop back to Step 2.
 
 #### Step 3: Code review
 
-Invoke the reviewer:
+Delegate to the reviewer using the native-first pattern:
 
-    5x invoke reviewer reviewer-commit --run $RUN \
-      --record --phase $PHASE --iteration $REVIEW_ITERATIONS \
-      --var commit_hash=$COMMIT \
-      --var review_path=$REVIEW_PATH \
-      --var plan_path=$PLAN_PATH \
-      ${REVIEWER_SESSION:+--session $REVIEWER_SESSION}
+```bash
+RENDERED=$(5x template render reviewer-commit --run $RUN \
+  --var commit_hash=$COMMIT --var review_path=$REVIEW_PATH \
+  --var plan_path=$PLAN_PATH \
+  ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-When `--session` is passed, the CLI automatically uses an abbreviated
-prompt template (`reviewer-commit-continued`) if one exists, since the
-full instructions are already in the session context.
+if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
+  RESULT=<launch native 5x-reviewer subagent with PROMPT>
+else
+  RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
+    --var commit_hash=$COMMIT --var review_path=$REVIEW_PATH \
+    --var plan_path=$PLAN_PATH \
+    ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
+fi
 
-Capture $REVIEWER_SESSION from the response.
+echo "$RESULT" | 5x protocol validate reviewer \
+  --run $RUN --record --step $STEP --phase $PHASE \
+  --iteration $REVIEW_ITERATIONS
+```
+
+When `--session` is passed to `5x template render`, the command
+automatically selects an abbreviated continued-template variant if one
+exists. Capture $REVIEWER_SESSION for optional reuse in subsequent
+reviews.
 
 #### Step 4: Route the verdict
 
@@ -247,12 +322,26 @@ Increment $REVIEW_ITERATIONS.
 If $REVIEW_ITERATIONS > 3:
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
-Invoke the author to fix review items:
+Delegate to the code author using the native-first pattern:
 
-    5x invoke author author-process-impl-review --run $RUN \
-      --record --phase $PHASE --iteration $REVIEW_ITERATIONS \
-      --var review_path=$REVIEW_PATH \
-      --var plan_path=$PLAN_PATH
+```bash
+RENDERED=$(5x template render author-process-impl-review --run $RUN \
+  --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH)
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+
+if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
+  RESULT=<launch native 5x-code-author subagent with PROMPT>
+else
+  RESULT=$(5x invoke author author-process-impl-review --run $RUN \
+    --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+fi
+
+echo "$RESULT" | 5x protocol validate author \
+  --run $RUN --record --step $STEP --phase $PHASE \
+  --iteration $REVIEW_ITERATIONS
+```
 
 Check the result:
 - `result: "complete"` — update $COMMIT, loop back to Step 2
@@ -282,7 +371,18 @@ Present the situation to the human:
 
 #### Step 6: Phase gate
 
-Record phase completion:
+Before recording phase completion, verify the checklist was updated:
+
+```bash
+# Verify checklist completion via the authoritative source
+PHASE_STATUS=$(5x plan phases $PLAN_PATH | jq -r ".phases[] | select(.number == $PHASE_NUMBER) | .done")
+```
+
+If `PHASE_STATUS` is not `true`:
+1. Record the mismatch: `5x run record "phase:checklist_mismatch" --run $RUN --phase $PHASE --result '{"phase":"$PHASE","reason":"checklist_not_updated"}'`
+2. Escalate to the human immediately — do NOT proceed with phase:complete
+
+If `PHASE_STATUS` is `true`, record phase completion:
 
     5x run record "phase:complete" --run $RUN --phase $PHASE --result '{"phase":"$PHASE"}'
 
@@ -319,11 +419,24 @@ Report to the human: all phases implemented and reviewed.
 - The author should not have reverted previous work
 
 ### Phase boundary:
-- `5x plan phases $PLAN_PATH` should show the completed phase's
-  checklist items as checked
+- BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm current phase shows `done: true`
+- If checklist is not updated, record `phase:checklist_mismatch` and escalate to human — do NOT record `phase:complete`
 - Phase count should not have changed since the run started
 
 ## Recovery
+
+### Checklist mismatch (verification failure)
+
+**Symptom:** Phase completes review/quality but `5x plan phases` shows `done: false` for the current phase.
+
+**Response:**
+1. Record `phase:checklist_mismatch` with phase number and reason
+2. Stop immediately — do NOT record `phase:complete`
+3. Escalate to the human with clear explanation:
+   "Phase $PHASE passed review and quality gates, but the plan checklist was not updated. The author must mark completed items with `[x]` in the plan before the phase can be recorded as complete."
+4. Wait for human guidance — do NOT auto-reinvoke the author
+
+This is an explicit failure mode. The audit trail must show `phase:checklist_mismatch` rather than a misleading `phase:complete`.
 
 ### Context loss (compaction)
 
@@ -372,6 +485,17 @@ still says not_ready on the same issues.
 3. If the diff doesn't address the items, re-invoke the author with
    explicit quotes of the review items and the current code.
 
+### Native subagent returns empty or invalid output
+
+**Symptom:** Native subagent returns no output or output that fails
+`5x protocol validate`.
+
+**Response:**
+1. Retry once with a fresh session (omit session reuse).
+2. If the second attempt fails, fall back to `5x invoke` as the
+   transport for this step.
+3. If both approaches fail, escalate to the human.
+
 ### Subprocess returns empty output
 
 **Symptom:** The `5x invoke` subprocess returns no output.
@@ -384,7 +508,8 @@ still says not_ready on the same issues.
 
 ### Structured output validation failure
 
-**Symptom:** `5x invoke` returns an error with code INVALID_STRUCTURED_OUTPUT.
+**Symptom:** `5x protocol validate` returns an error with code
+`INVALID_STRUCTURED_OUTPUT`.
 
 **Response:**
 1. Retry once with a fresh session.

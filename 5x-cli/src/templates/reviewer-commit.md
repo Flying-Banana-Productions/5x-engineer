@@ -66,7 +66,7 @@ Provide an overall readiness assessment:
 
 ## Non-Interactive Execution
 
-You are running as a subprocess in an automated pipeline. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human judgment on an issue, classify it as `human_required` in your review items — the orchestrator will escalate it.
+You are running as a delegated non-interactive workflow. There is no human operator available during this invocation. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.) — they will hang indefinitely. If you need human judgment on an issue, classify it as `human_required` in your review items — the orchestrator will escalate it.
 
 ## Completion
 

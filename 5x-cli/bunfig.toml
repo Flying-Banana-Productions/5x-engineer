@@ -1,3 +1,9 @@
 [test]
 timeout = 15000
 preload = ["./test/setup.ts"]
+
+# Test coverage
+coverageThreshold = 0.8
+coverageReporter = ["text", "lcov"]
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = ["**/tmp/**"]

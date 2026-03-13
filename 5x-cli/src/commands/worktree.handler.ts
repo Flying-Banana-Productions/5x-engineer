@@ -44,16 +44,22 @@ export interface WorktreeCreateParams {
 	branch?: string;
 	/** Allow creating a worktree from a linked-worktree context (nested). */
 	allowNested?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 export interface WorktreeRemoveParams {
 	plan: string;
 	force?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 export interface WorktreeAttachParams {
 	plan: string;
 	path: string;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +89,11 @@ function worktreeDir(
  * Detect if the current checkout is a linked worktree (not the main checkout).
  * Returns true if the checkout root differs from the control-plane root.
  */
-function isLinkedWorktreeContext(controlPlane: ControlPlaneResult): boolean {
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+function isLinkedWorktreeContext(
+	controlPlane: ControlPlaneResult,
+	startDir?: string,
+): boolean {
+	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
 	if (!checkoutRoot) return false;
 	return resolve(checkoutRoot) !== resolve(controlPlane.controlPlaneRoot);
 }
@@ -94,10 +103,13 @@ function isLinkedWorktreeContext(controlPlane: ControlPlaneResult): boolean {
  * shadows a local state DB in the current checkout. Emitted once per command
  * invocation — callers should invoke this at most once.
  */
-export function emitSplitBrainWarning(controlPlane: ControlPlaneResult): void {
+export function emitSplitBrainWarning(
+	controlPlane: ControlPlaneResult,
+	startDir?: string,
+): void {
 	if (controlPlane.mode !== "managed") return;
 
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
 	if (!checkoutRoot) return;
 	if (resolve(checkoutRoot) === resolve(controlPlane.controlPlaneRoot)) return;
 
@@ -151,11 +163,12 @@ export async function worktreeCreate(
 
 	// Phase 6: linked-worktree guard — prevent accidental nested worktree
 	// creation from a linked-worktree context. Use --allow-nested to bypass.
-	const controlPlane = resolveControlPlaneRoot(resolve("."));
+	const cwd = resolve(params.startDir ?? ".");
+	const controlPlane = resolveControlPlaneRoot(cwd);
 	if (
 		!params.allowNested &&
 		controlPlane.mode !== "none" &&
-		isLinkedWorktreeContext(controlPlane)
+		isLinkedWorktreeContext(controlPlane, params.startDir)
 	) {
 		outputError(
 			"WORKTREE_CONTEXT_INVALID",
@@ -169,7 +182,7 @@ export async function worktreeCreate(
 	}
 
 	// Phase 6: split-brain detection
-	emitSplitBrainWarning(controlPlane);
+	emitSplitBrainWarning(controlPlane, params.startDir);
 
 	const canonical = canonicalizePlanPath(planPath);
 	const {
@@ -177,7 +190,7 @@ export async function worktreeCreate(
 		config,
 		db,
 		controlPlane: cp,
-	} = await resolveDbContext();
+	} = await resolveDbContext({ startDir: cwd });
 	const stateDir = cp?.stateDir ?? ".5x";
 
 	// Check if worktree already exists for this plan
@@ -257,11 +270,12 @@ export async function worktreeAttach(
 	}
 
 	// Phase 6: isolated-mode and split-brain warnings
-	const cpEarly = resolveControlPlaneRoot(resolve("."));
+	const cwd = resolve(params.startDir ?? ".");
+	const cpEarly = resolveControlPlaneRoot(cwd);
 	emitIsolatedModeWarning(cpEarly, "attach");
-	emitSplitBrainWarning(cpEarly);
+	emitSplitBrainWarning(cpEarly, params.startDir);
 
-	const { projectRoot, db } = await resolveDbContext();
+	const { projectRoot, db } = await resolveDbContext({ startDir: cwd });
 	let gitWorktrees: Array<{ path: string; branch: string }> = [];
 	try {
 		gitWorktrees = await listWorktrees(projectRoot);
@@ -307,11 +321,12 @@ export async function worktreeRemove(
 	const canonical = canonicalizePlanPath(planPath);
 
 	// Phase 6: isolated-mode and split-brain warnings
-	const cpEarly = resolveControlPlaneRoot(resolve("."));
+	const cwd = resolve(params.startDir ?? ".");
+	const cpEarly = resolveControlPlaneRoot(cwd);
 	emitIsolatedModeWarning(cpEarly, "remove");
-	emitSplitBrainWarning(cpEarly);
+	emitSplitBrainWarning(cpEarly, params.startDir);
 
-	const { projectRoot, db } = await resolveDbContext();
+	const { projectRoot, db } = await resolveDbContext({ startDir: cwd });
 
 	const plan = getPlan(db, canonical);
 	if (!plan?.worktree_path) {
@@ -321,7 +336,7 @@ export async function worktreeRemove(
 	const wtPath = plan.worktree_path as string;
 
 	// Phase 6: prevent removing current checkout worktree
-	const checkoutRoot = resolveCheckoutRoot(resolve("."));
+	const checkoutRoot = resolveCheckoutRoot(cwd);
 	if (checkoutRoot && resolve(checkoutRoot) === resolve(wtPath)) {
 		outputError(
 			"WORKTREE_SELF_REMOVE",
@@ -392,12 +407,15 @@ export async function worktreeRemove(
 	});
 }
 
-export async function worktreeList(): Promise<void> {
+export async function worktreeList(params?: {
+	startDir?: string;
+}): Promise<void> {
 	// Phase 6: split-brain detection (list is safe in all modes, but still warn)
-	const cpEarly = resolveControlPlaneRoot(resolve("."));
-	emitSplitBrainWarning(cpEarly);
+	const cwd = resolve(params?.startDir ?? ".");
+	const cpEarly = resolveControlPlaneRoot(cwd);
+	emitSplitBrainWarning(cpEarly, params?.startDir);
 
-	const { projectRoot, db } = await resolveDbContext();
+	const { projectRoot, db } = await resolveDbContext({ startDir: cwd });
 
 	// Get all plans that have worktree associations
 	const plans = db

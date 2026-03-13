@@ -1,3 +1,11 @@
+export type LegacyAuthorStatus = {
+	status: "done" | "failed" | "needs_human";
+	commit?: string;
+	reason?: string;
+	notes?: string;
+	summary?: string;
+};
+
 export type AuthorStatus = {
 	result: "complete" | "needs_human" | "failed";
 	commit?: string;
@@ -154,4 +162,87 @@ export function assertReviewerVerdict(
 			);
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Legacy author status normalization (Phase 3, 016-review-artifacts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects and normalizes legacy native author payloads that use `status`
+ * instead of canonical `result`. This provides backward compatibility for
+ * native subagent outputs while the public protocol remains strict.
+ *
+ * Mappings:
+ * - `status: "done"` → `result: "complete"`
+ * - `status: "failed"` → `result: "failed"`
+ * - `status: "needs_human"` → `result: "needs_human"`
+ *
+ * For non-complete results, if `reason` is absent, it falls back to `notes`
+ * or `summary` (in that order) to satisfy the invariant checks.
+ *
+ * @param value The raw structured output value (may be legacy or canonical)
+ * @returns Normalized canonical AuthorStatus object, or the original value
+ *          if it doesn't appear to be a legacy payload.
+ */
+export function normalizeLegacyAuthorStatus(
+	value: unknown,
+): AuthorStatus | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+
+	const record = value as Record<string, unknown>;
+
+	// Only normalize if we see a legacy `status` field without `result`
+	if (!("status" in record) || "result" in record) {
+		return null;
+	}
+
+	const status = record.status;
+	if (status !== "done" && status !== "failed" && status !== "needs_human") {
+		return null;
+	}
+
+	// Map legacy status to canonical result
+	const result: AuthorStatus["result"] =
+		status === "done" ? "complete" : status;
+
+	// Build normalized object
+	const normalized: AuthorStatus = {
+		result,
+	};
+
+	// Copy commit if present (applies to complete results)
+	if (typeof record.commit === "string") {
+		normalized.commit = record.commit;
+	}
+
+	// Copy notes if present, or fall back to summary for complete results
+	if (typeof record.notes === "string") {
+		normalized.notes = record.notes;
+	} else if (result === "complete" && typeof record.summary === "string") {
+		// For complete results, summary becomes notes if notes is absent
+		normalized.notes = record.summary;
+	}
+
+	// Determine reason: use explicit reason, or fall back to notes/summary
+	// for non-complete results when reason is missing
+	let reason: string | undefined;
+	if (typeof record.reason === "string") {
+		reason = record.reason;
+	} else if (result !== "complete") {
+		// For non-complete, fall back to notes or summary
+		if (typeof record.notes === "string") {
+			reason = record.notes;
+		} else if (typeof record.summary === "string") {
+			reason = record.summary;
+		}
+	}
+
+	if (reason) {
+		normalized.reason = reason;
+	}
+
+	return normalized;
 }

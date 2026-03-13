@@ -203,19 +203,30 @@ provider session metadata.**
   agentskills-compatible layouts, but do not depend on it for OpenCode user
   installs.
 
-**OpenCode gets three custom subagents with stable names.**
+**OpenCode gets three custom subagents and a primary orchestrator with stable names.**
 
 - Install three subagent profiles:
   - `5x-plan-author`
   - `5x-code-author`
   - `5x-reviewer`
-- All are `mode: subagent`.
-- `5x-reviewer` is read-only for file modifications (enforced via
-  `allowedTools` / `disallowedTools` in the agent frontmatter).
+- All subagents are `mode: subagent`.
+- `5x-reviewer` has no tool restrictions. The read-only intent (do not fix
+  the work being reviewed) is behavioral guidance in the prompt, not enforced
+  via `allowedTools` / `disallowedTools`. The reviewer needs bash for
+  investigation and write/edit to produce review documents.
 - The author agents allow edits and bash, following current 5x author behavior.
 - Agent profiles set `cwd` frontmatter if supported by OpenCode, as a secondary
   mechanism for working directory communication (see prompt-text primary
   mechanism above).
+- Install one primary orchestrator profile:
+  - `5x-orchestrator`
+- `5x-orchestrator` is `mode: primary` with file write/edit tools disabled. It
+  delegates all code changes to native sub-agents and guides the human through
+  workflow decision points. Its prompt body defines the orchestrator's role,
+  skill-loading behavior, delegation pattern (render → sub-agent → validate),
+  state tracking, human interaction guidance, and recovery principles.
+- The orchestrator omits the `model` field so it inherits whatever model the
+  user selects in the harness before prompting.
 - Installed files remain user-editable so model changes and prompt tuning do not
   require new 5x config schema in v1.
 
@@ -255,11 +266,11 @@ provider session metadata.**
 **Completion gate:** 5x can render any author/reviewer task prompt and validate
 its final JSON result without invoking a provider.
 
-- [ ] Add `5x template render <template>` command and handler.
-- [ ] Support the same variable sources as `5x invoke`: repeated `--var`, `@file`,
+- [x] Add `5x template render <template>` command and handler.
+- [x] Support the same variable sources as `5x invoke`: repeated `--var`, `@file`,
       `@-`, internal template variables, and run/worktree-aware plan path
       resolution.
-- [ ] Accept `--run <id>` on `template render` and perform run/worktree context
+- [x] Accept `--run <id>` on `template render` and perform run/worktree context
       resolution (mirroring `invoke.handler.ts` lines 332–381). When `--run` is
       passed, include `run_id`, `plan_path`, and `worktree_root` in the output
       envelope. Append a `## Context` block (containing the effective working
@@ -267,35 +278,35 @@ its final JSON result without invoking a provider.
       not the `{{var}}` template variable mechanism — so native subagents receive
       the working directory in their instructions without requiring changes to
       template frontmatter.
-- [ ] Make `template render` mirror continued-template selection: when a caller
+- [x] Make `template render` mirror continued-template selection: when a caller
       passes `--session` and `<template>-continued` exists, render the continued
       variant automatically and expose the selected template name in output.
-- [ ] Output a standard `outputSuccess()` envelope to stdout (consistent with all
+- [x] Output a standard `outputSuccess()` envelope to stdout (consistent with all
       other `5x` commands) with `data` containing the fields: `template`,
       `selected_template`, `step_name`, `prompt`, `declared_variables`, and
       (when `--run` is passed) `run_id`, `plan_path`, `worktree_root`. Use
       `outputError()` for error cases.
-- [ ] Extract shared variable-resolution logic from `invoke.handler.ts` into a
+- [x] Extract shared variable-resolution logic from `invoke.handler.ts` into a
       reusable helper owned by the template/render path.
-- [ ] Add `5x protocol validate <author|reviewer>` command and handler.
-- [ ] Accept JSON from stdin or `--input`, validate against the existing schemas
+- [x] Add `5x protocol validate <author|reviewer>` command and handler.
+- [x] Accept JSON from stdin or `--input`, validate against the existing schemas
       in `src/protocol.ts`, and return the validated payload in a JSON envelope.
-- [ ] Auto-detect input format: if the parsed JSON contains an `ok` field, unwrap
+- [x] Auto-detect input format: if the parsed JSON contains an `ok` field, unwrap
       `.data.result` before schema validation (this handles the `outputSuccess()`
       envelope from `5x invoke` fallback); otherwise treat the input as raw
       structured JSON (this handles native subagent output).
-- [ ] Support `--require-commit` for author validation. Default to `true` for
+- [x] Support `--require-commit` for author validation. Default to `true` for
       author role to match existing `5x invoke` behavior; use
       `--no-require-commit` to opt out.
-- [ ] Support `--run <id>`, `--record`, `--step <name>`, `--phase <name>`, and
+- [x] Support `--run <id>`, `--record`, `--step <name>`, `--phase <name>`, and
       `--iteration <number>` on `5x protocol validate` so validation and recording
       are combined in one command, preserving the ergonomics of `5x invoke --record`.
       `--phase` and `--iteration` are passed through to `recordStepInternal()` to
       maintain phase/iteration metadata in recorded steps.
-- [ ] Refactor `invoke.handler.ts` to reuse the extracted render/validate helpers
+- [x] Refactor `invoke.handler.ts` to reuse the extracted render/validate helpers
       so native and fallback execution share one contract. This is a pure
       extraction — existing invoke test assertions must not change.
-- [ ] Add unit tests for render output, internal variable resolution,
+- [x] Add unit tests for render output, internal variable resolution,
       continued-template selection, stdin/file variable expansion, run-aware
       envelope fields, post-render `## Context` block injection, reviewer validation,
       author validation, author-commit enforcement, and combined
@@ -306,39 +317,52 @@ its final JSON result without invoking a provider.
 **Completion gate:** the codebase has a reusable harness asset installer model,
 plus bundled OpenCode agent templates and correct project/user path mapping.
 
-- [ ] Verify that `.opencode/agents/` is the correct agent discovery path for
+- [x] Verify that `.opencode/agents/` is the correct agent discovery path for
       OpenCode project installs, and `~/.config/opencode/agents/` for user
       installs. Reference OpenCode documentation or source as evidence before
       writing the installer. If the paths differ, update all references in this
       plan accordingly.
-- [ ] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
-      `readFile` vs `Read`) against OpenCode's tool registry or source before
-      finalizing `allowedTools`/`disallowedTools` in agent templates. If the
-      assumed names in the skeletons above are incorrect, update them. Silently
-      mismatched tool names would cause restrictions to not apply.
-- [ ] Add a small harness registry describing install locations for supported
+      **Verified (March 2026):** OpenCode docs confirm `.opencode/agents/` for
+      project scope and `~/.config/opencode/agents/` for user scope (XDG-style).
+- [x] Verify OpenCode's exact tool naming convention (e.g., `read_file` vs
+      `readFile` vs `Read`) against OpenCode's tool registry or source.
+      **Verified (March 2026):** OpenCode uses `write`, `edit`, `bash`, `read`,
+      `grep`, `glob`, `list`, `webfetch` — NOT `read_file`/`write_file`/
+      `run_terminal_cmd`/`list_directory` (those are Claude Code names). The
+      `5x-reviewer` has no tool restrictions (see design decision above); the
+      `5x-orchestrator` uses `tools: { write: false, edit: false }`.
+      OpenCode does NOT support a `cwd` frontmatter field (see below).
+- [x] Add a small harness registry describing install locations for supported
       harnesses, starting with OpenCode.
-- [ ] Model both `project` and `user` roots explicitly so OpenCode can target
+- [x] Model both `project` and `user` roots explicitly so OpenCode can target
       `.opencode/...` for project installs and `~/.config/opencode/...` for user
       installs.
-- [ ] Add bundled OpenCode agent templates in source control for:
-      `5x-plan-author`, `5x-code-author`, and `5x-reviewer`.
-- [ ] Define prompt, tool, permission, mode, description, and optional model
+- [x] Add bundled OpenCode agent templates in source control for:
+      `5x-plan-author`, `5x-code-author`, `5x-reviewer`, and `5x-orchestrator`.
+- [x] Define prompt, tool, permission, mode, description, and optional model
       frontmatter for each OpenCode agent template using the skeletons below as
       the concrete target.
-- [ ] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
+- [x] Define the `5x-orchestrator` prompt body covering: role definition,
+      skill-loading instructions (5x-plan, 5x-plan-review, 5x-phase-execution),
+      native delegation pattern (template render → sub-agent → protocol validate),
+      state tracking, human decision guidance, verification, and recovery
+      principles.
+- [x] Set `cwd` frontmatter in agent profiles if OpenCode supports it, as a
       secondary mechanism for communicating the effective working directory to
       native subagents (the primary mechanism is the post-render `## Context`
       block appended to the rendered prompt text from Phase 1).
-- [ ] Ensure the reviewer template denies direct file edits while still allowing
-      read-only investigation commands.
-- [ ] Make agent template rendering parameterized by current 5x config so model
+      **Decision:** OpenCode does NOT support a `cwd` frontmatter field (verified
+      against official docs, March 2026). No `cwd` field is included. The primary
+      mechanism (post-render `## Context` block from Phase 1) is the only path.
+- [x] Ensure the reviewer template has no tool restrictions; read-only intent
+      is enforced via prompt-level guidance only.
+- [x] Make agent template rendering parameterized by current 5x config so model
       fields can be included or omitted deterministically.
-- [ ] Add installer helpers for writing both skills and agents with
+- [x] Add installer helpers for writing both skills and agents with
       `created/overwritten/skipped` reporting matching existing command style.
-- [ ] Keep the existing `skills install` command backward-compatible; do not
+- [x] Keep the existing `skills install` command backward-compatible; do not
       change its output contract in this phase.
-- [ ] Add unit tests covering OpenCode location resolution, agent template
+- [x] Add unit tests covering OpenCode location resolution, agent template
       rendering with and without configured models, and correct file generation
       for project vs user scope.
 
@@ -349,19 +373,21 @@ templates. All three use `mode: subagent`. Model fields are included only when
 the corresponding 5x config role model is set; otherwise they are omitted so
 OpenCode inherits the primary agent's model.
 
-`5x-reviewer` _(tool names are assumed — verify against OpenCode's tool registry
-in Phase 2 before finalizing)_:
+`5x-reviewer`:
 
 ```markdown
 ---
 name: 5x-reviewer
-description: 5x quality reviewer — read-only investigation and structured verdict
+description: 5x quality reviewer — investigation and structured verdict
 model: <omit or from [reviewer].model>
 mode: subagent
-allowedTools: [read_file, search_files, run_terminal_cmd, list_directory]
-disallowedTools: [write_file, edit_file, delete_file]
 ---
 ```
+
+No `allowedTools`/`disallowedTools` restrictions. The reviewer has unrestricted
+tool access (bash, read, write, edit, etc.) so it can investigate the codebase
+and produce review documents. The read-only constraint (do not fix work being
+reviewed) is behavioral, enforced only via prompt-level guidance.
 
 `5x-plan-author`:
 
@@ -385,34 +411,90 @@ mode: subagent
 ---
 ```
 
+`5x-orchestrator`:
+
+```markdown
+---
+name: 5x-orchestrator
+description: Primary orchestrator for 5x plan generation, review, and phased implementation
+mode: primary
+tools:
+  write: false
+  edit: false
+---
+
+You are the 5x orchestrator. You manage structured software engineering
+workflows by delegating to native sub-agents and guiding the human
+through decision points. You never write or edit code directly.
+
+## How you work
+
+You follow **skills** — structured workflow documents that define each
+process step by step. Always load the relevant skill before starting a
+workflow:
+
+- **5x-plan**: Generate an implementation plan from a requirements doc
+- **5x-plan-review**: Run review/fix cycles on a plan until approved
+- **5x-phase-execution**: Execute approved plan phases through author
+  implementation, quality gates, and code review
+
+Skills are your source of truth for workflow steps, invariants, and
+recovery procedures. Follow them closely.
+
+## Key principles
+
+1. **Delegate, don't implement.** Render task prompts with
+   `5x template render`, launch the appropriate native sub-agent
+   (5x-plan-author, 5x-code-author, or 5x-reviewer), and validate
+   results with `5x protocol validate --record`. The skills describe
+   each delegation step in detail.
+
+2. **Track state.** Use `5x run state --run <id>` and
+   `5x plan phases <path>` to know where a run stands before acting.
+   Always check state when resuming a workflow.
+
+3. **Guide human decisions.** When a workflow requires human input
+   (review escalation, phase gate, override), present the situation
+   with enough context for the human to decide. Include your
+   recommendation when you have one.
+
+4. **Verify before proceeding.** After each sub-agent completes, check
+   the result against the skill's invariants — author produced a
+   commit, diff is non-empty, quality gates pass.
+
+5. **Recover gracefully.** When sub-agents fail or produce invalid
+   results, follow the skill's recovery section. Retry once with a
+   fresh session before escalating.
+```
+
 ### Phase 3: Add `5x init opencode <user|project>`
 
 **Completion gate:** users can install all required OpenCode-native 5x assets in
 one command without disturbing the existing repository scaffolding flow.
 
-- [ ] Restructure `init.ts` using citty's parent-with-subcommands pattern (same
+- [x] Restructure `init.ts` using citty's parent-with-subcommands pattern (same
       pattern as the existing `skills` command). The existing flat `init` handler
       is preserved as the no-arg/default `run` handler on the parent command.
       `5x init opencode` is registered as a `subCommands` entry on the parent.
       Bare `5x init [--force]` continues to run `initScaffold` via the parent's
       `run` handler (which fires only when no subcommand matches).
-- [ ] Add `5x init opencode <user|project>` as a new subcommand path.
-- [ ] `5x init opencode project` requires `.5x/` and `5x.toml` to already exist
+- [x] Add `5x init opencode <user|project>` as a new subcommand path.
+- [x] `5x init opencode project` requires `.5x/` and `5x.toml` to already exist
       (i.e., `5x init` must have been run first). Add a prerequisite check that
       exits with a clear error message if these are absent.
-- [ ] Support `--force` for overwriting installed agent and skill files.
-- [ ] For project scope, install:
+- [x] Support `--force` for overwriting installed agent and skill files.
+- [x] For project scope, install:
       - skills under `.opencode/skills/`
       - agents under `.opencode/agents/`
-- [ ] For user scope, install:
+- [x] For user scope, install:
       - skills under `~/.config/opencode/skills/`
       - agents under `~/.config/opencode/agents/`
-- [ ] Reuse the existing control-plane safeguards where appropriate so running
+- [x] Reuse the existing control-plane safeguards where appropriate so running
       `5x init opencode project` from a managed linked worktree still resolves to
       the checkout root intended for project-local assets.
-- [ ] Update `5x init` success messaging to mention the native OpenCode install
+- [x] Update `5x init` success messaging to mention the native OpenCode install
       path alongside the generic skills install path.
-- [ ] Add integration tests covering:
+- [x] Add integration tests covering:
       - legacy `5x init` scaffolding still works (compatibility test that
         `5x init --force` works without arguments),
       - `5x init opencode project` writes both skills and agents,
@@ -428,25 +510,25 @@ one command without disturbing the existing repository scaffolding flow.
 default path, with explicit fallback to `5x invoke` when native agents are not
 available.
 
-- [ ] Rewrite `5x-plan`, `5x-plan-review`, and `5x-phase-execution` skill docs.
-- [ ] Replace "always run `5x invoke` as a subprocess" guidance with a new
+- [x] Rewrite `5x-plan`, `5x-plan-review`, and `5x-phase-execution` skill docs.
+- [x] Replace "always run `5x invoke` as a subprocess" guidance with a new
       delegation pattern:
   - render the task prompt with `5x template render`,
   - detect whether a native agent is installed (see detection order below),
   - run the prompt in a native subagent if available,
   - validate the final JSON with `5x protocol validate --record`,
   - fall back to `5x invoke` if no native agent is found.
-- [ ] Document the preferred OpenCode agent names (`5x-plan-author`,
-      `5x-code-author`, `5x-reviewer`) and the fallback path when they are not
-      present.
-- [ ] In the fallback guidance, preserve `5x invoke` as the last-resort path so
+- [x] Document the preferred OpenCode agent names (`5x-orchestrator`,
+      `5x-plan-author`, `5x-code-author`, `5x-reviewer`) and the fallback path
+      when subagent profiles are not present.
+- [x] In the fallback guidance, preserve `5x invoke` as the last-resort path so
       older environments and unsupported harnesses still work.
-- [ ] Update skill prose to treat session reuse as optional/best effort.
-- [ ] Remove or rewrite subprocess-only wording in the shared task templates so
+- [x] Update skill prose to treat session reuse as optional/best effort.
+- [x] Remove or rewrite subprocess-only wording in the shared task templates so
       native subagents are not told they are external subprocesses.
-- [ ] Keep the structured outcome contract identical to today: author returns
+- [x] Keep the structured outcome contract identical to today: author returns
       `AuthorStatus`, reviewer returns `ReviewerVerdict`.
-- [ ] Add focused tests for any template text or loader behavior changed by this
+- [x] Add focused tests for any template text or loader behavior changed by this
       phase.
 
 **Native agent detection order:**
@@ -505,22 +587,22 @@ double-validation and double-recording in the fallback case.
 **Completion gate:** the native-first OpenCode workflow is documented, tested,
 and does not regress the existing `5x invoke` path.
 
-- [ ] Update `README.md` quick-start instructions to show:
+- [x] Update `README.md` quick-start instructions to show:
       - generic skill install,
       - `5x init opencode project`,
       - native subagent expectations,
       - `5x invoke` as fallback.
-- [ ] Update architecture/docs files that currently describe `5x invoke` as the
+- [x] Update architecture/docs files that currently describe `5x invoke` as the
       only subagent execution path.
-- [ ] Document the OpenCode user-scope path difference explicitly so users do not
+- [x] Document the OpenCode user-scope path difference explicitly so users do not
       assume `~/.opencode/...` is correct.
-- [ ] Add an end-to-end test plan for manual verification in OpenCode:
+- [x] Add an end-to-end test plan for manual verification in OpenCode:
       - custom agents installed,
       - skill discovers them,
       - native child sessions appear in the TUI,
       - validated JSON result records correctly,
       - fallback to `5x invoke` still works when custom agents are absent.
-- [ ] Run lint, typecheck, and the full affected test suite.
+- [x] Run lint, typecheck, and the full affected test suite.
 
 ## Files Touched
 
@@ -551,7 +633,7 @@ and does not regress the existing `5x invoke` path.
 |------|-------|-----------|
 | Unit | `test/commands/template*.test.ts` | Prompt rendering, variable injection, continued-template selection, run-aware envelope fields (`run_id`, `plan_path`, `worktree_root`), post-render `## Context` block injection, standard `outputSuccess()` envelope wrapping, `outputError()` for error cases |
 | Unit | `test/commands/protocol*.test.ts` | Author/reviewer schema validation, `--require-commit` defaults to true for author, `--no-require-commit` opt-out, `--run`/`--record`/`--step`/`--phase`/`--iteration` combined validation-and-record flow, stdin/input parsing, auto-detect raw vs `outputSuccess` envelope input (unwraps `.data.result` when `ok` field is present) |
-| Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion |
+| Unit | `test/harnesses/opencode*.test.ts` | OpenCode install locations, generated agent frontmatter, model inclusion/omission, `cwd` field inclusion, orchestrator prompt body rendering and `tools` frontmatter |
 | Integration | `test/commands/init-opencode.test.ts` | `5x init opencode <scope>` installs both skills and agents correctly, prerequisite check for `.5x/`/`5x.toml`, `5x init --force` compatibility |
 | Regression | existing `invoke` tests | Fallback transport still works with shared helpers; refactoring is a pure extraction with no invoke test assertion changes |
 | Manual | OpenCode TUI workflow | Native child sessions, custom subagent usage, JSON validation, run recording, fallback behavior |
@@ -574,10 +656,10 @@ and does not regress the existing `5x invoke` path.
 - `5x protocol validate author --require-commit` and
   `5x protocol validate reviewer` enforce the same structured contracts used by
   `5x invoke` today.
-- `5x init opencode project` installs 5x skills and 3 custom subagents under
-  `.opencode/`.
-- `5x init opencode user` installs 5x skills and 3 custom subagents under
-  `~/.config/opencode/`.
+- `5x init opencode project` installs 5x skills, 3 custom subagents, and 1
+    primary orchestrator under `.opencode/`.
+- `5x init opencode user` installs 5x skills, 3 custom subagents, and 1
+    primary orchestrator under `~/.config/opencode/`.
 - The bundled skills instruct OpenCode-capable orchestrators to use native
   subagents first, then fall back safely.
 - The task prompts remain shared across native and fallback execution paths.
@@ -622,6 +704,20 @@ Addresses re-review feedback from
   envelope schema in Design Decisions, Phase 1 checklist output item, the
   canonical delegation example in Phase 4 (`.data.prompt`, `.data.step_name`),
   and the Tests table.
+
+### v1.3 — March 11, 2026
+
+Addresses Phase 2 review items P1.9 and P1.10.
+
+- **P1.9:** Fixed YAML frontmatter model injection escaping. `injectModel()` in
+  `src/harnesses/opencode/loader.ts` now wraps the model value in double quotes
+  (`model: "..."`) so YAML-significant characters (colons, slashes) in model
+  strings cannot break the frontmatter or inject extra keys.
+- **P1.10:** Removed `allowedTools`/`disallowedTools` and `tools: { write: false,
+  edit: false }` from `5x-reviewer.md`. The reviewer has no tool restrictions;
+  the read-only intent (do not fix the work being reviewed) is behavioral guidance
+  in the reviewer's prompt, not enforced via frontmatter. Updated Design Decisions,
+  Phase 2 checklist, agent template skeleton, and unit tests accordingly.
 
 ### v1.2 — March 10, 2026
 

@@ -18,7 +18,7 @@ Follow the same review perspective, issue classification (`auto_fix` / `human_re
 
 ## Non-Interactive Execution
 
-You are running as a subprocess in an automated pipeline. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.). If you need human judgment on an issue, classify it as `human_required` in your review items.
+You are running as a delegated non-interactive workflow. Do NOT use any interactive tools (question, prompt, ask, confirm, etc.). If you need human judgment on an issue, classify it as `human_required` in your review items.
 
 ## Completion
 

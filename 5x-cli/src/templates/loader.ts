@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 // Template files are co-located and imported as strings via Bun's text loader
 // (configured in bunfig.toml or handled by bun build --compile).
 // For runtime compatibility, we import them eagerly and index by name.
+import authorFixQualityRaw from "./author-fix-quality.md" with { type: "text" };
 import authorGeneratePlanRaw from "./author-generate-plan.md" with {
 	type: "text",
 };
@@ -50,6 +51,7 @@ interface ParsedTemplate {
 
 // Registry of all bundled templates, keyed by name
 const TEMPLATES: Record<string, string> = {
+	"author-fix-quality": authorFixQualityRaw,
 	"author-generate-plan": authorGeneratePlanRaw,
 	"author-next-phase": authorNextPhaseRaw,
 	"author-process-plan-review": authorProcessPlanReviewRaw,
@@ -99,6 +101,7 @@ export function getDefaultTemplateRaw(name: string): string {
  * are missing the field in their frontmatter.
  */
 const STEP_NAME_FALLBACKS: Record<string, string> = {
+	"author-fix-quality": "author:fix-quality",
 	"author-generate-plan": "author:generate-plan",
 	"author-next-phase": "author:implement",
 	"author-process-plan-review": "author:fix-review",

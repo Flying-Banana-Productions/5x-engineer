@@ -7,7 +7,7 @@ A toolbelt of CLI primitives for AI-assisted implementation workflows. Manages r
 5x uses a three-layer architecture:
 
 ```
-Layer 3: Orchestrating Agent (Claude Code, OpenCode, ...)
+Layer 3: Orchestrating Agent (OpenCode 5x-orchestrator, Claude Code, ...)
          Loaded with a 5x skill (.md). Makes workflow decisions.
               |
               |  calls CLI commands as tools
@@ -16,20 +16,33 @@ Layer 2: 5x CLI (this tool)
          Stateless primitives returning JSON envelopes.
          Manages persistence (SQLite), logging, sub-agent invocation.
               |
-              |  5x invoke author/reviewer
+              |  native subagents (preferred) or 5x invoke (fallback)
               v
 Layer 1: Sub-Agents (Workers)
-         Author and reviewer agents. Pluggable providers.
-         Currently ships with OpenCode provider.
+         Author and reviewer agents.
+         Preferred: harness-native subagents (5x-plan-author, 5x-code-author, 5x-reviewer).
+         Fallback: 5x invoke with pluggable provider (OpenCode provider ships by default).
 ```
 
 The CLI does not decide what to do next -- it provides building blocks. Orchestration logic lives in **skills**: markdown documents loaded into your agent session that describe the workflow (which commands to run, when to retry, when to ask the human).
+
+### Native-First Subagent Execution
+
+When running inside a supported harness (OpenCode), author and reviewer work is
+delegated to **native subagents** rather than external subprocess invocations.
+The `5x-orchestrator` agent renders task prompts with `5x template render`,
+launches the appropriate native child agent, and validates structured results
+with `5x protocol validate`. This keeps all sub-agent work visible as native
+child sessions in the harness UI.
+
+`5x invoke` is retained as a fallback transport for unsupported harnesses and
+for environments where the custom 5x agents have not been installed.
 
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.1.0
 - Git repository (recommended; safety checks and worktree features depend on it)
-- [OpenCode](https://opencode.ai) installed and on `PATH` (for sub-agent invocation)
+- [OpenCode](https://opencode.ai) installed and on `PATH` (for native subagent and fallback invocation)
 - Provider API keys configured for the models you use (e.g., via `.env` / `.env.local`)
 
 ## Install
@@ -46,9 +59,56 @@ Verify:
 
 ## Quick Start
 
-### Option A: With an Agent Harness
+### Option A: Native OpenCode Workflow (Recommended)
 
-This is the intended workflow. Your agent (OpenCode, Claude Code, etc.) loads a 5x skill and drives the CLI.
+The recommended workflow uses OpenCode's native subagents so all author and
+reviewer sessions appear as first-class child sessions in the OpenCode TUI.
+
+1. Initialize in your repo:
+
+```bash
+5x init
+```
+
+2. Edit `5x.toml` -- set your models, quality gates, and paths.
+
+3. Install the native OpenCode agents and skills:
+
+```bash
+# Project scope — installs to .opencode/skills/ and .opencode/agents/:
+5x init opencode project
+
+# Or user scope — installs to ~/.config/opencode/skills/ and ~/.config/opencode/agents/:
+5x init opencode user
+```
+
+> **Note:** OpenCode uses `~/.config/opencode/` for user-scope assets, not
+> `~/.opencode/`. The `5x init opencode user` command installs to the correct
+> XDG-style path automatically.
+
+4. Start an OpenCode session using the `5x-orchestrator` agent:
+
+```bash
+opencode
+# Select or @mention the 5x-orchestrator agent, then describe your task:
+# "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
+```
+
+The orchestrator loads the skill, delegates author and reviewer work to native
+subagents (`5x-plan-author`, `5x-code-author`, `5x-reviewer`), and guides you
+through decision points.
+
+5. Monitor progress from another terminal:
+
+```bash
+5x run watch --run <run-id> --human-readable
+```
+
+### Option B: Generic Skill Install (Any Harness)
+
+Works with Claude Code, Cursor, or any agent that supports skill/instruction
+discovery. Author and reviewer work falls back to `5x invoke` (external
+subprocess) when native subagents are not available.
 
 1. Initialize in your repo:
 
@@ -64,6 +124,7 @@ This is the intended workflow. Your agent (OpenCode, Claude Code, etc.) loads a 
 5x skills install project            # installs to .agents/skills/
 # or for a specific agent client:
 5x skills install project --install-root .opencode
+5x skills install project --install-root .claude
 ```
 
 4. Start your agent session and load the skill:
@@ -75,7 +136,9 @@ opencode
 # "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
 ```
 
-The skill guides the agent through the full workflow: plan generation, review cycles, phase execution with quality gates.
+The skill guides the agent through the full workflow: plan generation, review
+cycles, phase execution with quality gates. When no native subagents are
+installed, the skill falls back to `5x invoke` automatically.
 
 5. Monitor progress from another terminal:
 
@@ -83,7 +146,7 @@ The skill guides the agent through the full workflow: plan generation, review cy
 5x run watch --run <run-id> --human-readable
 ```
 
-### Option B: Bash Scripting
+### Option C: Bash Scripting
 
 Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.
 
@@ -108,6 +171,31 @@ RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
 5x quality run | 5x run record "quality:check" --run "$RUN_ID"
 
 5x run complete --run "$RUN_ID"
+```
+
+For native subagent workflows (render → detect → subagent → validate):
+
+```bash
+RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
+
+# Render the task prompt
+RENDERED=$(5x template render author-next-phase --run "$RUN_ID" \
+  --var plan_path="$PLAN" --var phase_number=1)
+PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+
+# Detect native agent; fallback to 5x invoke
+if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
+   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
+  RESULT=<native subagent result JSON>
+else
+  RESULT=$(5x invoke author author-next-phase --run "$RUN_ID" \
+    --var plan_path="$PLAN" --var phase_number=1 2>/dev/null)
+fi
+
+# Validate + record (works for both paths)
+echo "$RESULT" | 5x protocol validate author \
+  --run "$RUN_ID" --record --step "$STEP"
 ```
 
 See [`examples/author-review-loop.sh`](examples/author-review-loop.sh) for a full working script with error handling and review-fix cycles.
@@ -138,6 +226,20 @@ Skills are markdown documents that teach an agent how to drive the 5x workflow. 
 
 ### Installing Skills
 
+**For OpenCode (native subagent workflow — recommended):**
+
+```bash
+# Project scope: installs skills under .opencode/skills/ AND
+# native subagent profiles under .opencode/agents/
+5x init opencode project
+
+# User scope: installs under ~/.config/opencode/skills/ and
+# ~/.config/opencode/agents/ (XDG path, NOT ~/.opencode/)
+5x init opencode user
+```
+
+**For other harnesses (generic agentskills.io layout):**
+
 ```bash
 # Project-level (committed to repo, any agent can discover them):
 5x skills install project
@@ -150,6 +252,12 @@ Skills are markdown documents that teach an agent how to drive the 5x workflow. 
 ```
 
 Skills follow the [agentskills.io](https://agentskills.io) convention. Once installed, agents that support skill discovery will find them automatically.
+
+> **OpenCode path note:** OpenCode discovers user-scope assets at
+> `~/.config/opencode/skills/` and `~/.config/opencode/agents/` (XDG-style),
+> **not** `~/.opencode/`. Running `5x init opencode user` writes to the correct
+> path. If you install manually, ensure you use `~/.config/opencode/`, not
+> `~/.opencode/`.
 
 ### Customizing
 
@@ -174,14 +282,61 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 
 `run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations). When piping from `invoke`, step name, run ID, result, and metadata are auto-extracted: `5x invoke ... | 5x run record`.
 
-### Agent Invocation
+### Native Subagent Primitives
+
+```bash
+5x template render <template> [--run <id>] [--var key=value ...] [--session <id>]
+```
+
+Renders a task prompt template and returns the result in a JSON envelope. When
+`--run` is passed, resolves run/worktree context and appends a `## Context`
+block with the effective working directory. When `--session` is passed and a
+`<template>-continued` variant exists, the shorter continued template is used
+automatically.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "template": "reviewer-plan",
+    "selected_template": "reviewer-plan-continued",
+    "step_name": "reviewer:review",
+    "prompt": "<rendered markdown>",
+    "declared_variables": ["plan_path", "review_path"],
+    "run_id": "run_abc123",
+    "plan_path": "/abs/path/to/plan.md",
+    "worktree_root": "/abs/path/to/worktree"
+  }
+}
+```
+
+```bash
+5x protocol validate <author|reviewer> [--run <id>] [--record] [--step <name>]
+                                        [--phase <name>] [--iteration <n>]
+                                        [--require-commit | --no-require-commit]
+```
+
+Validates structured output from a native subagent or `5x invoke` fallback.
+Accepts JSON via stdin or `--input`. Auto-detects input format: if the JSON
+contains an `ok` field (from `5x invoke`), unwraps `.data.result` before
+validation; otherwise treats the input as raw structured JSON (from a native
+subagent). With `--record`, records the validated result as a run step in one
+command.
+
+`--require-commit` defaults to `true` for author validation. Use
+`--no-require-commit` to opt out.
+
+### Agent Invocation (Fallback Transport)
 
 ```bash
 5x invoke author <template> [--run <id>] [--var key=value ...] [--record]
 5x invoke reviewer <template> [--run <id>] [--var key=value ...] [--record]
 ```
 
-Invokes a sub-agent with a prompt template. The author returns `AuthorStatus` (`result: complete | needs_human | failed`), the reviewer returns `ReviewerVerdict` (`readiness: ready | ready_with_corrections | not_ready`).
+Invokes a sub-agent with a prompt template via an external provider (fallback
+when native subagents are not installed). The author returns `AuthorStatus`
+(`result: complete | needs_human | failed`), the reviewer returns
+`ReviewerVerdict` (`readiness: ready | ready_with_corrections | not_ready`).
 
 Key flags:
 - `--run` -- run ID (optional when piping from an upstream command)
@@ -222,8 +377,13 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 
 ```bash
 5x init [--force]                                    # Scaffold config, templates, skills
+5x init opencode <project|user> [--force]            # Install OpenCode-native agents + skills
 5x skills install <project|user> [--install-root <dir>] [--force]
 ```
+
+`5x init opencode project` installs skills under `.opencode/skills/` and agent profiles under
+`.opencode/agents/` (requires `5x init` to have been run first).
+`5x init opencode user` installs under `~/.config/opencode/skills/` and `~/.config/opencode/agents/`.
 
 ### Worktrees
 

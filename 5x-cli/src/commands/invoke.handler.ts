@@ -10,7 +10,6 @@
  * anchored to `controlPlaneRoot/stateDir` rather than `projectRoot/.5x`.
  */
 
-import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -27,15 +26,7 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import {
-	type AuthorStatus,
-	AuthorStatusSchema,
-	assertAuthorStatus,
-	assertReviewerVerdict,
-	isStructuredOutputError,
-	type ReviewerVerdict,
-	ReviewerVerdictSchema,
-} from "../protocol.js";
+import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
 import { createProvider } from "../providers/factory.js";
 import {
 	appendLogLine,
@@ -49,15 +40,17 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import { validateRunId } from "../run-id.js";
-import {
-	loadTemplate,
-	renderTemplate,
-	setTemplateOverrideDir,
-} from "../templates/loader.js";
+import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import { validateStructuredOutput } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import {
+	hasStdinVarFlag,
+	parseVars,
+	resolveAndRenderTemplate,
+} from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,136 +98,6 @@ interface InvokeResult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Check whether any --var flags use `@-` (stdin) syntax.
- * Must be called BEFORE parseVars() or readUpstreamEnvelope() to determine
- * whether stdin is reserved for a template variable.
- */
-export function hasStdinVarFlag(vars: string | string[] | undefined): boolean {
-	if (!vars) return false;
-	const items = Array.isArray(vars) ? vars : [vars];
-	return items.some((v) => {
-		const eqIdx = v.indexOf("=");
-		return eqIdx > 0 && v.slice(eqIdx + 1) === "@-";
-	});
-}
-
-/**
- * Check whether a --var value is a file reference (@./path or @/abs/path).
- * Returns true only when the value starts with `@` followed by `.` or `/`,
- * which unambiguously indicates a file path. Literal `@`-prefixed values
- * like `@username` return false and are passed through unchanged.
- */
-function isFileReference(value: string): boolean {
-	if (value.length < 2 || value[0] !== "@") return false;
-	const ch = value[1];
-	return ch === "." || ch === "/";
-}
-
-/**
- * Parse --var key=value flags into a record.
- * Accepts a single string or array of strings (citty may collapse repeated flags).
- *
- * Supports:
- *   --var key=value       (literal value)
- *   --var key=@-          (read value from stdin)
- *   --var key=@./path.txt (read value from relative file)
- *   --var key=@/abs/path  (read value from absolute file)
- *
- * File-read is only triggered when the value after `@` starts with `.` or `/`
- * (i.e., looks like a file path). Literal values like `--var key=@username`
- * are passed through unchanged, preserving backward compatibility.
- *
- * At most one `@-` var is allowed per invocation.
- */
-async function parseVars(
-	vars: string | string[] | undefined,
-): Promise<Record<string, string>> {
-	if (!vars) return {};
-	const items = Array.isArray(vars) ? vars : [vars];
-	if (items.length === 0) return {};
-	const result: Record<string, string> = {};
-
-	// Enforce at most one @- (stdin) var
-	let stdinVarCount = 0;
-	for (const v of items) {
-		const eqIdx = v.indexOf("=");
-		if (eqIdx > 0 && v.slice(eqIdx + 1) === "@-") {
-			stdinVarCount++;
-		}
-	}
-	if (stdinVarCount > 1) {
-		outputError("INVALID_ARGS", "Only one --var can read from stdin (@-)");
-	}
-
-	for (const v of items) {
-		const eqIdx = v.indexOf("=");
-		if (eqIdx <= 0) {
-			outputError(
-				"INVALID_ARGS",
-				`--var must be in "key=value" format, got: "${v}"`,
-			);
-		}
-		const key = v.slice(0, eqIdx);
-		let value = v.slice(eqIdx + 1);
-
-		if (value === "@-") {
-			// Read from stdin
-			value = await new Response(Bun.stdin.stream()).text();
-		} else if (isFileReference(value)) {
-			// Read from file — strip the @ prefix.
-			// Only triggered for path-like values (@./relative or @/absolute),
-			// NOT for literal @-prefixed values like @username.
-			const rawPath = value.slice(1);
-			const filePath = resolve(rawPath);
-			try {
-				value = readFileSync(filePath, "utf-8");
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				outputError(
-					"INVALID_ARGS",
-					`Failed to read file for --var ${key}=@${rawPath}: ${msg}`,
-				);
-			}
-		}
-
-		result[key] = value;
-	}
-	return result;
-}
-
-/**
- * Resolve internal template-path variables owned by the CLI.
- * Explicit --var values override these defaults.
- */
-export function resolveInvokeTemplateVariables(
-	declaredVars: string[],
-	explicitVars: Record<string, string>,
-	config: Pick<FiveXConfig, "paths">,
-	projectRoot: string,
-): Record<string, string> {
-	const internalVars: Record<string, string> = {};
-
-	if (declaredVars.includes("plan_template_path")) {
-		internalVars.plan_template_path = resolve(
-			projectRoot,
-			config.paths.templates.plan,
-		);
-	}
-
-	if (declaredVars.includes("review_template_path")) {
-		internalVars.review_template_path = resolve(
-			projectRoot,
-			config.paths.templates.review,
-		);
-	}
-
-	return {
-		...internalVars,
-		...explicitVars,
-	};
-}
 
 /**
  * Run the agent invocation with streaming, writing events to the NDJSON log
@@ -435,55 +298,24 @@ export async function invokeAgent(
 	);
 	setTemplateOverrideDir(templateDir);
 
-	// 1. Resolve and render template
-	// When resuming a session, prefer a "-continued" variant of the template
-	// if one exists. The continued variant is shorter (saves tokens) since
-	// the full instructions are already in the session context.
-	let templateName = params.template;
-	if (params.session) {
-		const continuedName = `${templateName}-continued`;
-		try {
-			loadTemplate(continuedName);
-			templateName = continuedName;
-		} catch {
-			// No continued variant — use the full template
-		}
-	}
-
-	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
-	try {
-		const loaded = loadTemplate(templateName);
-		templateMetadata = loaded.metadata;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		if (message.includes("Unknown template") || message.includes("not found")) {
-			outputError("TEMPLATE_NOT_FOUND", message);
-		}
-		throw err;
-	}
-
+	// 1. Resolve and render template (shared helper)
 	const explicitVars = await parseVars(params.vars);
 	const mergedVars = pipeContext
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
 
-	// Phase 2: inject resolved plan path as default for plan_path variable.
-	// Explicit --var plan_path=... wins over resolver default.
-	if (
-		resolvedPlanPath &&
-		!mergedVars.plan_path &&
-		templateMetadata.variables.includes("plan_path")
-	) {
-		mergedVars.plan_path = resolvedPlanPath;
-	}
-
-	const variables = resolveInvokeTemplateVariables(
-		templateMetadata.variables,
-		mergedVars,
+	const resolved = resolveAndRenderTemplate({
+		templateName: params.template,
+		session: params.session,
+		explicitVars: mergedVars,
+		resolvedPlanPath,
 		config,
 		projectRoot,
-	);
-	const rendered = renderTemplate(templateName, variables);
+		// Pass run context for review_path auto-generation
+		runId: params.run,
+		phase: params.phase ?? mergedVars.phase_number,
+	});
+	const { variables } = resolved;
 
 	// 2. Create provider
 	let provider: AgentProvider;
@@ -546,7 +378,7 @@ export async function invokeAgent(
 	appendSessionStart(logPath, {
 		type: "session_start",
 		role,
-		template: templateName,
+		template: resolved.selectedTemplateName,
 		run: params.run,
 		phase_number: variables.phase_number,
 	});
@@ -571,7 +403,7 @@ export async function invokeAgent(
 	try {
 		runResult = await invokeStreamed(
 			session,
-			rendered.prompt,
+			resolved.prompt,
 			runOpts,
 			logPath,
 			quiet,
@@ -583,40 +415,21 @@ export async function invokeAgent(
 		throw err;
 	}
 
-	// 7. Validate structured output
-	const structured = runResult.structured;
+	// 7. Validate structured output (shared helper)
+	//    Use the result-based API so we can await provider.close() before
+	//    emitting the error envelope. The previous pattern called outputError()
+	//    directly from the shared helper, which threw CliError before the async
+	//    provider.close() could complete — potentially orphaning subprocesses.
+	const validation = validateStructuredOutput(runResult.structured, role, {
+		context: `invoke ${role}`,
+	});
 
-	// Check for StructuredOutputError BEFORE the object guard — real error
-	// payloads are typically objects and would fall through to assert* otherwise.
-	if (isStructuredOutputError(structured)) {
+	if (!validation.ok) {
 		await provider.close().catch(() => {});
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			"Agent returned a structured output error",
-			{ raw: structured },
-		);
+		outputError(validation.code, validation.message, validation.detail);
 	}
 
-	if (!structured || typeof structured !== "object") {
-		await provider.close().catch(() => {});
-		outputError(
-			"INVALID_STRUCTURED_OUTPUT",
-			`Agent did not return valid structured output for ${role}`,
-			{ raw: structured ?? null },
-		);
-	}
-
-	try {
-		if (role === "author") {
-			assertAuthorStatus(structured as AuthorStatus, `invoke ${role}`);
-		} else {
-			assertReviewerVerdict(structured as ReviewerVerdict, `invoke ${role}`);
-		}
-	} catch (err) {
-		await provider.close().catch(() => {});
-		const message = err instanceof Error ? err.message : String(err);
-		outputError("INVALID_STRUCTURED_OUTPUT", message, { raw: structured });
-	}
+	const structured = validation.value;
 
 	// 8. Close provider
 	await provider.close().catch(() => {});
@@ -624,7 +437,7 @@ export async function invokeAgent(
 	// 9. Return result — include worktree context for downstream pipelines
 	const output: InvokeResult = {
 		run_id: params.run,
-		step_name: rendered.stepName,
+		step_name: resolved.stepName,
 		phase: variables.phase_number ?? null,
 		model,
 		result: structured,
@@ -647,7 +460,7 @@ export async function invokeAgent(
 	// All errors from here must go to stderr — never outputError() (which would
 	// write a second JSON envelope to stdout, corrupting the stream).
 	if (params.record) {
-		const stepName = params.recordStep ?? rendered.stepName;
+		const stepName = params.recordStep ?? resolved.stepName;
 		if (!stepName) {
 			console.error(
 				"Warning: --record requires a step name. Provide --record-step or add step_name to the template frontmatter.",

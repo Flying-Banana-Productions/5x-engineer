@@ -49,6 +49,7 @@ function gitSync(
 	const result = Bun.spawnSync(["git", ...args], {
 		cwd,
 		env: env ?? sanitizedEnv(),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	});

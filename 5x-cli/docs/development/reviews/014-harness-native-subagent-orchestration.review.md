@@ -608,3 +608,413 @@ consistent:
   limitation is documented with a deferred enhancement path.
 
 **Readiness:** Ready — the plan can proceed to implementation as-is.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `a7a5c84`
+
+### What's Addressed
+
+Phase 1 is mostly implemented as planned.
+
+- `5x template render` landed with run-aware rendering, continued-template
+  selection, standard `outputSuccess()` envelope output, and post-render
+  `## Context` block injection in `5x-cli/src/commands/template.handler.ts`.
+- `5x protocol validate` landed with stdin / `--input` support, raw-vs-envelope
+  auto-detection, author/reviewer schema validation, and combined record flags
+  in `5x-cli/src/commands/protocol.handler.ts`.
+- `5x invoke` kept passing its regression suite after the extraction, and the
+  new command coverage is strong: `5x-cli/test/commands/template-render.test.ts`,
+  `5x-cli/test/commands/protocol-validate.test.ts`, and the existing invoke
+  tests all pass locally.
+
+### Remaining Concerns
+
+#### P1.7 — `protocol validate --record` can corrupt stdout with a second JSON envelope
+
+`5x-cli/src/commands/protocol.handler.ts:173` writes the success envelope before
+recording preconditions are fully validated. If `--record` is used with an
+invalid run id, `validateRunId()` at `5x-cli/src/commands/protocol.handler.ts:188`
+throws after success output has already been emitted, so stdout contains both a
+success envelope and an error envelope. Repro: `5x protocol validate author
+--record --run ../bad --step test`.
+
+This breaks the machine-readable single-envelope contract and can mislead the
+orchestrator into treating a failed validate+record call as successful.
+
+Recommendation: validate all `--record` prerequisites (`--run`, run id format,
+`--step`) before calling `outputSuccess()`, and add a regression test for the
+invalid-run-id case.
+
+#### P2.10 — Phase 1 did not actually extract shared render/validate helpers for `invoke`
+
+The plan called for `invoke.handler.ts` to reuse extracted render/validate
+helpers so native and fallback paths share one contract. This commit extracts
+shared variable parsing in `5x-cli/src/commands/template-vars.ts`, but
+`5x-cli/src/commands/invoke.handler.ts:312`-`5x-cli/src/commands/invoke.handler.ts:360`
+still reimplements template selection / rendering flow, and
+`5x-cli/src/commands/invoke.handler.ts:460`-`5x-cli/src/commands/invoke.handler.ts:493`
+still reimplements structured-output validation.
+
+Functionally this works today, but it leaves the exact drift risk Phase 1 was
+meant to remove. A later contract change will need to be updated in two places.
+
+Recommendation: factor a shared render helper and a shared validate helper out
+of the new command handlers, then have both `template render` / `protocol
+validate` and `invoke` call those helpers.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — Phase 1 is substantively complete and
+the test strategy is good, but one correctness issue remains in the new
+validate+record path and the planned invoke/helper consolidation is incomplete.
+Both are mechanical fixes. Phase 2 should wait until P1.7 is fixed.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `28a73df`
+
+### What's Addressed
+
+This follow-up commit addresses the two items from the prior implementation
+review.
+
+- **P1.7 (double stdout envelope):** Resolved. `5x-cli/src/commands/protocol.handler.ts`
+  now validates `--record` prerequisites before `outputSuccess()`, and
+  `5x-cli/test/commands/protocol-validate.test.ts` adds the invalid-run-id
+  regression case.
+- **P2.10 (shared helper extraction):** Resolved. Template selection/rendering is
+  now centralized in `5x-cli/src/commands/template-vars.ts` via
+  `resolveAndRenderTemplate()`, and structured-output validation is centralized
+  in `5x-cli/src/commands/protocol-helpers.ts` via `validateStructuredOutput()`.
+  `5x-cli/src/commands/invoke.handler.ts`, `5x-cli/src/commands/template.handler.ts`,
+  and `5x-cli/src/commands/protocol.handler.ts` all use those helpers.
+- Local verification passed: `bun test test/commands/protocol-validate.test.ts`,
+  `bun test test/commands/template-render.test.ts`, and
+  `bun test test/commands/invoke.test.ts test/commands/invoke-var-file.test.ts`.
+
+### Remaining Concerns
+
+#### P1.8 — Invalid structured-output failures no longer await provider cleanup
+
+The new shared validator intentionally does not await cleanup callbacks:
+`5x-cli/src/commands/protocol-helpers.ts:36`-`5x-cli/src/commands/protocol-helpers.ts:40`.
+`5x-cli/src/commands/invoke.handler.ts:416`-`5x-cli/src/commands/invoke.handler.ts:419`
+passes `onError: () => provider.close().catch(() => {})`, which starts async
+cleanup and then immediately throws via `outputError()`. `bin.ts` converts that
+throw into a process exit, so the provider close is no longer guaranteed to
+finish before exit on invalid structured output.
+
+Before this refactor, `invoke.handler.ts` awaited `provider.close()` on every
+structured-output validation failure path. The new behavior can leave provider
+subprocesses or transport resources orphaned in exactly the failure mode where
+cleanup matters most.
+
+Recommendation: keep the shared validation logic, but move the actual
+`outputError()` calls back behind an invoke-local wrapper that can `await
+provider.close()` first, or change the shared helper to return a structured
+failure result instead of throwing directly so callers can perform awaited
+cleanup before emitting the envelope.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the prior Phase 1 issues are fixed and
+the helper extraction now matches the plan, but the refactor introduced one
+mechanical cleanup regression in the invoke error path. Fix that before moving
+to Phase 2.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `3940db1`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 1 concern from the prior
+review.
+
+- **P1.8 (await provider cleanup):** Resolved. `5x-cli/src/commands/protocol-helpers.ts`
+  now returns a discriminated validation result, and `5x-cli/src/commands/invoke.handler.ts`
+  awaits `provider.close()` before calling `outputError()` on invalid structured
+  output.
+- The split between result-based and throwing validation APIs is appropriate for
+  the architecture: `5x-cli/src/commands/invoke.handler.ts` uses the result form
+  where async cleanup is required, while `5x-cli/src/commands/protocol.handler.ts`
+  uses `validateStructuredOutputOrThrow()` where no async teardown is needed.
+- Test coverage is now stronger for the shared validation layer. New unit tests
+  in `5x-cli/test/commands/protocol-helpers.test.ts` cover both success/failure
+  result behavior and the cleanup-oriented regression path.
+- Local verification passed: `bun test test/commands/protocol-helpers.test.ts`,
+  `bun test test/commands/protocol-validate.test.ts test/commands/template-render.test.ts`,
+  and `bun test test/commands/invoke.test.ts test/commands/invoke-var-file.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 1. The implementation now matches the Phase 1
+ plan: shared render and validation helpers are extracted, stdout contract issues
+ are fixed, and invoke preserves awaited cleanup on validation failure.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 1 is complete and ready for the next phase.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `a8b8200`
+
+### What's Addressed
+
+Phase 2 is largely in place and matches the plan's intended scope.
+
+- A reusable harness install-location registry landed in
+  `5x-cli/src/harnesses/locations.ts`, with explicit project vs user path
+  mapping for OpenCode.
+- Harness-agnostic asset installers landed in
+  `5x-cli/src/harnesses/installer.ts`, covering both agents and skills with
+  created/overwritten/skipped summaries.
+- Bundled OpenCode agent templates landed in
+  `5x-cli/src/harnesses/opencode/`, and model-aware rendering is centralized in
+  `5x-cli/src/harnesses/opencode/loader.ts`.
+- Local verification passed: `bun test test/harnesses/installer.test.ts test/harnesses/opencode.test.ts`.
+
+### Remaining Concerns
+
+#### P1.9 — Model frontmatter injection is not escaped
+
+`5x-cli/src/harnesses/opencode/loader.ts:105`-`5x-cli/src/harnesses/opencode/loader.ts:109`
+injects the configured model with raw string interpolation:
+`model: ${model}`. But `5x-cli/src/config.ts:6`-`5x-cli/src/config.ts:12`
+accepts arbitrary model strings. A model containing a newline, `#`, or other
+YAML-significant content can break the generated frontmatter or inject extra
+keys into the installed agent definition.
+
+This is a mechanical correctness/safety bug in the template renderer.
+
+Recommendation: serialize the inserted value as YAML-safe text (or validate
+model strings against a stricter character set) before writing agent files, and
+add a regression test with a model containing YAML-special characters.
+
+#### P1.10 — `5x-reviewer` is not actually enforced as read-only
+
+The plan's Phase 2 contract says the reviewer should be read-only for file
+modifications via agent frontmatter. But `5x-cli/src/harnesses/opencode/5x-reviewer.md:5`
+only disables `write` and `edit`, while `5x-cli/src/harnesses/opencode/5x-reviewer.md:17`
+still instructs the agent to use `bash`. That leaves an obvious escape hatch:
+the reviewer can still modify or delete files through shell commands.
+
+So the current template does not actually satisfy the read-only guarantee the
+plan claims; it relies on prompt obedience rather than harness-enforced policy.
+
+Recommendation: make an explicit product/architecture call on which invariant
+matters more for v1:
+
+- disable `bash` and accept reduced investigation capability, or
+- keep `bash` and weaken the plan/docs to say reviewer edits are prevented only
+  for first-class file tools, not all filesystem mutation paths.
+
+### Updated Readiness Assessment
+
+**Readiness:** Not ready — Phase 2 is close, but the reviewer safety contract is
+not actually enforced and needs a human design decision. The model-frontmatter
+escaping issue is mechanical and should be fixed alongside that decision.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `6dce50b`
+
+### What's Addressed
+
+This follow-up commit resolves the Phase 2 design mismatch from the prior
+review and partially addresses the model-frontmatter issue.
+
+- **P1.10 (reviewer restrictions):** Addressed via an explicit design change.
+  `5x-cli/docs/development/014-harness-native-subagent-orchestration.md` now
+  states that `5x-reviewer` has no tool restrictions and that the "do not fix
+  the work being reviewed" rule is behavioral guidance, not a harness-enforced
+  policy. The template in `5x-cli/src/harnesses/opencode/5x-reviewer.md` now
+  matches that contract.
+- Harness tests still pass locally after the update:
+  `bun test test/harnesses/opencode.test.ts test/harnesses/installer.test.ts`.
+
+### Remaining Concerns
+
+#### P1.11 — YAML escaping is still incomplete for quoted model values
+
+`5x-cli/src/harnesses/opencode/loader.ts:109` changed from raw interpolation to
+`model: "${model}"`, which fixes the simple unquoted-scalar case but does not
+actually escape YAML-special characters inside the quoted string. A configured
+model containing `"`, `\\`, or embedded newlines can still break frontmatter or
+change the parsed value.
+
+Because `5x-cli/src/config.ts:6`-`5x-cli/src/config.ts:12` still accepts
+arbitrary model strings, this remains a correctness/safety bug in generated
+agent files.
+
+Recommendation: use real YAML string escaping/serialization for the inserted
+value (or validate model names against a strict safe character set), and add a
+regression test covering embedded quotes and newline characters.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the prior human-decision item is now
+resolved by an explicit plan/implementation alignment, and the remaining issue
+is a mechanical escaping bug in the renderer.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `c85c79e`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 2 concern from the prior
+review.
+
+- **P1.11 (YAML escaping):** Resolved. `5x-cli/src/harnesses/opencode/loader.ts`
+  now routes model strings through `yamlQuote()`, which escapes backslashes,
+  double quotes, newlines, and carriage returns before injecting the `model:`
+  line into agent frontmatter.
+- Test coverage now exercises the previously missing edge cases in
+  `5x-cli/test/harnesses/opencode.test.ts`, including embedded quotes,
+  backslashes, newlines, carriage returns, and mixed special characters.
+- Local verification passed: `bun test test/harnesses/opencode.test.ts test/harnesses/installer.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 2.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 2 now matches the updated plan: install location
+resolution, installer helpers, bundled OpenCode templates, model-aware
+rendering, and the agreed reviewer contract are all in place with adequate unit
+coverage.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `f19316d`
+
+### What's Addressed
+
+Phase 3 is implemented cleanly and matches the plan's intended scope.
+
+- `5x-cli/src/commands/init.ts` now uses the expected citty parent-with-subcommands
+  shape, preserving bare `5x init` while adding `5x init opencode <user|project>`.
+- `5x-cli/src/commands/init.handler.ts` adds the OpenCode installer flow with the
+  planned project prerequisite check, project-vs-user path resolution, `--force`
+  behavior, and updated success messaging that points users to the native install path.
+- `5x-cli/test/commands/init-opencode.test.ts` covers the key compatibility and
+  integration cases: legacy init behavior, project/user installs, prerequisite failures,
+  idempotency, and overwrite behavior.
+- Local verification passed: `bun test test/commands/init-opencode.test.ts test/commands/init.test.ts test/commands/init-guard.test.ts test/commands/run-init-worktree.test.ts test/commands/init-skills.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 3.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — the Phase 3 `init opencode` flow is correct, consistent with
+the Phase 2 harness abstractions, and sufficiently covered to proceed to Phase 4.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `8ae000c`
+
+### What's Addressed
+
+Phase 4 is largely implemented and the main workflow rewrite landed in the right
+places.
+
+- The bundled skills now describe the native-first delegation flow: render via
+  `5x template render`, prefer native OpenCode subagents, validate/record via
+  `5x protocol validate`, and keep `5x invoke` as fallback in
+  `5x-cli/src/skills/5x-plan/SKILL.md`,
+  `5x-cli/src/skills/5x-plan-review/SKILL.md`, and
+  `5x-cli/src/skills/5x-phase-execution/SKILL.md`.
+- The shared task templates were updated to transport-neutral wording in
+  `5x-cli/src/templates/author-generate-plan.md`,
+  `5x-cli/src/templates/author-next-phase.md`,
+  `5x-cli/src/templates/author-process-plan-review.md`,
+  `5x-cli/src/templates/author-process-impl-review.md`,
+  `5x-cli/src/templates/reviewer-plan.md`,
+  `5x-cli/src/templates/reviewer-plan-continued.md`, and
+  `5x-cli/src/templates/reviewer-commit.md`.
+- Focused regression coverage was added in
+  `5x-cli/test/skills/skill-content.test.ts`, and local verification passed:
+  `bun test test/skills/skill-content.test.ts`.
+
+### Remaining Concerns
+
+#### P1.12 — Phase 4 does not actually document all preferred OpenCode agent names
+
+The Phase 4 checklist in the plan explicitly requires the shipped skills to
+document the preferred OpenCode agent names: `5x-orchestrator`,
+`5x-plan-author`, `5x-code-author`, and `5x-reviewer`
+(`5x-cli/docs/development/014-harness-native-subagent-orchestration.md:521`).
+The rewritten skills document the three subagents, but none of them mention
+`5x-orchestrator` at all.
+
+That leaves the implementation slightly out of contract with the approved plan,
+and the plan's Phase 4 checklist is currently overstated.
+
+Recommendation: add a short note in the skill docs that these workflows are
+intended to run under the `5x-orchestrator` primary agent when available, while
+keeping the existing fallback guidance unchanged.
+
+#### P2.11 — Phase 4 regression tests are too string-based and miss key contract checks
+
+`5x-cli/test/skills/skill-content.test.ts` gives useful smoke coverage, but it
+mainly checks for substring presence rather than the higher-value Phase 4
+contracts. For example, the "detection order" assertions only prove both paths
+are mentioned, not that project scope is preferred over user scope; the suite
+does not assert `5x-orchestrator` documentation at all; and it hard-codes the
+total skill count with `expect(names.length).toBe(3)` /
+`expect(skills.length).toBe(3)`, which will fail for unrelated future skill
+additions.
+
+This is not a functional bug in the current commit, but it leaves the new Phase
+4 behavior under-protected and creates avoidable test brittleness.
+
+Recommendation: tighten the assertions around ordered detection/fallback
+guidance, add explicit coverage for the required agent-name documentation, and
+avoid exact repository-wide skill counts unless the product intentionally caps
+them.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready with corrections — the Phase 4 rewrite is substantively in
+place, but one plan-compliance item is still missing and the new regression
+coverage should be strengthened before declaring the phase complete and moving to
+Phase 5. Both remaining issues are mechanical.
+
+---
+
+## Addendum (March 11, 2026) — Implementation review of `7586d00`
+
+### What's Addressed
+
+This follow-up commit resolves the remaining Phase 4 concerns from the prior
+review.
+
+- **P1.12 (missing `5x-orchestrator` docs):** Resolved. The skill docs now name
+  the installed OpenCode agents, including `5x-orchestrator`, in
+  `5x-cli/src/skills/5x-plan/SKILL.md`,
+  `5x-cli/src/skills/5x-plan-review/SKILL.md`, and
+  `5x-cli/src/skills/5x-phase-execution/SKILL.md`.
+- **P2.11 (shallow/brittle tests):** Resolved. `5x-cli/test/skills/skill-content.test.ts`
+  now avoids hard-coding the total bundled skill count, adds explicit coverage
+  for `5x-orchestrator`, and strengthens the detection-order/fallback checks by
+  asserting project-scope → user-scope → fallback ordering inside the relevant
+  sections.
+- Local verification passed: `bun test test/skills/skill-content.test.ts`.
+
+### Remaining Concerns
+
+No remaining concerns for Phase 4. The prior plan-compliance gap is closed, and
+the focused regression coverage is now adequate for the documentation/template
+surface changed in this phase.
+
+### Updated Readiness Assessment
+
+**Readiness:** Ready — Phase 4 now matches the approved plan closely enough to
+proceed to Phase 5. The native-first skill guidance, transport-neutral template
+wording, and focused regression tests are all in place.
