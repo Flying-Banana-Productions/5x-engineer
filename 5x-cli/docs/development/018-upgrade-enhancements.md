@@ -1,6 +1,6 @@
 # Upgrade Command Enhancements
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 13, 2026
 **Status:** Ready for implementation
 
@@ -335,7 +335,16 @@ up. User-scope harness assets are not touched.
       in `src/harnesses/types.ts`:
       ```ts
       interface HarnessDesiredAsset {
-        /** Relative path from the scope root (e.g. "skills/5x-plan/SKILL.md"). */
+        /**
+         * Path relative to the harness scope root — NOT relative to the
+         * control-plane root.  Example: "skills/5x-plan/SKILL.md".
+         *
+         * Callers must re-root these paths through
+         * `plugin.locations.resolve("project", controlPlaneRoot)` before
+         * passing them to `reconcileAssets()` so that the resulting
+         * `relativePath` values in the manifest are control-plane-root-
+         * relative (e.g. ".claude/skills/5x-plan/SKILL.md").
+         */
         relativePath: string;
         /** Content to write. */
         content: string;
@@ -365,7 +374,14 @@ up. User-scope harness assets are not touched.
           manifest-managed files still exist on disk — still enter
           reconciliation.
         - If installed (by either check): call `desiredAssets()` to get the
-          desired state, then `reconcileAssets()` to produce the plan.
+          desired state. Re-root each returned `relativePath` through
+          `plugin.locations.resolve("project", controlPlaneRoot)` so that
+          paths become control-plane-root-relative (e.g.
+          `"skills/5x-plan/SKILL.md"` →
+          `".claude/skills/5x-plan/SKILL.md"`). This ensures manifest
+          `relativePath` values are consistent with the manifest's
+          control-plane-root-relative keying. Then call
+          `reconcileAssets()` to produce the plan.
       - Compute manifest owner strings as `harness:<name>:skill` and
         `harness:<name>:agent`.
 - [ ] In `applyUpgradePlan()`, execute harness asset plans using the same
@@ -506,3 +522,13 @@ reconciliation. Added stale-only harness scope test case.
 Updated Phase 5 text to consistently describe the method as optional, with
 explicit skip logic for plugins that lack it. Added test case for graceful
 skip of plugins without `desiredAssets()`.
+
+### v1.2 — Address Addendum 2 review feedback
+
+**R4 / P2.1 (harness asset path normalization):** Clarified in the
+`HarnessDesiredAsset` interface that `relativePath` is relative to the
+harness scope root, not the control-plane root. Added explicit re-rooting
+step in the `buildUpgradePlan()` bullet: `desiredAssets()` output must be
+re-rooted through `plugin.locations.resolve("project", controlPlaneRoot)`
+before being passed to `reconcileAssets()`, ensuring manifest `relativePath`
+values remain control-plane-root-relative.
