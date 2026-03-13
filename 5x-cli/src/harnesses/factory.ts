@@ -52,7 +52,8 @@ export class InvalidHarnessError extends Error {
 	constructor(_harnessName: string, packageName: string) {
 		super(
 			`Harness package "${packageName}" does not export a valid HarnessPlugin.\n` +
-				`Expected default export: { name: string, description: string, supportedScopes: string[], install: (ctx) => Promise<...> }`,
+				`Expected default export: { name: string, description: string, supportedScopes: string[], ` +
+				`locations: { resolve: fn }, describe: fn, install: fn, uninstall: fn }`,
 		);
 		this.name = "InvalidHarnessError";
 	}
@@ -113,12 +114,16 @@ export function isValidPlugin(obj: unknown): obj is HarnessPlugin {
  */
 export async function loadHarnessPlugin(
 	harnessName: string,
+	/** @internal — override dynamic import for testing. */
+	importFn?: (specifier: string) => Promise<Record<string, unknown>>,
 ): Promise<LoadedHarnessPlugin> {
 	const packageName = resolvePackageName(harnessName);
+	const doImport =
+		importFn ?? ((s: string) => import(s) as Promise<Record<string, unknown>>);
 
 	// Try external package first (allows third-party overrides of bundled)
 	try {
-		const mod = (await import(packageName)) as Record<string, unknown>;
+		const mod = await doImport(packageName);
 		const plugin = mod.default;
 
 		if (!isValidPlugin(plugin)) {

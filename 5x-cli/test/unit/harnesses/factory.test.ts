@@ -9,6 +9,41 @@ import {
 	type LoadedHarnessPlugin,
 	loadHarnessPlugin,
 } from "../../../src/harnesses/factory.js";
+import type { HarnessPlugin } from "../../../src/harnesses/types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal fake HarnessPlugin for testing external-override detection.
+ * Only the fields checked by `isValidPlugin()` need to be present.
+ */
+function makeFakePlugin(overrides?: Partial<HarnessPlugin>): HarnessPlugin {
+	return {
+		name: overrides?.name ?? "opencode",
+		description: overrides?.description ?? "fake external plugin",
+		supportedScopes: overrides?.supportedScopes ?? ["project", "user"],
+		locations: overrides?.locations ?? {
+			resolve: () => ({
+				skillsDir: "/tmp/skills",
+				agentsDir: "/tmp/agents",
+			}),
+		},
+		describe:
+			overrides?.describe ?? (() => ({ skillNames: [], agentNames: [] })),
+		install: (overrides?.install ??
+			(async () => ({
+				skills: { written: [], skipped: [] },
+				agents: { written: [], skipped: [] },
+			}))) as HarnessPlugin["install"],
+		uninstall: (overrides?.uninstall ??
+			(async () => ({
+				skills: { removed: [], notFound: [] },
+				agents: { removed: [], notFound: [] },
+			}))) as HarnessPlugin["uninstall"],
+	};
+}
 
 // ---------------------------------------------------------------------------
 // Bundled harness loading
@@ -43,19 +78,53 @@ describe("loadHarnessPlugin — external override detection", () => {
 	 * Critical regression test: an external package that overrides a bundled
 	 * name must be labeled source: "external", not "bundled".
 	 *
-	 * We cannot actually install an external package in unit tests, but we
-	 * can verify the contract: when the dynamic import succeeds (external
-	 * path), the result should have source: "external". When it fails with
-	 * module-not-found and the name matches a bundled harness, it should
-	 * have source: "bundled".
-	 *
-	 * This test verifies the bundled fallback path by loading a known
-	 * bundled harness name that has no external override installed.
+	 * Uses the injected importFn to simulate a successful dynamic import
+	 * for @5x-ai/harness-opencode — an external package that overrides
+	 * the bundled "opencode" harness. The result must be source: "external".
 	 */
+	test("external override of bundled name returns source: external", async () => {
+		const fakePlugin = makeFakePlugin({ name: "opencode" });
+
+		// Simulate a successful external import for @5x-ai/harness-opencode
+		const importFn = async (_specifier: string) => ({
+			default: fakePlugin,
+		});
+
+		const loaded = await loadHarnessPlugin("opencode", importFn);
+
+		expect(loaded.source).toBe("external");
+		expect(loaded.plugin).toBe(fakePlugin);
+		expect(loaded.plugin.name).toBe("opencode");
+	});
+
+	test("external override for non-bundled name returns source: external", async () => {
+		const fakePlugin = makeFakePlugin({ name: "cursor" });
+
+		const importFn = async (_specifier: string) => ({
+			default: fakePlugin,
+		});
+
+		const loaded = await loadHarnessPlugin("cursor", importFn);
+
+		expect(loaded.source).toBe("external");
+		expect(loaded.plugin.name).toBe("cursor");
+	});
+
 	test("bundled fallback produces source: bundled (no external override)", async () => {
 		// "opencode" is bundled and no @5x-ai/harness-opencode package exists
 		const loaded = await loadHarnessPlugin("opencode");
 		expect(loaded.source).toBe("bundled");
+	});
+
+	test("external package with invalid plugin shape throws InvalidHarnessError", async () => {
+		// Return a module whose default export is not a valid plugin
+		const importFn = async (_specifier: string) => ({
+			default: { name: "bad" }, // missing required fields
+		});
+
+		await expect(loadHarnessPlugin("opencode", importFn)).rejects.toThrow(
+			"does not export a valid HarnessPlugin",
+		);
 	});
 
 	test("unknown harness name throws HarnessNotFoundError", async () => {
