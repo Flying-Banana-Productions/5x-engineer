@@ -95,20 +95,20 @@ is a trivial addition. The handler uses `loaded.source` directly for display.
 with unit tests covering removal, not-found reporting, empty directory cleanup,
 and preservation of user-created files.
 
-- [ ] Add `UninstallSummary` type to `src/harnesses/installer.ts`:
+- [x] Add `UninstallSummary` type to `src/harnesses/installer.ts`:
       `{ removed: string[]; notFound: string[] }`.
-- [ ] Add `removeDirIfEmpty(dir)` helper — reads the directory; if it exists
+- [x] Add `removeDirIfEmpty(dir)` helper — reads the directory; if it exists
       and is empty, removes it with `rmdirSync`. No-op if non-empty or missing.
-- [ ] Add `uninstallSkillFiles(skillsDir, skillNames)`:
+- [x] Add `uninstallSkillFiles(skillsDir, skillNames)`:
       - For each name: remove `<skillsDir>/<name>/SKILL.md` if it exists, then
         `removeDirIfEmpty(<skillsDir>/<name>/)`.
       - After all skills: `removeDirIfEmpty(<skillsDir>/)`.
       - Returns `UninstallSummary` with entries formatted as `<name>/SKILL.md`.
-- [ ] Add `uninstallAgentFiles(agentsDir, agentNames)`:
+- [x] Add `uninstallAgentFiles(agentsDir, agentNames)`:
       - For each name: remove `<agentsDir>/<name>.md` if it exists.
       - After all agents: `removeDirIfEmpty(<agentsDir>/)`.
       - Returns `UninstallSummary` with entries formatted as `<name>.md`.
-- [ ] Add unit tests in `test/unit/harnesses/installer.test.ts` (extend
+- [x] Add unit tests in `test/unit/harnesses/installer.test.ts` (extend
       existing file):
       - `uninstallSkillFiles`: removes known files, reports not-found for
         missing skills, cleans empty subdirs, leaves user-created files and

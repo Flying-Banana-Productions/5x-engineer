@@ -12,7 +12,14 @@
  * that require agent files in addition to skills.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	rmdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +42,12 @@ export interface InstallSummary {
 	created: string[];
 	overwritten: string[];
 	skipped: string[];
+}
+
+/** Summary of an asset uninstall operation. */
+export interface UninstallSummary {
+	removed: string[];
+	notFound: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -143,4 +156,95 @@ export function installAgentFiles(
 		agents.map((a) => ({ filename: `${a.name}.md`, content: a.content })),
 		force,
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove a directory if it exists and is empty.
+ *
+ * No-op if the directory does not exist or contains entries.
+ * Uses try/catch on `rmdirSync` to handle the TOCTOU race where
+ * the directory becomes non-empty between check and remove.
+ */
+export function removeDirIfEmpty(dir: string): void {
+	if (!existsSync(dir)) return;
+
+	try {
+		const entries = readdirSync(dir);
+		if (entries.length > 0) return;
+		rmdirSync(dir);
+	} catch {
+		// Directory may have been removed or become non-empty — ignore.
+	}
+}
+
+/**
+ * Uninstall a set of skill files following the agentskills.io convention:
+ * `<skillsDir>/<skillName>/SKILL.md`.
+ *
+ * For each name: removes the SKILL.md file if it exists, then removes
+ * the skill subdirectory if empty. After all skills, removes the
+ * skillsDir itself if empty.
+ *
+ * @returns Summary with entries formatted as `<name>/SKILL.md`.
+ */
+export function uninstallSkillFiles(
+	skillsDir: string,
+	skillNames: string[],
+): UninstallSummary {
+	const removed: string[] = [];
+	const notFound: string[] = [];
+
+	for (const name of skillNames) {
+		const skillDir = join(skillsDir, name);
+		const filePath = join(skillDir, "SKILL.md");
+
+		if (existsSync(filePath)) {
+			rmSync(filePath);
+			removed.push(`${name}/SKILL.md`);
+		} else {
+			notFound.push(`${name}/SKILL.md`);
+		}
+
+		removeDirIfEmpty(skillDir);
+	}
+
+	removeDirIfEmpty(skillsDir);
+
+	return { removed, notFound };
+}
+
+/**
+ * Uninstall a set of agent files from an agents directory:
+ * `<agentsDir>/<agentName>.md`.
+ *
+ * For each name: removes the .md file if it exists. After all agents,
+ * removes the agentsDir itself if empty.
+ *
+ * @returns Summary with entries formatted as `<name>.md`.
+ */
+export function uninstallAgentFiles(
+	agentsDir: string,
+	agentNames: string[],
+): UninstallSummary {
+	const removed: string[] = [];
+	const notFound: string[] = [];
+
+	for (const name of agentNames) {
+		const filePath = join(agentsDir, `${name}.md`);
+
+		if (existsSync(filePath)) {
+			rmSync(filePath);
+			removed.push(`${name}.md`);
+		} else {
+			notFound.push(`${name}.md`);
+		}
+	}
+
+	removeDirIfEmpty(agentsDir);
+
+	return { removed, notFound };
 }
