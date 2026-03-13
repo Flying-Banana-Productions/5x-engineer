@@ -1,7 +1,7 @@
 /**
  * Harness command — citty adapter.
  *
- * Dispatch-only parent with `install` and `list` subcommands.
+ * Dispatch-only parent with `install`, `list`, and `uninstall` subcommands.
  * No parent `run` handler — avoids the citty fall-through issue entirely.
  *
  * Business logic lives in harness.handler.ts.
