@@ -382,7 +382,7 @@ envelope contains structured equivalent.
 **Completion gate:** `5x skills uninstall <all|user|project>` removes
 5x-managed skill files from the specified scope(s) and prints a summary.
 
-- [ ] Add `SkillsUninstallParams` interface to `src/commands/skills.handler.ts`:
+- [x] Add `SkillsUninstallParams` interface to `src/commands/skills.handler.ts`:
       ```ts
       interface SkillsUninstallParams {
         scope: "all" | "user" | "project";
@@ -398,7 +398,7 @@ envelope contains structured equivalent.
       parameter is needed because user-scope resolution depends on `homedir()`,
       which cannot be overridden via `startDir` alone. Unit tests pass explicit
       temp directories for both; the citty adapter passes neither (defaults apply).
-- [ ] Add `skillsUninstall()` handler:
+- [x] Add `skillsUninstall()` handler:
       - Resolve `installRoot` (default `.agents`, same as `skillsInstall`).
       - Validate scope: must be `"all"`, `"user"`, or `"project"`.
       - Determine scopes to process: `"all"` → `["user", "project"]`,
@@ -412,16 +412,17 @@ envelope contains structured equivalent.
         - For each skill name: remove `<skillsDir>/<name>/SKILL.md` if exists,
           then `rmdir <skillsDir>/<name>/` if empty.
         - After all skills: `rmdir <skillsDir>/` if empty.
+        - Also clean up `installRoot` dir (e.g., `.agents/`) if empty.
         - Track removed and not-found per skill.
       - Report removed/not-found to stderr (mirrors install output style).
       - Output JSON success envelope with per-scope results.
-- [ ] Reuse `removeDirIfEmpty()` from `src/harnesses/installer.ts` (or extract
-      to a shared utility if importing from `harnesses/` feels like a layering
-      violation — use judgment based on the final module structure).
-- [ ] Register `uninstall` subcommand in `src/commands/skills.ts`:
+- [x] Reuse `removeDirIfEmpty()` from `src/harnesses/installer.ts` — imported
+      in skills.handler.ts; no layering violation since both are in the commands
+      layer relative to harnesses.
+- [x] Register `uninstall` subcommand in `src/commands/skills.ts`:
       - Args: `scope` (positional, required), `--install-root` (string).
       - Handler calls `skillsUninstall()`.
-- [ ] Add unit tests in `test/unit/commands/skills-uninstall.test.ts` (new file).
+- [x] Add unit tests in `test/unit/commands/skills-uninstall.test.ts` (new file).
       All tests use `startDir` and `homeDir` overrides pointing to temp
       directories — no process-wide env mutation or real home directory writes:
       - Uninstall user scope: removes skill files from `<homeDir>/<root>/skills/`.
@@ -431,11 +432,15 @@ envelope contains structured equivalent.
       - Empty directory cleanup after removal.
       - Not-found reporting when skills were never installed.
       - User-created files in `skills/` directory are preserved.
-- [ ] Add integration tests in `test/integration/commands/skills-install.test.ts`
+- [x] Add integration tests in `test/integration/commands/skills-install.test.ts`
       (extend existing):
       - Round-trip: install → verify files → uninstall → verify removed.
       - `uninstall all` removes from both user and project scope.
       - JSON envelope structure.
+
+**Also updated:** Extended `SkillsInstallParams` to include `startDir` and `homeDir`
+parameters for consistency with `SkillsUninstallParams` and to enable proper
+unit testing of the install handler (mirrors the pattern used in other handlers).
 
 ## Files Touched
 

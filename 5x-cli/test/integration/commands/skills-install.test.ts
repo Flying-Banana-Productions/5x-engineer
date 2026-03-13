@@ -50,6 +50,28 @@ async function runSkillsInstall(
 	return { stdout, stderr, exitCode };
 }
 
+async function runSkillsUninstall(
+	cwd: string,
+	scope: string,
+	extraArgs: string[] = [],
+	env?: Record<string, string>,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	const proc = Bun.spawn(
+		["bun", "run", BIN, "skills", "uninstall", scope, ...extraArgs],
+		{
+			cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+			stdin: "ignore",
+			env: { ...cleanGitEnv(), ...env },
+		},
+	);
+	const stdout = await new Response(proc.stdout).text();
+	const stderr = await new Response(proc.stderr).text();
+	const exitCode = await proc.exited;
+	return { stdout, stderr, exitCode };
+}
+
 describe("5x skills install project", () => {
 	test(
 		"installs all bundled skills to .agents/skills/",
@@ -304,6 +326,234 @@ describe("5x skills install output", () => {
 				const envelope = JSON.parse(stdout.trim());
 				expect(envelope.ok).toBe(true);
 				expect(envelope.data.scope).toBe("project");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Skills uninstall round-trip tests
+// ---------------------------------------------------------------------------
+
+describe("5x skills uninstall round-trip", () => {
+	test(
+		"install → verify → uninstall → verify removed (project scope)",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const skillNames = listSkillNames();
+
+				// Install
+				const installResult = await runSkillsInstall(tmp, "project");
+				expect(installResult.exitCode).toBe(0);
+
+				// Verify files exist
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				}
+
+				// Uninstall
+				const uninstallResult = await runSkillsUninstall(tmp, "project");
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify files removed
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				}
+
+				// Verify output contains removed entries
+				for (const name of skillNames) {
+					expect(uninstallResult.stderr).toContain(`Removed .agents/skills/${name}/SKILL.md`);
+				}
+
+				// Verify JSON envelope
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data.scope).toBe("project");
+				expect(envelope.data.scopes.project.removed.length).toBe(skillNames.length);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"install → verify → uninstall → verify removed (user scope)",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = makeTmpDir();
+			try {
+				const skillNames = listSkillNames();
+
+				// Install
+				const installResult = await runSkillsInstall(tmp, "user", [], { HOME: fakeHome });
+				expect(installResult.exitCode).toBe(0);
+
+				// Verify files exist
+				for (const name of skillNames) {
+					expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				}
+
+				// Uninstall
+				const uninstallResult = await runSkillsUninstall(tmp, "user", [], { HOME: fakeHome });
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify files removed
+				for (const name of skillNames) {
+					expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				}
+
+				// Verify stderr contains removed entries (with ~ shorthand)
+				for (const name of skillNames) {
+					expect(uninstallResult.stderr).toContain(`Removed ~/.agents/skills/${name}/SKILL.md`);
+				}
+
+				// Verify JSON envelope
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data.scope).toBe("user");
+			} finally {
+				cleanupDir(tmp);
+				cleanupDir(fakeHome);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"uninstall all removes from both user and project scope",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = makeTmpDir();
+			try {
+				const skillNames = listSkillNames();
+
+				// Install to both scopes
+				const installProject = await runSkillsInstall(tmp, "project");
+				expect(installProject.exitCode).toBe(0);
+				const installUser = await runSkillsInstall(tmp, "user", [], { HOME: fakeHome });
+				expect(installUser.exitCode).toBe(0);
+
+				// Verify both scopes have files
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+					expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(true);
+				}
+
+				// Uninstall all
+				const uninstallResult = await runSkillsUninstall(tmp, "all", [], { HOME: fakeHome });
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify both scopes are empty
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+					expect(existsSync(join(fakeHome, ".agents", "skills", name, "SKILL.md"))).toBe(false);
+				}
+
+				// Verify JSON envelope contains both scopes
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data.scope).toBe("all");
+				expect(envelope.data.scopes.project.removed.length).toBe(skillNames.length);
+				expect(envelope.data.scopes.user.removed.length).toBe(skillNames.length);
+			} finally {
+				cleanupDir(tmp);
+				cleanupDir(fakeHome);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"uninstall with --install-root targets correct directory",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const skillNames = listSkillNames();
+
+				// Install with custom root
+				const installResult = await runSkillsInstall(tmp, "project", [
+					"--install-root",
+					".claude",
+				]);
+				expect(installResult.exitCode).toBe(0);
+
+				// Verify files exist
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".claude", "skills", name, "SKILL.md"))).toBe(true);
+				}
+
+				// Uninstall with same custom root
+				const uninstallResult = await runSkillsUninstall(tmp, "project", [
+					"--install-root",
+					".claude",
+				]);
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify files removed
+				for (const name of skillNames) {
+					expect(existsSync(join(tmp, ".claude", "skills", name, "SKILL.md"))).toBe(false);
+				}
+
+				// Verify JSON envelope
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data.installRoot).toBe(".claude");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"uninstall reports not-found gracefully when files are missing",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const skillNames = listSkillNames();
+
+				// Uninstall without installing first
+				const uninstallResult = await runSkillsUninstall(tmp, "project");
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify output reports not-found
+				for (const name of skillNames) {
+					expect(uninstallResult.stderr).toContain(`Not found .agents/skills/${name}/SKILL.md`);
+				}
+
+				// Verify JSON envelope
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data.scopes.project.removed).toHaveLength(0);
+				expect(envelope.data.scopes.project.notFound.length).toBe(skillNames.length);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"uninstall returns pretty JSON envelope when --pretty is passed",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// Install then uninstall
+				const installResult = await runSkillsInstall(tmp, "project");
+				expect(installResult.exitCode).toBe(0);
+
+				const uninstallResult = await runSkillsUninstall(tmp, "project", ["--pretty"]);
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// With --pretty, JSON envelope is indented
+				expect(uninstallResult.stdout.trim()).toMatch(/^\{\n/);
+				const envelope = JSON.parse(uninstallResult.stdout.trim());
+				expect(envelope.ok).toBe(true);
 			} finally {
 				cleanupDir(tmp);
 			}

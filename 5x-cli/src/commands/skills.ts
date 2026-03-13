@@ -1,13 +1,13 @@
 /**
  * Skills management commands — citty adapter.
  *
- * Subcommands: install
+ * Subcommands: install, uninstall
  *
  * Business logic lives in skills.handler.ts.
  */
 
 import { defineCommand } from "citty";
-import { skillsInstall } from "./skills.handler.js";
+import { skillsInstall, skillsUninstall } from "./skills.handler.js";
 
 const installCmd = defineCommand({
 	meta: {
@@ -41,6 +41,32 @@ const installCmd = defineCommand({
 		}),
 });
 
+const uninstallCmd = defineCommand({
+	meta: {
+		name: "uninstall",
+		description:
+			"Uninstall skills from the specified scope (agentskills.io convention)",
+	},
+	args: {
+		scope: {
+			type: "positional" as const,
+			description:
+				'Uninstall scope: "all" (both user and project), "user" (~/.agents/skills/), or "project" (.agents/skills/)',
+			required: true as const,
+		},
+		"install-root": {
+			type: "string" as const,
+			description:
+				'Override the default ".agents" directory name (e.g. ".claude", ".opencode")',
+		},
+	},
+	run: ({ args }) =>
+		skillsUninstall({
+			scope: args.scope as "all" | "user" | "project",
+			installRoot: args["install-root"] as string | undefined,
+		}),
+});
+
 export default defineCommand({
 	meta: {
 		name: "skills",
@@ -48,5 +74,6 @@ export default defineCommand({
 	},
 	subCommands: {
 		install: () => Promise.resolve(installCmd),
+		uninstall: () => Promise.resolve(uninstallCmd),
 	},
 });
