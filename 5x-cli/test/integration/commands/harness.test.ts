@@ -395,6 +395,199 @@ describe("5x harness install — unknown harness", () => {
 // Legacy compatibility: bare `5x init --force` still works
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// `5x harness uninstall`
+// ---------------------------------------------------------------------------
+
+async function runHarnessUninstall(
+	cwd: string,
+	name: string,
+	extraArgs: string[] = [],
+	env?: Record<string, string>,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	return runCmd(cwd, ["harness", "uninstall", name, ...extraArgs], env);
+}
+
+describe("5x harness uninstall — round-trip", () => {
+	test(
+		"install → verify → uninstall → verify removed (project scope)",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install
+				const installResult = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(installResult.exitCode).toBe(0);
+
+				// Verify files exist
+				const skillNames = listSkillNames();
+				const agentNames = listAgentTemplates().map((a) => a.name);
+				for (const name of skillNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+					).toBe(true);
+				}
+				for (const name of agentNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "agents", `${name}.md`)),
+					).toBe(true);
+				}
+
+				// Uninstall
+				const uninstallResult = await runHarnessUninstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(uninstallResult.exitCode).toBe(0);
+				expect(uninstallResult.stderr).toContain("Removed");
+				expect(uninstallResult.stderr).toContain("uninstall complete");
+
+				// Verify files removed
+				for (const name of skillNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+					).toBe(false);
+				}
+				for (const name of agentNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "agents", `${name}.md`)),
+					).toBe(false);
+				}
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"uninstall emits JSON success envelope on stdout",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install first
+				const installResult = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(installResult.exitCode).toBe(0);
+
+				// Uninstall and check JSON envelope
+				const { stdout, exitCode } = await runHarnessUninstall(
+					tmp,
+					"opencode",
+					["--scope", "project"],
+				);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data).toBeDefined();
+				expect(envelope.data.harnessName).toBe("opencode");
+				expect(envelope.data.scopes).toBeDefined();
+				expect(envelope.data.scopes.project).toBeDefined();
+				expect(envelope.data.scopes.project.skills).toBeDefined();
+				expect(Array.isArray(envelope.data.scopes.project.skills.removed)).toBe(
+					true,
+				);
+				expect(
+					Array.isArray(envelope.data.scopes.project.skills.notFound),
+				).toBe(true);
+				expect(envelope.data.scopes.project.agents).toBeDefined();
+				expect(Array.isArray(envelope.data.scopes.project.agents.removed)).toBe(
+					true,
+				);
+				expect(
+					Array.isArray(envelope.data.scopes.project.agents.notFound),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--all removes from both scopes",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = join(tmp, "fake-home");
+			mkdirSync(fakeHome, { recursive: true });
+
+			try {
+				await bootstrapProject(tmp);
+
+				// Install project scope
+				const installProject = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(installProject.exitCode).toBe(0);
+
+				// Install user scope
+				const installUser = await runHarnessInstall(
+					tmp,
+					"opencode",
+					["--scope", "user"],
+					{ HOME: fakeHome },
+				);
+				expect(installUser.exitCode).toBe(0);
+
+				// Verify files exist in both scopes
+				const skillNames = listSkillNames();
+				for (const name of skillNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+					).toBe(true);
+					expect(
+						existsSync(
+							join(fakeHome, ".config", "opencode", "skills", name, "SKILL.md"),
+						),
+					).toBe(true);
+				}
+
+				// Uninstall --all
+				const uninstallResult = await runHarnessUninstall(
+					tmp,
+					"opencode",
+					["--all"],
+					{ HOME: fakeHome },
+				);
+				expect(uninstallResult.exitCode).toBe(0);
+
+				// Verify project-scope files removed
+				for (const name of skillNames) {
+					expect(
+						existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+					).toBe(false);
+				}
+
+				// Verify user-scope files removed
+				for (const name of skillNames) {
+					expect(
+						existsSync(
+							join(fakeHome, ".config", "opencode", "skills", name, "SKILL.md"),
+						),
+					).toBe(false);
+				}
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Legacy compatibility: bare `5x init --force` still works
+// ---------------------------------------------------------------------------
+
 describe("5x init (no subcommands)", () => {
 	test(
 		"bare 5x init --force works without arguments",

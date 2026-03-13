@@ -1,5 +1,5 @@
 /**
- * Harness command handler — business logic for harness install/list.
+ * Harness command handler — business logic for harness install/list/uninstall.
  *
  * Framework-independent: no citty imports.
  */
@@ -11,7 +11,11 @@ import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../harnesses/factory.js";
-import type { HarnessScope } from "../harnesses/types.js";
+import type {
+	HarnessScope,
+	HarnessUninstallResult,
+} from "../harnesses/types.js";
+import { outputSuccess } from "../output.js";
 import { listSkills } from "../skills/loader.js";
 import { DB_FILENAME, resolveCheckoutRoot } from "./control-plane.js";
 
@@ -28,6 +32,24 @@ export interface HarnessInstallParams {
 	force?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+}
+
+export interface HarnessUninstallParams {
+	/** Harness name (e.g. "opencode"). */
+	name: string;
+	/** Uninstall scope — one of "project" or "user". */
+	scope?: string;
+	/** Uninstall from all supported scopes. */
+	all?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
+}
+
+/** Typed output from the uninstall data layer. */
+export interface HarnessUninstallOutput {
+	harnessName: string;
+	/** Only the scopes that were actually processed. */
+	scopes: Partial<Record<HarnessScope, HarnessUninstallResult>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +124,101 @@ export function harnessList(): void {
 	for (const name of names) {
 		console.log(`  ${name}`);
 	}
+}
+
+/**
+ * Uninstall a harness integration.
+ *
+ * Two-layer design: `harnessUninstallCore()` builds the typed result,
+ * then the outer function prints a summary and returns the data.
+ */
+export async function harnessUninstall(
+	params: HarnessUninstallParams,
+): Promise<HarnessUninstallOutput> {
+	const output = await harnessUninstallCore(params);
+	printUninstallSummary(output);
+	outputSuccess(output);
+	return output;
+}
+
+/**
+ * Core data layer for harness uninstall — returns typed result without
+ * printing. Enables unit tests to assert on return values directly.
+ */
+async function harnessUninstallCore(
+	params: HarnessUninstallParams,
+): Promise<HarnessUninstallOutput> {
+	const { name, scope, all } = params;
+
+	// 1. Load the harness plugin
+	const { plugin } = await loadHarnessPlugin(name);
+
+	// 2. Validate: exactly one of --scope or --all must be set
+	if (scope && all) {
+		throw new Error(
+			"Cannot specify both --scope and --all. Use one or the other.",
+		);
+	}
+	if (!scope && !all) {
+		throw new Error(
+			"Must specify either --scope or --all for harness uninstall.",
+		);
+	}
+
+	// 3. Determine scopes to process
+	let scopesToProcess: HarnessScope[];
+	if (all) {
+		scopesToProcess = [...plugin.supportedScopes];
+	} else {
+		// Validate scope against supported scopes
+		if (!plugin.supportedScopes.includes(scope as HarnessScope)) {
+			throw new Error(
+				`Invalid scope "${scope}" for harness "${name}". ` +
+					`Supported: ${plugin.supportedScopes.join(", ")}.`,
+			);
+		}
+		scopesToProcess = [scope as HarnessScope];
+	}
+
+	// 4. Resolve project root: resolveCheckoutRoot(cwd) ?? cwd
+	const cwd = resolve(params.startDir ?? ".");
+	const projectRoot = resolveCheckoutRoot(cwd) ?? cwd;
+
+	// 5. No 5x init prerequisite check — uninstall should work even
+	//    if the project state DB is missing or removed.
+
+	// 6. Run uninstall for each scope
+	const scopes: Partial<Record<HarnessScope, HarnessUninstallResult>> = {};
+	for (const s of scopesToProcess) {
+		scopes[s] = await plugin.uninstall({ scope: s, projectRoot });
+	}
+
+	return { harnessName: name, scopes };
+}
+
+/**
+ * Print a human-readable uninstall summary to stderr.
+ */
+function printUninstallSummary(output: HarnessUninstallOutput): void {
+	for (const [scope, result] of Object.entries(output.scopes)) {
+		if (!result) continue;
+		const label = scope === "user" ? "user" : "project";
+
+		for (const name of result.skills.removed) {
+			console.error(`  Removed skill (${label}): ${name}`);
+		}
+		for (const name of result.skills.notFound) {
+			console.error(`  Not found skill (${label}): ${name}`);
+		}
+		for (const name of result.agents.removed) {
+			console.error(`  Removed agent (${label}): ${name}`);
+		}
+		for (const name of result.agents.notFound) {
+			console.error(`  Not found agent (${label}): ${name}`);
+		}
+	}
+
+	console.error(`  ${output.harnessName} uninstall complete.`);
 }
 
 // ---------------------------------------------------------------------------
