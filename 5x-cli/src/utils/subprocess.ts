@@ -51,6 +51,7 @@ export const subprocess = {
 		const proc = Bun.spawn(["git", ...args], {
 			cwd: workdir,
 			env: cleanEnv(),
+			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
 		});
