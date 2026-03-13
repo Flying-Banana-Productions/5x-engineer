@@ -200,7 +200,7 @@ behavior is unchanged.
 `5x harness uninstall <name> --all` remove harness-managed files from the
 specified scope(s) and print a summary.
 
-- [ ] Add `HarnessUninstallParams` interface to `src/commands/harness.handler.ts`:
+- [x] Add `HarnessUninstallParams` interface to `src/commands/harness.handler.ts`:
       ```ts
       interface HarnessUninstallParams {
         name: string;
@@ -209,7 +209,7 @@ specified scope(s) and print a summary.
         startDir?: string;
       }
       ```
-- [ ] Add `harnessUninstall()` handler. Structure the handler as two layers:
+- [x] Add `harnessUninstall()` handler. Structure the handler as two layers:
       a pure data-building function that returns a typed result, and a thin
       output layer that prints/envelopes. This enables unit tests to assert on
       the returned data without capturing console output.
@@ -242,13 +242,13 @@ specified scope(s) and print a summary.
         When `--scope project` is used, only `scopes.project` is present.
         When `--all`, both are present. Every requested scope always runs
         (project root falls back to cwd).
-- [ ] Add `printUninstallSummary()` helper (mirrors `printInstallSummary()`):
+- [x] Add `printUninstallSummary()` helper (mirrors `printInstallSummary()`):
       reports removed and not-found files per category (skills, agents).
-- [ ] Register `uninstall` subcommand in `src/commands/harness.ts`:
+- [x] Register `uninstall` subcommand in `src/commands/harness.ts`:
       - Args: `name` (positional, required), `--scope` (string), `--all`
         (boolean, default false).
       - Handler calls `harnessUninstall()`.
-- [ ] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing).
+- [x] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing).
       Tests call the handler directly with `startDir` overrides and assert on
       return values / filesystem side effects:
       - Single scope uninstall (project, user).
@@ -258,7 +258,7 @@ specified scope(s) and print a summary.
       - Validation: error when both `--scope` and `--all` provided.
       - `--all` outside a git repo uses cwd as project root, removes files
         relative to cwd.
-- [ ] Add integration tests in `test/integration/commands/harness.test.ts`
+- [x] Add integration tests in `test/integration/commands/harness.test.ts`
       (extend existing):
       - Round-trip: install → verify files exist → uninstall → verify removed.
       - `--all` removes from both scopes.
@@ -269,7 +269,7 @@ specified scope(s) and print a summary.
 (bundled/external), per-scope installed state, and managed file paths. JSON
 envelope contains structured equivalent.
 
-- [ ] Expand `harnessList()` in `src/commands/harness.handler.ts`. Structure as
+- [x] Expand `harnessList()` in `src/commands/harness.handler.ts`. Structure as
       two layers (same pattern as uninstall):
       - **Data layer** — a pure function `buildHarnessListData()` that accepts
         `startDir` and returns a typed `HarnessListOutput`:
@@ -359,10 +359,10 @@ envelope contains structured equivalent.
       - Project root always resolves (`resolveCheckoutRoot(cwd) ?? cwd`), so
         project scope is always checkable. If no files are found, it reports
         `"installed": false` — the output does not need an "n/a" state.
-- [ ] Update the `harnessList()` signature and the `listCmd` in
+- [x] Update the `harnessList()` signature and the `listCmd` in
       `src/commands/harness.ts` if `startDir` passthrough is needed for the
       citty adapter.
-- [ ] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing).
+- [x] Add unit tests in `test/unit/commands/harness.test.ts` (extend existing).
       Tests call `buildHarnessListData()` directly and assert on the returned
       `HarnessListOutput` — no console output capture needed:
       - Lists bundled harness with correct source label.
@@ -371,7 +371,7 @@ envelope contains structured equivalent.
       - Reports not-installed for project scope when `startDir` is a plain
         directory with no harness files (project root falls back to cwd).
       - File list matches expected managed files.
-- [ ] Add integration tests in `test/integration/commands/harness.test.ts`
+- [x] Add integration tests in `test/integration/commands/harness.test.ts`
       (extend existing):
       - `5x harness list` after install shows installed state with file list.
       - `5x harness list` after uninstall shows not-installed state.

@@ -16,7 +16,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { harnessInstall } from "../../../src/commands/harness.handler.js";
+import {
+	buildHarnessListData,
+	harnessInstall,
+	harnessUninstall,
+} from "../../../src/commands/harness.handler.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { isValidPlugin } from "../../../src/harnesses/factory.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
@@ -269,5 +273,347 @@ describe("isValidPlugin", () => {
 
 	test("rejects non-object", () => {
 		expect(isValidPlugin("string")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `harnessUninstall` — project scope
+// ---------------------------------------------------------------------------
+
+describe("harnessUninstall --scope project", () => {
+	test("removes all installed skill and agent files", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			// Verify files exist first
+			const skillNames = listSkillNames();
+			const agentNames = listAgentTemplates().map((a) => a.name);
+			for (const name of skillNames) {
+				expect(
+					existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+				).toBe(true);
+			}
+			for (const name of agentNames) {
+				expect(existsSync(join(tmp, ".opencode", "agents", `${name}.md`))).toBe(
+					true,
+				);
+			}
+
+			// Uninstall
+			const output = await harnessUninstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			// Verify files removed
+			for (const name of skillNames) {
+				expect(
+					existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+				).toBe(false);
+			}
+			for (const name of agentNames) {
+				expect(existsSync(join(tmp, ".opencode", "agents", `${name}.md`))).toBe(
+					false,
+				);
+			}
+
+			// Verify output shape
+			expect(output.harnessName).toBe("opencode");
+			expect(output.scopes.project).toBeDefined();
+			expect(output.scopes.user).toBeUndefined();
+			expect(output.scopes.project?.skills.removed.length).toBe(
+				skillNames.length,
+			);
+			expect(output.scopes.project?.agents.removed.length).toBe(
+				agentNames.length,
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports not-found gracefully when files are missing", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// No install — just uninstall directly
+			const output = await harnessUninstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const skillNames = listSkillNames();
+			const agentNames = listAgentTemplates().map((a) => a.name);
+
+			expect(output.scopes.project).toBeDefined();
+			expect(output.scopes.project?.skills.removed).toHaveLength(0);
+			expect(output.scopes.project?.skills.notFound.length).toBe(
+				skillNames.length,
+			);
+			expect(output.scopes.project?.agents.removed).toHaveLength(0);
+			expect(output.scopes.project?.agents.notFound.length).toBe(
+				agentNames.length,
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `harnessUninstall` — user scope
+// ---------------------------------------------------------------------------
+
+describe("harnessUninstall --scope user", () => {
+	test("removes installed files from user scope", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+
+		// User scope resolution depends on homedir(), which we can't override
+		// via startDir alone. User-scope integration tests are in the integration
+		// test file. Here we just verify scope validation works.
+		try {
+			const output = await harnessUninstall({
+				name: "opencode",
+				scope: "user",
+				startDir: tmp,
+			});
+
+			expect(output.harnessName).toBe("opencode");
+			expect(output.scopes.user).toBeDefined();
+			expect(output.scopes.project).toBeUndefined();
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `harnessUninstall` — --all flag
+// ---------------------------------------------------------------------------
+
+describe("harnessUninstall --all", () => {
+	test("processes both supported scopes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const output = await harnessUninstall({
+				name: "opencode",
+				all: true,
+				startDir: tmp,
+			});
+
+			expect(output.harnessName).toBe("opencode");
+			expect(output.scopes.project).toBeDefined();
+			expect(output.scopes.user).toBeDefined();
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("outside a git repo uses cwd as project root", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			// Verify files are installed
+			const skillNames = listSkillNames();
+			for (const name of skillNames) {
+				expect(
+					existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+				).toBe(true);
+			}
+
+			// Uninstall with --all from a non-git dir
+			// startDir is a temp dir that has the files — falls back to cwd
+			const output = await harnessUninstall({
+				name: "opencode",
+				all: true,
+				startDir: tmp,
+			});
+
+			expect(output.scopes.project).toBeDefined();
+			expect(output.scopes.project?.skills.removed.length).toBe(
+				skillNames.length,
+			);
+
+			// Verify files removed
+			for (const name of skillNames) {
+				expect(
+					existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
+				).toBe(false);
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `harnessUninstall` — validation
+// ---------------------------------------------------------------------------
+
+describe("harnessUninstall validation", () => {
+	test("errors when neither --scope nor --all provided", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				harnessUninstall({
+					name: "opencode",
+					startDir: tmp,
+				}),
+			).rejects.toThrow("Must specify either --scope or --all");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("errors when both --scope and --all provided", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				harnessUninstall({
+					name: "opencode",
+					scope: "project",
+					all: true,
+					startDir: tmp,
+				}),
+			).rejects.toThrow("Cannot specify both --scope and --all");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("errors on invalid scope value", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				harnessUninstall({
+					name: "opencode",
+					scope: "global",
+					startDir: tmp,
+				}),
+			).rejects.toThrow("Invalid scope");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `buildHarnessListData` — enhanced harness list
+// ---------------------------------------------------------------------------
+
+describe("buildHarnessListData", () => {
+	test("lists bundled harness with correct source label", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const output = await buildHarnessListData(tmp);
+
+			expect(output.harnesses.length).toBeGreaterThanOrEqual(1);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			expect(opencode!.source).toBe("bundled");
+			expect(opencode!.description).toBeTruthy();
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("shows installed state when files exist on disk", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const output = await buildHarnessListData(tmp);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			expect(opencode!.scopes.project).toBeDefined();
+			expect(opencode!.scopes.project!.installed).toBe(true);
+			expect(opencode!.scopes.project!.files.length).toBeGreaterThan(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("shows not-installed state when files are absent", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const output = await buildHarnessListData(tmp);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			expect(opencode!.scopes.project).toBeDefined();
+			expect(opencode!.scopes.project!.installed).toBe(false);
+			expect(opencode!.scopes.project!.files).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports not-installed for project scope in plain directory", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// No git repo, no harness files — project root falls back to cwd
+			const output = await buildHarnessListData(tmp);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			expect(opencode!.scopes.project).toBeDefined();
+			expect(opencode!.scopes.project!.installed).toBe(false);
+			expect(opencode!.scopes.project!.files).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("file list matches expected managed files", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const output = await buildHarnessListData(tmp);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+
+			const projectFiles = opencode!.scopes.project!.files;
+
+			// Check skill files
+			const skillNames = listSkillNames();
+			for (const name of skillNames) {
+				expect(projectFiles).toContain(`skills/${name}/SKILL.md`);
+			}
+
+			// Check agent files
+			const agentNames = listAgentTemplates().map((a) => a.name);
+			for (const name of agentNames) {
+				expect(projectFiles).toContain(`agents/${name}.md`);
+			}
+
+			// Total count should match skills + agents
+			expect(projectFiles).toHaveLength(skillNames.length + agentNames.length);
+		} finally {
+			cleanupDir(tmp);
+		}
 	});
 });

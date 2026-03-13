@@ -97,18 +97,92 @@ async function bootstrapProject(dir: string): Promise<void> {
 
 describe("5x harness list", () => {
 	test(
-		"lists bundled harnesses",
+		"lists bundled harnesses with JSON envelope",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				const { stdout, stderr, exitCode } = await runCmd(tmp, [
+					"harness",
+					"list",
+				]);
 				expect(exitCode).toBe(0);
-				expect(stdout).toContain("opencode");
+
+				// stderr has human-readable output
+				expect(stderr).toContain("opencode");
+
+				// stdout has JSON envelope
+				const envelope = JSON.parse(stdout);
+				expect(envelope.ok).toBe(true);
+				expect(envelope.data).toBeDefined();
+				expect(Array.isArray(envelope.data.harnesses)).toBe(true);
+				expect(envelope.data.harnesses.length).toBeGreaterThanOrEqual(1);
+
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode).toBeDefined();
+				expect(opencode.source).toBe("bundled");
+				expect(opencode.description).toBeTruthy();
+				expect(opencode.scopes.project).toBeDefined();
+				expect(typeof opencode.scopes.project.installed).toBe("boolean");
+				expect(Array.isArray(opencode.scopes.project.files)).toBe(true);
 			} finally {
 				cleanupDir(tmp);
 			}
 		},
 		{ timeout: 15000 },
+	);
+
+	test(
+		"shows installed state after install",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(true);
+				expect(opencode.scopes.project.files.length).toBeGreaterThan(0);
+				expect(opencode.scopes.project.files).toContain(
+					"skills/5x-plan/SKILL.md",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"shows not-installed state after uninstall",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+				await runHarnessUninstall(tmp, "opencode", ["--scope", "project"]);
+
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(false);
+				expect(opencode.scopes.project.files).toHaveLength(0);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
 	);
 });
 

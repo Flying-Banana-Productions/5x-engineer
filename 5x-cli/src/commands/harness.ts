@@ -8,7 +8,11 @@
  */
 
 import { defineCommand } from "citty";
-import { harnessInstall, harnessList } from "./harness.handler.js";
+import {
+	harnessInstall,
+	harnessList,
+	harnessUninstall,
+} from "./harness.handler.js";
 
 const installCmd = defineCommand({
 	meta: {
@@ -47,6 +51,36 @@ const listCmd = defineCommand({
 	run: () => harnessList(),
 });
 
+const uninstallCmd = defineCommand({
+	meta: {
+		name: "uninstall",
+		description:
+			"Uninstall a harness integration (remove skills + agent profiles)",
+	},
+	args: {
+		name: {
+			type: "positional" as const,
+			description: "Harness name (e.g. opencode)",
+			required: true as const,
+		},
+		scope: {
+			type: "string" as const,
+			description: "Uninstall scope: user or project",
+		},
+		all: {
+			type: "boolean" as const,
+			description: "Uninstall from all supported scopes",
+			default: false,
+		},
+	},
+	run: ({ args }) =>
+		harnessUninstall({
+			name: args.name as string,
+			scope: args.scope as string | undefined,
+			all: args.all as boolean | undefined,
+		}),
+});
+
 export default defineCommand({
 	meta: {
 		name: "harness",
@@ -55,5 +89,6 @@ export default defineCommand({
 	subCommands: {
 		install: () => Promise.resolve(installCmd),
 		list: () => Promise.resolve(listCmd),
+		uninstall: () => Promise.resolve(uninstallCmd),
 	},
 });

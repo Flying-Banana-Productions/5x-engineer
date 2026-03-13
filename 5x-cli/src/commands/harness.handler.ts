@@ -52,6 +52,31 @@ export interface HarnessUninstallOutput {
 	scopes: Partial<Record<HarnessScope, HarnessUninstallResult>>;
 }
 
+/** Per-scope installed state for harness list output. */
+export interface HarnessScopeStatus {
+	installed: boolean;
+	files: string[];
+}
+
+/** A single harness entry in list output. */
+export interface HarnessListEntry {
+	name: string;
+	source: "bundled" | "external";
+	description: string;
+	/** Only scopes the plugin supports (from plugin.supportedScopes). */
+	scopes: Partial<Record<HarnessScope, HarnessScopeStatus>>;
+}
+
+/** Typed output from the list data layer. */
+export interface HarnessListOutput {
+	harnesses: HarnessListEntry[];
+}
+
+export interface HarnessListParams {
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -117,12 +142,87 @@ export async function harnessInstall(
 }
 
 /**
- * List available harnesses (bundled names only for now).
+ * List available harnesses with installed state and file listing.
+ *
+ * Two-layer design: `buildHarnessListData()` builds the typed result,
+ * then the outer function prints a human-readable summary and outputs
+ * the JSON envelope.
  */
-export function harnessList(): void {
+export async function harnessList(
+	params?: HarnessListParams,
+): Promise<HarnessListOutput> {
+	const output = await buildHarnessListData(params?.startDir);
+	printListSummary(output);
+	outputSuccess(output);
+	return output;
+}
+
+/**
+ * Core data layer for harness list — returns typed result without printing.
+ * Enables unit tests to assert on return values directly.
+ */
+export async function buildHarnessListData(
+	startDir?: string,
+): Promise<HarnessListOutput> {
+	const cwd = resolve(startDir ?? ".");
+	const projectRoot = resolveCheckoutRoot(cwd) ?? cwd;
+
 	const names = listBundledHarnesses();
+	const harnesses: HarnessListEntry[] = [];
+
 	for (const name of names) {
-		console.log(`  ${name}`);
+		const { plugin, source } = await loadHarnessPlugin(name);
+		const description = plugin.description;
+		const { skillNames, agentNames } = plugin.describe();
+
+		const scopes: Partial<Record<HarnessScope, HarnessScopeStatus>> = {};
+
+		for (const scope of plugin.supportedScopes) {
+			const locations = plugin.locations.resolve(scope, projectRoot);
+			const files: string[] = [];
+
+			// Check skill files
+			for (const skillName of skillNames) {
+				const filePath = join(locations.skillsDir, skillName, "SKILL.md");
+				if (existsSync(filePath)) {
+					files.push(`skills/${skillName}/SKILL.md`);
+				}
+			}
+
+			// Check agent files
+			for (const agentName of agentNames) {
+				const filePath = join(locations.agentsDir, `${agentName}.md`);
+				if (existsSync(filePath)) {
+					files.push(`agents/${agentName}.md`);
+				}
+			}
+
+			scopes[scope] = {
+				installed: files.length > 0,
+				files,
+			};
+		}
+
+		harnesses.push({ name, source, description, scopes });
+	}
+
+	return { harnesses };
+}
+
+/**
+ * Print a human-readable list summary to stderr.
+ */
+function printListSummary(output: HarnessListOutput): void {
+	for (const entry of output.harnesses) {
+		console.error(`  ${entry.name} (${entry.source})`);
+		for (const [scope, status] of Object.entries(entry.scopes)) {
+			if (!status) continue;
+			const stateLabel = status.installed ? "installed" : "not installed";
+			console.error(`    ${scope}: ${stateLabel}`);
+			for (const file of status.files) {
+				console.error(`      ${file}`);
+			}
+		}
 	}
 }
 
