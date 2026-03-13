@@ -91,25 +91,25 @@ orchestrator contract and mention `5x invoke` only as a fallback transport.
 auto-populate deterministic review paths from config defaults and implicit context
 (run id, phase number), while explicit `--var review_path=...` overrides still work.
 
-- [ ] Extend shared internal variable resolution in `src/commands/template-vars.ts`
+- [x] Extend shared internal variable resolution in `src/commands/template-vars.ts`
       to synthesize `review_path` when a template declares it and the caller did
       not provide one.
-- [ ] Auto-inject `run_id` and `phase` as implicit template variables during phase
+- [x] Auto-inject `run_id` and `phase` as implicit template variables during phase
       execution so the resolver can construct implementation review paths from
       the current execution context.
-- [ ] Distinguish plan-review templates from implementation-review templates so
+- [x] Distinguish plan-review templates from implementation-review templates so
       the resolver chooses `paths.planReviews ?? paths.reviews` vs
       `paths.runReviews ?? paths.reviews`.
-- [ ] Generate stable filenames using the full plan basename for plan reviews and
+- [x] Generate stable filenames using the full plan basename for plan reviews and
       `run-id + phase` for implementation reviews; fall back to `<run-id>-review.md`
       when phase context is unavailable.
-- [ ] Ensure the generated path is repository-relative by default and absolute
+- [x] Ensure the generated path is repository-relative by default and absolute
       only when the configured directory is absolute.
-- [ ] Keep `review_template_path` behavior unchanged; only `review_path` becomes
+- [x] Keep `review_template_path` behavior unchanged; only `review_path` becomes
       auto-generated.
-- [ ] Add integration coverage for `5x template render` showing auto-filled
+- [x] Add integration coverage for `5x template render` showing auto-filled
       `review_path` for both plan-review and implementation-review flows.
-- [ ] Add unit/integration coverage showing explicit `--var review_path=...`
+- [x] Add unit/integration coverage showing explicit `--var review_path=...`
       still overrides the generated value.
 
 ## Phase 2: Split Out the Quality-Fix Author Template

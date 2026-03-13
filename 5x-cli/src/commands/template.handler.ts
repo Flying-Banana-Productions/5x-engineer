@@ -37,6 +37,8 @@ export interface TemplateRenderOutput {
 	step_name: string | null;
 	prompt: string;
 	declared_variables: string[];
+	// Resolved template variables (including auto-generated ones like review_path)
+	variables: Record<string, string>;
 	// Run-aware fields — only present when --run is provided
 	run_id?: string;
 	plan_path?: string;
@@ -144,6 +146,9 @@ export async function templateRender(
 		resolvedPlanPath,
 		config,
 		projectRoot,
+		// Pass run context for review_path auto-generation
+		runId: params.run,
+		phase: explicitVars.phase_number,
 	});
 	let prompt = resolved.prompt;
 
@@ -163,6 +168,7 @@ export async function templateRender(
 		step_name: resolved.stepName,
 		prompt,
 		declared_variables: resolved.metadata.variables,
+		variables: resolved.variables,
 		// Run-aware fields
 		...(params.run ? { run_id: params.run } : {}),
 		...(resolvedPlanPath && params.run ? { plan_path: resolvedPlanPath } : {}),

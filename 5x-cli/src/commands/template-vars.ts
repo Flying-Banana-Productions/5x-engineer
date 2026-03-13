@@ -128,6 +128,72 @@ export async function parseVars(
 // ---------------------------------------------------------------------------
 
 /**
+ * Determine if a template is a plan-review template vs implementation-review.
+ * Plan-review templates include: reviewer-plan, reviewer-plan-continued, author-process-plan-review
+ */
+function isPlanReviewTemplate(templateName: string): boolean {
+	// Check for the base name before -continued suffix
+	const baseName = templateName.replace(/-continued$/, "");
+	return (
+		baseName === "reviewer-plan" || baseName === "author-process-plan-review"
+	);
+}
+
+/**
+ * Generate a stable review path based on template type and context.
+ *
+ * Plan reviews: <planReviews>/<full-plan-basename>-review.md
+ * Implementation reviews: <runReviews>/<run-id>-phase-<phase>-review.md
+ * Fallback (no phase): <runReviews>/<run-id>-review.md
+ *
+ * Paths are repo-relative by default, absolute only when configured directory is absolute.
+ */
+function generateReviewPath(
+	declaredVars: string[],
+	explicitVars: Record<string, string>,
+	config: Pick<FiveXConfig, "paths">,
+	_projectRoot: string,
+	templateName: string,
+	runId?: string,
+	phase?: string,
+	planPath?: string | null,
+): string | null {
+	// Only generate if review_path is declared but not explicitly provided
+	if (!declaredVars.includes("review_path")) return null;
+	if (explicitVars.review_path !== undefined) return null;
+
+	// Determine which directory to use
+	const isPlanReview = isPlanReviewTemplate(templateName);
+	const reviewDir = isPlanReview
+		? (config.paths.planReviews ?? config.paths.reviews)
+		: (config.paths.runReviews ?? config.paths.reviews);
+
+	// Generate filename based on context
+	let filename: string;
+	if (isPlanReview && planPath) {
+		// Use full plan basename (including relative path with separators replaced)
+		const planBasename = planPath.replace(/[/\\]/g, "-").replace(/\.md$/, "");
+		filename = `${planBasename}-review.md`;
+	} else if (runId && phase) {
+		// Implementation review with phase context
+		filename = `${runId}-phase-${phase}-review.md`;
+	} else if (runId) {
+		// Fallback: one document per run
+		filename = `${runId}-review.md`;
+	} else {
+		// Cannot generate without run_id for implementation reviews
+		// or plan_path for plan reviews
+		return null;
+	}
+
+	// Resolve path: if reviewDir is absolute, use it directly; otherwise make repo-relative
+	if (reviewDir.startsWith("/")) {
+		return `${reviewDir}/${filename}`;
+	}
+	return `${reviewDir}/${filename}`;
+}
+
+/**
  * Resolve internal template-path variables owned by the CLI.
  * Explicit --var values override these defaults.
  */
@@ -136,6 +202,10 @@ export function resolveInternalTemplateVariables(
 	explicitVars: Record<string, string>,
 	config: Pick<FiveXConfig, "paths">,
 	projectRoot: string,
+	templateName?: string,
+	runId?: string,
+	phase?: string,
+	planPath?: string | null,
 ): Record<string, string> {
 	const internalVars: Record<string, string> = {};
 
@@ -151,6 +221,23 @@ export function resolveInternalTemplateVariables(
 			projectRoot,
 			config.paths.templates.review,
 		);
+	}
+
+	// Auto-generate review_path if declared but not explicitly provided
+	// For plan reviews, use explicitVars.plan_path as fallback if resolvedPlanPath is null
+	const effectivePlanPath = planPath ?? explicitVars.plan_path ?? null;
+	const generatedReviewPath = generateReviewPath(
+		declaredVars,
+		explicitVars,
+		config,
+		projectRoot,
+		templateName ?? "",
+		runId,
+		phase,
+		effectivePlanPath,
+	);
+	if (generatedReviewPath) {
+		internalVars.review_path = generatedReviewPath;
 	}
 
 	return {
@@ -170,6 +257,9 @@ export interface ResolveAndRenderOptions {
 	resolvedPlanPath: string | null;
 	config: Pick<FiveXConfig, "paths">;
 	projectRoot: string;
+	// Run context for review_path auto-generation
+	runId?: string;
+	phase?: string;
 }
 
 export interface ResolvedTemplate {
@@ -189,7 +279,15 @@ export interface ResolvedTemplate {
 export function resolveAndRenderTemplate(
 	opts: ResolveAndRenderOptions,
 ): ResolvedTemplate {
-	const { templateName: requestedName, session, config, projectRoot } = opts;
+	const {
+		templateName: requestedName,
+		session,
+		config,
+		projectRoot,
+		runId,
+		phase,
+		resolvedPlanPath,
+	} = opts;
 
 	// Continued-template selection: when a session is active and a "-continued"
 	// variant exists, use it (saves tokens since context is already loaded).
@@ -220,18 +318,26 @@ export function resolveAndRenderTemplate(
 	// Inject resolved plan path as default for plan_path variable
 	const vars = { ...opts.explicitVars };
 	if (
-		opts.resolvedPlanPath &&
+		resolvedPlanPath &&
 		!vars.plan_path &&
 		templateMetadata.variables.includes("plan_path")
 	) {
-		vars.plan_path = opts.resolvedPlanPath;
+		vars.plan_path = resolvedPlanPath;
 	}
+
+	// Inject run context for review_path auto-generation
+	// phase_number from explicit vars takes precedence for phase context
+	const phaseNumber = vars.phase_number ?? phase;
 
 	const variables = resolveInternalTemplateVariables(
 		templateMetadata.variables,
 		vars,
 		config,
 		projectRoot,
+		templateName,
+		runId,
+		phaseNumber,
+		resolvedPlanPath,
 	);
 
 	const rendered = renderTemplate(templateName, variables);

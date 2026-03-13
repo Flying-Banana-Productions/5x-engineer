@@ -559,4 +559,258 @@ describe("5x template render", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	// ---------------------------------------------------------------------------
+	// Phase 1: Auto-generated review_path tests
+	// ---------------------------------------------------------------------------
+
+	test(
+		"auto-generates review_path for plan-review template when not explicitly provided",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+
+				// reviewer-plan is a plan-review template
+				// review_path should be auto-generated
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--var",
+					`plan_path=${planPath}`,
+					// No --var review_path=...
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify review_path is in the rendered variables
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBeDefined();
+				expect(vars.review_path).toContain("-review.md");
+				expect(vars.review_path).toContain("docs-development-test-plan");
+
+				// Verify the prompt contains the auto-generated review path
+				const prompt = data.prompt as string;
+				expect(prompt).toContain(vars.review_path!);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"auto-generates review_path for implementation-review template with run context",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_test_review_001";
+				insertRun(dir, runId, planPath);
+
+				// reviewer-commit is an implementation-review template
+				// review_path should be auto-generated using run_id and phase
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=2",
+					// No --var review_path=...
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify review_path is auto-generated with run_id and phase
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBeDefined();
+				expect(vars.review_path).toContain(runId);
+				expect(vars.review_path).toContain("phase-2");
+				expect(vars.review_path).toContain("-review.md");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"explicit --var review_path overrides auto-generated value",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_test_review_002";
+				insertRun(dir, runId, planPath);
+
+				const explicitReviewPath = "/custom/path/my-custom-review.md";
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${explicitReviewPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify explicit review_path is used, not auto-generated
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBe(explicitReviewPath);
+
+				// Verify the prompt uses the explicit path
+				const prompt = data.prompt as string;
+				expect(prompt).toContain(explicitReviewPath);
+				expect(prompt).not.toContain(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"uses runReviews directory from config for implementation reviews",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				// Setup with custom runReviews directory
+				Bun.spawnSync(["git", "init"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "config", "user.name", "Test"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				mkdirSync(join(dir, ".5x"), { recursive: true });
+				const db = new Database(join(dir, ".5x", "5x.db"));
+				runMigrations(db);
+				db.close();
+
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				// Custom config with runReviews directory
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[paths]\nrunReviews = ".5x/run-reviews"\n',
+				);
+
+				const planDir = join(dir, "docs", "development");
+				mkdirSync(planDir, { recursive: true });
+				writeFileSync(
+					join(planDir, "test-plan.md"),
+					"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+				);
+
+				const planPath = join(planDir, "test-plan.md");
+				const runId = "run_custom_dir_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify the custom runReviews directory is used
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toContain(".5x/run-reviews");
+				expect(vars.review_path).toContain(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"fallback review_path uses run_id when phase is unavailable",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_no_phase_001";
+				insertRun(dir, runId, planPath);
+
+				// No phase_number provided - should fallback to <run-id>-review.md
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					// No phase_number
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				const data = json.data as Record<string, unknown>;
+
+				// Verify fallback filename format: <run-id>-review.md
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBeDefined();
+				expect(vars.review_path).toContain(runId);
+				expect(vars.review_path).toContain("-review.md");
+				// Should NOT contain "phase-" when no phase provided
+				expect(vars.review_path).not.toContain("phase-");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
 });

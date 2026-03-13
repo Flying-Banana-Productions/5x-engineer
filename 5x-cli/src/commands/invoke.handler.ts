@@ -311,6 +311,9 @@ export async function invokeAgent(
 		resolvedPlanPath,
 		config,
 		projectRoot,
+		// Pass run context for review_path auto-generation
+		runId: params.run,
+		phase: params.phase ?? mergedVars.phase_number,
 	});
 	const { variables } = resolved;
 
