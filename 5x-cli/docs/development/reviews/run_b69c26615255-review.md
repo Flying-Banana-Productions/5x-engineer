@@ -141,3 +141,19 @@ None.
 ### Assessment
 
 - **Readiness:** Ready - Phase 4 now matches the approved checklist-gate contract and no blocking issues remain.
+
+## Addendum (2026-03-14) - Phase 5 review
+
+### What's Addressed
+
+- Step 3 now relies on the CLI-derived `review_path` contract correctly: the explicit `--var review_path=...` is removed, and `REVIEW_PATH` is recovered from the render output before later reuse.
+- Step 5 likewise stops redundantly passing `review_path` into `author-process-impl-review`, which matches the Phase 2 auto-default behavior.
+- Step 2 now documents the `skipped: true` quality outcome and routes it forward as an intentional skip rather than an implicit failure.
+
+### Remaining Concerns
+
+- None.
+
+### Assessment
+
+- **Readiness:** Ready - the skill updates match the approved Phase 5 changes, and the existing skill-content suite still passes.
