@@ -1,6 +1,6 @@
 # Migrate CLI Framework from citty to Commander.js
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -24,7 +24,7 @@ framework-generated output. Handler files remain untouched.
 extra-typings package infers option types from flag definition strings,
 eliminating all `as string` casts in adapter code. It's maintained by the
 commander.js team and is the recommended TypeScript approach. Trade-off:
-extra dev dependency, but it's a type-only wrapper with zero runtime overhead.
+extra dependency, but it's a thin wrapper over `commander` with negligible overhead.
 
 **Eager registration over lazy `import()`.** citty used dynamic `import()` for
 lazy-loading subcommands. Commander doesn't execute action handlers at
@@ -85,7 +85,7 @@ exported from a new `src/program.ts` that can be imported without errors.
 
 - [ ] Update `package.json` (line 57): replace `"citty": "^0.1.6"` with
   `"commander": "^13.1.0"` in `dependencies` and add
-  `"@commander-js/extra-typings": "^13.1.0"` to `devDependencies`
+  `"@commander-js/extra-typings": "^13.1.0"` to `dependencies`
 - [ ] Run `bun install` to update `bun.lock`
 - [ ] Create `src/program.ts` — the root commander program factory:
 
@@ -749,6 +749,16 @@ assigned commands.
 - Modifying unit test assertions for handler behavior
 
 ## Revision History
+
+### v1.3 (March 14, 2026) — Fix extra-typings dependency classification
+
+Review addendum: `docs/development/020-commander-migration.review.md` (iteration 3, R9)
+
+**R9 — `@commander-js/extra-typings` misclassified as devDependency:**
+Moved `@commander-js/extra-typings` from `devDependencies` to `dependencies`
+in Phase 1. The package is imported at runtime from `src/program.ts`, all
+adapter files, and `src/bin.ts`, so it must be a regular dependency.
+Updated the Design Decisions section to match.
 
 ### v1.2 (March 14, 2026) — Address v1.1 follow-up review
 
