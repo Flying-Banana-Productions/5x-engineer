@@ -83,11 +83,13 @@ adapter files. Phase 3 wires up the entry point. Phase 4 updates tests. Phase
 exported from a new `src/program.ts` that can be imported without errors.
 `bun run typecheck` passes.
 
-- [ ] Update `package.json` (line 57): replace `"citty": "^0.1.6"` with
+- [x] Update `package.json` (line 57): replace `"citty": "^0.1.6"` with
   `"commander": "^13.1.0"` in `dependencies` and add
   `"@commander-js/extra-typings": "^13.1.0"` to `dependencies`
-- [ ] Run `bun install` to update `bun.lock`
-- [ ] Create `src/program.ts` — the root commander program factory:
+  (Note: citty retained alongside commander until Phase 6 removal, to keep
+  existing adapter files and tests passing at every phase boundary)
+- [x] Run `bun install` to update `bun.lock`
+- [x] Create `src/program.ts` — the root commander program factory:
 
   ```ts
   import { Command } from "@commander-js/extra-typings";
@@ -110,7 +112,7 @@ exported from a new `src/program.ts` that can be imported without errors.
   }
   ```
 
-- [ ] Verify `bun run typecheck` passes with the new dependency and
+- [x] Verify `bun run typecheck` passes with the new dependency and
   `src/program.ts`
 
 ## Phase 2: Migrate Adapter Files
