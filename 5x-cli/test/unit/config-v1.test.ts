@@ -506,6 +506,46 @@ describe("config v1 extensions", () => {
 	// P2.2: CLI provider names suppress unknown-key warnings
 	// -----------------------------------------------------------------------
 
+	// -----------------------------------------------------------------------
+	// skipQualityGates config key
+	// -----------------------------------------------------------------------
+
+	test("skipQualityGates defaults to false when not set", () => {
+		const result = FiveXConfigSchema.safeParse({});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.skipQualityGates).toBe(false);
+		}
+	});
+
+	test("skipQualityGates: true parses correctly", () => {
+		const result = FiveXConfigSchema.safeParse({ skipQualityGates: true });
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.skipQualityGates).toBe(true);
+		}
+	});
+
+	test("skipQualityGates appears in allowed keys (no unknown-key warning)", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `skipQualityGates = true\n`);
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).not.toContain("skipQualityGates");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// P2.2: CLI provider names suppress unknown-key warnings
+	// -----------------------------------------------------------------------
+
 	test("CLI provider names suppress unknown-key warnings for matching top-level keys", async () => {
 		const tmp = makeTmpDir();
 		const warnings: string[] = [];

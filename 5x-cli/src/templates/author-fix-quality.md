@@ -3,6 +3,8 @@ name: author-fix-quality
 version: 1
 variables: [plan_path, phase_number, user_notes]
 step_name: "author:fix-quality"
+variable_defaults:
+  user_notes: ""
 ---
 
 You are fixing quality gate failures for Phase {{phase_number}} of `{{plan_path}}`.

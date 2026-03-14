@@ -222,6 +222,70 @@ Callers always receive absolute `paths.*` values and should never need to resolv
 paths themselves. This contract was introduced in
 019-orchestrator-improvements Phase 1.
 
+## Template Variable Defaults
+
+Templates can declare default values for variables using the `variable_defaults`
+key in YAML frontmatter. This allows templates to render without explicit
+`--var` for variables that have sensible defaults (e.g., `user_notes: ""`).
+
+### Syntax
+
+```yaml
+---
+name: my-template
+version: 1
+variables: [required_var, optional_var]
+variable_defaults:
+  optional_var: ""
+---
+```
+
+### Validation Rules
+
+- `variable_defaults` must be a plain YAML mapping (not an array or scalar).
+- Every key in `variable_defaults` must exist in the `variables` list.
+- All values must be strings.
+- Invalid keys or non-string values produce a parse-time error.
+
+### Precedence
+
+1. **Explicit `--var`** — always wins over defaults.
+2. **`variable_defaults` value** — used when the variable is not provided
+   explicitly.
+3. **Missing-variable error** — raised for variables with no explicit value
+   and no default.
+
+Templates without `variable_defaults` behave exactly as before (all variables
+are required). This feature was introduced in 019-orchestrator-improvements
+Phase 2.
+
+## Quality Gate Skip Configuration
+
+The `skipQualityGates` config key controls behavior when no quality gates are
+configured:
+
+```toml
+# 5x.toml
+skipQualityGates = true   # Intentionally skip quality gates (silent)
+```
+
+### Behavior
+
+| `skipQualityGates` | `qualityGates` | Result |
+|--------------------|----------------|--------|
+| `false` (default)  | empty `[]`     | Warning on stderr: "no quality gates configured…"; output: `{ passed: true, results: [] }` |
+| `true`             | empty `[]`     | Silent; output: `{ passed: true, results: [], skipped: true }` |
+| `false`            | non-empty      | Normal gate execution |
+| `true`             | non-empty      | Gates skipped; output: `{ passed: true, results: [], skipped: true }` |
+
+- **Type:** boolean
+- **Default:** `false`
+- **`skipped: true`** in the output JSON allows downstream consumers (e.g.,
+  the phase-execution skill) to distinguish intentional skips from actual
+  gate results.
+
+This feature was introduced in 019-orchestrator-improvements Phase 3.
+
 ## Not In Scope
 
 - Adding new `postCreate` guardrails or changing worktree initialization policy

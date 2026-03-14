@@ -1,0 +1,116 @@
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runQuality } from "../../../src/commands/quality-v1.handler.js";
+
+function makeTmpDir(): string {
+	const dir = join(
+		tmpdir(),
+		`5x-quality-handler-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+/**
+ * Set up a minimal project with a config file.
+ * Uses a 5x.toml so we don't need to worry about module import paths.
+ */
+function setupProject(
+	dir: string,
+	opts: {
+		qualityGates?: string[];
+		skipQualityGates?: boolean;
+	} = {},
+): void {
+	// Create .git so resolveProjectRoot finds it
+	mkdirSync(join(dir, ".git"), { recursive: true });
+
+	const lines: string[] = [];
+	if (opts.qualityGates !== undefined) {
+		lines.push(
+			`qualityGates = [${opts.qualityGates.map((g) => `"${g}"`).join(", ")}]`,
+		);
+	}
+	if (opts.skipQualityGates !== undefined) {
+		lines.push(`skipQualityGates = ${opts.skipQualityGates}`);
+	}
+	if (lines.length > 0) {
+		writeFileSync(join(dir, "5x.toml"), `${lines.join("\n")}\n`);
+	}
+}
+
+describe("runQuality handler — skipQualityGates", () => {
+	test("empty gates + skipQualityGates: false → warn sink receives warning, output has no skipped field", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			setupProject(dir, { skipQualityGates: false });
+			await runQuality({ workdir: dir }, warn);
+
+			expect(warnCalls.length).toBe(1);
+			expect(warnCalls[0]).toContain("no quality gates configured");
+			expect(warnCalls[0]).toContain("skipQualityGates");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("empty gates + skipQualityGates: true → output has skipped: true, warn sink not called", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			setupProject(dir, { skipQualityGates: true });
+			await runQuality({ workdir: dir }, warn);
+
+			expect(warnCalls.length).toBe(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("non-empty gates → normal execution, no skipped field, warn sink not called", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			setupProject(dir, { qualityGates: ["echo ok"] });
+			await runQuality({ workdir: dir }, warn);
+
+			expect(warnCalls.length).toBe(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("no gates configured (default) + no skipQualityGates → warn emitted", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			// Project with no config at all — Zod defaults apply (empty gates, skip = false)
+			setupProject(dir);
+			await runQuality({ workdir: dir }, warn);
+
+			expect(warnCalls.length).toBe(1);
+			expect(warnCalls[0]).toContain("no quality gates configured");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

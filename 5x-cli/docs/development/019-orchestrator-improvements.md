@@ -62,49 +62,49 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 **Completion gate:** Templates declaring `variable_defaults` render without explicit `--var` for defaulted variables. Missing-var errors still fire for non-defaulted variables.
 
-- [ ] Add `variableDefaults: Record<string, string>` to `TemplateMetadata` interface in `src/templates/loader.ts` (line ~32, after `stepName`). Default to `{}`.
-- [ ] In `parseTemplate()` (~line 126): after existing frontmatter validation, parse optional `variable_defaults` key from frontmatter. Validate: must be a plain object, all keys must exist in the `variables` list, all values must be strings. Store in `metadata.variableDefaults`.
-- [ ] In `renderTemplate()` (~line 338): before the missing-vars check (line ~345), pre-populate absent variables from `metadata.variableDefaults`. Explicit vars always win — only fill in keys not already in `variables` record.
-- [ ] Remove the stale comment on line ~335: `"not yet implemented; all are required"`.
-- [ ] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-next-phase.md` (between `step_name` and `---`).
-- [ ] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-fix-quality.md`.
-- [ ] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-process-plan-review.md`.
-- [ ] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-process-impl-review.md`.
-- [ ] Add unit tests in `test/unit/templates/loader.test.ts`:
+- [x] Add `variableDefaults: Record<string, string>` to `TemplateMetadata` interface in `src/templates/loader.ts` (line ~32, after `stepName`). Default to `{}`.
+- [x] In `parseTemplate()` (~line 126): after existing frontmatter validation, parse optional `variable_defaults` key from frontmatter. Validate: must be a plain object, all keys must exist in the `variables` list, all values must be strings. Store in `metadata.variableDefaults`.
+- [x] In `renderTemplate()` (~line 338): before the missing-vars check (line ~345), pre-populate absent variables from `metadata.variableDefaults`. Explicit vars always win — only fill in keys not already in `variables` record.
+- [x] Remove the stale comment on line ~335: `"not yet implemented; all are required"`.
+- [x] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-next-phase.md` (between `step_name` and `---`).
+- [x] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-fix-quality.md`.
+- [x] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-process-plan-review.md`.
+- [x] Add `variable_defaults:\n  user_notes: ""` to frontmatter of `src/templates/author-process-impl-review.md`.
+- [x] Add unit tests in `test/unit/templates/loader.test.ts`:
   - `parseTemplate` with `variable_defaults` parses correctly and populates `metadata.variableDefaults`.
   - `renderTemplate` for `author-next-phase` renders without providing `user_notes` (uses default empty string).
   - Explicit `user_notes="custom"` overrides the default.
   - `variable_defaults` key referencing a variable not in `variables` list throws.
   - `variable_defaults` with non-string value throws.
   - Templates without `variable_defaults` still work (backward compatible).
-- [ ] Verify existing loader tests pass (especially the `author-next-phase` and `author-fix-quality` tests that currently pass `user_notes` explicitly).
-- [ ] Update template authoring reference docs (in `docs/` or inline in `016-review-artifacts-and-phase-checks.md`) to document `variable_defaults` frontmatter key: syntax, validation rules (keys must exist in `variables`, values must be strings), and precedence (explicit `--var` > default > missing-var error).
+- [x] Verify existing loader tests pass (especially the `author-next-phase` and `author-fix-quality` tests that currently pass `user_notes` explicitly).
+- [x] Update template authoring reference docs (in `docs/` or inline in `016-review-artifacts-and-phase-checks.md`) to document `variable_defaults` frontmatter key: syntax, validation rules (keys must exist in `variables`, values must be strings), and precedence (explicit `--var` > default > missing-var error).
 
 ## Phase 3: Quality Gate No-op Ambiguity
 
 **Completion gate:** `5x quality run` with empty gates and `skipQualityGates: false` emits a stderr warning. With `skipQualityGates: true`, output includes `skipped: true` and no warning.
 
-- [ ] Add `skipQualityGates: z.boolean().default(false)` to `FiveXConfigSchema` in `src/config.ts` (~line 51, after `qualityGates`).
-- [ ] Add `"skipQualityGates"` to the `allowedRoot` set in `warnUnknownConfigKeys()` (~line 195).
-- [ ] Add an optional `warn?: (...args: unknown[]) => void` parameter to `runQuality()` (defaulting to `console.error`), following the same dependency-injection pattern used by `loadConfig()`.
-- [ ] Modify the no-op short-circuit in `runQuality()` (`src/commands/quality-v1.handler.ts`, ~line 173):
+- [x] Add `skipQualityGates: z.boolean().default(false)` to `FiveXConfigSchema` in `src/config.ts` (~line 51, after `qualityGates`).
+- [x] Add `"skipQualityGates"` to the `allowedRoot` set in `warnUnknownConfigKeys()` (~line 195).
+- [x] Add an optional `warn?: (...args: unknown[]) => void` parameter to `runQuality()` (defaulting to `console.error`), following the same dependency-injection pattern used by `loadConfig()`.
+- [x] Modify the no-op short-circuit in `runQuality()` (`src/commands/quality-v1.handler.ts`, ~line 173):
   - Read `skipQualityGates` from resolved config (alongside `qualityGates`).
   - If `skipQualityGates: true`: output `{ passed: true, results: [], skipped: true }`, no warning.
   - If `qualityGates.length === 0` and `skipQualityGates: false`: call `warn("Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates: true to suppress this warning.")`, then output `{ passed: true, results: [] }`.
   - If `qualityGates.length > 0`: execute normally (unchanged).
-- [ ] Add unit tests in `test/unit/config.test.ts` or `test/unit/config-v1.test.ts`:
+- [x] Add unit tests in `test/unit/config.test.ts` or `test/unit/config-v1.test.ts`:
   - `skipQualityGates` defaults to `false` when not set.
   - `skipQualityGates: true` parses correctly.
   - `skipQualityGates` appears in allowed keys (no unknown-key warning).
-- [ ] Add handler-level unit test for the quality handler using the existing `warn` dependency-injection pattern (see `loadConfig()` signature in `src/config.ts` which already accepts an optional `warn` function). Add an optional `warn` parameter to `runQuality()` (defaulting to `console.error`). Unit tests inject a mock `warn` sink and assert on calls to it — this avoids capturing `console.error` output directly, which is reserved for integration tests per AGENTS.md:
+- [x] Add handler-level unit test for the quality handler using the existing `warn` dependency-injection pattern (see `loadConfig()` signature in `src/config.ts` which already accepts an optional `warn` function). Add an optional `warn` parameter to `runQuality()` (defaulting to `console.error`). Unit tests inject a mock `warn` sink and assert on calls to it — this avoids capturing `console.error` output directly, which is reserved for integration tests per AGENTS.md:
   - Empty gates + `skipQualityGates: false` → output has no `skipped` field, `warn` sink received the warning message.
   - Empty gates + `skipQualityGates: true` → output has `skipped: true`, `warn` sink not called.
   - Non-empty gates → normal execution (no `skipped` field, `warn` sink not called).
-- [ ] Add integration test in `test/integration/commands/` for `5x quality run` with no gates configured:
+- [x] Add integration test in `test/integration/commands/` for `5x quality run` with no gates configured:
   - Create a temp repo with a `5x.toml` that has no `qualityGates` and `skipQualityGates = false`.
   - Spawn `5x quality run`, assert stderr contains the warning message and stdout JSON has `passed: true` without `skipped`.
   - Repeat with `skipQualityGates = true`, assert no stderr warning and stdout JSON has `skipped: true`.
-- [ ] Update config reference docs to document `skipQualityGates` key: type (boolean), default (`false`), behavior when `true` (silent skip with `skipped: true` output), and interaction with empty `qualityGates`.
+- [x] Update config reference docs to document `skipQualityGates` key: type (boolean), default (`false`), behavior when `true` (silent skip with `skipped: true` output), and interaction with empty `qualityGates`.
 
 ## Phase 4: Protocol Validate Author Checklist Gate
 
