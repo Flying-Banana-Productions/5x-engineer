@@ -42,7 +42,7 @@ model = "openai/gpt-5.4"
 # Paths are relative to repository root unless absolute
 [paths]
 plans = "docs/development"
-reviews = docs/development/reviews"
+reviews = "docs/development/reviews"
 # planReviews = "docs/development/reviews/plans"
 # runReviews = "docs/development/reviews/impl"
 archive = "docs/archive"
