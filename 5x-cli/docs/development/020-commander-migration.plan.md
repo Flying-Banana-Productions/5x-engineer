@@ -1,6 +1,6 @@
 # Migrate CLI Framework from citty to Commander.js
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -37,17 +37,29 @@ normally calls `process.exit()` on errors. `exitOverride()` rethrows
 existing JSON envelope system. `configureOutput()` sends framework errors to
 stderr. This preserves the machine-readable error contract.
 
-**Consolidate `--worktree`/`--worktree-path` into `--worktree [path]`.**
-Commander's optional-value syntax natively supports "boolean or value." The
-hidden `--worktree-path` flag and the 15-line argv splice hack in bin.ts are
-eliminated. The adapter maps the single option to both handler params
-(`worktree: boolean`, `worktreePath?: string`). Breaking change: only affects
-the undocumented internal `--worktree-path` flag.
+**Consolidate `--worktree`/`--worktree-path` into `--worktree [path]` with
+backward compatibility.** Commander's optional-value syntax natively supports
+"boolean or value," so `--worktree [path]` replaces the 15-line argv splice
+hack in bin.ts. The adapter maps the single option to both handler params
+(`worktree: boolean`, `worktreePath?: string`). For backward compatibility,
+`--worktree-path <path>` is kept as a hidden option (`.hideHelp()`) that maps
+to the same handler param. When `--worktree-path` is used, a deprecation
+warning is emitted to stderr: `"Warning: --worktree-path is deprecated, use
+--worktree <path> instead"`. This preserves existing automation and tests
+while guiding users to the new syntax. The hidden alias can be removed in a
+future release.
 
-**`preAction` hook for `--pretty`/`--no-pretty`.** Replace the 20-line
-pre-parse argv manipulation with a `preAction` lifecycle hook on the root
-program. Commander's negatable boolean support handles `--no-pretty` natively.
-The hook calls `setPrettyPrint()` before any action handler runs.
+**Retain pre-parse argv stripping for `--pretty`/`--no-pretty`.** The current
+pre-parse approach (scan `process.argv`, apply last-wins, strip all
+occurrences before handing argv to commander) is preserved rather than
+replaced with a `preAction` hook. Rationale: `preAction` hooks only run when
+a command action executes — they do not fire for parse-time validation
+failures, `--help`, or `--version` flows. The pre-parse approach guarantees
+`--pretty`/`--no-pretty` is accepted at any argv position, applies
+formatting to parse-error JSON envelopes, and matches current test behavior.
+The `--pretty` and `--no-pretty` flags are NOT registered as commander
+options (they are stripped before commander sees them), avoiding conflicts
+with commander's own option parsing.
 
 **Adapt `parse-args.ts` to commander's `argParser` callback signature.** The
 existing `parseIntArg`, `parseFloatArg`, `parseTimeout` functions are wrapped
@@ -81,11 +93,14 @@ exported from a new `src/program.ts` that can be imported without errors.
     const program = new Command("5x")
       .version(version, "-V, --version")
       .description("A toolbelt of primitives for the 5x workflow")
-      .option("--pretty", "Format JSON output with indentation (default: auto-detect TTY)")
-      .option("--no-pretty", "Force compact JSON output")
       .exitOverride()
       .showHelpAfterError("(use --help for additional information)")
       .showSuggestionAfterError(true);
+
+    // Note: --pretty / --no-pretty are NOT registered as commander options.
+    // They are handled by pre-parse argv stripping in bin.ts (see design
+    // decision above). This ensures they work at any argv position and
+    // apply even on parse-error JSON envelopes.
 
     return program;
   }
@@ -183,8 +198,9 @@ Migrate the 3 simplest files first — single command, no subcommands:
   - Parent `prompt` command with subcommands `choose`, `confirm`, `input`
   - `choose`: positional `<message>`, `-o, --options <list>` (required),
     `-d, --default <value>`
-  - `confirm`: positional `<message>`, `-d, --default <value>` with
-    `.choices(["yes", "no"])`
+  - `confirm`: positional `<message>`, `-d, --default <value>`
+    (no `.choices()` — handler accepts `yes/no/y/n/true/false`, validated
+    in the handler layer to preserve current behavior)
   - `input`: positional `<message>`, `--multiline`
   - Actions call `promptChoose`, `promptConfirm`, `promptInput`
 
@@ -289,9 +305,12 @@ Migrate the 3 simplest files first — single command, no subcommands:
     `reopen`, `list`, `watch`
   - `init`: `-p, --plan <path>` (required), `-w, --worktree [path]`
     (optional value — consolidates `--worktree` + `--worktree-path`),
+    `--worktree-path <path>` (hidden, deprecated alias — `.hideHelp()`),
     `--allow-dirty`
     - Adapter maps: `opts.worktree === true` → `{ worktree: true }`;
-      `typeof opts.worktree === "string"` → `{ worktree: true, worktreePath: opts.worktree }`
+      `typeof opts.worktree === "string"` → `{ worktree: true, worktreePath: opts.worktree }`;
+      `opts.worktreePath` (from deprecated flag) → `{ worktree: true, worktreePath: opts.worktreePath }`
+      with stderr warning: `"Warning: --worktree-path is deprecated, use --worktree <path> instead"`
   - `state`: `-r, --run <id>`, `-p, --plan <path>`,
     `-t, --tail <n>` with `.argParser(intArg("--tail", { positive: true }))`,
     `--since-step <n>` with `.argParser(intArg("--since-step"))`
@@ -320,11 +339,15 @@ Migrate the 3 simplest files first — single command, no subcommands:
 
 **Completion gate:** `bun run src/bin.ts --help` prints commander-formatted
 help. `bun run src/bin.ts --version` prints the version. `bun run src/bin.ts
-run init --plan /nonexistent` produces a JSON error envelope. All existing
-integration tests pass (except those asserting on framework-generated text,
-which are updated in Phase 4).
+run init --plan /nonexistent` produces a JSON error envelope.
+`bun run src/bin.ts --pretty run init` and `bun run src/bin.ts run init
+--pretty` both apply pretty formatting (any-position argv).
+`bun run src/bin.ts run init` (missing `--plan`) produces a JSON error
+envelope with `--no-pretty` applied correctly. All existing integration
+tests pass (except those asserting on framework-generated text, which are
+updated in Phase 4).
 
-- [ ] Rewrite `src/bin.ts` (141 → ~65 lines):
+- [ ] Rewrite `src/bin.ts` (141 → ~80 lines):
 
   ```ts
   #!/usr/bin/env bun
@@ -345,6 +368,29 @@ which are updated in Phase 4).
   import { registerUpgrade } from "./commands/upgrade.js";
   import { registerWorktree } from "./commands/worktree.js";
 
+  // ---------------------------------------------------------------------------
+  // Global --pretty / --no-pretty flags (pre-parse strip, preserved from citty)
+  // Accepted anywhere in argv. Last flag wins. Applied before commander parses
+  // so that formatting is active even for parse-error JSON envelopes.
+  // ---------------------------------------------------------------------------
+  {
+    const indices: { idx: number; pretty: boolean }[] = [];
+    for (let i = process.argv.length - 1; i >= 0; i--) {
+      if (process.argv[i] === "--pretty") {
+        indices.push({ idx: i, pretty: true });
+      } else if (process.argv[i] === "--no-pretty") {
+        indices.push({ idx: i, pretty: false });
+      }
+    }
+    if (indices.length > 0) {
+      const last = indices.reduce((a, b) => (a.idx > b.idx ? a : b));
+      setPrettyPrint(last.pretty);
+      for (const { idx } of indices.sort((a, b) => b.idx - a.idx)) {
+        process.argv.splice(idx, 1);
+      }
+    }
+  }
+
   const program = createProgram();
 
   // Register all commands eagerly
@@ -361,14 +407,6 @@ which are updated in Phase 4).
   registerSkills(program);
   registerUpgrade(program);
   registerWorktree(program);
-
-  // preAction hook: --pretty / --no-pretty
-  program.hook("preAction", (thisCommand) => {
-    const opts = thisCommand.optsWithGlobals();
-    if (opts.pretty !== undefined) {
-      setPrettyPrint(opts.pretty);
-    }
-  });
 
   // Configure output routing
   program.configureOutput({
@@ -417,12 +455,14 @@ which are updated in Phase 4).
   }
   ```
 
-- [ ] Delete the 3 code blocks that are no longer needed:
-  - Lines 10-29: `--pretty`/`--no-pretty` pre-parse argv manipulation
-  - Lines 31-45: `--worktree`/`--worktree-path` argv splicing hack
+- [ ] Delete the code blocks that are no longer needed:
+  - Lines 31-45: `--worktree`/`--worktree-path` argv splicing hack (replaced
+    by commander's optional-value syntax + hidden `--worktree-path` alias)
   - Lines 76-94: `resolveSubCommand()` recursive walker
   - Lines 98-109: manual `--help`/`--version` handling
   - Lines 124-129: citty `CLIError` catch block
+  - Note: The `--pretty`/`--no-pretty` pre-parse block (lines 10-29) is
+    **retained** (ported to the new bin.ts), not deleted
 
 - [ ] Verify `bun run typecheck` passes
 - [ ] Verify `bun run src/bin.ts --help` shows commander-formatted output
@@ -431,11 +471,23 @@ which are updated in Phase 4).
   error envelope (CliError path works)
 - [ ] Verify `bun run src/bin.ts run complet` produces "Did you mean init?"
   or similar suggestion (CommanderError path works)
+- [ ] Verify `--pretty` works at any argv position:
+  - `bun run src/bin.ts --pretty run init --plan /nonexistent` → formatted JSON
+  - `bun run src/bin.ts run init --plan /nonexistent --pretty` → formatted JSON
+  - `bun run src/bin.ts run --pretty init --plan /nonexistent` → formatted JSON
+- [ ] Verify `--no-pretty` applies to parse-error envelopes:
+  - `bun run src/bin.ts --no-pretty run init` (no `--plan`) → compact JSON envelope
+- [ ] Verify `--worktree-path` backward compatibility:
+  - `bun run src/bin.ts run init --plan plan.md --worktree --worktree-path /tmp/wt` →
+    works, stderr shows deprecation warning
 
 ## Phase 4: Update Tests
 
 **Completion gate:** `bun test` passes. All 28+ integration tests pass. No
 handler test files are modified. No unit test behavioral assertions change.
+Pipe-composability flows (`run init | invoke`, `invoke | run record`) pass
+non-regression tests. `--pretty`/`--no-pretty` works at any argv position
+including in pipe contexts and on parse-error envelopes.
 
 ### Phase 4a: Update `parse-args.ts` unit tests
 
@@ -470,8 +522,10 @@ Files likely needing updates (based on codebase analysis):
 - [ ] `test/integration/commands/protocol-validate.test.ts` — verify
   `--no-require-commit` behavior works with commander negatable boolean.
 - [ ] `test/integration/commands/run-init-worktree.test.ts` — verify the
-  `--worktree [path]` consolidation works. Remove any references to
-  `--worktree-path` in test args.
+  `--worktree [path]` consolidation works. Keep existing `--worktree-path`
+  tests (they exercise the backward-compatible hidden alias). Add a test
+  asserting that `--worktree-path` usage emits a deprecation warning to
+  stderr.
 - [ ] Audit remaining integration test files — run `bun test
   test/integration/` and fix any failures.
 
@@ -485,6 +539,29 @@ Files likely needing updates (based on codebase analysis):
   mentioning "required option"
 - [ ] Add test: `--worktree [path]` consolidation — both `5x run init -p
   plan.md -w` and `5x run init -p plan.md -w /tmp/wt` work correctly
+- [ ] Add test: `--worktree-path` backward compatibility — `5x run init -p
+  plan.md --worktree --worktree-path /tmp/wt` works and emits deprecation
+  warning to stderr
+
+### Phase 4d: Pipe-composability non-regression tests
+
+Pipe composition is a critical automation surface (see
+`docs/development/archive/010-cli-composability.md`). The framework migration
+must not regress stdin-priority or envelope-ingestion behavior.
+
+- [ ] Add test (or verify existing): `5x run init ... | 5x invoke author ...`
+  — invoke reads `run_id` from piped upstream envelope without `--run`
+- [ ] Add test (or verify existing): `5x invoke ... | 5x run record` —
+  step name, result, run_id, and metadata auto-extracted from piped envelope
+- [ ] Add test (or verify existing): `5x quality run | 5x run record
+  "quality:check" --run R1` — step name and run from CLI, result from pipe
+- [ ] Add test: `--pretty` position in pipe context — `5x run init -p
+  plan.md --pretty | head -1` produces formatted JSON (pretty applies even
+  when stdout is piped, because `--pretty` was explicit)
+- [ ] Add test: `--no-pretty` on parse-error — `5x --no-pretty run init`
+  (no `--plan`) produces compact JSON error envelope on stdout
+- [ ] Verify existing pipe tests in `test/integration/pipe.test.ts` pass
+  without modification
 
 ## Phase 5: Help Content and Polish
 
@@ -516,21 +593,29 @@ content from the PRD. Short flags work for all assigned commands.
       "A toolbelt of primitives for the 5x workflow.\n\n" +
       "The 5x CLI manages implementation runs, invokes AI agents, validates\n" +
       "structured output, and orchestrates the plan-author-review development\n" +
-      "cycle. It outputs JSON envelopes to stdout for machine consumption and\n" +
-      "supports --pretty for human-readable formatting."
+      "cycle. Most commands output JSON envelopes to stdout for machine\n" +
+      "consumption. Use --pretty for human-readable formatting."
     )
     .addHelpText("afterAll",
-      "\nAll commands output JSON envelopes ({ ok, data } or { ok, error }) to stdout.\n" +
-      "Use --pretty for human-readable output. Exit codes: 0=success, 1=error,\n" +
-      "2=not found, 3=non-interactive, 4=locked, 5=dirty, 6=limit, 7=invalid output.\n\n" +
+      "\nMost commands output JSON envelopes ({ ok, data } or { ok, error }) to stdout.\n" +
+      "Exceptions: init and upgrade emit human-readable text; run watch streams\n" +
+      "NDJSON or human-readable output.\n" +
+      "Use --pretty for formatted JSON output, --no-pretty for compact.\n" +
+      "Exit codes: 0=success, 1=error, 2=not found, 3=non-interactive,\n" +
+      "4=locked, 5=dirty, 6=limit, 7=invalid output.\n\n" +
       "Documentation: https://github.com/5x-ai/5x-cli\n" +
       "Configuration: 5x.toml in project root"
     );
   ```
 
 - [ ] Add option grouping to `invoke author`/`invoke reviewer` and
-  `run record` using commander's help customization (grouping headers
-  via `.addHelpText("before", ...)` or custom `formatHelp`):
+  `run record` using Commander's `configureHelp()` with a custom
+  `formatHelp` function. This is the verified Commander v13 approach —
+  `configureHelp()` accepts a `formatHelp(cmd, helper)` callback that
+  returns the full help string, allowing arbitrary section headers.
+  Alternative: use `.addHelpText("after", ...)` for simpler section
+  dividers if full `formatHelp` override proves too complex. Do NOT use
+  `.optionsGroup()` (not a Commander API).
   - `invoke`: Template Options, Execution Options, Output Options,
     Recording Options
   - `run record`: Required, Result, Metadata, Metrics
@@ -587,7 +672,7 @@ content from the PRD. Short flags work for all assigned commands.
 | `test/unit/utils/parse-args.test.ts` | Add tests for commander wrappers |
 | `test/integration/bin-pretty.test.ts` | Verify / update if needed |
 | `test/integration/commands/run-v1.test.ts` | Update framework-dependent assertions |
-| `test/integration/commands/run-init-worktree.test.ts` | Update `--worktree-path` → `--worktree [path]` |
+| `test/integration/commands/run-init-worktree.test.ts` | Verify `--worktree [path]` + `--worktree-path` compat; add deprecation warning test |
 | `test/integration/commands/invoke.test.ts` | Verify `--var` array handling |
 | `test/integration/commands/prompt.test.ts` | Verify positional arg handling |
 | `test/integration/commands/protocol-validate.test.ts` | Verify negatable boolean |
@@ -598,13 +683,14 @@ content from the PRD. Short flags work for all assigned commands.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/utils/parse-args.test.ts` | `intArg`, `floatArg`, `timeoutArg`, `collect` wrappers |
-| Integration | `test/integration/bin-pretty.test.ts` | `--pretty`/`--no-pretty` via `preAction` hook |
+| Integration | `test/integration/bin-pretty.test.ts` | `--pretty`/`--no-pretty` via pre-parse argv strip (any position, parse-error envelopes) |
 | Integration | `test/integration/commands/run-v1.test.ts` | Run lifecycle through commander |
-| Integration | `test/integration/commands/run-init-worktree.test.ts` | `--worktree [path]` consolidation |
+| Integration | `test/integration/commands/run-init-worktree.test.ts` | `--worktree [path]` consolidation + `--worktree-path` backward compat |
 | Integration | `test/integration/commands/invoke.test.ts` | `--var` always produces `string[]` |
 | Integration | `test/integration/commands/protocol-validate.test.ts` | `--no-require-commit` negatable boolean |
 | Integration | New: commander error UX tests | Unknown command suggestion, choice validation, required option errors |
-| Integration | All 28+ existing tests | Full regression — JSON envelope, exit codes, handler behavior |
+| Integration | New/verify: pipe-composability non-regression | `run init \| invoke`, `invoke \| run record`, stdin-priority rules |
+| Integration | All 28+ existing tests | Full regression — JSON envelope, exit codes, handler behavior, pipe composition |
 
 ## Estimated Timeline
 
@@ -628,6 +714,43 @@ content from the PRD. Short flags work for all assigned commands.
 - Modifying unit test assertions for handler behavior
 
 ## Revision History
+
+### v1.1 (March 14, 2026) — Address review feedback
+
+Review: `docs/development/020-commander-migration.review.md`
+
+**P0.1 — Global `--pretty` handling:** Replaced `preAction` hook approach
+with retained pre-parse argv stripping. `--pretty`/`--no-pretty` are no
+longer registered as commander options; they are stripped from `process.argv`
+before commander parses, preserving any-position acceptance and parse-error
+envelope formatting. Updated Phase 1 (`program.ts`), Phase 3 (`bin.ts`
+code), and Phase 4 completion gates.
+
+**P0.2 — `--worktree-path` backward compatibility:** Changed from breaking
+removal to backward-compatible deprecation. `--worktree-path` is kept as a
+hidden option (`.hideHelp()`) that maps to the same handler param, with a
+stderr deprecation warning. Updated design decision, Phase 2e (`run-v1.ts`
+adapter), Phase 4b (keep existing worktree-path tests), Phase 4c (add
+deprecation warning test), and Files Touched table.
+
+**P1.1 — Help/footer contract:** Updated Phase 5 program description and
+footer to accurately reflect that `init`/`upgrade` emit human-readable
+text and `run watch` streams NDJSON, rather than claiming all commands
+output JSON envelopes.
+
+**P1.2 — `prompt confirm --default` choices:** Removed `.choices(["yes",
+"no"])` from `prompt confirm --default` in Phase 2c. Handler-layer
+validation accepts `yes/no/y/n/true/false` — framework-level restriction
+would break existing behavior and tests.
+
+**P1.3 — Pipe-composability non-regression:** Added Phase 4d with explicit
+non-regression tests for `run init | invoke`, `invoke | run record`, and
+`quality run | run record` pipe flows. Added `--pretty`/`--no-pretty`
+position and parse-error tests. Updated Phase 4 completion gate.
+
+**P2 — Help customization approach:** Specified `configureHelp()` with
+custom `formatHelp` callback as the verified Commander v13 API for option
+grouping. Noted `.optionsGroup()` is not a Commander API.
 
 ### v1.0 (March 14, 2026) — Initial plan
 
