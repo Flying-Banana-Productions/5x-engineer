@@ -1,6 +1,6 @@
 # Orchestrator Improvements
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -12,6 +12,10 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 **Fix sub-project config paths before other changes.** The relative-path resolution bug in `resolveLayeredConfig()` prevents `5x run init` from working with sub-project configs. All other improvements depend on a working run infrastructure, so this must come first.
 
+**All `paths.*` values become absolute after config resolution.** Callers of `resolveLayeredConfig()` must always receive absolute paths. The `resolveRawConfigPaths()` helper resolves raw configured values against their config file's directory. After Zod parsing (which applies defaults), a second pass resolves any remaining relative default paths against the workspace root. This ensures uniform absolute semantics regardless of whether a value came from explicit config or Zod defaults. Downstream consumers no longer need to resolve paths themselves.
+
+**Checklist gate fails closed on explicit inputs, open on auto-discovery.** When `--plan` or `--phase` are explicitly provided, lookup failures (file not found, phase not found) must surface a validation error — silent skip would defeat the purpose of explicit args. Silent skip only applies to the best-effort auto-discovery path (no `--plan`, no `--run`).
+
 **`variable_defaults` in template frontmatter rather than optional-suffix convention.** The loader already has a "not yet implemented" comment about optional variables (line ~333). A `variable_defaults` YAML key is more explicit than naming conventions (`_optional` suffix), keeps frontmatter self-documenting, and avoids changing the variable regex.
 
 **Checklist validation in `protocol validate author` rather than a separate command.** Embedding the check in the existing validate flow means the skill doesn't need to parse plans itself. The `--no-phase-checklist-validate` flag preserves backward compatibility.
@@ -22,18 +26,28 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 ## Phase 1: Sub-project Config Path Resolution
 
-**Completion gate:** `resolveLayeredConfig()` resolves relative `paths.*` values against their config file's directory. Existing config-layering tests pass. New tests validate the fix with sub-project relative paths.
+**Completion gate:** `resolveLayeredConfig()` produces all-absolute `paths.*` values regardless of source (explicit config, Zod defaults, or merged layers). Existing config-layering tests pass (expectations updated for absolute paths). New tests validate sub-project paths, Zod defaults, and the integration workflow.
 
-- [ ] Add `resolveRawConfigPaths(raw: unknown, baseDir: string): unknown` helper function in `src/config.ts` (after `isRecord()` helper, ~line 183). Walks `raw.paths` and resolves each relative string value against `baseDir` using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and `paths.templates.review`. Returns a new object with only `paths` modified; non-path fields untouched.
+**Path contract:** After `resolveLayeredConfig()` returns, every `paths.*` value is an absolute path. Raw configured values are resolved against their config file's directory. Zod default values (e.g., `"docs/development"`) are resolved against the workspace root after schema parsing. Callers never receive relative paths.
+
+- [ ] Add `resolveRawConfigPaths(raw: unknown, baseDir: string): unknown` helper function in `src/config.ts` (after `isRecord()` helper, ~line 183). Walks `raw.paths` and resolves each relative string value against `baseDir` using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and `paths.templates.review`. Returns a new object with only `paths` modified; non-path fields untouched. Already-absolute paths pass through unchanged.
 - [ ] Call `resolveRawConfigPaths()` on `rootRaw` with `dirname(rootConfigPath)` as `baseDir` in `resolveLayeredConfig()` (~line 489, after loading root config).
 - [ ] Call `resolveRawConfigPaths()` on `nearestRaw` with `dirname(nearestConfigPath)` as `baseDir` in `resolveLayeredConfig()` (~line 521, after loading nearest config).
+- [ ] After Zod schema parsing (which applies defaults for unset paths), call `resolveRawConfigPaths()` on the parsed `config.paths` with the workspace root as `baseDir`. This ensures Zod default relative paths (e.g., `"docs/development"`) also become absolute. Apply this to the final merged config object before returning.
+- [ ] Audit downstream callers of `resolveLayeredConfig()` that manually resolve paths (e.g., `src/commands/template-vars.ts`, `src/commands/run.handler.ts`). Remove redundant `resolve()` calls that are now unnecessary since config always returns absolute paths. Add inline comments noting the contract.
 - [ ] Add unit tests in `test/unit/config-layering.test.ts`:
   - Sub-project `paths.plans = "docs/development"` resolves to `<sub-project-dir>/docs/development` (absolute), not `<root>/docs/development`.
-  - Root `paths.plans = "docs/plans"` still resolves to `<root>/docs/plans` (no behavior change).
+  - Root `paths.plans = "docs/plans"` still resolves to `<root>/docs/plans` (absolute).
   - Absolute paths (`paths.plans = "/opt/plans"`) pass through unchanged.
   - Nested `paths.templates.plan` resolves correctly for sub-project.
   - Merged config produces all-absolute paths.
-- [ ] Verify all existing `test/unit/config-layering.test.ts` tests pass (they use string comparisons on `paths.*` — update expectations if the fix changes values from relative to absolute).
+  - Config with no explicit paths (Zod defaults only) produces absolute paths resolved against workspace root.
+  - Non-layered config (single config file) also produces absolute paths (same contract).
+- [ ] Verify all existing `test/unit/config-layering.test.ts` tests pass — update string expectations from relative to absolute where the fix changes returned values.
+- [ ] Add integration test in `test/integration/commands/` for sub-project `5x run init`:
+  - Create a temp repo with a root `5x.toml` and a sub-project `packages/foo/5x.toml` with relative `paths.plans = "docs/dev"`.
+  - Run `5x run init --plan packages/foo/docs/dev/some-plan.md` from the repo root.
+  - Assert the run record resolves the plan path correctly (absolute, under `packages/foo/`).
 
 ## Phase 2: Template Variable Defaults
 
@@ -55,6 +69,7 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - `variable_defaults` with non-string value throws.
   - Templates without `variable_defaults` still work (backward compatible).
 - [ ] Verify existing loader tests pass (especially the `author-next-phase` and `author-fix-quality` tests that currently pass `user_notes` explicitly).
+- [ ] Update template authoring reference docs (in `docs/` or inline in `016-review-artifacts-and-phase-checks.md`) to document `variable_defaults` frontmatter key: syntax, validation rules (keys must exist in `variables`, values must be strings), and precedence (explicit `--var` > default > missing-var error).
 
 ## Phase 3: Quality Gate No-op Ambiguity
 
@@ -71,14 +86,19 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - `skipQualityGates` defaults to `false` when not set.
   - `skipQualityGates: true` parses correctly.
   - `skipQualityGates` appears in allowed keys (no unknown-key warning).
-- [ ] Add integration test (or handler-level unit test) for the quality handler:
+- [ ] Add handler-level unit test for the quality handler:
   - Empty gates + `skipQualityGates: false` → output has no `skipped` field, stderr has warning.
   - Empty gates + `skipQualityGates: true` → output has `skipped: true`, no stderr warning.
   - Non-empty gates → normal execution (no `skipped` field).
+- [ ] Add integration test in `test/integration/commands/` for `5x quality run` with no gates configured:
+  - Create a temp repo with a `5x.toml` that has no `qualityGates` and `skipQualityGates = false`.
+  - Spawn `5x quality run`, assert stderr contains the warning message and stdout JSON has `passed: true` without `skipped`.
+  - Repeat with `skipQualityGates = true`, assert no stderr warning and stdout JSON has `skipped: true`.
+- [ ] Update config reference docs to document `skipQualityGates` key: type (boolean), default (`false`), behavior when `true` (silent skip with `skipped: true` output), and interaction with empty `qualityGates`.
 
 ## Phase 4: Protocol Validate Author Checklist Gate
 
-**Completion gate:** `5x protocol validate author` with `result: "complete"` checks plan phase checklist. Emits `PHASE_CHECKLIST_INCOMPLETE` error when phase is not done. `--no-phase-checklist-validate` suppresses the check.
+**Completion gate:** `5x protocol validate author` with `result: "complete"` checks plan phase checklist. Emits `PHASE_CHECKLIST_INCOMPLETE` error when phase is not done. `--no-phase-checklist-validate` suppresses the check. Explicit `--plan`/`--phase` with invalid targets fail with a validation error (fail-closed).
 
 - [ ] Add CLI args to `authorCmd` in `src/commands/protocol.ts` (~line 39):
   - `plan: { type: "string", description: "Path to plan file for checklist validation" }` (optional).
@@ -87,9 +107,10 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 - [ ] Add `plan?: string` and `phaseChecklistValidate?: boolean` to `ProtocolValidateParams` in `src/commands/protocol.handler.ts` (~line 24).
 - [ ] Implement checklist gate logic in `protocolValidate()`, after `validateStructuredOutputOrThrow` returns (line ~127) and before `outputSuccess()` (line ~159):
   - Only for `role === "author"` and `validated.result === "complete"` and `params.phaseChecklistValidate !== false`.
-  - Resolve plan path: try `params.plan` first. If not provided and `params.run` is set, use `resolveRunExecutionContext` to get the plan path (reuse existing DB/control-plane infrastructure from the handler). If neither available, skip silently.
-  - If plan path and `params.phase` are both available: read the plan file, call `parsePlan()`, find the phase matching `params.phase`, check `phase.isComplete`. If `false`: `outputError("PHASE_CHECKLIST_INCOMPLETE", "Phase ${phase} checklist is not complete. Mark all items [x] before returning result: complete.")`.
-  - If plan file doesn't exist or phase not found: skip silently (graceful degradation).
+  - Resolve plan path: try `params.plan` first. If not provided and `params.run` is set, use `resolveRunExecutionContext` to get the plan path (reuse existing DB/control-plane infrastructure from the handler). If neither available, skip silently (auto-discovery best-effort).
+  - **Fail-closed for explicit inputs:** If `params.plan` was explicitly provided but the file does not exist, emit `outputError("PLAN_NOT_FOUND", "Plan file not found: ${params.plan}")` — do not skip. If `params.phase` was explicitly provided but the phase is not found in the parsed plan, emit `outputError("PHASE_NOT_FOUND", "Phase '${params.phase}' not found in plan: ${params.plan}")` — do not skip.
+  - **Fail-open for auto-discovery only:** If the plan path was derived from `resolveRunExecutionContext` (not explicit `--plan`) and the file doesn't exist or the phase isn't found, skip silently (graceful degradation for best-effort path).
+  - If plan path and phase are both resolved: read the plan file, call `parsePlan()`, find the phase matching `params.phase`, check `phase.isComplete`. If `false`: `outputError("PHASE_CHECKLIST_INCOMPLETE", "Phase ${phase} checklist is not complete. Mark all items [x] before returning result: complete.")`.
 - [ ] Add unit tests in `test/unit/commands/protocol-validate.test.ts`:
   - Author `result: "complete"` with `--plan` pointing to a plan where phase is incomplete → `PHASE_CHECKLIST_INCOMPLETE` error.
   - Author `result: "complete"` with `--plan` pointing to a plan where phase is complete → success.
@@ -97,7 +118,14 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - Author `result: "needs_human"` → no checklist check regardless.
   - Reviewer role → no checklist check.
   - No `--plan` and no `--run` → checklist check skipped silently, validation succeeds.
-  - `--plan` with non-existent file → graceful skip, validation succeeds.
+  - `--plan` with non-existent file → `PLAN_NOT_FOUND` validation error (fail-closed).
+  - `--plan` with valid file but `--phase` not found in plan → `PHASE_NOT_FOUND` validation error (fail-closed).
+  - Auto-discovered plan path (via `--run`) where file doesn't exist → graceful skip, validation succeeds.
+- [ ] Add integration test in `test/integration/commands/` for `5x protocol validate author --run ...` with a mapped worktree plan:
+  - Set up a temp repo with a run record pointing to a plan file.
+  - Run `5x protocol validate author --run <id> --phase <phase>` with incomplete checklist.
+  - Assert `PHASE_CHECKLIST_INCOMPLETE` error in output.
+- [ ] Update protocol validate command reference docs to document `--plan` and `--no-phase-checklist-validate` flags, including fail-closed vs fail-open behavior.
 
 ## Phase 5: Skill Updates
 
@@ -123,20 +151,35 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 | `src/commands/protocol.ts` | Add `--plan` and `--phase-checklist-validate` args to `authorCmd` |
 | `src/commands/protocol.handler.ts` | Add `plan`/`phaseChecklistValidate` to params; implement checklist gate logic |
 | `src/skills/5x-phase-execution/SKILL.md` | Remove explicit `review_path` vars from Steps 3 & 5; extract auto-derived path; handle `skipped: true` in Step 2 |
-| `test/unit/config-layering.test.ts` | Tests for path resolution fix |
+| `docs/development/016-review-artifacts-and-phase-checks.md` (or equivalent) | Document `variable_defaults` frontmatter, `skipQualityGates` config key, `--plan`/`--no-phase-checklist-validate` flags |
+| `test/unit/config-layering.test.ts` | Tests for path resolution fix (including Zod defaults) |
 | `test/unit/config.test.ts` | Tests for `skipQualityGates` schema |
 | `test/unit/templates/loader.test.ts` | Tests for `variable_defaults` |
-| `test/unit/commands/protocol-validate.test.ts` | Tests for checklist gate |
+| `test/unit/commands/protocol-validate.test.ts` | Tests for checklist gate (fail-closed on explicit args) |
+| `test/integration/commands/run-init-subproject.test.ts` | Integration test for sub-project `5x run init` with relative paths |
+| `test/integration/commands/quality-run-noop.test.ts` | Integration test for `5x quality run` with empty gates and skip flag |
+| `test/integration/commands/protocol-validate-checklist.test.ts` | Integration test for `5x protocol validate author` with run-mapped plan |
 
 ## Tests
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/unit/config-layering.test.ts` | Sub-project relative paths resolve against config file dir, not root |
+| Unit | `test/unit/config-layering.test.ts` | Sub-project relative paths resolve against config file dir; Zod defaults resolve against workspace root; all paths absolute |
 | Unit | `test/unit/config.test.ts` | `skipQualityGates` schema parsing and allowlist |
 | Unit | `test/unit/templates/loader.test.ts` | `variable_defaults` parsing, default population, override behavior |
-| Unit | `test/unit/commands/protocol-validate.test.ts` | Checklist gate fires on incomplete phase, suppressed by flag, skipped gracefully |
-| Unit/Integration | quality handler test | `skipQualityGates` + empty gates produces correct output and warnings |
+| Unit | `test/unit/commands/protocol-validate.test.ts` | Checklist gate fires on incomplete phase; fail-closed on explicit `--plan`/`--phase` errors; suppressed by flag |
+| Unit | quality handler test | `skipQualityGates` + empty gates produces correct output and warnings |
+| Integration | `test/integration/commands/run-init-subproject.test.ts` | Sub-project `5x run init` resolves plan path correctly with layered config |
+| Integration | `test/integration/commands/quality-run-noop.test.ts` | `5x quality run` stderr warning with empty gates; silent skip with `skipQualityGates` |
+| Integration | `test/integration/commands/protocol-validate-checklist.test.ts` | `5x protocol validate author --run` with worktree-mapped plan and incomplete checklist |
+
+## Reference Documentation Updates
+
+The following inline doc updates ensure operators can discover new config keys and frontmatter behavior without reading source:
+
+- Phase 2: Add a `variable_defaults` section to the template authoring reference in `docs/development/016-review-artifacts-and-phase-checks.md` (or the relevant template docs). Document the YAML key, validation rules, and precedence (explicit vars > defaults > error).
+- Phase 3: Add `skipQualityGates` to the config reference section in `docs/development/016-review-artifacts-and-phase-checks.md` (or `docs/configuration.md` if one exists). Document the key, its default, and behavior with empty `qualityGates`.
+- Phase 4: Document `--plan` and `--no-phase-checklist-validate` flags in the protocol validate command reference.
 
 ## Not In Scope
 
@@ -147,6 +190,13 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 - Changes to reviewer protocol validation (checklist gate is author-only)
 
 ## Revision History
+
+### v1.1 (March 14, 2026) — Review feedback (019-orchestrator-improvements-review.md)
+
+- **P0.1 (checklist fail-closed):** Phase 4 now distinguishes explicit `--plan`/`--phase` args (fail-closed: `PLAN_NOT_FOUND` / `PHASE_NOT_FOUND` errors) from auto-discovery path (fail-open: silent skip). Added corresponding unit tests and design decision.
+- **P1.1 (path semantics contract):** Phase 1 now states an explicit contract: all `paths.*` values are absolute after `resolveLayeredConfig()`. Added a post-Zod-parse resolution step for default values against workspace root. Added caller audit checklist item. Added design decision documenting the contract.
+- **P1.2 (integration test coverage):** Added integration tests for the three user-visible workflows: sub-project `5x run init`, `5x quality run` with empty gates, and `5x protocol validate author --run` with worktree plan.
+- **P2 (reference docs):** Added Reference Documentation Updates section and per-phase checklist items for documenting `variable_defaults`, `skipQualityGates`, and `--plan`/`--no-phase-checklist-validate` flags.
 
 ### v1.0 (March 14, 2026) — Initial draft
 
