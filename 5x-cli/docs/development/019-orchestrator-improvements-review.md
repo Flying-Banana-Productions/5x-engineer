@@ -58,3 +58,16 @@ Recommendation: add explicit integration tests for the broken/fixed workflows, e
 **P1 recommended**
 - [ ] Clarify whether layered `paths.*` stay repo-relative by default or become fully normalized absolute paths, and align completion gates/tests with that choice.
 - [ ] Add command-level regression coverage for the user-visible flows this plan says it fixes.
+
+## Addendum (2026-03-14) — Iteration 2 assessment
+
+### What's Addressed
+
+- Prior P0.1 is addressed: Phase 4 now distinguishes explicit `--plan` / `--phase` inputs (fail closed) from best-effort auto-discovery, and the planned tests cover both paths.
+- Prior P1.2 is addressed: the plan now adds command-level integration coverage for sub-project `run init`, empty-gate `quality run`, and run-scoped `protocol validate author`.
+- The doc-update gap is addressed: the plan now calls out reference updates for `variable_defaults`, `skipQualityGates`, and the new protocol-validate flags.
+
+### Remaining Concerns
+
+- Phase 1 still does not fully close prior P1.1. The revised text says the contract is "all `paths.*` absolute," but the implementation checklist only changes `resolveLayeredConfig()`, while the same phase also claims non-layered config should now return absolute paths. That leaves `loadConfig()` callers, existing review-path docs, and template-render expectations split across two path contracts. Pick one contract and apply it consistently: either extend normalization to all config-loading paths and update the existing relative-path docs/tests, or explicitly scope the new contract to layered config only and remove the non-layered assertions. **Action:** `human_required`
+- Phase 3 still proposes a handler-level unit test that asserts stderr warning behavior for `runQuality()`. That conflicts with the repo's test-tier rules, which reserve stdout/stderr assertions for integration tests unless the handler exposes an injected warning sink. Recast that coverage as integration-only or add an injectable warning surface before claiming unit coverage. **Action:** `auto_fix`
