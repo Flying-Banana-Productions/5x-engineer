@@ -276,7 +276,7 @@ skipQualityGates = true   # Intentionally skip quality gates (silent)
 | `false` (default)  | empty `[]`     | Warning on stderr: "no quality gates configured…"; output: `{ passed: true, results: [] }` |
 | `true`             | empty `[]`     | Silent; output: `{ passed: true, results: [], skipped: true }` |
 | `false`            | non-empty      | Normal gate execution |
-| `true`             | non-empty      | Gates skipped; output: `{ passed: true, results: [], skipped: true }` |
+| `true`             | non-empty      | Normal gate execution (non-empty gates always run) |
 
 - **Type:** boolean
 - **Default:** `false`

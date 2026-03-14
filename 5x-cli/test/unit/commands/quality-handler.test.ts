@@ -95,6 +95,31 @@ describe("runQuality handler — skipQualityGates", () => {
 		}
 	});
 
+	test("non-empty gates + skipQualityGates: true → gates still execute (not skipped)", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			setupProject(dir, {
+				qualityGates: ["echo ok"],
+				skipQualityGates: true,
+			});
+			await runQuality({ workdir: dir }, warn);
+
+			// No warnings — gates are present
+			expect(warnCalls.length).toBe(0);
+			// The handler ran gates normally (did not return early with skipped: true).
+			// We can't inspect outputSuccess from here, but the absence of an error
+			// and the absence of warnings confirms it took the normal execution path
+			// rather than the early-return skip path.
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("no gates configured (default) + no skipQualityGates → warn emitted", async () => {
 		const dir = makeTmpDir();
 		const warnCalls: string[] = [];

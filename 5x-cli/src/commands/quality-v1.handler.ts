@@ -177,8 +177,8 @@ export async function runQuality(
 		skipQualityGates = ctx.config.skipQualityGates;
 	}
 
-	if (skipQualityGates) {
-		// Intentional skip — no warning, output includes skipped: true
+	if (skipQualityGates && qualityGates.length === 0) {
+		// Intentional skip of empty gates — no warning, output includes skipped: true
 		const qualityData = {
 			passed: true,
 			results: [] as unknown[],
