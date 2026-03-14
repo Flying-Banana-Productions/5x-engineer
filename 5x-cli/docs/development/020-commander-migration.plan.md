@@ -1,6 +1,6 @@
 # Migrate CLI Framework from citty to Commander.js
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -33,9 +33,13 @@ thin (~20-60 lines each) — the import cost is negligible.
 
 **`exitOverride` + `configureOutput` for JSON envelope preservation.** Commander
 normally calls `process.exit()` on errors. `exitOverride()` rethrows
-`CommanderError`, caught by bin.ts's error handler which routes through the
-existing JSON envelope system. `configureOutput()` sends framework errors to
-stderr. This preserves the machine-readable error contract.
+`CommanderError`, caught by bin.ts's error handler which maps Commander error
+codes to distinct envelope codes per the PRD contract
+(`commander.unknownCommand` → `UNKNOWN_COMMAND`,
+`commander.unknownOption` → `UNKNOWN_OPTION`, other parse errors →
+`INVALID_ARGS`) and routes through the existing JSON envelope system.
+`configureOutput()` sends framework errors to stderr. This preserves the
+machine-readable error contract.
 
 **Consolidate `--worktree`/`--worktree-path` into `--worktree [path]` with
 backward compatibility.** Commander's optional-value syntax natively supports
@@ -434,10 +438,20 @@ updated in Phase 4).
       if (err.code === "commander.helpDisplayed" || err.code === "commander.version") {
         process.exit(0);
       }
+      // Map Commander error codes to PRD-specified envelope codes:
+      //   commander.unknownCommand  → UNKNOWN_COMMAND
+      //   commander.unknownOption   → UNKNOWN_OPTION
+      //   all other parse errors    → INVALID_ARGS
+      const code =
+        err.code === "commander.unknownCommand"
+          ? "UNKNOWN_COMMAND"
+          : err.code === "commander.unknownOption"
+            ? "UNKNOWN_OPTION"
+            : "INVALID_ARGS";
       const envelope = {
         ok: false as const,
         error: {
-          code: "INVALID_ARGS",
+          code,
           message: err.message,
         },
       };
@@ -470,7 +484,8 @@ updated in Phase 4).
 - [ ] Verify `bun run src/bin.ts run init --plan /nonexistent` produces JSON
   error envelope (CliError path works)
 - [ ] Verify `bun run src/bin.ts run complet` produces "Did you mean init?"
-  or similar suggestion (CommanderError path works)
+  or similar suggestion (CommanderError path works) with `UNKNOWN_COMMAND`
+  error code in the JSON envelope
 - [ ] Verify `--pretty` works at any argv position:
   - `bun run src/bin.ts --pretty run init --plan /nonexistent` → formatted JSON
   - `bun run src/bin.ts run init --plan /nonexistent --pretty` → formatted JSON
@@ -531,12 +546,17 @@ Files likely needing updates (based on codebase analysis):
 
 ### Phase 4c: Add commander-specific integration tests
 
-- [ ] Add test: unknown command suggestion — `5x run int` produces stderr
-  containing "Did you mean" and exit code 1 with JSON error envelope
-- [ ] Add test: choice validation — `5x run complete -r abc -s invalid`
-  produces error mentioning "Allowed choices"
-- [ ] Add test: required option — `5x run init` (no `--plan`) produces error
-  mentioning "required option"
+- [ ] Add test: unknown command → `UNKNOWN_COMMAND` — `5x run int` produces
+  JSON error envelope with `code: "UNKNOWN_COMMAND"`, stderr containing
+  "Did you mean", and exit code 1
+- [ ] Add test: unknown option → `UNKNOWN_OPTION` — `5x run init --bogus`
+  produces JSON error envelope with `code: "UNKNOWN_OPTION"` and exit code 1
+- [ ] Add test: choice validation → `INVALID_ARGS` — `5x run complete -r abc
+  -s invalid` produces error envelope with `code: "INVALID_ARGS"` mentioning
+  "Allowed choices"
+- [ ] Add test: required option → `INVALID_ARGS` — `5x run init` (no
+  `--plan`) produces error envelope with `code: "INVALID_ARGS"` mentioning
+  "required option"
 - [ ] Add test: `--worktree [path]` consolidation — both `5x run init -p
   plan.md -w` and `5x run init -p plan.md -w /tmp/wt` work correctly
 - [ ] Add test: `--worktree-path` backward compatibility — `5x run init -p
@@ -566,16 +586,31 @@ must not regress stdin-priority or envelope-ingestion behavior.
 ## Phase 5: Help Content and Polish
 
 **Completion gate:** `5x --help`, `5x run --help`, `5x run init --help`,
-`5x protocol validate author --help` all produce the documented help
-content from the PRD. Short flags work for all assigned commands.
+`5x protocol validate author --help` all produce correct help content.
+Help examples are audited against actual CLI behavior (not copied verbatim
+from the PRD, which contains stale examples). Short flags work for all
+assigned commands.
 
 - [ ] Add `.summary()` and `.description()` to every command in all 13
-  adapter files, using the content from PRD Section 2.2. Each command gets:
+  adapter files, using the content from PRD Section 2.2 as a starting point.
+  Each command gets:
   - `.summary()` — one-line shown in parent's subcommand list
   - `.description()` — longer explanation shown in own `--help`
 
+- [ ] Audit all PRD Section 2.2 help examples against actual current CLI
+  behavior before copying them into commander help definitions. The PRD
+  contains stale examples that do not match the implemented CLI surface.
+  Known corrections needed:
+  - `harness install`: PRD example `$ 5x harness install opencode` omits
+    the required `--scope` flag. The `opencode` harness supports multiple
+    scopes (`project`, `user`), so `--scope` is mandatory. Correct to:
+    `$ 5x harness install opencode -s project`
+  - For each command, verify that all example flags/args match the current
+    option definitions and handler requirements. Cross-reference adapter
+    files and handler param interfaces.
+
 - [ ] Add `.addHelpText("after", ...)` example blocks to all leaf commands
-  using the content from PRD Section 2.2. Format:
+  using the audited/corrected content from PRD Section 2.2. Format:
   ```ts
   .addHelpText("after", `
   Examples:
@@ -598,8 +633,8 @@ content from the PRD. Short flags work for all assigned commands.
     )
     .addHelpText("afterAll",
       "\nMost commands output JSON envelopes ({ ok, data } or { ok, error }) to stdout.\n" +
-      "Exceptions: init and upgrade emit human-readable text; run watch streams\n" +
-      "NDJSON or human-readable output.\n" +
+      "Exceptions: init, upgrade, and harness install emit human-readable text;\n" +
+      "run watch streams NDJSON or human-readable output.\n" +
       "Use --pretty for formatted JSON output, --no-pretty for compact.\n" +
       "Exit codes: 0=success, 1=error, 2=not found, 3=non-interactive,\n" +
       "4=locked, 5=dirty, 6=limit, 7=invalid output.\n\n" +
@@ -714,6 +749,28 @@ content from the PRD. Short flags work for all assigned commands.
 - Modifying unit test assertions for handler behavior
 
 ## Revision History
+
+### v1.2 (March 14, 2026) — Address v1.1 follow-up review
+
+Review addendum: `docs/development/020-commander-migration.review.md` (v1.1 follow-up)
+
+**R6 — Phase 5 stale PRD help examples:** Added audit step requiring all
+PRD Section 2.2 help examples to be verified against actual CLI behavior
+before copying into commander help. Documented the known stale example
+(`harness install opencode` missing required `--scope`). Updated Phase 5
+completion gate to reference audited content, not verbatim PRD.
+
+**R7 — Incomplete non-JSON stdout exceptions:** Added `harness install` to
+the help footer's list of commands that emit human-readable stdout instead
+of JSON envelopes. The `printInstallSummary()` function writes directly to
+stdout via `console.log`.
+
+**R8 — CommanderError code mapping:** Updated Phase 3 `bin.ts` sketch to
+map Commander error codes to distinct PRD-specified envelope codes:
+`commander.unknownCommand` → `UNKNOWN_COMMAND`,
+`commander.unknownOption` → `UNKNOWN_OPTION`, all other parse errors →
+`INVALID_ARGS`. Added corresponding integration tests in Phase 4c for
+each error code path. Updated Phase 3 completion gate verification.
 
 ### v1.1 (March 14, 2026) — Address review feedback
 
