@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as tomlParse } from "@decimalturn/toml-patch";
+import { getDefaultTemplateRaw } from "../../../src/templates/loader.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -177,6 +178,82 @@ describe("5x upgrade", () => {
 						join(tmp, ".5x", "templates", "implementation-plan-template.md"),
 					),
 				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"auto-updates stale stock prompt templates with outdated frontmatter",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+
+				// Simulate a pre-existing .5x with stale prompt templates
+				const promptsDir = join(tmp, ".5x", "templates", "prompts");
+				mkdirSync(promptsDir, { recursive: true });
+
+				// Write stale version (same body, missing variable_defaults)
+				const bundled = getDefaultTemplateRaw("author-next-phase");
+				const stale = bundled.replace(
+					/variable_defaults:\n( {2}[^\n]+\n)*/g,
+					"",
+				);
+				writeFileSync(join(promptsDir, "author-next-phase.md"), stale);
+
+				const { stdout, exitCode } = await runUpgrade(tmp);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					"Updated .5x/templates/prompts/author-next-phase.md",
+				);
+
+				// File should now match the current bundled version
+				const updated = readFileSync(
+					join(promptsDir, "author-next-phase.md"),
+					"utf-8",
+				);
+				expect(updated).toContain("variable_defaults:");
+				expect(updated).toBe(bundled);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"warns about customized prompt templates that cannot be auto-upgraded",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+
+				const promptsDir = join(tmp, ".5x", "templates", "prompts");
+				mkdirSync(promptsDir, { recursive: true });
+
+				// Write a customized template (different body)
+				const customized =
+					'---\nname: author-next-phase\nversion: 1\nvariables: [plan_path, phase_number, user_notes]\nstep_name: "author:implement"\n---\nCUSTOM BODY {{plan_path}} {{phase_number}} {{user_notes}}';
+				writeFileSync(join(promptsDir, "author-next-phase.md"), customized);
+
+				const { stdout, exitCode } = await runUpgrade(tmp);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					"Warning: .5x/templates/prompts/author-next-phase.md has been customized",
+				);
+				expect(stdout).toContain("5x init --force");
+
+				// File should NOT be modified
+				const content = readFileSync(
+					join(promptsDir, "author-next-phase.md"),
+					"utf-8",
+				);
+				expect(content).toBe(customized);
 			} finally {
 				cleanupDir(tmp);
 			}
