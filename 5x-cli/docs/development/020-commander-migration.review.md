@@ -180,3 +180,25 @@ The plan specifies `.choices(["yes", "no"])` for `prompt confirm --default`, but
   "summary": "Review iteration 3 closes the earlier plan issues and leaves one remaining mechanical correction: the dependency classification for `@commander-js/extra-typings` must match its runtime usage. Once that is fixed, the plan is ready to execute."
 }
 ```
+
+## Addendum (2026-03-14) - review iteration 4
+
+### What's Addressed
+
+- R1-R9 are addressed in the current plan revision.
+- The plan now preserves the key CLI contracts called out in prior reviews: any-position `--pretty`, `--worktree-path` backward compatibility, distinct parse-error envelopes, pipe-composability coverage, and corrected help/output-contract guidance.
+- Phase sequencing, file touch points, and completion gates are specific enough to execute without reopening the earlier design questions.
+
+### Remaining Concerns
+
+- No blocking or follow-up issues found in this pass.
+
+## Structured Assessment (Addendum)
+
+```json
+{
+  "readiness": "ready",
+  "items": [],
+  "summary": "R1-R9 are resolved and the plan is ready for implementation as written. Scope, compatibility decisions, error-contract handling, and non-regression coverage are now sufficiently specified for execution."
+}
+```
