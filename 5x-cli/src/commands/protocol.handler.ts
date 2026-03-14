@@ -8,11 +8,16 @@
  * can validate and record author/reviewer results without invoking a provider.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { getDb } from "../db/connection.js";
+import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
+import { parsePlan } from "../parsers/plan.js";
 import { validateRunId } from "../run-id.js";
+import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
+import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -30,6 +35,8 @@ export interface ProtocolValidateParams {
 	step?: string;
 	phase?: string;
 	iteration?: number;
+	plan?: string;
+	phaseChecklistValidate?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +91,110 @@ function extractResult(parsed: unknown): unknown {
 		// This covers edge cases like error envelopes accidentally passed
 	}
 	return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Checklist gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that the plan's phase checklist is fully checked off.
+ *
+ * Plan path resolution:
+ * - If --plan is provided but file doesn't exist → PLAN_NOT_FOUND (fail-closed).
+ * - If plan is auto-discovered via --run but can't be resolved → skip silently (fail-open).
+ *
+ * Phase lookup (once a plan IS resolved):
+ * - If --phase is provided but not found in the parsed plan → PHASE_NOT_FOUND (fail-closed),
+ *   regardless of how the plan was resolved. --phase is always explicit input.
+ */
+function validatePhaseChecklist(params: ProtocolValidateParams): void {
+	const explicitPlan = !!params.plan;
+	let planPath: string | undefined = params.plan
+		? resolve(params.plan)
+		: undefined;
+
+	// Auto-discover plan path from run context if --plan not provided
+	if (!planPath && params.run) {
+		try {
+			const controlPlane = resolveControlPlaneRoot();
+			if (controlPlane.mode !== "none") {
+				const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
+				const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+				try {
+					runMigrations(db);
+				} catch {
+					// DB migration error — skip checklist gate gracefully
+					return;
+				}
+				const ctxResult = resolveRunExecutionContext(db, params.run, {
+					controlPlaneRoot: controlPlane.controlPlaneRoot,
+				});
+				if (ctxResult.ok) {
+					planPath = ctxResult.context.effectivePlanPath;
+				}
+				// If ctxResult not ok, skip silently (fail-open for auto-discovery)
+			}
+		} catch {
+			// Auto-discovery failed — skip silently
+			return;
+		}
+	}
+
+	// No plan path resolved — skip silently
+	if (!planPath) return;
+
+	// Check file exists
+	if (!existsSync(planPath)) {
+		if (explicitPlan) {
+			outputError("PLAN_NOT_FOUND", `Plan file not found: ${params.plan}`);
+		}
+		// Auto-discovered path doesn't exist — skip silently
+		return;
+	}
+
+	// Parse the plan
+	let planContent: string;
+	try {
+		planContent = readFileSync(planPath, "utf-8");
+	} catch {
+		if (explicitPlan) {
+			outputError("PLAN_NOT_FOUND", `Failed to read plan file: ${params.plan}`);
+		}
+		return;
+	}
+
+	const plan = parsePlan(planContent);
+
+	// If no --phase provided, skip checklist gate (can't determine which phase)
+	if (!params.phase) return;
+
+	// Find the matching phase
+	const phase = plan.phases.find(
+		(p) =>
+			p.title === params.phase ||
+			p.heading === params.phase ||
+			`Phase ${p.number}` === params.phase ||
+			`Phase ${p.number}: ${p.title}` === params.phase,
+	);
+
+	if (!phase) {
+		// Fail-closed: --phase is always explicit input (no auto-discovery for
+		// phase). Once a plan is resolved (by any means), a missing phase must
+		// error so orchestrators don't silently skip validation.
+		outputError(
+			"PHASE_NOT_FOUND",
+			`Phase '${params.phase}' not found in plan: ${planPath}`,
+		);
+	}
+
+	// Check if phase is complete
+	if (!phase.isComplete) {
+		outputError(
+			"PHASE_CHECKLIST_INCOMPLETE",
+			`Phase ${params.phase} checklist is not complete. Mark all items [x] before returning result: complete.`,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +262,24 @@ export async function protocolValidate(
 			);
 		}
 		recordStepName = params.step;
+	}
+
+	// -----------------------------------------------------------------------
+	// Checklist gate: verify phase completion in plan (author-only)
+	//
+	// Only fires when role === "author", result === "complete", and
+	// phaseChecklistValidate is not explicitly disabled. Resolves the plan
+	// path from --plan (fail-closed) or --run auto-discovery (fail-open).
+	// -----------------------------------------------------------------------
+	if (
+		role === "author" &&
+		validated &&
+		typeof validated === "object" &&
+		"result" in validated &&
+		(validated as Record<string, unknown>).result === "complete" &&
+		params.phaseChecklistValidate !== false
+	) {
+		validatePhaseChecklist(params);
 	}
 
 	// -----------------------------------------------------------------------

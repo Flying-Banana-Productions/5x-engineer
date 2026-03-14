@@ -31,7 +31,8 @@ describe("config", () => {
 			expect(config.worktree.postCreate).toBeUndefined();
 			expect(config.maxReviewIterations).toBe(5);
 			expect(config.maxAutoIterations).toBe(10);
-			expect(config.paths.plans).toBe("docs/development");
+			// paths.* values are always absolute after config loading
+			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -78,7 +79,8 @@ describe("config", () => {
 			const { config } = await loadConfig(tmp);
 			expect(config.maxReviewIterations).toBe(10);
 			expect(config.maxQualityRetries).toBe(3); // default
-			expect(config.paths.plans).toBe("docs/development"); // default
+			// paths.* default resolved to absolute against projectRoot
+			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -350,9 +352,10 @@ describe("TOML config", () => {
 			expect(config.author.timeout).toBe(300);
 			expect(config.reviewer.provider).toBe("opencode");
 			expect(config.worktree.postCreate).toBe("bun install");
-			expect(config.paths.plans).toBe("custom/plans");
-			expect(config.paths.templates.plan).toBe("custom/plan.md");
-			expect(config.db.path).toBe("custom/5x.db");
+			// paths.* values are always absolute after config loading
+			expect(config.paths.plans).toBe(join(tmp, "custom/plans"));
+			expect(config.paths.templates.plan).toBe(join(tmp, "custom/plan.md"));
+			expect(config.db.path).toBe("custom/5x.db"); // db.path is NOT in paths.*, not normalized
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -367,6 +370,90 @@ describe("TOML config", () => {
 			const { config, configPath } = await loadConfig(child);
 			expect(configPath).toBe(join(tmp, "5x.toml"));
 			expect(config.maxReviewIterations).toBe(42);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadConfig() path normalization (Phase 1, 019-orchestrator-improvements)
+// ---------------------------------------------------------------------------
+
+describe("loadConfig path normalization", () => {
+	test("config with relative paths.plans returns absolute path resolved against config file's directory", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[paths]\nplans = "my-plans"\n`);
+			const { config } = await loadConfig(tmp);
+			expect(config.paths.plans).toBe(join(tmp, "my-plans"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("no config file (Zod defaults only) returns absolute paths resolved against projectRoot", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { config } = await loadConfig(tmp);
+			// All Zod default paths resolved against projectRoot
+			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
+			expect(config.paths.reviews).toBe(join(tmp, "docs/development/reviews"));
+			expect(config.paths.archive).toBe(join(tmp, "docs/archive"));
+			expect(config.paths.templates.plan).toBe(
+				join(tmp, "docs/_implementation_plan_template.md"),
+			);
+			expect(config.paths.templates.review).toBe(
+				join(tmp, "docs/development/reviews/_review_template.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("already-absolute paths pass through unchanged", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nplans = "/opt/custom-plans"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.paths.plans).toBe("/opt/custom-plans");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("nested paths.templates.plan relative value resolves correctly", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths.templates]\nplan = "templates/my-plan.md"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.paths.templates.plan).toBe(
+				join(tmp, "templates/my-plan.md"),
+			);
+			// Review template should also be absolute (Zod default)
+			expect(config.paths.templates.review).toBe(
+				join(tmp, "docs/development/reviews/_review_template.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("config found in parent directory resolves paths against parent dir", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[paths]\nplans = "docs/plans"\n`);
+			const child = join(tmp, "a", "b");
+			mkdirSync(child, { recursive: true });
+			const { config } = await loadConfig(child);
+			// Paths resolved against the config file's directory (parent), not child
+			expect(config.paths.plans).toBe(join(tmp, "docs/plans"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

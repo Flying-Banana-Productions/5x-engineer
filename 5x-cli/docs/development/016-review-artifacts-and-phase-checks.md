@@ -203,6 +203,148 @@ skills no longer mention `5x run watch`.
 | Integration | `test/integration/commands/template-render.test.ts` | Generated `review_path` defaults are correct for plan-review and phase-review templates |
 | Integration | `test/integration/commands/invoke.test.ts` | `invoke` inherits generated `review_path` defaults and still honors explicit overrides |
 
+## Config Path Resolution Contract
+
+All `paths.*` values in `5x.toml` are resolved to **absolute paths** by the CLI
+after config loading, regardless of whether they were written as relative or
+absolute in the config file:
+
+- **Relative paths** in a config file are resolved against the config file's
+  directory (e.g., `paths.plans = "docs/dev"` in
+  `packages/foo/5x.toml` resolves to `<repo>/packages/foo/docs/dev`).
+- **Zod default values** (when no explicit path is configured) are resolved
+  against the workspace/project root.
+- **Absolute paths** pass through unchanged.
+- This applies to all config-loading entry points: `loadConfig()`,
+  `resolveLayeredConfig()`, and any function that returns a `FiveXConfig`.
+
+Callers always receive absolute `paths.*` values and should never need to resolve
+paths themselves. This contract was introduced in
+019-orchestrator-improvements Phase 1.
+
+## Template Variable Defaults
+
+Templates can declare default values for variables using the `variable_defaults`
+key in YAML frontmatter. This allows templates to render without explicit
+`--var` for variables that have sensible defaults (e.g., `user_notes: ""`).
+
+### Syntax
+
+```yaml
+---
+name: my-template
+version: 1
+variables: [required_var, optional_var]
+variable_defaults:
+  optional_var: ""
+---
+```
+
+### Validation Rules
+
+- `variable_defaults` must be a plain YAML mapping (not an array or scalar).
+- Every key in `variable_defaults` must exist in the `variables` list.
+- All values must be strings.
+- Invalid keys or non-string values produce a parse-time error.
+
+### Precedence
+
+1. **Explicit `--var`** — always wins over defaults.
+2. **`variable_defaults` value** — used when the variable is not provided
+   explicitly.
+3. **Missing-variable error** — raised for variables with no explicit value
+   and no default.
+
+Templates without `variable_defaults` behave exactly as before (all variables
+are required). This feature was introduced in 019-orchestrator-improvements
+Phase 2.
+
+## Quality Gate Skip Configuration
+
+The `skipQualityGates` config key controls behavior when no quality gates are
+configured:
+
+```toml
+# 5x.toml
+skipQualityGates = true   # Intentionally skip quality gates (silent)
+```
+
+### Behavior
+
+| `skipQualityGates` | `qualityGates` | Result |
+|--------------------|----------------|--------|
+| `false` (default)  | empty `[]`     | Warning on stderr: "no quality gates configured…"; output: `{ passed: true, results: [] }` |
+| `true`             | empty `[]`     | Silent; output: `{ passed: true, results: [], skipped: true }` |
+| `false`            | non-empty      | Normal gate execution |
+| `true`             | non-empty      | Normal gate execution (non-empty gates always run) |
+
+- **Type:** boolean
+- **Default:** `false`
+- **`skipped: true`** in the output JSON allows downstream consumers (e.g.,
+  the phase-execution skill) to distinguish intentional skips from actual
+  gate results.
+
+This feature was introduced in 019-orchestrator-improvements Phase 3.
+
+## Protocol Validate Checklist Gate
+
+`5x protocol validate author` can validate that a plan's phase checklist is
+fully checked off before accepting a `result: "complete"` status. This prevents
+authors from reporting completion without updating the plan's checklist items.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--plan <path>` | string | (none) | Path to the plan file for checklist validation |
+| `--phase <name>` | string | (none) | Phase identifier to check (e.g., `"Phase 1: Setup"`) |
+| `--no-phase-checklist-validate` | boolean | `true` | Suppress checklist validation |
+
+### Behavior
+
+The checklist gate fires only when **all** conditions are met:
+1. Role is `author`
+2. Validated result is `"complete"`
+3. `--no-phase-checklist-validate` was **not** passed
+
+### Plan Resolution
+
+- **Explicit `--plan`:** Uses the provided path. File not found produces
+  `PLAN_NOT_FOUND` error (fail-closed). Phase not found in plan produces
+  `PHASE_NOT_FOUND` error (fail-closed).
+- **Auto-discovery via `--run`:** Resolves the plan path from the run's
+  execution context. If the file doesn't exist or the phase isn't found,
+  the check is skipped silently (fail-open). This allows graceful degradation
+  when run context is incomplete.
+- **Neither `--plan` nor `--run`:** Checklist check is skipped silently.
+
+### Error Codes
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `PHASE_CHECKLIST_INCOMPLETE` | 8 | Phase checklist has unchecked items |
+| `PHASE_NOT_FOUND` | 8 | Phase not found in the plan (explicit `--plan` only) |
+| `PLAN_NOT_FOUND` | 2 | Plan file not found (explicit `--plan` only) |
+
+### Examples
+
+```bash
+# Validate with explicit plan and phase
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --plan docs/dev/my-plan.md --phase "Phase 1: Setup"
+
+# Suppress checklist validation
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --plan docs/dev/my-plan.md --phase "Phase 1" \
+  --no-phase-checklist-validate
+
+# Auto-discover plan from run context
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --run run_abc --phase "Phase 2: Implementation"
+```
+
+This feature was introduced in 019-orchestrator-improvements Phase 4.
+
 ## Not In Scope
 
 - Adding new `postCreate` guardrails or changing worktree initialization policy

@@ -751,6 +751,172 @@ describe("setTemplateOverrideDir — disk-first loading", () => {
 	});
 });
 
+describe("variable_defaults", () => {
+	test("parseTemplate parses variable_defaults and populates metadata.variableDefaults", () => {
+		const raw = [
+			"---",
+			"name: test-defaults",
+			"version: 1",
+			"variables:",
+			"  - required_var",
+			"  - optional_var",
+			"variable_defaults:",
+			'  optional_var: "fallback"',
+			"---",
+			"Body {{required_var}} {{optional_var}}",
+		].join("\n");
+
+		const result = parseTemplate(raw, "test-defaults");
+		expect(result.metadata.variableDefaults).toEqual({
+			optional_var: "fallback",
+		});
+		expect(result.metadata.variables).toContain("optional_var");
+		expect(result.metadata.variables).toContain("required_var");
+	});
+
+	test("renderTemplate for author-next-phase renders without providing user_notes (uses default empty string)", () => {
+		// Clear cache to pick up updated template
+		setTemplateOverrideDir(null);
+		const result = renderTemplate("author-next-phase", {
+			plan_path: "docs/development/001-impl-cli.md",
+			phase_number: "3",
+			// user_notes NOT provided — should use default ""
+		});
+		expect(result.prompt).toContain("phase 3");
+		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.name).toBe("author-next-phase");
+	});
+
+	test("explicit user_notes overrides the default", () => {
+		setTemplateOverrideDir(null);
+		const result = renderTemplate("author-next-phase", {
+			plan_path: "docs/development/001-impl-cli.md",
+			phase_number: "3",
+			user_notes: "custom notes",
+		});
+		expect(result.prompt).toContain("custom notes");
+	});
+
+	test("variable_defaults key referencing a variable not in variables list throws", () => {
+		const raw = [
+			"---",
+			"name: test-bad-default",
+			"version: 1",
+			"variables:",
+			"  - some_var",
+			"variable_defaults:",
+			'  unknown_var: "oops"',
+			"---",
+			"Body {{some_var}}",
+		].join("\n");
+
+		expect(() => parseTemplate(raw, "test-bad-default")).toThrow(
+			/key "unknown_var" is not declared in "variables" list/,
+		);
+	});
+
+	test("variable_defaults with non-string value throws", () => {
+		const raw = [
+			"---",
+			"name: test-nonstring",
+			"version: 1",
+			"variables:",
+			"  - some_var",
+			"variable_defaults:",
+			"  some_var: 42",
+			"---",
+			"Body {{some_var}}",
+		].join("\n");
+
+		expect(() => parseTemplate(raw, "test-nonstring")).toThrow(
+			/value for "some_var" must be a string, got number/,
+		);
+	});
+
+	test("templates without variable_defaults still work (backward compatible)", () => {
+		const raw = [
+			"---",
+			"name: test-no-defaults",
+			"version: 1",
+			"variables:",
+			"  - my_var",
+			"---",
+			"Body {{my_var}}",
+		].join("\n");
+
+		const result = parseTemplate(raw, "test-no-defaults");
+		expect(result.metadata.variableDefaults).toEqual({});
+	});
+
+	test("all bundled templates have valid variableDefaults metadata", () => {
+		const templates = listTemplates();
+		for (const t of templates) {
+			expect(t.variableDefaults).toBeDefined();
+			expect(typeof t.variableDefaults).toBe("object");
+		}
+	});
+
+	test("author-fix-quality renders without providing user_notes", () => {
+		setTemplateOverrideDir(null);
+		const result = renderTemplate("author-fix-quality", {
+			plan_path: "docs/development/001-impl-cli.md",
+			phase_number: "2",
+		});
+		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.prompt).toContain("Phase 2");
+	});
+
+	test("author-process-plan-review renders without providing user_notes", () => {
+		setTemplateOverrideDir(null);
+		const result = renderTemplate("author-process-plan-review", {
+			review_path: "docs/reviews/review.md",
+			plan_path: "docs/development/001-impl-cli.md",
+		});
+		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.prompt).toContain("review.md");
+	});
+
+	test("author-process-impl-review renders without providing user_notes", () => {
+		setTemplateOverrideDir(null);
+		const result = renderTemplate("author-process-impl-review", {
+			review_path: "docs/reviews/review.md",
+			plan_path: "docs/development/001-impl-cli.md",
+		});
+		expect(result.prompt).toContain("001-impl-cli.md");
+		expect(result.prompt).toContain("review.md");
+	});
+
+	test("missing non-defaulted variables still throw", () => {
+		setTemplateOverrideDir(null);
+		// author-next-phase has variable_defaults for user_notes only;
+		// plan_path and phase_number are still required
+		expect(() =>
+			renderTemplate("author-next-phase", {
+				plan_path: "docs/plan.md",
+				// missing phase_number (no default)
+			}),
+		).toThrow(/missing required variables.*phase_number/);
+	});
+
+	test("variable_defaults must be a plain object, not an array", () => {
+		const raw = [
+			"---",
+			"name: test-array-defaults",
+			"version: 1",
+			"variables:",
+			"  - some_var",
+			"variable_defaults:",
+			"  - some_var",
+			"---",
+			"Body {{some_var}}",
+		].join("\n");
+
+		expect(() => parseTemplate(raw, "test-array-defaults")).toThrow(
+			/"variable_defaults" must be a plain object/,
+		);
+	});
+});
+
 describe("getDefaultTemplateRaw", () => {
 	test("returns raw content including frontmatter", () => {
 		const raw = getDefaultTemplateRaw("author-generate-plan");

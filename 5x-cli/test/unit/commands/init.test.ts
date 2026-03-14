@@ -17,6 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
+import { getDefaultTemplateRaw } from "../../../src/templates/loader.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -323,6 +324,206 @@ describe("ensureTemplateFiles", () => {
 			const second = ensureTemplateFiles(tmp, true);
 			expect(second.overwritten).toContain("implementation-plan-template.md");
 			expect(readFileSync(planPath, "utf-8")).not.toBe("CUSTOM");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// upgradePromptTemplates — smart template upgrade for `5x upgrade`
+// ---------------------------------------------------------------------------
+
+describe("upgradePromptTemplates", () => {
+	test("creates missing prompt templates", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const result = upgradePromptTemplates(tmp, false);
+			// All templates should be created (none existed)
+			expect(result.created.length).toBeGreaterThan(0);
+			expect(result.updated).toHaveLength(0);
+			expect(result.skipped).toHaveLength(0);
+			expect(result.customized).toHaveLength(0);
+
+			// Verify files exist on disk
+			for (const name of result.created) {
+				expect(existsSync(join(tmp, ".5x", "templates", "prompts", name))).toBe(
+					true,
+				);
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips prompt templates that match the current bundled version", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			// First run creates all templates
+			upgradePromptTemplates(tmp, false);
+
+			// Second run should skip all (already up to date)
+			const result = upgradePromptTemplates(tmp, false);
+			expect(result.created).toHaveLength(0);
+			expect(result.updated).toHaveLength(0);
+			expect(result.skipped.length).toBeGreaterThan(0);
+			expect(result.customized).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("auto-updates stale stock templates with outdated frontmatter", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			mkdirSync(promptsDir, { recursive: true });
+
+			// Simulate a stale scaffolded copy of author-next-phase:
+			// same body content but missing variable_defaults in frontmatter
+			const bundled = getDefaultTemplateRaw("author-next-phase");
+			// Strip variable_defaults lines from frontmatter to simulate old version
+			const staleContent = bundled.replace(
+				/variable_defaults:\n( {2}[^\n]+\n)*/g,
+				"",
+			);
+			// Verify we actually changed something
+			expect(staleContent).not.toBe(bundled);
+			expect(staleContent).not.toContain("variable_defaults:");
+
+			writeFileSync(join(promptsDir, "author-next-phase.md"), staleContent);
+
+			const result = upgradePromptTemplates(tmp, false);
+			expect(result.updated).toContain("author-next-phase.md");
+			expect(result.customized).not.toContain("author-next-phase.md");
+
+			// Verify the file was updated to the current bundled version
+			const updatedContent = readFileSync(
+				join(promptsDir, "author-next-phase.md"),
+				"utf-8",
+			);
+			expect(updatedContent).toBe(bundled);
+			expect(updatedContent).toContain("variable_defaults:");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("warns about customized templates with modified body", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			mkdirSync(promptsDir, { recursive: true });
+
+			// Write a customized version with different body content
+			const customized = [
+				"---",
+				"name: author-next-phase",
+				"version: 1",
+				"variables: [plan_path, phase_number, user_notes]",
+				'step_name: "author:implement"',
+				"---",
+				"",
+				"CUSTOM BODY: implement {{plan_path}} phase {{phase_number}} {{user_notes}}",
+			].join("\n");
+			writeFileSync(join(promptsDir, "author-next-phase.md"), customized);
+
+			const result = upgradePromptTemplates(tmp, false);
+			expect(result.customized).toContain("author-next-phase.md");
+			expect(result.updated).not.toContain("author-next-phase.md");
+
+			// Verify the file was NOT modified
+			const diskContent = readFileSync(
+				join(promptsDir, "author-next-phase.md"),
+				"utf-8",
+			);
+			expect(diskContent).toBe(customized);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("force mode overwrites all templates including customized ones", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			mkdirSync(promptsDir, { recursive: true });
+
+			// Write a customized version
+			writeFileSync(
+				join(promptsDir, "author-next-phase.md"),
+				"---\nname: author-next-phase\nversion: 1\nvariables: [plan_path, phase_number, user_notes]\n---\nCUSTOM {{plan_path}} {{phase_number}} {{user_notes}}",
+			);
+
+			const result = upgradePromptTemplates(tmp, true);
+			expect(result.updated).toContain("author-next-phase.md");
+			expect(result.customized).toHaveLength(0);
+
+			// Verify it was overwritten with bundled version
+			const diskContent = readFileSync(
+				join(promptsDir, "author-next-phase.md"),
+				"utf-8",
+			);
+			const bundled = getDefaultTemplateRaw("author-next-phase");
+			expect(diskContent).toBe(bundled);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("handles mix of stale, customized, current, and missing templates", async () => {
+		const { upgradePromptTemplates } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			mkdirSync(promptsDir, { recursive: true });
+
+			// author-next-phase: stale (body matches, frontmatter outdated)
+			const bundledNextPhase = getDefaultTemplateRaw("author-next-phase");
+			const staleNextPhase = bundledNextPhase.replace(
+				/variable_defaults:\n( {2}[^\n]+\n)*/g,
+				"",
+			);
+			writeFileSync(join(promptsDir, "author-next-phase.md"), staleNextPhase);
+
+			// author-fix-quality: current (matches bundled exactly)
+			const bundledFixQuality = getDefaultTemplateRaw("author-fix-quality");
+			writeFileSync(
+				join(promptsDir, "author-fix-quality.md"),
+				bundledFixQuality,
+			);
+
+			// author-generate-plan: customized (different body)
+			writeFileSync(
+				join(promptsDir, "author-generate-plan.md"),
+				"---\nname: author-generate-plan\nversion: 1\nvariables: [prd_path, plan_path, plan_template_path]\n---\nMY CUSTOM PLAN PROMPT {{prd_path}} {{plan_path}} {{plan_template_path}}",
+			);
+
+			// Other templates: missing (will be created)
+
+			const result = upgradePromptTemplates(tmp, false);
+
+			expect(result.updated).toContain("author-next-phase.md");
+			expect(result.skipped).toContain("author-fix-quality.md");
+			expect(result.customized).toContain("author-generate-plan.md");
+			expect(result.created.length).toBeGreaterThan(0);
 		} finally {
 			cleanupDir(tmp);
 		}

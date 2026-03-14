@@ -964,6 +964,7 @@ describe("createProvider", () => {
 				reviewer: { provider: "opencode" },
 				opencode: {},
 				qualityGates: [],
+				skipQualityGates: false,
 				worktree: {},
 				paths: {
 					plans: "docs/development",
@@ -998,6 +999,7 @@ describe("createProvider", () => {
 			reviewer: { provider: "opencode" },
 			opencode: {},
 			qualityGates: [],
+			skipQualityGates: false,
 			worktree: {},
 			paths: {
 				plans: "docs/development",

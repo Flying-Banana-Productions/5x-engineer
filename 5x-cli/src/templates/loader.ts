@@ -30,6 +30,7 @@ export interface TemplateMetadata {
 	version: number;
 	variables: string[];
 	stepName: string | null; // Semantic step name for run recording; null if not declared
+	variableDefaults: Record<string, string>; // Default values for optional variables
 }
 
 /**
@@ -209,12 +210,42 @@ export function parseTemplate(
 		// For unknown template names, stepName stays null
 	}
 
+	// Parse optional variable_defaults from frontmatter
+	const variableDefaults: Record<string, string> = {};
+	const variablesList = fm.variables as string[];
+	if (fm.variable_defaults !== undefined) {
+		if (
+			!fm.variable_defaults ||
+			typeof fm.variable_defaults !== "object" ||
+			Array.isArray(fm.variable_defaults)
+		) {
+			throw new Error(
+				`Template "${templateName}" frontmatter "variable_defaults" must be a plain object.`,
+			);
+		}
+		const defaults = fm.variable_defaults as Record<string, unknown>;
+		for (const [key, value] of Object.entries(defaults)) {
+			if (!variablesList.includes(key)) {
+				throw new Error(
+					`Template "${templateName}" frontmatter "variable_defaults" key "${key}" is not declared in "variables" list.`,
+				);
+			}
+			if (typeof value !== "string") {
+				throw new Error(
+					`Template "${templateName}" frontmatter "variable_defaults" value for "${key}" must be a string, got ${typeof value}.`,
+				);
+			}
+			variableDefaults[key] = value;
+		}
+	}
+
 	return {
 		metadata: {
 			name: fm.name,
 			version: fm.version,
-			variables: fm.variables as string[],
+			variables: variablesList,
 			stepName,
+			variableDefaults,
 		},
 		body,
 	};
@@ -329,8 +360,8 @@ export function renderBody(
 /**
  * Render a template with variable substitution.
  *
- * - All variables declared in frontmatter must be provided (unless suffixed
- *   with `_optional` in the variables list — not yet implemented; all are required).
+ * - Variables declared in frontmatter must be provided unless they have a
+ *   default in `variable_defaults`. Explicit vars always override defaults.
  * - `{{variable_name}}` is replaced with the provided value.
  * - `\{{` in the template is treated as a literal `{{` (escape sequence).
  * - Any unresolved `{{...}}` after substitution is a hard error.
@@ -341,15 +372,23 @@ export function renderTemplate(
 ): RenderedTemplate {
 	const { metadata, body } = loadTemplate(name);
 
-	// Check all required variables are provided
-	const missing = metadata.variables.filter((v) => !(v in variables));
+	// Pre-populate absent variables from variable_defaults; explicit vars always win
+	const merged = { ...variables };
+	for (const [key, defaultValue] of Object.entries(metadata.variableDefaults)) {
+		if (!(key in merged)) {
+			merged[key] = defaultValue;
+		}
+	}
+
+	// Check all required variables are provided (after applying defaults)
+	const missing = metadata.variables.filter((v) => !(v in merged));
 	if (missing.length > 0) {
 		throw new Error(
 			`Template "${name}" is missing required variables: ${missing.join(", ")}`,
 		);
 	}
 
-	const prompt = renderBody(body, variables, metadata.variables, name);
+	const prompt = renderBody(body, merged, metadata.variables, name);
 
 	return {
 		name: metadata.name,

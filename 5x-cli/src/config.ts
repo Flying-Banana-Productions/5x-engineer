@@ -49,6 +49,7 @@ const FiveXConfigSchema = z
 		reviewer: AgentConfigSchema.default({}),
 		opencode: OpenCodeConfigSchema.default({}),
 		qualityGates: z.array(z.string()).default([]),
+		skipQualityGates: z.boolean().default(false),
 		worktree: WorktreeSchema.default({}),
 		paths: PathsSchema.default({}),
 		db: DbSchema.default({}),
@@ -184,6 +185,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value != null && !Array.isArray(value);
 }
 
+/**
+ * Resolve relative path strings in `raw.paths` against `baseDir`.
+ *
+ * Walks `raw.paths` and resolves each relative string value against `baseDir`
+ * using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and
+ * `paths.templates.review`. Already-absolute paths pass through unchanged.
+ * Non-path fields are untouched.
+ *
+ * Returns a shallow clone with only `paths` modified.
+ */
+function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
+	if (!isRecord(raw)) return raw;
+
+	const paths = raw.paths;
+	if (!isRecord(paths)) return raw;
+
+	const resolvedPaths: Record<string, unknown> = {};
+
+	for (const [key, value] of Object.entries(paths)) {
+		if (key === "templates" && isRecord(value)) {
+			// Handle nested templates object
+			const resolvedTemplates: Record<string, unknown> = {};
+			for (const [tKey, tValue] of Object.entries(value)) {
+				if (typeof tValue === "string") {
+					resolvedTemplates[tKey] = resolve(baseDir, tValue);
+				} else {
+					resolvedTemplates[tKey] = tValue;
+				}
+			}
+			resolvedPaths[key] = resolvedTemplates;
+		} else if (typeof value === "string") {
+			resolvedPaths[key] = resolve(baseDir, value);
+		} else {
+			resolvedPaths[key] = value;
+		}
+	}
+
+	return { ...raw, paths: resolvedPaths };
+}
+
+/**
+ * Resolve all `paths.*` values in a parsed FiveXConfig to absolute paths.
+ *
+ * Used after Zod parsing to ensure that default values (e.g., `"docs/development"`)
+ * are resolved against the given `baseDir` (typically workspace root or projectRoot).
+ * Already-absolute paths pass through unchanged.
+ */
+function resolveConfigPaths(config: FiveXConfig, baseDir: string): FiveXConfig {
+	return {
+		...config,
+		paths: {
+			plans: resolve(baseDir, config.paths.plans),
+			reviews: resolve(baseDir, config.paths.reviews),
+			...(config.paths.planReviews
+				? { planReviews: resolve(baseDir, config.paths.planReviews) }
+				: {}),
+			...(config.paths.runReviews
+				? { runReviews: resolve(baseDir, config.paths.runReviews) }
+				: {}),
+			archive: resolve(baseDir, config.paths.archive),
+			templates: {
+				plan: resolve(baseDir, config.paths.templates.plan),
+				review: resolve(baseDir, config.paths.templates.review),
+			},
+		},
+	};
+}
+
 function warnUnknownConfigKeys(
 	rawConfig: unknown,
 	configPath: string,
@@ -197,6 +266,7 @@ function warnUnknownConfigKeys(
 		"reviewer",
 		"opencode",
 		"qualityGates",
+		"skipQualityGates",
 		"worktree",
 		"paths",
 		"db",
@@ -355,8 +425,10 @@ export async function loadConfig(
 	const configPath = discoverConfigFile(projectRoot);
 
 	if (!configPath) {
+		// No config file — Zod defaults only. Resolve default paths against projectRoot.
+		const config = resolveConfigPaths(FiveXConfigSchema.parse({}), projectRoot);
 		return {
-			config: FiveXConfigSchema.parse({}),
+			config,
 			configPath: null,
 		};
 	}
@@ -380,6 +452,9 @@ export async function loadConfig(
 
 	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warn);
 
+	// Resolve raw paths against the config file's directory before Zod parsing
+	rawConfig = resolveRawConfigPaths(rawConfig, dirname(configPath));
+
 	const result = FiveXConfigSchema.safeParse(rawConfig);
 	if (!result.success) {
 		const issues = result.error.issues
@@ -391,7 +466,12 @@ export async function loadConfig(
 	// P0.1: Honor maxAutoIterations as alias for maxStepsPerRun when the
 	// user hasn't explicitly set maxStepsPerRun. This prevents existing configs
 	// from silently increasing run length/cost.
-	const config = applyDeprecatedAliases(result.data, rawConfig);
+	let config = applyDeprecatedAliases(result.data, rawConfig);
+
+	// Resolve any remaining Zod default paths against projectRoot.
+	// Explicit config values are already absolute (resolved against dirname(configPath) above).
+	// paths.* contract: all values are absolute after config loading.
+	config = resolveConfigPaths(config, projectRoot);
 
 	return {
 		config,
@@ -494,6 +574,8 @@ export async function resolveLayeredConfig(
 				: "Config must be a JS/MJS module exporting a default config object.";
 			throw new Error(`Failed to load ${rootConfigPath}: ${message}. ${hint}`);
 		}
+		// Resolve raw paths against the root config file's directory
+		rootRaw = resolveRawConfigPaths(rootRaw, dirname(rootConfigPath));
 	}
 
 	// Discover nearest config (only if contextDir is different from root)
@@ -529,6 +611,11 @@ export async function resolveLayeredConfig(
 						`Failed to load ${nearestConfigPath}: ${message}. ${hint}`,
 					);
 				}
+				// Resolve raw paths against the nearest config file's directory
+				nearestRaw = resolveRawConfigPaths(
+					nearestRaw,
+					dirname(nearestConfigPath),
+				);
 			}
 		}
 	}
@@ -579,7 +666,12 @@ export async function resolveLayeredConfig(
 		throw new Error(`Invalid config in ${source}:\n${issues}`);
 	}
 
-	const config = applyDeprecatedAliases(result.data, mergedRaw);
+	let config = applyDeprecatedAliases(result.data, mergedRaw);
+
+	// Resolve any remaining Zod default paths against the workspace root.
+	// Explicit config values are already absolute (resolved against their
+	// config file's directory above). paths.* contract: all values are absolute.
+	config = resolveConfigPaths(config, resolve(controlPlaneRoot));
 
 	return {
 		config,

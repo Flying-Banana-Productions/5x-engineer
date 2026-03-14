@@ -65,6 +65,22 @@ const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Git sets GIT_DIR, GIT_WORK_TREE, and GIT_INDEX_FILE when running hooks
+ * (e.g. pre-push). These leak into subprocesses and cause git commands in
+ * temp dirs to operate on the real repo's index, corrupting the working tree.
+ * Strip them so quality gate commands run with a clean git context.
+ */
+const GIT_ENV_VARS_TO_STRIP = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+
+function cleanEnvForSubprocess(): Record<string, string | undefined> {
+	const env = { ...process.env };
+	for (const key of GIT_ENV_VARS_TO_STRIP) {
+		delete env[key];
+	}
+	return env;
+}
+
 /** Slugify a command string for use in log filenames. */
 function commandSlug(command: string): string {
 	return command
@@ -230,7 +246,7 @@ export async function runSingleCommand(
 			cwd: workdir,
 			stdout: "pipe",
 			stderr: "pipe",
-			env: { ...process.env },
+			env: cleanEnvForSubprocess(),
 		});
 
 		// Open log file for streaming writes.

@@ -22,9 +22,9 @@ import { discoverConfigFile } from "../config.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { getSchemaVersion, runMigrations } from "../db/schema.js";
 import {
-	ensurePromptTemplates,
 	ensureTemplateFiles,
 	generateTomlConfig,
+	upgradePromptTemplates,
 } from "./init.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -296,22 +296,29 @@ function refreshTemplates(projectRoot: string, force: boolean): string[] {
 		log.push(`  Skipped .5x/templates/${name} (unchanged)`);
 	}
 
-	const promptResult = ensurePromptTemplates(projectRoot, force);
+	// Smart prompt template upgrade: auto-update stale stock templates,
+	// warn about customized ones that cannot be auto-upgraded.
+	const promptResult = upgradePromptTemplates(projectRoot, force);
 	for (const name of promptResult.created) {
 		log.push(`  Created .5x/templates/prompts/${name}`);
 	}
-	for (const name of promptResult.overwritten) {
+	for (const name of promptResult.updated) {
 		log.push(`  Updated .5x/templates/prompts/${name}`);
 	}
 	for (const name of promptResult.skipped) {
 		log.push(`  Skipped .5x/templates/prompts/${name} (unchanged)`);
+	}
+	for (const name of promptResult.customized) {
+		log.push(
+			`  Warning: .5x/templates/prompts/${name} has been customized and cannot be auto-upgraded. Back up your changes and run "5x init --force" to get the latest version.`,
+		);
 	}
 
 	if (
 		templateResult.created.length === 0 &&
 		templateResult.overwritten.length === 0 &&
 		promptResult.created.length === 0 &&
-		promptResult.overwritten.length === 0
+		promptResult.updated.length === 0
 	) {
 		log.push("  All templates up-to-date");
 	}

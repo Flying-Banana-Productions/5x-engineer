@@ -477,3 +477,347 @@ describe("protocol validate author with legacy status payloads (Phase 3)", () =>
 		}
 	});
 });
+
+// ===========================================================================
+// Phase 4 (019-orchestrator-improvements): Checklist gate
+// ===========================================================================
+
+/** Create a plan file with the given phase checklist items. */
+function writePlan(
+	dir: string,
+	phases: Array<{
+		number: string;
+		title: string;
+		items: Array<{ text: string; checked: boolean }>;
+	}>,
+): string {
+	const lines = ["# Test Plan\n", "**Version:** 1.0\n", "**Status:** Draft\n"];
+	for (const phase of phases) {
+		lines.push(`\n## Phase ${phase.number}: ${phase.title}\n`);
+		lines.push("**Completion gate:** All items checked.\n");
+		for (const item of phase.items) {
+			lines.push(`- [${item.checked ? "x" : " "}] ${item.text}`);
+		}
+		lines.push("");
+	}
+	const planPath = join(dir, "test-plan.md");
+	writeFileSync(planPath, lines.join("\n"));
+	return planPath;
+}
+
+describe("protocol validate author — checklist gate (unit)", () => {
+	test("result: complete with --plan pointing to incomplete phase → PHASE_CHECKLIST_INCOMPLETE", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: false },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await expect(
+				protocolValidate({
+					role: "author",
+					input: inputPath,
+					plan: planPath,
+					phase: "Phase 1: Setup",
+				}),
+			).rejects.toThrow(CliError);
+
+			try {
+				await protocolValidate({
+					role: "author",
+					input: inputPath,
+					plan: planPath,
+					phase: "Phase 1: Setup",
+				});
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PHASE_CHECKLIST_INCOMPLETE");
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("result: complete with --plan pointing to complete phase → success", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: true },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Should not throw — phase is complete
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "Phase 1: Setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("result: complete with --no-phase-checklist-validate and incomplete phase → success", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: false },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Should not throw — checklist validation is suppressed
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "Phase 1: Setup",
+				phaseChecklistValidate: false,
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("result: needs_human → no checklist check regardless", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Create config", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "needs_human",
+				reason: "Stuck",
+			});
+			// Should not throw — checklist only fires for result: complete
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "Phase 1: Setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("reviewer role → no checklist check", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Create config", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				readiness: "ready",
+				items: [],
+			});
+			// Should not throw — checklist gate is author-only
+			await protocolValidate({
+				role: "reviewer",
+				input: inputPath,
+				plan: planPath,
+				phase: "Phase 1: Setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("no --plan and no --run → checklist check skipped, validation succeeds", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Should not throw — no plan to check
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("--plan with non-existent file → PLAN_NOT_FOUND (fail-closed)", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			const fakePlanPath = join(dir, "nonexistent-plan.md");
+			try {
+				await protocolValidate({
+					role: "author",
+					input: inputPath,
+					plan: fakePlanPath,
+					phase: "Phase 1",
+				});
+				// Should not reach here
+				expect(true).toBe(false);
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PLAN_NOT_FOUND");
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("--plan with valid file but --phase not found → PHASE_NOT_FOUND (fail-closed)", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Create config", checked: true }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			try {
+				await protocolValidate({
+					role: "author",
+					input: inputPath,
+					plan: planPath,
+					phase: "Phase 99: Nonexistent",
+				});
+				expect(true).toBe(false);
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PHASE_NOT_FOUND");
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("auto-discovered plan path (via --run) where file doesn't exist → graceful skip", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			// Insert a run with a plan path that doesn't actually exist on disk
+			const fakePlanPath = join(dir, "docs", "nonexistent-plan.md");
+			const runId = "run_checklist001";
+			insertRun(dir, runId, fakePlanPath);
+
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+
+			// Should not throw — auto-discovery fails open
+			// Note: this test runs from the temp dir context, but the handler
+			// uses resolveControlPlaneRoot() which uses cwd. Since we can't
+			// change cwd in unit tests, the run context resolution may not
+			// find the DB. Either way, auto-discovery should skip silently.
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				run: runId,
+				phase: "Phase 1",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("phase matched by 'Phase N' shorthand", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: true },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Match by "Phase 1" shorthand
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "Phase 1",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("phase matched by title only", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: true },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Match by title
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "Setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});

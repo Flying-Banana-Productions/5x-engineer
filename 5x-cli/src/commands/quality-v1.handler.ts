@@ -86,7 +86,10 @@ async function autoRecord(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function runQuality(params: QualityParams = {}): Promise<void> {
+export async function runQuality(
+	params: QualityParams = {},
+	warn: (...args: unknown[]) => void = console.error,
+): Promise<void> {
 	// -----------------------------------------------------------------------
 	// Phase 3a: When --run is present, resolve control-plane root and run
 	// execution context to determine effective workdir and plan path for
@@ -149,6 +152,7 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 	// Resolve project context — use layered config if we have a contextDir
 	let projectRoot: string;
 	let qualityGates: string[];
+	let skipQualityGates: boolean;
 
 	if (configContextDir && controlPlaneRoot) {
 		// Phase 1c: plan-path-anchored config layering
@@ -158,22 +162,44 @@ export async function runQuality(params: QualityParams = {}): Promise<void> {
 		);
 		projectRoot = effectiveWorkdir ?? controlPlaneRoot;
 		qualityGates = result.config.qualityGates;
+		skipQualityGates = result.config.skipQualityGates;
 	} else if (effectiveWorkdir) {
 		// Explicit workdir but no config context (unlikely, but handle)
 		const ctx = await resolveProjectContext({ startDir: effectiveWorkdir });
 		projectRoot = effectiveWorkdir;
 		qualityGates = ctx.config.qualityGates;
+		skipQualityGates = ctx.config.skipQualityGates;
 	} else {
 		// Default: resolve from cwd
 		const ctx = await resolveProjectContext({ startDir: params.workdir });
 		projectRoot = ctx.projectRoot;
 		qualityGates = ctx.config.qualityGates;
+		skipQualityGates = ctx.config.skipQualityGates;
+	}
+
+	if (skipQualityGates && qualityGates.length === 0) {
+		// Intentional skip of empty gates — no warning, output includes skipped: true
+		const qualityData = {
+			passed: true,
+			results: [] as unknown[],
+			skipped: true,
+		};
+		outputSuccess(qualityData);
+
+		if (params.record) {
+			await autoRecord(params, qualityData);
+		}
+		return;
 	}
 
 	if (qualityGates.length === 0) {
+		// No gates configured and not explicitly skipped — warn about potential misconfiguration
+		warn(
+			"Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates = true to suppress this warning.",
+		);
 		const qualityData = {
 			passed: true,
-			results: [],
+			results: [] as unknown[],
 		};
 		outputSuccess(qualityData);
 

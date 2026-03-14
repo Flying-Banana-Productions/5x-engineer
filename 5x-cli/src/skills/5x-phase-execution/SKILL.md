@@ -232,6 +232,7 @@ a worktree, quality gates execute in the mapped worktree automatically.
 
 Check the result:
 - `passed: true` — continue to Step 3.
+- `skipped: true` — quality gates are intentionally disabled (`skipQualityGates: true` in config). Proceed to Step 3.
 - `passed: false` — go to Step 2a (Quality retry).
 
 ##### Step 2a: Quality retry
@@ -274,18 +275,19 @@ Delegate to the reviewer using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render reviewer-commit --run $RUN \
-  --var commit_hash=$COMMIT --var review_path=$REVIEW_PATH \
+  --var commit_hash=$COMMIT \
   --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
    [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
   RESULT=<launch native 5x-reviewer subagent with PROMPT>
 else
   RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
-    --var commit_hash=$COMMIT --var review_path=$REVIEW_PATH \
+    --var commit_hash=$COMMIT \
     --var plan_path=$PLAN_PATH \
     ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
 fi
@@ -326,7 +328,7 @@ Delegate to the code author using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render author-process-impl-review --run $RUN \
-  --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH)
+  --var plan_path=$PLAN_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -335,7 +337,7 @@ if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
   RESULT=<launch native 5x-code-author subagent with PROMPT>
 else
   RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-    --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+    --var plan_path=$PLAN_PATH 2>/dev/null)
 fi
 
 echo "$RESULT" | 5x protocol validate author \

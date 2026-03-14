@@ -106,7 +106,7 @@ function setupProject(dir: string): void {
 	mkdirSync(planDir, { recursive: true });
 	writeFileSync(
 		join(planDir, "test-plan.md"),
-		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+		"# Test Plan\n\n## Phase 1: Setup\n\n- [x] Do thing\n",
 	);
 
 	Bun.spawnSync(["git", "add", "-A"], {

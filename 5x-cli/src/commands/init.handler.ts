@@ -131,6 +131,93 @@ function ensurePromptTemplates(
 }
 
 /**
+ * Regex matching the YAML frontmatter block (--- delimited) at the start of a template.
+ */
+const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+
+/**
+ * Extract the body content (everything after frontmatter) from a raw template string.
+ * Returns the full string if no frontmatter is found.
+ */
+function extractTemplateBody(raw: string): string {
+	const match = FRONTMATTER_RE.exec(raw);
+	return match ? raw.slice(match[0].length) : raw;
+}
+
+/**
+ * Smart upgrade of scaffolded prompt templates during `5x upgrade`.
+ *
+ * For each bundled template:
+ * - If no on-disk copy exists → create it (same as init).
+ * - If on-disk copy matches current bundled version → skip (up to date).
+ * - If on-disk body matches bundled body (only frontmatter differs) →
+ *   auto-update to latest bundled version (stale stock template).
+ * - If on-disk body differs from bundled body → warn (user-customized;
+ *   cannot auto-upgrade).
+ */
+function upgradePromptTemplates(
+	projectRoot: string,
+	force: boolean,
+): {
+	created: string[];
+	updated: string[];
+	skipped: string[];
+	customized: string[];
+} {
+	const promptsDir = join(projectRoot, ".5x", "templates", "prompts");
+	mkdirSync(promptsDir, { recursive: true });
+
+	const templates = listTemplates();
+	const created: string[] = [];
+	const updated: string[] = [];
+	const skipped: string[] = [];
+	const customized: string[] = [];
+
+	for (const tmpl of templates) {
+		const filename = `${tmpl.name}.md`;
+		const filePath = join(promptsDir, filename);
+		const bundledContent = getDefaultTemplateRaw(tmpl.name);
+
+		if (!existsSync(filePath)) {
+			// No on-disk copy — create it
+			writeFileSync(filePath, bundledContent, "utf-8");
+			created.push(filename);
+			continue;
+		}
+
+		if (force) {
+			// Force mode — always overwrite
+			writeFileSync(filePath, bundledContent, "utf-8");
+			updated.push(filename);
+			continue;
+		}
+
+		const diskContent = readFileSync(filePath, "utf-8");
+
+		if (diskContent === bundledContent) {
+			// Already up to date
+			skipped.push(filename);
+			continue;
+		}
+
+		// Content differs — check if only frontmatter changed (stale stock template)
+		const diskBody = extractTemplateBody(diskContent);
+		const bundledBody = extractTemplateBody(bundledContent);
+
+		if (diskBody === bundledBody) {
+			// Body matches — stale frontmatter from older CLI version. Auto-update.
+			writeFileSync(filePath, bundledContent, "utf-8");
+			updated.push(filename);
+		} else {
+			// Body differs — user has customized this template. Warn.
+			customized.push(filename);
+		}
+	}
+
+	return { created, updated, skipped, customized };
+}
+
+/**
  * Append `.5x/` to .gitignore if not already present.
  * Creates .gitignore if it doesn't exist.
  */
@@ -283,4 +370,5 @@ export {
 	ensurePromptTemplates,
 	ensureTemplateFiles,
 	generateTomlConfig,
+	upgradePromptTemplates,
 };

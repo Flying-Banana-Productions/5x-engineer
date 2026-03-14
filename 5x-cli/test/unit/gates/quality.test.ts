@@ -119,6 +119,43 @@ describe("runSingleCommand", () => {
 		}
 	});
 
+	test("strips git env vars from subprocess", async () => {
+		const tmp = makeTmp();
+		// Temporarily inject GIT_DIR into process.env so the production code
+		// has something to strip. The test setup.ts may have already deleted it
+		// from the JS side, but we set it here to verify the spawn env is clean.
+		const origGitDir = process.env.GIT_DIR;
+		const origGitWorkTree = process.env.GIT_WORK_TREE;
+		const origGitIndexFile = process.env.GIT_INDEX_FILE;
+		try {
+			process.env.GIT_DIR = "/fake/git/dir";
+			process.env.GIT_WORK_TREE = "/fake/work/tree";
+			process.env.GIT_INDEX_FILE = "/fake/index";
+
+			const result = await runSingleCommand(
+				'echo "GIT_DIR=$GIT_DIR" "GIT_WORK_TREE=$GIT_WORK_TREE" "GIT_INDEX_FILE=$GIT_INDEX_FILE"',
+				tmp,
+				makeOpts(tmp),
+			);
+
+			expect(result.passed).toBe(true);
+			// The subprocess should see empty values for all three vars
+			expect(result.output).toContain("GIT_DIR=");
+			expect(result.output).not.toContain("/fake/git/dir");
+			expect(result.output).not.toContain("/fake/work/tree");
+			expect(result.output).not.toContain("/fake/index");
+		} finally {
+			// Restore original env
+			if (origGitDir === undefined) delete process.env.GIT_DIR;
+			else process.env.GIT_DIR = origGitDir;
+			if (origGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+			else process.env.GIT_WORK_TREE = origGitWorkTree;
+			if (origGitIndexFile === undefined) delete process.env.GIT_INDEX_FILE;
+			else process.env.GIT_INDEX_FILE = origGitIndexFile;
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("truncates large output in result but preserves full log", async () => {
 		const tmp = makeTmp();
 		try {
