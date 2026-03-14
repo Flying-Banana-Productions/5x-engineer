@@ -1,6 +1,6 @@
 # Orchestrator Improvements
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -51,6 +51,7 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - `loadConfig()` with no config file (Zod defaults only) returns absolute `paths.*` values resolved against `projectRoot`.
   - `loadConfig()` with already-absolute paths passes them through unchanged.
   - `loadConfig()` with nested `paths.templates.plan` relative value resolves correctly.
+- [ ] Update operator-facing config reference docs (`docs/development/016-review-artifacts-and-phase-checks.md` or `docs/configuration.md`) to describe the new absolute-path contract: `paths.*` values are always resolved to absolute paths by the CLI after config loading, regardless of whether they were written as relative or absolute. Update any examples that assume repo-relative defaults.
 - [ ] Verify all existing `test/unit/config-layering.test.ts` tests pass — update string expectations from relative to absolute where the fix changes returned values.
 - [ ] Add integration test in `test/integration/commands/` for sub-project `5x run init`:
   - Create a temp repo with a root `5x.toml` and a sub-project `packages/foo/5x.toml` with relative `paths.plans = "docs/dev"`.
@@ -160,7 +161,7 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 | `src/commands/protocol.ts` | Add `--plan` and `--phase-checklist-validate` args to `authorCmd` |
 | `src/commands/protocol.handler.ts` | Add `plan`/`phaseChecklistValidate` to params; implement checklist gate logic |
 | `src/skills/5x-phase-execution/SKILL.md` | Remove explicit `review_path` vars from Steps 3 & 5; extract auto-derived path; handle `skipped: true` in Step 2 |
-| `docs/development/016-review-artifacts-and-phase-checks.md` (or equivalent) | Document `variable_defaults` frontmatter, `skipQualityGates` config key, `--plan`/`--no-phase-checklist-validate` flags |
+| `docs/development/016-review-artifacts-and-phase-checks.md` (or equivalent) | Document absolute-path contract for `paths.*`, `variable_defaults` frontmatter, `skipQualityGates` config key, `--plan`/`--no-phase-checklist-validate` flags |
 | `test/unit/config-layering.test.ts` | Tests for path resolution fix (including Zod defaults) |
 | `test/unit/config.test.ts` (or `test/unit/config-paths.test.ts`) | Tests for `loadConfig()` path normalization; tests for `skipQualityGates` schema |
 | `test/unit/templates/loader.test.ts` | Tests for `variable_defaults` |
@@ -186,6 +187,7 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 The following inline doc updates ensure operators can discover new config keys and frontmatter behavior without reading source:
 
+- Phase 1: Update the config reference in `docs/development/016-review-artifacts-and-phase-checks.md` (or `docs/configuration.md` if one exists) to document the new absolute-path contract: all `paths.*` values in `5x.toml` are resolved to absolute paths by the CLI after config loading, regardless of whether they were written as relative or absolute. Relative paths are resolved against the config file's directory (or workspace/project root for defaults). Callers always receive absolute paths. Update any operator-facing examples that show or assume repo-relative `paths.*` values to reflect the new behavior.
 - Phase 2: Add a `variable_defaults` section to the template authoring reference in `docs/development/016-review-artifacts-and-phase-checks.md` (or the relevant template docs). Document the YAML key, validation rules, and precedence (explicit vars > defaults > error).
 - Phase 3: Add `skipQualityGates` to the config reference section in `docs/development/016-review-artifacts-and-phase-checks.md` (or `docs/configuration.md` if one exists). Document the key, its default, and behavior with empty `qualityGates`.
 - Phase 4: Document `--plan` and `--no-phase-checklist-validate` flags in the protocol validate command reference.
@@ -199,6 +201,10 @@ The following inline doc updates ensure operators can discover new config keys a
 - Changes to reviewer protocol validation (checklist gate is author-only)
 
 ## Revision History
+
+### v1.3 (March 14, 2026) — Review iteration 3 feedback (019-orchestrator-improvements-review.md addendum)
+
+- **P2.1 (absolute-path config contract docs):** Added a Phase 1 checklist item and a Reference Documentation Updates entry to document the new absolute-path contract for `paths.*` in operator-facing docs. Existing docs described repo-relative defaults; the new entry requires updating those docs to reflect that all `paths.*` values are resolved to absolute paths by the CLI after config loading.
 
 ### v1.2 (March 14, 2026) — Review iteration 2 feedback (019-orchestrator-improvements-review.md addendum)
 
