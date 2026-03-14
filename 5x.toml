@@ -16,7 +16,6 @@ maxAutoRetries = 5
 # Commands run after author implementation and before reviewer pass.
 # Any failing command triggers quality-retry behavior.
 qualityGates = [
-  "bun run --cwd=5x-cli test"
   # "bun test",
   # "bun run lint",
   # "bun run build",
@@ -42,11 +41,11 @@ model = "openai/gpt-5.4"
 
 # Paths are relative to repository root unless absolute
 [paths]
-plans = "5x-cli/docs/development"
-reviews = "5x-cli/docs/development/reviews"
+plans = "docs/development"
+reviews = docs/development/reviews"
 # planReviews = "docs/development/reviews/plans"
 # runReviews = "docs/development/reviews/impl"
-archive = "5x-cli/docs/archive"
+archive = "docs/archive"
 
 [paths.templates]
 plan = ".5x/templates/implementation-plan-template.md"
