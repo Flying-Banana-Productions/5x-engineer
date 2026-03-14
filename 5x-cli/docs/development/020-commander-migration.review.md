@@ -106,3 +106,48 @@ The plan specifies `.choices(["yes", "no"])` for `prompt confirm --default`, but
   "summary": "The plan is close, but it is not yet safe to execute because it still leaves two contract-level decisions unresolved and misses key non-regression coverage around global pretty handling and CLI composability. Fix those plan gaps first, then implementation can proceed cleanly."
 }
 ```
+
+## Addendum (2026-03-14) - v1.1 follow-up review
+
+### What's Addressed
+
+- Prior P0s are closed: the plan now preserves any-position `--pretty` handling, keeps `--worktree-path` as a deprecated hidden alias, restores pipe-composability coverage, and replaces the speculative help-grouping API.
+- The phase structure remains implementable: adapter-only migration, explicit entrypoint rewrite, and completion gates are still the right shape.
+
+### Remaining Concerns
+
+- **P1.4 - Phase 5 still treats PRD Section 2.2 as source-of-truth help content even where that content is stale.** The plan says to lift summaries/descriptions/examples from PRD Section 2.2, but that PRD still includes at least one invalid example (`5x harness install opencode` without the required `--scope` for a multi-scope harness) and still carries stale output-contract language elsewhere. The plan should require curating/correcting PRD-derived help text before copying it into commander help.
+- **P1.5 - Program-level stdout contract is still not fully accurate.** The revised footer now excludes `init`, `upgrade`, and `run watch`, but current behavior also includes non-envelope stdout from `harness install` (`src/commands/harness.handler.ts`). If output behavior is staying in scope-preserving mode, the help/footer text should call out all known exceptions rather than an incomplete subset.
+- **P1.6 - Commander parse-error code mapping regresses the PRD contract.** The Phase 3 `bin.ts` sketch maps all `CommanderError` cases to `INVALID_ARGS`, but the PRD explicitly distinguishes validation errors vs unknown command vs unknown option. The plan should either align the implementation sketch/tests with that contract or explicitly narrow the contract before execution starts.
+
+## Structured Assessment (Addendum)
+
+```json
+{
+  "readiness": "ready_with_corrections",
+  "items": [
+    {
+      "id": "R6",
+      "title": "Phase 5 copies stale PRD help/examples into the CLI",
+      "action": "auto_fix",
+      "reason": "The plan currently instructs implementation to use PRD Section 2.2 verbatim even though that source still contains stale help content, including an invalid `harness install opencode` example for a command that currently requires `--scope` when multiple scopes are supported.",
+      "priority": "P1"
+    },
+    {
+      "id": "R7",
+      "title": "Help footer still omits non-JSON stdout exceptions",
+      "action": "auto_fix",
+      "reason": "The revised help text is closer, but it still does not match the current CLI surface because `harness install` writes human-readable stdout too. The plan should document the real behavior rather than an incomplete subset.",
+      "priority": "P1"
+    },
+    {
+      "id": "R8",
+      "title": "Commander error-code mapping no longer matches the PRD",
+      "action": "auto_fix",
+      "reason": "The Phase 3 `bin.ts` sketch collapses all Commander parser errors into `INVALID_ARGS`, but the referenced PRD distinguishes validation, unknown-command, and unknown-option cases. The plan should resolve that mismatch and add tests for the chosen contract.",
+      "priority": "P1"
+    }
+  ],
+  "summary": "v1.1 fixes the earlier blockers and is close to executable, but the plan still needs a small pass to reconcile stale PRD-derived help content and to align parser-error code mapping with the documented contract. Those are mechanical plan corrections, not architectural rework."
+}
+```
