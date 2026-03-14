@@ -350,6 +350,15 @@ describe("Phase 4: run watch guidance removed from native-first skills", () => {
 		expect(getDefaultSkillRaw("5x-plan-review")).toContain("5x invoke");
 		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("5x invoke");
 	});
+
+	test("5x-plan skill treats --plan as output path and passes PRD separately", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).toContain("output plan path to be generated");
+		expect(content).toContain("--var prd_path=$PRD_PATH");
+		expect(content).not.toContain(
+			"--var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH",
+		);
+	});
 });
 
 describe("task templates — transport-neutral language (Phase 4)", () => {

@@ -181,6 +181,41 @@ describe("5x template render", () => {
 	);
 
 	test(
+		"auto-injects run plan_path for author-generate-plan without explicit plan_path var",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "generated-plan.md");
+				const runId = "run_generate_plan_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-generate-plan",
+					"--run",
+					runId,
+					"--var",
+					"prd_path=/tmp/prd.md",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				const vars = data.variables as Record<string, string>;
+				expect(vars.plan_path).toBe(planPath);
+				expect(vars.prd_path).toBe("/tmp/prd.md");
+				expect(data.prompt as string).toContain(planPath);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
 		"renders without --run and excludes run-aware fields",
 		async () => {
 			const dir = makeTmpDir();

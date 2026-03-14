@@ -164,7 +164,7 @@ RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
 
 # --record auto-records using the template's step_name
 AUTHOR_OUT=$(5x invoke author author-next-phase --run "$RUN_ID" --record \
-  --var "plan_path=$PLAN" --var phase_number=1)
+  --var phase_number=1)
 RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
 
 # Quality output piped to run record (step name + run from CLI flags)
@@ -180,7 +180,7 @@ RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
 
 # Render the task prompt
 RENDERED=$(5x template render author-next-phase --run "$RUN_ID" \
-  --var plan_path="$PLAN" --var phase_number=1)
+  --var phase_number=1)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -190,7 +190,7 @@ if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
   RESULT=<native subagent result JSON>
 else
   RESULT=$(5x invoke author author-next-phase --run "$RUN_ID" \
-    --var plan_path="$PLAN" --var phase_number=1 2>/dev/null)
+    --var phase_number=1 2>/dev/null)
 fi
 
 # Validate + record (works for both paths)
@@ -281,6 +281,8 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 ```
 
 `run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations). When piping from `invoke`, step name, run ID, result, and metadata are auto-extracted: `5x invoke ... | 5x run record`.
+
+`run init --plan` takes the implementation plan output path, not the requirements doc path. The file may not exist yet, but it must live under `paths.plans`.
 
 ### Native Subagent Primitives
 

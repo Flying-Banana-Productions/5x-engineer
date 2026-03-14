@@ -84,7 +84,10 @@ function setupMonorepo(dir: string): {
 	// Sub-project with its own config
 	const subDir = join(dir, "sub-project");
 	mkdirSync(subDir, { recursive: true });
-	writeFileSync(join(subDir, "5x.toml"), 'qualityGates = ["echo sub-gate"]\n');
+	writeFileSync(
+		join(subDir, "5x.toml"),
+		'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "sub-project/docs/development"\n',
+	);
 
 	// Sub-project plan
 	const subPlanDir = join(subDir, "docs", "development");
@@ -296,6 +299,45 @@ describe("config layering integration", () => {
 				const listData = parseJson(listResult.stdout);
 				const runs = (listData.data as { runs: { id: string }[] }).runs;
 				expect(runs.some((r) => r.id === data.run_id)).toBe(true);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"run init accepts a missing output plan path under sub-project paths.plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				setupMonorepo(tmp);
+				writeFileSync(
+					join(tmp, "sub-project", "5x.toml"),
+					'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "sub-project/plans/drafts"\n',
+				);
+
+				const outputPlanPath = join(
+					tmp,
+					"sub-project",
+					"plans",
+					"drafts",
+					"generated-plan.md",
+				);
+				const result = await run5x(tmp, [
+					"run",
+					"init",
+					"--plan",
+					outputPlanPath,
+					"--allow-dirty",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as { plan_path: string; run_id: string };
+				expect(data.run_id).toBeTruthy();
+				expect(data.plan_path).toBe(outputPlanPath);
 			} finally {
 				cleanup([tmp]);
 			}

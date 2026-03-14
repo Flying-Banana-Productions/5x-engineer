@@ -79,7 +79,7 @@ Create a new run for a plan (or resume an existing one).
 
 | Flag | Required | Description |
 |---|---|---|
-| `--plan` | Yes | Path to plan markdown file |
+| `--plan` | Yes | Path to the implementation plan markdown file to create or resume. The file may not exist yet, but the path must resolve under `paths.plans`. |
 | `--allow-dirty` | No | Skip dirty working tree check. Default: fail if uncommitted changes exist. |
 | `--worktree` | No | Ensure a plan worktree exists before run init. Auto-resolves existing mapping/candidate, otherwise creates default worktree. |
 | `--worktree <path>` | No | Attach an explicit existing worktree path before run init. Equivalent to `--worktree --worktree-path <path>`. |
@@ -108,7 +108,7 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 - Acquires a file-based plan lock under the control-plane root's state directory (`<controlPlaneRoot>/<stateDir>/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen.
 - Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0.
 - Canonicalizes the plan path for DB identity (worktree-safe). **Validates that the plan path is under `controlPlaneRoot`** — external plans are rejected with `PLAN_OUTSIDE_CONTROL_PLANE`.
-- Validates that the plan path exists; otherwise returns `PLAN_NOT_FOUND`.
+- Validates that the plan path resolves inside the configured `paths.plans` directory. The file itself may be created later by the author workflow.
 - When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
 - Run state is always stored in the control-plane root DB, regardless of which checkout the command is run from.
 

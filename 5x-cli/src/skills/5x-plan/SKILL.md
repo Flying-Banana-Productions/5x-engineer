@@ -76,7 +76,7 @@ to `5x invoke` when no native agent is found.
 ```bash
 # 1. Render the prompt
 RENDERED=$(5x template render author-generate-plan --run $RUN \
-  --var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH)
+  --var prd_path=$PRD_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -88,7 +88,7 @@ if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
 else
   # 3b. Fallback: 5x invoke (omit --record; validate is the single record point)
   RESULT=$(5x invoke author author-generate-plan --run $RUN \
-    --var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+    --var prd_path=$PRD_PATH 2>/dev/null)
 fi
 
 # 4. Validate + record (combined — universal for both paths)
@@ -114,7 +114,7 @@ if running as a subprocess, capture only the final JSON envelope:
 
 ```bash
 RESULT=$(5x invoke author author-generate-plan --run $RUN \
-  --var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+  --var prd_path=$PRD_PATH 2>/dev/null)
 ```
 
 Use `2>/dev/null` to discard stderr (streaming output) from your context.
@@ -145,6 +145,11 @@ Recovery for handling.
 
 Run `5x run init --plan $PLAN_PATH --worktree`.
 
+`$PLAN_PATH` is the output plan path to be generated. It may not exist yet,
+but it must resolve inside `paths.plans`. The requirements/design document is
+separate: pass it as `$PRD_PATH`, then provide it to the author via
+`--var prd_path=$PRD_PATH`.
+
 The `--worktree` flag ensures an isolated git worktree is resolved or
 created for this plan. All subsequent `--run`-scoped commands
 (`invoke`, `quality run`, `diff`) automatically execute in the mapped
@@ -159,7 +164,7 @@ Delegate to the plan author using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render author-generate-plan --run $RUN \
-  --var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH)
+  --var prd_path=$PRD_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -169,7 +174,7 @@ if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
   RESULT=<launch native 5x-plan-author subagent with PROMPT>
 else
   RESULT=$(5x invoke author author-generate-plan --run $RUN \
-    --var prd_path=$PRD_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+    --var prd_path=$PRD_PATH 2>/dev/null)
 fi
 
 echo "$RESULT" | 5x protocol validate author \

@@ -249,6 +249,20 @@ function deriveDefaultWorktreeDir(
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }
 
+function isPathUnder(childPath: string, parentPath: string): boolean {
+	const relPath = relative(parentPath, childPath);
+	return !relPath.startsWith("..") && !isAbsolute(relPath);
+}
+
+function resolveConfiguredPath(
+	projectRoot: string,
+	configuredPath: string,
+): string {
+	return isAbsolute(configuredPath)
+		? resolve(configuredPath)
+		: resolve(projectRoot, configuredPath);
+}
+
 async function ensureRunWorktree(
 	db: Database,
 	projectRoot: string,
@@ -433,11 +447,6 @@ function formatStep(step: StepRow) {
 
 export async function runV1Init(params: RunInitParams): Promise<void> {
 	const planPath = canonicalizePlanPath(params.plan);
-	if (!existsSync(planPath)) {
-		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
-			path: planPath,
-		});
-	}
 
 	// Phase 3b: resolve control-plane root for DB location.
 	// `run init` from a linked worktree creates the run in the root DB.
@@ -468,13 +477,35 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	// we have a control-plane root, so config is scoped to the plan's
 	// sub-project context.
 	let config: Awaited<ReturnType<typeof loadConfig>>["config"];
+	let configPath: string | null = null;
 	if (controlPlane.mode !== "none") {
 		const contextDir = dirname(planPath);
 		const result = await resolveLayeredConfig(projectRoot, contextDir);
 		config = result.config;
+		configPath = result.nearestConfigPath ?? result.rootConfigPath;
 	} else {
 		const result = await loadConfig(projectRoot);
 		config = result.config;
+		configPath = result.configPath;
+	}
+
+	const configuredPlansDir = resolveConfiguredPath(
+		projectRoot,
+		config.paths.plans,
+	);
+	if (!isPathUnder(planPath, configuredPlansDir)) {
+		const configHint = configPath
+			? ` Update \`${configPath}\` if this project should use a different plans directory.`
+			: " Configure `[paths].plans` in `5x.toml` if this project should use a different plans directory.";
+		outputError(
+			"INVALID_ARGS",
+			`Plan path \`${planPath}\` must be inside configured paths.plans directory \`${configuredPlansDir}\`.${configHint}`,
+			{
+				plan_path: planPath,
+				configured_plans_dir: configuredPlansDir,
+				config_path: configPath,
+			},
+		);
 	}
 
 	// Normalize db.path to directory semantics (backward compat: `.5x/5x.db` → `.5x`)

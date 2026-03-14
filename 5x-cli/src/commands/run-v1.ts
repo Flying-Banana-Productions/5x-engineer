@@ -26,7 +26,8 @@ const initCmd = defineCommand({
 	args: {
 		plan: {
 			type: "string",
-			description: "Path to implementation plan",
+			description:
+				"Path to implementation plan output (may not exist yet; must be under paths.plans)",
 			required: true,
 		},
 		"allow-dirty": {

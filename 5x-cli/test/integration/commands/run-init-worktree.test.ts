@@ -98,17 +98,43 @@ function parseJson(stdout: string): Record<string, unknown> {
 
 describe("5x run init --worktree", () => {
 	test(
-		"returns PLAN_NOT_FOUND for missing plan path",
+		"accepts a missing plan path under default paths.plans",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				setupProject(dir);
 				const missingPlan = join(dir, "docs", "development", "missing.md");
 				const result = await run5x(dir, ["run", "init", "--plan", missingPlan]);
-				expect(result.exitCode).toBe(2);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as { plan_path: string; run_id: string };
+				expect(payload.run_id).toBeTruthy();
+				expect(payload.plan_path).toBe(missingPlan);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"rejects a plan path outside configured paths.plans",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				writeFileSync(join(dir, "5x.toml"), '[paths]\nplans = "plans/out"\n');
+				const invalidPlan = join(dir, "docs", "development", "outside.md");
+				const result = await run5x(dir, ["run", "init", "--plan", invalidPlan]);
+
+				expect(result.exitCode).toBe(1);
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as { code: string }).code).toBe("PLAN_NOT_FOUND");
+				const error = data.error as { code: string; message: string };
+				expect(error.code).toBe("INVALID_ARGS");
+				expect(error.message).toContain("paths.plans");
+				expect(error.message).toContain("plans/out");
 			} finally {
 				cleanupDir(dir);
 			}
