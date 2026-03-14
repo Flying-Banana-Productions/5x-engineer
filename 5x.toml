@@ -16,7 +16,7 @@ maxAutoRetries = 5
 # Commands run after author implementation and before reviewer pass.
 # Any failing command triggers quality-retry behavior.
 qualityGates = [
-  "bun run test"
+  "bun run --cwd=5x-cli test"
   # "bun test",
   # "bun run lint",
   # "bun run build",

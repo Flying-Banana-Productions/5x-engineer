@@ -1,0 +1,19 @@
+# 5x Configuration
+# https://github.com/5x-engineer/5x-cli
+
+# Commands run after author implementation and before reviewer pass.
+# Any failing command triggers quality-retry behavior.
+qualityGates = [
+  "bun run test"
+  # "bun test",
+  # "bun run lint",
+  # "bun run build",
+]
+
+# Paths are relative to repository root unless absolute
+[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+# planReviews = "docs/development/reviews/plans"
+# runReviews = "docs/development/reviews/impl"
+archive = "docs/archive"
