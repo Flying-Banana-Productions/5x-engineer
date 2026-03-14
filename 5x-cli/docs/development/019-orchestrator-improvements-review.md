@@ -71,3 +71,18 @@ Recommendation: add explicit integration tests for the broken/fixed workflows, e
 
 - Phase 1 still does not fully close prior P1.1. The revised text says the contract is "all `paths.*` absolute," but the implementation checklist only changes `resolveLayeredConfig()`, while the same phase also claims non-layered config should now return absolute paths. That leaves `loadConfig()` callers, existing review-path docs, and template-render expectations split across two path contracts. Pick one contract and apply it consistently: either extend normalization to all config-loading paths and update the existing relative-path docs/tests, or explicitly scope the new contract to layered config only and remove the non-layered assertions. **Action:** `human_required`
 - Phase 3 still proposes a handler-level unit test that asserts stderr warning behavior for `runQuality()`. That conflicts with the repo's test-tier rules, which reserve stdout/stderr assertions for integration tests unless the handler exposes an injected warning sink. Recast that coverage as integration-only or add an injectable warning surface before claiming unit coverage. **Action:** `auto_fix`
+
+## Addendum (2026-03-14) -- Iteration 3 assessment
+
+### Iteration 2 follow-up
+
+- R4 is addressed. v1.2 now extends the all-absolute `paths.*` contract to `loadConfig()`, adds explicit pre-/post-parse normalization steps there, audits `loadConfig()` callers, and adds dedicated `loadConfig()` path-normalization tests.
+- R5 is addressed. Phase 3 no longer relies on handler-level stderr capture; it now specifies an injected `warn` sink for unit coverage and keeps stderr assertions in the integration test, matching `AGENTS.md`.
+
+### Remaining concern
+
+- **P2.1 - Reference docs still need the new absolute-path config contract.** Phase 1 now deliberately changes config semantics across all loading entry points, but the planned doc updates only mention `variable_defaults`, `skipQualityGates`, and protocol-validate flags. Existing docs such as `docs/development/016-review-artifacts-and-phase-checks.md` still describe `config.paths.*` as repo-relative by default, so the plan should explicitly add a reference-doc update for the new absolute-path contract and any operator-facing examples that rely on the old semantics. **Action:** `auto_fix`
+
+### Assessment
+
+The prior iteration 2 blockers are closed and no new design-level blockers surfaced in this pass. With the doc-contract update added, the plan is ready for implementation.
