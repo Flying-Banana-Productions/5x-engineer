@@ -49,6 +49,16 @@ const authorCmd = defineCommand({
 				"Require commit hash for complete results (default: true). Use --no-require-commit to opt out.",
 			default: true,
 		},
+		plan: {
+			type: "string" as const,
+			description: "Path to plan file for checklist validation",
+		},
+		"phase-checklist-validate": {
+			type: "boolean" as const,
+			default: true,
+			description:
+				"Validate phase checklist completion (use --no-phase-checklist-validate to skip)",
+		},
 	},
 	run: ({ args }) =>
 		protocolValidate({
@@ -62,6 +72,10 @@ const authorCmd = defineCommand({
 			iteration: args.iteration
 				? Number.parseInt(args.iteration as string, 10)
 				: undefined,
+			plan: args.plan as string | undefined,
+			phaseChecklistValidate: args["phase-checklist-validate"] as
+				| boolean
+				| undefined,
 		}),
 });
 

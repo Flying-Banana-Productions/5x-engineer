@@ -110,18 +110,18 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 **Completion gate:** `5x protocol validate author` with `result: "complete"` checks plan phase checklist. Emits `PHASE_CHECKLIST_INCOMPLETE` error when phase is not done. `--no-phase-checklist-validate` suppresses the check. Explicit `--plan`/`--phase` with invalid targets fail with a validation error (fail-closed).
 
-- [ ] Add CLI args to `authorCmd` in `src/commands/protocol.ts` (~line 39):
+- [x] Add CLI args to `authorCmd` in `src/commands/protocol.ts` (~line 39):
   - `plan: { type: "string", description: "Path to plan file for checklist validation" }` (optional).
   - `"phase-checklist-validate": { type: "boolean", default: true, description: "Validate phase checklist completion (use --no-phase-checklist-validate to skip)" }` (optional).
-- [ ] Pass new args to `protocolValidate()` in the `authorCmd` `run` handler (~line 53): `plan: args.plan as string | undefined`, `phaseChecklistValidate: args["phase-checklist-validate"] as boolean | undefined`.
-- [ ] Add `plan?: string` and `phaseChecklistValidate?: boolean` to `ProtocolValidateParams` in `src/commands/protocol.handler.ts` (~line 24).
-- [ ] Implement checklist gate logic in `protocolValidate()`, after `validateStructuredOutputOrThrow` returns (line ~127) and before `outputSuccess()` (line ~159):
+- [x] Pass new args to `protocolValidate()` in the `authorCmd` `run` handler (~line 53): `plan: args.plan as string | undefined`, `phaseChecklistValidate: args["phase-checklist-validate"] as boolean | undefined`.
+- [x] Add `plan?: string` and `phaseChecklistValidate?: boolean` to `ProtocolValidateParams` in `src/commands/protocol.handler.ts` (~line 24).
+- [x] Implement checklist gate logic in `protocolValidate()`, after `validateStructuredOutputOrThrow` returns (line ~127) and before `outputSuccess()` (line ~159):
   - Only for `role === "author"` and `validated.result === "complete"` and `params.phaseChecklistValidate !== false`.
   - Resolve plan path: try `params.plan` first. If not provided and `params.run` is set, use `resolveRunExecutionContext` to get the plan path (reuse existing DB/control-plane infrastructure from the handler). If neither available, skip silently (auto-discovery best-effort).
   - **Fail-closed for explicit inputs:** If `params.plan` was explicitly provided but the file does not exist, emit `outputError("PLAN_NOT_FOUND", "Plan file not found: ${params.plan}")` — do not skip. If `params.phase` was explicitly provided but the phase is not found in the parsed plan, emit `outputError("PHASE_NOT_FOUND", "Phase '${params.phase}' not found in plan: ${params.plan}")` — do not skip.
   - **Fail-open for auto-discovery only:** If the plan path was derived from `resolveRunExecutionContext` (not explicit `--plan`) and the file doesn't exist or the phase isn't found, skip silently (graceful degradation for best-effort path).
   - If plan path and phase are both resolved: read the plan file, call `parsePlan()`, find the phase matching `params.phase`, check `phase.isComplete`. If `false`: `outputError("PHASE_CHECKLIST_INCOMPLETE", "Phase ${phase} checklist is not complete. Mark all items [x] before returning result: complete.")`.
-- [ ] Add unit tests in `test/unit/commands/protocol-validate.test.ts`:
+- [x] Add unit tests in `test/unit/commands/protocol-validate.test.ts`:
   - Author `result: "complete"` with `--plan` pointing to a plan where phase is incomplete → `PHASE_CHECKLIST_INCOMPLETE` error.
   - Author `result: "complete"` with `--plan` pointing to a plan where phase is complete → success.
   - Author `result: "complete"` with `--no-phase-checklist-validate` and incomplete phase → success (check suppressed).
@@ -131,11 +131,11 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - `--plan` with non-existent file → `PLAN_NOT_FOUND` validation error (fail-closed).
   - `--plan` with valid file but `--phase` not found in plan → `PHASE_NOT_FOUND` validation error (fail-closed).
   - Auto-discovered plan path (via `--run`) where file doesn't exist → graceful skip, validation succeeds.
-- [ ] Add integration test in `test/integration/commands/` for `5x protocol validate author --run ...` with a mapped worktree plan:
+- [x] Add integration test in `test/integration/commands/` for `5x protocol validate author --run ...` with a mapped worktree plan:
   - Set up a temp repo with a run record pointing to a plan file.
   - Run `5x protocol validate author --run <id> --phase <phase>` with incomplete checklist.
   - Assert `PHASE_CHECKLIST_INCOMPLETE` error in output.
-- [ ] Update protocol validate command reference docs to document `--plan` and `--no-phase-checklist-validate` flags, including fail-closed vs fail-open behavior.
+- [x] Update protocol validate command reference docs to document `--plan` and `--no-phase-checklist-validate` flags, including fail-closed vs fail-open behavior.
 
 ## Phase 5: Skill Updates
 

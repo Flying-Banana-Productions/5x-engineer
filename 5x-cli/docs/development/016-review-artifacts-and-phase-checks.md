@@ -286,6 +286,65 @@ skipQualityGates = true   # Intentionally skip quality gates (silent)
 
 This feature was introduced in 019-orchestrator-improvements Phase 3.
 
+## Protocol Validate Checklist Gate
+
+`5x protocol validate author` can validate that a plan's phase checklist is
+fully checked off before accepting a `result: "complete"` status. This prevents
+authors from reporting completion without updating the plan's checklist items.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--plan <path>` | string | (none) | Path to the plan file for checklist validation |
+| `--phase <name>` | string | (none) | Phase identifier to check (e.g., `"Phase 1: Setup"`) |
+| `--no-phase-checklist-validate` | boolean | `true` | Suppress checklist validation |
+
+### Behavior
+
+The checklist gate fires only when **all** conditions are met:
+1. Role is `author`
+2. Validated result is `"complete"`
+3. `--no-phase-checklist-validate` was **not** passed
+
+### Plan Resolution
+
+- **Explicit `--plan`:** Uses the provided path. File not found produces
+  `PLAN_NOT_FOUND` error (fail-closed). Phase not found in plan produces
+  `PHASE_NOT_FOUND` error (fail-closed).
+- **Auto-discovery via `--run`:** Resolves the plan path from the run's
+  execution context. If the file doesn't exist or the phase isn't found,
+  the check is skipped silently (fail-open). This allows graceful degradation
+  when run context is incomplete.
+- **Neither `--plan` nor `--run`:** Checklist check is skipped silently.
+
+### Error Codes
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `PHASE_CHECKLIST_INCOMPLETE` | 8 | Phase checklist has unchecked items |
+| `PHASE_NOT_FOUND` | 8 | Phase not found in the plan (explicit `--plan` only) |
+| `PLAN_NOT_FOUND` | 2 | Plan file not found (explicit `--plan` only) |
+
+### Examples
+
+```bash
+# Validate with explicit plan and phase
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --plan docs/dev/my-plan.md --phase "Phase 1: Setup"
+
+# Suppress checklist validation
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --plan docs/dev/my-plan.md --phase "Phase 1" \
+  --no-phase-checklist-validate
+
+# Auto-discover plan from run context
+echo '{"result":"complete","commit":"abc123"}' | \
+  5x protocol validate author --run run_abc --phase "Phase 2: Implementation"
+```
+
+This feature was introduced in 019-orchestrator-improvements Phase 4.
+
 ## Not In Scope
 
 - Adding new `postCreate` guardrails or changing worktree initialization policy
