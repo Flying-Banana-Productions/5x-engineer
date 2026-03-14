@@ -203,6 +203,25 @@ skills no longer mention `5x run watch`.
 | Integration | `test/integration/commands/template-render.test.ts` | Generated `review_path` defaults are correct for plan-review and phase-review templates |
 | Integration | `test/integration/commands/invoke.test.ts` | `invoke` inherits generated `review_path` defaults and still honors explicit overrides |
 
+## Config Path Resolution Contract
+
+All `paths.*` values in `5x.toml` are resolved to **absolute paths** by the CLI
+after config loading, regardless of whether they were written as relative or
+absolute in the config file:
+
+- **Relative paths** in a config file are resolved against the config file's
+  directory (e.g., `paths.plans = "docs/dev"` in
+  `packages/foo/5x.toml` resolves to `<repo>/packages/foo/docs/dev`).
+- **Zod default values** (when no explicit path is configured) are resolved
+  against the workspace/project root.
+- **Absolute paths** pass through unchanged.
+- This applies to all config-loading entry points: `loadConfig()`,
+  `resolveLayeredConfig()`, and any function that returns a `FiveXConfig`.
+
+Callers always receive absolute `paths.*` values and should never need to resolve
+paths themselves. This contract was introduced in
+019-orchestrator-improvements Phase 1.
+
 ## Not In Scope
 
 - Adding new `postCreate` guardrails or changing worktree initialization policy

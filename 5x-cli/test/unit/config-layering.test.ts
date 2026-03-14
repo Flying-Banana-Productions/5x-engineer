@@ -65,9 +65,10 @@ describe("resolveLayeredConfig", () => {
 
 			const result = await resolveLayeredConfig(tmp, subDir);
 			expect(result.isLayered).toBe(true);
-			expect(result.config.paths.plans).toBe("sub-plans");
+			// paths.* values are always absolute after config loading
+			expect(result.config.paths.plans).toBe(join(subDir, "sub-plans"));
 			// reviews should come from root (not overridden by sub-project)
-			expect(result.config.paths.reviews).toBe("root-reviews");
+			expect(result.config.paths.reviews).toBe(join(tmp, "root-reviews"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -144,8 +145,8 @@ describe("resolveLayeredConfig", () => {
 			// When root has no config, nearest is the only source (but still layered)
 			expect(result.config.maxStepsPerRun).toBe(75);
 			expect(result.config.author.model).toBe("sub-model");
-			// Zod defaults fill gaps
-			expect(result.config.paths.plans).toBe("docs/development");
+			// Zod defaults fill gaps — resolved to absolute against workspace root
+			expect(result.config.paths.plans).toBe(join(tmp, "docs/development"));
 			expect(result.rootConfigPath).toBeNull();
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -158,7 +159,8 @@ describe("resolveLayeredConfig", () => {
 			const result = await resolveLayeredConfig(tmp);
 			expect(result.isLayered).toBe(false);
 			expect(result.config.author.provider).toBe("opencode");
-			expect(result.config.paths.plans).toBe("docs/development");
+			// Zod defaults resolved to absolute against workspace root
+			expect(result.config.paths.plans).toBe(join(tmp, "docs/development"));
 			expect(result.config.qualityGates).toEqual([]);
 			expect(result.rootConfigPath).toBeNull();
 			expect(result.nearestConfigPath).toBeNull();
@@ -227,13 +229,17 @@ describe("resolveLayeredConfig", () => {
 
 			const result = await resolveLayeredConfig(tmp, subDir);
 			expect(result.isLayered).toBe(true);
-			// Sub overrides only the plan template
-			expect(result.config.paths.templates.plan).toBe("sub-plan-template");
-			// Review template inherits from root
-			expect(result.config.paths.templates.review).toBe("root-review-template");
-			// Top-level paths fields unchanged from root
-			expect(result.config.paths.plans).toBe("root-plans");
-			expect(result.config.paths.reviews).toBe("root-reviews");
+			// Sub overrides only the plan template — resolved against sub-project dir
+			expect(result.config.paths.templates.plan).toBe(
+				join(subDir, "sub-plan-template"),
+			);
+			// Review template inherits from root — resolved against root dir
+			expect(result.config.paths.templates.review).toBe(
+				join(tmp, "root-review-template"),
+			);
+			// Top-level paths fields unchanged from root — resolved against root dir
+			expect(result.config.paths.plans).toBe(join(tmp, "root-plans"));
+			expect(result.config.paths.reviews).toBe(join(tmp, "root-reviews"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -323,6 +329,137 @@ describe("resolveLayeredConfig", () => {
 			writeToml(tmp, `maxStepsPerRun = -1\n`);
 
 			await expect(resolveLayeredConfig(tmp)).rejects.toThrow(/Invalid config/);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Path resolution tests (Phase 1, 019-orchestrator-improvements)
+	// -----------------------------------------------------------------------
+
+	test("sub-project relative paths.plans resolves against sub-project dir", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[paths]\nplans = "root-plans"\n`);
+			const subDir = join(tmp, "packages", "foo");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[paths]\nplans = "docs/development"\n`);
+
+			const result = await resolveLayeredConfig(tmp, subDir);
+			// Sub-project relative path resolves against sub-project config dir
+			expect(result.config.paths.plans).toBe(join(subDir, "docs/development"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("root relative paths.plans resolves against root dir", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[paths]\nplans = "docs/plans"\n`);
+
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.config.paths.plans).toBe(join(tmp, "docs/plans"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("absolute paths pass through unchanged", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[paths]\nplans = "/opt/plans"\n`);
+
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.config.paths.plans).toBe("/opt/plans");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("nested paths.templates.plan resolves correctly for sub-project", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(
+				tmp,
+				`[paths.templates]\nplan = "root-template.md"\nreview = "root-review.md"\n`,
+			);
+			const subDir = join(tmp, "packages", "bar");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[paths.templates]\nplan = "templates/plan.md"\n`);
+
+			const result = await resolveLayeredConfig(tmp, subDir);
+			expect(result.config.paths.templates.plan).toBe(
+				join(subDir, "templates/plan.md"),
+			);
+			// Review template inherits from root
+			expect(result.config.paths.templates.review).toBe(
+				join(tmp, "root-review.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("merged config produces all-absolute paths", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(
+				tmp,
+				`[paths]\nplans = "root-plans"\nreviews = "root-reviews"\n`,
+			);
+			const subDir = join(tmp, "sub");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[paths]\nplans = "sub-plans"\n`);
+
+			const result = await resolveLayeredConfig(tmp, subDir);
+			// All paths absolute
+			expect(result.config.paths.plans.startsWith("/")).toBe(true);
+			expect(result.config.paths.reviews.startsWith("/")).toBe(true);
+			expect(result.config.paths.archive.startsWith("/")).toBe(true);
+			expect(result.config.paths.templates.plan.startsWith("/")).toBe(true);
+			expect(result.config.paths.templates.review.startsWith("/")).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("config with no explicit paths (Zod defaults only) produces absolute paths", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// Config has no paths section — all paths come from Zod defaults
+			writeToml(tmp, `maxStepsPerRun = 10\n`);
+
+			const result = await resolveLayeredConfig(tmp);
+			// All Zod default paths resolved against workspace root
+			expect(result.config.paths.plans).toBe(join(tmp, "docs/development"));
+			expect(result.config.paths.reviews).toBe(
+				join(tmp, "docs/development/reviews"),
+			);
+			expect(result.config.paths.archive).toBe(join(tmp, "docs/archive"));
+			expect(result.config.paths.templates.plan).toBe(
+				join(tmp, "docs/_implementation_plan_template.md"),
+			);
+			expect(result.config.paths.templates.review).toBe(
+				join(tmp, "docs/development/reviews/_review_template.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("non-layered config (single config file) also produces absolute paths", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[paths]\nplans = "my-plans"\n`);
+
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.isLayered).toBe(false);
+			// Single config paths are absolute
+			expect(result.config.paths.plans).toBe(join(tmp, "my-plans"));
+			// Zod defaults are also absolute
+			expect(result.config.paths.reviews.startsWith("/")).toBe(true);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

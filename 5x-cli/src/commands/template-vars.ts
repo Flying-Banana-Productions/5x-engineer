@@ -213,18 +213,13 @@ export function resolveInternalTemplateVariables(
 ): Record<string, string> {
 	const internalVars: Record<string, string> = {};
 
+	// paths.* values are always absolute after config loading — no resolve() needed.
 	if (declaredVars.includes("plan_template_path")) {
-		internalVars.plan_template_path = resolve(
-			projectRoot,
-			config.paths.templates.plan,
-		);
+		internalVars.plan_template_path = config.paths.templates.plan;
 	}
 
 	if (declaredVars.includes("review_template_path")) {
-		internalVars.review_template_path = resolve(
-			projectRoot,
-			config.paths.templates.review,
-		);
+		internalVars.review_template_path = config.paths.templates.review;
 	}
 
 	// Auto-generate review_path if declared but not explicitly provided

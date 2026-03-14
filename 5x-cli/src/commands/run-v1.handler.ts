@@ -254,6 +254,12 @@ function isPathUnder(childPath: string, parentPath: string): boolean {
 	return !relPath.startsWith("..") && !isAbsolute(relPath);
 }
 
+/**
+ * Resolve a configured path against projectRoot.
+ * Note: paths.* values are always absolute after config loading,
+ * so this is effectively a no-op for config paths. Kept for
+ * non-config paths that may still be relative.
+ */
 function resolveConfiguredPath(
 	projectRoot: string,
 	configuredPath: string,

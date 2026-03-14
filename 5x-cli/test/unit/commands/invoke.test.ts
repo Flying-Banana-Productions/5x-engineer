@@ -130,7 +130,18 @@ describe("invoke — variable substitution (unit)", () => {
 			"../../../src/commands/template-vars.js"
 		);
 
-		const config = FiveXConfigSchema.parse({});
+		// paths.* are always absolute after config loading — simulate that contract
+		const rawConfig = FiveXConfigSchema.parse({});
+		const config = {
+			...rawConfig,
+			paths: {
+				...rawConfig.paths,
+				templates: {
+					plan: "/tmp/project/docs/_implementation_plan_template.md",
+					review: "/tmp/project/docs/development/reviews/_review_template.md",
+				},
+			},
+		};
 		const vars = resolveInternalTemplateVariables(
 			["prd_path", "plan_path", "plan_template_path"],
 			{
@@ -152,7 +163,18 @@ describe("invoke — variable substitution (unit)", () => {
 			"../../../src/commands/template-vars.js"
 		);
 
-		const config = FiveXConfigSchema.parse({});
+		// paths.* are always absolute after config loading — simulate that contract
+		const rawConfig = FiveXConfigSchema.parse({});
+		const config = {
+			...rawConfig,
+			paths: {
+				...rawConfig.paths,
+				templates: {
+					plan: "/tmp/project/docs/_implementation_plan_template.md",
+					review: "/tmp/project/docs/development/reviews/_review_template.md",
+				},
+			},
+		};
 		const vars = resolveInternalTemplateVariables(
 			["commit_hash", "review_path", "plan_path", "review_template_path"],
 			{
@@ -175,7 +197,18 @@ describe("invoke — variable substitution (unit)", () => {
 			"../../../src/commands/template-vars.js"
 		);
 
-		const config = FiveXConfigSchema.parse({});
+		// paths.* are always absolute after config loading — simulate that contract
+		const rawConfig = FiveXConfigSchema.parse({});
+		const config = {
+			...rawConfig,
+			paths: {
+				...rawConfig.paths,
+				templates: {
+					plan: "/tmp/project/docs/_implementation_plan_template.md",
+					review: "/tmp/project/docs/development/reviews/_review_template.md",
+				},
+			},
+		};
 		const vars = resolveInternalTemplateVariables(
 			["prd_path", "plan_path", "plan_template_path", "review_template_path"],
 			{

@@ -82,11 +82,12 @@ function setupMonorepo(dir: string): {
 	writeFileSync(rootPlanPath, "# Root Plan\n\n## Phase 1\n\n- [ ] Task\n");
 
 	// Sub-project with its own config
+	// paths.plans is relative to the config file's directory (sub-project/)
 	const subDir = join(dir, "sub-project");
 	mkdirSync(subDir, { recursive: true });
 	writeFileSync(
 		join(subDir, "5x.toml"),
-		'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "sub-project/docs/development"\n',
+		'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "docs/development"\n',
 	);
 
 	// Sub-project plan
@@ -312,9 +313,10 @@ describe("config layering integration", () => {
 			const tmp = makeTmpDir();
 			try {
 				setupMonorepo(tmp);
+				// paths.plans is relative to the config file's directory (sub-project/)
 				writeFileSync(
 					join(tmp, "sub-project", "5x.toml"),
-					'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "sub-project/plans/drafts"\n',
+					'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "plans/drafts"\n',
 				);
 
 				const outputPlanPath = join(
