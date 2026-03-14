@@ -90,3 +90,38 @@ None.
 ### Assessment
 
 - **Readiness:** Not ready - the implementation changes runtime semantics beyond the approved phase and can silently bypass configured quality gates.
+
+## Addendum (2026-03-14) - Phase 3 R1 resolution review
+
+### What's Addressed
+
+- R1 is resolved. `runQuality()` now limits the `skipQualityGates` early-return to the empty-gates case, so configured quality gates always execute normally.
+- The docs table now matches the intended semantics for `skipQualityGates = true` with non-empty `qualityGates`.
+- Verification is adequate: the new unit test covers the non-empty-plus-skip path, and the Phase 3 test suite passes locally.
+
+### Remaining Concerns
+
+- None.
+
+### Assessment
+
+- **Readiness:** Ready - Phase 3 now matches the approved plan and no blocking issues remain.
+
+## Addendum (2026-03-14) - Phase 4 review
+
+### What's Addressed
+
+- `protocol validate author` now has the right surface area: `--plan` and `--no-phase-checklist-validate` are wired into `authorCmd`, and the checklist gate runs only for author `result: "complete"`.
+- The implementation correctly handles explicit-plan missing-file errors and the incomplete-checklist path, and the unit/integration coverage is broad overall.
+- Docs in `docs/development/016-review-artifacts-and-phase-checks.md` explain the new flags and error codes clearly.
+
+### Remaining Concerns
+
+- **P1.1 - Explicit `--phase` still fails open when plan comes from `--run`**  
+  **Action:** `auto_fix`  
+  **Why it matters:** the approved Phase 4 contract says explicit `--phase` should fail closed with `PHASE_NOT_FOUND` when the phase is absent in the parsed plan. Current logic only treats `--plan` as explicit input. If the user passes `--run <id> --phase <bad-phase>` and the run maps to a valid plan, missing phase lookup silently skips instead of raising `PHASE_NOT_FOUND`. That violates the plan's explicit-input behavior and leaves a real validation gap. Tests also miss this exact scenario.  
+  **Location:** `src/commands/protocol.handler.ts:180`
+
+### Assessment
+
+- **Readiness:** Ready with corrections - the core checklist gate is solid, but explicit `--phase` semantics do not fully match the approved fail-closed contract.

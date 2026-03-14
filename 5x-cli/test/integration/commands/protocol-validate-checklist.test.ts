@@ -345,6 +345,53 @@ describe("5x protocol validate author — checklist gate (integration)", () => {
 	);
 
 	test(
+		"--run with auto-discovered plan + explicit --phase not found → PHASE_NOT_FOUND (fail-closed)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = writePlan(dir, "test-plan.md", [
+					{
+						number: "1",
+						title: "Setup",
+						items: [{ text: "Create config", checked: true }],
+					},
+				]);
+				const runId = "run_checklist_phase404";
+				insertRun(dir, runId, planPath);
+
+				const input = JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				});
+
+				const result = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						runId,
+						"--phase",
+						"Phase 99: Nonexistent",
+					],
+					input,
+				);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = JSON.parse(result.stdout) as Record<string, unknown>;
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("PHASE_NOT_FOUND");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
 		"--plan with non-existent file → PLAN_NOT_FOUND",
 		async () => {
 			const dir = makeTmpDir();

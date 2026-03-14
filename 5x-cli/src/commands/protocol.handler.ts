@@ -100,12 +100,13 @@ function extractResult(parsed: unknown): unknown {
 /**
  * Validate that the plan's phase checklist is fully checked off.
  *
- * Fail-closed for explicit inputs: if --plan is provided but file doesn't
- * exist → PLAN_NOT_FOUND error. If --phase is provided but not found in
- * plan → PHASE_NOT_FOUND error.
+ * Plan path resolution:
+ * - If --plan is provided but file doesn't exist → PLAN_NOT_FOUND (fail-closed).
+ * - If plan is auto-discovered via --run but can't be resolved → skip silently (fail-open).
  *
- * Fail-open for auto-discovery: if plan/phase are derived from --run
- * context and not resolvable, skip silently.
+ * Phase lookup (once a plan IS resolved):
+ * - If --phase is provided but not found in the parsed plan → PHASE_NOT_FOUND (fail-closed),
+ *   regardless of how the plan was resolved. --phase is always explicit input.
  */
 function validatePhaseChecklist(params: ProtocolValidateParams): void {
 	const explicitPlan = !!params.plan;
@@ -178,15 +179,13 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 	);
 
 	if (!phase) {
-		if (explicitPlan) {
-			// Fail-closed: explicit --plan with phase not found
-			outputError(
-				"PHASE_NOT_FOUND",
-				`Phase '${params.phase}' not found in plan: ${params.plan}`,
-			);
-		}
-		// Auto-discovered — skip silently
-		return;
+		// Fail-closed: --phase is always explicit input (no auto-discovery for
+		// phase). Once a plan is resolved (by any means), a missing phase must
+		// error so orchestrators don't silently skip validation.
+		outputError(
+			"PHASE_NOT_FOUND",
+			`Phase '${params.phase}' not found in plan: ${planPath}`,
+		);
 	}
 
 	// Check if phase is complete
