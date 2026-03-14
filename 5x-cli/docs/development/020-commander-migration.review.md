@@ -151,3 +151,32 @@ The plan specifies `.choices(["yes", "no"])` for `prompt confirm --default`, but
   "summary": "v1.1 fixes the earlier blockers and is close to executable, but the plan still needs a small pass to reconcile stale PRD-derived help content and to align parser-error code mapping with the documented contract. Those are mechanical plan corrections, not architectural rework."
 }
 ```
+
+## Addendum (2026-03-14) - review iteration 3
+
+### What's Addressed
+
+- R1-R8 are now addressed in the plan: global `--pretty` semantics are preserved, `--worktree-path` has a compatibility path, pipe-composability coverage is explicit, stale PRD help content is called out for audit, non-JSON stdout exceptions include `harness install`, and Commander parse errors are mapped back to the PRD's distinct envelope codes.
+- The phase ordering and scope remain sound: handlers stay untouched, adapter migration remains isolated, and completion gates cover the highest-risk behavior changes.
+
+### Remaining Concerns
+
+- **P1.7 - The dependency plan misclassifies `@commander-js/extra-typings` as a devDependency even though the runtime code imports it.** Phase 1 adds `@commander-js/extra-typings` to `devDependencies`, but the plan's code sketches import `Command` and `CommanderError` from that package in `src/program.ts`, adapter files, and `src/bin.ts`. Because this package is part of the published CLI's runtime import graph, keeping it in `devDependencies` risks install/runtime failures for production consumers. The plan should either move `@commander-js/extra-typings` to `dependencies` or switch runtime imports back to `commander` and use extra typings only in a type-erased way.
+
+## Structured Assessment (Addendum)
+
+```json
+{
+  "readiness": "ready_with_corrections",
+  "items": [
+    {
+      "id": "R9",
+      "title": "Runtime-imported extra-typings package is placed in devDependencies",
+      "action": "auto_fix",
+      "reason": "The plan's code sketches import `@commander-js/extra-typings` from runtime entrypoints and adapters, so listing it only in `devDependencies` can break the published CLI or any production-style install that omits dev dependencies.",
+      "priority": "P1"
+    }
+  ],
+  "summary": "Review iteration 3 closes the earlier plan issues and leaves one remaining mechanical correction: the dependency classification for `@commander-js/extra-typings` must match its runtime usage. Once that is fixed, the plan is ready to execute."
+}
+```
