@@ -1,6 +1,6 @@
 # Orchestrator Improvements
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 14, 2026
 **Status:** Draft
 
@@ -12,7 +12,7 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 **Fix sub-project config paths before other changes.** The relative-path resolution bug in `resolveLayeredConfig()` prevents `5x run init` from working with sub-project configs. All other improvements depend on a working run infrastructure, so this must come first.
 
-**All `paths.*` values become absolute after config resolution.** Callers of `resolveLayeredConfig()` must always receive absolute paths. The `resolveRawConfigPaths()` helper resolves raw configured values against their config file's directory. After Zod parsing (which applies defaults), a second pass resolves any remaining relative default paths against the workspace root. This ensures uniform absolute semantics regardless of whether a value came from explicit config or Zod defaults. Downstream consumers no longer need to resolve paths themselves.
+**All `paths.*` values become absolute after any config load.** Every config-loading entry point — `resolveLayeredConfig()`, `loadConfig()`, and any other function that returns a `FiveXConfig` — must normalize `paths.*` values to absolute before returning. The `resolveRawConfigPaths()` helper resolves raw configured values against their config file's directory. After Zod parsing (which applies defaults), a second pass resolves any remaining relative default paths against the workspace root (or `projectRoot` for `loadConfig()`). This ensures uniform absolute semantics regardless of which entry point loaded the config, whether values came from explicit config or Zod defaults. Callers should never need to resolve paths themselves.
 
 **Checklist gate fails closed on explicit inputs, open on auto-discovery.** When `--plan` or `--phase` are explicitly provided, lookup failures (file not found, phase not found) must surface a validation error — silent skip would defeat the purpose of explicit args. Silent skip only applies to the best-effort auto-discovery path (no `--plan`, no `--run`).
 
@@ -26,15 +26,18 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 ## Phase 1: Sub-project Config Path Resolution
 
-**Completion gate:** `resolveLayeredConfig()` produces all-absolute `paths.*` values regardless of source (explicit config, Zod defaults, or merged layers). Existing config-layering tests pass (expectations updated for absolute paths). New tests validate sub-project paths, Zod defaults, and the integration workflow.
+**Completion gate:** Both `resolveLayeredConfig()` and `loadConfig()` produce all-absolute `paths.*` values regardless of source (explicit config, Zod defaults, or merged layers). No config-loading entry point returns relative `paths.*` values. Existing config-layering tests pass (expectations updated for absolute paths). New tests validate sub-project paths, Zod defaults, `loadConfig()` normalization, and the integration workflow.
 
-**Path contract:** After `resolveLayeredConfig()` returns, every `paths.*` value is an absolute path. Raw configured values are resolved against their config file's directory. Zod default values (e.g., `"docs/development"`) are resolved against the workspace root after schema parsing. Callers never receive relative paths.
+**Path contract:** After any config load (`resolveLayeredConfig()`, `loadConfig()`, or any other entry point), every `paths.*` value is an absolute path. Raw configured values are resolved against their config file's directory (or `projectRoot` for `loadConfig()`). Zod default values (e.g., `"docs/development"`) are resolved against the workspace root after schema parsing. Callers never receive relative paths and should never need to resolve paths themselves.
 
 - [ ] Add `resolveRawConfigPaths(raw: unknown, baseDir: string): unknown` helper function in `src/config.ts` (after `isRecord()` helper, ~line 183). Walks `raw.paths` and resolves each relative string value against `baseDir` using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and `paths.templates.review`. Returns a new object with only `paths` modified; non-path fields untouched. Already-absolute paths pass through unchanged.
 - [ ] Call `resolveRawConfigPaths()` on `rootRaw` with `dirname(rootConfigPath)` as `baseDir` in `resolveLayeredConfig()` (~line 489, after loading root config).
 - [ ] Call `resolveRawConfigPaths()` on `nearestRaw` with `dirname(nearestConfigPath)` as `baseDir` in `resolveLayeredConfig()` (~line 521, after loading nearest config).
 - [ ] After Zod schema parsing (which applies defaults for unset paths), call `resolveRawConfigPaths()` on the parsed `config.paths` with the workspace root as `baseDir`. This ensures Zod default relative paths (e.g., `"docs/development"`) also become absolute. Apply this to the final merged config object before returning.
+- [ ] Add path normalization to `loadConfig()` in `src/config.ts` (~line 394, after `applyDeprecatedAliases`): call `resolveRawConfigPaths()` on `config.paths` with `projectRoot` as `baseDir`. This ensures `loadConfig()` also returns absolute `paths.*` values, matching the same contract as `resolveLayeredConfig()`. Both explicit config values (resolved against `dirname(configPath)` or `projectRoot`) and Zod defaults (resolved against `projectRoot`) become absolute.
+- [ ] If `configPath` is non-null in `loadConfig()`, resolve raw `paths` values against `dirname(configPath)` before Zod parsing (same pattern as `resolveLayeredConfig()`), then resolve Zod defaults against `projectRoot` after parsing. If `configPath` is null (no config file, pure defaults), resolve only Zod defaults against `projectRoot`.
 - [ ] Audit downstream callers of `resolveLayeredConfig()` that manually resolve paths (e.g., `src/commands/template-vars.ts`, `src/commands/run.handler.ts`). Remove redundant `resolve()` calls that are now unnecessary since config always returns absolute paths. Add inline comments noting the contract.
+- [ ] Audit downstream callers of `loadConfig()` that use `paths.*` values: `src/commands/run-v1.handler.ts`, `src/commands/harness.handler.ts`, `src/commands/invoke.handler.ts`, `src/commands/template.handler.ts`, `src/commands/context.ts`. Verify none of these callers perform their own `resolve()` on `config.paths.*` values — if they do, remove the redundant resolution and add inline comments noting the absolute-path contract. These callers should work unchanged since absolute paths are a superset of the prior behavior.
 - [ ] Add unit tests in `test/unit/config-layering.test.ts`:
   - Sub-project `paths.plans = "docs/development"` resolves to `<sub-project-dir>/docs/development` (absolute), not `<root>/docs/development`.
   - Root `paths.plans = "docs/plans"` still resolves to `<root>/docs/plans` (absolute).
@@ -43,6 +46,11 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
   - Merged config produces all-absolute paths.
   - Config with no explicit paths (Zod defaults only) produces absolute paths resolved against workspace root.
   - Non-layered config (single config file) also produces absolute paths (same contract).
+- [ ] Add unit tests for `loadConfig()` path normalization in `test/unit/config.test.ts` (or `test/unit/config-paths.test.ts`):
+  - `loadConfig()` with a config file containing relative `paths.plans` returns an absolute path resolved against the config file's directory.
+  - `loadConfig()` with no config file (Zod defaults only) returns absolute `paths.*` values resolved against `projectRoot`.
+  - `loadConfig()` with already-absolute paths passes them through unchanged.
+  - `loadConfig()` with nested `paths.templates.plan` relative value resolves correctly.
 - [ ] Verify all existing `test/unit/config-layering.test.ts` tests pass — update string expectations from relative to absolute where the fix changes returned values.
 - [ ] Add integration test in `test/integration/commands/` for sub-project `5x run init`:
   - Create a temp repo with a root `5x.toml` and a sub-project `packages/foo/5x.toml` with relative `paths.plans = "docs/dev"`.
@@ -77,19 +85,20 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 - [ ] Add `skipQualityGates: z.boolean().default(false)` to `FiveXConfigSchema` in `src/config.ts` (~line 51, after `qualityGates`).
 - [ ] Add `"skipQualityGates"` to the `allowedRoot` set in `warnUnknownConfigKeys()` (~line 195).
+- [ ] Add an optional `warn?: (...args: unknown[]) => void` parameter to `runQuality()` (defaulting to `console.error`), following the same dependency-injection pattern used by `loadConfig()`.
 - [ ] Modify the no-op short-circuit in `runQuality()` (`src/commands/quality-v1.handler.ts`, ~line 173):
   - Read `skipQualityGates` from resolved config (alongside `qualityGates`).
   - If `skipQualityGates: true`: output `{ passed: true, results: [], skipped: true }`, no warning.
-  - If `qualityGates.length === 0` and `skipQualityGates: false`: emit `console.error("Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates: true to suppress this warning.")`, then output `{ passed: true, results: [] }`.
+  - If `qualityGates.length === 0` and `skipQualityGates: false`: call `warn("Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates: true to suppress this warning.")`, then output `{ passed: true, results: [] }`.
   - If `qualityGates.length > 0`: execute normally (unchanged).
 - [ ] Add unit tests in `test/unit/config.test.ts` or `test/unit/config-v1.test.ts`:
   - `skipQualityGates` defaults to `false` when not set.
   - `skipQualityGates: true` parses correctly.
   - `skipQualityGates` appears in allowed keys (no unknown-key warning).
-- [ ] Add handler-level unit test for the quality handler:
-  - Empty gates + `skipQualityGates: false` → output has no `skipped` field, stderr has warning.
-  - Empty gates + `skipQualityGates: true` → output has `skipped: true`, no stderr warning.
-  - Non-empty gates → normal execution (no `skipped` field).
+- [ ] Add handler-level unit test for the quality handler using the existing `warn` dependency-injection pattern (see `loadConfig()` signature in `src/config.ts` which already accepts an optional `warn` function). Add an optional `warn` parameter to `runQuality()` (defaulting to `console.error`). Unit tests inject a mock `warn` sink and assert on calls to it — this avoids capturing `console.error` output directly, which is reserved for integration tests per AGENTS.md:
+  - Empty gates + `skipQualityGates: false` → output has no `skipped` field, `warn` sink received the warning message.
+  - Empty gates + `skipQualityGates: true` → output has `skipped: true`, `warn` sink not called.
+  - Non-empty gates → normal execution (no `skipped` field, `warn` sink not called).
 - [ ] Add integration test in `test/integration/commands/` for `5x quality run` with no gates configured:
   - Create a temp repo with a `5x.toml` that has no `qualityGates` and `skipQualityGates = false`.
   - Spawn `5x quality run`, assert stderr contains the warning message and stdout JSON has `passed: true` without `skipped`.
@@ -141,19 +150,19 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 | File | Change |
 |------|--------|
-| `src/config.ts` | Add `resolveRawConfigPaths()` helper; add `skipQualityGates` to schema and allowlist |
+| `src/config.ts` | Add `resolveRawConfigPaths()` helper; normalize paths in both `resolveLayeredConfig()` and `loadConfig()`; add `skipQualityGates` to schema and allowlist |
 | `src/templates/loader.ts` | Add `variableDefaults` to `TemplateMetadata`; parse `variable_defaults` frontmatter; pre-populate defaults before missing-var check; remove stale comment |
 | `src/templates/author-next-phase.md` | Add `variable_defaults: {user_notes: ""}` to frontmatter |
 | `src/templates/author-fix-quality.md` | Add `variable_defaults: {user_notes: ""}` to frontmatter |
 | `src/templates/author-process-plan-review.md` | Add `variable_defaults: {user_notes: ""}` to frontmatter |
 | `src/templates/author-process-impl-review.md` | Add `variable_defaults: {user_notes: ""}` to frontmatter |
-| `src/commands/quality-v1.handler.ts` | Read `skipQualityGates`; modify no-op short-circuit with warning vs skipped logic |
+| `src/commands/quality-v1.handler.ts` | Add injectable `warn` parameter; read `skipQualityGates`; modify no-op short-circuit with warning vs skipped logic |
 | `src/commands/protocol.ts` | Add `--plan` and `--phase-checklist-validate` args to `authorCmd` |
 | `src/commands/protocol.handler.ts` | Add `plan`/`phaseChecklistValidate` to params; implement checklist gate logic |
 | `src/skills/5x-phase-execution/SKILL.md` | Remove explicit `review_path` vars from Steps 3 & 5; extract auto-derived path; handle `skipped: true` in Step 2 |
 | `docs/development/016-review-artifacts-and-phase-checks.md` (or equivalent) | Document `variable_defaults` frontmatter, `skipQualityGates` config key, `--plan`/`--no-phase-checklist-validate` flags |
 | `test/unit/config-layering.test.ts` | Tests for path resolution fix (including Zod defaults) |
-| `test/unit/config.test.ts` | Tests for `skipQualityGates` schema |
+| `test/unit/config.test.ts` (or `test/unit/config-paths.test.ts`) | Tests for `loadConfig()` path normalization; tests for `skipQualityGates` schema |
 | `test/unit/templates/loader.test.ts` | Tests for `variable_defaults` |
 | `test/unit/commands/protocol-validate.test.ts` | Tests for checklist gate (fail-closed on explicit args) |
 | `test/integration/commands/run-init-subproject.test.ts` | Integration test for sub-project `5x run init` with relative paths |
@@ -165,10 +174,10 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/config-layering.test.ts` | Sub-project relative paths resolve against config file dir; Zod defaults resolve against workspace root; all paths absolute |
-| Unit | `test/unit/config.test.ts` | `skipQualityGates` schema parsing and allowlist |
+| Unit | `test/unit/config.test.ts` (or `test/unit/config-paths.test.ts`) | `loadConfig()` returns absolute `paths.*` values (explicit config, defaults-only, nested templates); `skipQualityGates` schema parsing and allowlist |
 | Unit | `test/unit/templates/loader.test.ts` | `variable_defaults` parsing, default population, override behavior |
 | Unit | `test/unit/commands/protocol-validate.test.ts` | Checklist gate fires on incomplete phase; fail-closed on explicit `--plan`/`--phase` errors; suppressed by flag |
-| Unit | quality handler test | `skipQualityGates` + empty gates produces correct output and warnings |
+| Unit | quality handler test | `skipQualityGates` + empty gates produces correct output; injected `warn` sink receives warning (no stderr capture) |
 | Integration | `test/integration/commands/run-init-subproject.test.ts` | Sub-project `5x run init` resolves plan path correctly with layered config |
 | Integration | `test/integration/commands/quality-run-noop.test.ts` | `5x quality run` stderr warning with empty gates; silent skip with `skipQualityGates` |
 | Integration | `test/integration/commands/protocol-validate-checklist.test.ts` | `5x protocol validate author --run` with worktree-mapped plan and incomplete checklist |
@@ -190,6 +199,11 @@ The following inline doc updates ensure operators can discover new config keys a
 - Changes to reviewer protocol validation (checklist gate is author-only)
 
 ## Revision History
+
+### v1.2 (March 14, 2026) — Review iteration 2 feedback (019-orchestrator-improvements-review.md addendum)
+
+- **R4 / P1.1 (path contract across all entry points):** Extended the absolute-path contract to cover ALL config-loading paths, not just `resolveLayeredConfig()`. Phase 1 now includes `loadConfig()` normalization steps, a caller audit for `loadConfig()` call sites (`run-v1.handler`, `harness.handler`, `invoke.handler`, `template.handler`, `context.ts`), and dedicated unit tests for `loadConfig()` path normalization. Design Decision updated to state the contract applies to every config-loading entry point.
+- **R5 (quality handler stderr test):** Replaced the handler-level unit test that asserted on stderr output with a dependency-injected `warn` sink pattern (matching the existing `loadConfig()` convention). Unit tests now inject a mock `warn` function and assert on its calls. Stderr assertions remain in the integration test only, per AGENTS.md test-tier rules.
 
 ### v1.1 (March 14, 2026) — Review feedback (019-orchestrator-improvements-review.md)
 
