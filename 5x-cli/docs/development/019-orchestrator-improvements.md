@@ -141,11 +141,11 @@ Post-run analysis identified five pain points in the 5x-cli orchestration system
 
 **Completion gate:** SKILL.md changes are syntactically correct. The `reviewer-commit` and `author-process-impl-review` render calls no longer pass `--var review_path=...`. Quality gate routing handles `skipped: true`.
 
-- [ ] Edit `src/skills/5x-phase-execution/SKILL.md` Step 3 (reviewer-commit, ~line 276): remove `--var review_path=$REVIEW_PATH` from both the `5x template render` and `5x invoke reviewer` calls. After the render call, add: `REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')` to extract the auto-derived path.
-- [ ] Edit `src/skills/5x-phase-execution/SKILL.md` Step 5 (author-process-impl-review, ~line 328): remove `--var review_path=$REVIEW_PATH` from both the `5x template render` and `5x invoke author` calls. The review_path is already auto-derived by the CLI for this template.
-- [ ] Remove any stale `REVIEW_PATH=...` initialization from the phase loop header if present (check ~line 188-191 for any per-run initialization).
-- [ ] Edit `src/skills/5x-phase-execution/SKILL.md` Step 2 quality gate routing (~line 228): add handling for `skipped: true` in the quality result — treat as `passed: true` (continue to Step 3). Add a brief note: "If `skipped: true`, quality gates are intentionally disabled — proceed to review."
-- [ ] Verify the SKILL.md parses correctly as a skill (has valid frontmatter).
+- [x] Edit `src/skills/5x-phase-execution/SKILL.md` Step 3 (reviewer-commit, ~line 276): remove `--var review_path=$REVIEW_PATH` from both the `5x template render` and `5x invoke reviewer` calls. After the render call, add: `REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')` to extract the auto-derived path.
+- [x] Edit `src/skills/5x-phase-execution/SKILL.md` Step 5 (author-process-impl-review, ~line 328): remove `--var review_path=$REVIEW_PATH` from both the `5x template render` and `5x invoke author` calls. The review_path is already auto-derived by the CLI for this template.
+- [x] Remove any stale `REVIEW_PATH=...` initialization from the phase loop header if present (check ~line 188-191 for any per-run initialization).
+- [x] Edit `src/skills/5x-phase-execution/SKILL.md` Step 2 quality gate routing (~line 228): add handling for `skipped: true` in the quality result — treat as `passed: true` (continue to Step 3). Add a brief note: "If `skipped: true`, quality gates are intentionally disabled — proceed to review."
+- [x] Verify the SKILL.md parses correctly as a skill (has valid frontmatter).
 
 ## Files Touched
 

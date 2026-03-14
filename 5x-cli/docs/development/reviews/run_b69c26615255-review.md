@@ -125,3 +125,19 @@ None.
 ### Assessment
 
 - **Readiness:** Ready with corrections - the core checklist gate is solid, but explicit `--phase` semantics do not fully match the approved fail-closed contract.
+
+## Addendum (2026-03-14) - Phase 4 R1 resolution review
+
+### What's Addressed
+
+- R1 is resolved. Once a plan is resolved, an explicit `--phase` now fails closed with `PHASE_NOT_FOUND` regardless of whether the plan came from `--plan` or `--run` auto-discovery.
+- The added integration coverage closes the exact gap from the previous review, and the repaired E2E test removes a false-positive path that had been masking the bug.
+- Local verification passed for the protocol checklist unit and integration suites.
+
+### Remaining Concerns
+
+- None.
+
+### Assessment
+
+- **Readiness:** Ready - Phase 4 now matches the approved checklist-gate contract and no blocking issues remain.
