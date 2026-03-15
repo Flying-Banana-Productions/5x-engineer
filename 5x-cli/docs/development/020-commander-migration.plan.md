@@ -353,7 +353,7 @@ envelope with `--no-pretty` applied correctly. All existing integration
 tests pass (except those asserting on framework-generated text, which are
 updated in Phase 4).
 
-- [ ] Rewrite `src/bin.ts` (141 → ~80 lines):
+- [x] Rewrite `src/bin.ts` (141 → ~80 lines):
 
   ```ts
   #!/usr/bin/env bun
@@ -471,7 +471,7 @@ updated in Phase 4).
   }
   ```
 
-- [ ] Delete the code blocks that are no longer needed:
+- [x] Delete the code blocks that are no longer needed:
   - Lines 31-45: `--worktree`/`--worktree-path` argv splicing hack (replaced
     by commander's optional-value syntax + hidden `--worktree-path` alias)
   - Lines 76-94: `resolveSubCommand()` recursive walker
@@ -480,21 +480,21 @@ updated in Phase 4).
   - Note: The `--pretty`/`--no-pretty` pre-parse block (lines 10-29) is
     **retained** (ported to the new bin.ts), not deleted
 
-- [ ] Verify `bun run typecheck` passes
-- [ ] Verify `bun run src/bin.ts --help` shows commander-formatted output
-- [ ] Verify `bun run src/bin.ts --version` prints version
-- [ ] Verify `bun run src/bin.ts run init --plan /nonexistent` produces JSON
+- [x] Verify `bun run typecheck` passes
+- [x] Verify `bun run src/bin.ts --help` shows commander-formatted output
+- [x] Verify `bun run src/bin.ts --version` prints version
+- [x] Verify `bun run src/bin.ts run init --plan /nonexistent` produces JSON
   error envelope (CliError path works)
-- [ ] Verify `bun run src/bin.ts run complet` produces "Did you mean init?"
+- [x] Verify `bun run src/bin.ts run complet` produces "Did you mean init?"
   or similar suggestion (CommanderError path works) with `UNKNOWN_COMMAND`
   error code in the JSON envelope
-- [ ] Verify `--pretty` works at any argv position:
+- [x] Verify `--pretty` works at any argv position:
   - `bun run src/bin.ts --pretty run init --plan /nonexistent` → formatted JSON
   - `bun run src/bin.ts run init --plan /nonexistent --pretty` → formatted JSON
   - `bun run src/bin.ts run --pretty init --plan /nonexistent` → formatted JSON
-- [ ] Verify `--no-pretty` applies to parse-error envelopes:
+- [x] Verify `--no-pretty` applies to parse-error envelopes:
   - `bun run src/bin.ts --no-pretty run init` (no `--plan`) → compact JSON envelope
-- [ ] Verify `--worktree-path` backward compatibility:
+- [x] Verify `--worktree-path` backward compatibility:
   - `bun run src/bin.ts run init --plan plan.md --worktree --worktree-path /tmp/wt` →
     works, stderr shows deprecation warning
 

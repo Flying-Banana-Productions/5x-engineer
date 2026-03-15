@@ -6,7 +6,7 @@
  * Business logic lives in harness.handler.ts.
  */
 
-import type { Command } from "@commander-js/extra-typings";
+import { type Command, Option } from "@commander-js/extra-typings";
 import {
 	harnessInstall,
 	harnessList,
@@ -24,7 +24,12 @@ export function registerHarness(parent: Command) {
 		.summary("Install a harness integration (skills + agent profiles)")
 		.description("Install a harness integration (skills + agent profiles)")
 		.argument("<name>", "Harness name (e.g. opencode)")
-		.option("-s, --scope <scope>", "Install scope: user or project")
+		.addOption(
+			new Option(
+				"-s, --scope <scope>",
+				"Install scope: user or project",
+			).choices(["user", "project"] as const),
+		)
 		.option("-f, --force", "Overwrite existing skill and agent files")
 		.action(async (name, opts) => {
 			await harnessInstall({
@@ -50,7 +55,12 @@ export function registerHarness(parent: Command) {
 			"Uninstall a harness integration (remove skills + agent profiles)",
 		)
 		.argument("<name>", "Harness name (e.g. opencode)")
-		.option("-s, --scope <scope>", "Uninstall scope: user or project")
+		.addOption(
+			new Option(
+				"-s, --scope <scope>",
+				"Uninstall scope: user or project",
+			).choices(["user", "project"] as const),
+		)
 		.option("--all", "Uninstall from all supported scopes")
 		.action(async (name, opts) => {
 			await harnessUninstall({

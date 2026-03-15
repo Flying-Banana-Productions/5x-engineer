@@ -1,14 +1,27 @@
 #!/usr/bin/env bun
-import { defineCommand, runCommand, showUsage } from "citty";
+import { CommanderError } from "@commander-js/extra-typings";
+import { registerDiff } from "./commands/diff.js";
+import { registerHarness } from "./commands/harness.js";
+import { registerInit } from "./commands/init.js";
+import { registerInvoke } from "./commands/invoke.js";
+import { registerPlan } from "./commands/plan-v1.js";
+import { registerPrompt } from "./commands/prompt.js";
+import { registerProtocol } from "./commands/protocol.js";
+import { registerQuality } from "./commands/quality-v1.js";
+import { registerRun } from "./commands/run-v1.js";
+import { registerSkills } from "./commands/skills.js";
+import { registerTemplate } from "./commands/template.js";
+import { registerUpgrade } from "./commands/upgrade.js";
+import { registerWorktree } from "./commands/worktree.js";
 import { CliError, jsonStringify, setPrettyPrint } from "./output.js";
-import { version } from "./version.js";
+import { createProgram } from "./program.js";
 
 // ---------------------------------------------------------------------------
-// Global --pretty / --no-pretty flags (parsed before citty sees the args)
-// Last flag wins when both are present — preserves standard CLI precedence.
+// Global --pretty / --no-pretty flags (pre-parse strip, preserved from citty)
+// Accepted anywhere in argv. Last flag wins. Applied before commander parses
+// so that formatting is active even for parse-error JSON envelopes.
 // ---------------------------------------------------------------------------
 {
-	// Collect indices of all --pretty / --no-pretty flags (there may be dupes)
 	const indices: { idx: number; pretty: boolean }[] = [];
 	for (let i = process.argv.length - 1; i >= 0; i--) {
 		if (process.argv[i] === "--pretty") {
@@ -18,113 +31,39 @@ import { version } from "./version.js";
 		}
 	}
 	if (indices.length > 0) {
-		// Apply the flag with the highest original argv index (last wins)
 		const last = indices.reduce((a, b) => (a.idx > b.idx ? a : b));
 		setPrettyPrint(last.pretty);
-		// Remove all flag occurrences from argv (reverse-sorted to keep indices valid)
 		for (const { idx } of indices.sort((a, b) => b.idx - a.idx)) {
 			process.argv.splice(idx, 1);
 		}
 	}
 }
 
-// Support shorthand: `5x run init --worktree <path>`.
-// Normalize to: `5x run init --worktree --worktree-path <path>` so citty can parse.
-{
-	const args = process.argv;
-	const runIdx = args.indexOf("run");
-	if (runIdx !== -1 && args[runIdx + 1] === "init") {
-		for (let i = runIdx + 2; i < args.length; i += 1) {
-			if (args[i] !== "--worktree") continue;
-			const next = args[i + 1];
-			if (!next || next.startsWith("-")) continue;
-			args.splice(i + 1, 0, "--worktree-path");
-			i += 1;
-		}
-	}
-}
+const program = createProgram();
 
-const main = defineCommand({
-	meta: {
-		name: "5x",
-		version,
-		description: "A toolbelt of primitives for the 5x workflow",
-	},
-	// Phase 3 replaces these lazy imports with commander registerX() calls.
-	// The adapter files no longer export citty default commands (Phase 2
-	// rewrote them to commander), so these lines are dead code until the
-	// Phase 3 bin.ts rewrite.
-	subCommands: {
-		// @ts-expect-error Phase 3 replaces with registerRun()
-		run: () => import("./commands/run-v1.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerInvoke()
-		invoke: () => import("./commands/invoke.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerQuality()
-		quality: () => import("./commands/quality-v1.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerPlan()
-		plan: () => import("./commands/plan-v1.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerDiff()
-		diff: () => import("./commands/diff.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerPrompt()
-		prompt: () => import("./commands/prompt.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerInit()
-		init: () => import("./commands/init.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerHarness()
-		harness: () => import("./commands/harness.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerTemplate()
-		template: () => import("./commands/template.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerProtocol()
-		protocol: () => import("./commands/protocol.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerSkills()
-		skills: () => import("./commands/skills.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerUpgrade()
-		upgrade: () => import("./commands/upgrade.js").then((m) => m.default),
-		// @ts-expect-error Phase 3 replaces with registerWorktree()
-		worktree: () => import("./commands/worktree.js").then((m) => m.default),
-	},
+// Register all commands eagerly
+registerRun(program);
+registerInvoke(program);
+registerQuality(program);
+registerPlan(program);
+registerDiff(program);
+registerPrompt(program);
+registerInit(program);
+registerHarness(program);
+registerTemplate(program);
+registerProtocol(program);
+registerSkills(program);
+registerUpgrade(program);
+registerWorktree(program);
+
+// Configure output routing
+program.configureOutput({
+	writeErr: (str) => process.stderr.write(str),
+	outputError: (str, write) => write(str),
 });
 
-const rawArgs = process.argv.slice(2);
-
-// biome-ignore lint/suspicious/noExplicitAny: citty command types are loosely typed
-type AnyCmd = Record<string, any>;
-
-/** Walk rawArgs to resolve the deepest subcommand, returning [cmd, parent]. */
-async function resolveSubCommand(
-	cmd: AnyCmd,
-	args: string[],
-	parent?: AnyCmd,
-): Promise<[AnyCmd, AnyCmd | undefined]> {
-	const subs =
-		typeof cmd.subCommands === "function"
-			? await cmd.subCommands()
-			: cmd.subCommands;
-	if (!subs) return [cmd, parent];
-	const nameIdx = args.findIndex((a: string) => !a.startsWith("-"));
-	if (nameIdx === -1) return [cmd, parent];
-	const name = args[nameIdx] as string;
-	if (!subs[name]) return [cmd, parent];
-	const entry = subs[name];
-	const resolved = typeof entry === "function" ? await entry() : entry;
-	const child = resolved?.default ?? resolved;
-	return resolveSubCommand(child, args.slice(nameIdx + 1), cmd);
-}
-
 try {
-	// Handle --help / -h and --version before runCommand (which doesn't handle them)
-	if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
-		const [cmd, parent] = await resolveSubCommand(main, rawArgs);
-		await showUsage(
-			cmd as Parameters<typeof showUsage>[0],
-			parent as Parameters<typeof showUsage>[0],
-		);
-		process.exit(0);
-	}
-	if (rawArgs.length === 1 && rawArgs[0] === "--version") {
-		console.log(version);
-		process.exit(0);
-	}
-	await runCommand(main, { rawArgs });
+	await program.parseAsync(process.argv);
 } catch (err: unknown) {
 	if (err instanceof CliError) {
 		const envelope = {
@@ -138,20 +77,39 @@ try {
 		console.log(jsonStringify(envelope));
 		process.exit(err.exitCode);
 	}
-	// Citty CLIError (e.g. E_NO_COMMAND, E_UNKNOWN_COMMAND) — show usage
-	if (err instanceof Error && err.name === "CLIError") {
-		await showUsage(main);
-		console.error(err.message);
+	if (err instanceof CommanderError) {
+		// Commander validation/help/version errors
+		if (
+			err.code === "commander.helpDisplayed" ||
+			err.code === "commander.version"
+		) {
+			process.exit(0);
+		}
+		// Map Commander error codes to PRD-specified envelope codes:
+		//   commander.unknownCommand  → UNKNOWN_COMMAND
+		//   commander.unknownOption   → UNKNOWN_OPTION
+		//   all other parse errors    → INVALID_ARGS
+		const code =
+			err.code === "commander.unknownCommand"
+				? "UNKNOWN_COMMAND"
+				: err.code === "commander.unknownOption"
+					? "UNKNOWN_OPTION"
+					: "INVALID_ARGS";
+		const envelope = {
+			ok: false as const,
+			error: {
+				code,
+				message: err.message,
+			},
+		};
+		console.log(jsonStringify(envelope));
 		process.exit(1);
 	}
-	// Non-CliError — still emit a JSON envelope to keep the CLI contract stable
+	// Non-CliError — still emit JSON envelope
 	const message = err instanceof Error ? err.message : String(err);
 	const envelope = {
 		ok: false as const,
-		error: {
-			code: "INTERNAL_ERROR",
-			message,
-		},
+		error: { code: "INTERNAL_ERROR", message },
 	};
 	console.log(jsonStringify(envelope));
 	process.exit(1);
