@@ -1,6 +1,6 @@
 # Human-Readable Output Mode
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 15, 2026
 **Status:** Draft
 
@@ -60,10 +60,15 @@ custom formatters for better presentation. Rolling our own rather than
 adding a dependency — it's trivial code tailored to our data conventions.
 
 **Errors follow the output format.** In JSON mode, errors are JSON envelopes
-on stdout (unchanged). In text mode, errors are `Error: <message>` on
-stderr. This is handled centrally in `bin.ts`'s catch block, which already
-knows the output format from global state. Consistency: if you ask for text,
-you get text for both success and failure.
+on stdout (unchanged). In text mode, errors are a single `Error: <message>`
+on stderr. This is handled in two places in `bin.ts`: (1) Commander's
+`configureOutput` is updated to suppress its built-in `writeErr` and
+`outputError` writes in text mode, preventing Commander from writing
+parse-error diagnostics and help text to stderr before the catch block runs;
+(2) the catch block writes the clean `Error: <message>` line. Together these
+ensure text-mode parse errors (missing required options, unknown options,
+unknown commands) produce exactly one clean error line on stderr with no
+duplicated or contract-breaking output.
 
 **Custom formatters are co-located with handlers.** Each handler file can
 define private `format*Text()` functions passed to `outputSuccess()`. No
@@ -109,7 +114,7 @@ perfectly readable. No custom formatter needed.
 | `run complete` | `run_id  R1` / `status  completed` |
 | `run reopen` | `run_id  R1` / `status  active` / `previous_status  completed` |
 | `quality run` | `passed  true` / `results:` / (nested) |
-| `template render` | `template  author-next-phase` / `prompt  ...` |
+| `template render` | `template  author-next-phase` / `prompt  ...` (see note below) |
 | `harness list` | Key-value with nested scopes |
 | `harness uninstall` | Key-value with removed/notFound lists |
 | `skills install` | `scope  project` / `created  skill1, skill2` |
@@ -121,6 +126,14 @@ perfectly readable. No custom formatter needed.
 | `invoke author` | `run_id  R1` / `result:` / (nested) |
 | `run record` | `step_id  S1` / `step_name  author:phase-1` |
 | `protocol validate *` | `role  author` / `valid  true` / `result:` / (nested) |
+
+> **Note on `template render`:** This command's primary payload is a
+> multi-line prompt string. The generic key-value fallback will render it
+> as `prompt  <long text>`, which is readable but not ideal for one of the
+> most human-consumed commands. If the generic output proves awkward in
+> practice, `template render` should be promoted to Tier 1 with a custom
+> formatter that prints the prompt text directly (no key-value wrapping).
+> Deferred to post-initial-rollout to avoid speculative work.
 
 ### Tier 3 — Grandfathered (outside the system)
 
@@ -135,8 +148,10 @@ perfectly readable. No custom formatter needed.
 
 **Completion gate:** `output.ts` exports `setOutputFormat`, `getOutputFormat`,
 `formatGenericText`, and an updated `outputSuccess` with optional formatter.
-`bin.ts` strips `--text`/`--json` from argv, reads `5X_OUTPUT_FORMAT`, and
-handles errors in text mode. `bun run typecheck` passes. No behavioral
+`bin.ts` strips `--text`/`--json` from argv, reads `5X_OUTPUT_FORMAT`,
+suppresses Commander's built-in error output in text mode via
+`configureOutput`, and handles errors in text mode with a single clean
+`Error: <message>` on stderr. `bun run typecheck` passes. No behavioral
 changes yet (no formatters registered, default is still JSON).
 
 ### Phase 1a: Output format state (`src/output.ts`)
@@ -180,6 +195,8 @@ changes yet (no formatters registered, default is still JSON).
    * - Nested objects are indented
    * - Arrays of primitives are comma-joined on one line
    * - Arrays of objects are rendered as separated blocks
+   * - Empty arrays render as "(none)" to preserve semantic meaning
+   * - Empty objects render as "(none)" to preserve semantic meaning
    * - Null/undefined values are omitted
    */
   export function formatGenericText(
@@ -196,6 +213,10 @@ changes yet (no formatters registered, default is still JSON).
     }
 
     if (Array.isArray(data)) {
+      if (data.length === 0) {
+        console.log(`${pad}(none)`);
+        return;
+      }
       for (let i = 0; i < data.length; i++) {
         const item = data[i];
         if (typeof item === "object" && item !== null) {
@@ -210,7 +231,10 @@ changes yet (no formatters registered, default is still JSON).
 
     const entries = Object.entries(data as Record<string, unknown>)
       .filter(([, v]) => v != null);
-    if (entries.length === 0) return;
+    if (entries.length === 0) {
+      console.log(`${pad}(none)`);
+      return;
+    }
 
     const maxKey = Math.max(...entries.map(([k]) => k.length));
 
@@ -219,7 +243,10 @@ changes yet (no formatters registered, default is still JSON).
         console.log(`${pad}${key}:`);
         formatGenericText(value, indent + 1);
       } else if (Array.isArray(value)) {
-        if (value.length === 0) continue;
+        if (value.length === 0) {
+          console.log(`${pad}${key.padEnd(maxKey)}  (none)`);
+          continue;
+        }
         if (value.every((v) => typeof v !== "object")) {
           console.log(`${pad}${key.padEnd(maxKey)}  ${value.join(", ")}`);
         } else {
@@ -298,6 +325,38 @@ changes yet (no formatters registered, default is still JSON).
   }
   ```
 
+- [ ] Update `program.configureOutput()` (line 60) to suppress Commander's
+  built-in parse-error and help output in text mode. Commander calls
+  `writeErr` and `outputError` for validation failures (missing required
+  options, unknown options, unknown commands) **before** throwing the
+  `CommanderError` that our catch block handles. In JSON mode, this stderr
+  output is tolerable (the structured envelope on stdout is authoritative).
+  In text mode, it would produce duplicated or contract-breaking stderr —
+  Commander's verbose message followed by our clean `Error: <message>`.
+
+  Replace the existing `configureOutput` block with:
+
+  ```ts
+  program.configureOutput({
+    writeOut: (str) => process.stdout.write(str),
+    writeErr: (str) => {
+      // In text mode, suppress Commander's built-in error/help output.
+      // Our catch block will write the clean "Error: <message>" to stderr.
+      if (getOutputFormat() === "text") return;
+      process.stderr.write(str);
+    },
+    outputError: (str, write) => {
+      // In text mode, suppress Commander's error formatting.
+      if (getOutputFormat() === "text") return;
+      write(str);
+    },
+  });
+  ```
+
+  This ensures that in text mode, only our single `Error: <message>` line
+  appears on stderr. In JSON mode, Commander's stderr output is preserved
+  (unchanged behavior).
+
 - [ ] Update error handler in `bin.ts` catch block. For each of the three
   error branches (CliError, CommanderError, generic Error), add text mode
   handling before the existing JSON path:
@@ -344,8 +403,14 @@ changes yet (no formatters registered, default is still JSON).
   - `5x run list --text` → generic text output (any position)
   - `5X_OUTPUT_FORMAT=text 5x run list` → generic text output
   - `5x --text --json run list` → JSON (last flag wins)
-  - `5x --text run init` (missing `--plan`) → `Error: ...` on stderr
-  - `5x run init` (missing `--plan`) → JSON error envelope on stdout
+  - `5x --text run init` (missing `--plan`) → single `Error: ...` on
+    stderr, no Commander help/usage text, stdout empty, exit code 1
+  - `5x run init` (missing `--plan`) → JSON error envelope on stdout,
+    Commander help text on stderr (unchanged)
+  - `5x --text bogus` (unknown command) → single `Error: ...` on stderr,
+    no Commander suggestion text, stdout empty, exit code 1
+  - `5x --text run list --bogus` (unknown option) → single `Error: ...`
+    on stderr, stdout empty, exit code 1
 
 ## Phase 2: Custom Formatters
 
@@ -537,8 +602,10 @@ data that belongs on stdout.
 
 **Completion gate:** `bun test` passes. Existing tests are unchanged (they
 test JSON mode, which is still the default). New tests cover `--text` mode
-for custom-formatted commands, generic-formatted commands, error handling,
-and the env var.
+for custom-formatted commands, generic-formatted commands, error handling
+(including Commander parse errors: missing required option, unknown option,
+unknown command — verifying no leaked Commander stderr), `--pretty`/`--text`
+interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4a: Unit tests for new output infrastructure
 
@@ -553,7 +620,11 @@ and the env var.
   - Array of primitives → comma-joined
   - Array of objects → separated blocks
   - Null values omitted
-  - Empty object → no output
+  - Empty array → prints `(none)`
+  - Empty object → prints `(none)`
+  - Object with empty array value → prints `key  (none)`
+  - Object with mix of empty and populated arrays → empty renders
+    `(none)`, populated renders normally
 
 - [ ] `test/unit/output.test.ts` — Add tests for `outputSuccess` with
   formatter:
@@ -572,11 +643,24 @@ and the env var.
     → JSON envelope
   - Unknown format env value ignored: `5X_OUTPUT_FORMAT=bogus 5x run list`
     → JSON envelope (default)
+  - `--pretty` ignored in text mode: `5x --text --pretty run list` →
+    text output (not JSON), identical to `5x --text run list`
+  - `--no-pretty` ignored in text mode: `5x --text --no-pretty run list` →
+    text output, identical to `5x --text run list`
+  - `--pretty` still works in JSON mode: `5x --pretty run list` →
+    pretty-printed JSON envelope (unchanged behavior)
 
 ### Phase 4c: Integration tests for text-mode errors
 
 - [ ] In `test/integration/commands/text-output.test.ts`:
-  - `5x --text run init` (missing `--plan`) → stderr contains `Error:`,
+  - `5x --text run init` (missing required `--plan`) → stderr contains
+    exactly one `Error:` line, stderr does NOT contain Commander help/usage
+    text, stdout is empty, exit code 1
+  - `5x --text bogus` (unknown command) → stderr contains exactly one
+    `Error:` line, stderr does NOT contain Commander suggestion text,
+    stdout is empty, exit code 1
+  - `5x --text run list --bogus` (unknown option) → stderr contains
+    exactly one `Error:` line, stderr does NOT contain Commander help text,
     stdout is empty, exit code 1
   - `5x --text run complete -r nonexistent` → stderr contains `Error:`,
     stdout is empty
@@ -664,7 +748,7 @@ need updating:
 | File | Change |
 |------|--------|
 | `src/output.ts` | Add output format state, generic text formatter, update `outputSuccess` signature |
-| `src/bin.ts` | Add `--text`/`--json` argv stripping, `5X_OUTPUT_FORMAT` env var, text-mode error handling |
+| `src/bin.ts` | Add `--text`/`--json` argv stripping, `5X_OUTPUT_FORMAT` env var, update `configureOutput` to suppress Commander stderr in text mode, text-mode error handling in catch block |
 | `src/commands/diff.handler.ts` | Add `formatDiffText()`, pass to `outputSuccess` |
 | `src/commands/run-v1.handler.ts` | Add `formatStateText()`, `formatListText()`, pass to `outputSuccess` |
 | `src/commands/plan-v1.handler.ts` | Add `formatPhasesText()`, pass to `outputSuccess` |
@@ -680,8 +764,8 @@ need updating:
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `output.test.ts` | Format state, generic formatter, outputSuccess branching |
-| Integration | `text-output.test.ts` | `--text`/`--json` flags, env var, precedence, custom formatters, generic fallback, text-mode errors |
+| Unit | `output.test.ts` | Format state, generic formatter (including empty-state rendering), outputSuccess branching |
+| Integration | `text-output.test.ts` | `--text`/`--json` flags, env var, precedence, `--pretty`/`--text` interaction, Commander parse-error suppression (required option, unknown option, unknown command), custom formatters, generic fallback, text-mode errors |
 | Integration | All existing tests (unchanged) | JSON default preserved — full non-regression |
 | Integration | `harness.test.ts` (existing) | Verify no stderr summary after `printListSummary`/`printUninstallSummary` removal |
 | Integration | `skills-install.test.ts` (existing) | Verify no stderr progress after `console.error` removal |
@@ -705,7 +789,39 @@ need updating:
   system (grandfathered — they use progressive `console.log`)
 - Changing `run watch` output (already has `--human-readable` flag)
 - Per-command `--text`/`--json` flags (global only)
-- `--pretty`/`--no-pretty` interaction with text mode (`--pretty` is
-  ignored in text mode — it only affects JSON formatting)
+- `--pretty`/`--no-pretty` behavior changes for text mode (`--pretty` is
+  naturally ignored in text mode since the text path never calls
+  `jsonStringify` — no code needed; integration tests verify this contract)
 - Custom formatters for Tier 2 commands (generic fallback is sufficient;
   custom formatters can be added later based on usage)
+
+## Revision History
+
+### v1.1 — March 15, 2026
+
+Addressed review feedback from `021-human-readable-output.review.md`:
+
+- **P0.1 — Commander parse-error stderr suppression:** Added
+  `configureOutput` update to Phase 1b that suppresses Commander's built-in
+  `writeErr`/`outputError` in text mode, preventing duplicated or
+  contract-breaking stderr for parse errors. Updated design decision on
+  error handling to document the two-place approach (configureOutput +
+  catch block). Added explicit integration tests for text-mode parse errors
+  covering missing required option, unknown option, and unknown command
+  cases (Phase 4c). Expanded Phase 1b manual verification checklist.
+
+- **P1.1 — Empty-state rendering in generic formatter:** Updated
+  `formatGenericText` to render empty arrays and empty objects as `(none)`
+  instead of silently omitting them. Empty array values within objects
+  render as `key  (none)`. Added corresponding unit tests in Phase 4a.
+
+- **P1.2 — `--pretty` + `--text` interaction tests:** Added integration
+  tests to Phase 4b verifying that `--pretty` and `--no-pretty` do not
+  affect text mode output. Updated Not In Scope section to note that
+  integration tests cover this contract.
+
+- **P2 — `template render` tier placement:** Added a note to the Tier 2
+  table acknowledging that the generic key-value fallback may be awkward
+  for `template render`'s multi-line prompt payload, with guidance to
+  promote to Tier 1 post-rollout if needed. Deferred to avoid speculative
+  work.
