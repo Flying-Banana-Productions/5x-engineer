@@ -592,13 +592,13 @@ Help examples are audited against actual CLI behavior (not copied verbatim
 from the PRD, which contains stale examples). Short flags work for all
 assigned commands.
 
-- [ ] Add `.summary()` and `.description()` to every command in all 13
+- [x] Add `.summary()` and `.description()` to every command in all 13
   adapter files, using the content from PRD Section 2.2 as a starting point.
   Each command gets:
   - `.summary()` — one-line shown in parent's subcommand list
   - `.description()` — longer explanation shown in own `--help`
 
-- [ ] Audit all PRD Section 2.2 help examples against actual current CLI
+- [x] Audit all PRD Section 2.2 help examples against actual current CLI
   behavior before copying them into commander help definitions. The PRD
   contains stale examples that do not match the implemented CLI surface.
   Known corrections needed:
@@ -610,7 +610,7 @@ assigned commands.
     option definitions and handler requirements. Cross-reference adapter
     files and handler param interfaces.
 
-- [ ] Add `.addHelpText("after", ...)` example blocks to all leaf commands
+- [x] Add `.addHelpText("after", ...)` example blocks to all leaf commands
   using the audited/corrected content from PRD Section 2.2. Format:
   ```ts
   .addHelpText("after", `
@@ -622,7 +622,7 @@ assigned commands.
   `)
   ```
 
-- [ ] Add program-level description and footer to `src/program.ts`:
+- [x] Add program-level description and footer to `src/program.ts`:
   ```ts
   program
     .description(
@@ -644,7 +644,7 @@ assigned commands.
     );
   ```
 
-- [ ] Add option grouping to `invoke author`/`invoke reviewer` and
+- [x] Add option grouping to `invoke author`/`invoke reviewer` and
   `run record` using Commander's `configureHelp()` with a custom
   `formatHelp` function. This is the verified Commander v13 approach —
   `configureHelp()` accepts a `formatHelp(cmd, helper)` callback that
@@ -656,16 +656,16 @@ assigned commands.
     Recording Options
   - `run record`: Required, Result, Metadata, Metrics
 
-- [ ] Verify all short flags work end-to-end:
+- [x] Verify all short flags work end-to-end:
   - `5x run init -p plan.md -w` ≡ `5x run init --plan plan.md --worktree`
   - `5x run state -r abc -t 5` ≡ `5x run state --run abc --tail 5`
   - `5x invoke author tmpl -r abc -m claude -t 60 -q`
   - `5x diff -s main -r abc`
   - `5x init -f` ≡ `5x init --force`
 
-- [ ] Final pass: `bun test` — all tests pass
-- [ ] Final pass: `bun run typecheck` — no type errors
-- [ ] Final pass: `bun build --compile src/bin.ts --outfile dist/5x` — binary
+- [x] Final pass: `bun test` — all tests pass
+- [x] Final pass: `bun run typecheck` — no type errors
+- [x] Final pass: `bun build --compile src/bin.ts --outfile dist/5x` — binary
   works
 
 ## Phase 6: Cleanup

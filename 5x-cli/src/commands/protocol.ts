@@ -14,21 +14,27 @@ export function registerProtocol(parent: Command) {
 	const protocol = parent
 		.command("protocol")
 		.summary("Structured protocol validation and recording")
-		.description("Structured protocol validation and recording");
+		.description(
+			"Validate JSON output from author and reviewer agents against the 5x protocol\n" +
+				"schemas. Optionally record validated results as run steps.",
+		);
 
 	const validate = protocol
 		.command("validate")
-		.summary(
-			"Validate structured JSON against author/reviewer protocol schemas",
-		)
+		.summary("Validate structured JSON against protocol schemas")
 		.description(
-			"Validate structured JSON against author/reviewer protocol schemas",
+			"Parse and validate JSON from a file or stdin against the author or reviewer\n" +
+				"protocol schema. Returns the validated and normalized result.",
 		);
 
 	validate
 		.command("author")
 		.summary("Validate an AuthorStatus structured result")
-		.description("Validate an AuthorStatus structured result")
+		.description(
+			"Validate a JSON object against the AuthorStatus protocol schema. By default,\n" +
+				'requires a commit hash for "complete" results; use --no-require-commit to\n' +
+				"relax this constraint.",
+		)
 		.option(
 			"-i, --input <path>",
 			"Path to input JSON file (default: read from stdin)",
@@ -58,6 +64,14 @@ export function registerProtocol(parent: Command) {
 			true,
 		)
 		.option("--no-phase-checklist-validate", "Skip phase checklist validation")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x protocol validate author -i /tmp/author-result.json\n" +
+				"  $ cat result.json | 5x protocol validate author\n" +
+				"  $ 5x protocol validate author -i result.json --record -r abc123 -p phase-1\n" +
+				"  $ 5x protocol validate author -i result.json --no-require-commit",
+		)
 		.action(async (opts) => {
 			await protocolValidate({
 				role: "author",
@@ -76,7 +90,9 @@ export function registerProtocol(parent: Command) {
 	validate
 		.command("reviewer")
 		.summary("Validate a ReviewerVerdict structured result")
-		.description("Validate a ReviewerVerdict structured result")
+		.description(
+			"Validate a JSON object against the ReviewerVerdict protocol schema.",
+		)
 		.option(
 			"-i, --input <path>",
 			"Path to input JSON file (default: read from stdin)",
@@ -89,6 +105,12 @@ export function registerProtocol(parent: Command) {
 			"--iteration <n>",
 			"Iteration number (used with --record)",
 			intArg("--iteration"),
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x protocol validate reviewer -i /tmp/verdict.json\n" +
+				"  $ cat verdict.json | 5x protocol validate reviewer --record -r abc123",
 		)
 		.action(async (opts) => {
 			await protocolValidate({

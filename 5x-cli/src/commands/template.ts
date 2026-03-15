@@ -14,15 +14,18 @@ export function registerTemplate(parent: Command) {
 	const template = parent
 		.command("template")
 		.summary("Prompt template operations")
-		.description("Prompt template operations");
+		.description(
+			"Inspect and render prompt templates used by agent invocations. Templates use\n" +
+				"variable substitution and are resolved from the project's template directory.",
+		);
 
 	template
 		.command("render")
-		.summary(
-			"Render a prompt template with variable substitution (no provider invocation)",
-		)
+		.summary("Render a prompt template with variable substitution")
 		.description(
-			"Render a prompt template with variable substitution (no provider invocation)",
+			"Render a prompt template, substituting variables and resolving run context.\n" +
+				"Returns the fully rendered template text. Use --var for explicit variables\n" +
+				"and --run for run/worktree context resolution.",
 		)
 		.argument(
 			"<template>",
@@ -45,6 +48,13 @@ export function registerTemplate(parent: Command) {
 		.option(
 			"-w, --workdir <path>",
 			"Working directory override (explicit --workdir wins)",
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x template render author-next-phase -r abc123\n" +
+				"  $ 5x template render reviewer-plan --var plan_path=./plan.md\n" +
+				"  $ 5x template render author-next-phase -r abc123 --session sess_abc",
 		)
 		.action(async (template, opts) => {
 			await templateRender({

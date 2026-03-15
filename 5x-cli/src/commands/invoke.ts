@@ -69,63 +69,110 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 		);
 }
 
+/**
+ * Build an option-grouped help text block for invoke subcommands.
+ */
+function invokeHelpSuffix(examples: string): string {
+	return (
+		"\nOption Groups:\n" +
+		"  Template:   <template>, --var, --session\n" +
+		"  Execution:  -r/--run, -m/--model, -t/--timeout, -w/--workdir,\n" +
+		"              --author-provider, --reviewer-provider, --opencode-url\n" +
+		"  Output:     -q/--quiet, --show-reasoning, --stderr\n" +
+		"  Recording:  --record, --record-step, --phase, --iteration\n" +
+		`\nExamples:\n${examples}`
+	);
+}
+
 export function registerInvoke(parent: Command) {
 	const invoke = parent
 		.command("invoke")
-		.summary("Invoke an agent with a prompt template")
-		.description("Invoke an agent with a prompt template");
+		.summary("Invoke an AI agent with a prompt template")
+		.description(
+			"Launch an author or reviewer agent with a prompt template. Templates are\n" +
+				"rendered with variable substitution, then sent to the configured AI provider.\n" +
+				"Supports session resumption, model override, timeout, and automatic run step\n" +
+				"recording.",
+		);
 
 	addInvokeOptions(
 		invoke
 			.command("author")
 			.summary("Invoke an author agent with a template")
-			.description("Invoke an author agent with a template"),
-	).action(async (template, opts) => {
-		await invokeAgent("author", {
-			template,
-			run: opts.run,
-			vars: opts.var,
-			model: opts.model,
-			workdir: opts.workdir,
-			session: opts.session,
-			timeoutSeconds: opts.timeout,
-			quiet: opts.quiet,
-			showReasoning: opts.showReasoning,
-			stderr: opts.stderr,
-			authorProvider: opts.authorProvider,
-			reviewerProvider: opts.reviewerProvider,
-			opencodeUrl: opts.opencodeUrl,
-			record: opts.record,
-			recordStep: opts.recordStep,
-			phase: opts.phase,
-			iteration: opts.iteration,
+			.description(
+				"Launch an author agent using the specified prompt template. The author agent\n" +
+					"generates code, documentation, or other artifacts. Use --var to inject\n" +
+					"template variables, --model to override the provider, and --record to\n" +
+					"automatically save the result as a run step.",
+			),
+	)
+		.addHelpText(
+			"after",
+			invokeHelpSuffix(
+				"  $ 5x invoke author author-next-phase -r abc123\n" +
+					'  $ 5x invoke author author-fix-quality -r abc123 --var user_notes="fix lint"\n' +
+					"  $ 5x invoke author author-next-phase -r abc123 -m claude-opus -t 300\n" +
+					"  $ 5x invoke author author-next-phase -r abc123 --record -p phase-1",
+			),
+		)
+		.action(async (template, opts) => {
+			await invokeAgent("author", {
+				template,
+				run: opts.run,
+				vars: opts.var,
+				model: opts.model,
+				workdir: opts.workdir,
+				session: opts.session,
+				timeoutSeconds: opts.timeout,
+				quiet: opts.quiet,
+				showReasoning: opts.showReasoning,
+				stderr: opts.stderr,
+				authorProvider: opts.authorProvider,
+				reviewerProvider: opts.reviewerProvider,
+				opencodeUrl: opts.opencodeUrl,
+				record: opts.record,
+				recordStep: opts.recordStep,
+				phase: opts.phase,
+				iteration: opts.iteration,
+			});
 		});
-	});
 
 	addInvokeOptions(
 		invoke
 			.command("reviewer")
 			.summary("Invoke a reviewer agent with a template")
-			.description("Invoke a reviewer agent with a template"),
-	).action(async (template, opts) => {
-		await invokeAgent("reviewer", {
-			template,
-			run: opts.run,
-			vars: opts.var,
-			model: opts.model,
-			workdir: opts.workdir,
-			session: opts.session,
-			timeoutSeconds: opts.timeout,
-			quiet: opts.quiet,
-			showReasoning: opts.showReasoning,
-			stderr: opts.stderr,
-			authorProvider: opts.authorProvider,
-			reviewerProvider: opts.reviewerProvider,
-			opencodeUrl: opts.opencodeUrl,
-			record: opts.record,
-			recordStep: opts.recordStep,
-			phase: opts.phase,
-			iteration: opts.iteration,
+			.description(
+				"Launch a reviewer agent using the specified prompt template. The reviewer\n" +
+					"agent evaluates code or plan quality and produces a structured verdict.",
+			),
+	)
+		.addHelpText(
+			"after",
+			invokeHelpSuffix(
+				"  $ 5x invoke reviewer reviewer-plan -r abc123\n" +
+					"  $ 5x invoke reviewer reviewer-impl -r abc123 -p phase-1 --record\n" +
+					"  $ 5x invoke reviewer reviewer-impl -r abc123 -q              # quiet mode",
+			),
+		)
+		.action(async (template, opts) => {
+			await invokeAgent("reviewer", {
+				template,
+				run: opts.run,
+				vars: opts.var,
+				model: opts.model,
+				workdir: opts.workdir,
+				session: opts.session,
+				timeoutSeconds: opts.timeout,
+				quiet: opts.quiet,
+				showReasoning: opts.showReasoning,
+				stderr: opts.stderr,
+				authorProvider: opts.authorProvider,
+				reviewerProvider: opts.reviewerProvider,
+				opencodeUrl: opts.opencodeUrl,
+				record: opts.record,
+				recordStep: opts.recordStep,
+				phase: opts.phase,
+				iteration: opts.iteration,
+			});
 		});
-	});
 }
