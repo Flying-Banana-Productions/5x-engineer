@@ -112,7 +112,7 @@ export function registerInvoke(parent: Command) {
 				"  $ 5x invoke author author-next-phase -r abc123\n" +
 					'  $ 5x invoke author author-fix-quality -r abc123 --var user_notes="fix lint"\n' +
 					"  $ 5x invoke author author-next-phase -r abc123 -m claude-opus -t 300\n" +
-					"  $ 5x invoke author author-next-phase -r abc123 --record -p phase-1",
+					"  $ 5x invoke author author-next-phase -r abc123 --record --phase phase-1",
 			),
 		)
 		.action(async (template, opts) => {
@@ -150,7 +150,7 @@ export function registerInvoke(parent: Command) {
 			"after",
 			invokeHelpSuffix(
 				"  $ 5x invoke reviewer reviewer-plan -r abc123\n" +
-					"  $ 5x invoke reviewer reviewer-impl -r abc123 -p phase-1 --record\n" +
+					"  $ 5x invoke reviewer reviewer-impl -r abc123 --phase phase-1 --record\n" +
 					"  $ 5x invoke reviewer reviewer-impl -r abc123 -q              # quiet mode",
 			),
 		)

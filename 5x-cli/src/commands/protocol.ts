@@ -69,7 +69,7 @@ export function registerProtocol(parent: Command) {
 			"\nExamples:\n" +
 				"  $ 5x protocol validate author -i /tmp/author-result.json\n" +
 				"  $ cat result.json | 5x protocol validate author\n" +
-				"  $ 5x protocol validate author -i result.json --record -r abc123 -p phase-1\n" +
+				"  $ 5x protocol validate author -i result.json --record -r abc123 --phase phase-1\n" +
 				"  $ 5x protocol validate author -i result.json --no-require-commit",
 		)
 		.action(async (opts) => {
