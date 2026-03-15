@@ -297,6 +297,17 @@ echo "$RESULT" | 5x protocol validate reviewer \
   --iteration $REVIEW_ITERATIONS
 ```
 
+After the reviewer completes and the result is validated, verify the
+review document was committed:
+
+    git -C $WORKTREE_PATH log -1 --name-only | grep -q "$REVIEW_PATH"
+
+If the review file was not committed, commit it on behalf of the
+reviewer before proceeding:
+
+    git -C $WORKTREE_PATH add $REVIEW_PATH
+    git -C $WORKTREE_PATH commit -m "review: phase $PHASE"
+
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
 exists. Capture $REVIEWER_SESSION for optional reuse in subsequent
