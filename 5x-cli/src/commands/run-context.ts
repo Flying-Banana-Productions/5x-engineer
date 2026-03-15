@@ -181,9 +181,7 @@ export function resolveRunExecutionContext(
 				run: { id: run.id, plan_path: run.plan_path, status: run.status },
 				mappedWorktreePath,
 				effectiveWorkingDirectory: mappedWorktreePath,
-				effectivePlanPath: planPathInWorktreeExists
-					? worktreePlanPath
-					: planPath,
+				effectivePlanPath: worktreePlanPath,
 				planPathInWorktreeExists,
 			},
 		};
