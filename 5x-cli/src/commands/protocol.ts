@@ -40,7 +40,7 @@ export function registerProtocol(parent: Command) {
 		.option(
 			"--iteration <n>",
 			"Iteration number (used with --record)",
-			intArg("--iteration", { positive: true }),
+			intArg("--iteration"),
 		)
 		.option(
 			"--require-commit",
@@ -88,7 +88,7 @@ export function registerProtocol(parent: Command) {
 		.option(
 			"--iteration <n>",
 			"Iteration number (used with --record)",
-			intArg("--iteration", { positive: true }),
+			intArg("--iteration"),
 		)
 		.action(async (opts) => {
 			await protocolValidate({

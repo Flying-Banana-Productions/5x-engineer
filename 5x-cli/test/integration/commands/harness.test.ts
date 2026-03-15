@@ -474,7 +474,7 @@ describe("5x harness install — scope validation", () => {
 				]);
 
 				expect(exitCode).not.toBe(0);
-				expect(stdout).toContain("Invalid scope");
+				expect(stdout).toContain("Allowed choices are user, project");
 			} finally {
 				cleanupDir(tmp);
 			}

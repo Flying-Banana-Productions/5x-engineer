@@ -524,7 +524,7 @@ describe("worktree help text", () => {
 				pathResolve(import.meta.dir, "../../../src/commands/worktree.ts"),
 				"utf-8",
 			);
-			expect(src).toContain('"allow-nested"');
+			expect(src).toContain("--allow-nested");
 			expect(src).toContain("allowNested");
 		},
 		{ timeout: 15000 },

@@ -65,7 +65,7 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 		.option(
 			"--iteration <n>",
 			"Iteration number (used with --record)",
-			intArg("--iteration", { positive: true }),
+			intArg("--iteration"),
 		);
 }
 

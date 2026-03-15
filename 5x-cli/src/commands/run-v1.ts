@@ -113,11 +113,7 @@ export function registerRun(parent: Command) {
 			'Result JSON (raw string, "-" for stdin, "@path" for file)',
 		)
 		.option("-p, --phase <name>", "Phase identifier")
-		.option(
-			"--iteration <n>",
-			"Iteration number",
-			intArg("--iteration", { positive: true }),
-		)
+		.option("--iteration <n>", "Iteration number", intArg("--iteration"))
 		.option("--session-id <id>", "Agent session ID")
 		.option("--model <name>", "Model used")
 		.option("--tokens-in <n>", "Input tokens", intArg("--tokens-in"))
