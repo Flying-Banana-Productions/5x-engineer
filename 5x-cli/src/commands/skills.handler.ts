@@ -1,7 +1,7 @@
 /**
  * Skills command handler — business logic for installing agent skills.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

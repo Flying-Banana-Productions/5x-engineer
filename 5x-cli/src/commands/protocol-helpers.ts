@@ -5,7 +5,7 @@
  * 014-harness-native-subagent) so both paths share one validation
  * contract.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { outputError } from "../output.js";

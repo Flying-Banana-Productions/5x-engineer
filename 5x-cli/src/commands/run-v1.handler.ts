@@ -1,7 +1,7 @@
 /**
  * Run v1 command handlers — business logic for run lifecycle management.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 3b (013-worktree-authoritative-execution-context):
  * All run subcommands use `resolveControlPlaneRoot` (via `resolveDbContext`)

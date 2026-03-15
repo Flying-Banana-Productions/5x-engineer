@@ -4,7 +4,7 @@
  * Extracted from invoke.handler.ts (Phase 1, 014-harness-native-subagent)
  * so that both `5x invoke` and `5x template render` share one implementation.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { readFileSync } from "node:fs";
@@ -53,7 +53,7 @@ function isFileReference(value: string): boolean {
 
 /**
  * Parse --var key=value flags into a record.
- * Accepts a single string or array of strings (citty may collapse repeated flags).
+ * Accepts a single string or array of strings.
  *
  * Supports:
  *   --var key=value       (literal value)

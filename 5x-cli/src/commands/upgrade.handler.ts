@@ -2,7 +2,7 @@
  * Upgrade command handler — business logic for migrating a project's config,
  * database, and templates to the latest 5x CLI version.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import {

@@ -55,7 +55,6 @@
     "@decimalturn/toml-patch": "^1.0.2",
     "@opencode-ai/sdk": "^1.2.6",
     "@commander-js/extra-typings": "^13.1.0",
-    "citty": "^0.1.6",
     "commander": "^13.1.0",
     "dotenv": "^16.6.1",
     "yaml": "^2.7.0",

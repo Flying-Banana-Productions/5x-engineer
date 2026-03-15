@@ -1,7 +1,7 @@
 /**
  * Plan inspection command handler — business logic for plan parsing.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * When a plan has a mapped worktree, `plan phases` reads the plan from
  * the worktree copy (where checklist items get checked by the author

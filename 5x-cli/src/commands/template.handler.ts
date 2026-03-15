@@ -1,7 +1,7 @@
 /**
  * Template command handler — business logic for `5x template render`.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 1 (014-harness-native-subagent-orchestration):
  * Standalone prompt rendering so native subagent orchestration can

@@ -1,7 +1,7 @@
 /**
  * Diff command handler — business logic for git diff inspection.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 3a (013-worktree-authoritative-execution-context):
  * When `--run` is provided, the handler resolves the run's mapped worktree

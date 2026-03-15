@@ -1,7 +1,7 @@
 /**
  * Harness command handler — business logic for harness install/list/uninstall.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { existsSync } from "node:fs";

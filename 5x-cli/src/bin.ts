@@ -17,7 +17,7 @@ import { CliError, jsonStringify, setPrettyPrint } from "./output.js";
 import { createProgram } from "./program.js";
 
 // ---------------------------------------------------------------------------
-// Global --pretty / --no-pretty flags (pre-parse strip, preserved from citty)
+// Global --pretty / --no-pretty flags (pre-parse argv strip)
 // Accepted anywhere in argv. Last flag wins. Applied before commander parses
 // so that formatting is active even for parse-error JSON envelopes.
 // ---------------------------------------------------------------------------

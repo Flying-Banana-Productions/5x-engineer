@@ -673,15 +673,15 @@ assigned commands.
 **Completion gate:** `citty` is completely removed. No dead code remains.
 `bun test && bun run typecheck && bun run lint` all pass.
 
-- [ ] Remove `citty` from `package.json` dependencies
-- [ ] Run `bun install` to clean `bun.lock`
-- [ ] Verify zero imports of `citty` remain:
+- [x] Remove `citty` from `package.json` dependencies
+- [x] Run `bun install` to clean `bun.lock`
+- [x] Verify zero imports of `citty` remain:
   `grep -r "from.*citty" src/` returns nothing
-- [ ] Remove any commented-out citty code or TODO markers from Phase 2/3
-- [ ] Run `bun run lint` and fix any formatting issues introduced by
+- [x] Remove any commented-out citty code or TODO markers from Phase 2/3
+- [x] Run `bun run lint` and fix any formatting issues introduced by
   the migration
-- [ ] Verify `bun build --compile src/bin.ts --outfile dist/5x` still works
-- [ ] Run the full test suite one final time: `bun test --concurrent`
+- [x] Verify `bun build --compile src/bin.ts --outfile dist/5x` still works
+- [x] Run the full test suite one final time: `bun test --concurrent`
 
 ## Files Touched
 

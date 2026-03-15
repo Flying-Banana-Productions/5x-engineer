@@ -89,7 +89,7 @@ export function parseTimeout(
 	// Explicitly check for undefined or null (not just falsy, to handle numeric 0)
 	if (raw === undefined || raw === null || raw === "") return undefined;
 
-	// If it's already a number (citty may parse numeric args), convert to string for validation
+	// If it's already a number, convert to string for validation
 	const rawStr = typeof raw === "number" ? String(raw) : raw;
 	const parsed = Number.parseInt(rawStr, 10);
 
