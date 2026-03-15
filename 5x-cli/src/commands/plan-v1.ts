@@ -1,38 +1,26 @@
 /**
- * v1 Plan inspection command — citty adapter.
+ * v1 Plan inspection command — commander adapter.
  *
  * `5x plan phases <path>`
  *
  * Business logic lives in plan-v1.handler.ts.
  */
 
-import { defineCommand } from "citty";
+import type { Command } from "@commander-js/extra-typings";
 import { planPhases } from "./plan-v1.handler.js";
 
-const phasesCmd = defineCommand({
-	meta: {
-		name: "phases",
-		description: "Parse a plan and return its phases",
-	},
-	args: {
-		path: {
-			type: "positional",
-			description: "Path to implementation plan",
-			required: true,
-		},
-	},
-	run: ({ args }) =>
-		planPhases({
-			path: args.path as string,
-		}),
-});
+export function registerPlan(parent: Command) {
+	const plan = parent
+		.command("plan")
+		.summary("Plan inspection operations")
+		.description("Plan inspection operations");
 
-export default defineCommand({
-	meta: {
-		name: "plan",
-		description: "Plan inspection operations",
-	},
-	subCommands: {
-		phases: () => Promise.resolve(phasesCmd),
-	},
-});
+	plan
+		.command("phases")
+		.summary("Parse a plan and return its phases")
+		.description("Parse a plan and return its phases")
+		.argument("<path>", "Path to implementation plan")
+		.action(async (path) => {
+			await planPhases({ path });
+		});
+}

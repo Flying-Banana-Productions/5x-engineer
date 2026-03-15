@@ -1,5 +1,5 @@
 /**
- * Init command — citty adapter.
+ * Init command — commander adapter.
  *
  * Leaf command (no subcommands). Runs `initScaffold` to set up the 5x
  * control plane in the current project.
@@ -10,23 +10,18 @@
  * Business logic lives in init.handler.ts.
  */
 
-import { defineCommand } from "citty";
+import type { Command } from "@commander-js/extra-typings";
 import { initScaffold } from "./init.handler.js";
 
-export default defineCommand({
-	meta: {
-		name: "init",
-		description: "Initialize 5x workflow in the current project",
-	},
-	args: {
-		force: {
-			type: "boolean",
-			description: "Overwrite existing config file",
-			default: false,
-		},
-	},
-	run: ({ args }) =>
-		initScaffold({
-			force: args.force as boolean | undefined,
-		}),
-});
+export function registerInit(parent: Command) {
+	parent
+		.command("init")
+		.summary("Initialize 5x workflow in the current project")
+		.description("Initialize 5x workflow in the current project")
+		.option("-f, --force", "Overwrite existing config file")
+		.action(async (opts) => {
+			await initScaffold({
+				force: opts.force,
+			});
+		});
+}

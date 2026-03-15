@@ -1,96 +1,63 @@
 /**
- * Harness command — citty adapter.
+ * Harness command — commander adapter.
  *
  * Dispatch-only parent with `install`, `list`, and `uninstall` subcommands.
- * No parent `run` handler — avoids the citty fall-through issue entirely.
  *
  * Business logic lives in harness.handler.ts.
  */
 
-import { defineCommand } from "citty";
+import type { Command } from "@commander-js/extra-typings";
 import {
 	harnessInstall,
 	harnessList,
 	harnessUninstall,
 } from "./harness.handler.js";
 
-const installCmd = defineCommand({
-	meta: {
-		name: "install",
-		description: "Install a harness integration (skills + agent profiles)",
-	},
-	args: {
-		name: {
-			type: "positional" as const,
-			description: "Harness name (e.g. opencode)",
-			required: true as const,
-		},
-		scope: {
-			type: "string" as const,
-			description: "Install scope: user or project",
-		},
-		force: {
-			type: "boolean" as const,
-			description: "Overwrite existing skill and agent files",
-			default: false,
-		},
-	},
-	run: ({ args }) =>
-		harnessInstall({
-			name: args.name as string,
-			scope: args.scope as string | undefined,
-			force: args.force as boolean | undefined,
-			homeDir: process.env.HOME,
-		}),
-});
+export function registerHarness(parent: Command) {
+	const harness = parent
+		.command("harness")
+		.summary("Manage harness integrations (OpenCode, Claude Code, etc.)")
+		.description("Manage harness integrations (OpenCode, Claude Code, etc.)");
 
-const listCmd = defineCommand({
-	meta: {
-		name: "list",
-		description: "List available harness integrations",
-	},
-	run: () => harnessList({ homeDir: process.env.HOME }),
-});
+	harness
+		.command("install")
+		.summary("Install a harness integration (skills + agent profiles)")
+		.description("Install a harness integration (skills + agent profiles)")
+		.argument("<name>", "Harness name (e.g. opencode)")
+		.option("-s, --scope <scope>", "Install scope: user or project")
+		.option("-f, --force", "Overwrite existing skill and agent files")
+		.action(async (name, opts) => {
+			await harnessInstall({
+				name,
+				scope: opts.scope,
+				force: opts.force,
+				homeDir: process.env.HOME,
+			});
+		});
 
-const uninstallCmd = defineCommand({
-	meta: {
-		name: "uninstall",
-		description:
+	harness
+		.command("list")
+		.summary("List available harness integrations")
+		.description("List available harness integrations")
+		.action(async () => {
+			await harnessList({ homeDir: process.env.HOME });
+		});
+
+	harness
+		.command("uninstall")
+		.summary("Uninstall a harness integration (remove skills + agent profiles)")
+		.description(
 			"Uninstall a harness integration (remove skills + agent profiles)",
-	},
-	args: {
-		name: {
-			type: "positional" as const,
-			description: "Harness name (e.g. opencode)",
-			required: true as const,
-		},
-		scope: {
-			type: "string" as const,
-			description: "Uninstall scope: user or project",
-		},
-		all: {
-			type: "boolean" as const,
-			description: "Uninstall from all supported scopes",
-			default: false,
-		},
-	},
-	run: ({ args }) =>
-		harnessUninstall({
-			name: args.name as string,
-			scope: args.scope as string | undefined,
-			all: args.all as boolean | undefined,
-			homeDir: process.env.HOME,
-		}),
-});
-
-export default defineCommand({
-	meta: {
-		name: "harness",
-		description: "Manage harness integrations (OpenCode, Claude Code, etc.)",
-	},
-	subCommands: {
-		install: () => Promise.resolve(installCmd),
-		list: () => Promise.resolve(listCmd),
-		uninstall: () => Promise.resolve(uninstallCmd),
-	},
-});
+		)
+		.argument("<name>", "Harness name (e.g. opencode)")
+		.option("-s, --scope <scope>", "Uninstall scope: user or project")
+		.option("--all", "Uninstall from all supported scopes")
+		.action(async (name, opts) => {
+			await harnessUninstall({
+				name,
+				scope: opts.scope,
+				all: opts.all,
+				homeDir: process.env.HOME,
+			});
+		});
+}

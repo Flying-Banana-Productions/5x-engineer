@@ -1,160 +1,131 @@
 /**
- * v1 Agent invocation commands — citty adapter.
+ * v1 Agent invocation commands — commander adapter.
  *
  * Subcommands: author, reviewer
  *
  * Business logic lives in invoke.handler.ts.
  */
 
-import { defineCommand } from "citty";
-import { parseTimeout } from "../utils/parse-args.js";
+import type { Command } from "@commander-js/extra-typings";
+import { collect, intArg, timeoutArg } from "../utils/parse-args.js";
 import { invokeAgent } from "./invoke.handler.js";
 
-const sharedArgs = {
-	template: {
-		type: "positional" as const,
-		description: "Template name (e.g. author-next-phase)",
-		required: true as const,
-	},
-	run: {
-		type: "string" as const,
-		description: "Run ID (provide via flag or pipe from upstream command)",
-		required: false as const,
-	},
-	var: {
-		type: "string" as const,
-		description: "Template variable (key=value, repeatable)",
-	},
-	model: {
-		type: "string" as const,
-		description: "Model override",
-	},
-	workdir: {
-		type: "string" as const,
-		description: "Working directory for agent tool execution",
-	},
-	session: {
-		type: "string" as const,
-		description: "Resume an existing session by ID",
-	},
-	timeout: {
-		type: "string" as const,
-		description: "Per-run timeout in seconds",
-	},
-	quiet: {
-		type: "boolean" as const,
-		description: "Suppress console output (stderr)",
-		default: false,
-	},
-	"show-reasoning": {
-		type: "boolean" as const,
-		description: "Show agent reasoning/thinking in console output",
-		default: false,
-	},
-	stderr: {
-		type: "boolean" as const,
-		description: "Stream output to stderr even when not a TTY",
-		default: false,
-	},
-	"author-provider": {
-		type: "string" as const,
-		description: "Override author provider (e.g. codex, @acme/provider-foo)",
-	},
-	"reviewer-provider": {
-		type: "string" as const,
-		description: "Override reviewer provider",
-	},
-	"opencode-url": {
-		type: "string" as const,
-		description: "Override OpenCode server URL (external mode)",
-	},
-	record: {
-		type: "boolean" as const,
-		description:
+/**
+ * Register shared options on an invoke subcommand.
+ * Returns the same command for chaining.
+ */
+function addInvokeOptions<C extends Command>(cmd: C) {
+	return cmd
+		.argument("<template>", "Template name (e.g. author-next-phase)")
+		.option(
+			"-r, --run <id>",
+			"Run ID (provide via flag or pipe from upstream command)",
+		)
+		.option(
+			"--var <key=value>",
+			"Template variable (key=value, repeatable)",
+			collect,
+			[] as string[],
+		)
+		.option("-m, --model <name>", "Model override")
+		.option(
+			"-w, --workdir <path>",
+			"Working directory for agent tool execution",
+		)
+		.option("--session <id>", "Resume an existing session by ID")
+		.option(
+			"-t, --timeout <seconds>",
+			"Per-run timeout in seconds",
+			timeoutArg(),
+		)
+		.option("-q, --quiet", "Suppress console output (stderr)")
+		.option(
+			"--show-reasoning",
+			"Show agent reasoning/thinking in console output",
+		)
+		.option("--stderr", "Stream output to stderr even when not a TTY")
+		.option(
+			"--author-provider <name>",
+			"Override author provider (e.g. codex, @acme/provider-foo)",
+		)
+		.option("--reviewer-provider <name>", "Override reviewer provider")
+		.option(
+			"--opencode-url <url>",
+			"Override OpenCode server URL (external mode)",
+		)
+		.option(
+			"--record",
 			"Auto-record the result as a run step (uses template's step_name)",
-	},
-	"record-step": {
-		type: "string" as const,
-		description:
+		)
+		.option(
+			"--record-step <name>",
 			"Override step name for recording (default: from template frontmatter)",
-	},
-	phase: {
-		type: "string" as const,
-		description: "Phase identifier (used with --record)",
-	},
-	iteration: {
-		type: "string" as const,
-		description: "Iteration number (used with --record)",
-	},
-};
+		)
+		.option("--phase <name>", "Phase identifier (used with --record)")
+		.option(
+			"--iteration <n>",
+			"Iteration number (used with --record)",
+			intArg("--iteration", { positive: true }),
+		);
+}
 
-const authorCmd = defineCommand({
-	meta: {
-		name: "author",
-		description: "Invoke an author agent with a template",
-	},
-	args: sharedArgs,
-	run: ({ args }) =>
-		invokeAgent("author", {
-			template: args.template as string,
-			run: args.run as string | undefined,
-			vars: args.var as string | string[] | undefined,
-			model: args.model as string | undefined,
-			workdir: args.workdir as string | undefined,
-			session: args.session as string | undefined,
-			timeoutSeconds: parseTimeout(args.timeout as string | undefined),
-			quiet: args.quiet as boolean | undefined,
-			showReasoning: args["show-reasoning"] as boolean | undefined,
-			stderr: args.stderr as boolean | undefined,
-			authorProvider: args["author-provider"] as string | undefined,
-			reviewerProvider: args["reviewer-provider"] as string | undefined,
-			opencodeUrl: args["opencode-url"] as string | undefined,
-			record: args.record as boolean | undefined,
-			recordStep: args["record-step"] as string | undefined,
-			phase: args.phase as string | undefined,
-			iteration: args.iteration
-				? Number.parseInt(args.iteration as string, 10)
-				: undefined,
-		}),
-});
+export function registerInvoke(parent: Command) {
+	const invoke = parent
+		.command("invoke")
+		.summary("Invoke an agent with a prompt template")
+		.description("Invoke an agent with a prompt template");
 
-const reviewerCmd = defineCommand({
-	meta: {
-		name: "reviewer",
-		description: "Invoke a reviewer agent with a template",
-	},
-	args: sharedArgs,
-	run: ({ args }) =>
-		invokeAgent("reviewer", {
-			template: args.template as string,
-			run: args.run as string | undefined,
-			vars: args.var as string | string[] | undefined,
-			model: args.model as string | undefined,
-			workdir: args.workdir as string | undefined,
-			session: args.session as string | undefined,
-			timeoutSeconds: parseTimeout(args.timeout as string | undefined),
-			quiet: args.quiet as boolean | undefined,
-			showReasoning: args["show-reasoning"] as boolean | undefined,
-			stderr: args.stderr as boolean | undefined,
-			authorProvider: args["author-provider"] as string | undefined,
-			reviewerProvider: args["reviewer-provider"] as string | undefined,
-			opencodeUrl: args["opencode-url"] as string | undefined,
-			record: args.record as boolean | undefined,
-			recordStep: args["record-step"] as string | undefined,
-			phase: args.phase as string | undefined,
-			iteration: args.iteration
-				? Number.parseInt(args.iteration as string, 10)
-				: undefined,
-		}),
-});
+	addInvokeOptions(
+		invoke
+			.command("author")
+			.summary("Invoke an author agent with a template")
+			.description("Invoke an author agent with a template"),
+	).action(async (template, opts) => {
+		await invokeAgent("author", {
+			template,
+			run: opts.run,
+			vars: opts.var,
+			model: opts.model,
+			workdir: opts.workdir,
+			session: opts.session,
+			timeoutSeconds: opts.timeout,
+			quiet: opts.quiet,
+			showReasoning: opts.showReasoning,
+			stderr: opts.stderr,
+			authorProvider: opts.authorProvider,
+			reviewerProvider: opts.reviewerProvider,
+			opencodeUrl: opts.opencodeUrl,
+			record: opts.record,
+			recordStep: opts.recordStep,
+			phase: opts.phase,
+			iteration: opts.iteration,
+		});
+	});
 
-export default defineCommand({
-	meta: {
-		name: "invoke",
-		description: "Invoke an agent with a prompt template",
-	},
-	subCommands: {
-		author: () => Promise.resolve(authorCmd),
-		reviewer: () => Promise.resolve(reviewerCmd),
-	},
-});
+	addInvokeOptions(
+		invoke
+			.command("reviewer")
+			.summary("Invoke a reviewer agent with a template")
+			.description("Invoke a reviewer agent with a template"),
+	).action(async (template, opts) => {
+		await invokeAgent("reviewer", {
+			template,
+			run: opts.run,
+			vars: opts.var,
+			model: opts.model,
+			workdir: opts.workdir,
+			session: opts.session,
+			timeoutSeconds: opts.timeout,
+			quiet: opts.quiet,
+			showReasoning: opts.showReasoning,
+			stderr: opts.stderr,
+			authorProvider: opts.authorProvider,
+			reviewerProvider: opts.reviewerProvider,
+			opencodeUrl: opts.opencodeUrl,
+			record: opts.record,
+			recordStep: opts.recordStep,
+			phase: opts.phase,
+			iteration: opts.iteration,
+		});
+	});
+}

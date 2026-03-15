@@ -50,19 +50,36 @@ const main = defineCommand({
 		version,
 		description: "A toolbelt of primitives for the 5x workflow",
 	},
+	// Phase 3 replaces these lazy imports with commander registerX() calls.
+	// The adapter files no longer export citty default commands (Phase 2
+	// rewrote them to commander), so these lines are dead code until the
+	// Phase 3 bin.ts rewrite.
 	subCommands: {
+		// @ts-expect-error Phase 3 replaces with registerRun()
 		run: () => import("./commands/run-v1.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerInvoke()
 		invoke: () => import("./commands/invoke.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerQuality()
 		quality: () => import("./commands/quality-v1.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerPlan()
 		plan: () => import("./commands/plan-v1.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerDiff()
 		diff: () => import("./commands/diff.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerPrompt()
 		prompt: () => import("./commands/prompt.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerInit()
 		init: () => import("./commands/init.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerHarness()
 		harness: () => import("./commands/harness.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerTemplate()
 		template: () => import("./commands/template.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerProtocol()
 		protocol: () => import("./commands/protocol.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerSkills()
 		skills: () => import("./commands/skills.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerUpgrade()
 		upgrade: () => import("./commands/upgrade.js").then((m) => m.default),
+		// @ts-expect-error Phase 3 replaces with registerWorktree()
 		worktree: () => import("./commands/worktree.js").then((m) => m.default),
 	},
 });

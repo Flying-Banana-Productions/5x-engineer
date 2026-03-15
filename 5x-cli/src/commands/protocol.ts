@@ -1,123 +1,104 @@
 /**
- * Protocol commands — citty adapter.
+ * Protocol commands — commander adapter.
  *
- * Subcommands: validate
+ * 3-level nesting: protocol → validate → author/reviewer
  *
  * Business logic lives in protocol.handler.ts.
  */
 
-import { defineCommand } from "citty";
+import type { Command } from "@commander-js/extra-typings";
+import { intArg } from "../utils/parse-args.js";
 import { protocolValidate } from "./protocol.handler.js";
 
-const sharedArgs = {
-	input: {
-		type: "string" as const,
-		description: "Path to input JSON file (default: read from stdin)",
-	},
-	run: {
-		type: "string" as const,
-		description: "Run ID (used with --record)",
-	},
-	record: {
-		type: "boolean" as const,
-		description: "Record the validated result as a run step",
-	},
-	step: {
-		type: "string" as const,
-		description: "Step name for recording (used with --record)",
-	},
-	phase: {
-		type: "string" as const,
-		description: "Phase identifier (used with --record)",
-	},
-	iteration: {
-		type: "string" as const,
-		description: "Iteration number (used with --record)",
-	},
-};
+export function registerProtocol(parent: Command) {
+	const protocol = parent
+		.command("protocol")
+		.summary("Structured protocol validation and recording")
+		.description("Structured protocol validation and recording");
 
-const authorCmd = defineCommand({
-	meta: {
-		name: "author",
-		description: "Validate an AuthorStatus structured result",
-	},
-	args: {
-		...sharedArgs,
-		"require-commit": {
-			type: "boolean" as const,
-			description:
-				"Require commit hash for complete results (default: true). Use --no-require-commit to opt out.",
-			default: true,
-		},
-		plan: {
-			type: "string" as const,
-			description: "Path to plan file for checklist validation",
-		},
-		"phase-checklist-validate": {
-			type: "boolean" as const,
-			default: true,
-			description:
-				"Validate phase checklist completion (use --no-phase-checklist-validate to skip)",
-		},
-	},
-	run: ({ args }) =>
-		protocolValidate({
-			role: "author",
-			input: args.input as string | undefined,
-			requireCommit: args["require-commit"] as boolean | undefined,
-			run: args.run as string | undefined,
-			record: args.record as boolean | undefined,
-			step: args.step as string | undefined,
-			phase: args.phase as string | undefined,
-			iteration: args.iteration
-				? Number.parseInt(args.iteration as string, 10)
-				: undefined,
-			plan: args.plan as string | undefined,
-			phaseChecklistValidate: args["phase-checklist-validate"] as
-				| boolean
-				| undefined,
-		}),
-});
+	const validate = protocol
+		.command("validate")
+		.summary(
+			"Validate structured JSON against author/reviewer protocol schemas",
+		)
+		.description(
+			"Validate structured JSON against author/reviewer protocol schemas",
+		);
 
-const reviewerCmd = defineCommand({
-	meta: {
-		name: "reviewer",
-		description: "Validate a ReviewerVerdict structured result",
-	},
-	args: sharedArgs,
-	run: ({ args }) =>
-		protocolValidate({
-			role: "reviewer",
-			input: args.input as string | undefined,
-			run: args.run as string | undefined,
-			record: args.record as boolean | undefined,
-			step: args.step as string | undefined,
-			phase: args.phase as string | undefined,
-			iteration: args.iteration
-				? Number.parseInt(args.iteration as string, 10)
-				: undefined,
-		}),
-});
+	validate
+		.command("author")
+		.summary("Validate an AuthorStatus structured result")
+		.description("Validate an AuthorStatus structured result")
+		.option(
+			"-i, --input <path>",
+			"Path to input JSON file (default: read from stdin)",
+		)
+		.option("-r, --run <id>", "Run ID (used with --record)")
+		.option("--record", "Record the validated result as a run step")
+		.option("--step <name>", "Step name for recording (used with --record)")
+		.option("--phase <name>", "Phase identifier (used with --record)")
+		.option(
+			"--iteration <n>",
+			"Iteration number (used with --record)",
+			intArg("--iteration", { positive: true }),
+		)
+		.option(
+			"--require-commit",
+			"Require commit hash for complete results (default: true)",
+			true,
+		)
+		.option(
+			"--no-require-commit",
+			"Do not require commit hash for complete results",
+		)
+		.option("--plan <path>", "Path to plan file for checklist validation")
+		.option(
+			"--phase-checklist-validate",
+			"Validate phase checklist completion (default: true)",
+			true,
+		)
+		.option("--no-phase-checklist-validate", "Skip phase checklist validation")
+		.action(async (opts) => {
+			await protocolValidate({
+				role: "author",
+				input: opts.input,
+				requireCommit: opts.requireCommit,
+				run: opts.run,
+				record: opts.record,
+				step: opts.step,
+				phase: opts.phase,
+				iteration: opts.iteration,
+				plan: opts.plan,
+				phaseChecklistValidate: opts.phaseChecklistValidate,
+			});
+		});
 
-export default defineCommand({
-	meta: {
-		name: "protocol",
-		description: "Structured protocol validation and recording",
-	},
-	subCommands: {
-		validate: () =>
-			Promise.resolve(
-				defineCommand({
-					meta: {
-						name: "validate",
-						description:
-							"Validate structured JSON against author/reviewer protocol schemas",
-					},
-					subCommands: {
-						author: () => Promise.resolve(authorCmd),
-						reviewer: () => Promise.resolve(reviewerCmd),
-					},
-				}),
-			),
-	},
-});
+	validate
+		.command("reviewer")
+		.summary("Validate a ReviewerVerdict structured result")
+		.description("Validate a ReviewerVerdict structured result")
+		.option(
+			"-i, --input <path>",
+			"Path to input JSON file (default: read from stdin)",
+		)
+		.option("-r, --run <id>", "Run ID (used with --record)")
+		.option("--record", "Record the validated result as a run step")
+		.option("--step <name>", "Step name for recording (used with --record)")
+		.option("--phase <name>", "Phase identifier (used with --record)")
+		.option(
+			"--iteration <n>",
+			"Iteration number (used with --record)",
+			intArg("--iteration", { positive: true }),
+		)
+		.action(async (opts) => {
+			await protocolValidate({
+				role: "reviewer",
+				input: opts.input,
+				run: opts.run,
+				record: opts.record,
+				step: opts.step,
+				phase: opts.phase,
+				iteration: opts.iteration,
+			});
+		});
+}

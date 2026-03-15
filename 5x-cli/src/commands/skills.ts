@@ -1,81 +1,70 @@
 /**
- * Skills management commands — citty adapter.
+ * Skills management commands — commander adapter.
  *
  * Subcommands: install, uninstall
  *
  * Business logic lives in skills.handler.ts.
  */
 
-import { defineCommand } from "citty";
+import { Argument, type Command } from "@commander-js/extra-typings";
 import { skillsInstall, skillsUninstall } from "./skills.handler.js";
 
-const installCmd = defineCommand({
-	meta: {
-		name: "install",
-		description:
+export function registerSkills(parent: Command) {
+	const skills = parent
+		.command("skills")
+		.summary("Manage agent skills")
+		.description("Manage agent skills");
+
+	skills
+		.command("install")
+		.summary(
 			"Install skills for agent client discovery (agentskills.io convention)",
-	},
-	args: {
-		scope: {
-			type: "positional" as const,
-			description:
-				"Install scope: user (~/.agents/skills/) or project (.agents/skills/)",
-			required: true as const,
-		},
-		force: {
-			type: "boolean" as const,
-			description: "Overwrite existing skill files",
-			default: false,
-		},
-		"install-root": {
-			type: "string" as const,
-			description:
-				'Override the default ".agents" directory name (e.g. ".claude", ".opencode")',
-		},
-	},
-	run: ({ args }) =>
-		skillsInstall({
-			scope: args.scope as "user" | "project",
-			force: args.force as boolean | undefined,
-			installRoot: args["install-root"] as string | undefined,
-			homeDir: process.env.HOME,
-		}),
-});
+		)
+		.description(
+			"Install skills for agent client discovery (agentskills.io convention)",
+		)
+		.addArgument(
+			new Argument("<scope>", "Install scope: user or project").choices([
+				"user",
+				"project",
+			] as const),
+		)
+		.option("-f, --force", "Overwrite existing skill files")
+		.option(
+			"--install-root <dir>",
+			'Override the default ".agents" directory name (e.g. ".claude", ".opencode")',
+		)
+		.action(async (scope, opts) => {
+			await skillsInstall({
+				scope: scope as "user" | "project",
+				force: opts.force,
+				installRoot: opts.installRoot,
+				homeDir: process.env.HOME,
+			});
+		});
 
-const uninstallCmd = defineCommand({
-	meta: {
-		name: "uninstall",
-		description:
+	skills
+		.command("uninstall")
+		.summary(
 			"Uninstall skills from the specified scope (agentskills.io convention)",
-	},
-	args: {
-		scope: {
-			type: "positional" as const,
-			description:
-				'Uninstall scope: "all" (both user and project), "user" (~/.agents/skills/), or "project" (.agents/skills/)',
-			required: true as const,
-		},
-		"install-root": {
-			type: "string" as const,
-			description:
-				'Override the default ".agents" directory name (e.g. ".claude", ".opencode")',
-		},
-	},
-	run: ({ args }) =>
-		skillsUninstall({
-			scope: args.scope as "all" | "user" | "project",
-			installRoot: args["install-root"] as string | undefined,
-			homeDir: process.env.HOME,
-		}),
-});
-
-export default defineCommand({
-	meta: {
-		name: "skills",
-		description: "Manage agent skills",
-	},
-	subCommands: {
-		install: () => Promise.resolve(installCmd),
-		uninstall: () => Promise.resolve(uninstallCmd),
-	},
-});
+		)
+		.description(
+			"Uninstall skills from the specified scope (agentskills.io convention)",
+		)
+		.addArgument(
+			new Argument("<scope>", "Uninstall scope: all, user, or project").choices(
+				["all", "user", "project"] as const,
+			),
+		)
+		.option(
+			"--install-root <dir>",
+			'Override the default ".agents" directory name (e.g. ".claude", ".opencode")',
+		)
+		.action(async (scope, opts) => {
+			await skillsUninstall({
+				scope: scope as "all" | "user" | "project",
+				installRoot: opts.installRoot,
+				homeDir: process.env.HOME,
+			});
+		});
+}

@@ -142,7 +142,7 @@ export function registerFoo(parent: Command) {
 
 ### Phase 2a: Adapt `parse-args.ts`
 
-- [ ] Add commander-compatible wrapper functions to `src/utils/parse-args.ts`
+- [x] Add commander-compatible wrapper functions to `src/utils/parse-args.ts`
   that match the `(value: string, previous: T) => T` signature:
 
   ```ts
@@ -175,31 +175,31 @@ export function registerFoo(parent: Command) {
   }
   ```
 
-- [ ] Retain existing `parseIntArg`, `parseFloatArg`, `parseTimeout` unchanged
+- [x] Retain existing `parseIntArg`, `parseFloatArg`, `parseTimeout` unchanged
   (unit tests depend on them)
 
 ### Phase 2b: Leaf commands (no subcommands)
 
 Migrate the 3 simplest files first — single command, no subcommands:
 
-- [ ] Rewrite `src/commands/diff.ts` (40 → ~45 lines):
+- [x] Rewrite `src/commands/diff.ts` (40 → ~45 lines):
   - Export `registerDiff(parent: Command)` instead of default citty command
   - Options: `-s, --since <ref>`, `--stat`, `-r, --run <id>`
   - Action calls `runDiff({ since, stat, run })`
 
-- [ ] Rewrite `src/commands/init.ts` (32 → ~35 lines):
+- [x] Rewrite `src/commands/init.ts` (32 → ~35 lines):
   - Export `registerInit(parent: Command)`
   - Options: `-f, --force`
   - Action calls `initScaffold({ force })`
 
-- [ ] Rewrite `src/commands/upgrade.ts` (27 → ~30 lines):
+- [x] Rewrite `src/commands/upgrade.ts` (27 → ~30 lines):
   - Export `registerUpgrade(parent: Command)`
   - Options: `-f, --force`
   - Action calls `runUpgrade({ force })`
 
 ### Phase 2c: Simple parent commands (2-3 subcommands)
 
-- [ ] Rewrite `src/commands/prompt.ts` (100 → ~90 lines):
+- [x] Rewrite `src/commands/prompt.ts` (100 → ~90 lines):
   - Export `registerPrompt(parent: Command)`
   - Parent `prompt` command with subcommands `choose`, `confirm`, `input`
   - `choose`: positional `<message>`, `-o, --options <list>` (required),
@@ -210,12 +210,12 @@ Migrate the 3 simplest files first — single command, no subcommands:
   - `input`: positional `<message>`, `--multiline`
   - Actions call `promptChoose`, `promptConfirm`, `promptInput`
 
-- [ ] Rewrite `src/commands/plan-v1.ts` (38 → ~40 lines):
+- [x] Rewrite `src/commands/plan-v1.ts` (38 → ~40 lines):
   - Export `registerPlan(parent: Command)`
   - Parent `plan` command with subcommand `phases`
   - `phases`: positional `<path>`, action calls `planPhases({ path })`
 
-- [ ] Rewrite `src/commands/skills.ts` (81 → ~75 lines):
+- [x] Rewrite `src/commands/skills.ts` (81 → ~75 lines):
   - Export `registerSkills(parent: Command)`
   - Parent `skills` with subcommands `install`, `uninstall`
   - `install`: positional `<scope>` with `.choices(["user", "project"])`,
@@ -226,7 +226,7 @@ Migrate the 3 simplest files first — single command, no subcommands:
 
 ### Phase 2d: Medium parent commands (3-5 subcommands)
 
-- [ ] Rewrite `src/commands/harness.ts` (96 → ~90 lines):
+- [x] Rewrite `src/commands/harness.ts` (96 → ~90 lines):
   - Export `registerHarness(parent: Command)`
   - Parent `harness` with subcommands `install`, `list`, `uninstall`
   - `install`: positional `<name>`, `-s, --scope <scope>` with
@@ -236,7 +236,7 @@ Migrate the 3 simplest files first — single command, no subcommands:
     `.choices(["user", "project"])`, `--all`
   - Actions pass `homeDir: process.env.HOME`
 
-- [ ] Rewrite `src/commands/template.ts` (61 → ~60 lines):
+- [x] Rewrite `src/commands/template.ts` (61 → ~60 lines):
   - Export `registerTemplate(parent: Command)`
   - Parent `template` with subcommand `render`
   - `render`: positional `<template>`, `-r, --run <id>`,
@@ -244,14 +244,14 @@ Migrate the 3 simplest files first — single command, no subcommands:
     `--session <id>`, `-w, --workdir <path>`
   - Action calls `templateRender({ template, run, vars, session, workdir })`
 
-- [ ] Rewrite `src/commands/quality-v1.ts` (60 → ~55 lines):
+- [x] Rewrite `src/commands/quality-v1.ts` (60 → ~55 lines):
   - Export `registerQuality(parent: Command)`
   - Parent `quality` with subcommand `run`
   - `run`: `--record`, `--record-step <name>`, `-r, --run <id>`,
     `--phase <name>`, `-w, --workdir <path>`
   - Action calls `runQuality({ record, recordStep, run, phase, workdir })`
 
-- [ ] Rewrite `src/commands/worktree.ts` (137 → ~120 lines):
+- [x] Rewrite `src/commands/worktree.ts` (137 → ~120 lines):
   - Export `registerWorktree(parent: Command)`
   - Parent `worktree` with subcommands `create`, `attach`, `detach`,
     `remove`, `list`
@@ -264,7 +264,7 @@ Migrate the 3 simplest files first — single command, no subcommands:
 
 ### Phase 2e: Complex parent commands
 
-- [ ] Rewrite `src/commands/protocol.ts` (123 → ~115 lines):
+- [x] Rewrite `src/commands/protocol.ts` (123 → ~115 lines):
   - Export `registerProtocol(parent: Command)`
   - 3-level nesting: `protocol` → `validate` → `author`/`reviewer`
   - Shared options: `-i, --input <path>`, `-r, --run <id>`, `--record`,
@@ -275,7 +275,7 @@ Migrate the 3 simplest files first — single command, no subcommands:
     `--no-phase-checklist-validate` (default true)
   - Actions call `protocolValidate({ role, ... })`
 
-- [ ] Rewrite `src/commands/invoke.ts` (160 → ~140 lines):
+- [x] Rewrite `src/commands/invoke.ts` (160 → ~140 lines):
   - Export `registerInvoke(parent: Command)`
   - Parent `invoke` with subcommands `author`, `reviewer`
   - Use a helper function to register shared options on both subcommands:
@@ -305,7 +305,7 @@ Migrate the 3 simplest files first — single command, no subcommands:
   - Key change: `vars` is now always `string[]` (never `string | string[]`)
     due to the `collect` argParser
 
-- [ ] Rewrite `src/commands/run-v1.ts` (295 → ~260 lines):
+- [x] Rewrite `src/commands/run-v1.ts` (295 → ~260 lines):
   - Export `registerRun(parent: Command)`
   - Parent `run` with 7 subcommands: `init`, `state`, `record`, `complete`,
     `reopen`, `list`, `watch`

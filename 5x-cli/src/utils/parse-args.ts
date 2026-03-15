@@ -2,14 +2,16 @@
  * CLI argument parsing utilities.
  *
  * Adapter-layer helpers that convert raw CLI strings into semantic types
- * before passing to handler functions. These exist because citty cannot
- * parse numbers natively. Commander.js has `.argParser()` which may
- * replace them, but they provide a single deprecation point.
+ * before passing to handler functions. The unwrapped functions
+ * (`parseIntArg`, `parseFloatArg`, `parseTimeout`) are the core parsers.
+ * The `intArg`, `floatArg`, `timeoutArg`, and `collect` wrappers adapt
+ * them to commander's `(value: string, previous: T) => T` argParser
+ * callback signature.
  *
  * Extracted from src/commands/run-v1.ts and src/commands/invoke.ts.
  */
 
-import { outputError } from "../output.js";
+import { CliError, outputError } from "../output.js";
 
 /**
  * Parse and validate an integer CLI argument.
@@ -99,4 +101,39 @@ export function parseTimeout(
 		);
 	}
 	return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Commander argParser wrappers
+// ---------------------------------------------------------------------------
+
+/** Commander argParser wrapper for parseIntArg */
+export function intArg(flag: string, opts?: { positive?: boolean }) {
+	return (value: string, _prev: number): number =>
+		parseIntArg(value, flag, opts);
+}
+
+/** Commander argParser wrapper for parseFloatArg */
+export function floatArg(flag: string, opts?: { nonNegative?: boolean }) {
+	return (value: string, _prev: number): number =>
+		parseFloatArg(value, flag, opts);
+}
+
+/** Commander argParser wrapper for parseTimeout */
+export function timeoutArg() {
+	return (value: string, _prev: number | undefined): number => {
+		const result = parseTimeout(value);
+		if (result === undefined) {
+			throw new CliError(
+				"INVALID_ARGS",
+				"--timeout must be a positive integer",
+			);
+		}
+		return result;
+	};
+}
+
+/** Commander argParser: collect repeatable --var values into string[] */
+export function collect(value: string, prev: string[]): string[] {
+	return [...prev, value];
 }
