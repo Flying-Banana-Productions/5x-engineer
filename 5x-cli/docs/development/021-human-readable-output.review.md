@@ -81,3 +81,34 @@ The plan explicitly states that `--pretty` is ignored in text mode, but Phase 4 
   "summary": "The overall design is good and should be implementable without architectural rework, but the plan still misses one real correctness gap on Commander parse-error output and two smaller specification/test gaps around fallback rendering and flag interaction. Fix those mechanically, then it is ready to execute."
 }
 ```
+
+## Addendum (2026-03-15) - v1.1 follow-up
+
+The v1.1 revision addresses the earlier blocking and high-priority gaps. The
+plan now matches the intended text-mode contract, covers the empty-state cases
+that would have made generic output lossy, and locks down the `--pretty` /
+`--text` interaction with explicit tests.
+
+**Readiness:** Ready - prior blockers are addressed; phasing, coverage, and
+scope are now implementation-ready.
+
+### What's Addressed
+
+- `src/bin.ts` now has an explicit Phase 1 path for suppressing Commander's
+  built-in parse-error stderr in text mode via `configureOutput`, plus manual
+  and integration verification for required-option, unknown-option, and
+  unknown-command cases.
+- `formatGenericText()` now specifies stable empty rendering (`(none)`) for
+  empty arrays and empty objects, including nested object fields, so text mode
+  does not silently hide meaningful success states.
+- Phase 4 now includes the previously-missing `--pretty` / `--no-pretty`
+  interaction coverage, which is important because both behaviors are driven by
+  shared pre-parse global state.
+- The `template render` Tier 2 placement is now called out explicitly as an
+  intentional rollout trade-off instead of an unexamined omission.
+
+### Remaining Concerns
+
+- None blocking. The only follow-up worth watching post-rollout is whether
+  `template render` should move from generic formatting to a dedicated prompt-
+  first formatter based on real usage.
