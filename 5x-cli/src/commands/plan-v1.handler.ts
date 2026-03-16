@@ -34,7 +34,7 @@ export interface PlanPhasesParams {
  *
  * Renders a checklist with checkbox notation and progress counts.
  */
-export function formatPhasesText(data: Record<string, unknown>): void {
+function formatPhasesText(data: Record<string, unknown>): void {
 	const phases = data.phases as Array<{
 		id: number;
 		title: string;
@@ -88,7 +88,7 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 			: { root: planPath },
 	};
 
-	outputSuccess(result);
+	outputSuccess(result, formatPhasesText);
 }
 
 // ---------------------------------------------------------------------------

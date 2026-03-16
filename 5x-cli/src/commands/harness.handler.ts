@@ -159,7 +159,6 @@ export async function harnessList(
 	params?: HarnessListParams,
 ): Promise<HarnessListOutput> {
 	const output = await buildHarnessListData(params?.startDir, params?.homeDir);
-	printListSummary(output);
 	outputSuccess(output);
 	return output;
 }
@@ -218,23 +217,6 @@ export async function buildHarnessListData(
 }
 
 /**
- * Print a human-readable list summary to stderr.
- */
-function printListSummary(output: HarnessListOutput): void {
-	for (const entry of output.harnesses) {
-		console.error(`  ${entry.name} (${entry.source})`);
-		for (const [scope, status] of Object.entries(entry.scopes)) {
-			if (!status) continue;
-			const stateLabel = status.installed ? "installed" : "not installed";
-			console.error(`    ${scope}: ${stateLabel}`);
-			for (const file of status.files) {
-				console.error(`      ${file}`);
-			}
-		}
-	}
-}
-
-/**
  * Uninstall a harness integration.
  *
  * Two-layer design: `harnessUninstallCore()` builds the typed result,
@@ -244,7 +226,6 @@ export async function harnessUninstall(
 	params: HarnessUninstallParams,
 ): Promise<HarnessUninstallOutput> {
 	const output = await harnessUninstallCore(params);
-	printUninstallSummary(output);
 	outputSuccess(output);
 	return output;
 }
@@ -306,31 +287,6 @@ async function harnessUninstallCore(
 	}
 
 	return { harnessName: name, scopes };
-}
-
-/**
- * Print a human-readable uninstall summary to stderr.
- */
-function printUninstallSummary(output: HarnessUninstallOutput): void {
-	for (const [scope, result] of Object.entries(output.scopes)) {
-		if (!result) continue;
-		const label = scope === "user" ? "user" : "project";
-
-		for (const name of result.skills.removed) {
-			console.error(`  Removed skill (${label}): ${name}`);
-		}
-		for (const name of result.skills.notFound) {
-			console.error(`  Not found skill (${label}): ${name}`);
-		}
-		for (const name of result.agents.removed) {
-			console.error(`  Removed agent (${label}): ${name}`);
-		}
-		for (const name of result.agents.notFound) {
-			console.error(`  Not found agent (${label}): ${name}`);
-		}
-	}
-
-	console.error(`  ${output.harnessName} uninstall complete.`);
 }
 
 // ---------------------------------------------------------------------------

@@ -497,7 +497,7 @@ custom-formatted commands in `--text` mode.
 
 ### Phase 3a: Register formatters at call sites
 
-- [ ] `src/commands/diff.handler.ts` line 187 — Change:
+- [x] `src/commands/diff.handler.ts` line 187 — Change:
   ```ts
   outputSuccess(data);
   ```
@@ -506,7 +506,7 @@ custom-formatted commands in `--text` mode.
   outputSuccess(data, formatDiffText);
   ```
 
-- [ ] `src/commands/run-v1.handler.ts` line 683 — Change:
+- [x] `src/commands/run-v1.handler.ts` line 683 — Change:
   ```ts
   outputSuccess({ run: { ... }, steps: ..., summary });
   ```
@@ -515,7 +515,7 @@ custom-formatted commands in `--text` mode.
   outputSuccess({ run: { ... }, steps: ..., summary }, formatStateText);
   ```
 
-- [ ] `src/commands/run-v1.handler.ts` line 1017 — Change:
+- [x] `src/commands/run-v1.handler.ts` line 1017 — Change:
   ```ts
   outputSuccess({ runs: ... });
   ```
@@ -524,7 +524,7 @@ custom-formatted commands in `--text` mode.
   outputSuccess({ runs: ... }, formatListText);
   ```
 
-- [ ] `src/commands/plan-v1.handler.ts` line 59 — Change:
+- [x] `src/commands/plan-v1.handler.ts` line 59 — Change:
   ```ts
   outputSuccess(result);
   ```
@@ -533,7 +533,7 @@ custom-formatted commands in `--text` mode.
   outputSuccess(result, formatPhasesText);
   ```
 
-- [ ] All other `outputSuccess()` call sites remain unchanged — they
+- [x] All other `outputSuccess()` call sites remain unchanged — they
   automatically get the generic text formatter in `--text` mode.
 
 ### Phase 3b: Remove auxiliary stderr output
@@ -551,19 +551,19 @@ framework routing, and prompt UI output all remain on stderr. The rule:
 stderr is for warnings and diagnostics, not for duplicating structured
 data that belongs on stdout.
 
-- [ ] `src/commands/harness.handler.ts` — Delete `printListSummary()`
+- [x] `src/commands/harness.handler.ts` — Delete `printListSummary()`
   function (lines 220–234) and remove its call in `harnessList()`
   (line 162). The function writes harness name, scope status, and file
   lists to stderr — all of which are available via `outputSuccess()` in
   JSON mode or the generic text formatter in `--text` mode.
 
-- [ ] `src/commands/harness.handler.ts` — Delete `printUninstallSummary()`
+- [x] `src/commands/harness.handler.ts` — Delete `printUninstallSummary()`
   function (lines 314–334) and remove its call in `harnessUninstall()`
   (line 247). The function writes removed/not-found skill and agent
   lists plus a completion message to stderr — all duplicated in the
   `outputSuccess()` envelope.
 
-- [ ] `src/commands/skills.handler.ts` — Remove the 3 `console.error`
+- [x] `src/commands/skills.handler.ts` — Remove the 3 `console.error`
   progress lines in `skillsInstall()` (lines 112–122):
   ```ts
   // DELETE these lines:
@@ -574,7 +574,7 @@ data that belongs on stdout.
   The created/overwritten/skipped arrays are already in the
   `outputSuccess()` data. The generic text formatter renders them.
 
-- [ ] `src/commands/skills.handler.ts` — Remove the 2 `console.error`
+- [x] `src/commands/skills.handler.ts` — Remove the 2 `console.error`
   progress lines in `skillsUninstall()` (lines 204–209):
   ```ts
   // DELETE these lines:
@@ -585,7 +585,7 @@ data that belongs on stdout.
 
 ### Phase 3c: Verify
 
-- [ ] Verify `bun run typecheck` passes
+- [x] Verify `bun run typecheck` passes
 - [ ] Manual verification:
   - `5x --text diff` → raw diff text
   - `5x --text run state -r <id>` → formatted step table

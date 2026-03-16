@@ -70,7 +70,7 @@ function parseFileNames(nameOnlyOutput: string): string[] {
  * Human-readable text formatter for diff output.
  * Raw diff text to stdout. Stat summary precedes diff when present.
  */
-export function formatDiffText(data: Record<string, unknown>): void {
+function formatDiffText(data: Record<string, unknown>): void {
 	const stat = data.stat as
 		| {
 				files_changed: number;
@@ -214,5 +214,5 @@ export async function runDiff(params: DiffParams): Promise<void> {
 		data.run_id = params.run;
 	}
 
-	outputSuccess(data);
+	outputSuccess(data, formatDiffText);
 }

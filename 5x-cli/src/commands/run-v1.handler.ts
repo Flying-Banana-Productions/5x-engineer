@@ -473,7 +473,7 @@ function formatCost(usd: number): string {
  * Renders a run info header, padded step table, and summary line.
  * Omits columns where all values are null.
  */
-export function formatStateText(data: {
+function formatStateText(data: {
 	run: {
 		id: string;
 		plan_path: string;
@@ -593,7 +593,7 @@ export function formatStateText(data: {
  * Column-aligned table with ID, Plan, Status, Steps, Created.
  * Truncates long plan paths with `...`.
  */
-export function formatListText(data: {
+function formatListText(data: {
 	runs: Array<{
 		id: string;
 		plan_path: string;
@@ -882,18 +882,21 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
 	const worktreePath = plan?.worktree_path || null;
 
-	outputSuccess({
-		run: {
-			id: run.id,
-			plan_path: run.plan_path,
-			status: run.status,
-			created_at: run.created_at,
-			updated_at: run.updated_at,
-			...(worktreePath ? { worktree_path: worktreePath } : {}),
+	outputSuccess(
+		{
+			run: {
+				id: run.id,
+				plan_path: run.plan_path,
+				status: run.status,
+				created_at: run.created_at,
+				updated_at: run.updated_at,
+				...(worktreePath ? { worktree_path: worktreePath } : {}),
+			},
+			steps: steps.map(formatStep),
+			summary,
 		},
-		steps: steps.map(formatStep),
-		summary,
-	});
+		formatStateText,
+	);
 }
 
 /**
@@ -1216,16 +1219,19 @@ export async function runV1List(params: RunListParams): Promise<void> {
 		limit: params.limit,
 	});
 
-	outputSuccess({
-		runs: runs.map((r) => ({
-			id: r.id,
-			plan_path: r.plan_path,
-			status: r.status,
-			created_at: r.created_at,
-			updated_at: r.updated_at,
-			step_count: r.step_count,
-		})),
-	});
+	outputSuccess(
+		{
+			runs: runs.map((r) => ({
+				id: r.id,
+				plan_path: r.plan_path,
+				status: r.status,
+				created_at: r.created_at,
+				updated_at: r.updated_at,
+				step_count: r.step_count,
+			})),
+		},
+		formatListText,
+	);
 }
 
 // ---------------------------------------------------------------------------
