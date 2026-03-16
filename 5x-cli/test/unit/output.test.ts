@@ -1,12 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	CliError,
 	exitCodeForError,
+	formatGenericText,
+	getOutputFormat,
 	outputError,
 	outputSuccess,
+	setOutputFormat,
 	setPrettyPrint,
 } from "../../src/output.js";
 import { nextLogSequence } from "../../src/providers/log-writer.js";
@@ -250,6 +253,199 @@ describe("outputSuccess", () => {
 		const raw = calls[0] as string;
 		expect(raw).toContain("\n");
 		expect(raw).toContain('  "ok"');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Output format state
+// ---------------------------------------------------------------------------
+
+describe("output format state", () => {
+	afterEach(() => {
+		setOutputFormat("json");
+	});
+
+	test("default format is json", () => {
+		expect(getOutputFormat()).toBe("json");
+	});
+
+	test("setOutputFormat('text') / getOutputFormat() round-trip", () => {
+		setOutputFormat("text");
+		expect(getOutputFormat()).toBe("text");
+	});
+
+	test("setOutputFormat('json') resets to JSON", () => {
+		setOutputFormat("text");
+		setOutputFormat("json");
+		expect(getOutputFormat()).toBe("json");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// formatGenericText
+// ---------------------------------------------------------------------------
+
+describe("formatGenericText", () => {
+	/** Capture console.log calls and return joined output. */
+	function capture(fn: () => void): string {
+		const lines: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			lines.push(args.length === 0 ? "" : String(args[0]));
+		};
+		try {
+			fn();
+		} finally {
+			console.log = origLog;
+		}
+		return lines.join("\n");
+	}
+
+	test("flat object renders aligned key-value lines", () => {
+		const output = capture(() =>
+			formatGenericText({ run_id: "R1", status: "completed" }),
+		);
+		expect(output).toContain("run_id");
+		expect(output).toContain("R1");
+		expect(output).toContain("status");
+		expect(output).toContain("completed");
+		// Keys should be padded — "run_id" (6) and "status" (6) are same length
+		expect(output).toContain("run_id  R1");
+		expect(output).toContain("status  completed");
+	});
+
+	test("nested object renders indented key-value", () => {
+		const output = capture(() =>
+			formatGenericText({ summary: { total: 5, passed: 3 } }),
+		);
+		expect(output).toContain("summary:");
+		expect(output).toContain("  total");
+		expect(output).toContain("  passed");
+	});
+
+	test("array of primitives renders comma-joined", () => {
+		const output = capture(() => formatGenericText({ tags: ["a", "b", "c"] }));
+		expect(output).toContain("a, b, c");
+	});
+
+	test("array of objects renders separated blocks", () => {
+		const output = capture(() =>
+			formatGenericText([
+				{ id: 1, name: "first" },
+				{ id: 2, name: "second" },
+			]),
+		);
+		expect(output).toContain("first");
+		expect(output).toContain("second");
+		// Blocks should be separated by a blank line
+		expect(output).toContain("\n\n");
+	});
+
+	test("null values are omitted", () => {
+		const output = capture(() =>
+			formatGenericText({ visible: "yes", hidden: null }),
+		);
+		expect(output).toContain("visible");
+		expect(output).not.toContain("hidden");
+	});
+
+	test("empty array renders (none)", () => {
+		const output = capture(() => formatGenericText([]));
+		expect(output).toBe("(none)");
+	});
+
+	test("empty object renders (none)", () => {
+		const output = capture(() => formatGenericText({}));
+		expect(output).toBe("(none)");
+	});
+
+	test("object with empty array value renders key  (none)", () => {
+		const output = capture(() => formatGenericText({ items: [] }));
+		expect(output).toContain("items  (none)");
+	});
+
+	test("object with mix of empty and populated arrays", () => {
+		const output = capture(() =>
+			formatGenericText({ empty: [], filled: ["x", "y"] }),
+		);
+		expect(output).toContain("empty   (none)");
+		expect(output).toContain("filled  x, y");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// outputSuccess with text formatter
+// ---------------------------------------------------------------------------
+
+describe("outputSuccess with text formatter", () => {
+	afterEach(() => {
+		setOutputFormat("json");
+	});
+
+	test("json mode: formatter is NOT called, JSON envelope written", () => {
+		setOutputFormat("json");
+		const calls: string[] = [];
+		let formatterCalled = false;
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			outputSuccess({ key: "val" }, () => {
+				formatterCalled = true;
+			});
+		} finally {
+			console.log = origLog;
+		}
+		expect(formatterCalled).toBe(false);
+		expect(calls).toHaveLength(1);
+		const parsed = JSON.parse(calls[0] as string);
+		expect(parsed.ok).toBe(true);
+		expect(parsed.data.key).toBe("val");
+	});
+
+	test("text mode with formatter: formatter IS called, no JSON", () => {
+		setOutputFormat("text");
+		const calls: string[] = [];
+		let formatterData: unknown = null;
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			outputSuccess({ key: "val" }, (data) => {
+				formatterData = data;
+				console.log(`custom: ${(data as { key: string }).key}`);
+			});
+		} finally {
+			console.log = origLog;
+		}
+		expect(formatterData).toEqual({ key: "val" });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toBe("custom: val");
+		// No JSON envelope
+		expect(calls[0]).not.toContain('"ok"');
+	});
+
+	test("text mode without formatter: generic formatter called", () => {
+		setOutputFormat("text");
+		const calls: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			calls.push(String(args[0]));
+		};
+		try {
+			outputSuccess({ run_id: "R1", status: "active" });
+		} finally {
+			console.log = origLog;
+		}
+		expect(calls.length).toBeGreaterThan(0);
+		const output = calls.join("\n");
+		// Generic formatter output — key-value pairs
+		expect(output).toContain("run_id");
+		expect(output).toContain("R1");
+		// No JSON envelope
+		expect(output).not.toContain('"ok"');
 	});
 });
 

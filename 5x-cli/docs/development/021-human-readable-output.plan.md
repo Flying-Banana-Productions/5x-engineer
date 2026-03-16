@@ -609,12 +609,12 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4a: Unit tests for new output infrastructure
 
-- [ ] `test/unit/output.test.ts` — Add tests for output format state:
+- [x] `test/unit/output.test.ts` — Add tests for output format state:
   - `setOutputFormat("text")` / `getOutputFormat()` round-trip
   - Default format is `"json"`
   - `setOutputFormat("json")` resets to JSON
 
-- [ ] `test/unit/output.test.ts` — Add tests for `formatGenericText()`:
+- [x] `test/unit/output.test.ts` — Add tests for `formatGenericText()`:
   - Flat object → aligned key-value lines
   - Nested object → indented key-value
   - Array of primitives → comma-joined
@@ -626,7 +626,7 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
   - Object with mix of empty and populated arrays → empty renders
     `(none)`, populated renders normally
 
-- [ ] `test/unit/output.test.ts` — Add tests for `outputSuccess` with
+- [x] `test/unit/output.test.ts` — Add tests for `outputSuccess` with
   formatter:
   - `outputFormat = "json"`: formatter is NOT called, JSON envelope written
   - `outputFormat = "text"` with formatter: formatter IS called, no JSON
@@ -634,7 +634,7 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4b: Integration tests for `--text` flag and env var
 
-- [ ] Add test file `test/integration/commands/text-output.test.ts`:
+- [x] Add test file `test/integration/commands/text-output.test.ts`:
   - `--text` at start of argv: `5x --text run list` → no `{"ok"` in stdout
   - `--text` at end of argv: `5x run list --text` → no `{"ok"` in stdout
   - `--json` overrides `--text`: `5x --text --json run list` → JSON envelope
@@ -652,7 +652,7 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4c: Integration tests for text-mode errors
 
-- [ ] In `test/integration/commands/text-output.test.ts`:
+- [x] In `test/integration/commands/text-output.test.ts`:
   - `5x --text run init` (missing required `--plan`) → stderr contains
     exactly one `Error:` line, stderr does NOT contain Commander help/usage
     text, stdout is empty, exit code 1
@@ -669,7 +669,7 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4d: Integration tests for custom formatters
 
-- [ ] In `test/integration/commands/text-output.test.ts` or co-located with
+- [x] In `test/integration/commands/text-output.test.ts` or co-located with
   existing command tests:
   - `5x --text diff` in a repo with changes → stdout contains raw diff
     text, not `{"ok"`. Stdout does not contain `"data"` or `"ref"`.
@@ -684,7 +684,7 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 
 ### Phase 4e: Integration tests for generic formatter fallback
 
-- [ ] In `test/integration/commands/text-output.test.ts`:
+- [x] In `test/integration/commands/text-output.test.ts`:
   - `5x --text run complete -r <id>` → stdout contains `run_id` and
     `status` as plain text, not wrapped in JSON
   - `5x --text skills install project` → stdout contains `scope` and
@@ -695,26 +695,26 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
 The auxiliary stderr output removed in Phase 3b has test assertions that
 need updating:
 
-- [ ] `test/integration/commands/harness.test.ts` line 565–566 — Remove
+- [x] `test/integration/commands/harness.test.ts` line 565–566 — Remove
   assertions `expect(uninstallResult.stderr).toContain("Removed")` and
   `expect(uninstallResult.stderr).toContain("uninstall complete")`.
   These asserted on `printUninstallSummary()` stderr output which no
   longer exists.
 
-- [ ] `test/integration/commands/skills-install.test.ts` lines 88, 210,
+- [x] `test/integration/commands/skills-install.test.ts` lines 88, 210,
   237 — Remove assertions `expect(stderr).toContain("Created ...")`.
   These asserted on the `console.error` progress lines which no longer
   exist.
 
 ### Phase 4g: Verify existing tests pass
 
-- [ ] All existing integration tests pass (with the stderr assertion
+- [x] All existing integration tests pass (with the stderr assertion
   updates from Phase 4f applied)
-- [ ] Pipe tests (`invoke-pipe.test.ts`, `run-record-pipe.test.ts`,
+- [x] Pipe tests (`invoke-pipe.test.ts`, `run-record-pipe.test.ts`,
   `pipe.test.ts`) pass unchanged
-- [ ] `bin-pretty.test.ts` passes unchanged (`--pretty` is orthogonal to
+- [x] `bin-pretty.test.ts` passes unchanged (`--pretty` is orthogonal to
   `--text`)
-- [ ] Full suite: `bun test` passes
+- [x] Full suite: `bun test` passes
 
 ## Phase 5: Documentation and Help Text
 
