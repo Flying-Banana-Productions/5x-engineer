@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { CliError } from "../../../src/output.js";
 import {
+	collect,
+	floatArg,
+	intArg,
 	parseFloatArg,
 	parseIntArg,
 	parseTimeout,
+	timeoutArg,
 } from "../../../src/utils/parse-args.js";
 
 describe("parseIntArg", () => {
@@ -174,5 +178,99 @@ describe("parseTimeout", () => {
 	test("rejects leading-zero forms like '05'", () => {
 		// String(parseInt("05")) === "5" !== "05", so strict equality rejects it
 		expect(() => parseTimeout("05")).toThrow(CliError);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Commander argParser wrappers
+// ---------------------------------------------------------------------------
+
+describe("intArg (commander wrapper)", () => {
+	test("returns a function", () => {
+		const parser = intArg("--count");
+		expect(typeof parser).toBe("function");
+	});
+
+	test("delegates to parseIntArg for valid input", () => {
+		const parser = intArg("--count");
+		expect(parser("42", 0)).toBe(42);
+	});
+
+	test("delegates to parseIntArg for zero", () => {
+		const parser = intArg("--count");
+		expect(parser("0", 0)).toBe(0);
+	});
+
+	test("throws CliError for invalid input", () => {
+		const parser = intArg("--count");
+		expect(() => parser("abc", 0)).toThrow(CliError);
+	});
+
+	test("passes positive option through to parseIntArg", () => {
+		const parser = intArg("--count", { positive: true });
+		expect(() => parser("0", 0)).toThrow(CliError);
+		expect(parser("1", 0)).toBe(1);
+	});
+});
+
+describe("floatArg (commander wrapper)", () => {
+	test("returns a function", () => {
+		const parser = floatArg("--cost");
+		expect(typeof parser).toBe("function");
+	});
+
+	test("delegates to parseFloatArg for valid input", () => {
+		const parser = floatArg("--cost");
+		expect(parser("3.14", 0)).toBeCloseTo(3.14);
+	});
+
+	test("throws CliError for invalid input", () => {
+		const parser = floatArg("--cost");
+		expect(() => parser("abc", 0)).toThrow(CliError);
+	});
+
+	test("passes nonNegative option through to parseFloatArg", () => {
+		const parser = floatArg("--cost", { nonNegative: true });
+		expect(() => parser("-1", 0)).toThrow(CliError);
+		expect(parser("0", 0)).toBe(0);
+	});
+});
+
+describe("timeoutArg (commander wrapper)", () => {
+	test("returns a function", () => {
+		const parser = timeoutArg();
+		expect(typeof parser).toBe("function");
+	});
+
+	test("delegates to parseTimeout for valid input", () => {
+		const parser = timeoutArg();
+		expect(parser("30", undefined)).toBe(30);
+	});
+
+	test("throws CliError for invalid input", () => {
+		const parser = timeoutArg();
+		expect(() => parser("abc", undefined)).toThrow(CliError);
+	});
+
+	test("throws CliError for zero", () => {
+		const parser = timeoutArg();
+		expect(() => parser("0", undefined)).toThrow(CliError);
+	});
+});
+
+describe("collect (commander argParser)", () => {
+	test("appends value to empty array", () => {
+		expect(collect("a", [])).toEqual(["a"]);
+	});
+
+	test("appends value to existing array", () => {
+		expect(collect("b", ["a"])).toEqual(["a", "b"]);
+	});
+
+	test("does not mutate previous array", () => {
+		const prev = ["a"];
+		const result = collect("b", prev);
+		expect(prev).toEqual(["a"]);
+		expect(result).toEqual(["a", "b"]);
 	});
 });

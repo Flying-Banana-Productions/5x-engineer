@@ -1,7 +1,7 @@
 /**
  * Skills command handler — business logic for installing agent skills.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -106,21 +106,6 @@ export async function skillsInstall(
 		}
 	}
 
-	const targetDisplay =
-		scope === "user" ? `~/${installRoot}/skills/` : `${installRoot}/skills/`;
-
-	for (const name of created) {
-		console.error(`  Created ${targetDisplay}${name}/SKILL.md`);
-	}
-	for (const name of overwritten) {
-		console.error(`  Overwrote ${targetDisplay}${name}/SKILL.md`);
-	}
-	for (const name of skipped) {
-		console.error(
-			`  Skipped ${targetDisplay}${name}/SKILL.md (already exists)`,
-		);
-	}
-
 	outputSuccess({
 		scope,
 		installRoot,
@@ -194,19 +179,6 @@ export async function skillsUninstall(
 		removeDirIfEmpty(installRootDir);
 
 		scopes[scopeName] = { removed, notFound };
-
-		// Report to stderr
-		const targetDisplay =
-			scopeName === "user"
-				? `~/${installRoot}/skills/`
-				: `${installRoot}/skills/`;
-
-		for (const entry of removed) {
-			console.error(`  Removed ${targetDisplay}${entry}`);
-		}
-		for (const entry of notFound) {
-			console.error(`  Not found ${targetDisplay}${entry}`);
-		}
 	}
 
 	const output: SkillsUninstallOutput = {

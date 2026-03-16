@@ -10,7 +10,7 @@
  *   2. If module-not-found AND name matches a bundled harness → return bundled.
  *   3. If module-not-found and not bundled → throw HarnessNotFoundError.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import type { HarnessPlugin } from "./types.js";

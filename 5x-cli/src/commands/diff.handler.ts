@@ -1,7 +1,7 @@
 /**
  * Diff command handler — business logic for git diff inspection.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 3a (013-worktree-authoritative-execution-context):
  * When `--run` is provided, the handler resolves the run's mapped worktree
@@ -60,6 +60,36 @@ function parseFileNames(nameOnlyOutput: string): string[] {
 		.split("\n")
 		.map((l) => l.trim())
 		.filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Text formatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable text formatter for diff output.
+ * Raw diff text to stdout. Stat summary precedes diff when present.
+ */
+function formatDiffText(data: Record<string, unknown>): void {
+	const stat = data.stat as
+		| {
+				files_changed: number;
+				insertions: number;
+				deletions: number;
+		  }
+		| undefined;
+	if (stat) {
+		console.log(
+			` ${stat.files_changed} file(s) changed,` +
+				` ${stat.insertions} insertion(s),` +
+				` ${stat.deletions} deletion(s)`,
+		);
+	}
+	const diff = data.diff as string;
+	if (diff) {
+		process.stdout.write(diff);
+		if (!diff.endsWith("\n")) process.stdout.write("\n");
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -184,5 +214,5 @@ export async function runDiff(params: DiffParams): Promise<void> {
 		data.run_id = params.run;
 	}
 
-	outputSuccess(data);
+	outputSuccess(data, formatDiffText);
 }

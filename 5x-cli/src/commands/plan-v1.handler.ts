@@ -1,7 +1,7 @@
 /**
  * Plan inspection command handler — business logic for plan parsing.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * When a plan has a mapped worktree, `plan phases` reads the plan from
  * the worktree copy (where checklist items get checked by the author
@@ -23,6 +23,38 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 
 export interface PlanPhasesParams {
 	path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Text formatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable text formatter for `plan phases` output.
+ *
+ * Renders a checklist with checkbox notation and progress counts.
+ */
+function formatPhasesText(data: Record<string, unknown>): void {
+	const phases = data.phases as Array<{
+		id: number;
+		title: string;
+		done: boolean;
+		checklist_total: number;
+		checklist_done: number;
+	}>;
+
+	if (!phases || phases.length === 0) {
+		console.log("(no phases)");
+		return;
+	}
+
+	console.log("Phases:");
+	for (const phase of phases) {
+		const check = phase.done ? "x" : " ";
+		console.log(
+			`  [${check}] Phase ${phase.id}: ${phase.title} (${phase.checklist_done}/${phase.checklist_total})`,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +88,7 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 			: { root: planPath },
 	};
 
-	outputSuccess(result);
+	outputSuccess(result, formatPhasesText);
 }
 
 // ---------------------------------------------------------------------------

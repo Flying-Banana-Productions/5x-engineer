@@ -1,7 +1,7 @@
 /**
  * Prompt command handlers — business logic for interactive prompts.
  *
- * Framework-independent: no citty imports. Uses stdin utilities from
+ * Framework-independent: no CLI framework imports. Uses stdin utilities from
  * src/utils/stdin.ts and output helpers from src/output.ts.
  *
  * Prompt text is written via getPromptOutput() (stderr normally, /dev/tty

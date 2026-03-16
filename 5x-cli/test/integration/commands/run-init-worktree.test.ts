@@ -317,9 +317,10 @@ describe("5x run init --worktree", () => {
 		{ timeout: 15000 },
 	);
 
-	// WTI-010: --worktree-path without --worktree → INVALID_ARGS
+	// WTI-010: --worktree-path without --worktree is now treated as
+	// backward-compatible shorthand (implies --worktree) with deprecation warning
 	test(
-		"returns INVALID_ARGS when --worktree-path used without --worktree",
+		"--worktree-path without --worktree implies worktree mode with deprecation warning",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -332,10 +333,16 @@ describe("5x run init --worktree", () => {
 					"--worktree-path",
 					join(dir, "some-path"),
 				]);
-				expect(result.exitCode).toBe(1);
+				// The deprecated flag now implies --worktree; the path may not exist
+				// so we may get WORKTREE_NOT_FOUND, but NOT INVALID_ARGS
 				const data = parseJson(result.stdout);
-				expect(data.ok).toBe(false);
-				expect((data.error as { code: string }).code).toBe("INVALID_ARGS");
+				if (!data.ok) {
+					expect((data.error as { code: string }).code).not.toBe(
+						"INVALID_ARGS",
+					);
+				}
+				// Deprecation warning emitted to stderr
+				expect(result.stderr).toContain("--worktree-path is deprecated");
 			} finally {
 				cleanupDir(dir);
 			}

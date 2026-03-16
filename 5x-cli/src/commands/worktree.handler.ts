@@ -1,7 +1,7 @@
 /**
  * Worktree command handlers — business logic for git worktree management.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 6 guards:
  * - `worktree create` fails in linked-worktree context unless `--allow-nested`.

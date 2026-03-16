@@ -461,8 +461,8 @@ describe("run record pipe ingestion", () => {
 
 				// When --result=- is specified, stdin is consumed as raw result JSON
 				// (not parsed as an envelope). Must provide --run and step name explicitly.
-				// Note: citty requires `--result=-` (equals syntax) to preserve the "-"
-				// value; `--result -` gets swallowed by the arg parser.
+				// Note: `--result=-` (equals syntax) preserves the "-" value;
+				// `--result -` would be swallowed by the arg parser.
 				const rawResult = '{"raw":"from_stdin"}';
 				const result = await run5xWithStdin(
 					projectRoot,

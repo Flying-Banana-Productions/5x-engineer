@@ -70,7 +70,14 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-Write your review to `{{review_path}}` and return when done. The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
+Write your review to `{{review_path}}` and commit it:
+
+    git add {{review_path}}
+    git commit -m "review: <phase or context summary>"
+
+The review document is part of the project audit trail and must be committed before you return.
+
+The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 
 Your structured response will include:
 - **readiness**: `ready`, `ready_with_corrections`, or `not_ready`

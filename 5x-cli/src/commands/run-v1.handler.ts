@@ -1,7 +1,7 @@
 /**
  * Run v1 command handlers — business logic for run lifecycle management.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 3b (013-worktree-authoritative-execution-context):
  * All run subcommands use `resolveControlPlaneRoot` (via `resolveDbContext`)
@@ -448,6 +448,208 @@ function formatStep(step: StepRow) {
 }
 
 // ---------------------------------------------------------------------------
+// Text formatters
+// ---------------------------------------------------------------------------
+
+/** Format duration_ms as human-readable string (e.g., "2m 15s" or "45s"). */
+function formatDuration(ms: number): string {
+	const totalSeconds = Math.round(ms / 1000);
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	if (minutes > 0) {
+		return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+	}
+	return `${seconds}s`;
+}
+
+/** Format cost as $X.XX. */
+function formatCost(usd: number): string {
+	return `$${usd.toFixed(2)}`;
+}
+
+/**
+ * Human-readable text formatter for `run state` output.
+ *
+ * Renders a run info header, padded step table, and summary line.
+ * Omits columns where all values are null.
+ */
+function formatStateText(data: {
+	run: {
+		id: string;
+		plan_path: string;
+		status: string;
+		created_at: string;
+		updated_at: string;
+		worktree_path?: string;
+	};
+	steps: Array<{
+		id: number;
+		step_name: string;
+		phase: string | null;
+		iteration: number | null;
+		duration_ms: number | null;
+		cost_usd: number | null;
+		created_at: string;
+		[key: string]: unknown;
+	}>;
+	summary: {
+		total_steps: number;
+		phases_completed: string[];
+		total_tokens_in: number;
+		total_tokens_out: number;
+		total_cost_usd: number;
+		total_duration_ms: number;
+	};
+}): void {
+	const { run, steps, summary } = data;
+
+	// Header
+	console.log(`Run:     ${run.id}`);
+	console.log(`Plan:    ${run.plan_path}`);
+	console.log(`Status:  ${run.status}`);
+	console.log(`Created: ${run.created_at}`);
+
+	if (steps.length === 0) {
+		console.log();
+		console.log("Steps: (none)");
+		return;
+	}
+
+	// Determine which optional columns have data
+	const hasPhase = steps.some((s) => s.phase != null);
+	const hasIteration = steps.some((s) => s.iteration != null);
+	const hasDuration = steps.some((s) => s.duration_ms != null);
+	const hasCost = steps.some((s) => s.cost_usd != null);
+
+	// Build column definitions: [header, width, getter]
+	type Col = {
+		header: string;
+		width: number;
+		get: (s: (typeof steps)[0]) => string;
+	};
+	const cols: Col[] = [
+		{ header: "#", width: 1, get: (s) => String(s.id) },
+		{ header: "Step", width: 4, get: (s) => s.step_name },
+	];
+	if (hasPhase)
+		cols.push({ header: "Phase", width: 5, get: (s) => s.phase ?? "" });
+	if (hasIteration)
+		cols.push({
+			header: "Iter",
+			width: 4,
+			get: (s) => (s.iteration != null ? String(s.iteration) : ""),
+		});
+	if (hasDuration)
+		cols.push({
+			header: "Duration",
+			width: 8,
+			get: (s) => (s.duration_ms != null ? formatDuration(s.duration_ms) : ""),
+		});
+	if (hasCost)
+		cols.push({
+			header: "Cost",
+			width: 4,
+			get: (s) => (s.cost_usd != null ? formatCost(s.cost_usd) : ""),
+		});
+	cols.push({ header: "Created", width: 7, get: (s) => s.created_at });
+
+	// Calculate actual widths from data
+	for (const col of cols) {
+		col.width = Math.max(col.width, col.header.length);
+		for (const s of steps) {
+			col.width = Math.max(col.width, col.get(s).length);
+		}
+	}
+
+	// Print table
+	console.log();
+	console.log("Steps:");
+	const headerLine = cols.map((c) => c.header.padEnd(c.width)).join("  ");
+	console.log(`  ${headerLine}`);
+	for (const step of steps) {
+		const row = cols.map((c) => c.get(step).padEnd(c.width)).join("  ");
+		console.log(`  ${row}`);
+	}
+
+	// Summary line
+	const parts: string[] = [`${summary.total_steps} steps`];
+	if (summary.phases_completed.length > 0) {
+		parts.push(`Phases completed: ${summary.phases_completed.length}`);
+	}
+	if (summary.total_cost_usd > 0) {
+		parts.push(`Cost: ${formatCost(summary.total_cost_usd)}`);
+	}
+	if (summary.total_duration_ms > 0) {
+		parts.push(`Duration: ${formatDuration(summary.total_duration_ms)}`);
+	}
+
+	console.log();
+	console.log(`Summary: ${parts.join(" | ")}`);
+}
+
+/**
+ * Human-readable text formatter for `run list` output.
+ *
+ * Column-aligned table with ID, Plan, Status, Steps, Created.
+ * Truncates long plan paths with `...`.
+ */
+function formatListText(data: {
+	runs: Array<{
+		id: string;
+		plan_path: string;
+		status: string;
+		step_count: number;
+		created_at: string;
+		updated_at: string;
+	}>;
+}): void {
+	const { runs } = data;
+
+	if (runs.length === 0) {
+		console.log("(no runs)");
+		return;
+	}
+
+	const MAX_PLAN_WIDTH = 50;
+
+	function truncatePlan(path: string): string {
+		if (path.length <= MAX_PLAN_WIDTH) return path;
+		return `...${path.slice(-(MAX_PLAN_WIDTH - 3))}`;
+	}
+
+	// Format rows first to compute widths
+	const rows = runs.map((r) => ({
+		id: r.id,
+		plan: truncatePlan(r.plan_path),
+		status: r.status,
+		steps: String(r.step_count),
+		created: r.created_at.split("T")[0] ?? r.created_at,
+	}));
+
+	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
+	const cols: ColDef[] = [
+		{ header: "ID", key: "id", width: 2 },
+		{ header: "Plan", key: "plan", width: 4 },
+		{ header: "Status", key: "status", width: 6 },
+		{ header: "Steps", key: "steps", width: 5 },
+		{ header: "Created", key: "created", width: 7 },
+	];
+
+	for (const col of cols) {
+		for (const row of rows) {
+			col.width = Math.max(col.width, row[col.key].length);
+		}
+	}
+
+	const headerLine = cols.map((c) => c.header.padEnd(c.width)).join("  ");
+	console.log(headerLine);
+	for (const row of rows) {
+		const line = cols.map((c) => row[c.key].padEnd(c.width)).join("  ");
+		console.log(line);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -680,18 +882,21 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
 	const worktreePath = plan?.worktree_path || null;
 
-	outputSuccess({
-		run: {
-			id: run.id,
-			plan_path: run.plan_path,
-			status: run.status,
-			created_at: run.created_at,
-			updated_at: run.updated_at,
-			...(worktreePath ? { worktree_path: worktreePath } : {}),
+	outputSuccess(
+		{
+			run: {
+				id: run.id,
+				plan_path: run.plan_path,
+				status: run.status,
+				created_at: run.created_at,
+				updated_at: run.updated_at,
+				...(worktreePath ? { worktree_path: worktreePath } : {}),
+			},
+			steps: steps.map(formatStep),
+			summary,
 		},
-		steps: steps.map(formatStep),
-		summary,
-	});
+		formatStateText,
+	);
 }
 
 /**
@@ -1014,16 +1219,19 @@ export async function runV1List(params: RunListParams): Promise<void> {
 		limit: params.limit,
 	});
 
-	outputSuccess({
-		runs: runs.map((r) => ({
-			id: r.id,
-			plan_path: r.plan_path,
-			status: r.status,
-			created_at: r.created_at,
-			updated_at: r.updated_at,
-			step_count: r.step_count,
-		})),
-	});
+	outputSuccess(
+		{
+			runs: runs.map((r) => ({
+				id: r.id,
+				plan_path: r.plan_path,
+				status: r.status,
+				created_at: r.created_at,
+				updated_at: r.updated_at,
+				step_count: r.step_count,
+			})),
+		},
+		formatListText,
+	);
 }
 
 // ---------------------------------------------------------------------------

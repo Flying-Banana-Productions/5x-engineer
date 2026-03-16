@@ -11,7 +11,7 @@
 The CLI toolbelt exposes stateless primitives as standard CLI commands. Every command:
 
 - Accepts structured input (flags, arguments, stdin)
-- Returns JSON to stdout (unless `--format text` for human readability)
+- Returns JSON to stdout by default (`--text` for human readability; see [Output Format](#output-format))
 - Writes side effects to the SQLite database and/or filesystem
 - Is independently callable — no implicit ordering or session state
 - Exits with standard codes: 0 (success), 1 (error), 2 (usage error)
@@ -31,6 +31,29 @@ All JSON output follows a consistent envelope:
   "error": { "code": "QUALITY_FAILED", "message": "2 of 3 gates failed", "detail": { ... } }
 }
 ```
+
+### Output Format
+
+Commands support two output formats controlled by global flags:
+
+| Flag / Env | Effect |
+|---|---|
+| `--json` | JSON envelopes on stdout (default) |
+| `--text` | Human-readable text output on stdout |
+| `--pretty` / `--no-pretty` | Format JSON output; no effect in text mode |
+| `FIVEX_OUTPUT_FORMAT=text\|json` | Set default output format via environment variable |
+
+**Precedence:** `--text`/`--json` flag > `FIVEX_OUTPUT_FORMAT` env > `json` (default).
+
+JSON is always the default to ensure deterministic pipe-chain behavior. A user building a pipe chain tests individual commands in a terminal, then pipes them together — if output format changed based on TTY detection, the tested output would differ from the piped output.
+
+**Text mode behavior:**
+
+- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan phases` prints a checklist).
+- Commands without a custom formatter use a built-in generic formatter that renders aligned key-value pairs with nested indentation.
+- Errors produce a single `Error: <message>` line on stderr (no JSON envelope, no Commander help text).
+
+**Grandfathered commands:** `init`, `upgrade`, and `harness install` always produce human-readable text via `console.log`. They do not participate in the output format system. `run watch` has its own `--human-readable` flag.
 
 ### Implementation status
 

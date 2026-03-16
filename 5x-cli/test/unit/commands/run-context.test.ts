@@ -127,7 +127,7 @@ describe("resolveRunExecutionContext", () => {
 		}
 	});
 
-	test("worktree mapped but plan file missing in worktree: fallback to root plan path", () => {
+	test("worktree mapped but plan file missing in worktree: still resolves to worktree path", () => {
 		const planPath = join(tmp, "docs", "plan.md");
 		mkdirSync(join(tmp, "docs"), { recursive: true });
 		writeFileSync(planPath, "# Plan\n");
@@ -144,8 +144,10 @@ describe("resolveRunExecutionContext", () => {
 			expect(result.ok).toBe(true);
 			if (result.ok) {
 				expect(result.context.effectiveWorkingDirectory).toBe(wtPath);
-				// Falls back to root plan path
-				expect(result.context.effectivePlanPath).toBe(planPath);
+				// Always resolves to worktree path so new files are created there
+				expect(result.context.effectivePlanPath).toBe(
+					join(wtPath, "docs", "plan.md"),
+				);
 				expect(result.context.planPathInWorktreeExists).toBe(false);
 			}
 		} finally {

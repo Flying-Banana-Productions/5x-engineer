@@ -2,7 +2,7 @@
  * Stdin I/O utilities for interactive prompts.
  *
  * Extracted from src/commands/prompt.ts to enable reuse across command handlers
- * without coupling to the citty CLI framework.
+ * without coupling to the CLI framework.
  *
  * Supports a /dev/tty fallback for environments where stdin is piped but a
  * controlling terminal is available (e.g., bash scripts that capture stdout).

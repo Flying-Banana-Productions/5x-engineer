@@ -1,7 +1,7 @@
 /**
  * Protocol command handler — business logic for `5x protocol validate`.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 1 (014-harness-native-subagent-orchestration):
  * Standalone structured-result validation so native subagent orchestration

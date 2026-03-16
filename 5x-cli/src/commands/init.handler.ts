@@ -1,7 +1,7 @@
 /**
  * Init command handler — business logic for project scaffolding.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

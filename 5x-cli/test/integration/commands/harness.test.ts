@@ -101,14 +101,8 @@ describe("5x harness list", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { stdout, stderr, exitCode } = await runCmd(tmp, [
-					"harness",
-					"list",
-				]);
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
 				expect(exitCode).toBe(0);
-
-				// stderr has human-readable output
-				expect(stderr).toContain("opencode");
 
 				// stdout has JSON envelope
 				const envelope = JSON.parse(stdout);
@@ -474,7 +468,7 @@ describe("5x harness install — scope validation", () => {
 				]);
 
 				expect(exitCode).not.toBe(0);
-				expect(stdout).toContain("Invalid scope");
+				expect(stdout).toContain("Allowed choices are user, project");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -562,8 +556,6 @@ describe("5x harness uninstall — round-trip", () => {
 					"project",
 				]);
 				expect(uninstallResult.exitCode).toBe(0);
-				expect(uninstallResult.stderr).toContain("Removed");
-				expect(uninstallResult.stderr).toContain("uninstall complete");
 
 				// Verify files removed
 				for (const name of skillNames) {

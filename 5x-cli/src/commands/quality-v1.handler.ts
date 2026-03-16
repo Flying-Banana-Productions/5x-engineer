@@ -1,7 +1,7 @@
 /**
  * Quality gate command handler — business logic for quality gate execution.
  *
- * Framework-independent: no citty imports.
+ * Framework-independent: no CLI framework imports.
  *
  * Phase 3a (013-worktree-authoritative-execution-context):
  * When `--run` is present, the handler uses the run context resolver to
