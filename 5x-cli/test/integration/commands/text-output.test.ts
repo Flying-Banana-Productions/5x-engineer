@@ -482,6 +482,18 @@ describe("custom formatter output (--text)", () => {
 				const initData = JSON.parse(initResult.stdout);
 				const runId = initData.data.run_id;
 
+				// Record a step so Steps: and Summary: sections appear
+				const recordResult = await run5x(dir, [
+					"run",
+					"record",
+					"author:phase-1",
+					"--run",
+					runId,
+					"--result",
+					'{"status":"complete"}',
+				]);
+				expect(recordResult.exitCode).toBe(0);
+
 				// State in text mode
 				const result = await run5x(dir, [
 					"--text",
@@ -493,6 +505,8 @@ describe("custom formatter output (--text)", () => {
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain("Run:");
 				expect(result.stdout).toContain("Status:");
+				expect(result.stdout).toContain("Steps:");
+				expect(result.stdout).toContain("Summary:");
 				// Not JSON
 				expect(result.stdout).not.toContain('{"ok"');
 			} finally {
