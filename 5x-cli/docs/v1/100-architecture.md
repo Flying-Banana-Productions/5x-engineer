@@ -199,7 +199,7 @@ The CLI supports two output formats: JSON envelopes (default) and human-readable
 | Mechanism | Priority | Example |
 |---|---|---|
 | `--text` / `--json` flag | Highest (last flag wins) | `5x --text run list`, `5x run list --json` |
-| `5X_OUTPUT_FORMAT` env var | Medium | `export 5X_OUTPUT_FORMAT=text` |
+| `FIVEX_OUTPUT_FORMAT` env var | Medium | `export FIVEX_OUTPUT_FORMAT=text` |
 | Default | Lowest | `json` |
 
 JSON is the default to ensure deterministic pipe-chain composition. Output format is explicit, not TTY-detected.

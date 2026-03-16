@@ -34,10 +34,10 @@ works at any argv position (`5x --text run state`, `5x run state --text`),
 applies to error envelopes, and uses the exact same mechanism as the
 existing `--pretty`/`--no-pretty` handling.
 
-**`5X_OUTPUT_FORMAT` environment variable for session defaults.** Accepts
-`text` or `json`. Lets a user `export 5X_OUTPUT_FORMAT=text` in their shell
+**`FIVEX_OUTPUT_FORMAT` environment variable for session defaults.** Accepts
+`text` or `json`. Lets a user `export FIVEX_OUTPUT_FORMAT=text` in their shell
 profile for a persistently human-friendly experience. CLI flags override it.
-Precedence: `--text`/`--json` flag > `5X_OUTPUT_FORMAT` env > `json`
+Precedence: `--text`/`--json` flag > `FIVEX_OUTPUT_FORMAT` env > `json`
 (default).
 
 **`outputSuccess(data, textFormatter?)` — optional formatter argument.**
@@ -148,7 +148,7 @@ perfectly readable. No custom formatter needed.
 
 **Completion gate:** `output.ts` exports `setOutputFormat`, `getOutputFormat`,
 `formatGenericText`, and an updated `outputSuccess` with optional formatter.
-`bin.ts` strips `--text`/`--json` from argv, reads `5X_OUTPUT_FORMAT`,
+`bin.ts` strips `--text`/`--json` from argv, reads `FIVEX_OUTPUT_FORMAT`,
 suppresses Commander's built-in error output in text mode via
 `configureOutput`, and handles errors in text mode with a single clean
 `Error: <message>` on stderr. `bun run typecheck` passes. No behavioral
@@ -301,7 +301,7 @@ changes yet (no formatters registered, default is still JSON).
 
   {
     // 1. Environment variable sets the baseline (lowest priority)
-    const envFormat = process.env["5X_OUTPUT_FORMAT"];
+    const envFormat = process.env["FIVEX_OUTPUT_FORMAT"];
     if (envFormat === "text" || envFormat === "json") {
       setOutputFormat(envFormat);
     }
@@ -401,7 +401,7 @@ changes yet (no formatters registered, default is still JSON).
   - `5x run list` → JSON envelope (default, unchanged)
   - `5x --text run list` → generic text output
   - `5x run list --text` → generic text output (any position)
-  - `5X_OUTPUT_FORMAT=text 5x run list` → generic text output
+  - `FIVEX_OUTPUT_FORMAT=text 5x run list` → generic text output
   - `5x --text --json run list` → JSON (last flag wins)
   - `5x --text run init` (missing `--plan`) → single `Error: ...` on
     stderr, no Commander help/usage text, stdout empty, exit code 1
@@ -638,10 +638,10 @@ interaction (verifying `--pretty` is ignored in text mode), and the env var.
   - `--text` at start of argv: `5x --text run list` → no `{"ok"` in stdout
   - `--text` at end of argv: `5x run list --text` → no `{"ok"` in stdout
   - `--json` overrides `--text`: `5x --text --json run list` → JSON envelope
-  - `5X_OUTPUT_FORMAT=text`: env var activates text mode
-  - `--json` overrides env var: `5X_OUTPUT_FORMAT=text 5x --json run list`
+  - `FIVEX_OUTPUT_FORMAT=text`: env var activates text mode
+  - `--json` overrides env var: `FIVEX_OUTPUT_FORMAT=text 5x --json run list`
     → JSON envelope
-  - Unknown format env value ignored: `5X_OUTPUT_FORMAT=bogus 5x run list`
+  - Unknown format env value ignored: `FIVEX_OUTPUT_FORMAT=bogus 5x run list`
     → JSON envelope (default)
   - `--pretty` ignored in text mode: `5x --text --pretty run list` →
     text output (not JSON), identical to `5x --text run list`
@@ -720,18 +720,18 @@ need updating:
 
 **Completion gate:** Documentation reflects the new output format system.
 `bun run typecheck` passes. Help text mentions `--text`/`--json` and
-`5X_OUTPUT_FORMAT`.
+`FIVEX_OUTPUT_FORMAT`.
 
 - [x] `src/program.ts` — Update program-level description and footer:
-  - Add `--text`/`--json` and `5X_OUTPUT_FORMAT` to the help footer
+  - Add `--text`/`--json` and `FIVEX_OUTPUT_FORMAT` to the help footer
   - Explain that JSON is the default, `--text` switches to human-readable
-  - Note the precedence: `--text`/`--json` > `5X_OUTPUT_FORMAT` > json
+  - Note the precedence: `--text`/`--json` > `FIVEX_OUTPUT_FORMAT` > json
   - List grandfathered commands (init, upgrade, harness install) that
     always produce human-readable text
 
 - [x] `docs/v1/101-cli-primitives.md` — Add a section on output format:
   - Document `--text` and `--json` global flags
-  - Document `5X_OUTPUT_FORMAT` env var
+  - Document `FIVEX_OUTPUT_FORMAT` env var
   - Document precedence chain
   - Note which commands have custom text formatters vs generic fallback
   - Note grandfathered commands
@@ -748,7 +748,7 @@ need updating:
 | File | Change |
 |------|--------|
 | `src/output.ts` | Add output format state, generic text formatter, update `outputSuccess` signature |
-| `src/bin.ts` | Add `--text`/`--json` argv stripping, `5X_OUTPUT_FORMAT` env var, update `configureOutput` to suppress Commander stderr in text mode, text-mode error handling in catch block |
+| `src/bin.ts` | Add `--text`/`--json` argv stripping, `FIVEX_OUTPUT_FORMAT` env var, update `configureOutput` to suppress Commander stderr in text mode, text-mode error handling in catch block |
 | `src/commands/diff.handler.ts` | Add `formatDiffText()`, pass to `outputSuccess` |
 | `src/commands/run-v1.handler.ts` | Add `formatStateText()`, `formatListText()`, pass to `outputSuccess` |
 | `src/commands/plan-v1.handler.ts` | Add `formatPhasesText()`, pass to `outputSuccess` |

@@ -20,8 +20,8 @@ export function createProgram(): Command {
 				"  --text              Human-readable text output\n" +
 				"  --json              JSON envelopes (default)\n" +
 				"  --pretty/--no-pretty  Format JSON output (no effect in text mode)\n" +
-				"  5X_OUTPUT_FORMAT=text|json  Set default via environment variable\n" +
-				"  Precedence: --text/--json flag > 5X_OUTPUT_FORMAT env > json (default)\n\n" +
+				"  FIVEX_OUTPUT_FORMAT=text|json  Set default via environment variable\n" +
+				"  Precedence: --text/--json flag > FIVEX_OUTPUT_FORMAT env > json (default)\n\n" +
 				"JSON envelopes use { ok, data } for success, { ok, error } for errors.\n" +
 				"Grandfathered: init, upgrade, and harness install always emit text;\n" +
 				"run watch streams NDJSON or human-readable output.\n\n" +

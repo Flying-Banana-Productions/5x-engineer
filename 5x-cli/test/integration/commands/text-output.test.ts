@@ -1,6 +1,6 @@
 /**
  * Integration tests for --text / --json output format flags and
- * 5X_OUTPUT_FORMAT environment variable.
+ * FIVEX_OUTPUT_FORMAT environment variable.
  *
  * Covers: Phase 4b (flags + env), Phase 4c (text-mode errors),
  * Phase 4d (custom formatters), Phase 4e (generic fallback).
@@ -184,12 +184,12 @@ describe("--text / --json flag and env var", () => {
 	);
 
 	test(
-		"5X_OUTPUT_FORMAT=text activates text mode",
+		"FIVEX_OUTPUT_FORMAT=text activates text mode",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
 				const result = await run5x(tmp, ["skills", "install", "project"], {
-					"5X_OUTPUT_FORMAT": "text",
+					FIVEX_OUTPUT_FORMAT: "text",
 				});
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
@@ -202,14 +202,14 @@ describe("--text / --json flag and env var", () => {
 	);
 
 	test(
-		"--json overrides 5X_OUTPUT_FORMAT=text",
+		"--json overrides FIVEX_OUTPUT_FORMAT=text",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
 				const result = await run5x(
 					tmp,
 					["--json", "skills", "install", "project"],
-					{ "5X_OUTPUT_FORMAT": "text" },
+					{ FIVEX_OUTPUT_FORMAT: "text" },
 				);
 				expect(result.exitCode).toBe(0);
 				const envelope = JSON.parse(result.stdout);
@@ -222,12 +222,12 @@ describe("--text / --json flag and env var", () => {
 	);
 
 	test(
-		"unknown 5X_OUTPUT_FORMAT value is ignored (defaults to JSON)",
+		"unknown FIVEX_OUTPUT_FORMAT value is ignored (defaults to JSON)",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
 				const result = await run5x(tmp, ["skills", "install", "project"], {
-					"5X_OUTPUT_FORMAT": "bogus",
+					FIVEX_OUTPUT_FORMAT: "bogus",
 				});
 				expect(result.exitCode).toBe(0);
 				const envelope = JSON.parse(result.stdout);

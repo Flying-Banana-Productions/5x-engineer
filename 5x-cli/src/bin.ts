@@ -53,7 +53,7 @@ import { createProgram } from "./program.js";
 // ---------------------------------------------------------------------------
 {
 	// 1. Environment variable sets the baseline (lowest priority)
-	const envFormat = process.env["5X_OUTPUT_FORMAT"];
+	const envFormat = process.env.FIVEX_OUTPUT_FORMAT;
 	if (envFormat === "text" || envFormat === "json") {
 		setOutputFormat(envFormat);
 	}

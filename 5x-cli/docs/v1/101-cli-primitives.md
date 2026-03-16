@@ -11,7 +11,7 @@
 The CLI toolbelt exposes stateless primitives as standard CLI commands. Every command:
 
 - Accepts structured input (flags, arguments, stdin)
-- Returns JSON to stdout (unless `--format text` for human readability)
+- Returns JSON to stdout by default (`--text` for human readability; see [Output Format](#output-format))
 - Writes side effects to the SQLite database and/or filesystem
 - Is independently callable — no implicit ordering or session state
 - Exits with standard codes: 0 (success), 1 (error), 2 (usage error)
@@ -41,9 +41,9 @@ Commands support two output formats controlled by global flags:
 | `--json` | JSON envelopes on stdout (default) |
 | `--text` | Human-readable text output on stdout |
 | `--pretty` / `--no-pretty` | Format JSON output; no effect in text mode |
-| `5X_OUTPUT_FORMAT=text\|json` | Set default output format via environment variable |
+| `FIVEX_OUTPUT_FORMAT=text\|json` | Set default output format via environment variable |
 
-**Precedence:** `--text`/`--json` flag > `5X_OUTPUT_FORMAT` env > `json` (default).
+**Precedence:** `--text`/`--json` flag > `FIVEX_OUTPUT_FORMAT` env > `json` (default).
 
 JSON is always the default to ensure deterministic pipe-chain behavior. A user building a pipe chain tests individual commands in a terminal, then pipes them together — if output format changed based on TTY detection, the tested output would differ from the piped output.
 
