@@ -389,6 +389,172 @@ describe("protocol validate --record arg validation (unit)", () => {
 });
 
 // ===========================================================================
+// Phase enforcement: --record requires deterministic phase
+// ===========================================================================
+
+describe("protocol validate --record phase enforcement (unit)", () => {
+	test("--record without --phase and result without .phase → PHASE_REQUIRED", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			try {
+				await protocolValidate({
+					role: "author",
+					input: inputPath,
+					record: true,
+					run: "run_phase001",
+					step: "author:implement",
+				});
+				expect(true).toBe(false); // should not reach
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PHASE_REQUIRED");
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("--record with --phase and mismatched result.phase → PHASE_MISMATCH", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Result JSON includes a .phase field that doesn't match --phase
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+				phase: "3",
+			});
+			try {
+				await protocolValidate({
+					role: "author",
+					input: inputPath,
+					record: true,
+					run: "run_phase002",
+					step: "phase:complete",
+					phase: "2",
+				});
+				expect(true).toBe(false); // should not reach
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PHASE_MISMATCH");
+				expect((err as CliError).message).toContain('"2"');
+				expect((err as CliError).message).toContain('"3"');
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("--record with result.phase but no --phase → passes prereqs (no error)", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Result includes phase — should be extracted as resolved phase.
+			// Recording itself may fail (DB context depends on cwd) but
+			// the phase resolution logic should not throw.
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+				phase: "3",
+			});
+
+			// Should not throw CliError — phase is resolved from result_json.
+			// Recording is a side-effect; failure is logged to stderr, not thrown.
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				record: true,
+				run: "run_phase003",
+				step: "phase:complete",
+				phaseChecklistValidate: false,
+			});
+		} finally {
+			// Recording side-effect failure sets process.exitCode = 1; reset
+			// to avoid poisoning the test runner exit code.
+			process.exitCode = 0;
+			cleanupDir(dir);
+		}
+	});
+
+	test("--record with matching --phase and result.phase → passes prereqs", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+				phase: "3",
+			});
+
+			// Both sources agree — should not throw
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				record: true,
+				run: "run_phase004",
+				step: "phase:complete",
+				phase: "3",
+				phaseChecklistValidate: false,
+			});
+		} finally {
+			process.exitCode = 0;
+			cleanupDir(dir);
+		}
+	});
+
+	test("--record with --phase only (no result.phase) → passes prereqs", async () => {
+		const dir = makeTmpDir();
+		try {
+			// AuthorStatus has no .phase field — --phase is the sole source
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+
+			// Should not throw — --phase provides the phase
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				record: true,
+				run: "run_phase005",
+				step: "author:implement",
+				phase: "2",
+				phaseChecklistValidate: false,
+			});
+		} finally {
+			process.exitCode = 0;
+			cleanupDir(dir);
+		}
+	});
+
+	test("reviewer --record also enforces phase requirement", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeInput(dir, {
+				readiness: "ready",
+				items: [],
+			});
+			try {
+				await protocolValidate({
+					role: "reviewer",
+					input: inputPath,
+					record: true,
+					run: "run_phase006",
+					step: "reviewer:commit",
+				});
+				expect(true).toBe(false);
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("PHASE_REQUIRED");
+			}
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+// ===========================================================================
 // Phase 3: Legacy author status normalization via handler (016-review-artifacts)
 // ===========================================================================
 
@@ -786,6 +952,35 @@ describe("protocol validate author — checklist gate (unit)", () => {
 				input: inputPath,
 				plan: planPath,
 				phase: "Phase 1",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("phase matched by bare numeric string", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [
+						{ text: "Create config", checked: true },
+						{ text: "Add tests", checked: true },
+					],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// Match by bare "1" — the root cause of the phase:null bug
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "1",
 			});
 		} finally {
 			cleanupDir(dir);

@@ -107,11 +107,18 @@ echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase $PHASE
 ```
 
-**Session reuse** is optional and best-effort. Pass `--session
-$REVIEWER_SESSION` to `5x template render` when a session id is
-available; the command will automatically select a shorter
-continued-template variant if one exists. Omit `--session` to start
-a fresh session.
+**Session reuse** is optional and best-effort. "Session" here means the
+agent's conversational session — the identifier that lets you resume the
+same agent conversation rather than starting fresh. In MCP Task tools
+this is the `task_id` returned from a Task invocation; in `5x invoke` it
+is the `session_id` from the JSON envelope.
+
+Capture the session identifier from the first reviewer invocation as
+`$REVIEWER_SESSION`. Pass it when resuming the reviewer for re-reviews
+within the same phase — this gives the reviewer conversational continuity
+with its prior findings. Pass `--session $REVIEWER_SESSION` to
+`5x template render` to auto-select a shorter continued-template variant
+if one exists. Omit to start fresh.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -172,6 +179,12 @@ The `--worktree` flag ensures an isolated git worktree is resolved or
 created for this plan. The worktree mapping is stored in the root DB,
 and all subsequent `--run`-scoped commands automatically execute in
 that worktree.
+
+**Timeout note:** `run init --worktree` may take 30+ seconds for large
+repositories (git checkout + file operations). Set your shell tool
+timeout to at least 120 seconds for this command. If it times out,
+retry with a longer timeout — the command is idempotent and will resume
+the existing run.
 
 If resuming an existing run (including runs migrated from v0), call
 `5x run state --run $RUN` to review recorded history.

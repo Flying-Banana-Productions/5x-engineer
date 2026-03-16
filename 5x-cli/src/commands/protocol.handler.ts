@@ -174,6 +174,7 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		(p) =>
 			p.title === params.phase ||
 			p.heading === params.phase ||
+			String(p.number) === params.phase ||
 			`Phase ${p.number}` === params.phase ||
 			`Phase ${p.number}: ${p.title}` === params.phase,
 	);
@@ -246,6 +247,7 @@ export async function protocolValidate(
 	// and misleading orchestrators into treating a failed call as successful.
 	// -----------------------------------------------------------------------
 	let recordStepName: string | undefined;
+	let resolvedPhase: string | undefined = params.phase;
 	if (params.record) {
 		if (!params.run) {
 			outputError(
@@ -262,6 +264,38 @@ export async function protocolValidate(
 			);
 		}
 		recordStepName = params.step;
+
+		// Phase enforcement: resolve from --phase and/or result_json.phase.
+		// result_json is authoritative; --phase must match if both are present.
+		const resultPhase =
+			validated &&
+			typeof validated === "object" &&
+			!Array.isArray(validated) &&
+			"phase" in validated
+				? String((validated as Record<string, unknown>).phase)
+				: undefined;
+
+		if (params.phase && resultPhase) {
+			if (params.phase !== resultPhase) {
+				outputError(
+					"PHASE_MISMATCH",
+					`--phase is "${params.phase}" but result_json.phase is "${resultPhase}". ` +
+						"These must match. Remove --phase to use result_json as authoritative, " +
+						"or correct the phase value.",
+				);
+			}
+			resolvedPhase = params.phase;
+		} else if (params.phase) {
+			resolvedPhase = params.phase;
+		} else if (resultPhase) {
+			resolvedPhase = resultPhase;
+		} else {
+			outputError(
+				"PHASE_REQUIRED",
+				"Phase is required when recording. Provide --phase or include " +
+					'a "phase" field in the result JSON.',
+			);
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -306,7 +340,7 @@ export async function protocolValidate(
 				run: params.run as string,
 				stepName: recordStepName,
 				result: JSON.stringify(validated),
-				phase: params.phase,
+				phase: resolvedPhase,
 				iteration: params.iteration,
 			});
 		} catch (err) {
