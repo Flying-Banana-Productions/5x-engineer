@@ -129,11 +129,20 @@ try {
 		process.exit(err.exitCode);
 	}
 	if (err instanceof CommanderError) {
-		// Commander validation/help/version errors
+		// Commander help/version errors — these are not real errors.
+		// commander.helpDisplayed = explicit --help (routed through writeOut)
+		// commander.help          = automatic help on no-args (routed through writeErr)
+		// commander.version       = explicit -V/--version (routed through writeOut)
 		if (
 			err.code === "commander.helpDisplayed" ||
+			err.code === "commander.help" ||
 			err.code === "commander.version"
 		) {
+			// commander.help routes output through writeErr, which text mode
+			// suppresses. Re-emit help via writeOut so it reaches stdout.
+			if (err.code === "commander.help" && getOutputFormat() === "text") {
+				program.outputHelp();
+			}
 			process.exit(0);
 		}
 		if (getOutputFormat() === "text") {

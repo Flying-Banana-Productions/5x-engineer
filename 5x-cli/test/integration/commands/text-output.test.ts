@@ -309,6 +309,75 @@ describe("--text / --json flag and env var", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Text-mode help/version display
+// ---------------------------------------------------------------------------
+
+describe("text-mode help and version display", () => {
+	test(
+		"no args in text mode: shows help and exits 0",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const result = await run5x(tmp, [], {
+					FIVEX_OUTPUT_FORMAT: "text",
+				});
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Usage:");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text with no args: shows help and exits 0",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const result = await run5x(tmp, ["--text"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Usage:");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text --help: shows help and exits 0",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const result = await run5x(tmp, ["--text", "--help"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Usage:");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text -V: shows version and exits 0",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const result = await run5x(tmp, ["--text", "-V"]);
+				expect(result.exitCode).toBe(0);
+				// Version string should be a semver-like pattern
+				expect(result.stdout).toMatch(/\d+\.\d+/);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
 // Phase 4c: Text-mode errors
 // ---------------------------------------------------------------------------
 
