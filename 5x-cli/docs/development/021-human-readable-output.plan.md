@@ -586,7 +586,7 @@ data that belongs on stdout.
 ### Phase 3c: Verify
 
 - [x] Verify `bun run typecheck` passes
-- [ ] Manual verification:
+- [x] Manual verification:
   - `5x --text diff` → raw diff text
   - `5x --text run state -r <id>` → formatted step table
   - `5x --text run list` → column-aligned table
