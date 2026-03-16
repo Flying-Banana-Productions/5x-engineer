@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveLayeredConfig } from "../../src/config.js";
+import { isWorktreeRoot, resolveLayeredConfig } from "../../src/config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -460,6 +460,147 @@ describe("resolveLayeredConfig", () => {
 			expect(result.config.paths.plans).toBe(join(tmp, "my-plans"));
 			// Zod defaults are also absolute
 			expect(result.config.paths.reviews.startsWith("/")).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Worktree config deduplication
+	// -----------------------------------------------------------------------
+
+	test("worktree root config is skipped: no false layering or db warning", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			// Root repo config with [db] section
+			writeToml(
+				tmp,
+				`[db]\npath = ".5x/5x.db"\n\n[author]\nmodel = "root-model"\n`,
+			);
+
+			// Simulate worktree checkout: .git FILE (not dir) indicates worktree
+			const worktree = join(tmp, ".5x", "worktrees", "plan-abc");
+			mkdirSync(worktree, { recursive: true });
+			writeFileSync(
+				join(worktree, ".git"),
+				`gitdir: ${join(tmp, ".git", "worktrees", "plan-abc")}\n`,
+			);
+			// Same 5x.toml content as repo root (checked out from same branch)
+			writeToml(
+				worktree,
+				`[db]\npath = ".5x/5x.db"\n\n[author]\nmodel = "root-model"\n`,
+			);
+
+			// contextDir is inside the worktree
+			const contextDir = join(worktree, "docs", "development");
+			mkdirSync(contextDir, { recursive: true });
+
+			const result = await resolveLayeredConfig(tmp, contextDir, warn);
+
+			// Worktree root config should be skipped — no layering
+			expect(result.isLayered).toBe(false);
+			expect(result.nearestConfigPath).toBeNull();
+			expect(result.rootConfigPath).toBe(join(tmp, "5x.toml"));
+			expect(result.config.author.model).toBe("root-model");
+			// No db warning emitted
+			expect(warnings).toEqual([]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("sub-project config within worktree is NOT skipped", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// Root repo config
+			writeToml(tmp, `[author]\nmodel = "root-model"\n`);
+
+			// Worktree checkout
+			const worktree = join(tmp, ".5x", "worktrees", "plan-abc");
+			mkdirSync(worktree, { recursive: true });
+			writeFileSync(
+				join(worktree, ".git"),
+				`gitdir: ${join(tmp, ".git", "worktrees", "plan-abc")}\n`,
+			);
+			// Worktree root also has 5x.toml (same as repo root)
+			writeToml(worktree, `[author]\nmodel = "root-model"\n`);
+
+			// Sub-project within worktree — NOT at worktree root, no .git file
+			const subProject = join(worktree, "packages", "my-pkg");
+			mkdirSync(subProject, { recursive: true });
+			writeToml(subProject, `[author]\ntimeout = 300\n`);
+
+			// contextDir is inside the sub-project
+			const contextDir = join(subProject, "docs");
+			mkdirSync(contextDir, { recursive: true });
+
+			const result = await resolveLayeredConfig(tmp, contextDir);
+
+			// Sub-project config is used — this IS layered
+			expect(result.isLayered).toBe(true);
+			expect(result.nearestConfigPath).toBe(join(subProject, "5x.toml"));
+			expect(result.config.author.model).toBe("root-model");
+			expect(result.config.author.timeout).toBe(300);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("normal repo (.git directory) is not affected by worktree detection", async () => {
+		const tmp = makeTmpDir();
+		try {
+			// Root repo config
+			writeToml(tmp, `[author]\nmodel = "root-model"\n`);
+
+			// Sub-project with a .git DIRECTORY (normal nested repo or submodule)
+			const subDir = join(tmp, "sub-project");
+			mkdirSync(join(subDir, ".git"), { recursive: true }); // .git as directory
+			writeToml(subDir, `[author]\ntimeout = 120\n`);
+
+			const result = await resolveLayeredConfig(tmp, subDir);
+
+			// .git is a directory, not a file — not a worktree root. Config is used.
+			expect(result.isLayered).toBe(true);
+			expect(result.config.author.timeout).toBe(120);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isWorktreeRoot helper
+// ---------------------------------------------------------------------------
+
+describe("isWorktreeRoot", () => {
+	test("returns true when .git is a file", () => {
+		const tmp = makeTmpDir("5x-wt");
+		try {
+			writeFileSync(join(tmp, ".git"), "gitdir: /some/path\n");
+			expect(isWorktreeRoot(tmp)).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("returns false when .git is a directory", () => {
+		const tmp = makeTmpDir("5x-wt");
+		try {
+			mkdirSync(join(tmp, ".git"));
+			expect(isWorktreeRoot(tmp)).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("returns false when .git does not exist", () => {
+		const tmp = makeTmpDir("5x-wt");
+		try {
+			expect(isWorktreeRoot(tmp)).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
