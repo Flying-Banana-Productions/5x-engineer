@@ -63,6 +63,36 @@ function parseFileNames(nameOnlyOutput: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Text formatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable text formatter for diff output.
+ * Raw diff text to stdout. Stat summary precedes diff when present.
+ */
+export function formatDiffText(data: Record<string, unknown>): void {
+	const stat = data.stat as
+		| {
+				files_changed: number;
+				insertions: number;
+				deletions: number;
+		  }
+		| undefined;
+	if (stat) {
+		console.log(
+			` ${stat.files_changed} file(s) changed,` +
+				` ${stat.insertions} insertion(s),` +
+				` ${stat.deletions} deletion(s)`,
+		);
+	}
+	const diff = data.diff as string;
+	if (diff) {
+		process.stdout.write(diff);
+		if (!diff.endsWith("\n")) process.stdout.write("\n");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 

@@ -419,7 +419,7 @@ respective handler files. Each is a private function that writes to stdout.
 Not yet wired to `outputSuccess` — they are standalone functions at this
 point. `bun run typecheck` passes.
 
-- [ ] `src/commands/diff.handler.ts` — Add `formatDiffText()`:
+- [x] `src/commands/diff.handler.ts` — Add `formatDiffText()`:
   ```ts
   function formatDiffText(data: Record<string, unknown>): void {
     const stat = data.stat as {
@@ -445,7 +445,7 @@ point. `bun run typecheck` passes.
   list, ref, and run_id are omitted (implicit in the diff itself or not
   useful to humans).
 
-- [ ] `src/commands/run-v1.handler.ts` — Add `formatStateText()`:
+- [x] `src/commands/run-v1.handler.ts` — Add `formatStateText()`:
   ```
   Run:     R-abc123
   Plan:    docs/development/015-test-separation.md
@@ -465,7 +465,7 @@ point. `bun run typecheck` passes.
   data → no Cost column). The function receives the same data shape that
   `outputSuccess` currently gets: `{ run, steps, summary }`.
 
-- [ ] `src/commands/run-v1.handler.ts` — Add `formatListText()`:
+- [x] `src/commands/run-v1.handler.ts` — Add `formatListText()`:
   ```
   ID          Plan                                          Status     Steps  Created
   R-abc123    docs/development/015-test-separation.md       active     3      2026-03-15
@@ -474,7 +474,7 @@ point. `bun run typecheck` passes.
   Column-aligned with space padding. Truncate long plan paths with `...`
   if exceeding 50 chars. Print `(no runs)` if empty.
 
-- [ ] `src/commands/plan-v1.handler.ts` — Add `formatPhasesText()`:
+- [x] `src/commands/plan-v1.handler.ts` — Add `formatPhasesText()`:
   ```
   Phases:
     [x] Phase 1: Dependency Swap and Program Skeleton (3/3)
@@ -484,7 +484,7 @@ point. `bun run typecheck` passes.
   ```
   Checkbox notation. `(done/total)` suffix shows checklist progress.
 
-- [ ] Verify `bun run typecheck` passes
+- [x] Verify `bun run typecheck` passes
 
 ## Phase 3: Register Formatters and Clean Up stderr
 

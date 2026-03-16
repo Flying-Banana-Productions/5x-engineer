@@ -26,6 +26,38 @@ export interface PlanPhasesParams {
 }
 
 // ---------------------------------------------------------------------------
+// Text formatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable text formatter for `plan phases` output.
+ *
+ * Renders a checklist with checkbox notation and progress counts.
+ */
+export function formatPhasesText(data: Record<string, unknown>): void {
+	const phases = data.phases as Array<{
+		id: number;
+		title: string;
+		done: boolean;
+		checklist_total: number;
+		checklist_done: number;
+	}>;
+
+	if (!phases || phases.length === 0) {
+		console.log("(no phases)");
+		return;
+	}
+
+	console.log("Phases:");
+	for (const phase of phases) {
+		const check = phase.done ? "x" : " ";
+		console.log(
+			`  [${check}] Phase ${phase.id}: ${phase.title} (${phase.checklist_done}/${phase.checklist_total})`,
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
