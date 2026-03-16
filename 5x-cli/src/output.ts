@@ -119,16 +119,120 @@ export function jsonStringify(value: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Output format state
+// ---------------------------------------------------------------------------
+
+type OutputFormat = "json" | "text";
+
+let outputFormat: OutputFormat = "json";
+
+/** Set the output format. Called from bin.ts based on --text/--json/env. */
+export function setOutputFormat(format: OutputFormat): void {
+	outputFormat = format;
+}
+
+/** Get the current output format. */
+export function getOutputFormat(): OutputFormat {
+	return outputFormat;
+}
+
+// ---------------------------------------------------------------------------
+// Generic text formatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Render any JSON-serializable data as human-readable aligned key-value
+ * text. Used as the fallback when --text is active and no custom formatter
+ * is provided to outputSuccess().
+ *
+ * - Object keys are left-padded to align values
+ * - Nested objects are indented
+ * - Arrays of primitives are comma-joined on one line
+ * - Arrays of objects are rendered as separated blocks
+ * - Empty arrays render as "(none)" to preserve semantic meaning
+ * - Empty objects render as "(none)" to preserve semantic meaning
+ * - Null/undefined values are omitted
+ */
+export function formatGenericText(data: unknown, indent: number = 0): void {
+	const pad = "  ".repeat(indent);
+
+	if (data == null) return;
+
+	if (typeof data !== "object") {
+		console.log(`${pad}${data}`);
+		return;
+	}
+
+	if (Array.isArray(data)) {
+		if (data.length === 0) {
+			console.log(`${pad}(none)`);
+			return;
+		}
+		for (let i = 0; i < data.length; i++) {
+			const item = data[i];
+			if (typeof item === "object" && item !== null) {
+				formatGenericText(item, indent);
+				if (i < data.length - 1) console.log();
+			} else {
+				console.log(`${pad}${item}`);
+			}
+		}
+		return;
+	}
+
+	const entries = Object.entries(data as Record<string, unknown>).filter(
+		([, v]) => v != null,
+	);
+	if (entries.length === 0) {
+		console.log(`${pad}(none)`);
+		return;
+	}
+
+	const maxKey = Math.max(...entries.map(([k]) => k.length));
+
+	for (const [key, value] of entries) {
+		if (typeof value === "object" && !Array.isArray(value)) {
+			console.log(`${pad}${key}:`);
+			formatGenericText(value, indent + 1);
+		} else if (Array.isArray(value)) {
+			if (value.length === 0) {
+				console.log(`${pad}${key.padEnd(maxKey)}  (none)`);
+				continue;
+			}
+			if (value.every((v) => typeof v !== "object")) {
+				console.log(`${pad}${key.padEnd(maxKey)}  ${value.join(", ")}`);
+			} else {
+				console.log(`${pad}${key}:`);
+				formatGenericText(value, indent + 1);
+			}
+		} else {
+			console.log(`${pad}${key.padEnd(maxKey)}  ${value}`);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Output helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Write success JSON to stdout. Does not exit — the command returns normally.
+ * Write success output to stdout. In JSON mode (default), writes a
+ * `{ ok: true, data }` envelope. In text mode, calls the provided
+ * formatter or falls back to the generic text formatter.
  */
-export function outputSuccess<T>(data: T): void {
-	// Normalize undefined → null so JSON.stringify always includes the `data` field.
-	// Without this, `JSON.stringify({ ok: true, data: undefined })` drops `data` entirely,
-	// violating the `{ ok, data }` envelope contract.
+export function outputSuccess<T>(
+	data: T,
+	textFormatter?: (data: T) => void,
+): void {
+	if (outputFormat === "text") {
+		if (textFormatter) {
+			textFormatter(data);
+		} else {
+			formatGenericText(data);
+		}
+		return;
+	}
+	// JSON mode (default) — unchanged
 	const normalized = data === undefined ? null : data;
 	const envelope = { ok: true as const, data: normalized };
 	console.log(jsonStringify(envelope));

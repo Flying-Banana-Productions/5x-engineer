@@ -156,7 +156,7 @@ changes yet (no formatters registered, default is still JSON).
 
 ### Phase 1a: Output format state (`src/output.ts`)
 
-- [ ] Add output format type and state management below the pretty-print
+- [x] Add output format type and state management below the pretty-print
   state block (after line 119):
 
   ```ts
@@ -179,7 +179,7 @@ changes yet (no formatters registered, default is still JSON).
   }
   ```
 
-- [ ] Add the generic text formatter:
+- [x] Add the generic text formatter:
 
   ```ts
   // ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ changes yet (no formatters registered, default is still JSON).
   }
   ```
 
-- [ ] Update `outputSuccess` signature (line 128) to accept an optional
+- [x] Update `outputSuccess` signature (line 128) to accept an optional
   text formatter:
 
   ```ts
@@ -283,11 +283,11 @@ changes yet (no formatters registered, default is still JSON).
   }
   ```
 
-- [ ] Verify `bun run typecheck` passes
+- [x] Verify `bun run typecheck` passes
 
 ### Phase 1b: Argv stripping and env var (`src/bin.ts`)
 
-- [ ] Add `--text`/`--json` pre-parse argv stripping block after the
+- [x] Add `--text`/`--json` pre-parse argv stripping block after the
   existing `--pretty`/`--no-pretty` block (after line 40). Same pattern:
 
   ```ts
@@ -325,7 +325,7 @@ changes yet (no formatters registered, default is still JSON).
   }
   ```
 
-- [ ] Update `program.configureOutput()` (line 60) to suppress Commander's
+- [x] Update `program.configureOutput()` (line 60) to suppress Commander's
   built-in parse-error and help output in text mode. Commander calls
   `writeErr` and `outputError` for validation failures (missing required
   options, unknown options, unknown commands) **before** throwing the
@@ -357,7 +357,7 @@ changes yet (no formatters registered, default is still JSON).
   appears on stderr. In JSON mode, Commander's stderr output is preserved
   (unchanged behavior).
 
-- [ ] Update error handler in `bin.ts` catch block. For each of the three
+- [x] Update error handler in `bin.ts` catch block. For each of the three
   error branches (CliError, CommanderError, generic Error), add text mode
   handling before the existing JSON path:
 
@@ -393,11 +393,11 @@ changes yet (no formatters registered, default is still JSON).
   // ... existing JSON envelope code unchanged ...
   ```
 
-- [ ] Add `setOutputFormat` and `getOutputFormat` to the import from
+- [x] Add `setOutputFormat` and `getOutputFormat` to the import from
   `./output.js` on line 16
 
-- [ ] Verify `bun run typecheck` passes
-- [ ] Manual verification:
+- [x] Verify `bun run typecheck` passes
+- [x] Manual verification:
   - `5x run list` → JSON envelope (default, unchanged)
   - `5x --text run list` → generic text output
   - `5x run list --text` → generic text output (any position)
