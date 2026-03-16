@@ -32,6 +32,29 @@ All JSON output follows a consistent envelope:
 }
 ```
 
+### Output Format
+
+Commands support two output formats controlled by global flags:
+
+| Flag / Env | Effect |
+|---|---|
+| `--json` | JSON envelopes on stdout (default) |
+| `--text` | Human-readable text output on stdout |
+| `--pretty` / `--no-pretty` | Format JSON output; no effect in text mode |
+| `5X_OUTPUT_FORMAT=text\|json` | Set default output format via environment variable |
+
+**Precedence:** `--text`/`--json` flag > `5X_OUTPUT_FORMAT` env > `json` (default).
+
+JSON is always the default to ensure deterministic pipe-chain behavior. A user building a pipe chain tests individual commands in a terminal, then pipes them together — if output format changed based on TTY detection, the tested output would differ from the piped output.
+
+**Text mode behavior:**
+
+- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan phases` prints a checklist).
+- Commands without a custom formatter use a built-in generic formatter that renders aligned key-value pairs with nested indentation.
+- Errors produce a single `Error: <message>` line on stderr (no JSON envelope, no Commander help text).
+
+**Grandfathered commands:** `init`, `upgrade`, and `harness install` always produce human-readable text via `console.log`. They do not participate in the output format system. `run watch` has its own `--human-readable` flag.
+
 ### Implementation status
 
 These primitives are not yet implemented. This document is an implementation-ready specification for the v1 CLI surface. When v1 ships, these commands replace the v0 CLI entirely — v0 orchestrator commands are removed, not deprecated (see `100-architecture.md`, Section 7).

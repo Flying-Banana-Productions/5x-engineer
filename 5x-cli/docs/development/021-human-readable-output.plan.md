@@ -722,25 +722,25 @@ need updating:
 `bun run typecheck` passes. Help text mentions `--text`/`--json` and
 `5X_OUTPUT_FORMAT`.
 
-- [ ] `src/program.ts` — Update program-level description and footer:
+- [x] `src/program.ts` — Update program-level description and footer:
   - Add `--text`/`--json` and `5X_OUTPUT_FORMAT` to the help footer
   - Explain that JSON is the default, `--text` switches to human-readable
   - Note the precedence: `--text`/`--json` > `5X_OUTPUT_FORMAT` > json
   - List grandfathered commands (init, upgrade, harness install) that
     always produce human-readable text
 
-- [ ] `docs/v1/101-cli-primitives.md` — Add a section on output format:
+- [x] `docs/v1/101-cli-primitives.md` — Add a section on output format:
   - Document `--text` and `--json` global flags
   - Document `5X_OUTPUT_FORMAT` env var
   - Document precedence chain
   - Note which commands have custom text formatters vs generic fallback
   - Note grandfathered commands
 
-- [ ] `docs/v1/100-architecture.md` — Add output format system to
+- [x] `docs/v1/100-architecture.md` — Add output format system to
   architecture description. Reference the formatter tiers (custom, generic
   fallback, grandfathered).
 
-- [ ] `docs/v1/102-agent-skills.md` — No changes needed. Skills call
+- [x] `docs/v1/102-agent-skills.md` — No changes needed. Skills call
   commands without `--text`, so they always get JSON (the default).
 
 ## Files Touched

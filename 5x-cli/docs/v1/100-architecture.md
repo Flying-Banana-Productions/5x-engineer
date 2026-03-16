@@ -92,7 +92,8 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 
 ### Layer 2 — 5x CLI Toolbelt
 
-- Stateless commands that accept inputs and return JSON
+- Stateless commands that accept inputs and return JSON envelopes by default
+- Dual output format: `--json` (default) for machine consumption, `--text` for human-readable output (see Section 4a)
 - Manages all persistence (SQLite), logging, and sub-agent invocation
 - Enforces hard constraints (not suggestions): max steps per run, required human gates, structured output validation
 - Handles structured output extraction internally (provider-specific, transparent to callers)
@@ -186,6 +187,40 @@ Install with:
 > assets, **not** `~/.opencode/`. The `user` scope installer writes to the
 > correct path automatically. Do not use `~/.opencode/` — OpenCode will not
 > discover assets there.
+
+---
+
+## 4a. Output Format System
+
+The CLI supports two output formats: JSON envelopes (default) and human-readable text. The format is controlled globally — no per-command flags.
+
+### Format selection
+
+| Mechanism | Priority | Example |
+|---|---|---|
+| `--text` / `--json` flag | Highest (last flag wins) | `5x --text run list`, `5x run list --json` |
+| `5X_OUTPUT_FORMAT` env var | Medium | `export 5X_OUTPUT_FORMAT=text` |
+| Default | Lowest | `json` |
+
+JSON is the default to ensure deterministic pipe-chain composition. Output format is explicit, not TTY-detected.
+
+### Formatter tiers
+
+| Tier | Description | Examples |
+|---|---|---|
+| **Custom** | Hand-written formatters for complex data shapes | `diff` (raw diff text), `run state` (step table), `run list` (column table), `plan phases` (checklist) |
+| **Generic fallback** | Built-in key-value renderer for simple data | `run complete`, `run reopen`, `skills install`, `prompt choose` |
+| **Grandfathered** | Commands that always produce text, outside the format system | `init`, `upgrade`, `harness install`, `run watch` |
+
+Custom formatters are co-located with their handlers. The generic fallback renders aligned key-value pairs with nested indentation, handling arrays and nested objects. Commands without a custom formatter automatically get the generic fallback in `--text` mode.
+
+### Error handling
+
+In JSON mode, errors are JSON envelopes on stdout. In text mode, errors produce a single `Error: <message>` line on stderr. Commander's built-in parse-error output (help text, suggestions) is suppressed in text mode to prevent duplicate or contract-breaking output.
+
+### Implementation
+
+Flags are stripped from `process.argv` before Commander parses, using the same pre-parse mechanism as `--pretty`/`--no-pretty`. The `outputSuccess()` function accepts an optional text formatter — when format is `text`, it calls the formatter (or the generic fallback) instead of writing a JSON envelope.
 
 ---
 
