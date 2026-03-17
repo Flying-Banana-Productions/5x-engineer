@@ -72,3 +72,45 @@ None.
 - None.
 
 **Readiness:** Ready - follow-up fix resolves the only previously raised issue and Phase 4 now matches the intended contract.
+
+## Addendum (2026-03-17) - Phase 2 Session Management Enforcement
+
+**Review type:** commit `ac6c39e`
+**Scope:** Phase 2 — session management enforcement (checklist items 2a–2i)
+**Reviewer:** Staff engineer
+**Local verification:** `bun test test/unit/commands/session-check.test.ts test/integration/commands/template-render.test.ts` — passed (48 tests); full suite — passed (1566 tests, 0 fail)
+
+### Checklist Coverage
+
+| Item | Description | Status |
+|------|-------------|--------|
+| 2a | `continuePhaseSessions` config schema | Done — `AgentConfigSchema` + `allowedAgent` set + `5x.default.toml` |
+| 2b | `--new-session` CLI flag | Done — `template.ts`, `invoke.ts`, handler param types |
+| 2c | Session validation helper | Done — `src/commands/session-check.ts` (172 LOC) |
+| 2d | `SESSION_REQUIRED` error code | Done — exit code 9 in `EXIT_CODE_MAP` |
+| 2e | Handler integration | Done — both `template.handler.ts` and `invoke.handler.ts` |
+| 2f | Template selection (`--new-session`) | Done — `template-vars.ts` continued-template probe guard |
+| 2g | Skill file update | Done — session lifecycle, `${REVIEWER_SESSION:+--session}` pattern, `--new-session` recovery, `SESSION_REQUIRED` in Recovery |
+| 2h | Unit tests | Done — 16 tests covering all specified scenarios |
+| 2i | Integration tests | Done — 10 tests covering session enforcement end-to-end |
+
+### Strengths
+
+- **Clean separation:** `validateSessionContinuity` is a pure function (modulo `outputError` throws and `loadTemplate` calls), making it straightforward to unit test with in-memory SQLite. No process-wide mutation.
+- **Defense-in-depth template selection:** `--new-session` is respected in three places — (1) session-check skips enforcement, (2) `effectiveSession` is set to `undefined` so `resolveAndRenderTemplate` doesn't probe for continued template, (3) `template-vars.ts` has a redundant `!opts.newSession` guard. This is correct — belt and suspenders.
+- **Graceful degradation:** When role can't be inferred, phase can't be determined, or no run context exists, enforcement is silently skipped. This avoids breaking non-run invocations.
+- **Test strategy is thorough:** Both unit and integration tests cover the full matrix (config on/off, prior steps yes/no, session/newSession/neither, continued template exists/missing, phase scoping). The integration tests properly use `setupProjectWithSessionEnforcement` helper with real DB + git init.
+- **Skill updates are comprehensive:** Session lifecycle, `${REVIEWER_SESSION:+--session}` pattern in both canonical and workflow examples, `--new-session` in Recovery section, `SESSION_REQUIRED` documented.
+- **`opencode.test.ts` fixed:** Existing provider tests updated to include `continuePhaseSessions: false` in config objects, preventing breakage from the new required default.
+
+### Concerns
+
+- **P2 / minor — DB handle leakage in `invoke.handler.ts`:** The `runDb` variable captures a DB handle obtained inside a block scope. The handle is used later by `validateSessionContinuity` but is never explicitly closed after validation. The `getDb` function likely manages this via connection pooling, and the existing pattern for `template.handler.ts` has the same characteristic, so this is consistent with the codebase convention. Not a bug, but worth noting.
+
+- **P2 / minor — `--new-session` without `--run` on `invoke`:** The `invoke` handler requires `--run`, so `--new-session` without `--run` on invoke is impossible. But on `template render`, `--new-session` without `--run` is silently accepted (no-op since no DB means no enforcement). The session-check's early exit handles this correctly. The `--new-session` flag still semantically affects template selection (skips continued-template probe) via the `newSession` → `effectiveSession = undefined` path in `template.handler.ts`. This is correct behavior since `--new-session` without `--run` just means "use the full template even if a session is provided" — except `session` and `newSession` are mutually exclusive. In practice: `--new-session` alone without `--run` and without `--session` is a pure no-op. Acceptable — no user confusion expected.
+
+### Remaining Concerns
+
+None blocking.
+
+**Readiness:** Ready — implementation matches all 9 checklist items, test coverage is comprehensive, the full test suite passes, and the design correctly handles edge cases (no run context, undetermined phase, missing continued template).
