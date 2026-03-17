@@ -65,3 +65,17 @@ Defaulting missing reviewer `action` to `auto_fix` is not conservative. The curr
 **P1 recommended**
 - [ ] Reorder session-validation logic so `--new-session` remains a real recovery path.
 - [ ] Change reviewer normalization so missing `action` does not silently become `auto_fix`.
+
+## Addendum (2026-03-17) - Review Round 2
+
+### What's Addressed
+
+- The session-enforcement rollout risk is addressed: the default stays `false`, the scaffold only documents opt-in, and the plan now explicitly calls out `reviewer-commit-continued` as a prerequisite before enabling reviewer enforcement broadly.
+- The `5x protocol emit` contract is now clear on the success path: it writes raw canonical JSON to stdout and the template instructions tell agents to return that output verbatim.
+- The `--new-session` logic is reordered correctly so it bypasses continued-template checks and remains a real recovery path.
+- Reviewer normalization now defaults missing `action` to `human_required`, which matches the safety posture described in the templates.
+- The Phase 3 dependency note is improved and now correctly treats template and protocol changes as an atomic rollout unit.
+
+### Remaining Concerns
+
+- **P1 / `auto_fix`**: Phase 3 still has an internal inconsistency on the error path for `5x protocol emit`. The handler section says failures still use `outputError()`, but the planned integration tests say to verify stderr/exit code and "not stdout envelope." In the current CLI architecture, `outputError()` writes a JSON error envelope to stdout. The plan should pick one error-path contract and align the handler text and tests to it.
