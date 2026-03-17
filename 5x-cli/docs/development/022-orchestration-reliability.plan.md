@@ -615,7 +615,7 @@ Fix the `PHASE_NOT_FOUND` error when `--phase plan` is used with
 `5x protocol validate author --record`. The phase checklist gate should
 not fire for non-numeric phase identifiers.
 
-- [ ] **4a. Auto-skip checklist gate for non-numeric phases**
+- [x] **4a. Auto-skip checklist gate for non-numeric phases**
 
   In `src/commands/protocol.handler.ts` `validatePhaseChecklist`:
   - Before the phase-matching loop, check if the phase value matches the
@@ -628,14 +628,14 @@ not fire for non-numeric phase identifiers.
     `Phase <number>` — a non-numeric value can never match any parsed
     phase heading.
 
-- [ ] **4b. Update skill to pass `--no-phase-checklist-validate`**
+- [x] **4b. Update skill to pass `--no-phase-checklist-validate`**
 
   In `src/skills/5x-plan-review/SKILL.md` Step 3 (lines 207-208):
   - Add `--no-phase-checklist-validate` to the `5x protocol validate author`
     command for plan review recording. Belt and suspenders — explicit intent
     even though 4a handles it automatically.
 
-- [ ] **4c. Tests**
+- [x] **4c. Tests**
 
   In `test/integration/commands/` (existing protocol validate test file or
   new file):

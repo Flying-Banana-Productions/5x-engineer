@@ -428,4 +428,144 @@ describe("5x protocol validate author — checklist gate (integration)", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	test(
+		"--phase plan with --record succeeds (non-numeric phase skips checklist gate)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				// Plan with incomplete checklist — would fail if the gate fired
+				const planPath = writePlan(dir, "test-plan.md", [
+					{
+						number: "1",
+						title: "Setup",
+						items: [{ text: "Add tests", checked: false }],
+					},
+				]);
+				const runId = "run_checklist_plan001";
+				insertRun(dir, runId, planPath);
+
+				const input = JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				});
+
+				const result = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"author:process-plan-review",
+						"--phase",
+						"plan",
+						"--iteration",
+						"1",
+					],
+					input,
+				);
+
+				expect(result.exitCode).toBe(0);
+				const json = JSON.parse(result.stdout) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--phase 1 still triggers checklist gate normally",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = writePlan(dir, "test-plan.md", [
+					{
+						number: "1",
+						title: "Setup",
+						items: [{ text: "Add tests", checked: false }],
+					},
+				]);
+
+				const input = JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				});
+
+				const result = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--plan",
+						planPath,
+						"--phase",
+						"1",
+					],
+					input,
+				);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = JSON.parse(result.stdout) as Record<string, unknown>;
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("PHASE_CHECKLIST_INCOMPLETE");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--phase setup (non-numeric) skips checklist gate",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				// Plan with incomplete checklist — would fail if the gate fired
+				const planPath = writePlan(dir, "test-plan.md", [
+					{
+						number: "1",
+						title: "Setup",
+						items: [{ text: "Add tests", checked: false }],
+					},
+				]);
+
+				const input = JSON.stringify({
+					result: "complete",
+					commit: "abc123",
+				});
+
+				const result = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--plan",
+						planPath,
+						"--phase",
+						"setup",
+					],
+					input,
+				);
+
+				expect(result.exitCode).toBe(0);
+				const json = JSON.parse(result.stdout) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
 });

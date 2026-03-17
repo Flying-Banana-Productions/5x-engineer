@@ -98,6 +98,19 @@ function extractResult(parsed: unknown): unknown {
 // ---------------------------------------------------------------------------
 
 /**
+ * Check whether a phase value could reference a numeric plan phase.
+ *
+ * The plan parser's `PHASE_HEADING_RE` requires `Phase <number>` — a purely
+ * semantic value like `"plan"`, `"review"`, or `"setup"` (no digits) can
+ * never match any parsed phase heading. Returns `true` when the value
+ * contains at least one digit (e.g., `"1"`, `"Phase 1"`, `"phase-1"`,
+ * `"Phase 2: Setup"`).
+ */
+export function isNumericPhaseRef(phase: string): boolean {
+	return /\d/.test(phase);
+}
+
+/**
  * Validate that the plan's phase checklist is fully checked off.
  *
  * Plan path resolution:
@@ -107,8 +120,16 @@ function extractResult(parsed: unknown): unknown {
  * Phase lookup (once a plan IS resolved):
  * - If --phase is provided but not found in the parsed plan → PHASE_NOT_FOUND (fail-closed),
  *   regardless of how the plan was resolved. --phase is always explicit input.
+ * - If --phase is a non-numeric semantic identifier (e.g., "plan", "review") → skip
+ *   the gate entirely. Such values can never match a plan parser phase heading.
  */
 function validatePhaseChecklist(params: ProtocolValidateParams): void {
+	// Skip for non-numeric phase identifiers — they are semantic context
+	// labels (e.g., "plan", "review") that don't map to plan file phases.
+	if (params.phase && !isNumericPhaseRef(params.phase)) {
+		return;
+	}
+
 	const explicitPlan = !!params.plan;
 	let planPath: string | undefined = params.plan
 		? resolve(params.plan)

@@ -14,7 +14,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { protocolValidate } from "../../../src/commands/protocol.handler.js";
+import {
+	isNumericPhaseRef,
+	protocolValidate,
+} from "../../../src/commands/protocol.handler.js";
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
@@ -1014,5 +1017,129 @@ describe("protocol validate author — checklist gate (unit)", () => {
 		} finally {
 			cleanupDir(dir);
 		}
+	});
+
+	test("non-numeric --phase 'plan' skips checklist gate (no PHASE_NOT_FOUND)", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Plan with incomplete checklist — would fail if gate fired
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// --phase "plan" is a semantic identifier, not a plan phase reference.
+			// The gate should skip — no PHASE_NOT_FOUND, no PHASE_CHECKLIST_INCOMPLETE.
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "plan",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("non-numeric --phase 'review' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "review",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("non-numeric --phase 'setup' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+// ===========================================================================
+// isNumericPhaseRef (unit)
+// ===========================================================================
+
+describe("isNumericPhaseRef", () => {
+	test("pure numeric: '1' → true", () => {
+		expect(isNumericPhaseRef("1")).toBe(true);
+	});
+
+	test("decimal numeric: '2.1' → true", () => {
+		expect(isNumericPhaseRef("2.1")).toBe(true);
+	});
+
+	test("'Phase 1' → true", () => {
+		expect(isNumericPhaseRef("Phase 1")).toBe(true);
+	});
+
+	test("'Phase 2: Setup' → true", () => {
+		expect(isNumericPhaseRef("Phase 2: Setup")).toBe(true);
+	});
+
+	test("'phase-1' → true", () => {
+		expect(isNumericPhaseRef("phase-1")).toBe(true);
+	});
+
+	test("'Phase 99: Nonexistent' → true", () => {
+		expect(isNumericPhaseRef("Phase 99: Nonexistent")).toBe(true);
+	});
+
+	test("'plan' → false", () => {
+		expect(isNumericPhaseRef("plan")).toBe(false);
+	});
+
+	test("'review' → false", () => {
+		expect(isNumericPhaseRef("review")).toBe(false);
+	});
+
+	test("'setup' → false", () => {
+		expect(isNumericPhaseRef("setup")).toBe(false);
+	});
+
+	test("empty string → false", () => {
+		expect(isNumericPhaseRef("")).toBe(false);
 	});
 });

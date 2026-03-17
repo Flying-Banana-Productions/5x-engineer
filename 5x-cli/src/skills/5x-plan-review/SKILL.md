@@ -210,7 +210,8 @@ else
 fi
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase plan
+  --run $RUN --record --step $STEP --phase plan \
+  --no-phase-checklist-validate
 ```
 
 Check the result:
