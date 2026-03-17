@@ -1,14 +1,24 @@
 /**
  * Protocol commands — commander adapter.
  *
- * 3-level nesting: protocol → validate → author/reviewer
+ * 3-level nesting:
+ *   protocol → validate → author/reviewer
+ *   protocol → emit    → author/reviewer
  *
- * Business logic lives in protocol.handler.ts.
+ * Business logic lives in protocol.handler.ts and protocol-emit.handler.ts.
  */
 
 import type { Command } from "@commander-js/extra-typings";
 import { intArg } from "../utils/parse-args.js";
 import { protocolValidate } from "./protocol.handler.js";
+import {
+	protocolEmitAuthor,
+	protocolEmitReviewer,
+} from "./protocol-emit.handler.js";
+
+function collect(value: string, previous: string[]): string[] {
+	return [...previous, value];
+}
 
 export function registerProtocol(parent: Command) {
 	const protocol = parent
@@ -121,6 +131,89 @@ export function registerProtocol(parent: Command) {
 				step: opts.step,
 				phase: opts.phase,
 				iteration: opts.iteration,
+			});
+		});
+
+	// -----------------------------------------------------------------------
+	// protocol emit — produce canonical structured output for agents
+	// -----------------------------------------------------------------------
+
+	const emit = protocol
+		.command("emit")
+		.summary("Produce canonical structured JSON for protocol output")
+		.description(
+			"Agents call this to produce schema-conforming structured output.\n" +
+				"Success writes raw canonical JSON to stdout (no envelope).\n" +
+				"Errors use the standard { ok: false, error } envelope with non-zero exit.",
+		);
+
+	emit
+		.command("reviewer")
+		.summary("Emit a ReviewerVerdict structured result")
+		.description(
+			"Produce a canonical ReviewerVerdict JSON object from flags.\n" +
+				"Use --ready or --no-ready to set the readiness assessment.\n" +
+				"Use --item to add review items (repeatable). Items imply corrections.\n" +
+				"If no flags are provided and stdin is piped, reads JSON from stdin\n" +
+				"and normalizes it to canonical form.",
+		)
+		.option("--ready", "Plan/code is ready (possibly with corrections)")
+		.option("--no-ready", "Plan/code is not ready")
+		.option(
+			"--item <json>",
+			"Review item as JSON (repeatable)",
+			collect,
+			[] as string[],
+		)
+		.option("--summary <text>", "1-3 sentence assessment")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x protocol emit reviewer --ready\n" +
+				'  $ 5x protocol emit reviewer --no-ready --item \'{"title":"Fix X","action":"auto_fix","reason":"..."}\'\n' +
+				'  $ echo \'{"verdict":"rejected","issues":[...]}\' | 5x protocol emit reviewer',
+		)
+		.action(async (opts) => {
+			await protocolEmitReviewer({
+				ready: opts.ready,
+				item: opts.item,
+				summary: opts.summary,
+			});
+		});
+
+	emit
+		.command("author")
+		.summary("Emit an AuthorStatus structured result")
+		.description(
+			"Produce a canonical AuthorStatus JSON object from flags.\n" +
+				"Exactly one of --complete, --needs-human, or --failed is required.\n" +
+				"If no flags are provided and stdin is piped, reads JSON from stdin\n" +
+				"and normalizes it to canonical form.",
+		)
+		.option("--complete", "Work finished successfully")
+		.option("--needs-human", "Human intervention needed")
+		.option("--failed", "Unable to complete the work")
+		.option("--commit <hash>", "Git commit hash (required with --complete)")
+		.option(
+			"--reason <text>",
+			"Explanation (required with --needs-human or --failed)",
+		)
+		.option("--notes <text>", "Optional additional context")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x protocol emit author --complete --commit abc123\n" +
+				'  $ 5x protocol emit author --needs-human --reason "Need design decision"\n' +
+				'  $ echo \'{"status":"done","commit":"abc123"}\' | 5x protocol emit author',
+		)
+		.action(async (opts) => {
+			await protocolEmitAuthor({
+				complete: opts.complete,
+				needsHuman: opts.needsHuman,
+				failed: opts.failed,
+				commit: opts.commit,
+				reason: opts.reason,
+				notes: opts.notes,
 			});
 		});
 }

@@ -266,10 +266,19 @@ export async function protocolValidate(
 	// -----------------------------------------------------------------------
 	// Validate structured output (shared helper)
 	// -----------------------------------------------------------------------
-	const validated = validateStructuredOutputOrThrow(structured, role, {
-		requireCommit: params.requireCommit,
-		context: `protocol validate ${role}`,
-	});
+	const { value: validated, warnings } = validateStructuredOutputOrThrow(
+		structured,
+		role,
+		{
+			requireCommit: params.requireCommit,
+			context: `protocol validate ${role}`,
+		},
+	);
+
+	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
+	for (const w of warnings) {
+		console.error(`Warning: ${w}`);
+	}
 
 	// -----------------------------------------------------------------------
 	// Validate --record prerequisites BEFORE outputSuccess().

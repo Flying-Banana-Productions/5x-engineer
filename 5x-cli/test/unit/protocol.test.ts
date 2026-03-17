@@ -81,15 +81,16 @@ describe("assertReviewerVerdict", () => {
 		expect(() => assertReviewerVerdict(verdict, "REVIEW")).not.toThrow();
 	});
 
-	test("throws when non-ready has no items", () => {
+	test("warns (not throws) when non-ready has no items", () => {
 		const verdict: ReviewerVerdict = {
 			readiness: "not_ready",
 			items: [],
 		};
 
-		expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(
-			"items' is empty",
-		);
+		const result = assertReviewerVerdict(verdict, "REVIEW");
+		expect(result.warnings).toHaveLength(1);
+		expect(result.warnings[0]).toContain("items");
+		expect(result.warnings[0]).toContain("empty");
 	});
 
 	test("throws when item action is missing at runtime", () => {

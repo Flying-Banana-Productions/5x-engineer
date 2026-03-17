@@ -143,14 +143,27 @@ export function assertAuthorStatus(
 	}
 }
 
+export interface ReviewerVerdictAssertionResult {
+	warnings: string[];
+}
+
+/**
+ * Assert reviewer verdict invariants.
+ *
+ * Empty items with non-ready readiness is relaxed from hard error to
+ * warning — the verdict is still valid and the orchestrator routes it
+ * to escalation. Missing item actions remain hard errors.
+ */
 export function assertReviewerVerdict(
 	verdict: ReviewerVerdict,
 	context: string,
-): void {
+): ReviewerVerdictAssertionResult {
+	const warnings: string[] = [];
+
 	if (verdict.readiness !== "ready" && verdict.items.length === 0) {
-		throw new Error(
-			`[${context}] ReviewerVerdict invariant violation: readiness is '${verdict.readiness}' but 'items' is empty. ` +
-				"Review items are required for non-ready verdicts. Escalating.",
+		warnings.push(
+			`[${context}] ReviewerVerdict warning: readiness is '${verdict.readiness}' but 'items' is empty. ` +
+				"The orchestrator will escalate to the human.",
 		);
 	}
 
@@ -162,6 +175,8 @@ export function assertReviewerVerdict(
 			);
 		}
 	}
+
+	return { warnings };
 }
 
 // ---------------------------------------------------------------------------

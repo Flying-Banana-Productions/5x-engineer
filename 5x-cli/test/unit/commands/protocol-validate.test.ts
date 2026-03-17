@@ -214,17 +214,20 @@ describe("protocol validate reviewer (unit)", () => {
 		expect(r.ok).toBe(true);
 	});
 
-	test("rejects not_ready with empty items", () => {
+	test("warns (not rejects) not_ready with empty items", () => {
 		const r = validateStructuredOutput(
 			{ readiness: "not_ready", items: [] },
 			"reviewer",
 			{ context: "test" },
 		);
-		expect(r.ok).toBe(false);
-		if (!r.ok) expect(r.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.warnings).toHaveLength(1);
+			expect(r.warnings[0]).toContain("empty");
+		}
 	});
 
-	test("rejects item without action", () => {
+	test("normalizes item without action to human_required", () => {
 		const r = validateStructuredOutput(
 			{
 				readiness: "ready_with_corrections",
@@ -239,8 +242,13 @@ describe("protocol validate reviewer (unit)", () => {
 			"reviewer",
 			{ context: "test" },
 		);
-		expect(r.ok).toBe(false);
-		if (!r.ok) expect(r.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			const items = (r.value as Record<string, unknown>).items as Array<
+				Record<string, unknown>
+			>;
+			expect(items[0]?.action).toBe("human_required");
+		}
 	});
 });
 

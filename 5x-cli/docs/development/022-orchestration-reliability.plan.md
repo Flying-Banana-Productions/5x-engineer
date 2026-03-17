@@ -415,7 +415,7 @@ Add `5x protocol emit` command that agents call to produce schema-conforming
 structured output. Extract normalization logic into a shared module used by
 both `emit` and `validate`.
 
-- [ ] **3a. Shared normalization module**
+- [x] **3a. Shared normalization module**
 
   New file `src/protocol-normalize.ts`:
 
@@ -441,7 +441,7 @@ both `emit` and `validate`.
   - Passes through already-conforming input unchanged
   - Replaces `normalizeLegacyAuthorStatus` in `protocol-helpers.ts`
 
-- [ ] **3b. Wire normalization into `5x protocol validate`**
+- [x] **3b. Wire normalization into `5x protocol validate`**
 
   In `src/commands/protocol-helpers.ts`:
   - Replace inline `normalizeLegacyAuthorStatus` call with
@@ -449,7 +449,7 @@ both `emit` and `validate`.
   - Add `normalizeReviewerVerdict` call for the reviewer path (currently
     no normalization exists for reviewer — this is the safety net)
 
-- [ ] **3c. Relax `assertReviewerVerdict` for empty items**
+- [x] **3c. Relax `assertReviewerVerdict` for empty items**
 
   In `src/protocol.ts`, change the `items` invariant for `not_ready` with
   empty items from a hard error to a warning field on the return value.
@@ -457,7 +457,7 @@ both `emit` and `validate`.
   Add a `warnings: string[]` field to the assertion result (or return a
   structured object instead of throwing).
 
-- [ ] **3d. Register `5x protocol emit` command**
+- [x] **3d. Register `5x protocol emit` command**
 
   In `src/commands/protocol.ts`, add two subcommands under `protocol emit`:
 
@@ -481,7 +481,7 @@ both `emit` and `validate`.
   Both support stdin fallback: if no result/readiness flags are provided and
   stdin is piped, read JSON from stdin and normalize it.
 
-- [ ] **3e. Protocol emit handler**
+- [x] **3e. Protocol emit handler**
 
   New file `src/commands/protocol-emit.handler.ts`:
 
@@ -517,7 +517,7 @@ both `emit` and `validate`.
   Stdin fallback for both: if no primary flags and stdin is piped, read
   JSON, normalize, validate, output raw canonical JSON to stdout.
 
-- [ ] **3f. Update reviewer templates to use `emit`**
+- [x] **3f. Update reviewer templates to use `emit`**
 
   In `src/templates/reviewer-plan.md` and `src/templates/reviewer-commit.md`:
   - Replace "Your structured response will include: readiness, items,
@@ -537,7 +537,7 @@ both `emit` and `validate`.
   In `src/templates/reviewer-plan-continued.md`:
   - Add brief reference to the same `emit` pattern
 
-- [ ] **3g. Update author templates to use `emit`**
+- [x] **3g. Update author templates to use `emit`**
 
   In `src/templates/author-next-phase.md`,
   `src/templates/author-process-plan-review.md`,
@@ -555,7 +555,7 @@ both `emit` and `validate`.
         5x protocol emit author --needs-human --reason "..."
     ```
 
-- [ ] **3h. Unit tests for normalization**
+- [x] **3h. Unit tests for normalization**
 
   New file `test/unit/protocol-normalize.test.ts`:
 
@@ -573,7 +573,7 @@ both `emit` and `validate`.
   - Test: `status` → `result` mapping (`"done"` → `"complete"`, etc.)
   - Test: replaces legacy `normalizeLegacyAuthorStatus` behavior
 
-- [ ] **3i. Unit tests for emit handler**
+- [x] **3i. Unit tests for emit handler**
 
   New file `test/unit/commands/protocol-emit.test.ts`:
 
@@ -595,7 +595,7 @@ both `emit` and `validate`.
   - Test: `--needs-human` without `--reason` → error
   - Test: multiple result flags → error
 
-- [ ] **3j. Integration tests for `5x protocol emit`**
+- [x] **3j. Integration tests for `5x protocol emit`**
 
   New file `test/integration/commands/protocol-emit.test.ts`:
 

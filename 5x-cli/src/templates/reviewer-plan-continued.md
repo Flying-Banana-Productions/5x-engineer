@@ -23,9 +23,11 @@ You are running as a delegated non-interactive workflow. Do NOT use any interact
 
 ## Completion
 
-Write your updated review to `{{review_path}}`, commit the file, and return your structured verdict (readiness, items, summary):
+Write your updated review to `{{review_path}}` and commit the file:
 
 ```
 git add {{review_path}}
 git commit -m "docs: update plan review for <plan name>"
 ```
+
+Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result.

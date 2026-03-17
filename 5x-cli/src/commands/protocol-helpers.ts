@@ -14,9 +14,12 @@ import {
 	assertAuthorStatus,
 	assertReviewerVerdict,
 	isStructuredOutputError,
-	normalizeLegacyAuthorStatus,
 	type ReviewerVerdict,
 } from "../protocol.js";
+import {
+	normalizeAuthorStatus,
+	normalizeReviewerVerdict,
+} from "../protocol-normalize.js";
 
 export type ValidateRole = "author" | "reviewer";
 
@@ -39,7 +42,7 @@ export interface ValidateOptions {
 // ---------------------------------------------------------------------------
 
 export type ValidationResult =
-	| { ok: true; value: AuthorStatus | ReviewerVerdict }
+	| { ok: true; value: AuthorStatus | ReviewerVerdict; warnings: string[] }
 	| { ok: false; code: string; message: string; detail?: unknown };
 
 /**
@@ -78,15 +81,16 @@ export function validateStructuredOutput(
 		};
 	}
 
-	// Normalize legacy author payloads (Phase 3, 016-review-artifacts)
-	// Native author agents may return { status: "done" } instead of canonical { result: "complete" }
+	// Normalize alternative field names to canonical schema (Phase 3, 022-orchestration-reliability)
+	// Author: status → result, etc.  Reviewer: verdict → readiness, issues → items, etc.
 	let valueToValidate: AuthorStatus | ReviewerVerdict | unknown = structured;
 	if (role === "author") {
-		const normalized = normalizeLegacyAuthorStatus(structured);
-		if (normalized) {
-			valueToValidate = normalized;
-		}
+		valueToValidate = normalizeAuthorStatus(structured);
+	} else {
+		valueToValidate = normalizeReviewerVerdict(structured);
 	}
+
+	const warnings: string[] = [];
 
 	try {
 		if (role === "author") {
@@ -95,7 +99,11 @@ export function validateStructuredOutput(
 				requireCommit,
 			});
 		} else {
-			assertReviewerVerdict(valueToValidate as ReviewerVerdict, opts.context);
+			const result = assertReviewerVerdict(
+				valueToValidate as ReviewerVerdict,
+				opts.context,
+			);
+			warnings.push(...result.warnings);
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -107,7 +115,16 @@ export function validateStructuredOutput(
 		};
 	}
 
-	return { ok: true, value: valueToValidate as AuthorStatus | ReviewerVerdict };
+	return {
+		ok: true,
+		value: valueToValidate as AuthorStatus | ReviewerVerdict,
+		warnings,
+	};
+}
+
+export interface ValidatedOutput {
+	value: AuthorStatus | ReviewerVerdict;
+	warnings: string[];
 }
 
 /**
@@ -121,10 +138,10 @@ export function validateStructuredOutputOrThrow(
 	structured: unknown,
 	role: ValidateRole,
 	opts: ValidateOptions,
-): AuthorStatus | ReviewerVerdict {
+): ValidatedOutput {
 	const result = validateStructuredOutput(structured, role, opts);
 	if (!result.ok) {
 		outputError(result.code, result.message, result.detail);
 	}
-	return result.value;
+	return { value: result.value, warnings: result.warnings };
 }

@@ -114,15 +114,16 @@ describe("validateStructuredOutput (result-based)", () => {
 		}
 	});
 
-	test("returns failure result for reviewer not_ready with empty items", () => {
+	test("warns (not rejects) for reviewer not_ready with empty items", () => {
 		const result = validateStructuredOutput(
 			{ readiness: "not_ready", items: [] },
 			"reviewer",
 			{ context: "test" },
 		);
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.warnings).toHaveLength(1);
+			expect(result.warnings[0]).toContain("empty");
 		}
 	});
 
@@ -148,12 +149,13 @@ describe("validateStructuredOutput (result-based)", () => {
 
 describe("validateStructuredOutputOrThrow", () => {
 	test("returns validated value on success", () => {
-		const value = validateStructuredOutputOrThrow(
+		const { value, warnings } = validateStructuredOutputOrThrow(
 			{ result: "complete", commit: "abc123" },
 			"author",
 			{ context: "test" },
 		);
 		expect(value).toEqual({ result: "complete", commit: "abc123" });
+		expect(warnings).toEqual([]);
 	});
 
 	test("throws CliError on validation failure", () => {
