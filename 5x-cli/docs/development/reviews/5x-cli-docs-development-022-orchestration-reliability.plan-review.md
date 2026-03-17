@@ -79,3 +79,14 @@ Defaulting missing reviewer `action` to `auto_fix` is not conservative. The curr
 ### Remaining Concerns
 
 - **P1 / `auto_fix`**: Phase 3 still has an internal inconsistency on the error path for `5x protocol emit`. The handler section says failures still use `outputError()`, but the planned integration tests say to verify stderr/exit code and "not stdout envelope." In the current CLI architecture, `outputError()` writes a JSON error envelope to stdout. The plan should pick one error-path contract and align the handler text and tests to it.
+
+## Addendum (2026-03-17) - Review Round 3
+
+### What's Addressed
+
+- The remaining `protocol emit` error-path inconsistency is resolved. The design decision, handler plan, and integration-test plan now all agree: success writes raw canonical JSON to stdout, while failures use the standard `outputError()` envelope on stdout with a non-zero exit code.
+- This aligns the new command with the existing CLI error-handling model in `src/output.ts`/`bin.ts` while keeping the structured-output success path compatible with provider validation.
+
+### Remaining Concerns
+
+- None. The previously raised rollout, contract, safety, and phasing issues are addressed in the revised plan.
