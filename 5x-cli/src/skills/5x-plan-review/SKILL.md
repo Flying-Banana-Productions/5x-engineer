@@ -74,6 +74,8 @@ to `5x invoke` when no native agent is found.
 # 1. Render the prompt (output follows standard outputSuccess envelope)
 #    review_path is auto-generated — do NOT pass --var review_path.
 #    Read the auto-generated path from .data.variables.review_path in the output.
+#    Session lifecycle: first review has no $REVIEWER_SESSION, subsequent
+#    reviews pass --session $REVIEWER_SESSION for continuity.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
   --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
@@ -98,13 +100,22 @@ fi
 # 4. Validate + record (combined — universal for both paths)
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
+
+# 5. Capture session for reuse in subsequent reviews
+REVIEWER_SESSION=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
-**Session reuse** is optional and best-effort. Pass `--session
-$REVIEWER_SESSION` to `5x template render` when a session id is
-available; the command will automatically select the shorter
-`reviewer-plan-continued` template variant if one exists. If session
-reuse is unavailable or awkward, omit `--session` to start fresh.
+**Session reuse** is expected when `reviewer.continuePhaseSessions` is
+enabled. The tool enforces this: if a prior reviewer step exists for the
+current phase, `--session <id>` or `--new-session` is required. Use
+`--new-session` only for recovery (context loss, empty output).
+
+When `--session` is passed, the command automatically selects the shorter
+`reviewer-plan-continued` template variant if one exists.
+
+Projects using plan-review should enable
+`reviewer.continuePhaseSessions = true` in their `5x.toml` once they have
+confirmed all reviewer templates have `-continued` variants.
 
 ### Fallback: 5x invoke
 
@@ -133,7 +144,9 @@ output — see Recovery for handling.
 ## Workflow
 
 Track $ITERATION starting at 1. Maximum 5 review cycles.
-Track $REVIEWER_SESSION (initially empty) for optional session reuse.
+Track $REVIEWER_SESSION (initially empty). Session reuse is enforced when
+`reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_SESSION`
+on subsequent reviews.
 Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
 
 ### Step 1: Review
@@ -280,14 +293,17 @@ Report to the human: plan review is complete. Verdict: approved
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
-  Suspect context loss (compaction). Re-invoke with a fresh session
-  (omit --session). If it happens twice, escalate to the human.
-- **Native subagent returns empty or invalid output**: Retry once with a
-  fresh session. If it fails again, fall back to `5x invoke` or escalate.
+  Suspect context loss (compaction). Re-invoke with `--new-session` to
+  force a fresh session. If it happens twice, escalate to the human.
+- **Native subagent returns empty or invalid output**: Retry once with
+  `--new-session`. If it fails again, fall back to `5x invoke` or escalate.
 - **Subprocess returns empty output**: The agent process may have been
   killed by the subprocess tool's timeout before completing. Retry with
-  a longer timeout and a fresh session (omit --session). If empty output
-  persists after retry, escalate to the human.
+  a longer timeout and `--new-session`. If empty output persists after
+  retry, escalate to the human.
+- **SESSION_REQUIRED error**: The tool requires `--session <id>` or
+  `--new-session` because `continuePhaseSessions` is enabled and prior
+  steps exist. Pass `--new-session` to recover from context loss.
 
 ## Completion
 

@@ -46,6 +46,10 @@ export function registerTemplate(parent: Command) {
 			"Session ID — triggers continued-template selection when available",
 		)
 		.option(
+			"--new-session",
+			"Force a new session (skip continued-template selection)",
+		)
+		.option(
 			"-w, --workdir <path>",
 			"Working directory override (explicit --workdir wins)",
 		)
@@ -62,6 +66,7 @@ export function registerTemplate(parent: Command) {
 				run: opts.run,
 				vars: opts.var,
 				session: opts.session,
+				newSession: opts.newSession,
 				workdir: opts.workdir,
 			});
 		});

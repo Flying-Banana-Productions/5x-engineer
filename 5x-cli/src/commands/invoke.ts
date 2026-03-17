@@ -33,6 +33,7 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 			"Working directory for agent tool execution",
 		)
 		.option("--session <id>", "Resume an existing session by ID")
+		.option("--new-session", "Force a new session instead of resuming")
 		.option(
 			"-t, --timeout <seconds>",
 			"Per-run timeout in seconds",
@@ -123,6 +124,7 @@ export function registerInvoke(parent: Command) {
 				model: opts.model,
 				workdir: opts.workdir,
 				session: opts.session,
+				newSession: opts.newSession,
 				timeoutSeconds: opts.timeout,
 				quiet: opts.quiet,
 				showReasoning: opts.showReasoning,
@@ -162,6 +164,7 @@ export function registerInvoke(parent: Command) {
 				model: opts.model,
 				workdir: opts.workdir,
 				session: opts.session,
+				newSession: opts.newSession,
 				timeoutSeconds: opts.timeout,
 				quiet: opts.quiet,
 				showReasoning: opts.showReasoning,

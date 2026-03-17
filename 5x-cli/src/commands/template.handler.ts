@@ -17,6 +17,7 @@ import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import { validateSessionContinuity } from "./session-check.js";
 import { parseVars, resolveAndRenderTemplate } from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ export interface TemplateRenderParams {
 	run?: string;
 	vars?: string | string[];
 	session?: string;
+	newSession?: boolean;
 	workdir?: string;
 }
 
@@ -61,6 +63,7 @@ export async function templateRender(
 	let resolvedWorktreeRoot: string | null = null;
 	let projectRoot: string;
 	let stateDir: string;
+	let runDb: ReturnType<typeof getDb> | undefined;
 
 	if (params.run) {
 		validateRunId(params.run);
@@ -79,6 +82,7 @@ export async function templateRender(
 
 		const dbRelPath = join(stateDir, DB_FILENAME);
 		const db = getDb(projectRoot, dbRelPath);
+		runDb = db;
 		try {
 			runMigrations(db);
 		} catch (err) {
@@ -138,12 +142,33 @@ export async function templateRender(
 	setTemplateOverrideDir(templateDir);
 
 	// -----------------------------------------------------------------------
-	// Resolve and render template (shared helper)
+	// Parse vars (needed for session validation + rendering)
 	// -----------------------------------------------------------------------
 	const explicitVars = await parseVars(params.vars);
-	const resolved = resolveAndRenderTemplate({
+
+	// -----------------------------------------------------------------------
+	// Session continuity validation (before template rendering)
+	// -----------------------------------------------------------------------
+	validateSessionContinuity({
 		templateName: params.template,
 		session: params.session,
+		newSession: params.newSession,
+		runId: params.run,
+		db: runDb,
+		config,
+		explicitVars,
+	});
+
+	// -----------------------------------------------------------------------
+	// Resolve and render template (shared helper)
+	// -----------------------------------------------------------------------
+	// When --new-session is set, pass session: undefined to ensure full
+	// template is selected (not the -continued variant)
+	const effectiveSession = params.newSession ? undefined : params.session;
+	const resolved = resolveAndRenderTemplate({
+		templateName: params.template,
+		session: effectiveSession,
+		newSession: params.newSession,
 		explicitVars,
 		resolvedPlanPath,
 		config,

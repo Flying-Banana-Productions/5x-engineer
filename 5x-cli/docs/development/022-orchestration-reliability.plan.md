@@ -226,7 +226,7 @@ Add `continuePhaseSessions` config option and `--new-session` CLI flag.
 Enforce session continuity when configured: require `--session <id>` or
 `--new-session` when prior steps exist for the same run/step/phase.
 
-- [ ] **2a. Add `continuePhaseSessions` to config schema**
+- [x] **2a. Add `continuePhaseSessions` to config schema**
 
   In `src/config.ts`, add to `AgentConfigSchema`:
   ```ts
@@ -239,7 +239,7 @@ Enforce session continuity when configured: require `--session <id>` or
     templates have -continued variants`
   - Under `[author]`, add commented-out `# continuePhaseSessions = false`
 
-- [ ] **2b. Add `--new-session` CLI flag**
+- [x] **2b. Add `--new-session` CLI flag**
 
   In `src/commands/template.ts`:
   - Add `.option("--new-session", "Force a new session (skip continued-template selection)")`
@@ -256,7 +256,7 @@ Enforce session continuity when configured: require `--session <id>` or
   In `src/commands/invoke.handler.ts`:
   - Add `newSession?: boolean` to `InvokeParams`
 
-- [ ] **2c. Session validation helper**
+- [x] **2c. Session validation helper**
 
   New file `src/commands/session-check.ts`. Export `validateSessionContinuity`:
 
@@ -302,11 +302,11 @@ Enforce session continuity when configured: require `--session <id>` or
        run "${runId}" phase "${phase}". Pass --session <id> to continue or
        --new-session to start fresh."`
 
-- [ ] **2d. Add `SESSION_REQUIRED` error code**
+- [x] **2d. Add `SESSION_REQUIRED` error code**
 
   In `src/output.ts`, add `SESSION_REQUIRED: 9` to `EXIT_CODE_MAP`.
 
-- [ ] **2e. Integrate validation in handlers**
+- [x] **2e. Integrate validation in handlers**
 
   In `src/commands/template.handler.ts`:
   - After DB open + run context resolution, before `resolveAndRenderTemplate`:
@@ -321,14 +321,14 @@ Enforce session continuity when configured: require `--session <id>` or
     `resumeSession`), and pass `session: undefined` to
     `resolveAndRenderTemplate`
 
-- [ ] **2f. Respect `--new-session` in template selection**
+- [x] **2f. Respect `--new-session` in template selection**
 
   In `src/commands/template-vars.ts` `resolveAndRenderTemplate`:
   - Add `newSession?: boolean` to `ResolveAndRenderOptions`
   - In the continued-template selection block: skip continued-template probe
     when `newSession` is true. `--new-session` always means full template.
 
-- [ ] **2g. Update skill file**
+- [x] **2g. Update skill file**
 
   In `src/skills/5x-plan-review/SKILL.md`:
   - Replace "optional and best-effort" (lines 100-104) with: "Session reuse
@@ -347,7 +347,7 @@ Enforce session continuity when configured: require `--session <id>` or
     `${REVIEWER_SESSION:+--session $REVIEWER_SESSION}` pattern
   - Update Recovery section to mention `--new-session` as the recovery flag
 
-- [ ] **2h. Unit tests for session validation**
+- [x] **2h. Unit tests for session validation**
 
   New file `test/unit/commands/session-check.test.ts`:
   - Test: mutual exclusivity (both session and newSession → error)
@@ -367,7 +367,7 @@ Enforce session continuity when configured: require `--session <id>` or
   - Test: phase derivation (plan-review → "plan", explicit phase_number)
   - Test: no run context → no enforcement
 
-- [ ] **2i. Integration tests for session enforcement**
+- [x] **2i. Integration tests for session enforcement**
 
   In `test/integration/commands/template-render.test.ts`:
 

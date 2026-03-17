@@ -282,6 +282,7 @@ export function resolveInternalTemplateVariables(
 export interface ResolveAndRenderOptions {
 	templateName: string;
 	session?: string;
+	newSession?: boolean;
 	explicitVars: Record<string, string>;
 	resolvedPlanPath: string | null;
 	config: Pick<FiveXConfig, "paths">;
@@ -321,8 +322,9 @@ export function resolveAndRenderTemplate(
 
 	// Continued-template selection: when a session is active and a "-continued"
 	// variant exists, use it (saves tokens since context is already loaded).
+	// --new-session always means full template — skip continued-template probe.
 	let templateName = requestedName;
-	if (session) {
+	if (session && !opts.newSession) {
 		const continuedName = `${templateName}-continued`;
 		try {
 			loadTemplate(continuedName);

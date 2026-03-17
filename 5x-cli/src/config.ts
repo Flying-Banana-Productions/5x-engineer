@@ -9,6 +9,11 @@ const AgentConfigSchema = z.object({
 	model: z.string().optional(),
 	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
 	timeout: z.number().int().positive().optional(),
+	/** When true, enforce session continuity across steps within the same phase.
+	 *  Requires --session <id> or --new-session when prior steps exist for the
+	 *  same run/step/phase. Default false — enable after confirming all relevant
+	 *  templates have -continued variants. */
+	continuePhaseSessions: z.boolean().default(false),
 });
 
 const PathsSchema = z.object({
@@ -293,7 +298,12 @@ function warnUnknownConfigKeys(
 		"maxAutoIterations",
 		"maxAutoRetries",
 	]);
-	const allowedAgent = new Set(["provider", "model", "timeout"]);
+	const allowedAgent = new Set([
+		"provider",
+		"model",
+		"timeout",
+		"continuePhaseSessions",
+	]);
 	const allowedOpencode = new Set(["url"]);
 	const allowedWorktree = new Set(["postCreate"]);
 	const allowedPaths = new Set([
