@@ -1,6 +1,6 @@
 # Orchestration Reliability Improvements
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 17, 2026
 **Status:** Draft
 
@@ -10,6 +10,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-17 | Initial draft |
 | 1.1 | 2026-03-17 | Address review feedback (review round 1): P0.1 — narrow session enforcement default to `false`, require explicit opt-in per template set; P0.2 — define `protocol emit` raw stdout contract (no `outputSuccess` envelope); P1.1 — reorder session validation so `--new-session` skips continued-template check; P1.2 — change missing `action` default from `auto_fix` to `human_required`; P2 — tighten Phase 3 dependency note. |
+| 1.2 | 2026-03-17 | Address review addendum 2: align `protocol emit` error-path contract — success writes raw JSON, errors use `outputError()` (standard `{ ok: false, error }` envelope to stdout with non-zero exit); updated Design Decisions, handler (3e), and integration tests (3j) to agree on the same convention. |
 
 ## Overview
 
@@ -88,18 +89,25 @@ tool the agent calls to produce its structured output. The agent invokes
 flags, and the tool outputs canonical JSON. The schema lives in the tool,
 not in the agent's memory.
 
-**`protocol emit` stdout contract: raw canonical JSON, not an `outputSuccess`
-envelope.** The `emit` command writes the canonical structured result directly
-to stdout as a single JSON object (e.g., `{"readiness":"not_ready","items":[...]}`
-for reviewer, `{"result":"complete","commit":"abc123"}` for author). It does
-**not** use `outputSuccess()` — the agent includes the command's stdout as-is
-in its structured result. This matches the schema expected by provider
-structured-output validation and by `5x protocol validate`. The `5x invoke`
-pipeline already handles both raw JSON and `outputSuccess` envelopes via
-`extractResult()`, but raw JSON is the correct path for `emit` because the
-agent is the one returning the JSON to the provider, not the CLI returning it
-to a caller. Template instructions say: "Include the command's JSON output as
-your structured result."
+**`protocol emit` stdout contract.** Two distinct paths:
+
+- **Success (exit 0):** Write raw canonical JSON to stdout — no
+  `outputSuccess()` envelope. The agent includes this stdout verbatim as its
+  structured result. This matches the schema expected by provider
+  structured-output validation and by `5x protocol validate`. The `5x invoke`
+  pipeline already handles both raw JSON and `outputSuccess` envelopes via
+  `extractResult()`, but raw JSON is the correct path for `emit` because the
+  agent is the one returning the JSON to the provider, not the CLI returning
+  it to a caller. Template instructions say: "Include the command's JSON
+  output as your structured result."
+
+- **Error (exit ≠ 0):** Use `outputError()` like every other CLI command.
+  This writes the standard `{ ok: false, error: { code, message } }` envelope
+  to stdout (per the CLI's global error-handling convention in `bin.ts`). The
+  non-zero exit code tells the agent the command failed; the agent reads the
+  error envelope to understand why (e.g., missing flags, validation failure)
+  and either retries or reports the failure. The agent does **not** include
+  error output in its structured result.
 
 The `emit` command also accepts JSON on stdin for normalization — mapping
 alternative field names (`verdict` → `readiness`, `issues` → `items`,
@@ -491,7 +499,10 @@ both `emit` and `validate`.
      JSON.stringify(result))`. Do **not** use `outputSuccess()` — the agent
      includes this output directly as its structured result, and the
      `{ ok, data }` envelope would not match the provider schema contract.
-     Errors still use `outputError()` (exit code ≠ 0 signals failure).
+  7. On validation or flag errors: use `outputError()` — this follows the
+     standard CLI error convention (writes `{ ok: false, error }` to stdout
+     with non-zero exit code). The agent distinguishes success from failure
+     by exit code and does not include error output in its structured result.
 
   `protocolEmitAuthor(params)`:
   1. Validate flags: exactly one of `--complete`, `--needs-human`, `--failed`
@@ -501,6 +512,7 @@ both `emit` and `validate`.
   4. Run through `normalizeAuthorStatus`
   5. Validate via `assertAuthorStatus`
   6. Write raw canonical JSON to stdout (same contract as reviewer emit).
+  7. On errors: use `outputError()` (same contract as reviewer emit).
 
   Stdin fallback for both: if no primary flags and stdin is piped, read
   JSON, normalize, validate, output raw canonical JSON to stdout.
@@ -593,8 +605,9 @@ both `emit` and `validate`.
   - Test: end-to-end author emit via subprocess, verify raw JSON output
   - Test: stdin normalization mode — pipe non-conforming JSON, verify
     canonical output (raw JSON, no envelope)
-  - Test: error cases (missing required flags) — verify stderr/exit code,
-    not stdout envelope
+  - Test: error cases (missing required flags) — verify non-zero exit code
+    and stdout contains standard `{ ok: false, error: { code, message } }`
+    envelope (the CLI's global error convention via `outputError()`)
 
 ## Phase 4: Plan Revision Checklist Gate Fix
 
