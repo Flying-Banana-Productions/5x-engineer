@@ -1096,6 +1096,56 @@ describe("protocol validate author — checklist gate (unit)", () => {
 			cleanupDir(dir);
 		}
 	});
+
+	test("digit-bearing semantic --phase 'setup-v2' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "setup-v2",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("digit-bearing semantic --phase 'review-2026' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "review-2026",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
 });
 
 // ===========================================================================
@@ -1127,6 +1177,18 @@ describe("isNumericPhaseRef", () => {
 		expect(isNumericPhaseRef("Phase 99: Nonexistent")).toBe(true);
 	});
 
+	test("'## Phase 1: Setup' (markdown heading) → true", () => {
+		expect(isNumericPhaseRef("## Phase 1: Setup")).toBe(true);
+	});
+
+	test("'### Phase 2.1: Title' (markdown heading) → true", () => {
+		expect(isNumericPhaseRef("### Phase 2.1: Title")).toBe(true);
+	});
+
+	test("'12' (multi-digit) → true", () => {
+		expect(isNumericPhaseRef("12")).toBe(true);
+	});
+
 	test("'plan' → false", () => {
 		expect(isNumericPhaseRef("plan")).toBe(false);
 	});
@@ -1141,5 +1203,26 @@ describe("isNumericPhaseRef", () => {
 
 	test("empty string → false", () => {
 		expect(isNumericPhaseRef("")).toBe(false);
+	});
+
+	// Digit-bearing semantic labels should NOT match
+	test("'setup-v2' → false (semantic label with digits)", () => {
+		expect(isNumericPhaseRef("setup-v2")).toBe(false);
+	});
+
+	test("'review-2026' → false (semantic label with year)", () => {
+		expect(isNumericPhaseRef("review-2026")).toBe(false);
+	});
+
+	test("'v2' → false (version-like semantic label)", () => {
+		expect(isNumericPhaseRef("v2")).toBe(false);
+	});
+
+	test("'iteration3' → false (semantic label with trailing digit)", () => {
+		expect(isNumericPhaseRef("iteration3")).toBe(false);
+	});
+
+	test("'pre-release-1.0' → false (semantic label)", () => {
+		expect(isNumericPhaseRef("pre-release-1.0")).toBe(false);
 	});
 });

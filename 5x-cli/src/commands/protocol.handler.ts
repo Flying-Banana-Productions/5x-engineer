@@ -100,14 +100,26 @@ function extractResult(parsed: unknown): unknown {
 /**
  * Check whether a phase value could reference a numeric plan phase.
  *
- * The plan parser's `PHASE_HEADING_RE` requires `Phase <number>` — a purely
- * semantic value like `"plan"`, `"review"`, or `"setup"` (no digits) can
- * never match any parsed phase heading. Returns `true` when the value
- * contains at least one digit (e.g., `"1"`, `"Phase 1"`, `"phase-1"`,
- * `"Phase 2: Setup"`).
+ * The plan parser's `PHASE_HEADING_RE` requires `Phase <number>` headings.
+ * This function recognizes the forms that could match a parsed phase:
+ *
+ * - Pure numeric: `"1"`, `"2.1"` (matches `String(p.number)`)
+ * - Phase-prefixed: `"Phase 1"`, `"phase-1"`, `"Phase 2: Setup"`
+ * - Markdown heading: `"## Phase 1: Setup"`
+ *
+ * Semantic identifiers like `"plan"`, `"review"`, `"setup-v2"`, or
+ * `"review-2026"` return `false` — they cannot match any plan parser
+ * phase heading and should skip the checklist gate.
  */
 export function isNumericPhaseRef(phase: string): boolean {
-	return /\d/.test(phase);
+	// Pure numeric: "1", "2.1", "12"
+	if (/^\d+(?:\.\d+)?$/.test(phase)) return true;
+	// Phase-prefixed (case-insensitive, separator is space or dash):
+	// "Phase 1", "phase-1", "Phase 2.1: Title", "Phase 2.1"
+	if (/^phase[\s-]+\d/i.test(phase)) return true;
+	// Markdown heading: "## Phase 1: Setup", "### Phase 2.1: Title"
+	if (/^#{2,3}\s+Phase\s+\d/i.test(phase)) return true;
+	return false;
 }
 
 /**
