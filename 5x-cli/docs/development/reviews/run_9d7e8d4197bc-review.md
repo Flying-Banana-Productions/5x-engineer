@@ -54,3 +54,21 @@ None.
 - P1 / auto_fix: `isNumericPhaseRef()` currently treats any phase string containing a digit as a plan phase reference. That is broader than the plan's stated "extract a numeric phase identifier" behavior and will incorrectly fail closed for semantic identifiers that happen to include digits, such as `setup-v2` or `review-2026`. Tighten parsing to recognized phase-reference forms (`1`, `1.2`, `phase-1`, `Phase 2`, etc.) and add coverage for digit-bearing semantic labels. Location: `src/commands/protocol.handler.ts:109`.
 
 **Readiness:** Ready with corrections - core regression is fixed, but the numeric-phase detection heuristic is too broad for the stated contract.
+
+## Addendum (2026-03-17) - Phase 4 Re-review
+
+**Review type:** commit `7b354cb`
+**Scope:** Re-review of Phase 4 numeric-phase detection follow-up fix
+**Local verification:** `bun test test/integration/commands/protocol-validate-checklist.test.ts test/unit/commands/protocol-validate.test.ts` - passed (73 tests)
+
+### What's Addressed
+
+- The prior P1 issue is addressed: `isNumericPhaseRef()` now recognizes specific plan-phase reference forms instead of any digit-bearing string, so semantic labels like `setup-v2`, `review-2026`, and `v2` correctly skip the checklist gate.
+- The implementation now aligns with the Phase 4 plan language about extracting a numeric phase identifier from recognized forms such as `1`, `2.1`, `Phase 1`, `phase-1`, and markdown heading variants.
+- Added unit coverage validates both accepted numeric-reference forms and rejected semantic-with-digits forms, closing the gap in the original test strategy.
+
+### Remaining Concerns
+
+- None.
+
+**Readiness:** Ready - follow-up fix resolves the only previously raised issue and Phase 4 now matches the intended contract.
