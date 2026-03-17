@@ -39,6 +39,8 @@ export interface TemplateRenderOutput {
 	declared_variables: string[];
 	// Resolved template variables (including auto-generated ones like review_path)
 	variables: Record<string, string>;
+	// Warnings from template resolution (e.g. review_path mismatch)
+	warnings?: string[];
 	// Run-aware fields — only present when --run is provided
 	run_id?: string;
 	plan_path?: string;
@@ -160,6 +162,15 @@ export async function templateRender(
 	}
 
 	// -----------------------------------------------------------------------
+	// Surface warnings (stderr for human visibility)
+	// -----------------------------------------------------------------------
+	if (resolved.warnings.length > 0) {
+		for (const warning of resolved.warnings) {
+			console.error(`Warning: ${warning}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// Build output envelope
 	// -----------------------------------------------------------------------
 	const output: TemplateRenderOutput = {
@@ -169,6 +180,8 @@ export async function templateRender(
 		prompt,
 		declared_variables: resolved.metadata.variables,
 		variables: resolved.variables,
+		// Warnings from template resolution
+		...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
 		// Run-aware fields
 		...(params.run ? { run_id: params.run } : {}),
 		...(resolvedPlanPath && params.run ? { plan_path: resolvedPlanPath } : {}),

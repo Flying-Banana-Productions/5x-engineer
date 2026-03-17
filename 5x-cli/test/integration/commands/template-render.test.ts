@@ -945,4 +945,154 @@ describe("5x template render", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	// ---------------------------------------------------------------------------
+	// Phase 1: Review path override warning tests (022-orchestration-reliability)
+	// ---------------------------------------------------------------------------
+
+	test(
+		"warns when explicit review_path is outside configured review directory",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${join(dir, "docs", "development", "wrong-place.md")}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// Warnings should be present in the envelope
+				expect(data.warnings).toBeDefined();
+				const warnings = data.warnings as string[];
+				expect(warnings.length).toBeGreaterThan(0);
+				expect(warnings[0]).toContain(
+					"resolves outside configured review directory",
+				);
+
+				// Warning should also appear on stderr
+				expect(result.stderr).toContain(
+					"resolves outside configured review directory",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"no warning when explicit review_path matches configured directory",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_002";
+				insertRun(dir, runId, planPath);
+
+				// Default reviews dir is docs/development/reviews (resolved to absolute)
+				const reviewsDir = join(dir, "docs", "development", "reviews");
+				mkdirSync(reviewsDir, { recursive: true });
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${join(reviewsDir, "custom-review.md")}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// No warnings expected
+				expect(data.warnings).toBeUndefined();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"explicit --var review_path overrides still work with warning being additive",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_003";
+				insertRun(dir, runId, planPath);
+
+				const explicitReviewPath = "/custom/path/my-custom-review.md";
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${explicitReviewPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// Override still works
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBe(explicitReviewPath);
+
+				// Warning is present (additive, not blocking)
+				expect(data.warnings).toBeDefined();
+				const warnings = data.warnings as string[];
+				expect(warnings.length).toBeGreaterThan(0);
+
+				// Prompt uses the explicit path
+				const prompt = data.prompt as string;
+				expect(prompt).toContain(explicitReviewPath);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
 });

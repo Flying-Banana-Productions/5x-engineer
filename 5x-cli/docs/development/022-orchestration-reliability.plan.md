@@ -152,7 +152,7 @@ Add a warning when `--var review_path` resolves outside the configured review
 directory. Update skill examples to omit `--var review_path` so
 auto-generation is the default.
 
-- [ ] **1a. Add `checkReviewPathMismatch` helper to `src/commands/template-vars.ts`**
+- [x] **1a. Add `checkReviewPathMismatch` helper to `src/commands/template-vars.ts`**
 
   Add function that compares an explicit `review_path` against the configured
   review directory. Uses `isPlanReviewTemplate()` to determine whether to
@@ -165,28 +165,28 @@ auto-generation is the default.
   Warning text format:
   `review_path "<explicit>" resolves outside configured review directory "<configured>". Omit --var review_path to use the auto-generated path.`
 
-- [ ] **1b. Add `warnings` to `ResolvedTemplate` and `resolveAndRenderTemplate`**
+- [x] **1b. Add `warnings` to `ResolvedTemplate` and `resolveAndRenderTemplate`**
 
   Add `warnings: string[]` field to the `ResolvedTemplate` interface in
   `src/commands/template-vars.ts`. In `resolveAndRenderTemplate`, after
   variable resolution, if `opts.explicitVars.review_path` was provided,
   call `checkReviewPathMismatch`. Collect any warnings into the array.
 
-- [ ] **1c. Surface warnings in template render output**
+- [x] **1c. Surface warnings in template render output**
 
   In `src/commands/template.handler.ts`:
   - Add `warnings?: string[]` to `TemplateRenderOutput`
   - After `resolveAndRenderTemplate`, if warnings exist, include in the
     envelope data and write each to stderr for human visibility
 
-- [ ] **1d. Surface warnings in invoke output**
+- [x] **1d. Surface warnings in invoke output**
 
   In `src/commands/invoke.handler.ts`:
   - Add `warnings?: string[]` to `InvokeResult`
   - Same pattern: surface warnings from template resolution in both the
     envelope and stderr
 
-- [ ] **1e. Update skill to omit `--var review_path`**
+- [x] **1e. Update skill to omit `--var review_path`**
 
   In `src/skills/5x-plan-review/SKILL.md`:
   - Remove `--var review_path=$REVIEW_PATH` from all `5x template render`
@@ -198,7 +198,7 @@ auto-generation is the default.
     "review file must exist at $REVIEW_PATH" (line 258) to reference the
     auto-generated path from the render output
 
-- [ ] **1f. Unit tests for `checkReviewPathMismatch`**
+- [x] **1f. Unit tests for `checkReviewPathMismatch`**
 
   New file `test/unit/commands/template-vars.test.ts` (or add to existing):
   - Test: explicit path in configured directory → returns null
@@ -206,7 +206,7 @@ auto-generation is the default.
   - Test: plan-review template uses `planReviews`/`reviews` config
   - Test: impl-review template uses `runReviews`/`reviews` config
 
-- [ ] **1g. Integration tests for review path warnings**
+- [x] **1g. Integration tests for review path warnings**
 
   In `test/integration/commands/template-render.test.ts`:
   - New test: "warns when explicit review_path is outside configured review

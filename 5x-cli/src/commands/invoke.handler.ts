@@ -89,6 +89,8 @@ interface InvokeResult {
 	tokens: { in: number; out: number };
 	cost_usd: number | null;
 	log_path: string;
+	/** Warnings from template resolution (e.g. review_path mismatch). */
+	warnings?: string[];
 	/** Mapped worktree path (if run is mapped to a worktree). */
 	worktree_path?: string;
 	/** Effective plan path in the worktree (if resolved). */
@@ -317,6 +319,13 @@ export async function invokeAgent(
 	});
 	const { variables } = resolved;
 
+	// Surface warnings (stderr for human visibility)
+	if (resolved.warnings.length > 0) {
+		for (const warning of resolved.warnings) {
+			console.error(`Warning: ${warning}`);
+		}
+	}
+
 	// 2. Create provider
 	let provider: AgentProvider;
 	try {
@@ -446,6 +455,8 @@ export async function invokeAgent(
 		tokens: runResult.tokens,
 		cost_usd: runResult.costUsd ?? null,
 		log_path: logPath,
+		// Warnings from template resolution
+		...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
 		// Phase 2: optional execution context fields for downstream pipelines
 		...(resolvedWorktreePath ? { worktree_path: resolvedWorktreePath } : {}),
 		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists

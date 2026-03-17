@@ -72,11 +72,14 @@ to `5x invoke` when no native agent is found.
 
 ```bash
 # 1. Render the prompt (output follows standard outputSuccess envelope)
+#    review_path is auto-generated — do NOT pass --var review_path.
+#    Read the auto-generated path from .data.variables.review_path in the output.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+  --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 # 2. Detect native agent (project scope first, then user scope)
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
@@ -88,7 +91,7 @@ else
   #     so that 5x protocol validate --record is the single recording point
   #     for both native and fallback paths, avoiding double-recording)
   RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-    --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+    --var plan_path=$PLAN_PATH \
     ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
 fi
 
@@ -131,6 +134,7 @@ output — see Recovery for handling.
 
 Track $ITERATION starting at 1. Maximum 5 review cycles.
 Track $REVIEWER_SESSION (initially empty) for optional session reuse.
+Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
 
 ### Step 1: Review
 
@@ -138,17 +142,18 @@ Delegate to the reviewer using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+  --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
    [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
   RESULT=<launch native 5x-reviewer subagent with PROMPT>
 else
   RESULT=$(5x invoke reviewer reviewer-plan --run $RUN --phase plan \
-    --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+    --var plan_path=$PLAN_PATH \
     ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
 fi
 
@@ -192,7 +197,7 @@ Delegate to the plan author using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render author-process-plan-review --run $RUN \
-  --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH)
+  --var plan_path=$PLAN_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -201,7 +206,7 @@ if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
   RESULT=<launch native 5x-plan-author subagent with PROMPT>
 else
   RESULT=$(5x invoke author author-process-plan-review --run $RUN \
-    --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+    --var plan_path=$PLAN_PATH 2>/dev/null)
 fi
 
 echo "$RESULT" | 5x protocol validate author \
@@ -248,14 +253,15 @@ Present the situation to the human:
     5x run complete --run $RUN
 
 Report to the human: plan review is complete. Verdict: approved
-(or overridden). Review document is at $REVIEW_PATH.
+(or overridden). Review document is at the auto-generated review path
+(read from `.data.variables.review_path` in the template render output).
 
 ## Invariants
 
 - The plan must still parse after author revisions
   (`5x plan phases $PLAN_PATH` succeeds and returns the same phase count).
   Phase additions are acceptable; phase removals or reordering are suspect.
-- The review file must exist at $REVIEW_PATH after reviewer invocation.
+- The review file must exist at the auto-generated review path after reviewer invocation.
 - Author revisions must produce a commit (AuthorStatus.commit is present).
 
 ## Recovery
