@@ -47,3 +47,33 @@ The proposed `5x` description triggers on words like `plan`, `review`, `implemen
 **P1 recommended**
 - [ ] Narrow skill trigger descriptions to 5x-specific phrases.
 - [ ] Rework Phase 1 unit tests to avoid stdout-capture assertions.
+
+## Addendum (2026-03-18) — Iteration 2 assessment
+
+### What's Addressed
+
+- **P0.1 fixed.** The plan now switches `config show` to `resolveLayeredConfig(...)` and adds `--context`, so nearest-config overrides are covered instead of root-only config.
+- **P1.1 fixed.** Phase 4a correctly removes the broad `Triggers on:` line from the shared `5x` skill and repositions it as a co-loaded dependency.
+- **P2.1 fixed.** Phase 1 now keeps stdout/envelope assertions in integration scope and limits unit coverage to pure helpers + config resolution.
+
+### Readiness
+
+**Readiness:** Ready with corrections — prior review items are addressed, but the revised plan still needs a control-plane-root correction for `config show` plus a couple of internal consistency cleanups.
+
+### Review Items
+
+- **P1.2 — `config show` root resolution is still underspecified for managed worktrees.**
+  - **Action:** `auto_fix`
+  - **Reason:** Phase 1 now says to call `resolveLayeredConfig(projectRoot, contextDir)`, but it never requires `projectRoot` to come from `resolveControlPlaneRoot(startDir)`. If implemented from `resolveProjectRoot()` / cwd inside a linked worktree, root-anchored values like `db.path` can still resolve relative to the checkout instead of the control-plane root, so `5x config show` can disagree with `template` / `invoke` / `quality` runtime behavior. The plan should explicitly anchor root resolution to the control-plane root and add a worktree-context test.
+
+- **P2.2 — The plan still contradicts itself on whether the new `5x` skill should self-trigger.**
+  - **Action:** `auto_fix`
+  - **Reason:** Phase 4a correctly says the shared `5x` skill should never fire on its own, but Phase 2a still asks for a description “optimized for triggering on any 5x-related work,” and the Phase 4 completion gate still says all four descriptions include trigger words. Those sections should be normalized so implementation does not regress the fix.
+
+- **P2.3 — Test/file update scope is incomplete for adding a fourth bundled skill.**
+  - **Action:** `auto_fix`
+  - **Reason:** The plan updates `test/unit/skills/skill-content.test.ts`, but repo tests such as `test/unit/commands/init-skills.test.ts` still assert exactly three bundled skills. Expand the touched-files/tests lists so the implementation plan covers all known exact-count assertions likely to fail.
+
+### Summary
+
+Iteration 2 resolves the three issues from the first review. Remaining gaps are mechanical: make `config show` explicitly control-plane-aware in worktree contexts, and clean up the plan's own inconsistencies around the new shared skill and test scope.
