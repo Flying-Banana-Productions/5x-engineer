@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 // Skill files are co-located in subdirectories and imported as strings via Bun's text loader
+import skill5xRaw from "./5x/SKILL.md" with { type: "text" };
 import skillPhaseExecutionRaw from "./5x-phase-execution/SKILL.md" with {
 	type: "text",
 };
@@ -65,6 +66,7 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
 
 // Registry of all bundled skills (name → raw SKILL.md content)
 const SKILLS: Record<string, string> = {
+	"5x": skill5xRaw,
 	"5x-plan": skillPlanRaw,
 	"5x-plan-review": skillPlanReviewRaw,
 	"5x-phase-execution": skillPhaseExecutionRaw,

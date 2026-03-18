@@ -131,7 +131,7 @@ envelope, tests pass.
 **Completion gate:** A new `5x` skill exists in the loader, is installed by
 `5x skills install`, and contains all cross-cutting orchestration content.
 
-- [ ] **2a.** Create `src/skills/5x/SKILL.md` with the following content
+- [x] **2a.** Create `src/skills/5x/SKILL.md` with the following content
   extracted from the existing three skills:
   - YAML frontmatter with `name: 5x` and a description focused on the
     co-loading instruction (no trigger words — this skill is loaded by
@@ -162,14 +162,14 @@ envelope, tests pass.
     - `result: "complete"` without a commit = invariant violation in any author step
     - Read iteration/retry limits from `5x config show`, never hardcode numbers
 
-- [ ] **2b.** Update `src/skills/loader.ts`: add `import` for the new
+- [x] **2b.** Update `src/skills/loader.ts`: add `import` for the new
   `5x/SKILL.md` with `{ type: "text" }`, add `"5x": skill5xRaw` to the
   `SKILLS` registry. Update `test/unit/commands/init-skills.test.ts` to
   account for the fourth bundled skill: change `expect(names.length).toBe(3)`
   to `toBe(4)` and `expect(skills.length).toBe(3)` to `toBe(4)`, and add
   `expect(names).toContain("5x")` to the name assertions.
 
-- [ ] **2c.** Update existing skill loader tests in
+- [x] **2c.** Update existing skill loader tests in
   `test/unit/skills/skill-content.test.ts`:
   - Add `"5x"` to the expected skill names
   - Add a new `describe("5x foundational skill")` block that verifies:

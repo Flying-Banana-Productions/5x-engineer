@@ -26,7 +26,8 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("skill loader — Phase 4 rewrites", () => {
-	test("all three skills load without error", () => {
+	test("all skills load without error", () => {
+		expect(() => getDefaultSkillRaw("5x")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan-review")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-phase-execution")).not.toThrow();
@@ -34,16 +35,17 @@ describe("skill loader — Phase 4 rewrites", () => {
 
 	test("all skill names are listed", () => {
 		const names = listSkillNames();
+		expect(names).toContain("5x");
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
 		// Do not hard-code total count — new skills may be added
-		expect(names.length).toBeGreaterThanOrEqual(3);
+		expect(names.length).toBeGreaterThanOrEqual(4);
 	});
 
 	test("listSkills returns metadata for all expected skills", () => {
 		const skills = listSkills();
-		expect(skills.length).toBeGreaterThanOrEqual(3);
+		expect(skills.length).toBeGreaterThanOrEqual(4);
 		for (const skill of skills) {
 			expect(skill.name).toBeTruthy();
 			expect(skill.description).toBeTruthy();
@@ -51,13 +53,79 @@ describe("skill loader — Phase 4 rewrites", () => {
 		}
 	});
 
-	test("skill frontmatter parses correctly for all three skills", () => {
-		for (const name of ["5x-plan", "5x-plan-review", "5x-phase-execution"]) {
+	test("skill frontmatter parses correctly for all skills", () => {
+		for (const name of [
+			"5x",
+			"5x-plan",
+			"5x-plan-review",
+			"5x-phase-execution",
+		]) {
 			const raw = getDefaultSkillRaw(name);
 			const fm = parseSkillFrontmatter(raw);
 			expect(fm.name).toBe(name);
 			expect(fm.description.length).toBeGreaterThan(0);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 5x foundational skill
+// ---------------------------------------------------------------------------
+
+describe("5x foundational skill", () => {
+	test("skill loads and frontmatter parses correctly", () => {
+		const raw = getDefaultSkillRaw("5x");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.name).toBe("5x");
+		expect(fm.description.length).toBeGreaterThan(0);
+	});
+
+	test("contains Human Interaction Model section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Human Interaction Model");
+	});
+
+	test("contains Delegating Sub-Agent Work section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Delegating Sub-Agent Work");
+	});
+
+	test("contains Timeout section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Timeout Layers");
+	});
+
+	test("contains Gotchas section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Gotchas");
+	});
+
+	test("references all four agent names", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("5x-orchestrator");
+		expect(content).toContain("5x-plan-author");
+		expect(content).toContain("5x-code-author");
+		expect(content).toContain("5x-reviewer");
+	});
+
+	test("references 5x config show", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("5x config show");
+	});
+
+	test("documents native agent detection order: project scope before user scope before fallback", () => {
+		const content = getDefaultSkillRaw("5x");
+		const sectionIdx = content.indexOf("Native agent detection order");
+		expect(sectionIdx).toBeGreaterThan(-1);
+		const section = content.slice(sectionIdx);
+		const projectIdx = section.indexOf(".opencode/agents/");
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const fallbackIdx = section.indexOf("5x invoke");
+		expect(projectIdx).toBeGreaterThan(-1);
+		expect(userIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(-1);
+		expect(projectIdx).toBeLessThan(userIdx);
+		expect(userIdx).toBeLessThan(fallbackIdx);
 	});
 });
 
