@@ -117,3 +117,63 @@ None.
 - None in Phase 3 scope. All workflow prose now references config keys by name, consistent with the plan's design decision.
 
 **Readiness:** Ready.
+
+## Addendum (2026-03-18) — Staff re-review of commit `6b129ab0d890793d2648ca743c714b3159fc9686`
+
+### What's Addressed
+
+- **R1 resolved.** The Phase 3 process skills no longer hardcode numeric review/retry caps in workflow prose. `src/skills/5x-plan-review/SKILL.md` now points to `maxReviewIterations` from `5x config show`, and `src/skills/5x-phase-execution/SKILL.md` now points to `maxReviewIterations` / `maxQualityRetries` from `5x config show`.
+- I did not find any remaining fixed numeric loop limits in the changed Phase 3 workflow sections.
+- Local verification: `bun test test/unit/skills/skill-content.test.ts` passed (72 tests).
+
+### Remaining Concerns
+
+- **Minor — undefined placeholder in escalation prompt.** `src/skills/5x-phase-execution/SKILL.md:179` now says `Quality gates failing after $maxQualityRetries retries`, but the workflow never defines `$maxQualityRetries` as a shell variable. Either reference the config key name directly in prose or explicitly define the variable before using it. Non-blocking, but still one inconsistent placeholder in the updated text.
+
+**Readiness:** Ready with corrections.
+
+## Addendum (2026-03-18) — Phase 4 review of commit `6fb1a0e27b915d17d16126c0d4cfaf334bd4a151`
+
+### What's Addressed
+
+- All three process skill descriptions now include both required pieces from Phase 4: the co-loading instruction (`Load the `5x` skill first.`) and the trigger-word list from the plan.
+- The trigger text in `src/skills/5x-plan/SKILL.md`, `src/skills/5x-plan-review/SKILL.md`, and `src/skills/5x-phase-execution/SKILL.md` matches the Phase 4 plan wording exactly.
+- `src/skills/5x/SKILL.md` remains correctly scoped as a co-loaded dependency: its description focuses on loading alongside the process skills and does not include a `Triggers on:` line.
+- Local verification: `bun test` passed (1641 pass, 1 skip).
+
+### Remaining Concerns
+
+- None in Phase 4 scope. The description fields now align with the plan and the suite remains green.
+
+**Readiness:** Ready.
+
+## Addendum (2026-03-18) — Phase 5 review of commit `1b6c34ec67eb18da1208efc088035845621b35a2`
+
+### What's Addressed
+
+- `src/commands/quality-v1.handler.ts` now uses `dirname(result.nearestConfigPath)` when layered config resolution selects a sub-project `5x.toml`, so run-scoped quality gates execute from the sub-project directory instead of the control-plane root.
+- Precedence is preserved in the handler: `projectRoot = effectiveWorkdir ?? layeredCwd`, so explicit `--workdir` and mapped worktree paths still win, while non-layered config still falls back to `controlPlaneRoot`.
+- The new integration coverage is meaningful: `test/integration/commands/quality-v1.test.ts` creates a root repo plus sub-project config/plan, runs `5x quality run --run <id>`, and verifies `pwd` reports the sub-project path. It also follows the repo's subprocess rules (`cleanGitEnv()`, `stdin: "ignore"`, timeout).
+- Local verification: `bun test test/unit/commands/quality-handler.test.ts` passed (7 tests); `bun test test/integration/commands/quality-v1.test.ts` passed (6 tests).
+
+### Remaining Concerns
+
+- **Minor — the new unit tests do not actually pin the fixed Phase 5 handler path.** One test only re-checks `resolveLayeredConfig()` metadata, not `runQuality()` behavior. The other calls `runQuality({ workdir: subDir })`, which exercises the non-`--run` branch (`else if (effectiveWorkdir)`) rather than the Phase 5 layered run-scoped branch called out in the plan. Neither unit test asserts the gate output/cwd directly. The integration test covers the real bug, so this is not blocking, but the unit tests should be tightened or renamed to match what they actually verify.
+
+**Readiness:** Ready with corrections.
+
+## Addendum (2026-03-18) — Phase 6 review of commit `f484054951502cc9c675aba2e6dd6e182d1296d1`
+
+### What's Addressed
+
+- `src/templates/loader.ts` now performs the intended stale-override comparison in `loadTemplate()`: it parses the loaded override, looks up the bundled template from `TEMPLATES`, and warns only when `overrideVersion < bundledVersion`. Equal versions do not warn, and user-only templates with no bundled equivalent correctly skip the version check.
+- The new warning text is actionable and consistent with the existing template warning pattern: same `Warning: Template ...` prefix, same `.5x/templates/prompts/<name>.md` removal guidance, and the same `5x init --install-templates --force` remediation path.
+- All 8 bundled templates are now at `version: 2`, and `src/templates/author-generate-plan.md` now includes the same `5x protocol emit author --complete --commit <hash>` / `--needs-human` completion pattern already used by the other author templates.
+- Test updates are meaningful for the Phase 6 scope: `test/unit/templates/stale-override.test.ts` covers stale override, equal-version override, and user-only override cases; existing version assertions were updated in `test/unit/templates/loader.test.ts` and `test/integration/commands/template-list.test.ts` to reflect the v2 bump.
+- Local verification: `bun test test/unit/templates/loader.test.ts test/unit/templates/stale-override.test.ts test/integration/commands/template-list.test.ts` passed (90 tests); `bun test` passed (1647 pass, 1 skip).
+
+### Remaining Concerns
+
+- None in Phase 6 scope. I did not find new Staff-level issues in the stale-template detection, protocol-emit update, or test/version-bump follow-through.
+
+**Readiness:** Ready.

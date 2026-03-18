@@ -2,8 +2,9 @@
 name: 5x-plan
 description: >-
   Generate an implementation plan from a requirements document, then run
-  review/fix cycles until the plan is approved. Use when starting a new
-  feature or project that needs a structured implementation plan.
+  review/fix cycles until the plan is approved. Load the `5x` skill first.
+  Triggers on: 'new feature', 'implementation plan', 'plan from
+  requirements', 'generate plan', 'PRD', 'TDD'.
 metadata:
   author: 5x-engineer
 ---

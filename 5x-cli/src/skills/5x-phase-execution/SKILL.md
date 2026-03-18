@@ -1,9 +1,10 @@
 ---
 name: 5x-phase-execution
 description: >-
-  Execute implementation phases from an approved plan. Each phase goes through
-  author implementation, quality gates, code review, and optional fix cycles.
-  Use when a plan has been approved and is ready for execution.
+  Execute implementation phases from an approved plan. Each phase goes
+  through author implementation, quality gates, code review, and optional
+  fix cycles. Load the `5x` skill first. Triggers on: 'execute plan',
+  'implement plan', 'run phases', 'next phase', 'phase execution'.
 metadata:
   author: 5x-engineer
 ---

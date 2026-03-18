@@ -2,8 +2,9 @@
 name: 5x-plan-review
 description: >-
   Run iterative review/fix cycles on an implementation plan until it is
-  approved by the reviewer or the human overrides. Use when a plan needs
-  quality review before execution.
+  approved by the reviewer or the human overrides. Load the `5x` skill
+  first. Triggers on: 'review plan', 'plan review', 'iterate on plan',
+  'get plan approved'.
 metadata:
   author: 5x-engineer
 ---
