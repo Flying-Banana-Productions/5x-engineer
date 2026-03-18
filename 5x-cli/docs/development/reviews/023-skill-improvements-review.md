@@ -77,3 +77,25 @@ The proposed `5x` description triggers on words like `plan`, `review`, `implemen
 ### Summary
 
 Iteration 2 resolves the three issues from the first review. Remaining gaps are mechanical: make `config show` explicitly control-plane-aware in worktree contexts, and clean up the plan's own inconsistencies around the new shared skill and test scope.
+
+## Addendum (2026-03-18) — Iteration 3 assessment
+
+### What's Addressed
+
+- **P1.2 mostly fixed.** Phase 1a now explicitly requires `resolveControlPlaneRoot(startDir)` and uses `controlPlane.controlPlaneRoot` for `resolveLayeredConfig`, which aligns the planned command behavior with `template` / `invoke` / `quality` in linked worktrees.
+- **P2.2 fixed.** Phase 2a and the Phase 4 completion gate now consistently describe the shared `5x` skill as a co-loaded dependency, not a trigger-optimized standalone skill.
+- **P2.3 fixed.** The plan now calls out `test/unit/commands/init-skills.test.ts` and the exact-count assertion updates needed for the fourth bundled skill.
+
+### Readiness
+
+**Readiness:** Ready with corrections — the plan revisions are directionally correct and introduced no new design problems, but one mechanical test gap remains.
+
+### Review Items
+
+- **P2.4 — Worktree-specific test coverage for `config show` is still missing.**
+  - **Action:** `auto_fix`
+  - **Reason:** The plan now fixes the implementation approach for managed worktrees, but Phase 1e still only covers root config, `--context` nearest-config layering, and defaults. Add an integration test case that invokes `5x config show` from a linked/managed worktree context and verifies root-anchored values resolve from the control-plane root rather than the checkout.
+
+### Summary
+
+Iteration 3 resolves the architecture/copy issues from the previous addendum, and I do not see any new design regressions. The remaining gap is narrow: add one worktree-context test so the newly specified control-plane-root behavior is explicitly protected.
