@@ -378,7 +378,7 @@ with actionable remediation advice. `author-generate-plan` includes
 `5x protocol emit` instructions. All bundled templates are at version 2.
 All tests pass.
 
-- [ ] **6a.** Add stale override detection in `loadTemplate()`
+- [x] **6a.** Add stale override detection in `loadTemplate()`
   (`src/templates/loader.ts`): after loading an override from disk (line 304),
   also look up the bundled template's raw content from the `TEMPLATES` registry.
   Parse the bundled template's frontmatter to extract its version. Compare:
@@ -392,27 +392,27 @@ All tests pass.
   bundled template doesn't exist for this name (user-only template), skip the
   version check.
 
-- [ ] **6b.** Add `5x protocol emit` instructions to the `## Completion`
+- [x] **6b.** Add `5x protocol emit` instructions to the `## Completion`
   section of `src/templates/author-generate-plan.md`. Follow the same pattern
   as `author-next-phase.md`: include `5x protocol emit author --complete
   --commit <hash>` and `5x protocol emit author --needs-human --reason "..."`
   examples, with the "include verbatim as structured result" instruction.
 
-- [ ] **6c.** Bump the `version` field in all 8 bundled templates from `1` to
+- [x] **6c.** Bump the `version` field in all 8 bundled templates from `1` to
   `2`. All templates have gained content (description, variable_defaults,
   protocol emit instructions, or body changes) since the initial v1 scaffolding.
   Templates: `author-fix-quality`, `author-generate-plan`, `author-next-phase`,
   `author-process-impl-review`, `author-process-plan-review`, `reviewer-commit`,
   `reviewer-plan`, `reviewer-plan-continued`.
 
-- [ ] **6d.** Add unit test for stale override warning: create a temp override
+- [x] **6d.** Add unit test for stale override warning: create a temp override
   directory with a v1 template (matching a bundled template name), call
   `setTemplateOverrideDir()` then `loadTemplate()`, and verify a warning is
   emitted. Also test the no-warning case (override version equals bundled
   version). Test can be in `test/unit/templates/` or alongside existing
   template loader tests.
 
-- [ ] **6e.** Run full test suite (`bun test`) and fix any failures from
+- [x] **6e.** Run full test suite (`bun test`) and fix any failures from
   version bumps affecting test assertions (e.g., tests that assert on
   `metadata.version === 1`).
 

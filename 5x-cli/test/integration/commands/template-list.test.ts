@@ -63,7 +63,7 @@ describe("5x template describe", () => {
 		const envelope = JSON.parse(stdout);
 		expect(envelope.ok).toBe(true);
 		expect(envelope.data.name).toBe("author-next-phase");
-		expect(envelope.data.version).toBe(1);
+		expect(envelope.data.version).toBe(2);
 		expect(envelope.data.step_name).toBe("author:implement");
 		expect(envelope.data.source).toBe("bundled");
 		expect(Array.isArray(envelope.data.variables)).toBe(true);
