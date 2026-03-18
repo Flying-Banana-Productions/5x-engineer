@@ -22,9 +22,9 @@ import { discoverConfigFile } from "../config.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { getSchemaVersion, runMigrations } from "../db/schema.js";
 import {
+	checkInstalledPromptTemplates,
 	ensureTemplateFiles,
 	generateTomlConfig,
-	upgradePromptTemplates,
 } from "./init.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -296,29 +296,25 @@ function refreshTemplates(projectRoot: string, force: boolean): string[] {
 		log.push(`  Skipped .5x/templates/${name} (unchanged)`);
 	}
 
-	// Smart prompt template upgrade: auto-update stale stock templates,
-	// warn about customized ones that cannot be auto-upgraded.
-	const promptResult = upgradePromptTemplates(projectRoot, force);
-	for (const name of promptResult.created) {
-		log.push(`  Created .5x/templates/prompts/${name}`);
+	// Check installed prompt templates — never auto-write, just report.
+	// Users opt in to on-disk templates via `5x init --install-templates`.
+	const promptResult = checkInstalledPromptTemplates(projectRoot);
+	for (const name of promptResult.current) {
+		log.push(`  Skipped .5x/templates/prompts/${name} (matches bundled)`);
 	}
-	for (const name of promptResult.updated) {
-		log.push(`  Updated .5x/templates/prompts/${name}`);
-	}
-	for (const name of promptResult.skipped) {
-		log.push(`  Skipped .5x/templates/prompts/${name} (unchanged)`);
-	}
-	for (const name of promptResult.customized) {
+	for (const name of promptResult.diverged) {
 		log.push(
-			`  Warning: .5x/templates/prompts/${name} has been customized and cannot be auto-upgraded. Back up your changes and run "5x init --force" to get the latest version.`,
+			`  Warning: .5x/templates/prompts/${name} differs from the bundled version. ` +
+				"Remove it to use the latest bundled template, or run " +
+				'"5x init --install-templates --force" to overwrite.',
 		);
 	}
 
 	if (
 		templateResult.created.length === 0 &&
 		templateResult.overwritten.length === 0 &&
-		promptResult.created.length === 0 &&
-		promptResult.updated.length === 0
+		promptResult.diverged.length === 0 &&
+		promptResult.current.length === 0
 	) {
 		log.push("  All templates up-to-date");
 	}

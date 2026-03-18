@@ -278,11 +278,14 @@ describe("invoke — structured output validation (unit)", () => {
 		);
 	});
 
-	test("invalid ReviewerVerdict throws on empty items for non-ready", async () => {
+	test("warns (not throws) for ReviewerVerdict with empty items for non-ready", async () => {
 		const { assertReviewerVerdict } = await import("../../../src/protocol.js");
-		expect(() =>
-			assertReviewerVerdict({ readiness: "not_ready", items: [] }, "test"),
-		).toThrow(/items/);
+		const result = assertReviewerVerdict(
+			{ readiness: "not_ready", items: [] },
+			"test",
+		);
+		expect(result.warnings).toHaveLength(1);
+		expect(result.warnings[0]).toContain("items");
 	});
 
 	test("invalid ReviewerVerdict throws on missing action", async () => {

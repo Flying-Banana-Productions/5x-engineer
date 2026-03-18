@@ -162,7 +162,7 @@ describe("5x upgrade", () => {
 	);
 
 	test(
-		"refreshes templates",
+		"refreshes artifact templates",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -171,7 +171,6 @@ describe("5x upgrade", () => {
 				const { stdout, exitCode } = await runUpgrade(tmp);
 
 				expect(exitCode).toBe(0);
-				// Templates should be created
 				expect(stdout).toContain("Templates:");
 				expect(
 					existsSync(
@@ -186,38 +185,21 @@ describe("5x upgrade", () => {
 	);
 
 	test(
-		"auto-updates stale stock prompt templates with outdated frontmatter",
+		"does not create prompt templates when none exist on disk",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
 				writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
 
-				// Simulate a pre-existing .5x with stale prompt templates
-				const promptsDir = join(tmp, ".5x", "templates", "prompts");
-				mkdirSync(promptsDir, { recursive: true });
-
-				// Write stale version (same body, missing variable_defaults)
-				const bundled = getDefaultTemplateRaw("author-next-phase");
-				const stale = bundled.replace(
-					/variable_defaults:\n( {2}[^\n]+\n)*/g,
-					"",
-				);
-				writeFileSync(join(promptsDir, "author-next-phase.md"), stale);
-
 				const { stdout, exitCode } = await runUpgrade(tmp);
 
 				expect(exitCode).toBe(0);
-				expect(stdout).toContain(
-					"Updated .5x/templates/prompts/author-next-phase.md",
+				// No prompts directory should be created
+				expect(existsSync(join(tmp, ".5x", "templates", "prompts"))).toBe(
+					false,
 				);
-
-				// File should now match the current bundled version
-				const updated = readFileSync(
-					join(promptsDir, "author-next-phase.md"),
-					"utf-8",
-				);
-				expect(updated).toContain("variable_defaults:");
-				expect(updated).toBe(bundled);
+				// Should report templates as up-to-date
+				expect(stdout).toContain("up-to-date");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -226,7 +208,7 @@ describe("5x upgrade", () => {
 	);
 
 	test(
-		"warns about customized prompt templates that cannot be auto-upgraded",
+		"warns about diverged prompt templates without overwriting them",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -244,9 +226,9 @@ describe("5x upgrade", () => {
 
 				expect(exitCode).toBe(0);
 				expect(stdout).toContain(
-					"Warning: .5x/templates/prompts/author-next-phase.md has been customized",
+					"Warning: .5x/templates/prompts/author-next-phase.md differs from the bundled version",
 				);
-				expect(stdout).toContain("5x init --force");
+				expect(stdout).toContain("5x init --install-templates --force");
 
 				// File should NOT be modified
 				const content = readFileSync(
@@ -254,6 +236,34 @@ describe("5x upgrade", () => {
 					"utf-8",
 				);
 				expect(content).toBe(customized);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"reports matching prompt templates without warning",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+
+				const promptsDir = join(tmp, ".5x", "templates", "prompts");
+				mkdirSync(promptsDir, { recursive: true });
+
+				// Write a template that matches bundled exactly
+				const bundled = getDefaultTemplateRaw("author-next-phase");
+				writeFileSync(join(promptsDir, "author-next-phase.md"), bundled);
+
+				const { stdout, exitCode } = await runUpgrade(tmp);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					"Skipped .5x/templates/prompts/author-next-phase.md (matches bundled)",
+				);
+				expect(stdout).not.toContain("Warning");
 			} finally {
 				cleanupDir(tmp);
 			}

@@ -98,6 +98,31 @@ function extractResult(parsed: unknown): unknown {
 // ---------------------------------------------------------------------------
 
 /**
+ * Check whether a phase value could reference a numeric plan phase.
+ *
+ * The plan parser's `PHASE_HEADING_RE` requires `Phase <number>` headings.
+ * This function recognizes the forms that could match a parsed phase:
+ *
+ * - Pure numeric: `"1"`, `"2.1"` (matches `String(p.number)`)
+ * - Phase-prefixed: `"Phase 1"`, `"phase-1"`, `"Phase 2: Setup"`
+ * - Markdown heading: `"## Phase 1: Setup"`
+ *
+ * Semantic identifiers like `"plan"`, `"review"`, `"setup-v2"`, or
+ * `"review-2026"` return `false` — they cannot match any plan parser
+ * phase heading and should skip the checklist gate.
+ */
+export function isNumericPhaseRef(phase: string): boolean {
+	// Pure numeric: "1", "2.1", "12"
+	if (/^\d+(?:\.\d+)?$/.test(phase)) return true;
+	// Phase-prefixed (case-insensitive, separator is space or dash):
+	// "Phase 1", "phase-1", "Phase 2.1: Title", "Phase 2.1"
+	if (/^phase[\s-]+\d/i.test(phase)) return true;
+	// Markdown heading: "## Phase 1: Setup", "### Phase 2.1: Title"
+	if (/^#{2,3}\s+Phase\s+\d/i.test(phase)) return true;
+	return false;
+}
+
+/**
  * Validate that the plan's phase checklist is fully checked off.
  *
  * Plan path resolution:
@@ -107,8 +132,16 @@ function extractResult(parsed: unknown): unknown {
  * Phase lookup (once a plan IS resolved):
  * - If --phase is provided but not found in the parsed plan → PHASE_NOT_FOUND (fail-closed),
  *   regardless of how the plan was resolved. --phase is always explicit input.
+ * - If --phase is a non-numeric semantic identifier (e.g., "plan", "review") → skip
+ *   the gate entirely. Such values can never match a plan parser phase heading.
  */
 function validatePhaseChecklist(params: ProtocolValidateParams): void {
+	// Skip for non-numeric phase identifiers — they are semantic context
+	// labels (e.g., "plan", "review") that don't map to plan file phases.
+	if (params.phase && !isNumericPhaseRef(params.phase)) {
+		return;
+	}
+
 	const explicitPlan = !!params.plan;
 	let planPath: string | undefined = params.plan
 		? resolve(params.plan)
@@ -233,10 +266,19 @@ export async function protocolValidate(
 	// -----------------------------------------------------------------------
 	// Validate structured output (shared helper)
 	// -----------------------------------------------------------------------
-	const validated = validateStructuredOutputOrThrow(structured, role, {
-		requireCommit: params.requireCommit,
-		context: `protocol validate ${role}`,
-	});
+	const { value: validated, warnings } = validateStructuredOutputOrThrow(
+		structured,
+		role,
+		{
+			requireCommit: params.requireCommit,
+			context: `protocol validate ${role}`,
+		},
+	);
+
+	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
+	for (const w of warnings) {
+		console.error(`Warning: ${w}`);
+	}
 
 	// -----------------------------------------------------------------------
 	// Validate --record prerequisites BEFORE outputSuccess().

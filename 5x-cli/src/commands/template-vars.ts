@@ -8,7 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { outputError } from "../output.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
@@ -131,12 +131,42 @@ export async function parseVars(
  * Determine if a template is a plan-review template vs implementation-review.
  * Plan-review templates include: reviewer-plan, reviewer-plan-continued, author-process-plan-review
  */
-function isPlanReviewTemplate(templateName: string): boolean {
+export function isPlanReviewTemplate(templateName: string): boolean {
 	// Check for the base name before -continued suffix
 	const baseName = templateName.replace(/-continued$/, "");
 	return (
 		baseName === "reviewer-plan" || baseName === "author-process-plan-review"
 	);
+}
+
+/**
+ * Check whether an explicit `review_path` resolves outside the configured
+ * review directory. Returns a warning string if mismatched, null otherwise.
+ *
+ * For plan-review templates, checks against `planReviews` (falling back to
+ * `reviews`). For implementation-review templates, checks against
+ * `runReviews` (falling back to `reviews`).
+ */
+export function checkReviewPathMismatch(
+	explicitReviewPath: string,
+	templateName: string,
+	config: Pick<FiveXConfig, "paths">,
+	projectRoot: string,
+): string | null {
+	const isPlanReview = isPlanReviewTemplate(templateName);
+	const configuredDir = isPlanReview
+		? (config.paths.planReviews ?? config.paths.reviews)
+		: (config.paths.runReviews ?? config.paths.reviews);
+
+	// Resolve both paths to absolute for comparison
+	const resolvedExplicitDir = dirname(resolve(projectRoot, explicitReviewPath));
+	const resolvedConfiguredDir = resolve(projectRoot, configuredDir);
+
+	if (resolvedExplicitDir !== resolvedConfiguredDir) {
+		return `review_path "${explicitReviewPath}" resolves outside configured review directory "${configuredDir}". Omit --var review_path to use the auto-generated path.`;
+	}
+
+	return null;
 }
 
 /**
@@ -252,6 +282,7 @@ export function resolveInternalTemplateVariables(
 export interface ResolveAndRenderOptions {
 	templateName: string;
 	session?: string;
+	newSession?: boolean;
 	explicitVars: Record<string, string>;
 	resolvedPlanPath: string | null;
 	config: Pick<FiveXConfig, "paths">;
@@ -268,6 +299,7 @@ export interface ResolvedTemplate {
 	prompt: string;
 	stepName: string | null;
 	variables: Record<string, string>;
+	warnings: string[];
 }
 
 /**
@@ -290,8 +322,9 @@ export function resolveAndRenderTemplate(
 
 	// Continued-template selection: when a session is active and a "-continued"
 	// variant exists, use it (saves tokens since context is already loaded).
+	// --new-session always means full template — skip continued-template probe.
 	let templateName = requestedName;
-	if (session) {
+	if (session && !opts.newSession) {
 		const continuedName = `${templateName}-continued`;
 		try {
 			loadTemplate(continuedName);
@@ -341,6 +374,20 @@ export function resolveAndRenderTemplate(
 
 	const rendered = renderTemplate(templateName, variables);
 
+	// Check for review_path mismatch warning
+	const warnings: string[] = [];
+	if (opts.explicitVars.review_path !== undefined) {
+		const warning = checkReviewPathMismatch(
+			opts.explicitVars.review_path,
+			templateName,
+			config,
+			projectRoot,
+		);
+		if (warning) {
+			warnings.push(warning);
+		}
+	}
+
 	return {
 		originalTemplateName: requestedName,
 		selectedTemplateName: templateName,
@@ -348,5 +395,6 @@ export function resolveAndRenderTemplate(
 		prompt: rendered.prompt,
 		stepName: rendered.stepName,
 		variables,
+		warnings,
 	};
 }

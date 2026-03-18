@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
@@ -9,6 +9,11 @@ const AgentConfigSchema = z.object({
 	model: z.string().optional(),
 	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
 	timeout: z.number().int().positive().optional(),
+	/** When true, enforce session continuity across steps within the same phase.
+	 *  Requires --session <id> or --new-session when prior steps exist for the
+	 *  same run/step/phase. Default false — enable after confirming all relevant
+	 *  templates have -continued variants. */
+	continuePhaseSessions: z.boolean().default(false),
 });
 
 const PathsSchema = z.object({
@@ -176,6 +181,23 @@ function discoverConfigFile(startDir: string, stopDir?: string): string | null {
 	return null;
 }
 
+/**
+ * Detect whether a directory is a git worktree checkout root.
+ *
+ * Git worktrees have a `.git` **file** (not directory) that points to the
+ * main repo's `.git/worktrees/<name>` directory.  A normal repo has a
+ * `.git` **directory**.  This distinction lets us tell the two apart
+ * without parsing the file contents.
+ */
+export function isWorktreeRoot(dir: string): boolean {
+	const dotGit = join(dir, ".git");
+	try {
+		return statSync(dotGit).isFile();
+	} catch {
+		return false;
+	}
+}
+
 export interface LoadConfigResult {
 	config: FiveXConfig;
 	configPath: string | null;
@@ -276,7 +298,12 @@ function warnUnknownConfigKeys(
 		"maxAutoIterations",
 		"maxAutoRetries",
 	]);
-	const allowedAgent = new Set(["provider", "model", "timeout"]);
+	const allowedAgent = new Set([
+		"provider",
+		"model",
+		"timeout",
+		"continuePhaseSessions",
+	]);
 	const allowedOpencode = new Set(["url"]);
 	const allowedWorktree = new Set(["postCreate"]);
 	const allowedPaths = new Set([
@@ -596,6 +623,15 @@ export async function resolveLayeredConfig(
 				rootConfigPath &&
 				resolve(nearestConfigPath) === resolve(rootConfigPath)
 			) {
+				nearestConfigPath = null;
+			}
+
+			// Skip nearest config at a worktree root — it's a copy of the
+			// repo root config (same git content, different filesystem path),
+			// not a sub-project override.  Without this, worktree checkouts
+			// trigger false layering, spurious db-section warnings, and
+			// incorrect path resolution against the worktree directory.
+			if (nearestConfigPath && isWorktreeRoot(dirname(nearestConfigPath))) {
 				nearestConfigPath = null;
 			}
 

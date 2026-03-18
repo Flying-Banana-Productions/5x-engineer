@@ -960,8 +960,12 @@ describe("createProvider", () => {
 			// Gated: only runs when TEST_OPENCODE_SERVER=1 is set.
 			// Spawns a real OpenCode server — too slow/flaky for CI without the env var.
 			const config = {
-				author: { provider: "opencode", model: "anthropic/claude-sonnet-4-6" },
-				reviewer: { provider: "opencode" },
+				author: {
+					provider: "opencode",
+					model: "anthropic/claude-sonnet-4-6",
+					continuePhaseSessions: false,
+				},
+				reviewer: { provider: "opencode", continuePhaseSessions: false },
 				opencode: {},
 				qualityGates: [],
 				skipQualityGates: false,
@@ -995,8 +999,11 @@ describe("createProvider", () => {
 
 	test("throws ProviderNotFoundError for missing plugin", async () => {
 		const config = {
-			author: { provider: "nonexistent-provider-xyz" },
-			reviewer: { provider: "opencode" },
+			author: {
+				provider: "nonexistent-provider-xyz",
+				continuePhaseSessions: false,
+			},
+			reviewer: { provider: "opencode", continuePhaseSessions: false },
 			opencode: {},
 			qualityGates: [],
 			skipQualityGates: false,

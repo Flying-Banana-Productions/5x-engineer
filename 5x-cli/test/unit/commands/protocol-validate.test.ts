@@ -14,7 +14,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { protocolValidate } from "../../../src/commands/protocol.handler.js";
+import {
+	isNumericPhaseRef,
+	protocolValidate,
+} from "../../../src/commands/protocol.handler.js";
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
@@ -211,17 +214,20 @@ describe("protocol validate reviewer (unit)", () => {
 		expect(r.ok).toBe(true);
 	});
 
-	test("rejects not_ready with empty items", () => {
+	test("warns (not rejects) not_ready with empty items", () => {
 		const r = validateStructuredOutput(
 			{ readiness: "not_ready", items: [] },
 			"reviewer",
 			{ context: "test" },
 		);
-		expect(r.ok).toBe(false);
-		if (!r.ok) expect(r.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.warnings).toHaveLength(1);
+			expect(r.warnings[0]).toContain("empty");
+		}
 	});
 
-	test("rejects item without action", () => {
+	test("normalizes item without action to human_required", () => {
 		const r = validateStructuredOutput(
 			{
 				readiness: "ready_with_corrections",
@@ -236,8 +242,13 @@ describe("protocol validate reviewer (unit)", () => {
 			"reviewer",
 			{ context: "test" },
 		);
-		expect(r.ok).toBe(false);
-		if (!r.ok) expect(r.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			const items = (r.value as Record<string, unknown>).items as Array<
+				Record<string, unknown>
+			>;
+			expect(items[0]?.action).toBe("human_required");
+		}
 	});
 });
 
@@ -1014,5 +1025,212 @@ describe("protocol validate author — checklist gate (unit)", () => {
 		} finally {
 			cleanupDir(dir);
 		}
+	});
+
+	test("non-numeric --phase 'plan' skips checklist gate (no PHASE_NOT_FOUND)", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Plan with incomplete checklist — would fail if gate fired
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			// --phase "plan" is a semantic identifier, not a plan phase reference.
+			// The gate should skip — no PHASE_NOT_FOUND, no PHASE_CHECKLIST_INCOMPLETE.
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "plan",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("non-numeric --phase 'review' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "review",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("non-numeric --phase 'setup' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "setup",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("digit-bearing semantic --phase 'setup-v2' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "setup-v2",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("digit-bearing semantic --phase 'review-2026' skips checklist gate", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = writePlan(dir, [
+				{
+					number: "1",
+					title: "Setup",
+					items: [{ text: "Add tests", checked: false }],
+				},
+			]);
+			const inputPath = writeInput(dir, {
+				result: "complete",
+				commit: "abc123",
+			});
+			await protocolValidate({
+				role: "author",
+				input: inputPath,
+				plan: planPath,
+				phase: "review-2026",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+// ===========================================================================
+// isNumericPhaseRef (unit)
+// ===========================================================================
+
+describe("isNumericPhaseRef", () => {
+	test("pure numeric: '1' → true", () => {
+		expect(isNumericPhaseRef("1")).toBe(true);
+	});
+
+	test("decimal numeric: '2.1' → true", () => {
+		expect(isNumericPhaseRef("2.1")).toBe(true);
+	});
+
+	test("'Phase 1' → true", () => {
+		expect(isNumericPhaseRef("Phase 1")).toBe(true);
+	});
+
+	test("'Phase 2: Setup' → true", () => {
+		expect(isNumericPhaseRef("Phase 2: Setup")).toBe(true);
+	});
+
+	test("'phase-1' → true", () => {
+		expect(isNumericPhaseRef("phase-1")).toBe(true);
+	});
+
+	test("'Phase 99: Nonexistent' → true", () => {
+		expect(isNumericPhaseRef("Phase 99: Nonexistent")).toBe(true);
+	});
+
+	test("'## Phase 1: Setup' (markdown heading) → true", () => {
+		expect(isNumericPhaseRef("## Phase 1: Setup")).toBe(true);
+	});
+
+	test("'### Phase 2.1: Title' (markdown heading) → true", () => {
+		expect(isNumericPhaseRef("### Phase 2.1: Title")).toBe(true);
+	});
+
+	test("'12' (multi-digit) → true", () => {
+		expect(isNumericPhaseRef("12")).toBe(true);
+	});
+
+	test("'plan' → false", () => {
+		expect(isNumericPhaseRef("plan")).toBe(false);
+	});
+
+	test("'review' → false", () => {
+		expect(isNumericPhaseRef("review")).toBe(false);
+	});
+
+	test("'setup' → false", () => {
+		expect(isNumericPhaseRef("setup")).toBe(false);
+	});
+
+	test("empty string → false", () => {
+		expect(isNumericPhaseRef("")).toBe(false);
+	});
+
+	// Digit-bearing semantic labels should NOT match
+	test("'setup-v2' → false (semantic label with digits)", () => {
+		expect(isNumericPhaseRef("setup-v2")).toBe(false);
+	});
+
+	test("'review-2026' → false (semantic label with year)", () => {
+		expect(isNumericPhaseRef("review-2026")).toBe(false);
+	});
+
+	test("'v2' → false (version-like semantic label)", () => {
+		expect(isNumericPhaseRef("v2")).toBe(false);
+	});
+
+	test("'iteration3' → false (semantic label with trailing digit)", () => {
+		expect(isNumericPhaseRef("iteration3")).toBe(false);
+	});
+
+	test("'pre-release-1.0' → false (semantic label)", () => {
+		expect(isNumericPhaseRef("pre-release-1.0")).toBe(false);
 	});
 });

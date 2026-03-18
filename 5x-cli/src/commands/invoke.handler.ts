@@ -46,6 +46,7 @@ import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import { validateSessionContinuity } from "./session-check.js";
 import {
 	hasStdinVarFlag,
 	parseVars,
@@ -65,6 +66,7 @@ export interface InvokeParams {
 	model?: string;
 	workdir?: string;
 	session?: string;
+	newSession?: boolean;
 	timeoutSeconds?: number;
 	quiet?: boolean;
 	showReasoning?: boolean;
@@ -89,6 +91,8 @@ interface InvokeResult {
 	tokens: { in: number; out: number };
 	cost_usd: number | null;
 	log_path: string;
+	/** Warnings from template resolution (e.g. review_path mismatch). */
+	warnings?: string[];
 	/** Mapped worktree path (if run is mapped to a worktree). */
 	worktree_path?: string;
 	/** Effective plan path in the worktree (if resolved). */
@@ -211,10 +215,12 @@ export async function invokeAgent(
 	let resolvedPlanPath: string | null = null;
 	let effectiveWorkdir: string | null = null;
 	let planPathInWorktreeExists = false;
+	let runDb: ReturnType<typeof getDb> | undefined;
 
 	{
 		const dbRelPath = join(stateDir, DB_FILENAME);
 		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+		runDb = db;
 		try {
 			runMigrations(db);
 		} catch (err) {
@@ -304,9 +310,24 @@ export async function invokeAgent(
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
 
-	const resolved = resolveAndRenderTemplate({
+	// Session continuity validation (before template rendering)
+	validateSessionContinuity({
 		templateName: params.template,
 		session: params.session,
+		newSession: params.newSession,
+		runId: params.run,
+		db: runDb,
+		config,
+		explicitVars: mergedVars,
+	});
+
+	// When --new-session is set, pass session: undefined to ensure full
+	// template is selected (not the -continued variant)
+	const effectiveSession = params.newSession ? undefined : params.session;
+	const resolved = resolveAndRenderTemplate({
+		templateName: params.template,
+		session: effectiveSession,
+		newSession: params.newSession,
 		explicitVars: mergedVars,
 		resolvedPlanPath,
 		config,
@@ -316,6 +337,13 @@ export async function invokeAgent(
 		phase: params.phase ?? mergedVars.phase_number,
 	});
 	const { variables } = resolved;
+
+	// Surface warnings (stderr for human visibility)
+	if (resolved.warnings.length > 0) {
+		for (const warning of resolved.warnings) {
+			console.error(`Warning: ${warning}`);
+		}
+	}
 
 	// 2. Create provider
 	let provider: AgentProvider;
@@ -349,7 +377,7 @@ export async function invokeAgent(
 
 	let session: AgentSession;
 	try {
-		if (params.session) {
+		if (params.session && !params.newSession) {
 			session = await provider.resumeSession(params.session, {
 				model: params.model,
 			});
@@ -446,6 +474,8 @@ export async function invokeAgent(
 		tokens: runResult.tokens,
 		cost_usd: runResult.costUsd ?? null,
 		log_path: logPath,
+		// Warnings from template resolution
+		...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
 		// Phase 2: optional execution context fields for downstream pipelines
 		...(resolvedWorktreePath ? { worktree_path: resolvedWorktreePath } : {}),
 		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists

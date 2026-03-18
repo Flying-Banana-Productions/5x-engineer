@@ -132,6 +132,80 @@ function insertRun(dir: string, runId: string, planPath: string): void {
 	db.close();
 }
 
+/** Insert a step directly into the DB for session enforcement testing. */
+function insertStep(
+	dir: string,
+	runId: string,
+	stepName: string,
+	phase: string | null,
+): void {
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	db.run(
+		`INSERT INTO steps (run_id, step_name, phase, iteration, result_json, created_at)
+		 VALUES (?1, ?2, ?3, 1, '{}', datetime('now'))`,
+		[runId, stepName, phase],
+	);
+	db.close();
+}
+
+/** Create a project with continuePhaseSessions enabled for reviewer. */
+function setupProjectWithSessionEnforcement(dir: string): void {
+	Bun.spawnSync(["git", "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	Bun.spawnSync(["git", "config", "user.name", "Test"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	mkdirSync(join(dir, ".5x"), { recursive: true });
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	runMigrations(db);
+	db.close();
+
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(
+		join(dir, "5x.toml"),
+		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\ncontinuePhaseSessions = true\n',
+	);
+
+	const planDir = join(dir, "docs", "development");
+	mkdirSync(planDir, { recursive: true });
+	writeFileSync(
+		join(planDir, "test-plan.md"),
+		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+	);
+
+	Bun.spawnSync(["git", "add", "-A"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	Bun.spawnSync(["git", "commit", "-m", "init"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -939,6 +1013,506 @@ describe("5x template render", () => {
 				expect(vars.review_path).toContain("-review.md");
 				// Should NOT contain "phase-" when no phase provided
 				expect(vars.review_path).not.toContain("phase-");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	// ---------------------------------------------------------------------------
+	// Phase 1: Review path override warning tests (022-orchestration-reliability)
+	// ---------------------------------------------------------------------------
+
+	test(
+		"warns when explicit review_path is outside configured review directory",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${join(dir, "docs", "development", "wrong-place.md")}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// Warnings should be present in the envelope
+				expect(data.warnings).toBeDefined();
+				const warnings = data.warnings as string[];
+				expect(warnings.length).toBeGreaterThan(0);
+				expect(warnings[0]).toContain(
+					"resolves outside configured review directory",
+				);
+
+				// Warning should also appear on stderr
+				expect(result.stderr).toContain(
+					"resolves outside configured review directory",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"no warning when explicit review_path matches configured directory",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_002";
+				insertRun(dir, runId, planPath);
+
+				// Default reviews dir is docs/development/reviews (resolved to absolute)
+				const reviewsDir = join(dir, "docs", "development", "reviews");
+				mkdirSync(reviewsDir, { recursive: true });
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${join(reviewsDir, "custom-review.md")}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// No warnings expected
+				expect(data.warnings).toBeUndefined();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"explicit --var review_path overrides still work with warning being additive",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_warn_003";
+				insertRun(dir, runId, planPath);
+
+				const explicitReviewPath = "/custom/path/my-custom-review.md";
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`review_path=${explicitReviewPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				// Override still works
+				const vars = data.variables as Record<string, string>;
+				expect(vars.review_path).toBe(explicitReviewPath);
+
+				// Warning is present (additive, not blocking)
+				expect(data.warnings).toBeDefined();
+				const warnings = data.warnings as string[];
+				expect(warnings.length).toBeGreaterThan(0);
+
+				// Prompt uses the explicit path
+				const prompt = data.prompt as string;
+				expect(prompt).toContain(explicitReviewPath);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	// ---------------------------------------------------------------------------
+	// Phase 2: Session management enforcement tests (022-orchestration-reliability)
+	// ---------------------------------------------------------------------------
+
+	test(
+		"first review succeeds without session flags when continuePhaseSessions enabled",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_sess_first";
+				insertRun(dir, runId, planPath);
+				// No prior steps — first review
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"SESSION_REQUIRED when prior step exists and no session flag",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_sess_req";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "reviewer:review", "plan");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				expect(result.exitCode).toBe(9); // SESSION_REQUIRED
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("SESSION_REQUIRED");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--session selects continued template on subsequent review",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_sess_cont";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "reviewer:review", "plan");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+					"--session",
+					"sess_123",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.selected_template).toBe("reviewer-plan-continued");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--new-session uses full template on subsequent review",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_sess_new";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "reviewer:review", "plan");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+					"--new-session",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				// --new-session forces full template (not continued)
+				expect(data.selected_template).toBe("reviewer-plan");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--session and --new-session together errors",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--session",
+					"sess_abc",
+					"--new-session",
+					"--var",
+					"plan_path=/tmp/plan.md",
+					"--var",
+					"review_path=/tmp/review.md",
+				]);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("INVALID_ARGS");
+				expect(error.message as string).toContain("mutually exclusive");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"no enforcement for template without continued variant when continuePhaseSessions disabled",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir); // Uses default config (continuePhaseSessions: false)
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_no_enforce";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "author:implement", "1");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"TEMPLATE_NOT_FOUND when continuePhaseSessions enabled but no continued variant and --session used",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_no_cont";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "reviewer:review", "1");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--session",
+					"sess_123",
+				]);
+
+				expect(result.exitCode).toBe(2); // TEMPLATE_NOT_FOUND
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as Record<string, unknown>;
+				expect(error.code).toBe("TEMPLATE_NOT_FOUND");
+				expect(error.message as string).toContain("reviewer-commit-continued");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--new-session bypasses TEMPLATE_NOT_FOUND for missing continued variant",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_bypass";
+				insertRun(dir, runId, planPath);
+				insertStep(dir, runId, "reviewer:review", "1");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--new-session",
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				// Full template selected (not continued)
+				expect(data.selected_template).toBe("reviewer-commit");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"no enforcement without --run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--var",
+					"plan_path=/tmp/plan.md",
+					"--var",
+					"review_path=/tmp/review.md",
+				]);
+
+				// Should succeed — no run context means no enforcement
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"phase scoping: new phase has no prior steps",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProjectWithSessionEnforcement(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_phase_scope";
+				insertRun(dir, runId, planPath);
+				// Prior step for phase 1 — not phase 2
+				insertStep(dir, runId, "reviewer:review", "1");
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					runId,
+					"--var",
+					"commit_hash=abc123",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=2",
+				]);
+
+				// Phase 2 has no prior steps — should succeed without --session
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
 			} finally {
 				cleanupDir(dir);
 			}

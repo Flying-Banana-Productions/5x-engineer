@@ -72,11 +72,16 @@ to `5x invoke` when no native agent is found.
 
 ```bash
 # 1. Render the prompt (output follows standard outputSuccess envelope)
+#    review_path is auto-generated — do NOT pass --var review_path.
+#    Read the auto-generated path from .data.variables.review_path in the output.
+#    Session lifecycle: first review has no $REVIEWER_SESSION, subsequent
+#    reviews pass --session $REVIEWER_SESSION for continuity.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+  --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 # 2. Detect native agent (project scope first, then user scope)
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
@@ -88,20 +93,29 @@ else
   #     so that 5x protocol validate --record is the single recording point
   #     for both native and fallback paths, avoiding double-recording)
   RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-    --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+    --var plan_path=$PLAN_PATH \
     ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
 fi
 
 # 4. Validate + record (combined — universal for both paths)
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
+
+# 5. Capture session for reuse in subsequent reviews
+REVIEWER_SESSION=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
-**Session reuse** is optional and best-effort. Pass `--session
-$REVIEWER_SESSION` to `5x template render` when a session id is
-available; the command will automatically select the shorter
-`reviewer-plan-continued` template variant if one exists. If session
-reuse is unavailable or awkward, omit `--session` to start fresh.
+**Session reuse** is expected when `reviewer.continuePhaseSessions` is
+enabled. The tool enforces this: if a prior reviewer step exists for the
+current phase, `--session <id>` or `--new-session` is required. Use
+`--new-session` only for recovery (context loss, empty output).
+
+When `--session` is passed, the command automatically selects the shorter
+`reviewer-plan-continued` template variant if one exists.
+
+Projects using plan-review should enable
+`reviewer.continuePhaseSessions = true` in their `5x.toml` once they have
+confirmed all reviewer templates have `-continued` variants.
 
 ### Fallback: 5x invoke
 
@@ -130,7 +144,10 @@ output — see Recovery for handling.
 ## Workflow
 
 Track $ITERATION starting at 1. Maximum 5 review cycles.
-Track $REVIEWER_SESSION (initially empty) for optional session reuse.
+Track $REVIEWER_SESSION (initially empty). Session reuse is enforced when
+`reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_SESSION`
+on subsequent reviews.
+Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
 
 ### Step 1: Review
 
@@ -138,17 +155,18 @@ Delegate to the reviewer using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+  --var plan_path=$PLAN_PATH \
   ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
    [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
   RESULT=<launch native 5x-reviewer subagent with PROMPT>
 else
   RESULT=$(5x invoke reviewer reviewer-plan --run $RUN --phase plan \
-    --var plan_path=$PLAN_PATH --var review_path=$REVIEW_PATH \
+    --var plan_path=$PLAN_PATH \
     ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
 fi
 
@@ -192,7 +210,7 @@ Delegate to the plan author using the native-first pattern:
 
 ```bash
 RENDERED=$(5x template render author-process-plan-review --run $RUN \
-  --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH)
+  --var plan_path=$PLAN_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -201,11 +219,12 @@ if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
   RESULT=<launch native 5x-plan-author subagent with PROMPT>
 else
   RESULT=$(5x invoke author author-process-plan-review --run $RUN \
-    --var review_path=$REVIEW_PATH --var plan_path=$PLAN_PATH 2>/dev/null)
+    --var plan_path=$PLAN_PATH 2>/dev/null)
 fi
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase plan
+  --run $RUN --record --step $STEP --phase plan \
+  --no-phase-checklist-validate
 ```
 
 Check the result:
@@ -248,14 +267,15 @@ Present the situation to the human:
     5x run complete --run $RUN
 
 Report to the human: plan review is complete. Verdict: approved
-(or overridden). Review document is at $REVIEW_PATH.
+(or overridden). Review document is at the auto-generated review path
+(read from `.data.variables.review_path` in the template render output).
 
 ## Invariants
 
 - The plan must still parse after author revisions
   (`5x plan phases $PLAN_PATH` succeeds and returns the same phase count).
   Phase additions are acceptable; phase removals or reordering are suspect.
-- The review file must exist at $REVIEW_PATH after reviewer invocation.
+- The review file must exist at the auto-generated review path after reviewer invocation.
 - Author revisions must produce a commit (AuthorStatus.commit is present).
 
 ## Recovery
@@ -273,14 +293,17 @@ Report to the human: plan review is complete. Verdict: approved
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
-  Suspect context loss (compaction). Re-invoke with a fresh session
-  (omit --session). If it happens twice, escalate to the human.
-- **Native subagent returns empty or invalid output**: Retry once with a
-  fresh session. If it fails again, fall back to `5x invoke` or escalate.
+  Suspect context loss (compaction). Re-invoke with `--new-session` to
+  force a fresh session. If it happens twice, escalate to the human.
+- **Native subagent returns empty or invalid output**: Retry once with
+  `--new-session`. If it fails again, fall back to `5x invoke` or escalate.
 - **Subprocess returns empty output**: The agent process may have been
   killed by the subprocess tool's timeout before completing. Retry with
-  a longer timeout and a fresh session (omit --session). If empty output
-  persists after retry, escalate to the human.
+  a longer timeout and `--new-session`. If empty output persists after
+  retry, escalate to the human.
+- **SESSION_REQUIRED error**: The tool requires `--session <id>` or
+  `--new-session` because `continuePhaseSessions` is enabled and prior
+  steps exist. Pass `--new-session` to recover from context loss.
 
 ## Completion
 

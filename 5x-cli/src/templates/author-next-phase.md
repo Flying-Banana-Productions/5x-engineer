@@ -1,5 +1,6 @@
 ---
 name: author-next-phase
+description: Implement the next phase of a plan
 version: 1
 variables: [plan_path, phase_number, user_notes]
 step_name: "author:implement"
@@ -51,4 +52,13 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
 
-Commit your work and return when the phase is implemented. The structured outcome (complete/needs_human/failed + commit hash) is captured separately via structured output — you do not need to emit any special blocks.
+When finished, produce your structured result by running:
+
+    5x protocol emit author --complete --commit <hash>
+
+Or if you need human help:
+
+    5x protocol emit author --needs-human --reason "..."
+
+Include the command's JSON output verbatim as your structured result.
+The output is raw canonical JSON — do not wrap or modify it.

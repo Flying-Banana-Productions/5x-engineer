@@ -1,8 +1,8 @@
 /**
  * Unit tests for upgrade handler — template upgrade behavior.
  *
- * Tests that the upgrade handler correctly auto-updates stale stock
- * prompt templates and warns about customized ones.
+ * Tests that the upgrade handler correctly reports diverged prompt templates
+ * without auto-writing them.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -28,36 +28,23 @@ function cleanupDir(dir: string): void {
 }
 
 describe("runUpgrade — prompt template handling", () => {
-	test("auto-updates stale stock prompt templates during upgrade", async () => {
+	test("does not create prompt templates when none exist on disk", async () => {
 		const tmp = makeTmpDir();
 		try {
-			// Set up a minimal project with config
 			writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
-
-			// Create .5x/templates/prompts/ with stale template
-			const promptsDir = join(tmp, ".5x", "templates", "prompts");
-			mkdirSync(promptsDir, { recursive: true });
-
-			const bundled = getDefaultTemplateRaw("author-next-phase");
-			// Simulate pre-variable_defaults scaffolded copy
-			const stale = bundled.replace(/variable_defaults:\n( {2}[^\n]+\n)*/g, "");
-			writeFileSync(join(promptsDir, "author-next-phase.md"), stale);
 
 			await runUpgrade({ startDir: tmp });
 
-			// Template should have been auto-updated
-			const updated = readFileSync(
-				join(promptsDir, "author-next-phase.md"),
-				"utf-8",
-			);
-			expect(updated).toBe(bundled);
-			expect(updated).toContain("variable_defaults:");
+			// No prompts directory should be created
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			const { existsSync } = await import("node:fs");
+			expect(existsSync(promptsDir)).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("does not overwrite customized prompt templates during upgrade", async () => {
+	test("reports diverged prompt templates without overwriting them", async () => {
 		const tmp = makeTmpDir();
 		try {
 			writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
@@ -65,7 +52,7 @@ describe("runUpgrade — prompt template handling", () => {
 			const promptsDir = join(tmp, ".5x", "templates", "prompts");
 			mkdirSync(promptsDir, { recursive: true });
 
-			// Write a customized template with different body
+			// Write a modified template
 			const customized =
 				'---\nname: author-next-phase\nversion: 1\nvariables: [plan_path, phase_number, user_notes]\nstep_name: "author:implement"\n---\nMY CUSTOM BODY {{plan_path}} {{phase_number}} {{user_notes}}';
 			writeFileSync(join(promptsDir, "author-next-phase.md"), customized);
@@ -78,6 +65,31 @@ describe("runUpgrade — prompt template handling", () => {
 				"utf-8",
 			);
 			expect(content).toBe(customized);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("does not report prompt templates that match bundled content", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+
+			const promptsDir = join(tmp, ".5x", "templates", "prompts");
+			mkdirSync(promptsDir, { recursive: true });
+
+			// Write a template that matches the bundled version exactly
+			const bundled = getDefaultTemplateRaw("author-next-phase");
+			writeFileSync(join(promptsDir, "author-next-phase.md"), bundled);
+
+			await runUpgrade({ startDir: tmp });
+
+			// Template should remain unchanged
+			const content = readFileSync(
+				join(promptsDir, "author-next-phase.md"),
+				"utf-8",
+			);
+			expect(content).toBe(bundled);
 		} finally {
 			cleanupDir(tmp);
 		}

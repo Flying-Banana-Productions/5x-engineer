@@ -27,6 +27,7 @@ import reviewerPlanContinuedRaw from "./reviewer-plan-continued.md" with {
  */
 export interface TemplateMetadata {
 	name: string;
+	description: string | null; // Short description from frontmatter; null if not declared
 	version: number;
 	variables: string[];
 	stepName: string | null; // Semantic step name for run recording; null if not declared
@@ -94,6 +95,21 @@ export function getDefaultTemplateRaw(name: string): string {
 		);
 	}
 	return raw;
+}
+
+/**
+ * Check whether a template is loaded from an on-disk override or the bundled default.
+ * Returns `"override"` if the override directory contains a file for this template,
+ * `"bundled"` otherwise. Useful for `5x template list/describe`.
+ */
+export function getTemplateSource(name: string): "bundled" | "override" {
+	if (overrideDir) {
+		const overridePath = join(overrideDir, `${name}.md`);
+		if (existsSync(overridePath)) {
+			return "override";
+		}
+	}
+	return "bundled";
 }
 
 /**
@@ -189,6 +205,17 @@ export function parseTemplate(
 		);
 	}
 
+	// Extract optional description from frontmatter
+	let description: string | null = null;
+	if (fm.description !== undefined) {
+		if (typeof fm.description !== "string" || !fm.description) {
+			throw new Error(
+				`Template "${templateName}" frontmatter "description" must be a non-empty string.`,
+			);
+		}
+		description = fm.description;
+	}
+
 	// Extract step_name from frontmatter
 	let stepName: string | null = null;
 	if (fm.step_name !== undefined) {
@@ -203,7 +230,9 @@ export function parseTemplate(
 		const fallback = STEP_NAME_FALLBACKS[templateName];
 		if (fallback) {
 			console.error(
-				`Warning: Template "${templateName}" is missing "step_name" in frontmatter. Using default "${fallback}". Run "5x init --force" to update your templates.`,
+				`Warning: Template "${templateName}" is missing "step_name" in frontmatter. Using default "${fallback}". ` +
+					`Remove .5x/templates/prompts/${templateName}.md to use the bundled version, ` +
+					'or run "5x init --install-templates --force" to reinstall.',
 			);
 			stepName = fallback;
 		}
@@ -242,6 +271,7 @@ export function parseTemplate(
 	return {
 		metadata: {
 			name: fm.name,
+			description,
 			version: fm.version,
 			variables: variablesList,
 			stepName,

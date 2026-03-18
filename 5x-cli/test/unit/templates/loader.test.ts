@@ -438,9 +438,11 @@ describe("template stepName", () => {
 				expect(stderrLines.some((l) => l.includes('missing "step_name"'))).toBe(
 					true,
 				);
-				expect(stderrLines.some((l) => l.includes("5x init --force"))).toBe(
-					true,
-				);
+				expect(
+					stderrLines.some((l) =>
+						l.includes("5x init --install-templates --force"),
+					),
+				).toBe(true);
 			} finally {
 				console.error = origStderr;
 				setTemplateOverrideDir(null);
@@ -914,6 +916,82 @@ describe("variable_defaults", () => {
 		expect(() => parseTemplate(raw, "test-array-defaults")).toThrow(
 			/"variable_defaults" must be a plain object/,
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// description field parsing
+// ---------------------------------------------------------------------------
+
+describe("parseTemplate — description field", () => {
+	test("parses description from frontmatter", () => {
+		const raw = [
+			"---",
+			"name: test-desc",
+			"description: A short description",
+			"version: 1",
+			"variables: []",
+			"---",
+			"Body",
+		].join("\n");
+
+		const { metadata } = parseTemplate(raw, "test-desc");
+		expect(metadata.description).toBe("A short description");
+	});
+
+	test("description is null when not present", () => {
+		const raw = [
+			"---",
+			"name: test-no-desc",
+			"version: 1",
+			"variables: []",
+			"---",
+			"Body",
+		].join("\n");
+
+		const { metadata } = parseTemplate(raw, "test-no-desc");
+		expect(metadata.description).toBeNull();
+	});
+
+	test("throws for empty description string", () => {
+		const raw = [
+			"---",
+			"name: test-empty-desc",
+			'description: ""',
+			"version: 1",
+			"variables: []",
+			"---",
+			"Body",
+		].join("\n");
+
+		expect(() => parseTemplate(raw, "test-empty-desc")).toThrow(
+			/"description" must be a non-empty string/,
+		);
+	});
+
+	test("throws for non-string description", () => {
+		const raw = [
+			"---",
+			"name: test-bad-desc",
+			"description: 42",
+			"version: 1",
+			"variables: []",
+			"---",
+			"Body",
+		].join("\n");
+
+		expect(() => parseTemplate(raw, "test-bad-desc")).toThrow(
+			/"description" must be a non-empty string/,
+		);
+	});
+
+	test("all bundled templates have descriptions", () => {
+		const templates = listTemplates();
+		for (const t of templates) {
+			expect(t.description).not.toBeNull();
+			expect(typeof t.description).toBe("string");
+			expect(t.description?.length).toBeGreaterThan(0);
+		}
 	});
 });
 

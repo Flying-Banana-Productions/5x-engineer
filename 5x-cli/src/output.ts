@@ -18,6 +18,7 @@
  *   6 — MAX_STEPS_EXCEEDED
  *   7 — INVALID_STRUCTURED_OUTPUT
  *   8 — PHASE_CHECKLIST_INCOMPLETE, PHASE_NOT_FOUND
+ *   9 — SESSION_REQUIRED
  * 130 — INTERRUPTED (prompt cancelled via SIGINT)
  */
 
@@ -59,6 +60,7 @@ const EXIT_CODE_MAP: Record<string, number> = {
 	INVALID_STRUCTURED_OUTPUT: 7,
 	PHASE_CHECKLIST_INCOMPLETE: 8,
 	PHASE_NOT_FOUND: 8,
+	SESSION_REQUIRED: 9,
 };
 
 /** Resolve exit code from error code. Falls back to 1 for unknown codes. */

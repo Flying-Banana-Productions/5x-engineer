@@ -1,5 +1,6 @@
 ---
 name: reviewer-plan
+description: Review an implementation plan
 version: 1
 variables: [plan_path, review_path, review_template_path]
 step_name: "reviewer:review"
@@ -70,7 +71,12 @@ git commit -m "docs: add plan review for <plan name>"
 
 The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 
-Your structured response will include:
-- **readiness**: `ready`, `ready_with_corrections`, or `not_ready`
-- **items**: array of review items, each with `id`, `title`, `action` (`auto_fix` or `human_required`), `reason`, and optional `priority` (`P0`/`P1`/`P2`)
-- **summary**: optional 1-3 sentence overall assessment
+When your review is complete, produce your structured verdict by running:
+
+    5x protocol emit reviewer --no-ready \
+      --item '{"title":"...","action":"auto_fix","reason":"..."}' \
+      --summary "..."
+
+Use `--ready` or `--no-ready`. Items imply corrections (`--ready` + items → `ready_with_corrections`).
+Include the command's JSON output verbatim as your structured result.
+The output is raw canonical JSON — do not wrap or modify it.
