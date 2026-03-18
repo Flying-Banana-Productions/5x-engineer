@@ -30,6 +30,8 @@ export type HarnessScope = "project" | "user";
  * Both `agentsDir` and `skillsDir` are absolute paths.
  */
 export interface HarnessLocations {
+	/** Absolute path to the harness install root for this scope. */
+	rootDir: string;
 	/** Absolute path to the agents directory for this scope. */
 	agentsDir: string;
 	/** Absolute path to the skills directory for this scope. */
@@ -75,6 +77,7 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 		if (scope === "project") {
 			const base = join(projectRoot, ".opencode");
 			return {
+				rootDir: base,
 				agentsDir: join(base, "agents"),
 				skillsDir: join(base, "skills"),
 			};
@@ -84,6 +87,7 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 		const home = homeDir ?? process.env.HOME ?? homedir();
 		const base = join(home, ".config", "opencode");
 		return {
+			rootDir: base,
 			agentsDir: join(base, "agents"),
 			skillsDir: join(base, "skills"),
 		};

@@ -119,6 +119,7 @@ describe("5x harness list", () => {
 				expect(opencode.description).toBeTruthy();
 				expect(opencode.scopes.project).toBeDefined();
 				expect(typeof opencode.scopes.project.installed).toBe("boolean");
+				expect(typeof opencode.scopes.project.root).toBe("string");
 				expect(Array.isArray(opencode.scopes.project.files)).toBe(true);
 			} finally {
 				cleanupDir(tmp);
@@ -143,6 +144,7 @@ describe("5x harness list", () => {
 					(h: { name: string }) => h.name === "opencode",
 				);
 				expect(opencode.scopes.project.installed).toBe(true);
+				expect(opencode.scopes.project.root).toContain(".opencode");
 				expect(opencode.scopes.project.files.length).toBeGreaterThan(0);
 				expect(opencode.scopes.project.files).toContain(
 					"skills/5x-plan/SKILL.md",

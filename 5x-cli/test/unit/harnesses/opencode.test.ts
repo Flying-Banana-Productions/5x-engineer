@@ -74,6 +74,7 @@ describe("OpenCode location resolver", () => {
 		const projectRoot = "/home/user/my-project";
 		const locations = opencodeLocationResolver.resolve("project", projectRoot);
 
+		expect(locations.rootDir).toBe(join(projectRoot, ".opencode"));
 		expect(locations.agentsDir).toBe(join(projectRoot, ".opencode", "agents"));
 		expect(locations.skillsDir).toBe(join(projectRoot, ".opencode", "skills"));
 	});
@@ -83,6 +84,7 @@ describe("OpenCode location resolver", () => {
 		const locations = opencodeLocationResolver.resolve("user", projectRoot);
 
 		const expectedBase = join(homedir(), ".config", "opencode");
+		expect(locations.rootDir).toBe(expectedBase);
 		expect(locations.agentsDir).toBe(join(expectedBase, "agents"));
 		expect(locations.skillsDir).toBe(join(expectedBase, "skills"));
 	});

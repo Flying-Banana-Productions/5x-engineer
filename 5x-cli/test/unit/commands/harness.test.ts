@@ -609,6 +609,7 @@ describe("buildHarnessListData", () => {
 			}
 			expect(opencode.scopes.project).toBeDefined();
 			expect(opencode.scopes.project.installed).toBe(true);
+			expect(opencode.scopes.project.root).toBe(join(tmp, ".opencode"));
 			expect(opencode.scopes.project.files.length).toBeGreaterThan(0);
 		} finally {
 			cleanupDir(tmp);
@@ -714,6 +715,9 @@ describe("buildHarnessListData", () => {
 			}
 			expect(opencode.scopes.user).toBeDefined();
 			expect(opencode.scopes.user.installed).toBe(true);
+			expect(opencode.scopes.user.root).toBe(
+				join(fakeHome, ".config", "opencode"),
+			);
 			expect(opencode.scopes.user.files).toContain("skills/5x-plan/SKILL.md");
 			expect(
 				existsSync(

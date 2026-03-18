@@ -26,6 +26,7 @@ function makeFakePlugin(overrides?: Partial<HarnessPlugin>): HarnessPlugin {
 		supportedScopes: overrides?.supportedScopes ?? ["project", "user"],
 		locations: overrides?.locations ?? {
 			resolve: () => ({
+				rootDir: "/tmp",
 				skillsDir: "/tmp/skills",
 				agentsDir: "/tmp/agents",
 			}),

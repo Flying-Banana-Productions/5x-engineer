@@ -58,6 +58,7 @@ export interface HarnessUninstallOutput {
 /** Per-scope installed state for harness list output. */
 export interface HarnessScopeStatus {
 	installed: boolean;
+	root: string;
 	files: string[];
 }
 
@@ -130,7 +131,14 @@ export async function harnessInstall(
 		// rendered without model fields.
 	}
 
-	// 6. Run the plugin install
+	// 6. Resolve install locations (for reporting)
+	const locations = plugin.locations.resolve(
+		scope,
+		projectRoot,
+		params.homeDir,
+	);
+
+	// 7. Run the plugin install
 	const result = await plugin.install({
 		scope,
 		projectRoot,
@@ -139,8 +147,14 @@ export async function harnessInstall(
 		homeDir: params.homeDir,
 	});
 
-	// 7. Report results
-	printInstallSummary(name, scope, result.skills, result.agents);
+	// 8. Report results
+	printInstallSummary(
+		name,
+		scope,
+		locations.rootDir,
+		result.skills,
+		result.agents,
+	);
 }
 
 /**
@@ -201,6 +215,7 @@ export async function buildHarnessListData(
 
 			scopes[scope] = {
 				installed: files.length > 0,
+				root: locations.rootDir,
 				files,
 			};
 		}
@@ -333,10 +348,13 @@ function resolveScope(
 function printInstallSummary(
 	harnessName: string,
 	scope: HarnessScope,
+	rootDir: string,
 	skills: { created: string[]; overwritten: string[]; skipped: string[] },
 	agents: { created: string[]; overwritten: string[]; skipped: string[] },
 ): void {
 	const label = scope === "user" ? "user" : "project";
+
+	console.log(`  Install root: ${rootDir}`);
 
 	for (const name of skills.created) {
 		console.log(`  Created skill: ${name}`);
