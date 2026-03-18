@@ -217,6 +217,49 @@ describe("5x config show (integration)", () => {
 	);
 
 	test(
+		"preserves passthrough/plugin config keys in envelope",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"[author]",
+						'provider = "acme"',
+						"",
+						"[acme]",
+						'apiKey = "sk-test-123"',
+						'region = "us-east-1"',
+					].join("\n"),
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "add config with plugin"], dir);
+
+				const result = await run5x(dir, ["config", "show"]);
+				expect(result.exitCode).toBe(0);
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+
+				const data = envelope.data as Record<string, unknown>;
+				// Plugin config should be preserved via passthrough
+				expect(data.acme).toBeDefined();
+				const acme = data.acme as Record<string, unknown>;
+				expect(acme.apiKey).toBe("sk-test-123");
+				expect(acme.region).toBe("us-east-1");
+
+				// Standard config should still be present
+				const author = data.author as Record<string, unknown>;
+				expect(author.provider).toBe("acme");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"resolves root-anchored values from linked worktree",
 		async () => {
 			const dir = makeTmpDir();

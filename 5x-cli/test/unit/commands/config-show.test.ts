@@ -9,11 +9,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	type ConfigShowOutput,
-	formatConfigText,
-} from "../../../src/commands/config.handler.js";
-import { resolveLayeredConfig } from "../../../src/config.js";
+import { formatConfigText } from "../../../src/commands/config.handler.js";
+import { type FiveXConfig, resolveLayeredConfig } from "../../../src/config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,52 +29,93 @@ function writeToml(dir: string, content: string): void {
 	writeFileSync(join(dir, "5x.toml"), content, "utf-8");
 }
 
+/**
+ * Build a minimal FiveXConfig for formatter tests. Allows overrides.
+ */
+function makeConfig(overrides: Partial<FiveXConfig> = {}): FiveXConfig {
+	return {
+		author: {
+			provider: "opencode",
+			continuePhaseSessions: false,
+		},
+		reviewer: {
+			provider: "opencode",
+			continuePhaseSessions: true,
+		},
+		opencode: {},
+		qualityGates: ["bun test"],
+		skipQualityGates: false,
+		paths: {
+			plans: "/project/docs/development",
+			reviews: "/project/docs/development/reviews",
+			archive: "/project/docs/archive",
+			templates: {
+				plan: "/project/docs/_plan_template.md",
+				review: "/project/docs/_review_template.md",
+			},
+		},
+		db: { path: ".5x/5x.db" },
+		worktree: {},
+		maxStepsPerRun: 50,
+		maxReviewIterations: 5,
+		maxQualityRetries: 3,
+		maxAutoIterations: 10,
+		maxAutoRetries: 3,
+		...overrides,
+	} as FiveXConfig;
+}
+
 // ---------------------------------------------------------------------------
 // Text formatter tests
 // ---------------------------------------------------------------------------
 
 describe("formatConfigText", () => {
-	test("renders key config values in human-readable format", () => {
-		const output: ConfigShowOutput = {
+	test("returns string with expected key-value sections", () => {
+		const config = makeConfig({
 			author: {
-				provider: "opencode",
+				provider: "test-provider",
 				model: "gpt-4",
 				timeout: 120,
 				continuePhaseSessions: false,
 			},
 			reviewer: {
-				provider: "opencode",
+				provider: "review-provider",
 				continuePhaseSessions: true,
 			},
-			opencode: {},
-			qualityGates: ["bun test"],
-			skipQualityGates: false,
-			paths: {
-				plans: "/project/docs/development",
-				reviews: "/project/docs/development/reviews",
-				archive: "/project/docs/archive",
-				templates: {
-					plan: "/project/docs/_plan_template.md",
-					review: "/project/docs/_review_template.md",
-				},
-			},
-			db: { path: ".5x/5x.db" },
-			worktree: {},
-			maxStepsPerRun: 50,
-			maxReviewIterations: 5,
-			maxQualityRetries: 3,
-			maxAutoIterations: 10,
-			maxAutoRetries: 3,
-		};
+		});
 
-		// formatConfigText writes to console.log which is silenced in tests.
-		// We verify it doesn't throw and returns void.
-		const result = formatConfigText(output);
-		expect(result).toBeUndefined();
+		const text = formatConfigText(config);
+
+		// Verify section headers are present
+		expect(text).toContain("Author:");
+		expect(text).toContain("Reviewer:");
+		expect(text).toContain("Paths:");
+		expect(text).toContain("Database:");
+		expect(text).toContain("Limits:");
+
+		// Verify key-value content for author
+		expect(text).toContain("provider");
+		expect(text).toContain("test-provider");
+		expect(text).toContain("model");
+		expect(text).toContain("gpt-4");
+		expect(text).toContain("timeout");
+		expect(text).toContain("120s");
+		expect(text).toContain("continuePhaseSessions");
+
+		// Verify reviewer values
+		expect(text).toContain("review-provider");
+
+		// Verify limits
+		expect(text).toContain("maxStepsPerRun");
+		expect(text).toContain("50");
+		expect(text).toContain("maxReviewIterations");
+		expect(text).toContain("5");
+		expect(text).toContain("maxQualityRetries");
+		expect(text).toContain("3");
 	});
 
 	test("renders optional fields when present", () => {
-		const output: ConfigShowOutput = {
+		const config = makeConfig({
 			author: {
 				provider: "custom",
 				model: "custom-model",
@@ -89,9 +127,6 @@ describe("formatConfigText", () => {
 				timeout: 60,
 				continuePhaseSessions: false,
 			},
-			opencode: { url: "http://localhost:3000" },
-			qualityGates: [],
-			skipQualityGates: true,
 			paths: {
 				plans: "/plans",
 				reviews: "/reviews",
@@ -103,18 +138,28 @@ describe("formatConfigText", () => {
 					review: "/t/review.md",
 				},
 			},
-			db: { path: ".5x/5x.db" },
-			worktree: { postCreate: "npm install" },
-			maxStepsPerRun: 25,
-			maxReviewIterations: 3,
-			maxQualityRetries: 2,
-			maxAutoIterations: 5,
-			maxAutoRetries: 1,
-		};
+		});
 
-		// Verify it doesn't throw
-		const result = formatConfigText(output);
-		expect(result).toBeUndefined();
+		const text = formatConfigText(config);
+
+		expect(text).toContain("planReviews");
+		expect(text).toContain("/plan-reviews");
+		expect(text).toContain("runReviews");
+		expect(text).toContain("/run-reviews");
+		expect(text).toContain("reviewer-model");
+		expect(text).toContain("60s");
+	});
+
+	test("omits optional fields when absent", () => {
+		const config = makeConfig();
+
+		const text = formatConfigText(config);
+
+		// No model or timeout lines for default config
+		expect(text).not.toContain("model");
+		expect(text).not.toContain("timeout");
+		expect(text).not.toContain("planReviews");
+		expect(text).not.toContain("runReviews");
 	});
 });
 
@@ -202,6 +247,33 @@ describe("config resolution via resolveLayeredConfig", () => {
 			expect(result.config.maxStepsPerRun).toBe(50);
 			expect(result.rootConfigPath).toBeNull();
 			expect(result.isLayered).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("passthrough/plugin config keys are preserved", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(
+				tmp,
+				[
+					"[author]",
+					'provider = "acme"',
+					"",
+					"[acme]",
+					'apiKey = "sk-test"',
+					'region = "us-east-1"',
+				].join("\n"),
+			);
+
+			const result = await resolveLayeredConfig(tmp);
+			// Plugin config should survive via .passthrough()
+			const configAny = result.config as Record<string, unknown>;
+			expect(configAny.acme).toBeDefined();
+			const acme = configAny.acme as Record<string, unknown>;
+			expect(acme.apiKey).toBe("sk-test");
+			expect(acme.region).toBe("us-east-1");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
