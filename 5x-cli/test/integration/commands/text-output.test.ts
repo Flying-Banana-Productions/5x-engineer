@@ -123,16 +123,11 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, [
-					"--text",
-					"skills",
-					"install",
-					"project",
-				]);
+				const result = await run5x(tmp, ["--text", "harness", "list"]);
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
 				// Should have text output instead
-				expect(result.stdout).toContain("scope");
+				expect(result.stdout).toContain("harness");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -145,15 +140,10 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, [
-					"skills",
-					"install",
-					"project",
-					"--text",
-				]);
+				const result = await run5x(tmp, ["harness", "list", "--text"]);
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
-				expect(result.stdout).toContain("scope");
+				expect(result.stdout).toContain("harness");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -169,9 +159,8 @@ describe("--text / --json flag and env var", () => {
 				const result = await run5x(tmp, [
 					"--text",
 					"--json",
-					"skills",
-					"install",
-					"project",
+					"harness",
+					"list",
 				]);
 				expect(result.exitCode).toBe(0);
 				const envelope = JSON.parse(result.stdout);
@@ -188,12 +177,12 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, ["skills", "install", "project"], {
+				const result = await run5x(tmp, ["harness", "list"], {
 					FIVEX_OUTPUT_FORMAT: "text",
 				});
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
-				expect(result.stdout).toContain("scope");
+				expect(result.stdout).toContain("harness");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -206,11 +195,9 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(
-					tmp,
-					["--json", "skills", "install", "project"],
-					{ FIVEX_OUTPUT_FORMAT: "text" },
-				);
+				const result = await run5x(tmp, ["--json", "harness", "list"], {
+					FIVEX_OUTPUT_FORMAT: "text",
+				});
 				expect(result.exitCode).toBe(0);
 				const envelope = JSON.parse(result.stdout);
 				expect(envelope.ok).toBe(true);
@@ -226,7 +213,7 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, ["skills", "install", "project"], {
+				const result = await run5x(tmp, ["harness", "list"], {
 					FIVEX_OUTPUT_FORMAT: "bogus",
 				});
 				expect(result.exitCode).toBe(0);
@@ -247,13 +234,12 @@ describe("--text / --json flag and env var", () => {
 				const result = await run5x(tmp, [
 					"--text",
 					"--pretty",
-					"skills",
-					"install",
-					"project",
+					"harness",
+					"list",
 				]);
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
-				expect(result.stdout).toContain("scope");
+				expect(result.stdout).toContain("harness");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -269,13 +255,12 @@ describe("--text / --json flag and env var", () => {
 				const result = await run5x(tmp, [
 					"--text",
 					"--no-pretty",
-					"skills",
-					"install",
-					"project",
+					"harness",
+					"list",
 				]);
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).not.toContain('{"ok"');
-				expect(result.stdout).toContain("scope");
+				expect(result.stdout).toContain("harness");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -288,12 +273,7 @@ describe("--text / --json flag and env var", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, [
-					"--pretty",
-					"skills",
-					"install",
-					"project",
-				]);
+				const result = await run5x(tmp, ["--pretty", "harness", "list"]);
 				expect(result.exitCode).toBe(0);
 				// Pretty JSON has newlines and indentation
 				expect(result.stdout).toContain("\n");
@@ -700,20 +680,15 @@ describe("generic formatter fallback (--text)", () => {
 	);
 
 	test(
-		"skills install --text: plain text key-value, not JSON",
+		"harness list --text: plain text key-value, not JSON",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const result = await run5x(tmp, [
-					"--text",
-					"skills",
-					"install",
-					"project",
-				]);
+				const result = await run5x(tmp, ["--text", "harness", "list"]);
 				expect(result.exitCode).toBe(0);
 				// Should contain key-value text
-				expect(result.stdout).toContain("scope");
-				expect(result.stdout).toContain("project");
+				expect(result.stdout).toContain("harness");
+				expect(result.stdout).toContain("opencode");
 				// Not JSON
 				expect(result.stdout).not.toContain('{"ok"');
 			} finally {

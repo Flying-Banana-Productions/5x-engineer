@@ -26,7 +26,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
-import { listSkillNames } from "../../../src/skills/loader.js";
+import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");

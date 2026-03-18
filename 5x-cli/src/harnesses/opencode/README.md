@@ -24,7 +24,7 @@ The plugin implements `HarnessPlugin` with `supportedScopes: ["project", "user"]
 
 The `install()` method:
 1. Resolves install paths via `opencodeLocationResolver` (from `../locations.ts`).
-2. Installs bundled 5x skills using the shared `installSkillFiles()` helper.
+2. Loads bundled 5x skills from the local `skills/loader.ts` and installs them using the shared `installSkillFiles()` helper.
 3. Renders agent templates with model config via `renderAgentTemplates()`.
 4. Installs rendered agents using the shared `installAgentFiles()` helper.
 
@@ -89,7 +89,7 @@ To create a modified version of this harness (e.g. different agent profiles, add
 The key extension points:
 
 - **`loader.ts`**: Add/remove/modify agent templates in the `AGENT_TEMPLATES` registry. Change model injection logic.
-- **`plugin.ts`**: Change which skills are installed, add custom post-install steps, modify the install flow.
+- **`plugin.ts`**: Change install behavior, add custom post-install steps, modify the install flow. Skills are loaded from the local `skills/loader.ts`.
 - **`../locations.ts`**: Override install paths if targeting a different directory structure.
 - **Agent templates**: Rewrite the prompt content, change tool restrictions, adjust the orchestrator's delegation patterns.
 

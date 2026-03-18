@@ -91,6 +91,19 @@ const SKILLS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Get the raw content of a bundled skill.
+ * Returns the full SKILL.md content including YAML frontmatter.
+ */
+export function getDefaultSkillRaw(name: string): string {
+	const raw = SKILLS[name];
+	if (raw === undefined) {
+		const available = Object.keys(SKILLS).join(", ");
+		throw new Error(`Unknown skill "${name}". Available skills: ${available}`);
+	}
+	return raw;
+}
+
+/**
  * List all bundled skill names.
  */
 export function listSkillNames(): string[] {

@@ -84,3 +84,15 @@ The plan says existing harness tests cover skill installation after deleting `sk
 - **Minor:** `docs/development/024-skills-to-harness.plan.md:47-49` says the old-command error is handled by "citty" unknown-command behavior. This repo's CLI is on Commander (`src/bin.ts`), so that framework reference is stale/inaccurate. Replace it with Commander-specific or framework-agnostic wording.
 
 **Readiness:** ready_with_corrections
+
+## Addendum — 2026-03-18 (Phase 1 implementation review @ `d367368995eb0ccfe5680265de39114dce667659`)
+
+**Assessment:** approved for Phase 1.
+
+- Verified all 4 `SKILL.md` files were moved from `src/skills/` to `src/harnesses/opencode/skills/` as pure renames (`R100`).
+- Verified `src/harnesses/opencode/skills/loader.ts` exists, imports all 4 skill files via Bun text loader, exports `parseSkillFrontmatter()`, `listSkills()`, and `listSkillNames()`, and the OpenCode plugin now imports from this local loader.
+- Verified `HarnessInstallContext` no longer includes `skills`, `src/commands/harness.handler.ts` no longer calls `listSkills()` or passes `skills` into `plugin.install()`, and `src/harnesses/opencode/plugin.ts` installs via local `listSkills()` instead of `ctx.skills`.
+- Verified `SkillMetadata` is now defined in `src/harnesses/installer.ts` and consumed by the new local loader.
+- Local verification run: `bun test` → **1647 pass, 1 skip, 0 fail**.
+
+No Phase 1 blocking issues found.

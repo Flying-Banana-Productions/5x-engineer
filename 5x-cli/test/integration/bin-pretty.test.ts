@@ -26,23 +26,20 @@ function makeTmpDir(): string {
 
 /**
  * Run the CLI via bin.ts with given args, capturing stdout/stderr.
- * Uses `skills install project` as a lightweight command that always
+ * Uses `harness list` as a lightweight command that always
  * produces a JSON envelope.
  */
 async function runCli(
 	cwd: string,
 	extraArgs: string[] = [],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const proc = Bun.spawn(
-		["bun", "run", BIN, "skills", "install", "project", ...extraArgs],
-		{
-			cwd,
-			stdout: "pipe",
-			stderr: "pipe",
-			stdin: "ignore",
-			env: cleanGitEnv(),
-		},
-	);
+	const proc = Bun.spawn(["bun", "run", BIN, "harness", "list", ...extraArgs], {
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+		stdin: "ignore",
+		env: cleanGitEnv(),
+	});
 	const stdout = await new Response(proc.stdout).text();
 	const stderr = await new Response(proc.stderr).text();
 	const exitCode = await proc.exited;

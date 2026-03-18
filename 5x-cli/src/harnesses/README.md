@@ -43,7 +43,6 @@ interface HarnessInstallContext {
   scope: "project" | "user";
   projectRoot: string;          // absolute path to project root
   force: boolean;               // overwrite existing files?
-  skills: SkillMetadata[];      // bundled 5x skills (name, description, content)
   config: {
     authorModel?: string;       // from 5x.toml [author].model
     reviewerModel?: string;     // from 5x.toml [reviewer].model
@@ -143,6 +142,5 @@ The `install` command orchestration (in `harness.handler.ts`):
 2. Validates `--scope` against `plugin.supportedScopes`.
 3. For project scope: verifies the 5x control plane exists (`.5x/5x.db`).
 4. Loads model config from `5x.toml` (non-fatal failure for user scope).
-5. Gathers bundled skills.
-6. Calls `plugin.install(ctx)`.
-7. Prints the install summary.
+5. Calls `plugin.install(ctx)` — the plugin manages its own skills and agents.
+6. Prints the install summary.

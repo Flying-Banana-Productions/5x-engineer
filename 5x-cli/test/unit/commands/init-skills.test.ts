@@ -4,7 +4,7 @@ import {
 	listSkillNames,
 	listSkills,
 	parseSkillFrontmatter,
-} from "../../../src/skills/loader.js";
+} from "../../../src/harnesses/opencode/skills/loader.js";
 
 describe("Skill loader", () => {
 	test("listSkillNames returns all bundled skills", () => {

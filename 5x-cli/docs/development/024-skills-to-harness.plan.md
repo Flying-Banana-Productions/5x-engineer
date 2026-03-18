@@ -137,25 +137,25 @@ SKILL.md files. It moves to the OpenCode harness's local skill loader.
 no longer exists. `bin.ts` has no reference to skills. Init guidance
 references the new command. All tests pass.
 
-- [ ] **2a.** Delete `src/skills/loader.ts` and the entire `src/skills/`
+- [x] **2a.** Delete `src/skills/loader.ts` and the entire `src/skills/`
   directory (the `.md` files were moved in Phase 1).
 
-- [ ] **2b.** Remove the `5x skills` command:
+- [x] **2b.** Remove the `5x skills` command:
   - Delete `src/commands/skills.ts` (command registration)
   - Delete `src/commands/skills.handler.ts` (handler)
   - Remove `import { registerSkills }` and `registerSkills(program)` from
     `src/bin.ts`
 
-- [ ] **2c.** Check `src/index.ts` for any skills-related exports and
+- [x] **2c.** Check `src/index.ts` for any skills-related exports and
   remove them (currently none expected, but verify).
 
-- [ ] **2d.** Update `src/commands/init.handler.ts` post-init guidance:
+- [x] **2d.** Update `src/commands/init.handler.ts` post-init guidance:
   replace the line `Run '5x skills install project' to install skills for
   agent clients` with guidance to use `5x harness install opencode --scope
   project` instead. The existing harness install line on the next line can
   remain or be consolidated.
 
-- [ ] **2e.** Update `README.md`:
+- [x] **2e.** Update `README.md`:
   - **Lines 121–128** (Quick Start step 3): Replace the `5x skills install`
     examples with `5x harness install opencode --scope project`. Remove the
     `--install-root .opencode` / `--install-root .claude` variants.
@@ -169,14 +169,14 @@ references the new command. All tests pass.
     `5x skills install <project|user> [--install-root <dir>] [--force]`
     line from the command reference table.
 
-- [ ] **2f.** Update `src/harnesses/README.md`:
+- [x] **2f.** Update `src/harnesses/README.md`:
   - **Lines 39–52** (Plugin Contract): Remove `skills: SkillMetadata[]`
     from the `HarnessInstallContext` code example. This reflects the
     contract change in Phase 1e.
   - **Lines 145–147** (Command Interface): Remove or update step 5
     ("Gathers bundled skills") from the install orchestration description.
 
-- [ ] **2g.** Update `src/harnesses/opencode/README.md`:
+- [x] **2g.** Update `src/harnesses/opencode/README.md`:
   - **Lines 25–29** (How It Works): Update the `install()` method
     description to say the plugin loads its own skills via the local
     loader instead of "installs bundled 5x skills using the shared

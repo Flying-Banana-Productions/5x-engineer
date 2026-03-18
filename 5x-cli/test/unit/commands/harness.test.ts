@@ -24,7 +24,7 @@ import {
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { isValidPlugin } from "../../../src/harnesses/factory.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
-import { listSkillNames } from "../../../src/skills/loader.js";
+import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

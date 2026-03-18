@@ -10,7 +10,6 @@ import { registerPrompt } from "./commands/prompt.js";
 import { registerProtocol } from "./commands/protocol.js";
 import { registerQuality } from "./commands/quality-v1.js";
 import { registerRun } from "./commands/run-v1.js";
-import { registerSkills } from "./commands/skills.js";
 import { registerTemplate } from "./commands/template.js";
 import { registerUpgrade } from "./commands/upgrade.js";
 import { registerWorktree } from "./commands/worktree.js";
@@ -91,7 +90,6 @@ registerInit(program);
 registerHarness(program);
 registerTemplate(program);
 registerProtocol(program);
-registerSkills(program);
 registerUpgrade(program);
 registerWorktree(program);
 

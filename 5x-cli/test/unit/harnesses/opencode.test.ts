@@ -24,7 +24,7 @@ import {
 	renderAgentTemplates,
 } from "../../../src/harnesses/opencode/loader.js";
 import opencodePlugin from "../../../src/harnesses/opencode/plugin.js";
-import { listSkillNames } from "../../../src/skills/loader.js";
+import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

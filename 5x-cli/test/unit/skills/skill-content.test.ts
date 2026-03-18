@@ -15,7 +15,7 @@ import {
 	listSkillNames,
 	listSkills,
 	parseSkillFrontmatter,
-} from "../../../src/skills/loader.js";
+} from "../../../src/harnesses/opencode/skills/loader.js";
 import {
 	listTemplates,
 	renderTemplate,

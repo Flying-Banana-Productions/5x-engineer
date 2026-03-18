@@ -104,7 +104,7 @@ through decision points.
 5x run watch --run <run-id> --human-readable
 ```
 
-### Option B: Generic Skill Install (Any Harness)
+### Option B: Generic Harness Install (Any Harness)
 
 Works with Claude Code, Cursor, or any agent that supports skill/instruction
 discovery. Author and reviewer work falls back to `5x invoke` (external
@@ -118,13 +118,10 @@ subprocess) when native subagents are not available.
 
 2. Edit `5x.toml` -- set your models, quality gates, and paths.
 
-3. Install skills so your agent can discover them:
+3. Install skills and agent profiles:
 
 ```bash
-5x skills install project            # installs to .agents/skills/
-# or for a specific agent client:
-5x skills install project --install-root .opencode
-5x skills install project --install-root .claude
+5x harness install opencode --scope project
 ```
 
 4. Start your agent session and load the skill:
@@ -226,42 +223,30 @@ Skills are markdown documents that teach an agent how to drive the 5x workflow. 
 
 ### Installing Skills
 
-**For OpenCode (native subagent workflow — recommended):**
+Skills are installed via the harness system. The OpenCode harness installs
+skills and native subagent profiles together:
 
 ```bash
 # Project scope: installs skills under .opencode/skills/ AND
 # native subagent profiles under .opencode/agents/
-5x init opencode project
+5x harness install opencode --scope project
 
 # User scope: installs under ~/.config/opencode/skills/ and
 # ~/.config/opencode/agents/ (XDG path, NOT ~/.opencode/)
-5x init opencode user
-```
-
-**For other harnesses (generic agentskills.io layout):**
-
-```bash
-# Project-level (committed to repo, any agent can discover them):
-5x skills install project
-
-# User-level (global, in ~/.agents/skills/):
-5x skills install user
-
-# For a specific agent client directory:
-5x skills install project --install-root .claude
+5x harness install opencode --scope user
 ```
 
 Skills follow the [agentskills.io](https://agentskills.io) convention. Once installed, agents that support skill discovery will find them automatically.
 
 > **OpenCode path note:** OpenCode discovers user-scope assets at
 > `~/.config/opencode/skills/` and `~/.config/opencode/agents/` (XDG-style),
-> **not** `~/.opencode/`. Running `5x init opencode user` writes to the correct
-> path. If you install manually, ensure you use `~/.config/opencode/`, not
-> `~/.opencode/`.
+> **not** `~/.opencode/`. Running `5x harness install opencode --scope user`
+> writes to the correct path. If you install manually, ensure you use
+> `~/.config/opencode/`, not `~/.opencode/`.
 
 ### Customizing
 
-Skills are plain markdown. After `5x init`, find them in `.5x/skills/` -- edit freely. The installed copies in `.agents/skills/` are what agents actually load; re-run `5x skills install` after editing to update them.
+Skills are plain markdown. The installed copies in `.opencode/skills/` (or `~/.config/opencode/skills/` for user scope) are what agents actually load. Edit them freely. Re-run `5x harness install opencode --force` to reset them to the bundled defaults.
 
 ## Commands
 
@@ -386,8 +371,7 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 
 ```bash
 5x init [--force] [--install-templates]              # Scaffold config, templates, DB
-5x init opencode <project|user> [--force]            # Install OpenCode-native agents + skills
-5x skills install <project|user> [--install-root <dir>] [--force]
+5x harness install <name> [--scope user|project] [--force]  # Install harness skills + agents
 ```
 
 `--install-templates` scaffolds editable prompt templates to `.5x/templates/prompts/` for customization. Without this flag, the CLI uses bundled templates directly (recommended for most users).
