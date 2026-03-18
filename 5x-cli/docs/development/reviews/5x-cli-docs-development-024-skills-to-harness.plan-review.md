@@ -96,3 +96,26 @@ The plan says existing harness tests cover skill installation after deleting `sk
 - Local verification run: `bun test` → **1647 pass, 1 skip, 0 fail**.
 
 No Phase 1 blocking issues found.
+
+## Addendum — 2026-03-18 (Phase 2 implementation review @ `bd9700e35d6d14c303c6a50bcda23a7f05ab0ea2`)
+
+**Assessment:** approved for Phase 2.
+
+- Verified `src/skills/` no longer exists and `src/skills/loader.ts` is deleted.
+- Verified `src/commands/skills.ts` and `src/commands/skills.handler.ts` are deleted, `registerSkills` is removed from `src/bin.ts`, and `src/index.ts` still has no skills-related exports.
+- Verified `src/commands/init.handler.ts`, `README.md`, `src/harnesses/README.md`, and `src/harnesses/opencode/README.md` were updated to point users at `5x harness install opencode --scope ...`.
+- Verified no dangling imports of `src/skills/loader` remain anywhere under `src/`.
+- Local verification run: `bun test` → **1621 pass, 1 skip, 0 fail**.
+
+No Phase 2 blocking issues found.
+
+## Addendum — 2026-03-18 (Phase 3 implementation review @ `778a56270a16e70866eb75bcc8976e9d5e9d29bb`)
+
+**Assessment:** approved for Phase 3.
+
+- Verified skill content tests and loader/frontmatter tests were consolidated into `test/unit/harnesses/opencode-skills.test.ts`; `test/unit/commands/init-skills.test.ts` is deleted and `test/unit/skills/skill-content.test.ts` no longer exists as a separate file.
+- Verified test imports now use the OpenCode-local loader at `src/harnesses/opencode/skills/loader.js` in `test/unit/harnesses/opencode-skills.test.ts`, `test/unit/harnesses/opencode.test.ts`, `test/unit/commands/harness.test.ts`, and `test/integration/commands/harness.test.ts`.
+- Verified no references to `src/skills/loader` remain anywhere under `src/` or `test/`.
+- Local verification run: `bun test` → **1619 pass, 1 skip, 0 fail**.
+
+No Phase 3 blocking issues found.
