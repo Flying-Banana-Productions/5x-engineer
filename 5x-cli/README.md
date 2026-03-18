@@ -287,14 +287,16 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 ### Native Subagent Primitives
 
 ```bash
-5x template render <template> [--run <id>] [--var key=value ...] [--session <id>]
+5x template render <template> [--run <id>] [--var key=value ...] [--session <id>] [--new-session]
+5x template list                           # List all available prompt templates
+5x template describe <template>            # Show detailed template metadata
 ```
 
-Renders a task prompt template and returns the result in a JSON envelope. When
+`template render` renders a task prompt template and returns the result in a JSON envelope. When
 `--run` is passed, resolves run/worktree context and appends a `## Context`
 block with the effective working directory. When `--session` is passed and a
 `<template>-continued` variant exists, the shorter continued template is used
-automatically.
+automatically. `--new-session` forces a fresh session (skips continued-template selection).
 
 ```json
 {
@@ -312,13 +314,16 @@ automatically.
 }
 ```
 
+`template list` returns all available prompt templates with descriptions. `template describe` shows full metadata including version, variables, defaults, step name, and whether an on-disk override is active.
+
 ```bash
 5x protocol validate <author|reviewer> [--run <id>] [--record] [--step <name>]
                                         [--phase <name>] [--iteration <n>]
                                         [--require-commit | --no-require-commit]
+5x protocol emit <author|reviewer> [flags]
 ```
 
-Validates structured output from a native subagent or `5x invoke` fallback.
+`protocol validate` validates structured output from a native subagent or `5x invoke` fallback.
 Accepts JSON via stdin or `--input`. Auto-detects input format: if the JSON
 contains an `ok` field (from `5x invoke`), unwraps `.data.result` before
 validation; otherwise treats the input as raw structured JSON (from a native
@@ -327,6 +332,8 @@ command.
 
 `--require-commit` defaults to `true` for author validation. Use
 `--no-require-commit` to opt out.
+
+`protocol emit` lets agents construct canonical structured output from CLI flags or piped JSON. Success output is raw canonical JSON to stdout (not wrapped in the `{ok, data}` envelope) so agents can use it directly as their structured result. Accepts alternative field names (e.g., `verdict` → `readiness`) and normalizes to the canonical schema.
 
 ### Agent Invocation (Fallback Transport)
 
@@ -348,7 +355,7 @@ Key flags:
 - `--session` -- resume an existing session (auto-selects an abbreviated prompt template if a `-continued` variant exists)
 - `--model` (override config), `--timeout` (seconds), `--quiet` (suppress stderr), `--stderr` (force stderr in non-TTY)
 
-Templates are resolved from `.5x/templates/prompts/` (user overrides) then bundled defaults.
+Templates are resolved from `.5x/templates/prompts/` (user overrides, if installed via `5x init --install-templates`) then bundled defaults. Use `5x template list` to see all available templates.
 
 ### Quality Gates
 
@@ -378,10 +385,12 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 ### Setup
 
 ```bash
-5x init [--force]                                    # Scaffold config, templates, skills
+5x init [--force] [--install-templates]              # Scaffold config, templates, DB
 5x init opencode <project|user> [--force]            # Install OpenCode-native agents + skills
 5x skills install <project|user> [--install-root <dir>] [--force]
 ```
+
+`--install-templates` scaffolds editable prompt templates to `.5x/templates/prompts/` for customization. Without this flag, the CLI uses bundled templates directly (recommended for most users).
 
 `5x init opencode project` installs skills under `.opencode/skills/` and agent profiles under
 `.opencode/agents/` (requires `5x init` to have been run first).
@@ -423,11 +432,13 @@ qualityGates = [
 provider = "opencode"                  # "opencode" (default) or plugin name
 model = "anthropic/claude-sonnet-4-6"
 timeout = 300                          # Inactivity timeout in seconds
+# continuePhaseSessions = true         # Require --session for continued reviews (opt-in)
 
 [reviewer]
 provider = "opencode"
 model = "anthropic/claude-sonnet-4-6"
 timeout = 120
+# continuePhaseSessions = true
 
 [paths]
 plans = "docs/development"
@@ -455,7 +466,7 @@ postCreate = "bun install"
 // Success (exit 0):
 { "ok": true, "data": { ... } }
 
-// Error (exit 1-7):
+// Error (exit 1-9):
 { "ok": false, "error": { "code": "RUN_NOT_FOUND", "message": "...", "detail": { ... } } }
 ```
 
@@ -473,6 +484,8 @@ Output is compact JSON when piped, pretty-printed when stdout is a TTY. Override
 | 5 | Dirty worktree |
 | 6 | Max steps exceeded |
 | 7 | Invalid structured output from agent |
+| 8 | Phase checklist incomplete / phase not found |
+| 9 | Session required (continuePhaseSessions enabled, no --session provided) |
 | 130 | Interrupted (SIGINT) |
 
 ## Plan Format
@@ -512,7 +525,7 @@ Plan files are markdown with phase headings and checklists:
   logs/<run-id>/agent-NNN.ndjson # Per-agent NDJSON event logs (0o700)
   locks/<hash>.lock              # Plan-level lock files
   worktrees/                     # Isolated git worktrees
-  templates/                     # Editable plan, review, and prompt templates
+  templates/                     # Plan and review templates (prompt templates opt-in via --install-templates)
   skills/                        # Bundled skill source (internal)
   debug/                         # Debug traces
 ```
