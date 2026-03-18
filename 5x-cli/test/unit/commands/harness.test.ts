@@ -111,7 +111,7 @@ describe("harnessInstall --scope project", () => {
 			const agentsDir = join(tmp, ".opencode", "agents");
 
 			const skillNames = listSkillNames();
-			expect(skillNames).toHaveLength(3);
+			expect(skillNames).toHaveLength(4);
 
 			const agentNames = listAgentTemplates().map((a) => a.name);
 			expect(agentNames).toHaveLength(4);

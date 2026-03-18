@@ -1,9 +1,10 @@
 ---
 name: 5x-phase-execution
 description: >-
-  Execute implementation phases from an approved plan. Each phase goes through
-  author implementation, quality gates, code review, and optional fix cycles.
-  Use when a plan has been approved and is ready for execution.
+  Execute implementation phases from an approved plan. Each phase goes
+  through author implementation, quality gates, code review, and optional
+  fix cycles. Load the `5x` skill first. Triggers on: 'execute plan',
+  'implement plan', 'run phases', 'next phase', 'phase execution'.
 metadata:
   author: 5x-engineer
 ---
@@ -20,6 +21,23 @@ optional fix cycles.
 - The plan parses into phases (`5x plan phases` returns phases)
 - Quality gates are configured (if any)
 - Git working tree is clean, or a worktree will be created via `run init --worktree`
+
+## Prerequisite Skill
+
+Load the `5x` skill for delegation patterns, interaction model, and
+timeout handling.
+
+## Gotchas
+
+- NEVER record `phase:complete` if checklist shows `done: false` —
+  record `phase:checklist_mismatch` and escalate instead
+- `5x plan phases` is the authoritative signal for phase completion,
+  not step records
+- After author fix, re-run quality gates (Step 2), don't skip to
+  review (Step 3)
+- Read `maxReviewIterations` and `maxQualityRetries` from
+  `5x config show` — never hardcode limits
+- Phase count should not change during a run — if it does, flag to human
 
 ## Tools
 
@@ -41,112 +59,18 @@ optional fix cycles.
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
-### Human interaction note
+### Session reuse
 
-The workflow steps reference `5x prompt` commands to describe **what to
-ask the human and when**. How you collect the response depends on your
-capabilities:
-
-1. **You have a question/input tool** (e.g., MCP question tool, built-in
-   ask-user tool): use it directly. This is preferred — it keeps the
-   interaction in your native UI.
-2. **You have a conversational UI**: ask the human in the conversation
-   and use their reply.
-3. **Neither of the above**: spawn `5x prompt choose` / `5x prompt input`
-   as a subprocess. This works in direct terminal sessions and shell
-   scripts but will fail with `NON_INTERACTIVE` (exit 3) if no terminal
-   is available. Pass `--default` to provide a fallback for non-interactive
-   environments.
-
-### Delegating sub-agent work
-
-Sub-agent tasks (author and reviewer work) should be delegated using the
-**native-first pattern**: render the prompt, detect whether a native agent
-is available, run it if so, then validate and record the result. Fall back
-to `5x invoke` when no native agent is found.
-
-**Native agent detection order:**
-
-1. Project scope: `.opencode/agents/<name>.md`
-2. User scope: `~/.config/opencode/agents/<name>.md`
-3. Fallback: `5x invoke`
-
-**Installed OpenCode agent names:**
-- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
-- `5x-code-author` — implements code changes from approved plans
-- `5x-reviewer` — performs code review and produces structured verdicts
-
-**Native agent detection order:**
-
-1. Project scope: `.opencode/agents/<name>.md`
-2. User scope: `~/.config/opencode/agents/<name>.md`
-3. Fallback: `5x invoke`
-
-**Native-first delegation pattern (example: author implement phase):**
-
-```bash
-# 1. Render the prompt (includes run/worktree context via ## Context block)
-RENDERED=$(5x template render author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER)
-PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
-STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
-
-# 2. Detect native agent (project scope first, then user scope)
-if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
-  # 3a. Launch native subagent (harness provides child session)
-  RESULT=<native subagent result JSON>
-else
-  # 3b. Fallback to 5x invoke (omit --record; validate is the single record point)
-  RESULT=$(5x invoke author author-next-phase --run $RUN \
-    --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER 2>/dev/null)
-fi
-
-# 4. Validate + record (combined — universal for both paths)
-echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase $PHASE
-```
-
-**Session reuse** is optional and best-effort. "Session" here means the
-agent's conversational session — the identifier that lets you resume the
-same agent conversation rather than starting fresh. In MCP Task tools
-this is the `task_id` returned from a Task invocation; in `5x invoke` it
-is the `session_id` from the JSON envelope.
-
-Capture the session identifier from the first reviewer invocation as
-`$REVIEWER_SESSION`. Pass it when resuming the reviewer for re-reviews
-within the same phase — this gives the reviewer conversational continuity
-with its prior findings. Pass `--session $REVIEWER_SESSION` to
-`5x template render` to auto-select a shorter continued-template variant
-if one exists. Omit to start fresh.
+Session reuse is optional and best-effort. Capture the session identifier
+from the first reviewer invocation as `$REVIEWER_SESSION`. Pass it when
+resuming the reviewer for re-reviews within the same phase — this gives
+the reviewer conversational continuity with its prior findings. Pass
+`--session $REVIEWER_SESSION` to `5x template render` to auto-select a
+shorter continued-template variant if one exists. Omit to start fresh.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
 subagents of the effective working directory.
-
-### Fallback: 5x invoke
-
-When native agents are not installed, delegate using `5x invoke` as a
-subprocess. Use `2>/dev/null` to discard stderr (streaming output).
-
-### Timeout layers
-
-Two independent timeouts apply to `5x invoke` fallback invocations:
-
-1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
-   in config, or `--timeout` CLI override): an inactivity timeout
-   inside `5x invoke` that resets on each agent event. When it fires,
-   you get a clean `AgentTimeoutError` in the JSON envelope. Do NOT
-   pass `--timeout` unless you intend to override the configured value.
-
-2. **Shell tool timeout**: your bash/subprocess tool's wall-clock
-   limit. This is a blunt circuit breaker — when it fires, the process
-   is killed and you get empty or truncated output.
-
-Set your shell tool timeout generously (e.g., 10 minutes) as a safety
-net for catastrophic hangs. Let the invocation timeout handle normal
-operational control. An unexpectedly killed subprocess produces empty
-output — see Recovery for handling.
 
 ### Worktree-aware execution
 
@@ -198,8 +122,8 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 ### For each pending phase ($PHASE):
 
-Track $QUALITY_RETRIES = 0 (max 2).
-Track $REVIEW_ITERATIONS = 0 (max 3).
+Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
+Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
 Track $REVIEWER_SESSION = "" (for optional session reuse within this phase).
 
 #### Step 1: Author implements
@@ -252,8 +176,8 @@ Check the result:
 
 Increment $QUALITY_RETRIES.
 
-If $QUALITY_RETRIES > 2:
-  Escalate: `5x prompt choose "Quality gates failing after 2 retries" --options retry,skip,abort`
+If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
+  Escalate: `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`
   - retry: reset $QUALITY_RETRIES, go to Step 2a below
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
@@ -345,7 +269,7 @@ reviews.
 
 Increment $REVIEW_ITERATIONS.
 
-If $REVIEW_ITERATIONS > 3:
+If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
 Delegate to the code author using the native-first pattern:

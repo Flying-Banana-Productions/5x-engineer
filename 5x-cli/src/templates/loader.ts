@@ -299,10 +299,12 @@ export function loadTemplate(name: string): {
 
 	// Check for user override on disk
 	let raw: string | undefined;
+	let isOverride = false;
 	if (overrideDir) {
 		const overridePath = join(overrideDir, `${name}.md`);
 		if (existsSync(overridePath)) {
 			raw = readFileSync(overridePath, "utf-8");
+			isOverride = true;
 		}
 	}
 
@@ -318,6 +320,22 @@ export function loadTemplate(name: string): {
 		);
 	}
 	const result = parseTemplate(raw, name);
+
+	// Warn if on-disk override is older than the bundled version
+	if (isOverride) {
+		const bundledRaw = TEMPLATES[name];
+		if (bundledRaw !== undefined) {
+			const bundled = parseTemplate(bundledRaw, name);
+			if (result.metadata.version < bundled.metadata.version) {
+				console.error(
+					`Warning: Template "${name}" on-disk override (v${result.metadata.version}) is older than bundled (v${bundled.metadata.version}). ` +
+						`Remove .5x/templates/prompts/${name}.md to use the bundled version, ` +
+						'or run "5x init --install-templates --force" to update.',
+				);
+			}
+		}
+	}
+
 	parsedCache.set(name, result);
 	return result;
 }

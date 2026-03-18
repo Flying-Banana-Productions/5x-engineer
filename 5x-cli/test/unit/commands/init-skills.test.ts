@@ -9,15 +9,16 @@ import {
 describe("Skill loader", () => {
 	test("listSkillNames returns all bundled skills", () => {
 		const names = listSkillNames();
+		expect(names).toContain("5x");
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
-		expect(names.length).toBe(3);
+		expect(names.length).toBe(4);
 	});
 
 	test("listSkills returns metadata with description and content", () => {
 		const skills = listSkills();
-		expect(skills.length).toBe(3);
+		expect(skills.length).toBe(4);
 
 		const planSkill = skills.find((s) => s.name === "5x-plan");
 		expect(planSkill).toBeDefined();

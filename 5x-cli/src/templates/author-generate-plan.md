@@ -1,7 +1,7 @@
 ---
 name: author-generate-plan
 description: Generate an implementation plan from requirements
-version: 1
+version: 2
 variables: [prd_path, plan_path, plan_template_path]
 step_name: "author:generate-plan"
 ---
@@ -47,4 +47,15 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-Write the plan to `{{plan_path}}` and return when done. You will be asked to report the outcome of your work in a structured format when you complete.
+CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
+
+When finished, produce your structured result by running:
+
+    5x protocol emit author --complete --commit <hash>
+
+Or if you need human help:
+
+    5x protocol emit author --needs-human --reason "..."
+
+Include the command's JSON output verbatim as your structured result.
+The output is raw canonical JSON — do not wrap or modify it.

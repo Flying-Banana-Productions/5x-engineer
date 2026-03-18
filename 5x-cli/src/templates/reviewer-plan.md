@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 1
+version: 2
 variables: [plan_path, review_path, review_template_path]
 step_name: "reviewer:review"
 ---

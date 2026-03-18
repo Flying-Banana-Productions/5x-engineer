@@ -1,7 +1,7 @@
 ---
 name: author-fix-quality
 description: Fix quality gate failures for a plan phase
-version: 1
+version: 2
 variables: [plan_path, phase_number, user_notes]
 step_name: "author:fix-quality"
 variable_defaults:

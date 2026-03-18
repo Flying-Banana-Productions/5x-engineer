@@ -16,7 +16,7 @@ describe("loadTemplate", () => {
 	test("loads a known template with valid metadata", () => {
 		const { metadata, body } = loadTemplate("author-generate-plan");
 		expect(metadata.name).toBe("author-generate-plan");
-		expect(metadata.version).toBe(1);
+		expect(metadata.version).toBe(2);
 		expect(metadata.variables).toContain("prd_path");
 		expect(metadata.variables).toContain("plan_path");
 		expect(metadata.variables).toContain("plan_template_path");
@@ -100,10 +100,13 @@ describe("author-generate-plan template", () => {
 		expect(result.prompt).toContain("370-impl-feature.md");
 	});
 
-	test("includes completion section (no signal blocks)", () => {
+	test("includes completion section with protocol emit (no signal blocks)", () => {
 		const result = renderTemplate("author-generate-plan", vars);
 		expect(result.prompt).toContain("Completion");
-		expect(result.prompt).toContain("structured format");
+		expect(result.prompt).toContain(
+			"5x protocol emit author --complete --commit",
+		);
+		expect(result.prompt).toContain("structured result");
 		expect(result.prompt).not.toContain("5x:status");
 		expect(result.prompt).not.toContain("5x:verdict");
 	});
@@ -367,10 +370,10 @@ describe("listTemplates", () => {
 		expect(templates.length).toBe(8);
 	});
 
-	test("all templates have version 1", () => {
+	test("all templates have version 2", () => {
 		const templates = listTemplates();
 		for (const t of templates) {
-			expect(t.version).toBe(1);
+			expect(t.version).toBe(2);
 		}
 	});
 });

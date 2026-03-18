@@ -26,7 +26,8 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("skill loader — Phase 4 rewrites", () => {
-	test("all three skills load without error", () => {
+	test("all skills load without error", () => {
+		expect(() => getDefaultSkillRaw("5x")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan-review")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-phase-execution")).not.toThrow();
@@ -34,16 +35,17 @@ describe("skill loader — Phase 4 rewrites", () => {
 
 	test("all skill names are listed", () => {
 		const names = listSkillNames();
+		expect(names).toContain("5x");
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
 		// Do not hard-code total count — new skills may be added
-		expect(names.length).toBeGreaterThanOrEqual(3);
+		expect(names.length).toBeGreaterThanOrEqual(4);
 	});
 
 	test("listSkills returns metadata for all expected skills", () => {
 		const skills = listSkills();
-		expect(skills.length).toBeGreaterThanOrEqual(3);
+		expect(skills.length).toBeGreaterThanOrEqual(4);
 		for (const skill of skills) {
 			expect(skill.name).toBeTruthy();
 			expect(skill.description).toBeTruthy();
@@ -51,8 +53,13 @@ describe("skill loader — Phase 4 rewrites", () => {
 		}
 	});
 
-	test("skill frontmatter parses correctly for all three skills", () => {
-		for (const name of ["5x-plan", "5x-plan-review", "5x-phase-execution"]) {
+	test("skill frontmatter parses correctly for all skills", () => {
+		for (const name of [
+			"5x",
+			"5x-plan",
+			"5x-plan-review",
+			"5x-phase-execution",
+		]) {
 			const raw = getDefaultSkillRaw(name);
 			const fm = parseSkillFrontmatter(raw);
 			expect(fm.name).toBe(name);
@@ -62,15 +69,84 @@ describe("skill loader — Phase 4 rewrites", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 5x foundational skill
+// ---------------------------------------------------------------------------
+
+describe("5x foundational skill", () => {
+	test("skill loads and frontmatter parses correctly", () => {
+		const raw = getDefaultSkillRaw("5x");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.name).toBe("5x");
+		expect(fm.description.length).toBeGreaterThan(0);
+	});
+
+	test("contains Human Interaction Model section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Human Interaction Model");
+	});
+
+	test("contains Delegating Sub-Agent Work section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Delegating Sub-Agent Work");
+	});
+
+	test("contains Timeout section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Timeout Layers");
+	});
+
+	test("contains Gotchas section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Gotchas");
+	});
+
+	test("references all four agent names", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("5x-orchestrator");
+		expect(content).toContain("5x-plan-author");
+		expect(content).toContain("5x-code-author");
+		expect(content).toContain("5x-reviewer");
+	});
+
+	test("references 5x config show", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("5x config show");
+	});
+
+	test("contains Session Reuse section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Session Reuse");
+	});
+
+	test("contains Fallback: 5x invoke section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Fallback: 5x invoke");
+	});
+
+	test("documents native agent detection order: project scope before user scope before fallback", () => {
+		const content = getDefaultSkillRaw("5x");
+		const sectionIdx = content.indexOf("Native agent detection order");
+		expect(sectionIdx).toBeGreaterThan(-1);
+		const section = content.slice(sectionIdx);
+		const projectIdx = section.indexOf(".opencode/agents/");
+		const userIdx = section.indexOf("~/.config/opencode/agents/");
+		const fallbackIdx = section.indexOf("5x invoke");
+		expect(projectIdx).toBeGreaterThan(-1);
+		expect(userIdx).toBeGreaterThan(-1);
+		expect(fallbackIdx).toBeGreaterThan(-1);
+		expect(projectIdx).toBeLessThan(userIdx);
+		expect(userIdx).toBeLessThan(fallbackIdx);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Native-first delegation: 5x-plan skill
 // ---------------------------------------------------------------------------
 
 describe("5x-plan skill — native-first delegation", () => {
-	let skillContent: string;
-
-	test("setup", () => {
-		skillContent = getDefaultSkillRaw("5x-plan");
-		expect(skillContent).toBeTruthy();
+	test("skill loads", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).toBeTruthy();
 	});
 
 	test("references 5x template render command", () => {
@@ -83,36 +159,9 @@ describe("5x-plan skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection order: project scope before user scope before fallback", () => {
-		const content = getDefaultSkillRaw("5x-plan");
-		// Find the "Native agent detection order" section
-		const sectionIdx = content.indexOf("Native agent detection order");
-		expect(sectionIdx).toBeGreaterThan(-1);
-		// Extract from that section onward for positional checks
-		const section = content.slice(sectionIdx);
-		const projectIdx = section.indexOf(".opencode/agents/");
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const fallbackIdx = section.indexOf("5x invoke");
-		// All three must be present in the section
-		expect(projectIdx).toBeGreaterThan(-1);
-		expect(userIdx).toBeGreaterThan(-1);
-		expect(fallbackIdx).toBeGreaterThan(-1);
-		// Order within the section: project scope → user scope → fallback
-		expect(projectIdx).toBeLessThan(userIdx);
-		expect(userIdx).toBeLessThan(fallbackIdx);
-	});
-
-	test("preserves 5x invoke as last-resort fallback", () => {
+	test("references 5x invoke in skill-specific code examples", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toContain("5x invoke");
-		// Fallback label should appear
-		expect(content).toContain("Fallback");
-		// In the detection order section, 5x invoke appears after user scope
-		const sectionIdx = content.indexOf("Native agent detection order");
-		const section = content.slice(sectionIdx);
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const invokeIdx = section.indexOf("5x invoke");
-		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-plan-author native agent name", () => {
@@ -120,15 +169,15 @@ describe("5x-plan skill — native-first delegation", () => {
 		expect(content).toContain("5x-plan-author");
 	});
 
-	test("references 5x-orchestrator agent name", () => {
+	test("contains Prerequisite Skill section referencing 5x skill", () => {
 		const content = getDefaultSkillRaw("5x-plan");
-		expect(content).toContain("5x-orchestrator");
+		expect(content).toContain("## Prerequisite Skill");
+		expect(content).toMatch(/[Ll]oad the `5x` skill/);
 	});
 
-	test("treats session reuse as optional", () => {
+	test("contains Gotchas section", () => {
 		const content = getDefaultSkillRaw("5x-plan");
-		// Session reuse should be described as optional/best-effort
-		expect(content).toMatch(/optional|best.effort/i);
+		expect(content).toContain("## Gotchas");
 	});
 
 	test("keeps AuthorStatus structured outcome contract", () => {
@@ -155,34 +204,9 @@ describe("5x-plan-review skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection order: project scope before user scope before fallback", () => {
-		const content = getDefaultSkillRaw("5x-plan-review");
-		// Find the "Native agent detection order" section
-		const sectionIdx = content.indexOf("Native agent detection order");
-		expect(sectionIdx).toBeGreaterThan(-1);
-		// Extract from that section onward for positional checks
-		const section = content.slice(sectionIdx);
-		const projectIdx = section.indexOf(".opencode/agents/");
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const fallbackIdx = section.indexOf("5x invoke");
-		// All three must be present in the section
-		expect(projectIdx).toBeGreaterThan(-1);
-		expect(userIdx).toBeGreaterThan(-1);
-		expect(fallbackIdx).toBeGreaterThan(-1);
-		// Order within the section: project scope → user scope → fallback
-		expect(projectIdx).toBeLessThan(userIdx);
-		expect(userIdx).toBeLessThan(fallbackIdx);
-	});
-
-	test("preserves 5x invoke as last-resort fallback", () => {
+	test("references 5x invoke in skill-specific code examples", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x invoke");
-		// In the detection order section, 5x invoke appears after user scope
-		const sectionIdx = content.indexOf("Native agent detection order");
-		const section = content.slice(sectionIdx);
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const invokeIdx = section.indexOf("5x invoke");
-		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-reviewer native agent name", () => {
@@ -195,14 +219,15 @@ describe("5x-plan-review skill — native-first delegation", () => {
 		expect(content).toContain("5x-plan-author");
 	});
 
-	test("references 5x-orchestrator agent name", () => {
+	test("contains Prerequisite Skill section referencing 5x skill", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
-		expect(content).toContain("5x-orchestrator");
+		expect(content).toContain("## Prerequisite Skill");
+		expect(content).toMatch(/[Ll]oad the `5x` skill/);
 	});
 
-	test("treats session reuse as optional", () => {
+	test("contains Gotchas section", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
-		expect(content).toMatch(/optional|best.effort/i);
+		expect(content).toContain("## Gotchas");
 	});
 
 	test("keeps ReviewerVerdict structured outcome contract", () => {
@@ -236,36 +261,9 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("documents native agent detection order: project scope before user scope before fallback", () => {
-		const content = getDefaultSkillRaw("5x-phase-execution");
-		// Find the "Native agent detection order" section
-		const sectionIdx = content.indexOf("Native agent detection order");
-		expect(sectionIdx).toBeGreaterThan(-1);
-		// Extract from that section onward for positional checks
-		const section = content.slice(sectionIdx);
-		const projectIdx = section.indexOf(".opencode/agents/");
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const fallbackIdx = section.indexOf("5x invoke");
-		// All three must be present in the section
-		expect(projectIdx).toBeGreaterThan(-1);
-		expect(userIdx).toBeGreaterThan(-1);
-		expect(fallbackIdx).toBeGreaterThan(-1);
-		// Order within the section: project scope → user scope → fallback
-		expect(projectIdx).toBeLessThan(userIdx);
-		expect(userIdx).toBeLessThan(fallbackIdx);
-	});
-
-	test("preserves 5x invoke as last-resort fallback", () => {
+	test("references 5x invoke in skill-specific code examples", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x invoke");
-		// Fallback section must be documented
-		expect(content).toContain("Fallback");
-		// In the detection order section, 5x invoke appears after user scope
-		const sectionIdx = content.indexOf("Native agent detection order");
-		const section = content.slice(sectionIdx);
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const invokeIdx = section.indexOf("5x invoke");
-		expect(userIdx).toBeLessThan(invokeIdx);
 	});
 
 	test("references 5x-code-author native agent name", () => {
@@ -278,11 +276,6 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toContain("5x-reviewer");
 	});
 
-	test("references 5x-orchestrator agent name", () => {
-		const content = getDefaultSkillRaw("5x-phase-execution");
-		expect(content).toContain("5x-orchestrator");
-	});
-
 	test("treats session reuse as optional", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toMatch(/optional|best.effort/i);
@@ -292,6 +285,17 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		// The ## Context block provides working directory to native subagents
 		expect(content).toContain("## Context");
+	});
+
+	test("contains Prerequisite Skill section referencing 5x skill", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		expect(content).toContain("## Prerequisite Skill");
+		expect(content).toMatch(/[Ll]oad the `5x` skill/);
+	});
+
+	test("contains Gotchas section", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		expect(content).toContain("## Gotchas");
 	});
 
 	test("keeps AuthorStatus and ReviewerVerdict contracts", () => {
@@ -344,11 +348,16 @@ describe("Phase 4: run watch guidance removed from native-first skills", () => {
 		expect(content).not.toContain("run watch");
 	});
 
-	test("5x invoke fallback is preserved in all skills", () => {
-		// 5x invoke should still be documented as fallback
+	test("5x invoke is referenced in all process skills (in code examples)", () => {
+		// 5x invoke still appears in skill-specific code examples
 		expect(getDefaultSkillRaw("5x-plan")).toContain("5x invoke");
 		expect(getDefaultSkillRaw("5x-plan-review")).toContain("5x invoke");
 		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("5x invoke");
+	});
+
+	test("Fallback: 5x invoke section is in the 5x foundational skill", () => {
+		// The dedicated Fallback section moved to the 5x skill
+		expect(getDefaultSkillRaw("5x")).toContain("## Fallback: 5x invoke");
 	});
 
 	test("5x-plan skill treats --plan as output path and passes PRD separately", () => {
