@@ -438,9 +438,11 @@ describe("template stepName", () => {
 				expect(stderrLines.some((l) => l.includes('missing "step_name"'))).toBe(
 					true,
 				);
-				expect(stderrLines.some((l) => l.includes("5x init --force"))).toBe(
-					true,
-				);
+				expect(
+					stderrLines.some((l) =>
+						l.includes("5x init --install-templates --force"),
+					),
+				).toBe(true);
 			} finally {
 				console.error = origStderr;
 				setTemplateOverrideDir(null);

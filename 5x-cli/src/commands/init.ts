@@ -23,15 +23,22 @@ export function registerInit(parent: Command) {
 				"directory layout. Use --force to overwrite an existing configuration.",
 		)
 		.option("-f, --force", "Overwrite existing config file")
+		.option(
+			"--install-templates",
+			"Scaffold editable prompt templates to .5x/templates/prompts/",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x init\n" +
-				"  $ 5x init -f                                        # overwrite existing config",
+				"  $ 5x init -f                                        # overwrite existing config\n" +
+				"  $ 5x init --install-templates                       # scaffold prompt templates for customization\n" +
+				"  $ 5x init --install-templates -f                    # reinstall prompt templates (overwrites)",
 		)
 		.action(async (opts) => {
 			await initScaffold({
 				force: opts.force,
+				installTemplates: opts.installTemplates,
 			});
 		});
 }

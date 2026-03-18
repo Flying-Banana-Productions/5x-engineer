@@ -203,7 +203,9 @@ export function parseTemplate(
 		const fallback = STEP_NAME_FALLBACKS[templateName];
 		if (fallback) {
 			console.error(
-				`Warning: Template "${templateName}" is missing "step_name" in frontmatter. Using default "${fallback}". Run "5x init --force" to update your templates.`,
+				`Warning: Template "${templateName}" is missing "step_name" in frontmatter. Using default "${fallback}". ` +
+					`Remove .5x/templates/prompts/${templateName}.md to use the bundled version, ` +
+					'or run "5x init --install-templates --force" to reinstall.',
 			);
 			stepName = fallback;
 		}
