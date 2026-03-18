@@ -99,3 +99,22 @@ Iteration 2 resolves the three issues from the first review. Remaining gaps are 
 ### Summary
 
 Iteration 3 resolves the architecture/copy issues from the previous addendum, and I do not see any new design regressions. The remaining gap is narrow: add one worktree-context test so the newly specified control-plane-root behavior is explicitly protected.
+
+## Addendum (2026-03-18) — Iteration 4 assessment
+
+### What's Addressed
+
+- **P2.4 fixed.** Phase 1e now adds the missing linked-worktree integration case and explicitly checks that root-anchored values resolve from the control-plane root rather than the worktree checkout.
+- The new test requirement matches the Phase 1a design change, so the plan now protects the key managed-worktree correctness path instead of leaving it implicit.
+
+### Readiness
+
+**Readiness:** Ready — all previously raised issues are addressed, and this revision did not introduce new plan-level concerns.
+
+### Review Items
+
+- None.
+
+### Summary
+
+Iteration 4 closes the last remaining gap. The plan is now coherent across design, phasing, and test strategy, and is ready for implementation as written.
