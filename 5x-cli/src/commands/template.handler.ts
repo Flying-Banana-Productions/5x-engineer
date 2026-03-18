@@ -1,11 +1,12 @@
 /**
- * Template command handler — business logic for `5x template render`.
+ * Template command handler — business logic for `5x template` subcommands.
  *
  * Framework-independent: no CLI framework imports.
  *
- * Phase 1 (014-harness-native-subagent-orchestration):
- * Standalone prompt rendering so native subagent orchestration can
- * obtain the exact rendered prompt without invoking a provider.
+ * Subcommands:
+ * - render: Render a prompt template with variable substitution
+ * - list: List all available prompt templates
+ * - describe: Show detailed metadata for a specific template
  */
 
 import { dirname, join, resolve } from "node:path";
@@ -14,7 +15,12 @@ import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { validateRunId } from "../run-id.js";
-import { setTemplateOverrideDir } from "../templates/loader.js";
+import {
+	getTemplateSource,
+	listTemplates,
+	loadTemplate,
+	setTemplateOverrideDir,
+} from "../templates/loader.js";
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { validateSessionContinuity } from "./session-check.js";
@@ -216,4 +222,111 @@ export async function templateRender(
 	};
 
 	outputSuccess(output);
+}
+
+// ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
+interface TemplateListItem {
+	name: string;
+	description: string | null;
+	source: "bundled" | "override";
+}
+
+interface TemplateListOutput {
+	templates: TemplateListItem[];
+}
+
+function formatTemplateListText(data: TemplateListOutput): void {
+	if (data.templates.length === 0) {
+		console.log("No templates found.");
+		return;
+	}
+
+	const hasOverrides = data.templates.some((t) => t.source === "override");
+
+	// Calculate column widths
+	const nameWidth = Math.max(...data.templates.map((t) => t.name.length));
+
+	for (const t of data.templates) {
+		const name = t.name.padEnd(nameWidth);
+		const desc = t.description ?? "";
+		const source = hasOverrides ? `  [${t.source}]` : "";
+		console.log(`  ${name}  ${desc}${source}`);
+	}
+}
+
+export function templateList(): void {
+	const templates = listTemplates();
+	const items: TemplateListItem[] = templates.map((t) => ({
+		name: t.name,
+		description: t.description,
+		source: getTemplateSource(t.name),
+	}));
+
+	// Sort alphabetically by name
+	items.sort((a, b) => a.name.localeCompare(b.name));
+
+	outputSuccess({ templates: items }, formatTemplateListText);
+}
+
+// ---------------------------------------------------------------------------
+// Describe
+// ---------------------------------------------------------------------------
+
+interface TemplateDescribeOutput {
+	name: string;
+	description: string | null;
+	version: number;
+	step_name: string | null;
+	variables: string[];
+	variable_defaults: Record<string, string>;
+	source: "bundled" | "override";
+}
+
+function formatTemplateDescribeText(data: TemplateDescribeOutput): void {
+	console.log(`  Name:        ${data.name}`);
+	if (data.description) {
+		console.log(`  Description: ${data.description}`);
+	}
+	console.log(`  Version:     ${data.version}`);
+	if (data.step_name) {
+		console.log(`  Step name:   ${data.step_name}`);
+	}
+	console.log(`  Source:      ${data.source}`);
+	console.log(
+		`  Variables:   ${data.variables.length > 0 ? data.variables.join(", ") : "(none)"}`,
+	);
+	const defaults = Object.entries(data.variable_defaults);
+	if (defaults.length > 0) {
+		const formatted = defaults
+			.map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
+			.join(", ");
+		console.log(`  Defaults:    ${formatted}`);
+	}
+}
+
+export function templateDescribe(name: string): void {
+	let metadata: ReturnType<typeof loadTemplate>["metadata"];
+	try {
+		({ metadata } = loadTemplate(name));
+	} catch {
+		outputError(
+			"TEMPLATE_NOT_FOUND",
+			`Template "${name}" not found. Run "5x template list" to see available templates.`,
+		);
+	}
+
+	const output: TemplateDescribeOutput = {
+		name: metadata.name,
+		description: metadata.description,
+		version: metadata.version,
+		step_name: metadata.stepName,
+		variables: metadata.variables,
+		variable_defaults: metadata.variableDefaults,
+		source: getTemplateSource(metadata.name),
+	};
+
+	outputSuccess(output, formatTemplateDescribeText);
 }

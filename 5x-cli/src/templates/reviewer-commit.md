@@ -1,5 +1,6 @@
 ---
 name: reviewer-commit
+description: Review implementation commits
 version: 1
 variables: [commit_hash, review_path, plan_path, review_template_path]
 step_name: "reviewer:review"

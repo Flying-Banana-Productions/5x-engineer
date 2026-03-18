@@ -1,5 +1,6 @@
 ---
 name: author-next-phase
+description: Implement the next phase of a plan
 version: 1
 variables: [plan_path, phase_number, user_notes]
 step_name: "author:implement"

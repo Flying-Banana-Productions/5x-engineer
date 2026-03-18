@@ -1,5 +1,6 @@
 ---
 name: author-process-impl-review
+description: Fix implementation issues from code review
 version: 1
 variables: [review_path, plan_path, user_notes]
 step_name: "author:fix-review"

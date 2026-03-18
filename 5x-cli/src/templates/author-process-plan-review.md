@@ -1,5 +1,6 @@
 ---
 name: author-process-plan-review
+description: Revise a plan based on review feedback
 version: 1
 variables: [review_path, plan_path, user_notes]
 step_name: "author:fix-review"

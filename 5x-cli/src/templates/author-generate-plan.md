@@ -1,5 +1,6 @@
 ---
 name: author-generate-plan
+description: Generate an implementation plan from requirements
 version: 1
 variables: [prd_path, plan_path, plan_template_path]
 step_name: "author:generate-plan"

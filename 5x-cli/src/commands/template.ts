@@ -1,14 +1,18 @@
 /**
  * Template management commands — commander adapter.
  *
- * Subcommands: render
+ * Subcommands: render, list, describe
  *
  * Business logic lives in template.handler.ts.
  */
 
 import type { Command } from "@commander-js/extra-typings";
 import { collect } from "../utils/parse-args.js";
-import { templateRender } from "./template.handler.js";
+import {
+	templateDescribe,
+	templateList,
+	templateRender,
+} from "./template.handler.js";
 
 export function registerTemplate(parent: Command) {
 	const template = parent
@@ -69,5 +73,31 @@ export function registerTemplate(parent: Command) {
 				newSession: opts.newSession,
 				workdir: opts.workdir,
 			});
+		});
+
+	template
+		.command("list")
+		.summary("List all available prompt templates")
+		.description(
+			"List all bundled prompt templates with their descriptions.\n" +
+				"Templates with on-disk overrides are marked accordingly.",
+		)
+		.action(() => {
+			templateList();
+		});
+
+	template
+		.command("describe")
+		.summary("Show detailed metadata for a template")
+		.description(
+			"Display metadata for a specific prompt template including version,\n" +
+				"variables, defaults, step name, and whether an on-disk override exists.",
+		)
+		.argument(
+			"<template>",
+			"Template name (e.g. reviewer-plan, author-next-phase)",
+		)
+		.action((name) => {
+			templateDescribe(name);
 		});
 }
