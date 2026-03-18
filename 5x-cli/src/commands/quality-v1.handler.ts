@@ -144,7 +144,7 @@ export async function runQuality(
 		const ctx = ctxResult.context;
 		effectiveWorkdir = params.workdir
 			? resolve(params.workdir)
-			: ctx.effectiveWorkingDirectory;
+			: (ctx.mappedWorktreePath ?? undefined);
 		// Use plan path directory for config layering
 		configContextDir = dirname(ctx.effectivePlanPath);
 	}
@@ -160,7 +160,15 @@ export async function runQuality(
 			controlPlaneRoot,
 			configContextDir,
 		);
-		projectRoot = effectiveWorkdir ?? controlPlaneRoot;
+		// Phase 5a: when config is layered from a sub-project, execute gates
+		// in the sub-project directory (dirname of nearest config file), not
+		// the control-plane root. Explicit --workdir and worktree mappings
+		// (effectiveWorkdir) still take precedence.
+		const layeredCwd =
+			result.isLayered && result.nearestConfigPath
+				? dirname(result.nearestConfigPath)
+				: controlPlaneRoot;
+		projectRoot = effectiveWorkdir ?? layeredCwd;
 		qualityGates = result.config.qualityGates;
 		skipQualityGates = result.config.skipQualityGates;
 	} else if (effectiveWorkdir) {

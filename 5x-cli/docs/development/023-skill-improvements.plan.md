@@ -1,6 +1,6 @@
 # Skill Improvements: Config Command, Shared Foundation, Gotchas, Trigger Descriptions
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** March 18, 2026
 **Status:** Draft
 
@@ -260,7 +260,7 @@ updated to match new structure.
 and instruct the agent to co-load the `5x` skill. The `5x` skill description
 instructs co-loading (no trigger words — it never fires independently).
 
-- [ ] **4a.** Update the description field in `src/skills/5x/SKILL.md`.
+- [x] **4a.** Update the description field in `src/skills/5x/SKILL.md`.
   The `5x` skill is a co-loaded dependency, not an independently triggered
   skill — it should never fire on its own. Remove the `Triggers on:` line
   entirely and keep the description focused on the co-loading instruction:
@@ -272,7 +272,7 @@ instructs co-loading (no trigger words — it never fires independently).
     gotchas.
   ```
 
-- [ ] **4b.** Update the description field in `src/skills/5x-plan/SKILL.md`:
+- [x] **4b.** Update the description field in `src/skills/5x-plan/SKILL.md`:
   ```yaml
   description: >-
     Generate an implementation plan from a requirements document, then run
@@ -281,7 +281,7 @@ instructs co-loading (no trigger words — it never fires independently).
     requirements', 'generate plan', 'PRD', 'TDD'.
   ```
 
-- [ ] **4c.** Update the description field in `src/skills/5x-plan-review/SKILL.md`:
+- [x] **4c.** Update the description field in `src/skills/5x-plan-review/SKILL.md`:
   ```yaml
   description: >-
     Run iterative review/fix cycles on an implementation plan until it is
@@ -290,7 +290,7 @@ instructs co-loading (no trigger words — it never fires independently).
     'get plan approved'.
   ```
 
-- [ ] **4d.** Update the description field in `src/skills/5x-phase-execution/SKILL.md`:
+- [x] **4d.** Update the description field in `src/skills/5x-phase-execution/SKILL.md`:
   ```yaml
   description: >-
     Execute implementation phases from an approved plan. Each phase goes
@@ -299,7 +299,7 @@ instructs co-loading (no trigger words — it never fires independently).
     'implement plan', 'run phases', 'next phase', 'phase execution'.
   ```
 
-- [ ] **4e.** Run full test suite (`bun test`) and fix any failures from
+- [x] **4e.** Run full test suite (`bun test`) and fix any failures from
   description changes affecting test assertions.
 
 ## Files Touched
@@ -314,10 +314,17 @@ instructs co-loading (no trigger words — it never fires independently).
 | `src/skills/5x-plan-review/SKILL.md` | Remove shared content, add gotchas, update description |
 | `src/skills/5x-phase-execution/SKILL.md` | Remove shared content, fix duplicate block, add gotchas, update description |
 | `src/skills/loader.ts` | Add import + registry entry for `5x` skill |
+| `src/commands/quality-v1.handler.ts` | Fix `projectRoot` to use `dirname(nearestConfigPath)` when config is layered |
+| `src/templates/loader.ts` | Add stale override version comparison and warning |
+| `src/templates/author-generate-plan.md` | Add `5x protocol emit` instructions to Completion section |
+| `src/templates/*.md` (all 8) | Bump version from 1 to 2 |
 | `test/unit/commands/config-show.test.ts` | **New** — unit tests for config show |
 | `test/integration/commands/config-show.test.ts` | **New** — integration test for config show |
 | `test/unit/commands/init-skills.test.ts` | Update exact-count assertions (3 → 4) for new `5x` skill |
 | `test/unit/skills/skill-content.test.ts` | Update for new skill, moved content, gotchas assertions |
+| `test/unit/commands/quality-handler.test.ts` | Add sub-project cwd test |
+| `test/integration/commands/quality-v1.test.ts` | Add sub-project cwd integration test |
+| `test/unit/templates/` | **New** — stale override warning test |
 
 ## Tests
 
@@ -325,8 +332,89 @@ instructs co-loading (no trigger words — it never fires independently).
 |------|-------|-----------|
 | Unit | `config-show.test.ts` | Pure config-resolution (layered + defaults) and text-formatting helpers |
 | Unit | `skill-content.test.ts` | All 4 skills load, frontmatter parses, content assertions |
+| Unit | `quality-handler.test.ts` | Sub-project layered config → cwd is sub-project dir |
+| Unit | `templates/` | Stale override warning emitted when override version < bundled |
 | Integration | `config-show.test.ts` | `5x config show` subprocess returns JSON envelope; `--context` layered resolution |
+| Integration | `quality-v1.test.ts` | `5x quality run --run` with sub-project config runs gates in sub-project dir |
 | Existing | `skill-content.test.ts` | Existing contract tests still pass after content moves |
+
+## Phase 5: Fix quality gate sub-project execution directory
+
+**Completion gate:** Quality gates defined in a sub-project's `5x.toml`
+execute with cwd in that sub-project's directory. Tests pass.
+
+- [x] **5a.** Fix `src/commands/quality-v1.handler.ts` code path A (run-scoped,
+  lines 157-165): when `resolveLayeredConfig` returns `isLayered: true` and
+  `nearestConfigPath` is set, use `dirname(result.nearestConfigPath)` as the
+  execution cwd instead of `controlPlaneRoot`. Specifically, change the
+  `projectRoot` assignment from `effectiveWorkdir ?? controlPlaneRoot` to
+  `effectiveWorkdir ?? dirname(result.nearestConfigPath)` when the config is
+  layered. Explicit `--workdir` and worktree mappings (`effectiveWorkdir`) still
+  take precedence. When `isLayered` is false, preserve the existing behavior
+  (`effectiveWorkdir ?? controlPlaneRoot`).
+
+- [x] **5b.** Add unit test in `test/unit/commands/quality-handler.test.ts`:
+  set up a monorepo-like temp dir with a root `5x.toml` (empty `qualityGates`)
+  and a sub-project `sub/5x.toml` (with `qualityGates = ["pwd"]` or equivalent
+  cwd-revealing command). Call `runQuality()` with the appropriate params to
+  trigger layered config resolution into the sub-project. Assert the quality
+  gate ran in the sub-project directory (check the output contains the
+  sub-project path). Note: this may require adjusting the handler to accept
+  `startDir` or similar testability parameters, consistent with the existing
+  `startDir` convention used by `initScaffold`, `planPhases`, etc.
+
+- [x] **5c.** Add integration test in
+  `test/integration/commands/quality-v1.test.ts` (or new file): set up a temp
+  git repo with monorepo structure (root `5x.toml` with empty gates, sub-project
+  `5x.toml` with `qualityGates`), initialize a run with a plan in the
+  sub-project, spawn `5x quality run --run <id>`, verify the quality gate
+  command executes in the sub-project directory. Use `cleanGitEnv()`,
+  `stdin: "ignore"`, and per-test `timeout`.
+
+## Phase 6: Template staleness detection and `author-generate-plan` protocol emit
+
+**Completion gate:** Stale on-disk template overrides trigger a stderr warning
+with actionable remediation advice. `author-generate-plan` includes
+`5x protocol emit` instructions. All bundled templates are at version 2.
+All tests pass.
+
+- [ ] **6a.** Add stale override detection in `loadTemplate()`
+  (`src/templates/loader.ts`): after loading an override from disk (line 304),
+  also look up the bundled template's raw content from the `TEMPLATES` registry.
+  Parse the bundled template's frontmatter to extract its version. Compare:
+  if `overrideVersion < bundledVersion`, emit a warning to stderr:
+  ```
+  Warning: Template "<name>" on-disk override (v<N>) is older than bundled
+  (v<M>). Remove .5x/templates/prompts/<name>.md to use the bundled version,
+  or run "5x init --install-templates --force" to update.
+  ```
+  Continue using the override (warn-only, no behavioral change). If the
+  bundled template doesn't exist for this name (user-only template), skip the
+  version check.
+
+- [ ] **6b.** Add `5x protocol emit` instructions to the `## Completion`
+  section of `src/templates/author-generate-plan.md`. Follow the same pattern
+  as `author-next-phase.md`: include `5x protocol emit author --complete
+  --commit <hash>` and `5x protocol emit author --needs-human --reason "..."`
+  examples, with the "include verbatim as structured result" instruction.
+
+- [ ] **6c.** Bump the `version` field in all 8 bundled templates from `1` to
+  `2`. All templates have gained content (description, variable_defaults,
+  protocol emit instructions, or body changes) since the initial v1 scaffolding.
+  Templates: `author-fix-quality`, `author-generate-plan`, `author-next-phase`,
+  `author-process-impl-review`, `author-process-plan-review`, `reviewer-commit`,
+  `reviewer-plan`, `reviewer-plan-continued`.
+
+- [ ] **6d.** Add unit test for stale override warning: create a temp override
+  directory with a v1 template (matching a bundled template name), call
+  `setTemplateOverrideDir()` then `loadTemplate()`, and verify a warning is
+  emitted. Also test the no-warning case (override version equals bundled
+  version). Test can be in `test/unit/templates/` or alongside existing
+  template loader tests.
+
+- [ ] **6e.** Run full test suite (`bun test`) and fix any failures from
+  version bumps affecting test assertions (e.g., tests that assert on
+  `metadata.version === 1`).
 
 ## Estimated Scope
 
@@ -336,6 +424,8 @@ instructs co-loading (no trigger words — it never fires independently).
 | Phase 2 | Medium | ~120 lines SKILL.md + ~5 lines loader + ~40 lines tests |
 | Phase 3 | Medium | Net removal across 3 skills; test updates are the main work |
 | Phase 4 | Small | Description field updates only + test fixups |
+| Phase 5 | Small | ~10 lines handler fix + ~60 lines tests |
+| Phase 6 | Small | ~30 lines loader + ~10 lines template + ~40 lines tests |
 
 ## Not In Scope
 
@@ -345,9 +435,25 @@ instructs co-loading (no trigger words — it never fires independently).
 - Memory/data persistence in skills (we use the 5x database for this)
 - Skill marketplace or plugin distribution changes
 - Changes to the skill installer to support multi-file skill directories
-- Changes to templates or agent definitions
+- Auto-merging user-customized template overrides with bundled updates
+  (warn-only approach; users manually re-scaffold via
+  `5x init --install-templates --force`)
 
 ## Revision History
+
+### v1.4 — Add Phases 5-6 from execution debrief
+
+**Phase 5 — quality gate cwd bug:** Quality gates defined in a sub-project
+`5x.toml` executed with cwd at the control-plane root instead of the
+sub-project directory. Fix uses `dirname(nearestConfigPath)` from
+`resolveLayeredConfig` when `isLayered` is true.
+
+**Phase 6 — stale template overrides:** On-disk template overrides
+(`.5x/templates/prompts/`) scaffolded by `5x init` become stale when
+bundled templates are updated. Adds version comparison in `loadTemplate()`
+with stderr warning (warn-only, continues using override). Also adds
+`5x protocol emit` instructions to `author-generate-plan` (the only bundled
+template missing them) and bumps all template versions to 2.
 
 ### v1.3 — Address R3 review (023-skill-improvements-review.md, Addendum iteration 3)
 

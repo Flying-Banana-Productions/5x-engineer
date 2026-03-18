@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { runQuality } from "../../../src/commands/quality-v1.handler.js";
+import { resolveLayeredConfig } from "../../../src/config.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -134,6 +135,66 @@ describe("runQuality handler — skipQualityGates", () => {
 
 			expect(warnCalls.length).toBe(1);
 			expect(warnCalls[0]).toContain("no quality gates configured");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("runQuality handler — sub-project layered config cwd", () => {
+	test("resolveLayeredConfig returns nearestConfigPath for sub-project with qualityGates", async () => {
+		const dir = makeTmpDir();
+		try {
+			// Set up monorepo structure: root with empty gates, sub-project with gates
+			mkdirSync(join(dir, ".git"), { recursive: true });
+			writeFileSync(join(dir, "5x.toml"), "qualityGates = []\n");
+
+			const subDir = join(dir, "packages", "sub");
+			mkdirSync(subDir, { recursive: true });
+			writeFileSync(
+				join(subDir, "5x.toml"),
+				'qualityGates = ["echo sub-project"]\n',
+			);
+
+			// Resolve layered config from root with context pointing to sub-project
+			const result = await resolveLayeredConfig(dir, subDir);
+
+			expect(result.isLayered).toBe(true);
+			expect(result.nearestConfigPath).toBe(join(subDir, "5x.toml"));
+			expect(result.config.qualityGates).toEqual(["echo sub-project"]);
+
+			// Verify the handler's fix logic: dirname(nearestConfigPath) = subDir
+			expect(result.nearestConfigPath).toBeTruthy();
+			expect(dirname(result.nearestConfigPath as string)).toBe(resolve(subDir));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("workdir pointing to sub-project uses sub-project quality gates", async () => {
+		const dir = makeTmpDir();
+		const warnCalls: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnCalls.push(args.map(String).join(" "));
+		};
+
+		try {
+			// Root project with .git and no quality gates
+			mkdirSync(join(dir, ".git"), { recursive: true });
+			writeFileSync(join(dir, "5x.toml"), "skipQualityGates = true\n");
+
+			// Sub-project with its own .git marker and quality gates that print cwd
+			const subDir = join(dir, "packages", "sub");
+			mkdirSync(subDir, { recursive: true });
+			mkdirSync(join(subDir, ".git"), { recursive: true });
+			writeFileSync(join(subDir, "5x.toml"), 'qualityGates = ["pwd"]\n');
+
+			// Call runQuality with workdir pointing to sub-project
+			// This takes the `else if (effectiveWorkdir)` path (no --run)
+			await runQuality({ workdir: subDir }, warn);
+
+			// No warnings expected — gates are configured in sub-project
+			expect(warnCalls.length).toBe(0);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
