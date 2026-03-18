@@ -1,6 +1,6 @@
 # Skill Improvements: Config Command, Shared Foundation, Gotchas, Trigger Descriptions
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** March 18, 2026
 **Status:** Draft
 
@@ -34,13 +34,21 @@ to improve the 5x bundled agent skills. Four problems to address:
 
 ## Design Decisions
 
-**`5x config show` outputs the full resolved config.** A single command that
-dumps the merged, resolved config as a JSON envelope. The orchestrator runs it
-once at init and reads values like `maxReviewIterations` and `maxQualityRetries`
-from the output. This is simpler than per-key lookup (`5x config get <key>`)
-and consistent with the existing `outputSuccess` envelope pattern. Sensitive
-values (db path, absolute filesystem paths) are included — this is a local
-development tool, not a public API.
+**`5x config show` outputs the full resolved config using layered resolution.**
+A single command that dumps the merged, resolved config as a JSON envelope. The
+orchestrator runs it once at init and reads values like `maxReviewIterations`
+and `maxQualityRetries` from the output. This is simpler than per-key lookup
+(`5x config get <key>`) and consistent with the existing `outputSuccess`
+envelope pattern. Sensitive values (db path, absolute filesystem paths) are
+included — this is a local development tool, not a public API.
+
+The handler uses `resolveLayeredConfig(projectRoot, contextDir)` — the same
+function used by `template.handler.ts`, `run-v1.handler.ts`, `context.ts`, and
+`invoke.handler.ts` — so it resolves nearest-config overrides in sub-project /
+monorepo layouts. An optional `--context <dir>` CLI flag (defaults to
+`process.cwd()`) lets the caller specify which directory's config context to
+resolve. This ensures the command reports the same values the workflow would
+see when running in that directory.
 
 **Shared `5x` foundational skill over inline duplication.** A new `5x` skill
 contains all cross-cutting orchestration knowledge. Process skills reference it
@@ -65,30 +73,47 @@ set is a starting point, not exhaustive.
 envelope, tests pass.
 
 - [ ] **1a.** Create `src/commands/config.handler.ts` with a `configShow` handler
-  that loads the resolved config via `loadConfig(projectRoot)` and outputs it
-  via `outputSuccess()`. The handler accepts an optional `startDir` parameter
-  for testability (same convention as `initScaffold`, `planPhases`, etc.).
-  Include a text formatter that renders key config values in human-readable
-  format (similar to `plan-v1.handler.ts:formatPhasesText`).
+  that loads the resolved config via `resolveLayeredConfig(projectRoot,
+  contextDir)` and outputs it via `outputSuccess()`. The handler accepts
+  optional `startDir` and `contextDir` parameters for testability (same
+  convention as `initScaffold`, `planPhases`, etc.). `contextDir` defaults
+  to `process.cwd()`. Include a text formatter that renders key config values
+  in human-readable format (similar to `plan-v1.handler.ts:formatPhasesText`).
 
 - [ ] **1b.** Create `src/commands/config.ts` with a `registerConfig` function
   that registers `5x config show` as a commander subcommand. Pattern:
-  `parent.command("config")` → `.command("show")` → `.action(configShow)`.
+  `parent.command("config")` → `.command("show")` →
+  `.option("--context <dir>", "Config context directory", process.cwd())` →
+  `.action(configShow)`. The `--context` flag passes `contextDir` to the
+  handler for layered config resolution.
 
 - [ ] **1c.** Register the command in `src/bin.ts`: import `registerConfig`,
   call `registerConfig(program)`.
 
-- [ ] **1d.** Add unit test `test/unit/commands/config-show.test.ts` that:
-  (a) calls `configShow({ startDir: tmp })` with a temp dir containing a
-  `5x.toml` with custom values; (b) verifies the output includes the
-  custom values (capture stdout via the test setup pattern); (c) calls
-  `configShow({ startDir: tmp })` with no config file and verifies defaults
-  are returned.
+- [ ] **1d.** Add unit test `test/unit/commands/config-show.test.ts` that tests
+  pure config-resolution and text-formatting helpers directly (no stdout
+  capture). Specifically:
+  (a) calls the text formatter with a known config object and asserts the
+  returned string contains expected key-value pairs;
+  (b) calls `resolveLayeredConfig(rootDir)` with a temp dir containing a
+  `5x.toml` with custom values and verifies the resolved config reflects
+  those overrides;
+  (c) calls `resolveLayeredConfig(rootDir, subDir)` where `subDir` contains
+  a nearest-config override, verifying the layered merge (sub-project values
+  override root, root values fill gaps);
+  (d) calls `resolveLayeredConfig(rootDir)` with no config file and verifies
+  defaults are returned.
 
 - [ ] **1e.** Add integration test `test/integration/commands/config-show.test.ts`
-  that spawns `5x config show` in a temp dir with a `5x.toml`, parses the
-  JSON envelope, and asserts `ok: true` with expected config values. Use
-  `cleanGitEnv()`, `stdin: "ignore"`, and per-test `timeout`.
+  that spawns `5x config show` via `Bun.spawnSync` and validates
+  stdout/envelope output. Use `cleanGitEnv()`, `stdin: "ignore"`, and
+  per-test `timeout`. Cases:
+  (a) spawn in a temp dir with a `5x.toml` containing custom values, parse
+  the JSON envelope, assert `ok: true` with expected config values;
+  (b) spawn with `--context <subdir>` where `subdir` has a nearest-config
+  override, verify the envelope reflects the layered merge;
+  (c) spawn in a temp dir with no config file, verify the envelope contains
+  default values.
 
 ## Phase 2: Create `5x` foundational skill
 
@@ -219,14 +244,16 @@ updated to match new structure.
 **Completion gate:** All four skill descriptions include trigger words and
 the three process skills instruct the agent to co-load the `5x` skill.
 
-- [ ] **4a.** Update the description field in `src/skills/5x/SKILL.md`:
+- [ ] **4a.** Update the description field in `src/skills/5x/SKILL.md`.
+  The `5x` skill is a co-loaded dependency, not an independently triggered
+  skill — it should never fire on its own. Remove the `Triggers on:` line
+  entirely and keep the description focused on the co-loading instruction:
   ```yaml
   description: >-
     Shared foundation for all 5x workflows. ALWAYS load this skill alongside
     any 5x-plan, 5x-plan-review, or 5x-phase-execution skill. Covers
     delegation patterns, human interaction, timeouts, and cross-cutting
-    gotchas. Triggers on: '5x', 'plan', 'review', 'phase', 'implement',
-    'execute'.
+    gotchas.
   ```
 
 - [ ] **4b.** Update the description field in `src/skills/5x-plan/SKILL.md`:
@@ -263,8 +290,8 @@ the three process skills instruct the agent to co-load the `5x` skill.
 
 | File | Change |
 |------|--------|
-| `src/commands/config.handler.ts` | **New** — `configShow` handler |
-| `src/commands/config.ts` | **New** — commander registration |
+| `src/commands/config.handler.ts` | **New** — `configShow` handler using `resolveLayeredConfig` |
+| `src/commands/config.ts` | **New** — commander registration with `--context <dir>` option |
 | `src/bin.ts` | Add `registerConfig` import and call |
 | `src/skills/5x/SKILL.md` | **New** — shared foundational skill |
 | `src/skills/5x-plan/SKILL.md` | Remove shared content, add gotchas, update description |
@@ -279,9 +306,9 @@ the three process skills instruct the agent to co-load the `5x` skill.
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `config-show.test.ts` | Handler loads config and outputs correct envelope |
+| Unit | `config-show.test.ts` | Pure config-resolution (layered + defaults) and text-formatting helpers |
 | Unit | `skill-content.test.ts` | All 4 skills load, frontmatter parses, content assertions |
-| Integration | `config-show.test.ts` | `5x config show` subprocess returns JSON envelope |
+| Integration | `config-show.test.ts` | `5x config show` subprocess returns JSON envelope; `--context` layered resolution |
 | Existing | `skill-content.test.ts` | Existing contract tests still pass after content moves |
 
 ## Estimated Scope
@@ -302,3 +329,23 @@ the three process skills instruct the agent to co-load the `5x` skill.
 - Skill marketplace or plugin distribution changes
 - Changes to the skill installer to support multi-file skill directories
 - Changes to templates or agent definitions
+
+## Revision History
+
+### v1.1 — Address R1 review (023-skill-improvements-review.md)
+
+**P0.1 — config resolution (R1):** Replaced `loadConfig(projectRoot)` with
+`resolveLayeredConfig(projectRoot, contextDir)` in Phase 1a. Added
+`--context <dir>` CLI flag to Phase 1b. Updated Design Decisions to document
+layered resolution and reference the existing callers. Updated Phase 1d/1e
+tests to cover both root-only and layered (sub-project override) scenarios.
+
+**P1.1 — trigger descriptions (R2):** Removed `Triggers on:` line from the
+`5x` skill description in Phase 4a. The `5x` skill is a co-loaded dependency
+that should never fire independently; its description now focuses solely on
+the co-loading instruction.
+
+**P2.1 — unit test stdout capture (R3):** Reworked Phase 1d to test pure
+config-resolution and text-formatting helpers directly (function return values,
+no stdout capture). Moved envelope/stdout assertions to the integration test
+in Phase 1e.
