@@ -1,6 +1,6 @@
 {
   "name": "@5x-ai/5x-cli",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "AI-assisted author/reviewer workflow CLI for implementation plans",
   "license": "MIT",
   "author": "Flying Banana Productions",
@@ -22,7 +22,9 @@
     "planning",
     "review"
   ],
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "files": [
     "src"
   ],
