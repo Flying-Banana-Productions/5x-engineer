@@ -114,3 +114,58 @@ None.
 None blocking.
 
 **Readiness:** Ready — implementation matches all 9 checklist items, test coverage is comprehensive, the full test suite passes, and the design correctly handles edge cases (no run context, undetermined phase, missing continued template).
+
+## Addendum (2026-03-17) - Phase 3 Protocol Emit Command and Shared Normalization
+
+**Review type:** commit `6efe1e9`
+**Scope:** Phase 3 — protocol emit command and shared normalization (checklist items 3a–3j)
+**Reviewer:** Staff engineer
+**Local verification:** `bun test` — passed (1605 tests, 0 fail); `bun test test/unit/protocol-normalize.test.ts test/unit/commands/protocol-emit.test.ts test/integration/commands/protocol-emit.test.ts` — passed (30 tests)
+
+### Checklist Coverage
+
+| Item | Description | Status |
+|------|-------------|--------|
+| 3a | Shared normalization module | Done — `src/protocol-normalize.ts` (206 LOC), `normalizeReviewerVerdict` + `normalizeAuthorStatus` |
+| 3b | Wire normalization into validate | Done — `protocol-helpers.ts` uses shared module for both author and reviewer paths |
+| 3c | Relax `assertReviewerVerdict` for empty items | Done — warning instead of throw, `ReviewerVerdictAssertionResult` with `warnings: string[]` |
+| 3d | Register `5x protocol emit` command | Done — `protocol.ts` adds `emit reviewer` and `emit author` subcommands |
+| 3e | Protocol emit handler | Done — `protocol-emit.handler.ts` (251 LOC), raw JSON stdout, `outputError()` for errors |
+| 3f | Update reviewer templates | Done — `reviewer-plan.md`, `reviewer-commit.md`, `reviewer-plan-continued.md` |
+| 3g | Update author templates | Done — `author-next-phase.md`, `author-process-plan-review.md`, `author-process-impl-review.md`, `author-fix-quality.md` |
+| 3h | Unit tests for normalization | Done — 13 tests in `test/unit/protocol-normalize.test.ts` |
+| 3i | Unit tests for emit handler | Done — 14 tests in `test/unit/commands/protocol-emit.test.ts` |
+| 3j | Integration tests | Done — 9 tests in `test/integration/commands/protocol-emit.test.ts` |
+
+### Key Design Requirement Verification
+
+The critical contract — `5x protocol emit` success output is raw canonical JSON to stdout, NOT wrapped in `outputSuccess` envelope — is correctly implemented:
+
+- **Success path:** `process.stdout.write(JSON.stringify(normalized))` in both `protocolEmitReviewer` and `protocolEmitAuthor`. No `outputSuccess()` call anywhere in the handler.
+- **Error path:** `outputError()` (which throws `CliError`, caught by `bin.ts` top-level handler, writes `{ ok: false, error }` envelope to stdout with non-zero exit code).
+- **Integration test validates both contracts:** Test "e2e: --ready emits raw canonical JSON (not envelope)" asserts `parsed.ok` is `undefined` (confirming no envelope). Test "missing required flags → non-zero exit + error envelope" asserts `parsed.ok === false` with `error.code`.
+- **Round-trip test:** Output from `emit` is piped to `validate` and succeeds, confirming the two commands agree on schema format.
+
+### Strengths
+
+- **Single source of truth for normalization:** Both `protocol emit` and `protocol validate` use the same shared module. No schema drift possible between the "produce" and "validate" paths.
+- **`outputError` returns `never`:** The handler can call `outputError()` without explicit `return` statements — TypeScript's control-flow analysis ensures no code executes after the throw. Clean and correct.
+- **Stdin fallback is well-designed:** The `stdinData` parameter injection in unit tests avoids mocking `Bun.stdin.stream()`. Integration tests use real pipe via `Bun.spawn` with `stdin: "pipe"`. Both tiers exercise the normalization-via-stdin path.
+- **Backward-compatible relaxation:** `assertReviewerVerdict` now returns a structured result with `warnings` instead of throwing. All callers updated to destructure — `protocol.handler.ts`, `protocol-helpers.ts`, `protocol-emit.handler.ts`. Existing tests updated from `toThrow()` to `warnings.length` assertions.
+- **Reviewer normalization is comprehensive:** `verdict` → `readiness`, `issues` → `items`, `severity` → `priority`, auto-`id`, default `action` — all specified mappings implemented with corresponding tests.
+- **`normalizeLegacyAuthorStatus` preserved:** The old function in `protocol.ts` is kept as a dead export for backward compatibility with any external callers. No imports from `src/commands/` reference it anymore — only test files. Clean migration.
+- **Integration tests use `cleanGitEnv()` and `stdin: "ignore"`/`stdin: "pipe"` correctly** per the AGENTS.md conventions. All tests have `{ timeout: 15000 }`.
+
+### Concerns
+
+- **P2 / minor — Dead `normalizeLegacyAuthorStatus` export:** The old function remains in `protocol.ts` (lines 203+) and its tests remain in `protocol-helpers.test.ts`. No production code imports it. This is dead code that should eventually be cleaned up, but it's harmless and the tests provide regression coverage during the transition.
+
+- **P2 / minor — Missing `--failed` without `--reason` unit test:** The plan item 3i doesn't explicitly list this case, but the handler enforces `--reason` for both `--needs-human` and `--failed` (line 227). Only `--needs-human` without `--reason` has a dedicated unit test. The `--failed` path is covered implicitly by the handler's `result !== "complete"` check, and the integration test for multiple flags covers error envelope behavior. Minor coverage gap.
+
+- **P2 / minor — `normalizeAuthorStatus` field-stripping on normalization:** When normalizing from `status` → `result`, the function builds a new object with only canonical fields (lines 171–205), dropping any extra fields. `normalizeReviewerVerdict` uses `{ ...record }` spread (preserving extras). The asymmetry is documented in code comments and is intentional — legacy author payloads often contain non-canonical fields. Worth noting but not a bug.
+
+### Remaining Concerns
+
+None blocking.
+
+**Readiness:** Ready — all 10 checklist items implemented, the critical raw-JSON-on-success contract is correctly enforced, shared normalization is the single source of truth, the full test suite passes (1605 tests), and the design handles stdin fallback, error paths, and backward compatibility cleanly.
