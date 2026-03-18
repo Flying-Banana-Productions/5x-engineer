@@ -1,0 +1,267 @@
+/**
+ * Integration tests for `5x config show` — CLI subprocess behavior.
+ *
+ * Tests spawn the CLI binary and validate JSON envelope output, exit
+ * codes, and layered config resolution via --context.
+ *
+ * Pure config-resolution unit tests are in test/unit/commands/config-show.test.ts.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { cleanGitEnv } from "../../helpers/clean-env.js";
+
+const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeTmpDir(prefix = "5x-cfg-int"): string {
+	const dir = join(
+		tmpdir(),
+		`${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+function cleanupDir(dir: string): void {
+	try {
+		rmSync(dir, { recursive: true });
+	} catch {}
+}
+
+function git(args: string[], cwd: string): string {
+	const result = Bun.spawnSync(["git", ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (result.exitCode !== 0) {
+		throw new Error(
+			`git ${args.join(" ")} failed: ${result.stderr.toString()}`,
+		);
+	}
+	return result.stdout.toString().trim();
+}
+
+function initRepo(dir: string): void {
+	git(["init"], dir);
+	git(["config", "user.email", "test@test.com"], dir);
+	git(["config", "user.name", "Test"], dir);
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	git(["add", "."], dir);
+	git(["commit", "-m", "initial"], dir);
+}
+
+interface CmdResult {
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+}
+
+async function run5x(
+	cwd: string,
+	args: string[],
+	timeoutMs = 15000,
+): Promise<CmdResult> {
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const timer = setTimeout(() => proc.kill("SIGINT"), timeoutMs);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	clearTimeout(timer);
+	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
+function parseJson(stdout: string): Record<string, unknown> {
+	return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("5x config show (integration)", () => {
+	test(
+		"returns envelope with custom config values",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"maxReviewIterations = 8",
+						"maxQualityRetries = 4",
+						"",
+						"[author]",
+						'provider = "test-provider"',
+						'model = "test-model"',
+					].join("\n"),
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "add config"], dir);
+
+				const result = await run5x(dir, ["config", "show"]);
+				expect(result.exitCode).toBe(0);
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+
+				const data = envelope.data as Record<string, unknown>;
+				expect(data.maxReviewIterations).toBe(8);
+				expect(data.maxQualityRetries).toBe(4);
+
+				const author = data.author as Record<string, unknown>;
+				expect(author.provider).toBe("test-provider");
+				expect(author.model).toBe("test-model");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--context resolves layered config from sub-project",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"maxReviewIterations = 5",
+						"",
+						"[author]",
+						'provider = "root-provider"',
+						'model = "root-model"',
+					].join("\n"),
+				);
+
+				const subDir = join(dir, "packages", "api");
+				mkdirSync(subDir, { recursive: true });
+				writeFileSync(
+					join(subDir, "5x.toml"),
+					["[author]", 'model = "sub-model"'].join("\n"),
+				);
+
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "add configs"], dir);
+
+				const result = await run5x(dir, [
+					"config",
+					"show",
+					"--context",
+					subDir,
+				]);
+				expect(result.exitCode).toBe(0);
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+
+				const data = envelope.data as Record<string, unknown>;
+				const author = data.author as Record<string, unknown>;
+				// Sub-project overrides model
+				expect(author.model).toBe("sub-model");
+				// Root provider preserved
+				expect(author.provider).toBe("root-provider");
+				// Root value preserved
+				expect(data.maxReviewIterations).toBe(5);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"returns default values when no config file exists",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+
+				const result = await run5x(dir, ["config", "show"]);
+				expect(result.exitCode).toBe(0);
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+
+				const data = envelope.data as Record<string, unknown>;
+				expect(data.maxReviewIterations).toBe(5);
+				expect(data.maxQualityRetries).toBe(3);
+				expect(data.maxStepsPerRun).toBe(50);
+
+				const author = data.author as Record<string, unknown>;
+				expect(author.provider).toBe("opencode");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"resolves root-anchored values from linked worktree",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"[db]",
+						'path = ".5x/5x.db"',
+						"",
+						"[author]",
+						'provider = "wt-provider"',
+					].join("\n"),
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "add config"], dir);
+
+				// Create a linked worktree
+				const wtDir = join(dir, "..", `wt-${Date.now()}`);
+				git(["worktree", "add", wtDir, "-b", "test-wt"], dir);
+
+				try {
+					const result = await run5x(wtDir, ["config", "show"]);
+					expect(result.exitCode).toBe(0);
+
+					const envelope = parseJson(result.stdout);
+					expect(envelope.ok).toBe(true);
+
+					const data = envelope.data as Record<string, unknown>;
+					const db = data.db as Record<string, unknown>;
+					// db.path should resolve relative to the control-plane
+					// root (main repo), not the worktree checkout
+					expect(db.path).toBe(".5x/5x.db");
+
+					const author = data.author as Record<string, unknown>;
+					expect(author.provider).toBe("wt-provider");
+				} finally {
+					// Clean up worktree
+					git(["worktree", "remove", "--force", wtDir], dir);
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});

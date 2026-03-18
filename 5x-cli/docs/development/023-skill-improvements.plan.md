@@ -72,7 +72,7 @@ set is a starting point, not exhaustive.
 **Completion gate:** `5x config show` outputs the resolved config as a JSON
 envelope, tests pass.
 
-- [ ] **1a.** Create `src/commands/config.handler.ts` with a `configShow` handler
+- [x] **1a.** Create `src/commands/config.handler.ts` with a `configShow` handler
   that loads the resolved config via `resolveLayeredConfig(controlPlaneRoot,
   contextDir)` and outputs it via `outputSuccess()`. The control plane root is
   resolved via `resolveControlPlaneRoot(startDir)` — the same pattern used by
@@ -86,17 +86,17 @@ envelope, tests pass.
   renders key config values in human-readable format (similar to
   `plan-v1.handler.ts:formatPhasesText`).
 
-- [ ] **1b.** Create `src/commands/config.ts` with a `registerConfig` function
+- [x] **1b.** Create `src/commands/config.ts` with a `registerConfig` function
   that registers `5x config show` as a commander subcommand. Pattern:
   `parent.command("config")` → `.command("show")` →
   `.option("--context <dir>", "Config context directory", process.cwd())` →
   `.action(configShow)`. The `--context` flag passes `contextDir` to the
   handler for layered config resolution.
 
-- [ ] **1c.** Register the command in `src/bin.ts`: import `registerConfig`,
+- [x] **1c.** Register the command in `src/bin.ts`: import `registerConfig`,
   call `registerConfig(program)`.
 
-- [ ] **1d.** Add unit test `test/unit/commands/config-show.test.ts` that tests
+- [x] **1d.** Add unit test `test/unit/commands/config-show.test.ts` that tests
   pure config-resolution and text-formatting helpers directly (no stdout
   capture). Specifically:
   (a) calls the text formatter with a known config object and asserts the
@@ -110,7 +110,7 @@ envelope, tests pass.
   (d) calls `resolveLayeredConfig(rootDir)` with no config file and verifies
   defaults are returned.
 
-- [ ] **1e.** Add integration test `test/integration/commands/config-show.test.ts`
+- [x] **1e.** Add integration test `test/integration/commands/config-show.test.ts`
   that spawns `5x config show` via `Bun.spawnSync` and validates
   stdout/envelope output. Use `cleanGitEnv()`, `stdin: "ignore"`, and
   per-test `timeout`. Cases:

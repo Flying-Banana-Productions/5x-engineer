@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { CommanderError } from "@commander-js/extra-typings";
+import { registerConfig } from "./commands/config.js";
 import { registerDiff } from "./commands/diff.js";
 import { registerHarness } from "./commands/harness.js";
 import { registerInit } from "./commands/init.js";
@@ -83,6 +84,7 @@ registerRun(program);
 registerInvoke(program);
 registerQuality(program);
 registerPlan(program);
+registerConfig(program);
 registerDiff(program);
 registerPrompt(program);
 registerInit(program);
