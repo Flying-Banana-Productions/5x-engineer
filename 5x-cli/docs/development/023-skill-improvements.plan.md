@@ -1,6 +1,6 @@
 # Skill Improvements: Config Command, Shared Foundation, Gotchas, Trigger Descriptions
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** March 18, 2026
 **Status:** Draft
 
@@ -119,7 +119,12 @@ envelope, tests pass.
   (b) spawn with `--context <subdir>` where `subdir` has a nearest-config
   override, verify the envelope reflects the layered merge;
   (c) spawn in a temp dir with no config file, verify the envelope contains
-  default values.
+  default values;
+  (d) create a linked worktree (via `git worktree add`), spawn
+  `5x config show` from the worktree checkout, and verify root-anchored
+  values (e.g., `db.path`) resolve relative to the control-plane root,
+  not the worktree directory — validates `resolveControlPlaneRoot(startDir)`
+  behavior from Phase 1a.
 
 ## Phase 2: Create `5x` foundational skill
 
@@ -343,6 +348,13 @@ instructs co-loading (no trigger words — it never fires independently).
 - Changes to templates or agent definitions
 
 ## Revision History
+
+### v1.3 — Address R3 review (023-skill-improvements-review.md, Addendum iteration 3)
+
+**P2.4 — missing worktree integration test (R1):** Added test case (d) to
+Phase 1e that spawns `5x config show` from inside a linked worktree and
+verifies root-anchored values resolve via the control-plane root, not the
+worktree checkout directory.
 
 ### v1.2 — Address R2 review (023-skill-improvements-review.md, Addendum)
 
