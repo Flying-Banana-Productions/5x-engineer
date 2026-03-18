@@ -113,6 +113,16 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("5x config show");
 	});
 
+	test("contains Session Reuse section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Session Reuse");
+	});
+
+	test("contains Fallback: 5x invoke section", () => {
+		const content = getDefaultSkillRaw("5x");
+		expect(content).toContain("## Fallback: 5x invoke");
+	});
+
 	test("documents native agent detection order: project scope before user scope before fallback", () => {
 		const content = getDefaultSkillRaw("5x");
 		const sectionIdx = content.indexOf("Native agent detection order");
