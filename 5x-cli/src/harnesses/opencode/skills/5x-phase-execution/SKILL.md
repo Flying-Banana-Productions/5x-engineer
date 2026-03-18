@@ -49,8 +49,6 @@ timeout handling.
 - `5x run reopen --run <id>` — reopen a completed/aborted run
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-- `5x invoke author <template> --run <id> --var key=val` — invoke author (fallback transport, auto-resolves worktree when `--run` is mapped)
-- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer (fallback transport, auto-resolves worktree when `--run` is mapped)
 - `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
 - `5x diff --run <id>` — inspect changes in mapped worktree
@@ -61,8 +59,8 @@ timeout handling.
 
 ### Session reuse
 
-Session reuse is optional and best-effort. Capture the session identifier
-from the first reviewer invocation as `$REVIEWER_SESSION`. Pass it when
+Session reuse is optional and best-effort. Capture the `task_id` from
+the first reviewer invocation as `$REVIEWER_SESSION`. Pass it when
 resuming the reviewer for re-reviews within the same phase — this gives
 the reviewer conversational continuity with its prior findings. Pass
 `--session $REVIEWER_SESSION` to `5x template render` to auto-select a
@@ -128,7 +126,7 @@ Track $REVIEWER_SESSION = "" (for optional session reuse within this phase).
 
 #### Step 1: Author implements
 
-Delegate to the code author using the native-first pattern:
+Delegate to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-next-phase --run $RUN \
@@ -136,13 +134,7 @@ RENDERED=$(5x template render author-next-phase --run $RUN \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
-  RESULT=<launch native 5x-code-author subagent with PROMPT>
-else
-  RESULT=$(5x invoke author author-next-phase --run $RUN \
-    --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase $PHASE
@@ -182,7 +174,7 @@ If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
 
-Delegate fix to the code author using the native-first pattern:
+Delegate fix to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-fix-quality --run $RUN \
@@ -191,14 +183,7 @@ RENDERED=$(5x template render author-fix-quality --run $RUN \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
-  RESULT=<launch native 5x-code-author subagent with PROMPT>
-else
-  RESULT=$(5x invoke author author-fix-quality --run $RUN \
-    --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
-    --var user_notes="Quality gate failures: $FAILURES" 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase $PHASE
@@ -208,7 +193,7 @@ Loop back to Step 2.
 
 #### Step 3: Code review
 
-Delegate to the reviewer using the native-first pattern:
+Delegate to the reviewer via the Task tool:
 
 ```bash
 RENDERED=$(5x template render reviewer-commit --run $RUN \
@@ -219,15 +204,7 @@ PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
-  RESULT=<launch native 5x-reviewer subagent with PROMPT>
-else
-  RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
-    --var commit_hash=$COMMIT \
-    --var plan_path=$PLAN_PATH \
-    ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -247,8 +224,8 @@ reviewer before proceeding:
 
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
-exists. Capture $REVIEWER_SESSION for optional reuse in subsequent
-reviews.
+exists. Capture $REVIEWER_SESSION (the `task_id` from the Task tool)
+for optional reuse in subsequent reviews.
 
 #### Step 4: Route the verdict
 
@@ -272,7 +249,7 @@ Increment $REVIEW_ITERATIONS.
 If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
-Delegate to the code author using the native-first pattern:
+Delegate to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-process-impl-review --run $RUN \
@@ -280,13 +257,7 @@ RENDERED=$(5x template render author-process-impl-review --run $RUN \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
-  RESULT=<launch native 5x-code-author subagent with PROMPT>
-else
-  RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-    --var plan_path=$PLAN_PATH 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -435,26 +406,14 @@ still says not_ready on the same issues.
 3. If the diff doesn't address the items, re-invoke the author with
    explicit quotes of the review items and the current code.
 
-### Native subagent returns empty or invalid output
+### Subagent returns empty or invalid output
 
-**Symptom:** Native subagent returns no output or output that fails
+**Symptom:** Subagent returns no output or output that fails
 `5x protocol validate`.
 
 **Response:**
-1. Retry once with a fresh session (omit session reuse).
-2. If the second attempt fails, fall back to `5x invoke` as the
-   transport for this step.
-3. If both approaches fail, escalate to the human.
-
-### Subprocess returns empty output
-
-**Symptom:** The `5x invoke` subprocess returns no output.
-
-**Response:**
-1. The agent process was likely killed by the shell tool's wall-clock
-   timeout before completing. Retry with a longer timeout and a fresh
-   session (omit --session).
-2. If empty output persists after retry, escalate to the human.
+1. Retry once with a fresh session (no `task_id`).
+2. If it fails again, escalate to the human.
 
 ### Structured output validation failure
 

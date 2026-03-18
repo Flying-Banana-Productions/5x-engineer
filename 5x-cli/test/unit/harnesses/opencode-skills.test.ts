@@ -217,14 +217,9 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("## Human Interaction Model");
 	});
 
-	test("contains Delegating Sub-Agent Work section", () => {
+	test("contains Delegating to Subagents section", () => {
 		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("## Delegating Sub-Agent Work");
-	});
-
-	test("contains Timeout section", () => {
-		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("## Timeout Layers");
+		expect(content).toContain("## Delegating to Subagents");
 	});
 
 	test("contains Gotchas section", () => {
@@ -232,9 +227,8 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("## Gotchas");
 	});
 
-	test("references all four agent names", () => {
+	test("references all three subagent types", () => {
 		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("5x-orchestrator");
 		expect(content).toContain("5x-plan-author");
 		expect(content).toContain("5x-code-author");
 		expect(content).toContain("5x-reviewer");
@@ -250,24 +244,10 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("## Session Reuse");
 	});
 
-	test("contains Fallback: 5x invoke section", () => {
+	test("documents Task tool delegation pattern", () => {
 		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("## Fallback: 5x invoke");
-	});
-
-	test("documents native agent detection order: project scope before user scope before fallback", () => {
-		const content = getDefaultSkillRaw("5x");
-		const sectionIdx = content.indexOf("Native agent detection order");
-		expect(sectionIdx).toBeGreaterThan(-1);
-		const section = content.slice(sectionIdx);
-		const projectIdx = section.indexOf(".opencode/agents/");
-		const userIdx = section.indexOf("~/.config/opencode/agents/");
-		const fallbackIdx = section.indexOf("5x invoke");
-		expect(projectIdx).toBeGreaterThan(-1);
-		expect(userIdx).toBeGreaterThan(-1);
-		expect(fallbackIdx).toBeGreaterThan(-1);
-		expect(projectIdx).toBeLessThan(userIdx);
-		expect(userIdx).toBeLessThan(fallbackIdx);
+		expect(content).toContain("subagent_type");
+		expect(content).toContain("Task tool");
 	});
 });
 
@@ -275,7 +255,7 @@ describe("5x foundational skill", () => {
 // Native-first delegation: 5x-plan skill
 // ---------------------------------------------------------------------------
 
-describe("5x-plan skill — native-first delegation", () => {
+describe("5x-plan skill — Task tool delegation", () => {
 	test("skill loads", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toBeTruthy();
@@ -291,12 +271,13 @@ describe("5x-plan skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("references 5x invoke in skill-specific code examples", () => {
+	test("delegates via Task tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-plan");
-		expect(content).toContain("5x invoke");
+		expect(content).toContain("Task tool");
+		expect(content).not.toContain("5x invoke");
 	});
 
-	test("references 5x-plan-author native agent name", () => {
+	test("references 5x-plan-author subagent type", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toContain("5x-plan-author");
 	});
@@ -325,7 +306,7 @@ describe("5x-plan skill — native-first delegation", () => {
 // Native-first delegation: 5x-plan-review skill
 // ---------------------------------------------------------------------------
 
-describe("5x-plan-review skill — native-first delegation", () => {
+describe("5x-plan-review skill — Task tool delegation", () => {
 	test("references 5x template render command", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x template render");
@@ -336,17 +317,18 @@ describe("5x-plan-review skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("references 5x invoke in skill-specific code examples", () => {
+	test("delegates via Task tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
-		expect(content).toContain("5x invoke");
+		expect(content).toContain("Task tool");
+		expect(content).not.toContain("5x invoke");
 	});
 
-	test("references 5x-reviewer native agent name", () => {
+	test("references 5x-reviewer subagent type", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x-reviewer");
 	});
 
-	test("references 5x-plan-author native agent name", () => {
+	test("references 5x-plan-author subagent type", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x-plan-author");
 	});
@@ -382,7 +364,7 @@ describe("5x-plan-review skill — native-first delegation", () => {
 // Native-first delegation: 5x-phase-execution skill
 // ---------------------------------------------------------------------------
 
-describe("5x-phase-execution skill — native-first delegation", () => {
+describe("5x-phase-execution skill — Task tool delegation", () => {
 	test("references 5x template render command", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x template render");
@@ -393,17 +375,18 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("references 5x invoke in skill-specific code examples", () => {
+	test("delegates via Task tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
-		expect(content).toContain("5x invoke");
+		expect(content).toContain("Task tool");
+		expect(content).not.toContain("5x invoke");
 	});
 
-	test("references 5x-code-author native agent name", () => {
+	test("references 5x-code-author subagent type", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x-code-author");
 	});
 
-	test("references 5x-reviewer native agent name", () => {
+	test("references 5x-reviewer subagent type", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x-reviewer");
 	});
@@ -452,11 +435,9 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 		expect(content).toMatch(/checklist mismatch|Checklist mismatch/i);
 	});
 
-	test("native subagent recovery section exists", () => {
+	test("subagent recovery section exists", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
-		expect(content).toContain(
-			"Native subagent returns empty or invalid output",
-		);
+		expect(content).toContain("Subagent returns empty or invalid output");
 	});
 });
 
@@ -480,16 +461,17 @@ describe("run watch guidance removed from native-first skills", () => {
 		expect(content).not.toContain("run watch");
 	});
 
-	test("5x invoke is referenced in all process skills (in code examples)", () => {
-		// 5x invoke still appears in skill-specific code examples
-		expect(getDefaultSkillRaw("5x-plan")).toContain("5x invoke");
-		expect(getDefaultSkillRaw("5x-plan-review")).toContain("5x invoke");
-		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("5x invoke");
+	test("Task tool delegation is referenced in all process skills", () => {
+		expect(getDefaultSkillRaw("5x-plan")).toContain("Task tool");
+		expect(getDefaultSkillRaw("5x-plan-review")).toContain("Task tool");
+		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("Task tool");
 	});
 
-	test("Fallback: 5x invoke section is in the 5x foundational skill", () => {
-		// The dedicated Fallback section moved to the 5x skill
-		expect(getDefaultSkillRaw("5x")).toContain("## Fallback: 5x invoke");
+	test("no process skill references 5x invoke", () => {
+		expect(getDefaultSkillRaw("5x")).not.toContain("5x invoke");
+		expect(getDefaultSkillRaw("5x-plan")).not.toContain("5x invoke");
+		expect(getDefaultSkillRaw("5x-plan-review")).not.toContain("5x invoke");
+		expect(getDefaultSkillRaw("5x-phase-execution")).not.toContain("5x invoke");
 	});
 
 	test("5x-plan skill treats --plan as output path and passes PRD separately", () => {

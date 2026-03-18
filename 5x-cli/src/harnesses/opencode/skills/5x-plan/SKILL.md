@@ -44,8 +44,6 @@ timeout handling.
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-- `5x invoke author <template> --run <id> --var key=val` — invoke author sub-agent (fallback transport)
-- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer sub-agent (fallback transport)
 - `5x plan phases <path>` — get phase list and check plan parses
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
@@ -71,7 +69,7 @@ and skip to the appropriate step based on recorded history.
 
 ### Step 2: Generate the plan
 
-Delegate to the plan author using the native-first pattern:
+Delegate to the plan author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-generate-plan --run $RUN \
@@ -79,14 +77,7 @@ RENDERED=$(5x template render author-generate-plan --run $RUN \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-# Detect native agent
-if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-plan-author.md" ]]; then
-  RESULT=<launch native 5x-plan-author subagent with PROMPT>
-else
-  RESULT=$(5x invoke author author-generate-plan --run $RUN \
-    --var prd_path=$PRD_PATH 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP
@@ -134,11 +125,8 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Author claims complete but no commit**: Invariant violation — treat
   as context loss. Re-invoke with a fresh session. If it fails again,
   escalate to the human.
-- **Native subagent returns empty or invalid output**: Retry once with a
-  fresh session. If it fails again, fall back to `5x invoke` or escalate.
-- **Subprocess returns empty output**: The agent process was likely
-  killed by the shell tool's timeout. Retry with a longer timeout and
-  a fresh session. If empty output persists, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once with a fresh
+  session (no `task_id`). If it fails again, escalate to the human.
 
 ## Completion
 

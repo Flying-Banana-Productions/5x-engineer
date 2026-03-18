@@ -42,15 +42,13 @@ timeout handling.
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-- `5x invoke reviewer <template> --run <id> --var key=val` — invoke reviewer (fallback transport)
-- `5x invoke author <template> --run <id> --var key=val` — invoke author (fallback transport)
 - `5x plan phases <path>` — verify plan still parses after revisions
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
 ### Delegating sub-agent work
 
-**Canonical native delegation example (reviewer:review):**
+**Canonical delegation example (reviewer:review):**
 
 ```bash
 # 1. Render the prompt (output follows standard outputSuccess envelope)
@@ -65,26 +63,15 @@ PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-# 2. Detect native agent (project scope first, then user scope)
-if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
-  # 3a. Launch native subagent (harness provides child session)
-  RESULT=<native subagent result JSON>
-else
-  # 3b. Fallback to 5x invoke (NOTE: --record intentionally omitted here
-  #     so that 5x protocol validate --record is the single recording point
-  #     for both native and fallback paths, avoiding double-recording)
-  RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-    --var plan_path=$PLAN_PATH \
-    ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
-fi
+# 2. Launch subagent via Task tool
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
 
-# 4. Validate + record (combined — universal for both paths)
+# 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 
-# 5. Capture session for reuse in subsequent reviews
-REVIEWER_SESSION=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+# 4. Capture session (task_id) for reuse in subsequent reviews
+REVIEWER_SESSION=<task_id from Task tool result>
 ```
 
 **Session reuse** is expected when `reviewer.continuePhaseSessions` is
@@ -109,7 +96,7 @@ Read $REVIEW_PATH from `.data.variables.review_path` in the template render outp
 
 ### Step 1: Review
 
-Delegate to the reviewer using the native-first pattern:
+Delegate to the reviewer via the Task tool:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
@@ -119,14 +106,7 @@ PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-if [[ -f ".opencode/agents/5x-reviewer.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-reviewer.md" ]]; then
-  RESULT=<launch native 5x-reviewer subagent with PROMPT>
-else
-  RESULT=$(5x invoke reviewer reviewer-plan --run $RUN --phase plan \
-    --var plan_path=$PLAN_PATH \
-    ${REVIEWER_SESSION:+--session $REVIEWER_SESSION} 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
@@ -137,8 +117,7 @@ automatically selects the `reviewer-plan-continued` template variant
 (a shorter prompt) when it exists, since full instructions are already
 in the session context.
 
-Capture $REVIEWER_SESSION from the native harness or from
-`.data.session_id` in the `5x invoke` fallback response, for optional
+Capture $REVIEWER_SESSION from the Task tool's `task_id` for optional
 reuse in subsequent reviews.
 
 ### Step 2: Route the verdict
@@ -164,7 +143,7 @@ Read the verdict from the `5x protocol validate` output:
 
 ### Step 3: Author fix
 
-Delegate to the plan author using the native-first pattern:
+Delegate to the plan author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-process-plan-review --run $RUN \
@@ -172,13 +151,7 @@ RENDERED=$(5x template render author-process-plan-review --run $RUN \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-plan-author.md" ]]; then
-  RESULT=<launch native 5x-plan-author subagent with PROMPT>
-else
-  RESULT=$(5x invoke author author-process-plan-review --run $RUN \
-    --var plan_path=$PLAN_PATH 2>/dev/null)
-fi
+RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase plan \
@@ -252,14 +225,10 @@ Report to the human: plan review is complete. Verdict: approved
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
-  Suspect context loss (compaction). Re-invoke with `--new-session` to
-  force a fresh session. If it happens twice, escalate to the human.
-- **Native subagent returns empty or invalid output**: Retry once with
-  `--new-session`. If it fails again, fall back to `5x invoke` or escalate.
-- **Subprocess returns empty output**: The agent process may have been
-  killed by the subprocess tool's timeout before completing. Retry with
-  a longer timeout and `--new-session`. If empty output persists after
-  retry, escalate to the human.
+  Suspect context loss (compaction). Re-invoke with a fresh session
+  (no `task_id`). If it happens twice, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once with a fresh
+  session (no `task_id`). If it fails again, escalate to the human.
 - **SESSION_REQUIRED error**: The tool requires `--session <id>` or
   `--new-session` because `continuePhaseSessions` is enabled and prior
   steps exist. Pass `--new-session` to recover from context loss.
