@@ -1,6 +1,6 @@
 # Skill Improvements: Config Command, Shared Foundation, Gotchas, Trigger Descriptions
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 18, 2026
 **Status:** Draft
 
@@ -73,12 +73,18 @@ set is a starting point, not exhaustive.
 envelope, tests pass.
 
 - [ ] **1a.** Create `src/commands/config.handler.ts` with a `configShow` handler
-  that loads the resolved config via `resolveLayeredConfig(projectRoot,
-  contextDir)` and outputs it via `outputSuccess()`. The handler accepts
-  optional `startDir` and `contextDir` parameters for testability (same
-  convention as `initScaffold`, `planPhases`, etc.). `contextDir` defaults
-  to `process.cwd()`. Include a text formatter that renders key config values
-  in human-readable format (similar to `plan-v1.handler.ts:formatPhasesText`).
+  that loads the resolved config via `resolveLayeredConfig(controlPlaneRoot,
+  contextDir)` and outputs it via `outputSuccess()`. The control plane root is
+  resolved via `resolveControlPlaneRoot(startDir)` — the same pattern used by
+  `template.handler.ts`, `invoke.handler.ts`, `quality-v1.handler.ts`, etc. —
+  so that root-anchored values like `db.path` match runtime behavior in linked
+  worktrees. The first argument to `resolveLayeredConfig` must be
+  `controlPlane.controlPlaneRoot`, not `resolveProjectRoot()` or `cwd`. The
+  handler accepts optional `startDir` and `contextDir` parameters for
+  testability (same convention as `initScaffold`, `planPhases`, etc.).
+  `contextDir` defaults to `process.cwd()`. Include a text formatter that
+  renders key config values in human-readable format (similar to
+  `plan-v1.handler.ts:formatPhasesText`).
 
 - [ ] **1b.** Create `src/commands/config.ts` with a `registerConfig` function
   that registers `5x config show` as a commander subcommand. Pattern:
@@ -122,8 +128,9 @@ envelope, tests pass.
 
 - [ ] **2a.** Create `src/skills/5x/SKILL.md` with the following content
   extracted from the existing three skills:
-  - YAML frontmatter with `name: 5x` and a description optimized for
-    triggering on any 5x-related work
+  - YAML frontmatter with `name: 5x` and a description focused on the
+    co-loading instruction (no trigger words — this skill is loaded by
+    process skills, never independently)
   - `## Tools` section listing `5x config show` as the way to read runtime
     config values (iteration limits, quality retry limits, timeout settings)
   - `## Human Interaction Model` — the 3-tier interaction model (native
@@ -152,7 +159,10 @@ envelope, tests pass.
 
 - [ ] **2b.** Update `src/skills/loader.ts`: add `import` for the new
   `5x/SKILL.md` with `{ type: "text" }`, add `"5x": skill5xRaw` to the
-  `SKILLS` registry.
+  `SKILLS` registry. Update `test/unit/commands/init-skills.test.ts` to
+  account for the fourth bundled skill: change `expect(names.length).toBe(3)`
+  to `toBe(4)` and `expect(skills.length).toBe(3)` to `toBe(4)`, and add
+  `expect(names).toContain("5x")` to the name assertions.
 
 - [ ] **2c.** Update existing skill loader tests in
   `test/unit/skills/skill-content.test.ts`:
@@ -241,8 +251,9 @@ updated to match new structure.
 
 ## Phase 4: Improve description fields
 
-**Completion gate:** All four skill descriptions include trigger words and
-the three process skills instruct the agent to co-load the `5x` skill.
+**Completion gate:** All three process skill descriptions include trigger words
+and instruct the agent to co-load the `5x` skill. The `5x` skill description
+instructs co-loading (no trigger words — it never fires independently).
 
 - [ ] **4a.** Update the description field in `src/skills/5x/SKILL.md`.
   The `5x` skill is a co-loaded dependency, not an independently triggered
@@ -300,6 +311,7 @@ the three process skills instruct the agent to co-load the `5x` skill.
 | `src/skills/loader.ts` | Add import + registry entry for `5x` skill |
 | `test/unit/commands/config-show.test.ts` | **New** — unit tests for config show |
 | `test/integration/commands/config-show.test.ts` | **New** — integration test for config show |
+| `test/unit/commands/init-skills.test.ts` | Update exact-count assertions (3 → 4) for new `5x` skill |
 | `test/unit/skills/skill-content.test.ts` | Update for new skill, moved content, gotchas assertions |
 
 ## Tests
@@ -331,6 +343,24 @@ the three process skills instruct the agent to co-load the `5x` skill.
 - Changes to templates or agent definitions
 
 ## Revision History
+
+### v1.2 — Address R2 review (023-skill-improvements-review.md, Addendum)
+
+**P1.2 — worktree control plane root (R1):** Phase 1a now explicitly requires
+`resolveControlPlaneRoot(startDir)` and passes `controlPlane.controlPlaneRoot`
+as the first argument to `resolveLayeredConfig`. This matches the pattern used
+by `template.handler.ts`, `invoke.handler.ts`, etc. and ensures root-anchored
+values like `db.path` resolve correctly in linked worktrees.
+
+**P2.2 — self-trigger contradiction (R2):** Fixed Phase 4 completion gate to
+say "All three process skill descriptions include trigger words" (not four),
+and clarifies the `5x` skill description instructs co-loading only. Updated
+Phase 2a frontmatter description from "optimized for triggering" to "focused
+on co-loading instruction."
+
+**P2.3 — missing test coverage for 4th skill (R3):** Added
+`test/unit/commands/init-skills.test.ts` to the Files Touched table. Phase 2b
+now explicitly notes updating the exact-count assertions (3 → 4) in that file.
 
 ### v1.1 — Address R1 review (023-skill-improvements-review.md)
 
