@@ -110,9 +110,10 @@ describe("protocolEmitReviewer", () => {
 	});
 
 	test("missing --ready/--no-ready without stdin → error", async () => {
-		// ready=undefined and no stdin (isTTY will vary, but stdinData not provided)
+		// Pass empty string for stdinData to simulate no piped input without
+		// relying on readStdinIfPiped() which is non-deterministic in test runs
 		try {
-			await protocolEmitReviewer({ ready: undefined, stdinData: undefined });
+			await protocolEmitReviewer({ ready: undefined, stdinData: "" });
 			expect.unreachable("should have thrown");
 		} catch (err) {
 			expect(err).toBeInstanceOf(CliError);
