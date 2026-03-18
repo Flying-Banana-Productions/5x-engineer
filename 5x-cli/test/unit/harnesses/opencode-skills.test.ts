@@ -1,12 +1,12 @@
 /**
- * Tests for Phase 4 skill rewrites — 014-harness-native-subagent.
+ * Tests for OpenCode harness skill content, loader, and frontmatter parsing.
  *
- * Validates that:
- * - Skill SKILL.md files load correctly via the skill loader
- * - Skills describe native-first delegation (5x template render, 5x protocol validate)
- * - Skills document the fallback path (5x invoke)
- * - Skills describe native agent detection order
- * - Task prompt templates use transport-neutral language
+ * Consolidated from:
+ * - test/unit/skills/skill-content.test.ts (skill content assertions)
+ * - test/unit/commands/init-skills.test.ts (loader + frontmatter parser tests)
+ *
+ * All skill content and loader tests now live here, alongside the OpenCode
+ * harness that owns the skill files.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -25,7 +25,7 @@ import {
 // Skill loader tests
 // ---------------------------------------------------------------------------
 
-describe("skill loader — Phase 4 rewrites", () => {
+describe("skill loader", () => {
 	test("all skills load without error", () => {
 		expect(() => getDefaultSkillRaw("5x")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan")).not.toThrow();
@@ -33,24 +33,50 @@ describe("skill loader — Phase 4 rewrites", () => {
 		expect(() => getDefaultSkillRaw("5x-phase-execution")).not.toThrow();
 	});
 
-	test("all skill names are listed", () => {
+	test("listSkillNames returns all bundled skills", () => {
 		const names = listSkillNames();
 		expect(names).toContain("5x");
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
-		// Do not hard-code total count — new skills may be added
-		expect(names.length).toBeGreaterThanOrEqual(4);
+		expect(names.length).toBe(4);
 	});
 
-	test("listSkills returns metadata for all expected skills", () => {
+	test("listSkills returns metadata with description and content", () => {
 		const skills = listSkills();
-		expect(skills.length).toBeGreaterThanOrEqual(4);
+		expect(skills.length).toBe(4);
+
+		const planSkill = skills.find((s) => s.name === "5x-plan");
+		expect(planSkill).toBeDefined();
+		expect(planSkill?.description).toContain("implementation plan");
+		expect(planSkill?.content).toContain("---");
+		expect(planSkill?.content).toContain("name: 5x-plan");
+		expect(planSkill?.content).toContain("## Workflow");
+	});
+
+	test("all bundled skills have valid frontmatter", () => {
+		const skills = listSkills();
 		for (const skill of skills) {
 			expect(skill.name).toBeTruthy();
-			expect(skill.description).toBeTruthy();
-			expect(skill.content).toBeTruthy();
+			expect(skill.description.length).toBeGreaterThan(10);
+			// Description should be useful for agent discovery
+			expect(skill.description).not.toBe("A skill.");
 		}
+	});
+
+	test("getDefaultSkillRaw returns full SKILL.md content", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).toContain("---");
+		expect(content).toContain("name: 5x-plan");
+		expect(content).toContain("## Prerequisites");
+		expect(content).toContain("## Tools");
+		expect(content).toContain("## Workflow");
+	});
+
+	test("getDefaultSkillRaw throws for unknown skill", () => {
+		expect(() => getDefaultSkillRaw("unknown-skill")).toThrow(
+			'Unknown skill "unknown-skill"',
+		);
 	});
 
 	test("skill frontmatter parses correctly for all skills", () => {
@@ -65,6 +91,112 @@ describe("skill loader — Phase 4 rewrites", () => {
 			expect(fm.name).toBe(name);
 			expect(fm.description.length).toBeGreaterThan(0);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// parseSkillFrontmatter
+// ---------------------------------------------------------------------------
+
+describe("parseSkillFrontmatter", () => {
+	test("parses valid frontmatter with name and description", () => {
+		const raw = [
+			"---",
+			"name: my-skill",
+			"description: Does something useful.",
+			"---",
+			"# Body content",
+		].join("\n");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.name).toBe("my-skill");
+		expect(fm.description).toBe("Does something useful.");
+		expect(fm.metadata).toBeUndefined();
+	});
+
+	test("parses metadata field", () => {
+		const raw = [
+			"---",
+			"name: my-skill",
+			"description: A skill.",
+			"metadata:",
+			'  author: "test-org"',
+			'  version: "1.0"',
+			"---",
+			"# Body",
+		].join("\n");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.metadata).toEqual({ author: "test-org", version: "1.0" });
+	});
+
+	test("parses multi-line description (YAML block scalar)", () => {
+		const raw = [
+			"---",
+			"name: my-skill",
+			"description: >-",
+			"  A multi-line description that spans",
+			"  multiple lines in YAML.",
+			"---",
+			"# Body",
+		].join("\n");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.description).toBe(
+			"A multi-line description that spans multiple lines in YAML.",
+		);
+	});
+
+	test("throws on missing frontmatter delimiters", () => {
+		expect(() => parseSkillFrontmatter("# Just markdown")).toThrow(
+			"missing YAML frontmatter",
+		);
+	});
+
+	test("throws on missing name field", () => {
+		const raw = ["---", "description: A skill.", "---", "# Body"].join("\n");
+		expect(() => parseSkillFrontmatter(raw)).toThrow('missing required "name"');
+	});
+
+	test("throws on missing description field", () => {
+		const raw = ["---", "name: my-skill", "---", "# Body"].join("\n");
+		expect(() => parseSkillFrontmatter(raw)).toThrow(
+			'missing required "description"',
+		);
+	});
+
+	test("throws on empty name", () => {
+		const raw = [
+			"---",
+			'name: ""',
+			"description: A skill.",
+			"---",
+			"# Body",
+		].join("\n");
+		expect(() => parseSkillFrontmatter(raw)).toThrow('missing required "name"');
+	});
+
+	test("throws on empty description", () => {
+		const raw = [
+			"---",
+			"name: my-skill",
+			'description: ""',
+			"---",
+			"# Body",
+		].join("\n");
+		expect(() => parseSkillFrontmatter(raw)).toThrow(
+			'missing required "description"',
+		);
+	});
+
+	test("ignores non-object metadata", () => {
+		const raw = [
+			"---",
+			"name: my-skill",
+			"description: A skill.",
+			"metadata: not-an-object",
+			"---",
+			"# Body",
+		].join("\n");
+		const fm = parseSkillFrontmatter(raw);
+		expect(fm.metadata).toBeUndefined();
 	});
 });
 
@@ -329,10 +461,10 @@ describe("5x-phase-execution skill — native-first delegation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 4: run watch guidance removal
+// Run watch guidance removal
 // ---------------------------------------------------------------------------
 
-describe("Phase 4: run watch guidance removed from native-first skills", () => {
+describe("run watch guidance removed from native-first skills", () => {
 	test("5x-plan skill does not mention run watch", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).not.toContain("run watch");
@@ -370,7 +502,11 @@ describe("Phase 4: run watch guidance removed from native-first skills", () => {
 	});
 });
 
-describe("task templates — transport-neutral language (Phase 4)", () => {
+// ---------------------------------------------------------------------------
+// Task templates — transport-neutral language
+// ---------------------------------------------------------------------------
+
+describe("task templates — transport-neutral language", () => {
 	const templateNames = [
 		"author-fix-quality",
 		"author-generate-plan",

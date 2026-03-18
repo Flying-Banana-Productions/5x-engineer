@@ -194,7 +194,7 @@ directories. No active runtime, test, or user-facing references to
 `src/skills/loader.js` or `5x skills` remain (archived docs like
 changelogs are excluded from this check). All remaining tests pass.
 
-- [ ] **3a.** Move skill content tests from
+- [x] **3a.** Move skill content tests from
   `test/unit/skills/skill-content.test.ts` to
   `test/unit/harnesses/opencode-skills.test.ts` (or similar). Update
   imports to use the OpenCode-local skill loader at
@@ -202,34 +202,34 @@ changelogs are excluded from this check). All remaining tests pass.
   (frontmatter parsing, section presence, gotchas, agent names,
   `5x config show` references, delegation patterns, etc.).
 
-- [ ] **3b.** Move skill loader tests from
+- [x] **3b.** Move skill loader tests from
   `test/unit/commands/init-skills.test.ts` to the same harness test file
   (or a separate `opencode-skill-loader.test.ts`). Tests for
   `listSkillNames()`, `listSkills()`, `parseSkillFrontmatter()` move with
   the loader. Update imports.
 
-- [ ] **3c.** Delete `test/integration/commands/skills-install.test.ts` —
+- [x] **3c.** Delete `test/integration/commands/skills-install.test.ts` —
   the `5x skills install` command no longer exists. Skill installation
   coverage is provided by the existing harness install tests in
   `test/integration/commands/harness.test.ts` and
   `test/unit/harnesses/installer.test.ts`.
 
-- [ ] **3d.** Delete `test/unit/commands/skills-uninstall.test.ts` — same
+- [x] **3d.** Delete `test/unit/commands/skills-uninstall.test.ts` — same
   reason. Harness uninstall is covered by existing harness tests.
 
-- [ ] **3e.** Update harness tests in `test/unit/commands/harness.test.ts`
+- [x] **3e.** Update harness tests in `test/unit/commands/harness.test.ts`
   and `test/unit/harnesses/opencode.test.ts` to reflect the new plugin
   contract (no `skills` in install context, plugin owns skills directly).
   Update any assertions that reference `listSkills()` from the old loader
   path.
 
-- [ ] **3f.** Update `test/integration/commands/harness.test.ts`:
+- [x] **3f.** Update `test/integration/commands/harness.test.ts`:
   - Change `import { listSkillNames } from "../../../src/skills/loader.js"`
     to import from `../../../src/harnesses/opencode/skills/loader.js`
     instead. This import is used in 3 test assertions (lines 250, 540,
     654) that verify installed skill filenames match the bundled skill list.
 
-- [ ] **3g.** Run `bun test` and fix any remaining import or assertion
+- [x] **3g.** Run `bun test` and fix any remaining import or assertion
   failures.
 
 ### Surviving Regression Coverage
