@@ -18,6 +18,20 @@ approved by the reviewer or the human overrides.
 - An implementation plan exists at a known path (under the repository root)
 - The plan parses successfully (`5x plan phases` returns phases)
 
+## Prerequisite Skill
+
+Load the `5x` skill for delegation patterns, interaction model, and
+timeout handling.
+
+## Gotchas
+
+- Only completed review-then-author cycles count toward
+  `maxReviewIterations` — retries from timeout/empty output don't count
+- Empty diff after author "completes" = context loss → use `--new-session`
+- `not_ready` with no actionable items → escalate, don't loop
+- `SESSION_REQUIRED` error → pass `--new-session` to recover
+- Read `maxReviewIterations` from `5x config show` for the iteration limit
+
 ## Tools
 
 - `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
@@ -33,40 +47,7 @@ approved by the reviewer or the human overrides.
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
-### Human interaction note
-
-The workflow steps reference `5x prompt` commands to describe **what to
-ask the human and when**. How you collect the response depends on your
-capabilities:
-
-1. **You have a question/input tool** (e.g., MCP question tool, built-in
-   ask-user tool): use it directly. This is preferred — it keeps the
-   interaction in your native UI.
-2. **You have a conversational UI**: ask the human in the conversation
-   and use their reply.
-3. **Neither of the above**: spawn `5x prompt choose` / `5x prompt input`
-   as a subprocess. This works in direct terminal sessions and shell
-   scripts but will fail with `NON_INTERACTIVE` (exit 3) if no terminal
-   is available. Pass `--default` to provide a fallback for non-interactive
-   environments.
-
 ### Delegating sub-agent work
-
-Sub-agent tasks (reviewer and author work) should be delegated using the
-**native-first pattern**: render the prompt, detect whether a native agent
-is available, run it if so, then validate and record the result. Fall back
-to `5x invoke` when no native agent is found.
-
-**Installed OpenCode agent names:**
-- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
-- `5x-plan-author` — generates and revises implementation plans
-- `5x-reviewer` — performs quality review and produces structured verdicts
-
-**Native agent detection order:**
-
-1. Project scope: `.opencode/agents/<name>.md`
-2. User scope: `~/.config/opencode/agents/<name>.md`
-3. Fallback: `5x invoke`
 
 **Canonical native delegation example (reviewer:review):**
 
@@ -116,30 +97,6 @@ When `--session` is passed, the command automatically selects the shorter
 Projects using plan-review should enable
 `reviewer.continuePhaseSessions = true` in their `5x.toml` once they have
 confirmed all reviewer templates have `-continued` variants.
-
-### Fallback: 5x invoke
-
-When native agents are not installed, delegate using `5x invoke` as a
-subprocess. Use `2>/dev/null` to discard stderr (streaming output).
-
-### Timeout layers
-
-Two independent timeouts apply to `5x invoke` fallback invocations:
-
-1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
-   in config, or `--timeout` CLI override): an inactivity timeout
-   inside `5x invoke` that resets on each agent event. When it fires,
-   you get a clean `AgentTimeoutError` in the JSON envelope. Do NOT
-   pass `--timeout` unless you intend to override the configured value.
-
-2. **Shell tool timeout**: your bash/subprocess tool's wall-clock
-   limit. This is a blunt circuit breaker — when it fires, the process
-   is killed and you get empty or truncated output.
-
-Set your shell tool timeout generously (e.g., 10 minutes) as a safety
-net for catastrophic hangs. Let the invocation timeout handle normal
-operational control. An unexpectedly killed subprocess produces empty
-output — see Recovery for handling.
 
 ## Workflow
 

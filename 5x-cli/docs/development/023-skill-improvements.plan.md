@@ -189,7 +189,7 @@ envelope, tests pass.
 gotchas sections added, and back-reference the `5x` skill. Existing tests
 updated to match new structure.
 
-- [ ] **3a.** Update `src/skills/5x-plan/SKILL.md`:
+- [x] **3a.** Update `src/skills/5x-plan/SKILL.md`:
   - Remove: "Human interaction note" section (~16 lines)
   - Remove: "Delegating sub-agent work" intro, agent names list, detection
     order, generic delegation example (~40 lines). Keep the skill-specific
@@ -207,7 +207,7 @@ updated to match new structure.
       re-invoke with fresh session
     - Read `maxReviewIterations` from `5x config show` for the review loop limit
 
-- [ ] **3b.** Update `src/skills/5x-plan-review/SKILL.md`:
+- [x] **3b.** Update `src/skills/5x-plan-review/SKILL.md`:
   - Same shared content removal as 3a
   - Keep the skill-specific delegation examples (reviewer-plan and
     author-process-plan-review code blocks) and session reuse details
@@ -221,7 +221,7 @@ updated to match new structure.
     - `SESSION_REQUIRED` error → pass `--new-session` to recover
     - Read `maxReviewIterations` from `5x config show` for the iteration limit
 
-- [ ] **3c.** Update `src/skills/5x-phase-execution/SKILL.md`:
+- [x] **3c.** Update `src/skills/5x-phase-execution/SKILL.md`:
   - Same shared content removal as 3a
   - Remove the duplicated "Native agent detection order" block
     (appears at lines 68-72 and again at lines 79-83)
@@ -239,7 +239,7 @@ updated to match new structure.
       `5x config show` — never hardcode limits
     - Phase count should not change during a run — if it does, flag to human
 
-- [ ] **3d.** Update `test/unit/skills/skill-content.test.ts`:
+- [x] **3d.** Update `test/unit/skills/skill-content.test.ts`:
   - For each process skill, update or replace tests that assert on content
     that has moved to the `5x` skill. Specifically:
     - Tests checking for "Native agent detection order" in each process

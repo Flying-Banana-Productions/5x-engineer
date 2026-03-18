@@ -20,6 +20,20 @@ review/fix cycles until the plan is approved.
 - A plan template exists (config paths.templates.plan)
 - Plans must live under the repository root (the control-plane root)
 
+## Prerequisite Skill
+
+Load the `5x` skill for delegation patterns, interaction model, and
+timeout handling.
+
+## Gotchas
+
+- Plan path must resolve inside `paths.plans` (from config)
+- After author generates plan, file must exist AND parse via
+  `5x plan phases`
+- Author must produce a commit — no commit is an invariant violation;
+  re-invoke with fresh session
+- Read `maxReviewIterations` from `5x config show` for the review loop limit
+
 ## Tools
 
 - `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
@@ -34,110 +48,6 @@ review/fix cycles until the plan is approved.
 - `5x plan phases <path>` — get phase list and check plan parses
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
-
-### Human interaction note
-
-The workflow steps reference `5x prompt` commands to describe **what to
-ask the human and when**. How you collect the response depends on your
-capabilities:
-
-1. **You have a question/input tool** (e.g., MCP question tool, built-in
-   ask-user tool): use it directly. This is preferred — it keeps the
-   interaction in your native UI.
-2. **You have a conversational UI**: ask the human in the conversation
-   and use their reply.
-3. **Neither of the above**: spawn `5x prompt choose` / `5x prompt input`
-   as a subprocess. This works in direct terminal sessions and shell
-   scripts but will fail with `NON_INTERACTIVE` (exit 3) if no terminal
-   is available. Pass `--default` to provide a fallback for non-interactive
-   environments.
-
-### Delegating sub-agent work
-
-Sub-agent tasks (author and reviewer work) should be delegated using the
-**native-first pattern**: render the prompt, detect whether a native agent
-is available, run it if so, then validate and record the result. Fall back
-to `5x invoke` when no native agent is found.
-
-**Installed OpenCode agent names:**
-- `5x-orchestrator` — primary orchestrator (loads skills, delegates to subagents, guides human)
-- `5x-plan-author` — generates and revises implementation plans
-- `5x-code-author` — implements code changes from approved plans
-- `5x-reviewer` — performs quality review and produces structured verdicts
-
-**Native agent detection order:**
-
-1. Project scope: `.opencode/agents/<name>.md`
-2. User scope: `~/.config/opencode/agents/<name>.md`
-3. Fallback: `5x invoke`
-
-**Native-first delegation pattern (example: author generate-plan):**
-
-```bash
-# 1. Render the prompt
-RENDERED=$(5x template render author-generate-plan --run $RUN \
-  --var prd_path=$PRD_PATH)
-PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
-STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
-
-# 2. Detect native agent (project scope first, then user scope)
-if [[ -f ".opencode/agents/5x-plan-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-plan-author.md" ]]; then
-  # 3a. Launch native subagent (harness provides child session)
-  RESULT=<native subagent result JSON>
-else
-  # 3b. Fallback: 5x invoke (omit --record; validate is the single record point)
-  RESULT=$(5x invoke author author-generate-plan --run $RUN \
-    --var prd_path=$PRD_PATH 2>/dev/null)
-fi
-
-# 4. Validate + record (combined — universal for both paths)
-echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP
-```
-
-This pattern works for all author and reviewer delegation steps. The
-fallback `5x invoke` call intentionally omits `--record` so that
-`5x protocol validate --record` is the single recording point for both
-native and fallback paths, avoiding double-recording.
-
-**Session reuse** is optional and best-effort. If your harness exposes a
-stable session identifier, you may pass it to `5x template render
---session <id>` to automatically select a shorter continued-template
-variant. If session reuse is unavailable or awkward, start a fresh session.
-
-### Fallback: 5x invoke
-
-When native agents are not installed, delegate using `5x invoke` as a
-subprocess. Sub-agent sessions consume tens of thousands of tokens —
-if running as a subprocess, capture only the final JSON envelope:
-
-```bash
-RESULT=$(5x invoke author author-generate-plan --run $RUN \
-  --var prd_path=$PRD_PATH 2>/dev/null)
-```
-
-Use `2>/dev/null` to discard stderr (streaming output) from your context.
-
-### Timeout layers
-
-Two independent timeouts apply to `5x invoke` fallback invocations:
-
-1. **Invocation timeout** (`[author].timeout` / `[reviewer].timeout`
-   in config, or `--timeout` CLI override): an inactivity timeout
-   inside `5x invoke` that resets on each agent event. When it fires,
-   you get a clean `AgentTimeoutError` in the JSON envelope. Do NOT
-   pass `--timeout` unless you intend to override the configured value.
-
-2. **Shell tool timeout**: your bash/subprocess tool's wall-clock
-   limit. This is a blunt circuit breaker — when it fires, the process
-   is killed and you get empty or truncated output.
-
-These serve different purposes and cannot be cleanly aligned. Set your
-shell tool timeout generously (e.g., 10 minutes) as a safety net for
-catastrophic hangs. Let the invocation timeout handle normal operational
-control. An unexpectedly killed subprocess produces empty output — see
-Recovery for handling.
 
 ## Workflow
 
