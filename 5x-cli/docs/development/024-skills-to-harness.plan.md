@@ -90,7 +90,7 @@ SKILL.md files. It moves to the OpenCode harness's local skill loader.
 `src/harnesses/opencode/skills/`, the OpenCode plugin imports them directly,
 `5x harness install opencode` still works correctly. All tests pass.
 
-- [ ] **1a.** Move skill files from `src/skills/` to
+- [x] **1a.** Move skill files from `src/skills/` to
   `src/harnesses/opencode/skills/`:
   - `src/skills/5x/SKILL.md` → `src/harnesses/opencode/skills/5x/SKILL.md`
   - `src/skills/5x-plan/SKILL.md` →
@@ -100,33 +100,33 @@ SKILL.md files. It moves to the OpenCode harness's local skill loader.
   - `src/skills/5x-phase-execution/SKILL.md` →
     `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md`
 
-- [ ] **1b.** Create `src/harnesses/opencode/skills/loader.ts` — a skill
+- [x] **1b.** Create `src/harnesses/opencode/skills/loader.ts` — a skill
   loader local to the OpenCode harness. Import all 4 SKILL.md files via
   `with { type: "text" }`. Move `parseSkillFrontmatter()` from
   `src/skills/loader.ts` to this file. Export `listSkills()` returning
   `SkillMetadata[]` and `listSkillNames()` returning `string[]`.
 
-- [ ] **1c.** Update `src/harnesses/opencode/plugin.ts`:
+- [x] **1c.** Update `src/harnesses/opencode/plugin.ts`:
   - Import `listSkillNames` and `listSkills` from the local
     `./skills/loader.js` instead of `../../skills/loader.js`
   - Change `install()` to call its own `listSkills()` instead of using
     `ctx.skills`
   - Update `describe()` to use the local `listSkillNames()`
 
-- [ ] **1d.** Move `SkillMetadata` interface to `src/harnesses/installer.ts`.
+- [x] **1d.** Move `SkillMetadata` interface to `src/harnesses/installer.ts`.
   The interface is `{ name: string; description: string; content: string }`.
   Update the `installSkillFiles()` parameter type to reference it (currently
   uses `Array<{ name: string; content: string }>` — add `description` or
   keep the structural type and export `SkillMetadata` separately for plugin
   authors).
 
-- [ ] **1e.** Remove `skills` from `HarnessInstallContext` in
+- [x] **1e.** Remove `skills` from `HarnessInstallContext` in
   `src/harnesses/types.ts`. Remove the `import type { SkillMetadata }` from
   `../skills/loader.js`. If `HarnessInstallResult.skills` still references
   `InstallSummary`, that stays (it's from `installer.ts`, not the skill
   loader).
 
-- [ ] **1f.** Update `src/commands/harness.handler.ts`: remove
+- [x] **1f.** Update `src/commands/harness.handler.ts`: remove
   `import { listSkills }` from `../skills/loader.js` and the
   `const skills = listSkills()` call. Remove `skills` from the context
   passed to `plugin.install()`.

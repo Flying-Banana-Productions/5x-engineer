@@ -9,7 +9,6 @@
  * having it installed in the project.
  */
 
-import { listSkillNames } from "../../skills/loader.js";
 import {
 	installAgentFiles,
 	installSkillFiles,
@@ -26,6 +25,7 @@ import type {
 	HarnessUninstallResult,
 } from "../types.js";
 import { listAgentTemplates, renderAgentTemplates } from "./loader.js";
+import { listSkillNames, listSkills } from "./skills/loader.js";
 
 const opencodePlugin: HarnessPlugin = {
 	name: "opencode",
@@ -50,7 +50,7 @@ const opencodePlugin: HarnessPlugin = {
 		// Install skills
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			ctx.skills,
+			listSkills(),
 			ctx.force,
 		);
 

@@ -15,7 +15,6 @@
  *   - Scoped names → used as-is
  */
 
-import type { SkillMetadata } from "../skills/loader.js";
 import type { InstallSummary, UninstallSummary } from "./installer.js";
 import type { HarnessLocations } from "./locations.js";
 
@@ -38,8 +37,6 @@ export interface HarnessInstallContext {
 	projectRoot: string;
 	/** Whether to overwrite existing files. */
 	force: boolean;
-	/** Bundled 5x skills — the plugin decides which (if any) to install. */
-	skills: SkillMetadata[];
 	/** Model config extracted from 5x.toml (may be empty). */
 	config: {
 		authorModel?: string;

@@ -16,7 +16,6 @@ import type {
 	HarnessUninstallResult,
 } from "../harnesses/types.js";
 import { outputSuccess } from "../output.js";
-import { listSkills } from "../skills/loader.js";
 import { DB_FILENAME, resolveCheckoutRoot } from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
@@ -131,20 +130,16 @@ export async function harnessInstall(
 		// rendered without model fields.
 	}
 
-	// 6. Gather bundled skills
-	const skills = listSkills();
-
-	// 7. Run the plugin install
+	// 6. Run the plugin install
 	const result = await plugin.install({
 		scope,
 		projectRoot,
 		force,
-		skills,
 		config: { authorModel, reviewerModel },
 		homeDir: params.homeDir,
 	});
 
-	// 8. Report results
+	// 7. Report results
 	printInstallSummary(name, scope, result.skills, result.agents);
 }
 

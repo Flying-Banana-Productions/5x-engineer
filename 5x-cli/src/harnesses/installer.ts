@@ -26,6 +26,16 @@ import { join } from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Metadata for a bundled skill. */
+export interface SkillMetadata {
+	/** Skill name (matches the subdirectory name). */
+	name: string;
+	/** Short description of what the skill does and when to use it. */
+	description: string;
+	/** Full raw SKILL.md content (frontmatter + body). */
+	content: string;
+}
+
 /** A file to install: a relative filename and its text content. */
 export interface InstallableFile {
 	/** Filename (e.g. "SKILL.md" or "5x-reviewer.md"). */

@@ -1,18 +1,29 @@
+/**
+ * OpenCode harness skill loader.
+ *
+ * Loads the bundled 5x skill .md files co-located in this directory and
+ * exposes them as `SkillMetadata[]` for the OpenCode plugin to install.
+ *
+ * `parseSkillFrontmatter()` is also exported for tests and any consumer
+ * that needs to extract name/description from a SKILL.md file.
+ */
+
 import { parse as parseYaml } from "yaml";
-// Skill files moved to src/harnesses/opencode/skills/ — re-exported here for
-// backward compatibility until Phase 2 removes this module entirely.
-import skill5xRaw from "../harnesses/opencode/skills/5x/SKILL.md" with {
+import type { SkillMetadata } from "../../installer.js";
+
+// Skill files imported as text via Bun's text loader
+import skill5xRaw from "./5x/SKILL.md" with { type: "text" };
+import skillPhaseExecutionRaw from "./5x-phase-execution/SKILL.md" with {
 	type: "text",
 };
-import skillPhaseExecutionRaw from "../harnesses/opencode/skills/5x-phase-execution/SKILL.md" with {
+import skillPlanRaw from "./5x-plan/SKILL.md" with { type: "text" };
+import skillPlanReviewRaw from "./5x-plan-review/SKILL.md" with {
 	type: "text",
 };
-import skillPlanRaw from "../harnesses/opencode/skills/5x-plan/SKILL.md" with {
-	type: "text",
-};
-import skillPlanReviewRaw from "../harnesses/opencode/skills/5x-plan-review/SKILL.md" with {
-	type: "text",
-};
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 /** Parsed YAML frontmatter from a SKILL.md file. */
 export interface SkillFrontmatter {
@@ -21,15 +32,9 @@ export interface SkillFrontmatter {
 	metadata?: Record<string, string>;
 }
 
-/** Metadata for a bundled skill. */
-export interface SkillMetadata {
-	/** Skill name (matches the subdirectory name). */
-	name: string;
-	/** Short description of what the skill does and when to use it. */
-	description: string;
-	/** Full raw SKILL.md content (frontmatter + body). */
-	content: string;
-}
+// ---------------------------------------------------------------------------
+// Frontmatter parser
+// ---------------------------------------------------------------------------
 
 /**
  * Parse YAML frontmatter from a SKILL.md file.
@@ -69,7 +74,11 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
 	};
 }
 
-// Registry of all bundled skills (name → raw SKILL.md content)
+// ---------------------------------------------------------------------------
+// Skill registry
+// ---------------------------------------------------------------------------
+
+/** Registry of all bundled skills (name -> raw SKILL.md content). */
 const SKILLS: Record<string, string> = {
 	"5x": skill5xRaw,
 	"5x-plan": skillPlanRaw,
@@ -77,18 +86,9 @@ const SKILLS: Record<string, string> = {
 	"5x-phase-execution": skillPhaseExecutionRaw,
 };
 
-/**
- * Get the raw content of a bundled skill.
- * Returns the full SKILL.md content including YAML frontmatter.
- */
-export function getDefaultSkillRaw(name: string): string {
-	const raw = SKILLS[name];
-	if (raw === undefined) {
-		const available = Object.keys(SKILLS).join(", ");
-		throw new Error(`Unknown skill "${name}". Available skills: ${available}`);
-	}
-	return raw;
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
  * List all bundled skill names.
