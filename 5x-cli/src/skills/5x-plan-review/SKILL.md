@@ -100,7 +100,7 @@ confirmed all reviewer templates have `-continued` variants.
 
 ## Workflow
 
-Track $ITERATION starting at 1. Maximum 5 review cycles.
+Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 Track $REVIEWER_SESSION (initially empty). Session reuse is enforced when
 `reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_SESSION`
 on subsequent reviews.
@@ -189,13 +189,14 @@ Check the result:
 - `result: "needs_human"` — go to Step 4 (Escalate).
 - `result: "failed"` — go to Step 4 (Escalate).
 
-Increment $ITERATION. If $ITERATION > 5, go to Step 4 (Escalate)
-with the message "Maximum review iterations reached."
+Increment $ITERATION. If $ITERATION exceeds `maxReviewIterations` (from
+`5x config show`), go to Step 4 (Escalate) with the message "Maximum
+review iterations reached."
 
 Only successful review-then-author cycles increment $ITERATION.
 Author retries due to timeout, empty output, or transient failures
-do not count. The max 5 limit applies to completed review cycles,
-not total invocations.
+do not count. The `maxReviewIterations` limit applies to completed
+review cycles, not total invocations.
 
 Loop back to Step 1.
 

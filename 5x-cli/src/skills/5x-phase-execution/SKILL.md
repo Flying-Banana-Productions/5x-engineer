@@ -121,8 +121,8 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 ### For each pending phase ($PHASE):
 
-Track $QUALITY_RETRIES = 0 (max 2).
-Track $REVIEW_ITERATIONS = 0 (max 3).
+Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
+Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
 Track $REVIEWER_SESSION = "" (for optional session reuse within this phase).
 
 #### Step 1: Author implements
@@ -175,8 +175,8 @@ Check the result:
 
 Increment $QUALITY_RETRIES.
 
-If $QUALITY_RETRIES > 2:
-  Escalate: `5x prompt choose "Quality gates failing after 2 retries" --options retry,skip,abort`
+If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
+  Escalate: `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`
   - retry: reset $QUALITY_RETRIES, go to Step 2a below
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
@@ -268,7 +268,7 @@ reviews.
 
 Increment $REVIEW_ITERATIONS.
 
-If $REVIEW_ITERATIONS > 3:
+If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
 Delegate to the code author using the native-first pattern:
