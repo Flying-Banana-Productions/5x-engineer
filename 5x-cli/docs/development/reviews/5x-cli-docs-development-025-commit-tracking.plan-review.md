@@ -80,3 +80,18 @@ The command's main architectural behavior is "commit in the effective working di
 **P1 recommended**
 - [ ] Update the handler spec so `COMMIT_FAILED` surfaces stdout-backed git failures such as "nothing to commit".
 - [ ] Add mapped-worktree coverage to the unit/integration test plan.
+
+## Addendum (2026-03-19) - Review Round 2
+
+### What's Addressed
+
+- **R1 (missing `run_id` plumbing):** addressed by moving commit responsibility out of agent templates and into orchestrator skills. That removes the unresolved-template-variable problem entirely.
+- **R3 (stdout vs stderr):** addressed. The handler spec now explicitly surfaces `stderr || stdout`, and the unit test plan names the `nothing to commit` stdout case.
+- **R4 (mapped-worktree coverage):** addressed. The revised plan adds both a unit-level mapped-worktree commit case and an integration-level end-to-end mapped-worktree case.
+
+### Remaining Concerns
+
+- **P0 / `human_required`:** R2 is not actually resolved. The new design-decision note claims `git add <absolute-path>` from a linked worktree succeeds for repo-owned absolute paths, but local verification still shows the opposite: Git rejects an absolute path in the control-plane checkout as outside the linked worktree (`fatal: ... is outside repository at ...`). The original blocker remains for reviewer artifacts committed via `5x commit --run ... --files $REVIEW_PATH`. The plan still needs an explicit approach for mapping review files into the effective worktree or otherwise avoiding control-plane-root paths during run-scoped commits.
+- **P1 / `auto_fix`:** The orchestrator-owns-commits change inventory is incomplete. Phase 1 only mentions relaxing `5x protocol emit author --complete`, but the current commit-required contract also lives in `src/commands/protocol-helpers.ts`, `src/protocol.ts`, `src/providers/opencode.ts`, `src/harnesses/opencode/5x-code-author.md`, and existing skill text that treats `complete` without a commit as an invariant violation. Phase 4/5 covers some prompt/skill updates, but the plan should explicitly include validator/provider/schema/help-text updates so the new contract is end-to-end consistent rather than only changing `emit`.
+
+**Readiness:** not_ready
