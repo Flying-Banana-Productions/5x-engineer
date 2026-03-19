@@ -1,6 +1,6 @@
 # Track Commits in the Run Step Journal
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** March 19, 2026
 **Status:** Draft
 
@@ -11,6 +11,7 @@
 | 1.0 | 2026-03-19 | Initial draft |
 | 1.1 | 2026-03-19 | Address review feedback: move commit responsibility to orchestrator (R1), add worktree safety note (R2), fix stderr/stdout handling (R3), add worktree test coverage (R4). See `reviews/5x-cli-docs-development-025-commit-tracking.plan-review.md`. |
 | 1.2 | 2026-03-19 | Review cycle 2: fix worktree review-path re-rooting (R1 P0), enumerate all protocol relaxation sites (R2 P1). Replace false "worktree paths are safe" design decision. Add Phase 1f for review-path fix. Expand task 1e with full file list. |
+| 1.3 | 2026-03-19 | Review cycle 3: add `src/providers/opencode.ts` commit-required prompt text to task 1e enumeration (P2). |
 
 ## Overview
 
@@ -217,6 +218,13 @@ tests pass.
      itself is correct (it only enforces when `opts?.requireCommit` is
      truthy). No change needed, but verify the updated callers pass the
      right values.
+  7. **`src/providers/opencode.ts` lines 148-156** — The
+     `buildStructuredSummaryPrompt()` function emits prompt text telling
+     agents that "a 'complete' result without a valid commit hash will
+     be rejected and escalated as a failure" and "If result is complete,
+     you MUST include the commit hash." Update this prompt to reflect
+     that the commit hash is optional — agents may include it if they
+     committed, but it is no longer required for a `complete` result.
 
 - [ ] **1f.** Fix review-path generation for worktree-mapped runs.
   When a run has a mapped worktree, `generateReviewPath()` currently
@@ -458,6 +466,7 @@ tests pass.
 | `src/commands/protocol-helpers.ts` | Change `requireCommit` default from `true` to `false` (line 97) |
 | `src/commands/protocol.handler.ts` | Verify `requireCommit` passthrough works with new default (line 273) |
 | `src/protocol.ts` | Verify `assertAuthorStatus` works with updated callers (line 131) — no change needed |
+| `src/providers/opencode.ts` | Update `buildStructuredSummaryPrompt()` commit-required prompt text to reflect optional `--commit` (lines 148-156) |
 | `src/commands/template-vars.ts` | Add `worktreeRoot` param to `resolveInternalTemplateVariables()` and `ResolveAndRenderOptions`; re-root `review_path` to worktree when provided |
 | `src/commands/template.handler.ts` | Pass `resolvedWorktreeRoot` as `worktreeRoot` to `resolveAndRenderTemplate()` |
 | `src/commands/invoke.handler.ts` | Pass `worktreeRoot` through to `resolveAndRenderTemplate()` if applicable |
