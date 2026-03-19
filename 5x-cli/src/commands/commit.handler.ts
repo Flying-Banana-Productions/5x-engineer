@@ -49,7 +49,7 @@ function formatCommitText(data: {
 
 export async function runCommit(params: CommitParams): Promise<void> {
 	// 1. Resolve DB context
-	const { db, controlPlane } = await resolveDbContext({
+	const { config, db, controlPlane } = await resolveDbContext({
 		startDir: params.startDir,
 	});
 
@@ -94,6 +94,15 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		}
 
 		const dryResult = await subprocess.execGit(dryRunArgs, workdir);
+
+		// Fail if git add --dry-run returned a non-zero exit code (invalid
+		// pathspecs, permission errors, etc.) — mirroring the real staging path.
+		if (dryResult.exitCode !== 0) {
+			outputError(
+				"COMMIT_FAILED",
+				`git add --dry-run failed: ${dryResult.stderr || dryResult.stdout}`,
+			);
+		}
 
 		outputSuccess(
 			{
@@ -163,18 +172,24 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		.map((l) => l.trim())
 		.filter(Boolean);
 
-	// 8. Record step in the run journal
-	const stepResult = await recordStepInternal({
-		run: params.run,
-		stepName: "git:commit",
-		phase: params.phase,
-		result: JSON.stringify({
-			hash,
-			short_hash,
-			message: params.message,
-			files,
-		}),
-	});
+	// 8. Record step in the run journal — use the same DB/control-plane context
+	//    that was resolved at the top of this handler. Passing it explicitly
+	//    prevents recordStepInternal from re-resolving via process cwd, which
+	//    would target the wrong DB when called from a linked worktree.
+	const stepResult = await recordStepInternal(
+		{
+			run: params.run,
+			stepName: "git:commit",
+			phase: params.phase,
+			result: JSON.stringify({
+				hash,
+				short_hash,
+				message: params.message,
+				files,
+			}),
+		},
+		{ db, config, controlPlane },
+	);
 
 	// 9. Output success
 	outputSuccess(

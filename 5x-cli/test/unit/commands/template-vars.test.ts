@@ -2,12 +2,14 @@
  * Unit tests for template-vars helpers.
  *
  * Phase 1, 022-orchestration-reliability: checkReviewPathMismatch warning.
+ * Phase 1 review fix (P2.1): review-path re-rooting with worktreeRoot.
  */
 
 import { describe, expect, test } from "bun:test";
 import {
 	checkReviewPathMismatch,
 	isPlanReviewTemplate,
+	resolveInternalTemplateVariables,
 } from "../../../src/commands/template-vars.js";
 import type { FiveXConfig } from "../../../src/config.js";
 
@@ -200,5 +202,116 @@ describe("checkReviewPathMismatch", () => {
 		);
 		expect(result).not.toBeNull();
 		expect(result).toContain("/other/dir/review.md");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveInternalTemplateVariables — review-path re-rooting
+// ---------------------------------------------------------------------------
+
+describe("resolveInternalTemplateVariables — review-path re-rooting", () => {
+	const projectRoot = "/project";
+
+	test("review_path without worktreeRoot resolves under projectRoot", () => {
+		const config = makeConfig();
+		const vars = resolveInternalTemplateVariables(
+			["review_path"],
+			{},
+			config,
+			projectRoot,
+			"reviewer-plan",
+			"run_abc123",
+			undefined,
+			"/project/docs/development/my-plan.md",
+		);
+
+		// Should resolve under the configured reviews directory (projectRoot-relative)
+		expect(vars.review_path).toBeDefined();
+		expect(vars.review_path).toContain("review.md");
+		expect(vars.review_path).not.toContain(".5x/worktrees");
+	});
+
+	test("review_path with worktreeRoot is re-rooted to worktree", () => {
+		const config = makeConfig();
+		const worktreeRoot = "/project/.5x/worktrees/feature";
+		const vars = resolveInternalTemplateVariables(
+			["review_path"],
+			{},
+			config,
+			projectRoot,
+			"reviewer-plan",
+			"run_abc123",
+			undefined,
+			"/project/docs/development/my-plan.md",
+			worktreeRoot,
+		);
+
+		expect(vars.review_path).toBeDefined();
+		// Should be re-rooted: /project/.5x/worktrees/feature/docs/development/reviews/...
+		expect(vars.review_path).toStartWith(worktreeRoot);
+		expect(vars.review_path).toContain("docs/development/reviews/");
+		expect(vars.review_path).toContain("review.md");
+	});
+
+	test("plan-review with worktreeRoot re-roots planReviews path", () => {
+		const config = makeConfig({
+			planReviews: "/project/docs/development/plan-reviews",
+		});
+		const worktreeRoot = "/project/.5x/worktrees/feature";
+		const vars = resolveInternalTemplateVariables(
+			["review_path"],
+			{},
+			config,
+			projectRoot,
+			"reviewer-plan",
+			"run_abc123",
+			undefined,
+			"/project/docs/development/my-plan.md",
+			worktreeRoot,
+		);
+
+		expect(vars.review_path).toBeDefined();
+		expect(vars.review_path).toStartWith(worktreeRoot);
+		expect(vars.review_path).toContain("docs/development/plan-reviews/");
+	});
+
+	test("explicit review_path is NOT re-rooted (explicit always wins)", () => {
+		const config = makeConfig();
+		const worktreeRoot = "/project/.5x/worktrees/feature";
+		const explicitPath = "/project/custom/review.md";
+		const vars = resolveInternalTemplateVariables(
+			["review_path"],
+			{ review_path: explicitPath },
+			config,
+			projectRoot,
+			"reviewer-plan",
+			"run_abc123",
+			undefined,
+			"/project/docs/development/my-plan.md",
+			worktreeRoot,
+		);
+
+		// Explicit review_path should be preserved as-is
+		expect(vars.review_path).toBe(explicitPath);
+	});
+
+	test("impl-review review_path with worktreeRoot is re-rooted", () => {
+		const config = makeConfig();
+		const worktreeRoot = "/project/.5x/worktrees/feature";
+		const vars = resolveInternalTemplateVariables(
+			["review_path"],
+			{},
+			config,
+			projectRoot,
+			"reviewer-commit",
+			"run_abc123",
+			"2",
+			"/project/docs/development/my-plan.md",
+			worktreeRoot,
+		);
+
+		expect(vars.review_path).toBeDefined();
+		expect(vars.review_path).toStartWith(worktreeRoot);
+		expect(vars.review_path).toContain("run_abc123-phase-2-review.md");
 	});
 });
