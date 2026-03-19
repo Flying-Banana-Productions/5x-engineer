@@ -95,3 +95,16 @@ The command's main architectural behavior is "commit in the effective working di
 - **P1 / `auto_fix`:** The orchestrator-owns-commits change inventory is incomplete. Phase 1 only mentions relaxing `5x protocol emit author --complete`, but the current commit-required contract also lives in `src/commands/protocol-helpers.ts`, `src/protocol.ts`, `src/providers/opencode.ts`, `src/harnesses/opencode/5x-code-author.md`, and existing skill text that treats `complete` without a commit as an invariant violation. Phase 4/5 covers some prompt/skill updates, but the plan should explicitly include validator/provider/schema/help-text updates so the new contract is end-to-end consistent rather than only changing `emit`.
 
 **Readiness:** not_ready
+
+## Addendum (2026-03-19) - Review Round 3
+
+### What's Addressed
+
+- **R1 (worktree review-path handling):** addressed. The false "absolute paths are safe" claim is removed, replaced with a correct design: auto-generated review paths are re-rooted relative to the mapped worktree, and the plan now threads `worktreeRoot` through template rendering plus adds direct unit coverage for the re-rooting logic.
+- **R2 (protocol relaxation inventory):** mostly addressed. Phase 1e now names the main validator/help enforcement points with concrete files and exact changes, which makes the orchestrator-owned-commits rollout much more implementable and auditable.
+
+### Remaining Concerns
+
+- **P1 / `auto_fix`:** One contract-update site is still missing from the plan inventory: `src/providers/opencode.ts` still injects summary guidance that says a `complete` result without a commit hash will be rejected and escalated. That prompt text should be updated alongside the protocol/helper/template changes so the provider guidance matches the new optional-commit contract end to end.
+
+**Readiness:** ready_with_corrections
