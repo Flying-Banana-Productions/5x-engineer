@@ -10,7 +10,7 @@
 
 import { outputError, outputSuccess } from "../output.js";
 import { subprocess } from "../utils/subprocess.js";
-import { resolveDbContext } from "./context.js";
+import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { recordStepInternal } from "./run-v1.handler.js";
 
@@ -26,6 +26,7 @@ export interface CommitParams {
 	phase?: string;
 	dryRun?: boolean;
 	startDir?: string; // for testability; defaults to run context resolution
+	dbContext?: DbContext; // for testability; bypasses singleton DB when provided
 }
 
 // ---------------------------------------------------------------------------
@@ -48,10 +49,12 @@ function formatCommitText(data: {
 // ---------------------------------------------------------------------------
 
 export async function runCommit(params: CommitParams): Promise<void> {
-	// 1. Resolve DB context
-	const { config, db, controlPlane } = await resolveDbContext({
-		startDir: params.startDir,
-	});
+	// 1. Resolve DB context (use injected context if provided — for testability)
+	const { config, db, controlPlane } =
+		params.dbContext ??
+		(await resolveDbContext({
+			startDir: params.startDir,
+		}));
 
 	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
 	if (!controlPlaneRoot) {
