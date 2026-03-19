@@ -1,6 +1,6 @@
 # Track Commits in the Run Step Journal
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 19, 2026
 **Status:** Draft
 
@@ -10,6 +10,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-19 | Initial draft |
 | 1.1 | 2026-03-19 | Address review feedback: move commit responsibility to orchestrator (R1), add worktree safety note (R2), fix stderr/stdout handling (R3), add worktree test coverage (R4). See `reviews/5x-cli-docs-development-025-commit-tracking.plan-review.md`. |
+| 1.2 | 2026-03-19 | Review cycle 2: fix worktree review-path re-rooting (R1 P0), enumerate all protocol relaxation sites (R2 P1). Replace false "worktree paths are safe" design decision. Add Phase 1f for review-path fix. Expand task 1e with full file list. |
 
 ## Overview
 
@@ -74,25 +75,32 @@ the need to inject `run_id` into agent templates and centralizes commit
 logic in skill workflows where the orchestrator already has full run
 context. Templates are simplified by removing commit instructions entirely.
 
-**Worktree-based runs are safe with absolute paths.** Git worktrees share
-the same repository object store with the main working tree. The `git add`
-command with absolute paths works correctly from linked worktrees because
-the paths resolve within the shared repository. The review-path concern
-(R2 in the review) was investigated and found to be a non-issue:
-`review_path` is an absolute path within the repository, and `git add`
-with absolute paths from a linked worktree operates on the shared index
-and object store. This was verified by testing `git add <absolute-path>`
-from a linked worktree — it succeeds as long as the path is within the
-repository's working tree or a linked worktree.
+**Review paths are re-rooted to the worktree when a run has a mapped
+worktree.** Git rejects `git add <absolute-path>` when the path is outside
+the current worktree, even if the path belongs to the same repository's
+main working tree. This means `review_path` (generated from
+`config.paths.reviews`, which resolves under the control-plane root)
+cannot be staged from a linked worktree. The fix: when a run has a mapped
+worktree, `generateReviewPath()` re-roots the review directory relative
+to the worktree. For example, if `config.paths.reviews` resolves to
+`/project/docs/development/reviews/`, the path relative to the project
+root is `docs/development/reviews/`, and the re-rooted path becomes
+`/project/.5x/worktrees/feature/docs/development/reviews/`. This keeps
+all work — code, plans, and reviews — inside the worktree branch until
+merge. The `plan_path` is already re-rooted via
+`resolveRunExecutionContext` → `ctx.effectivePlanPath`; the review path
+gets the same treatment.
 
-## Phase 1: `5x commit` command and protocol relaxation
+## Phase 1: `5x commit` command, protocol relaxation, and worktree review-path fix
 
 **Completion gate:** `5x commit` creates a git commit, records a
 `git:commit` step in the run journal, and returns a JSON envelope with
 commit metadata. `--dry-run` shows what would happen without side effects.
 `--files` and `--all-files` are mutually exclusive and one is required.
 The `--commit` field on `5x protocol emit author --complete` is optional
-(no longer required). All existing tests pass.
+(no longer required) across all enforcement points. Review paths are
+re-rooted to the worktree when a run has a mapped worktree. All existing
+tests pass.
 
 - [ ] **1a.** Create `src/commands/commit.ts` — Commander registration.
   Top-level command `commit` on the parent program. Flags:
@@ -179,19 +187,80 @@ The `--commit` field on `5x protocol emit author --complete` is optional
   if not already present. Map to exit code 1 (general error).
 
 - [ ] **1e.** Relax the `--commit` requirement on
-  `5x protocol emit author --complete`. In the protocol emit command
-  handler (`src/commands/protocol.ts` or the relevant emit logic), make
-  the `--commit` flag optional when `--complete` is passed. Agents may
-  still provide a commit hash, but it is no longer required. Update any
-  validation that currently errors on a missing `--commit` with
-  `--complete` to allow it.
+  `5x protocol emit author --complete`. The commit-required contract is
+  enforced in multiple locations — all must be updated so `--commit` is
+  optional when `--complete` is passed. Agents may still provide a commit
+  hash, but it is no longer required. Specific files and changes:
+
+  1. **`src/commands/protocol-emit.handler.ts` lines 220-225** — Remove
+     the hard error that rejects `--complete` without `--commit`. The
+     `if (result === "complete" && !commit)` block should be removed
+     entirely.
+  2. **`src/commands/protocol-emit.handler.ts` lines 245-246** — Change
+     `requireCommit: normalized.result === "complete"` to
+     `requireCommit: false` in the `assertAuthorStatus` call (JSON
+     stdin path at line 191-192 needs the same change).
+  3. **`src/commands/protocol.ts` line 196** — Update the help text from
+     `"Git commit hash (required with --complete)"` to
+     `"Git commit hash (optional)"`.
+  4. **`src/commands/protocol-helpers.ts` line 97** — Change
+     `const requireCommit = opts.requireCommit !== false;` to
+     `const requireCommit = opts.requireCommit === true;` so the default
+     is `false` (don't require commit) rather than `true`. This affects
+     `5x protocol validate author` when `--require-commit` is not
+     explicitly passed.
+  5. **`src/commands/protocol.handler.ts` line 273** — The
+     `requireCommit: params.requireCommit` passthrough is fine as-is
+     (it passes the explicit flag value). No change needed, but verify
+     it works with the new default.
+  6. **`src/protocol.ts` line 131** — The `assertAuthorStatus` function
+     itself is correct (it only enforces when `opts?.requireCommit` is
+     truthy). No change needed, but verify the updated callers pass the
+     right values.
+
+- [ ] **1f.** Fix review-path generation for worktree-mapped runs.
+  When a run has a mapped worktree, `generateReviewPath()` currently
+  produces a path under the control-plane root (e.g.,
+  `/project/docs/development/reviews/plan-review.md`). This path cannot
+  be staged via `git add` from the linked worktree. The fix re-roots
+  the review path to the worktree, following the same pattern used for
+  `plan_path` via `ctx.effectivePlanPath`.
+
+  Changes:
+
+  1. **`src/commands/template-vars.ts`** — Update
+     `resolveInternalTemplateVariables()` to accept an optional
+     `worktreeRoot` parameter. When `worktreeRoot` is provided and
+     `generateReviewPath()` produces a path, re-root it: compute the
+     path relative to `projectRoot`, then join it with `worktreeRoot`.
+     Example:
+     ```
+     // Generated: /project/docs/development/reviews/plan-review.md
+     // Relative:  docs/development/reviews/plan-review.md
+     // Re-rooted: /project/.5x/worktrees/feature/docs/development/reviews/plan-review.md
+     ```
+     Also update `ResolveAndRenderOptions` to include an optional
+     `worktreeRoot?: string` field, and pass it through in
+     `resolveAndRenderTemplate()`.
+
+  2. **`src/commands/template.handler.ts`** — Pass
+     `resolvedWorktreeRoot` to `resolveAndRenderTemplate()` via the new
+     `worktreeRoot` option. The value is already available from
+     `ctx.mappedWorktreePath` (line 114). Currently it is only used for
+     the post-render `## Context` block (line 191); now it also flows
+     into variable resolution.
+
+  3. **`src/commands/invoke.handler.ts`** — If `resolveAndRenderTemplate`
+     is called here, pass the same `worktreeRoot` option. Verify the
+     invoke handler passes worktree context through consistently.
 
 ## Phase 2: Unit tests
 
 **Completion gate:** Unit tests cover the handler's core paths: successful
 commit + step recording, `--dry-run` both variants, mutual exclusion
 validation, inactive run rejection, nothing-to-commit error, worktree
-commit + recording. All tests pass under `bun test --concurrent`.
+commit + recording, review-path re-rooting. All tests pass under
+`bun test --concurrent`.
 
 - [ ] **2a.** Create `test/unit/commands/commit.test.ts`. Tests call
   `runCommit()` directly with a `startDir` temp directory containing a
@@ -236,7 +305,27 @@ commit + recording. All tests pass under `bun test --concurrent`.
   pattern as `initScaffold`, `runDiff`). Add this to `CommitParams` as an
   optional field, defaulting to resolving from the run context.
 
-- [ ] **2b.** Verify all tests pass: `bun test test/unit/commands/commit.test.ts`.
+- [ ] **2b.** Create review-path re-rooting unit tests in
+  `test/unit/commands/template-vars.test.ts` (or add to the existing
+  file if one exists). Tests call `resolveInternalTemplateVariables()`
+  directly.
+
+  Test cases:
+  1. **Review path without worktree** — call with no `worktreeRoot`.
+     Verify: `review_path` resolves under `projectRoot` as before.
+  2. **Review path with worktree** — call with `worktreeRoot` set to a
+     temp worktree path. Verify: `review_path` is re-rooted to the
+     worktree (e.g., `/worktree/docs/reviews/plan-review.md` instead of
+     `/project/docs/reviews/plan-review.md`).
+  3. **Plan review path with worktree** — same test using a plan-review
+     template name. Verify: the `planReviews` config path is re-rooted.
+  4. **Explicit review_path not re-rooted** — when `review_path` is
+     provided via explicit vars, it should NOT be re-rooted (explicit
+     always wins).
+
+- [ ] **2c.** Verify all tests pass:
+  `bun test test/unit/commands/commit.test.ts` and
+  `bun test test/unit/commands/template-vars.test.ts`.
 
 ## Phase 3: Integration tests
 
@@ -364,7 +453,14 @@ tests pass.
 | `src/commands/commit.handler.ts` | **New** — business logic |
 | `src/bin.ts` | Add `registerCommit` import and call |
 | `src/output.ts` | Add `COMMIT_FAILED` to exit code map (if needed) |
-| `src/commands/protocol.ts` (or relevant emit logic) | Make `--commit` optional on `--complete` |
+| `src/commands/protocol-emit.handler.ts` | Remove `--commit` required check on `--complete` (lines 220-225), change `requireCommit` to `false` in both stdin and flag paths (lines 191-192, 245-246) |
+| `src/commands/protocol.ts` | Update `--commit` help text from "(required with --complete)" to "(optional)" (line 196) |
+| `src/commands/protocol-helpers.ts` | Change `requireCommit` default from `true` to `false` (line 97) |
+| `src/commands/protocol.handler.ts` | Verify `requireCommit` passthrough works with new default (line 273) |
+| `src/protocol.ts` | Verify `assertAuthorStatus` works with updated callers (line 131) — no change needed |
+| `src/commands/template-vars.ts` | Add `worktreeRoot` param to `resolveInternalTemplateVariables()` and `ResolveAndRenderOptions`; re-root `review_path` to worktree when provided |
+| `src/commands/template.handler.ts` | Pass `resolvedWorktreeRoot` as `worktreeRoot` to `resolveAndRenderTemplate()` |
+| `src/commands/invoke.handler.ts` | Pass `worktreeRoot` through to `resolveAndRenderTemplate()` if applicable |
 | `src/templates/author-generate-plan.md` | Remove git commit instructions |
 | `src/templates/author-next-phase.md` | Remove git commit instructions |
 | `src/templates/author-fix-quality.md` | Remove git commit instructions |
@@ -380,6 +476,7 @@ tests pass.
 | `src/harnesses/opencode/skills/5x-plan/SKILL.md` | Add orchestrator `5x commit` calls, remove agent commit invariant |
 | `src/harnesses/opencode/skills/5x-plan-review/SKILL.md` | Add orchestrator `5x commit` calls, remove agent commit invariant |
 | `test/unit/commands/commit.test.ts` | **New** — unit tests (incl. worktree case) |
+| `test/unit/commands/template-vars.test.ts` | **New or expanded** — review-path re-rooting tests |
 | `test/integration/commands/commit.test.ts` | **New** — integration tests (incl. worktree case) |
 
 ## Tests
@@ -387,6 +484,7 @@ tests pass.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `commit.test.ts` | Handler: commit+record, dry-run, validation, error paths, worktree commit |
+| Unit | `template-vars.test.ts` | Review-path re-rooting: with/without worktree, plan vs impl review, explicit override |
 | Integration | `commit.test.ts` | CLI: JSON envelopes, exit codes, git state, step in run state, worktree end-to-end |
 | Regression | Full suite | Templates render, existing command behavior unchanged |
 
@@ -394,8 +492,8 @@ tests pass.
 
 | Phase | Size | Notes |
 |-------|------|-------|
-| Phase 1 | Medium | ~120 lines handler + ~30 lines registration + protocol relaxation |
-| Phase 2 | Medium | ~220 lines test coverage (incl. worktree case) |
+| Phase 1 | Medium-Large | ~120 lines handler + ~30 lines registration + protocol relaxation across 4 files + review-path re-rooting (~30 lines) |
+| Phase 2 | Medium | ~220 lines commit tests + ~60 lines review-path tests |
 | Phase 3 | Medium | ~170 lines integration tests (incl. worktree case) |
 | Phase 4 | Small | Template text removals across 8 files |
 | Phase 5 | Small-Medium | Skill/agent updates across 6 files — adding `5x commit` orchestration |
