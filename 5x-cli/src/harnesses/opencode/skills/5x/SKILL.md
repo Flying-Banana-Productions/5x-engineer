@@ -71,30 +71,29 @@ echo "$RESULT" | 5x protocol validate <role> \
 This pattern works for all author and reviewer delegation steps.
 `5x protocol validate --record` is the single recording point.
 
-## Session Reuse
+## Task Reuse
 
-**Session reuse** is optional and best-effort. "Session" here means the
-agent's conversational session — the identifier that lets you resume the
-same agent conversation rather than starting fresh. The Task tool returns
-a `task_id` from each invocation; pass it back to continue the same
-subagent session.
+**Task reuse** is optional and best-effort. The Task tool returns a
+`task_id` from each subagent invocation. Pass it back to resume the same
+subagent conversation with full prior context — the subagent picks up
+where it left off instead of starting fresh.
 
-Pass the session identifier to `5x template render --session <id>` to
-automatically select a shorter continued-template variant. If session
-reuse is unavailable or awkward, start a fresh session — never fail a
-workflow because session reuse didn't work.
+To also get a shorter continued-template variant, pass the `task_id` as
+the `--session` value to `5x template render --session <task_id>`. If
+task reuse is unavailable or awkward, start a fresh task (omit
+`task_id`) — never fail a workflow because task reuse didn't work.
 
 ## Gotchas
 
 - **`5x protocol validate --record` is the single recording point.**
   Never record separately — validate handles it.
-- **Session reuse is best-effort.** Never fail a workflow because
-  session reuse didn't work. Start a fresh session and move on.
+- **Task reuse is best-effort.** Never fail a workflow because
+  task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
 - **`result: "complete"` without a commit = invariant violation** in any
-  author step. Re-invoke with a fresh session. If it fails again,
-  escalate to the human.
+  author step. Re-invoke with a fresh task (omit `task_id`). If it fails
+  again, escalate to the human.
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
-- **Empty or invalid subagent output**: Retry once with a fresh session
-  (no `task_id`). If it fails again, escalate to the human.
+- **Empty or invalid subagent output**: Retry once with a fresh task
+  (omit `task_id`). If it fails again, escalate to the human.

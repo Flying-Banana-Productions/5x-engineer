@@ -28,9 +28,9 @@ timeout handling.
 
 - Only completed review-then-author cycles count toward
   `maxReviewIterations` — retries from timeout/empty output don't count
-- Empty diff after author "completes" = context loss → use `--new-session`
+- Empty diff after author "completes" = context loss → start fresh task
 - `not_ready` with no actionable items → escalate, don't loop
-- `SESSION_REQUIRED` error → pass `--new-session` to recover
+- `SESSION_REQUIRED` error → pass `--new-session` to `5x template render`
 - Read `maxReviewIterations` from `5x config show` for the iteration limit
 
 ## Tools
@@ -54,30 +54,32 @@ timeout handling.
 # 1. Render the prompt (output follows standard outputSuccess envelope)
 #    review_path is auto-generated — do NOT pass --var review_path.
 #    Read the auto-generated path from .data.variables.review_path in the output.
-#    Session lifecycle: first review has no $REVIEWER_SESSION, subsequent
-#    reviews pass --session $REVIEWER_SESSION for continuity.
+#    Task lifecycle: first review has no $REVIEWER_TASK_ID, subsequent
+#    reviews pass --session $REVIEWER_TASK_ID for the continued template.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
   --var plan_path=$PLAN_PATH \
-  ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
+  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-# 2. Launch subagent via Task tool
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
+# 2. Launch subagent via Task tool (pass task_id to resume prior conversation)
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
+        task_id=$REVIEWER_TASK_ID (omit if empty)>
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 
-# 4. Capture session (task_id) for reuse in subsequent reviews
-REVIEWER_SESSION=<task_id from Task tool result>
+# 4. Capture task_id for reuse in subsequent reviews
+REVIEWER_TASK_ID=<task_id from Task tool result>
 ```
 
-**Session reuse** is expected when `reviewer.continuePhaseSessions` is
+**Task reuse** is expected when `reviewer.continuePhaseSessions` is
 enabled. The tool enforces this: if a prior reviewer step exists for the
-current phase, `--session <id>` or `--new-session` is required. Use
-`--new-session` only for recovery (context loss, empty output).
+current phase, `--session <id>` or `--new-session` is required on
+`5x template render`. Pass the reviewer's `task_id` as the `--session`
+value. Use `--new-session` only for recovery (context loss, empty output).
 
 When `--session` is passed, the command automatically selects the shorter
 `reviewer-plan-continued` template variant if one exists.
@@ -89,8 +91,9 @@ confirmed all reviewer templates have `-continued` variants.
 ## Workflow
 
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
-Track $REVIEWER_SESSION (initially empty). Session reuse is enforced when
-`reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_SESSION`
+Track $REVIEWER_TASK_ID (initially empty). Task reuse is enforced when
+`reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_TASK_ID`
+to `5x template render` and pass `task_id=$REVIEWER_TASK_ID` to the Task tool
 on subsequent reviews.
 Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
 
@@ -101,12 +104,13 @@ Delegate to the reviewer via the Task tool:
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
   --var plan_path=$PLAN_PATH \
-  ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
+  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
+        task_id=$REVIEWER_TASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
@@ -115,9 +119,9 @@ echo "$RESULT" | 5x protocol validate reviewer \
 When `--session` is passed to `5x template render`, the command
 automatically selects the `reviewer-plan-continued` template variant
 (a shorter prompt) when it exists, since full instructions are already
-in the session context.
+in the prior task context.
 
-Capture $REVIEWER_SESSION from the Task tool's `task_id` for optional
+Capture `$REVIEWER_TASK_ID` from the Task tool's returned `task_id` for
 reuse in subsequent reviews.
 
 ### Step 2: Route the verdict
@@ -218,20 +222,21 @@ Report to the human: plan review is complete. Verdict: approved
   notes to the human for judgment.
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
-  with a fresh session and explicit instructions to provide actionable
-  items. If it happens again, escalate to the human.
+  with a fresh task (omit `task_id`) and explicit instructions to provide
+  actionable items. If it happens again, escalate to the human.
 - **Phase count changed after revision**: The author restructured the
   plan significantly. This may be valid (reviewer asked for it) or a
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
-  Suspect context loss (compaction). Re-invoke with a fresh session
-  (no `task_id`). If it happens twice, escalate to the human.
+  Suspect context loss (compaction). Re-invoke with a fresh task (omit
+  `task_id`). If it happens twice, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
-  session (no `task_id`). If it fails again, escalate to the human.
-- **SESSION_REQUIRED error**: The tool requires `--session <id>` or
-  `--new-session` because `continuePhaseSessions` is enabled and prior
-  steps exist. Pass `--new-session` to recover from context loss.
+  task (omit `task_id`). If it fails again, escalate to the human.
+- **SESSION_REQUIRED error**: `5x template render` requires `--session`
+  or `--new-session` because `continuePhaseSessions` is enabled and prior
+  steps exist. Pass `--new-session` to recover, or pass the reviewer's
+  `task_id` as `--session` to continue normally.
 
 ## Completion
 

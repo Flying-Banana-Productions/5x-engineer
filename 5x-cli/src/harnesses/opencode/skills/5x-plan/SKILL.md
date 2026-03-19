@@ -32,7 +32,7 @@ timeout handling.
 - After author generates plan, file must exist AND parse via
   `5x plan phases`
 - Author must produce a commit — no commit is an invariant violation;
-  re-invoke with fresh session
+  re-invoke with a fresh task (omit `task_id`)
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
 
 ## Tools
@@ -120,13 +120,13 @@ Report to the human: plan is ready at $PLAN_PATH.
   wrote to the wrong path. Re-invoke with explicit emphasis on the
   output path. If it fails again, ask the human.
 - **Plan has no parseable phases**: The author didn't follow the template
-  structure. Re-invoke with a fresh session and explicit instructions
-  to follow the template format.
+  structure. Re-invoke with a fresh task (omit `task_id`) and explicit
+  instructions to follow the template format.
 - **Author claims complete but no commit**: Invariant violation — treat
-  as context loss. Re-invoke with a fresh session. If it fails again,
-  escalate to the human.
+  as context loss. Re-invoke with a fresh task (omit `task_id`). If it
+  fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
-  session (no `task_id`). If it fails again, escalate to the human.
+  task (omit `task_id`). If it fails again, escalate to the human.
 
 ## Completion
 

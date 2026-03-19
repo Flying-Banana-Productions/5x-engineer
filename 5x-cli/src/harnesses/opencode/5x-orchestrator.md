@@ -48,4 +48,4 @@ recovery procedures. Follow them closely.
 
 5. **Recover gracefully.** When sub-agents fail or produce invalid
    results, follow the skill's recovery section. Retry once with a
-   fresh session before escalating.
+   fresh task (omit `task_id`) before escalating.
