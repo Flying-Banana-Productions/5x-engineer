@@ -8,7 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { outputError } from "../output.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
@@ -240,6 +240,7 @@ export function resolveInternalTemplateVariables(
 	runId?: string,
 	phase?: string,
 	planPath?: string | null,
+	worktreeRoot?: string,
 ): Record<string, string> {
 	const internalVars: Record<string, string> = {};
 
@@ -266,7 +267,15 @@ export function resolveInternalTemplateVariables(
 		effectivePlanPath,
 	);
 	if (generatedReviewPath) {
-		internalVars.review_path = generatedReviewPath;
+		// Re-root review_path to the worktree when a worktree is mapped,
+		// following the same pattern used for plan_path via effectivePlanPath.
+		if (worktreeRoot) {
+			const absReviewPath = resolve(projectRoot, generatedReviewPath);
+			const relReviewPath = relative(projectRoot, absReviewPath);
+			internalVars.review_path = join(worktreeRoot, relReviewPath);
+		} else {
+			internalVars.review_path = generatedReviewPath;
+		}
 	}
 
 	return {
@@ -290,6 +299,8 @@ export interface ResolveAndRenderOptions {
 	// Run context for review_path auto-generation
 	runId?: string;
 	phase?: string;
+	/** Worktree root path — when set, auto-generated review_path is re-rooted into the worktree. */
+	worktreeRoot?: string;
 }
 
 export interface ResolvedTemplate {
@@ -370,6 +381,7 @@ export function resolveAndRenderTemplate(
 		runId,
 		phaseNumber,
 		resolvedPlanPath,
+		opts.worktreeRoot,
 	);
 
 	const rendered = renderTemplate(templateName, variables);

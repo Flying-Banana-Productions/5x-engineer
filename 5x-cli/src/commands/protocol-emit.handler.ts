@@ -189,7 +189,7 @@ export async function protocolEmitAuthor(
 
 			const normalized = normalizeAuthorStatus(parsed) as AuthorStatus;
 			assertAuthorStatus(normalized, "protocol emit author", {
-				requireCommit: normalized.result === "complete",
+				requireCommit: false,
 			});
 
 			process.stdout.write(JSON.stringify(normalized));
@@ -217,13 +217,6 @@ export async function protocolEmitAuthor(
 	else result = "failed";
 
 	// Validate conditional requirements
-	if (result === "complete" && !commit) {
-		outputError(
-			"INVALID_ARGS",
-			"--commit is required with --complete. Provide the git commit hash.",
-		);
-	}
-
 	if (result !== "complete" && !reason) {
 		outputError(
 			"INVALID_ARGS",
@@ -243,7 +236,7 @@ export async function protocolEmitAuthor(
 
 	// Validate
 	assertAuthorStatus(normalized, "protocol emit author", {
-		requireCommit: normalized.result === "complete",
+		requireCommit: false,
 	});
 
 	// Write raw canonical JSON to stdout

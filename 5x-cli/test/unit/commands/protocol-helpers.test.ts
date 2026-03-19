@@ -135,11 +135,11 @@ describe("validateStructuredOutput (result-based)", () => {
 		expect(result.ok).toBe(true);
 	});
 
-	test("requireCommit defaults to true", () => {
+	test("requireCommit defaults to false", () => {
 		const result = validateStructuredOutput({ result: "complete" }, "author", {
 			context: "test",
 		});
-		expect(result.ok).toBe(false);
+		expect(result.ok).toBe(true);
 	});
 });
 

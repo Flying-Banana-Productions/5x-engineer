@@ -335,6 +335,8 @@ export async function invokeAgent(
 		// Pass run context for review_path auto-generation
 		runId: params.run,
 		phase: params.phase ?? mergedVars.phase_number,
+		// Re-root review_path into the worktree when a worktree is mapped
+		worktreeRoot: resolvedWorktreePath ?? undefined,
 	});
 	const { variables } = resolved;
 

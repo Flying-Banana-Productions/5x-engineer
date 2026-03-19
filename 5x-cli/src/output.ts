@@ -61,6 +61,7 @@ const EXIT_CODE_MAP: Record<string, number> = {
 	PHASE_CHECKLIST_INCOMPLETE: 8,
 	PHASE_NOT_FOUND: 8,
 	SESSION_REQUIRED: 9,
+	COMMIT_FAILED: 1,
 };
 
 /** Resolve exit code from error code. Falls back to 1 for unknown codes. */

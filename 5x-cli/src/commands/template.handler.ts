@@ -182,6 +182,8 @@ export async function templateRender(
 		// Pass run context for review_path auto-generation
 		runId: params.run,
 		phase: explicitVars.phase_number,
+		// Re-root review_path into the worktree when a worktree is mapped
+		worktreeRoot: resolvedWorktreeRoot ?? undefined,
 	});
 	let prompt = resolved.prompt;
 

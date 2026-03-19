@@ -103,7 +103,7 @@ The `--commit` field on `5x protocol emit author --complete` is optional
 re-rooted to the worktree when a run has a mapped worktree. All existing
 tests pass.
 
-- [ ] **1a.** Create `src/commands/commit.ts` — Commander registration.
+- [x] **1a.** Create `src/commands/commit.ts` — Commander registration.
   Top-level command `commit` on the parent program. Flags:
   - `-r, --run <id>` — required (`.requiredOption`)
   - `-m, --message <msg>` — required (`.requiredOption`)
@@ -115,7 +115,7 @@ tests pass.
   and `--all-files` are provided, error if neither is provided. Import and
   call `runCommit()` from `./commit.handler.js`.
 
-- [ ] **1b.** Create `src/commands/commit.handler.ts` — business logic.
+- [x] **1b.** Create `src/commands/commit.handler.ts` — business logic.
   Export `CommitParams` interface and `async runCommit(params)` function.
 
   `CommitParams`:
@@ -180,14 +180,14 @@ tests pass.
   the file list to prevent filenames beginning with `-` from being
   interpreted as flags (consistent with existing pattern in `src/git.ts`).
 
-- [ ] **1c.** Register the command in `src/bin.ts`:
+- [x] **1c.** Register the command in `src/bin.ts`:
   - Add `import { registerCommit } from "./commands/commit.js";`
   - Add `registerCommit(program);` in the registration block.
 
-- [ ] **1d.** Add `COMMIT_FAILED` to the exit code map in `src/output.ts`
+- [x] **1d.** Add `COMMIT_FAILED` to the exit code map in `src/output.ts`
   if not already present. Map to exit code 1 (general error).
 
-- [ ] **1e.** Relax the `--commit` requirement on
+- [x] **1e.** Relax the `--commit` requirement on
   `5x protocol emit author --complete`. The commit-required contract is
   enforced in multiple locations — all must be updated so `--commit` is
   optional when `--complete` is passed. Agents may still provide a commit
@@ -226,7 +226,7 @@ tests pass.
      that the commit hash is optional — agents may include it if they
      committed, but it is no longer required for a `complete` result.
 
-- [ ] **1f.** Fix review-path generation for worktree-mapped runs.
+- [x] **1f.** Fix review-path generation for worktree-mapped runs.
   When a run has a mapped worktree, `generateReviewPath()` currently
   produces a path under the control-plane root (e.g.,
   `/project/docs/development/reviews/plan-review.md`). This path cannot

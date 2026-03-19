@@ -166,15 +166,11 @@ describe("protocolEmitAuthor", () => {
 		expect(result.reason).toBe("Tests broken beyond repair");
 	});
 
-	test("--complete without --commit → error", async () => {
-		try {
-			await protocolEmitAuthor({ complete: true });
-			expect.unreachable("should have thrown");
-		} catch (err) {
-			expect(err).toBeInstanceOf(CliError);
-			expect((err as CliError).code).toBe("INVALID_ARGS");
-			expect((err as CliError).message).toContain("--commit");
-		}
+	test("--complete without --commit → succeeds (commit is optional)", async () => {
+		await protocolEmitAuthor({ complete: true });
+		const result = parseOutput();
+		expect(result.result).toBe("complete");
+		expect(result.commit).toBeUndefined();
 	});
 
 	test("--needs-human without --reason → error", async () => {
