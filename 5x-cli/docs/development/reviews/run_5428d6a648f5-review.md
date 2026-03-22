@@ -52,3 +52,17 @@ None.
 - [ ] Keep `git:commit` step recording anchored to the same resolved DB/control-plane used by `runCommit()`.
 - [ ] Fail `--dry-run` when `git add --dry-run` returns a non-zero exit code.
 - [ ] Add the planned command and review-path tests before relying on this flow in later phases.
+
+## Addendum (2026-03-22) - Phase 1 closeout
+
+### What's Addressed
+
+- `runCommit()` now passes the already-resolved DB/control-plane into `recordStepInternal()`, and `recordStepInternal()` accepts that injected context, so git commits and journal writes stay on the same control-plane.
+- The `--dry-run` path now checks `git add --dry-run` exit status and fails with `COMMIT_FAILED` instead of emitting a false success envelope.
+- Targeted unit coverage now exists for `commit.handler` core paths and for review-path re-rooting, including the new `run_id` internal template variable.
+- Commit `4752f65` correctly reverts the protocol relaxation across emit validation, helper defaults, CLI help text, provider prompt text, and the affected protocol tests.
+- `run_id` is now threaded into shared template-variable resolution, matching the Phase 1 requirement for `{{run_id}}` support in later template updates.
+
+### Remaining Concerns
+
+- No new blocking concerns. Phase 1 is ready to close; remaining `5x commit` subprocess coverage and template-render integration coverage belong to the planned Phase 2/3 test work, not this phase gate.
