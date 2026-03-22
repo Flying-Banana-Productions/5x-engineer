@@ -244,6 +244,11 @@ export function resolveInternalTemplateVariables(
 ): Record<string, string> {
 	const internalVars: Record<string, string> = {};
 
+	// Expose run_id so templates can reference {{run_id}} (e.g. for `5x commit --run {{run_id}}`)
+	if (runId) {
+		internalVars.run_id = runId;
+	}
+
 	// paths.* values are always absolute after config loading — no resolve() needed.
 	if (declaredVars.includes("plan_template_path")) {
 		internalVars.plan_template_path = config.paths.templates.plan;

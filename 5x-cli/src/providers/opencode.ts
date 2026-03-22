@@ -148,8 +148,7 @@ function buildStructuredSummaryPrompt(schema: JSONSchema): string {
 	if (isStatus) {
 		return [
 			"Do not call any other tools. Base your answer only on work already completed in this session.",
-			"If result is complete, include the commit hash if you committed; otherwise omit it.",
-			"The orchestrator handles committing — a commit hash is optional.",
+			"If result is complete, you MUST include the commit hash.",
 			"If result is needs_human or failed, include a concise reason.",
 		].join("\n");
 	}

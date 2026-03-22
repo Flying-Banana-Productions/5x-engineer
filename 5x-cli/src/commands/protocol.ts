@@ -193,7 +193,7 @@ export function registerProtocol(parent: Command) {
 		.option("--complete", "Work finished successfully")
 		.option("--needs-human", "Human intervention needed")
 		.option("--failed", "Unable to complete the work")
-		.option("--commit <hash>", "Git commit hash (optional)")
+		.option("--commit <hash>", "Git commit hash (required with --complete)")
 		.option(
 			"--reason <text>",
 			"Explanation (required with --needs-human or --failed)",

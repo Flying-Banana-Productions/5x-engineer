@@ -223,13 +223,17 @@ describe("5x protocol emit — error cases (integration)", () => {
 	);
 
 	test(
-		"--complete without --commit → succeeds (commit is optional)",
+		"--complete without --commit → error (commit is required)",
 		async () => {
 			const result = await run5x(["protocol", "emit", "author", "--complete"]);
 
-			expect(result.exitCode).toBe(0);
-			const parsed = JSON.parse(result.stdout) as { result: string };
-			expect(parsed.result).toBe("complete");
+			expect(result.exitCode).not.toBe(0);
+			const parsed = JSON.parse(result.stdout) as {
+				ok: boolean;
+				error: { code: string };
+			};
+			expect(parsed.ok).toBe(false);
+			expect(parsed.error.code).toBe("INVALID_ARGS");
 		},
 		{ timeout: 15000 },
 	);

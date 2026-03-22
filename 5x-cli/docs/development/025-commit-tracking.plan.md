@@ -1,6 +1,6 @@
 # Track Commits in the Run Step Journal
 
-**Version:** 1.3
+**Version:** 1.5
 **Created:** March 19, 2026
 **Status:** Draft
 
@@ -12,6 +12,8 @@
 | 1.1 | 2026-03-19 | Address review feedback: move commit responsibility to orchestrator (R1), add worktree safety note (R2), fix stderr/stdout handling (R3), add worktree test coverage (R4). See `reviews/5x-cli-docs-development-025-commit-tracking.plan-review.md`. |
 | 1.2 | 2026-03-19 | Review cycle 2: fix worktree review-path re-rooting (R1 P0), enumerate all protocol relaxation sites (R2 P1). Replace false "worktree paths are safe" design decision. Add Phase 1f for review-path fix. Expand task 1e with full file list. |
 | 1.3 | 2026-03-19 | Review cycle 3: add `src/providers/opencode.ts` commit-required prompt text to task 1e enumeration (P2). |
+| 1.4 | 2026-03-19 | Design pivot: author owns commits via `5x commit`, not orchestrator. Revert protocol relaxation (1e). Add `run_id` template variable (1g). Rewrite Phase 4 (templates use `5x commit`) and Phase 5 (skills reflect author-owns-commits). |
+| 1.5 | 2026-03-19 | Review cycle 4: fix "orchestrator reaches for command" contradiction, clarify Phase 4 template instructions, add `run_id` test coverage to Phase 2.
 
 ## Overview
 
@@ -27,14 +29,13 @@ files, creates a git commit, and records the commit as a `git:commit` step
 in the run's step journal. No schema migration is needed — commits are
 stored as regular steps using the existing `result_json` column.
 
-**Agents do not commit directly.** Templates are updated to *remove* all
-commit instructions from agents. Instead, the orchestrator calls
-`5x commit` after each successful agent completion. This eliminates the
-need to plumb `run_id` into agent templates, keeps commit logic centralized
-in skill workflows, and opens the door for future non-git version control
-contexts (though that is not in scope here). The `--commit` field in
-`5x protocol emit author --complete` becomes optional to support this
-pattern.
+**Agents commit via `5x commit`.** Templates are updated to replace raw
+`git add` / `git commit` with `5x commit --run {{run_id}}`. This gives
+agents the same pre-commit hook feedback loop they had before (hooks fire,
+agent iterates in-session) while adding journal recording atomically.
+The `--commit` field in `5x protocol emit author --complete` remains
+required — agents report the commit hash produced by `5x commit`. The
+`run_id` template variable is auto-populated from `--run` context.
 
 ## Design Decisions
 
@@ -44,9 +45,9 @@ would go against that architectural direction. Commit metadata fits
 naturally in `result_json` and benefits from existing step infrastructure
 (phase association, timeline ordering, pagination via `run state`).
 
-**`5x commit` is a top-level command, not `5x run commit`.** The
-orchestrator reaches for this command directly — nesting it under `run`
-adds verbosity for no benefit. The `--run` flag ties it to a run.
+**`5x commit` is a top-level command, not `5x run commit`.** Agents invoke
+this command directly via `5x commit --run {{run_id}}`. Nesting it under
+`run` adds verbosity for no benefit. The `--run` flag ties it to a run.
 
 **File staging requires an explicit choice.** Either `--files <list>` or
 `--all-files` must be provided — never implicit staging. This forces the
@@ -69,12 +70,14 @@ pattern (`author:*`, `quality:check`, `event:*`). The `phase` column on
 the step provides phase-level queryability without encoding it in the step
 name.
 
-**Orchestrator owns commits, not agents.** Agents report
-`result: "complete"` without a commit hash. The orchestrator then calls
-`5x commit` to stage, commit, and record in the journal. This avoids
-the need to inject `run_id` into agent templates and centralizes commit
-logic in skill workflows where the orchestrator already has full run
-context. Templates are simplified by removing commit instructions entirely.
+**Author owns commits via `5x commit`.** Agents call `5x commit` directly
+instead of raw `git commit`. This preserves the pre-commit hook feedback
+loop — if hooks reject the commit, the agent sees the failure immediately
+and can iterate in-session without orchestrator re-invocation. The
+orchestrator validates that a commit hash is present in the author's
+structured output (unchanged from before). The `run_id` is plumbed into
+templates as an auto-populated variable so agents can call
+`5x commit --run {{run_id}}`.
 
 **Review paths are re-rooted to the worktree when a run has a mapped
 worktree.** Git rejects `git add <absolute-path>` when the path is outside
@@ -92,14 +95,15 @@ merge. The `plan_path` is already re-rooted via
 `resolveRunExecutionContext` → `ctx.effectivePlanPath`; the review path
 gets the same treatment.
 
-## Phase 1: `5x commit` command, protocol relaxation, and worktree review-path fix
+## Phase 1: `5x commit` command, `run_id` template variable, and worktree review-path fix
 
 **Completion gate:** `5x commit` creates a git commit, records a
 `git:commit` step in the run journal, and returns a JSON envelope with
 commit metadata. `--dry-run` shows what would happen without side effects.
 `--files` and `--all-files` are mutually exclusive and one is required.
-The `--commit` field on `5x protocol emit author --complete` is optional
-(no longer required) across all enforcement points. Review paths are
+The `--commit` field on `5x protocol emit author --complete` remains
+required (no protocol relaxation). `run_id` is auto-populated as an
+internal template variable when `--run` is provided. Review paths are
 re-rooted to the worktree when a run has a mapped worktree. All existing
 tests pass.
 
@@ -187,80 +191,51 @@ tests pass.
 - [x] **1d.** Add `COMMIT_FAILED` to the exit code map in `src/output.ts`
   if not already present. Map to exit code 1 (general error).
 
-- [x] **1e.** Relax the `--commit` requirement on
-  `5x protocol emit author --complete`. The commit-required contract is
-  enforced in multiple locations — all must be updated so `--commit` is
-  optional when `--complete` is passed. Agents may still provide a commit
-  hash, but it is no longer required. Specific files and changes:
+- [x] **1e.** Revert the protocol relaxation changes. The `--commit` field
+  on `5x protocol emit author --complete` remains required. Restore the
+  original behavior across these files:
 
-  1. **`src/commands/protocol-emit.handler.ts` lines 220-225** — Remove
+  1. **`src/commands/protocol-emit.handler.ts` lines 220-225** — Restore
      the hard error that rejects `--complete` without `--commit`. The
-     `if (result === "complete" && !commit)` block should be removed
-     entirely.
+     `if (result === "complete" && !commit)` block should be restored.
   2. **`src/commands/protocol-emit.handler.ts` lines 245-246** — Change
-     `requireCommit: normalized.result === "complete"` to
-     `requireCommit: false` in the `assertAuthorStatus` call (JSON
-     stdin path at line 191-192 needs the same change).
+     `requireCommit: false` back to
+     `requireCommit: normalized.result === "complete"` in both stdin and
+     flag paths.
   3. **`src/commands/protocol.ts` line 196** — Update the help text from
-     `"Git commit hash (required with --complete)"` to
-     `"Git commit hash (optional)"`.
+     `"Git commit hash (optional)"` back to
+     `"Git commit hash (required with --complete)"`.
   4. **`src/commands/protocol-helpers.ts` line 97** — Change
-     `const requireCommit = opts.requireCommit !== false;` to
-     `const requireCommit = opts.requireCommit === true;` so the default
-     is `false` (don't require commit) rather than `true`. This affects
-     `5x protocol validate author` when `--require-commit` is not
-     explicitly passed.
-  5. **`src/commands/protocol.handler.ts` line 273** — The
-     `requireCommit: params.requireCommit` passthrough is fine as-is
-     (it passes the explicit flag value). No change needed, but verify
-     it works with the new default.
-  6. **`src/protocol.ts` line 131** — The `assertAuthorStatus` function
-     itself is correct (it only enforces when `opts?.requireCommit` is
-     truthy). No change needed, but verify the updated callers pass the
-     right values.
-  7. **`src/providers/opencode.ts` lines 148-156** — The
-     `buildStructuredSummaryPrompt()` function emits prompt text telling
-     agents that "a 'complete' result without a valid commit hash will
-     be rejected and escalated as a failure" and "If result is complete,
-     you MUST include the commit hash." Update this prompt to reflect
-     that the commit hash is optional — agents may include it if they
-     committed, but it is no longer required for a `complete` result.
+     `const requireCommit = opts.requireCommit === true;` back to
+     `const requireCommit = opts.requireCommit !== false;` so the default
+     is `true` (require commit) rather than `false`.
+  5. **`src/providers/opencode.ts` lines 148-156** — Restore the original
+     prompt text: "If result is complete, you MUST include the commit hash."
 
 - [x] **1f.** Fix review-path generation for worktree-mapped runs.
-  When a run has a mapped worktree, `generateReviewPath()` currently
-  produces a path under the control-plane root (e.g.,
-  `/project/docs/development/reviews/plan-review.md`). This path cannot
-  be staged via `git add` from the linked worktree. The fix re-roots
-  the review path to the worktree, following the same pattern used for
-  `plan_path` via `ctx.effectivePlanPath`.
+  (Keep as-is — unchanged from v1.3)
+
+- [x] **1g.** Add `run_id` as an internal template variable. The `run_id`
+  from the `--run` flag is not currently exposed to templates. Add it
+  to `resolveInternalTemplateVariables()` so authors can reference
+  `{{run_id}}` in their commit commands.
 
   Changes:
 
-  1. **`src/commands/template-vars.ts`** — Update
-     `resolveInternalTemplateVariables()` to accept an optional
-     `worktreeRoot` parameter. When `worktreeRoot` is provided and
-     `generateReviewPath()` produces a path, re-root it: compute the
-     path relative to `projectRoot`, then join it with `worktreeRoot`.
-     Example:
+  1. **`src/commands/template-vars.ts`** — In `resolveInternalTemplateVariables()`,
+     add `run_id` to `internalVars` when `runId` is provided:
      ```
-     // Generated: /project/docs/development/reviews/plan-review.md
-     // Relative:  docs/development/reviews/plan-review.md
-     // Re-rooted: /project/.5x/worktrees/feature/docs/development/reviews/plan-review.md
+     if (runId) {
+       internalVars.run_id = runId;
+     }
      ```
-     Also update `ResolveAndRenderOptions` to include an optional
-     `worktreeRoot?: string` field, and pass it through in
-     `resolveAndRenderTemplate()`.
+     Also add `run_id` to `ResolveAndRenderOptions` interface for consistency.
 
-  2. **`src/commands/template.handler.ts`** — Pass
-     `resolvedWorktreeRoot` to `resolveAndRenderTemplate()` via the new
-     `worktreeRoot` option. The value is already available from
-     `ctx.mappedWorktreePath` (line 114). Currently it is only used for
-     the post-render `## Context` block (line 191); now it also flows
-     into variable resolution.
+  2. **`src/commands/template.handler.ts`** — Pass `resolvedRunId` through
+     to `resolveAndRenderTemplate()` (already flows via `params.run`).
 
-  3. **`src/commands/invoke.handler.ts`** — If `resolveAndRenderTemplate`
-     is called here, pass the same `worktreeRoot` option. Verify the
-     invoke handler passes worktree context through consistently.
+  3. **`src/commands/invoke.handler.ts`** — Pass `run_id` through
+     to `resolveAndRenderTemplate()` when rendering agent prompts.
 
 ## Phase 2: Unit tests
 
@@ -330,10 +305,21 @@ commit + recording, review-path re-rooting. All tests pass under
   4. **Explicit review_path not re-rooted** — when `review_path` is
      provided via explicit vars, it should NOT be re-rooted (explicit
      always wins).
+  5. **`run_id` variable populated** — call with `runId` set. Verify:
+     `run_id` appears in the resolved variables with the correct value.
+  6. **`run_id` variable absent when not provided** — call without `runId`.
+     Verify: `run_id` is not present in resolved variables.
 
-- [ ] **2c.** Verify all tests pass:
-  `bun test test/unit/commands/commit.test.ts` and
-  `bun test test/unit/commands/template-vars.test.ts`.
+- [ ] **2c.** Add `run_id` template integration tests. Create a new file
+  `test/integration/commands/template-render.test.ts` or add to an existing
+  template-related integration test file. Spawn `5x template render --run <id>
+  author-next-phase` and verify the JSON output includes `run_id` in the
+  `variables` object with the correct run ID.
+
+- [ ] **2d.** Verify all tests pass:
+  `bun test test/unit/commands/commit.test.ts`,
+  `bun test test/unit/commands/template-vars.test.ts`, and
+  the relevant template integration test file from 2c.
 
 ## Phase 3: Integration tests
 
@@ -373,82 +359,83 @@ pass under `bun test --concurrent`.
 - [ ] **3b.** Verify all tests pass:
   `bun test test/integration/commands/commit.test.ts`.
 
-## Phase 4: Update templates to remove commit instructions
+## Phase 4: Update templates to use `5x commit`
 
-**Completion gate:** All templates that previously instructed agents to
-commit have those instructions removed. Agents focus on producing work
-and reporting structured results without committing. The `--commit` field
-in structured output is documented as optional. All existing tests pass.
+**Completion gate:** All templates that previously used raw `git add` /
+`git commit` now use `5x commit --run {{run_id}}`. The `run_id` variable
+is declared in each template's frontmatter. Agents preserve the pre-commit
+hook feedback loop by calling `5x commit` directly. All existing tests pass.
 
-- [ ] **4a.** Update author templates. In each of the following files,
-  **remove** the "you MUST commit all changes to git" instruction block,
-  the CRITICAL block about committing, and any `git add` / `git commit`
-  instructions. Do NOT replace with `5x commit` — the orchestrator
-  handles commits:
-  - `src/templates/author-generate-plan.md` — remove commit instructions.
-    The agent reports `result: "complete"` without a commit hash.
-  - `src/templates/author-next-phase.md` — same removal.
-  - `src/templates/author-fix-quality.md` — same removal.
-  - `src/templates/author-process-plan-review.md` — same removal.
-  - `src/templates/author-process-impl-review.md` — same removal.
+- [ ] **4a.** Update author templates. The author templates don't currently
+  show the actual `git add`/`git commit` commands — they only have a
+  CRITICAL section stating that changes must be committed. Update each
+  of the following files to:
+  1. Add `run_id` to the `variables:` frontmatter declaration.
+  2. **In the Completion section**, add explicit instructions showing
+     the `5x commit` command to use:
+     ```
+     When ready to commit, run:
 
-  In all cases: the agent's structured output (`5x protocol emit author
-  --complete`) no longer requires `--commit`. The agent reports completion
-  and the orchestrator takes responsibility for committing.
+         5x commit --run {{run_id}} -m "<descriptive message>" --all-files
 
-- [ ] **4b.** Update reviewer templates. **Remove** the explicit
-  `git add` + `git commit` commands. The orchestrator commits review
-  artifacts after the reviewer completes:
-  - `src/templates/reviewer-plan.md` — remove commit instructions.
-  - `src/templates/reviewer-plan-continued.md` — same removal.
-  - `src/templates/reviewer-commit.md` — same removal.
+     Then produce your structured result:
+
+         5x protocol emit author --complete --commit <hash>
+     ```
+  3. Keep and update the CRITICAL section to reference `5x commit`:
+     "CRITICAL: You MUST commit all changes using `5x commit` before finishing..."
+
+  Templates to update:
+  - `src/templates/author-generate-plan.md`
+  - `src/templates/author-next-phase.md`
+  - `src/templates/author-fix-quality.md`
+  - `src/templates/author-process-plan-review.md`
+  - `src/templates/author-process-impl-review.md`
+
+- [ ] **4b.** Update reviewer templates. Replace `git add` + `git commit`
+  with `5x commit`:
+  - `src/templates/reviewer-plan.md` — replace with `5x commit --run {{run_id}} --files {{review_path}} -m "docs: add plan review"`.
+  - `src/templates/reviewer-plan-continued.md` — use `5x commit --run {{run_id}} --files {{review_path}} -m "docs: update plan review"`.
+  - `src/templates/reviewer-commit.md` — use `5x commit --run {{run_id}} --files {{review_path}} -m "review: <phase or context summary>"`.
+
+  Add `run_id` to each template's `variables:` frontmatter.
 
 - [ ] **4c.** Update agent definitions in `src/harnesses/opencode/`:
-  - `5x-code-author.md` — remove the "you must make a git commit"
-    section. Clarify that the agent produces work and reports
-    `result: "complete"` — the orchestrator handles committing.
+  - `5x-code-author.md` — update the "you must make a git commit"
+    section to reference `5x commit --run {{run_id}} --all-files`. Keep
+    the invariant — agents still commit, just via the tracked command.
   - `5x-plan-author.md` — same update.
 
-## Phase 5: Update skills to add orchestrator-level `5x commit` calls
+## Phase 5: Update skills to reflect author-owns-commits
 
-**Completion gate:** Skills that orchestrate agent workflows call
-`5x commit` after each successful agent/reviewer completion step.
-The old invariant "result: complete without a commit = invariant
-violation" is removed — the orchestrator owns commits. All existing
-tests pass.
+**Completion gate:** Skills reflect that agents call `5x commit` directly.
+The old "agent must commit" invariants stay — they just reference the
+`5x commit` command. No orchestrator-level commit calls are added. All
+existing tests pass.
 
 - [ ] **5a.** Update `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md`:
-  - After each successful author completion (code implementation, quality
-    fix), add an orchestrator step that calls
-    `5x commit --run $RUN -m "<message>" --all-files --phase "$PHASE"`.
-  - After each successful reviewer completion (plan review, impl review),
-    add an orchestrator step that calls
-    `5x commit --run $RUN --files $REVIEW_PATH -m "review: phase $PHASE"
-    --phase "$PHASE"`.
-  - Remove the fallback commit block (lines ~217-223, `git add` +
-    `git commit` for uncommitted review files) — it is replaced by the
-    orchestrator `5x commit` call above.
-  - Remove any invariant language that treats "agent completed without a
-    commit" as an error condition.
+  - Keep the "After author completes" sections unchanged — they already
+    reference the author producing a commit.
+  - Update any prose that mentions `git commit` to mention `5x commit`.
+  - **Keep** the fallback commit block (lines ~217-223) — it should now
+    use `5x commit` instead of `git add` + `git commit`.
+  - Keep the invariant language — "result: complete without a commit"
+    is still an error, but now the commit is produced via `5x commit`.
 
 - [ ] **5b.** Update `src/harnesses/opencode/skills/5x/SKILL.md`:
-  - Remove the invariant "`result: "complete"` without a commit =
-    invariant violation". Replace with guidance that the orchestrator
-    calls `5x commit` after each successful agent completion to record
-    commits in the run journal.
-  - Add a note that agents no longer commit directly — they report
-    `result: "complete"` and the orchestrator is responsible for staging,
-    committing, and journal recording via `5x commit`.
+  - Keep the "`result: "complete"` without a commit = invariant violation"
+    guidance — agents still commit.
+  - Update the delegation example prose to reference `5x commit` instead
+    of raw git commands.
+  - Keep the note that agents commit and report the hash.
 
 - [ ] **5c.** Update `src/harnesses/opencode/skills/5x-plan/SKILL.md`:
-  - Remove the invariant about author producing a commit.
-  - Add orchestrator-level `5x commit` calls after successful author
-    plan generation and after successful author plan revision steps.
+  - Keep the invariant about author producing a commit.
+  - Update any `git commit` references to `5x commit`.
 
 - [ ] **5d.** Update `src/harnesses/opencode/skills/5x-plan-review/SKILL.md`:
-  - Remove the invariant about author revisions producing a commit.
-  - Add orchestrator-level `5x commit` calls after successful author
-    revision and after successful reviewer review steps.
+  - Keep the invariant about author revisions producing a commit.
+  - Update any `git commit` references to `5x commit`.
 
 - [ ] **5e.** Run full test suite: `bun test`. Verify template content
   tests (if any assert on specific template strings) still pass.
@@ -461,29 +448,29 @@ tests pass.
 | `src/commands/commit.handler.ts` | **New** — business logic |
 | `src/bin.ts` | Add `registerCommit` import and call |
 | `src/output.ts` | Add `COMMIT_FAILED` to exit code map (if needed) |
-| `src/commands/protocol-emit.handler.ts` | Remove `--commit` required check on `--complete` (lines 220-225), change `requireCommit` to `false` in both stdin and flag paths (lines 191-192, 245-246) |
-| `src/commands/protocol.ts` | Update `--commit` help text from "(required with --complete)" to "(optional)" (line 196) |
-| `src/commands/protocol-helpers.ts` | Change `requireCommit` default from `true` to `false` (line 97) |
-| `src/commands/protocol.handler.ts` | Verify `requireCommit` passthrough works with new default (line 273) |
-| `src/protocol.ts` | Verify `assertAuthorStatus` works with updated callers (line 131) — no change needed |
-| `src/providers/opencode.ts` | Update `buildStructuredSummaryPrompt()` commit-required prompt text to reflect optional `--commit` (lines 148-156) |
-| `src/commands/template-vars.ts` | Add `worktreeRoot` param to `resolveInternalTemplateVariables()` and `ResolveAndRenderOptions`; re-root `review_path` to worktree when provided |
-| `src/commands/template.handler.ts` | Pass `resolvedWorktreeRoot` as `worktreeRoot` to `resolveAndRenderTemplate()` |
-| `src/commands/invoke.handler.ts` | Pass `worktreeRoot` through to `resolveAndRenderTemplate()` if applicable |
-| `src/templates/author-generate-plan.md` | Remove git commit instructions |
-| `src/templates/author-next-phase.md` | Remove git commit instructions |
-| `src/templates/author-fix-quality.md` | Remove git commit instructions |
-| `src/templates/author-process-plan-review.md` | Remove git commit instructions |
-| `src/templates/author-process-impl-review.md` | Remove git commit instructions |
-| `src/templates/reviewer-plan.md` | Remove `git add`/`git commit` instructions |
-| `src/templates/reviewer-plan-continued.md` | Remove `git add`/`git commit` instructions |
-| `src/templates/reviewer-commit.md` | Remove `git add`/`git commit` instructions |
-| `src/harnesses/opencode/5x-code-author.md` | Remove commit requirement |
-| `src/harnesses/opencode/5x-plan-author.md` | Remove commit requirement |
-| `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md` | Add orchestrator `5x commit` calls, remove fallback commit |
-| `src/harnesses/opencode/skills/5x/SKILL.md` | Replace commit invariant with orchestrator-owns-commits guidance |
-| `src/harnesses/opencode/skills/5x-plan/SKILL.md` | Add orchestrator `5x commit` calls, remove agent commit invariant |
-| `src/harnesses/opencode/skills/5x-plan-review/SKILL.md` | Add orchestrator `5x commit` calls, remove agent commit invariant |
+| `src/commands/protocol-emit.handler.ts` | **Revert** protocol relaxation — restore `--commit` required check (lines 220-225), restore `requireCommit: normalized.result === "complete"` (lines 245-246) |
+| `src/commands/protocol.ts` | **Revert** help text from "(optional)" to "(required with --complete)" (line 196) |
+| `src/commands/protocol-helpers.ts` | **Revert** `requireCommit` default back to `true` — `opts.requireCommit !== false` (line 97) |
+| `src/commands/protocol.handler.ts` | No change — passthrough stays as-is |
+| `src/protocol.ts` | No change — `assertAuthorStatus` works with reverted callers |
+| `src/providers/opencode.ts` | **Revert** prompt text — restore "you MUST include the commit hash" (lines 148-156) |
+| `src/commands/template-vars.ts` | Add `run_id` to internal variables; add `worktreeRoot` param for review_path re-rooting |
+| `src/commands/template.handler.ts` | Pass `run_id` and `worktreeRoot` to template resolution |
+| `src/commands/invoke.handler.ts` | Pass `run_id` and `worktreeRoot` to template resolution |
+| `src/templates/author-generate-plan.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}}` |
+| `src/templates/author-next-phase.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}}` |
+| `src/templates/author-fix-quality.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}}` |
+| `src/templates/author-process-plan-review.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}}` |
+| `src/templates/author-process-impl-review.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}}` |
+| `src/templates/reviewer-plan.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}} --files {{review_path}}` |
+| `src/templates/reviewer-plan-continued.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}} --files {{review_path}}` |
+| `src/templates/reviewer-commit.md` | Replace `git add`/`git commit` with `5x commit --run {{run_id}} --files {{review_path}}` |
+| `src/harnesses/opencode/5x-code-author.md` | Update prose to reference `5x commit --run {{run_id}}` |
+| `src/harnesses/opencode/5x-plan-author.md` | Update prose to reference `5x commit --run {{run_id}}` |
+| `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md` | Update fallback commit block to use `5x commit`, keep author invariants |
+| `src/harnesses/opencode/skills/5x/SKILL.md` | Update examples to reference `5x commit`, keep commit invariants |
+| `src/harnesses/opencode/skills/5x-plan/SKILL.md` | Update examples to reference `5x commit`, keep commit invariants |
+| `src/harnesses/opencode/skills/5x-plan-review/SKILL.md` | Update examples to reference `5x commit`, keep commit invariants |
 | `test/unit/commands/commit.test.ts` | **New** — unit tests (incl. worktree case) |
 | `test/unit/commands/template-vars.test.ts` | **New or expanded** — review-path re-rooting tests |
 | `test/integration/commands/commit.test.ts` | **New** — integration tests (incl. worktree case) |
@@ -501,11 +488,11 @@ tests pass.
 
 | Phase | Size | Notes |
 |-------|------|-------|
-| Phase 1 | Medium-Large | ~120 lines handler + ~30 lines registration + protocol relaxation across 4 files + review-path re-rooting (~30 lines) |
+| Phase 1 | Medium-Large | ~120 lines handler + ~30 lines registration + **revert** protocol relaxation across 4 files + add `run_id` template variable (~20 lines) + review-path re-rooting (~30 lines) |
 | Phase 2 | Medium | ~220 lines commit tests + ~60 lines review-path tests |
 | Phase 3 | Medium | ~170 lines integration tests (incl. worktree case) |
-| Phase 4 | Small | Template text removals across 8 files |
-| Phase 5 | Small-Medium | Skill/agent updates across 6 files — adding `5x commit` orchestration |
+| Phase 4 | Small | Template updates across 8 files — replace `git commit` with `5x commit` |
+| Phase 5 | Small | Skill/agent prose updates across 6 files — keep invariants, reference `5x commit` |
 
 ## Not In Scope
 
@@ -516,5 +503,5 @@ tests pass.
 - Auto-discovery of active run from working directory (explicit `--run`
   only for v1)
 - `--no-record` flag — use `git commit` directly if you don't want tracking
-- Non-git version control backends — the orchestrator-owns-commits design
-  opens the door for this, but it is not in scope for this plan
+- Non-git version control backends — author-owns-commits design preserves
+  the git-centric workflow, though `5x commit` abstracts the details

@@ -124,11 +124,11 @@ describe("protocol validate author (unit)", () => {
 		}
 	});
 
-	test("require-commit defaults to false — complete without commit is allowed", () => {
+	test("require-commit defaults to true — complete without commit is rejected", () => {
 		const r = validateStructuredOutput({ result: "complete" }, "author", {
 			context: "test",
 		});
-		expect(r.ok).toBe(true);
+		expect(r.ok).toBe(false);
 	});
 
 	test("no-require-commit allows complete without commit", () => {
@@ -607,15 +607,16 @@ describe("protocol validate author with legacy status payloads (Phase 3)", () =>
 		}
 	});
 
-	test("validates normalized payload accepts done status without commit (commit is optional)", async () => {
+	test("validates normalized payload rejects done status without commit (commit is required)", async () => {
 		const dir = makeTmpDir();
 		try {
 			const inputPath = writeInput(dir, {
 				status: "done",
-				// missing commit — now allowed since commit is optional
+				// missing commit — required since commit is mandatory for complete
 			});
-			// Should succeed without throwing
-			await protocolValidate({ role: "author", input: inputPath });
+			await expect(
+				protocolValidate({ role: "author", input: inputPath }),
+			).rejects.toThrow(CliError);
 		} finally {
 			cleanupDir(dir);
 		}

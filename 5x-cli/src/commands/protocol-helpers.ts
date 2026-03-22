@@ -94,7 +94,7 @@ export function validateStructuredOutput(
 
 	try {
 		if (role === "author") {
-			const requireCommit = opts.requireCommit === true;
+			const requireCommit = opts.requireCommit !== false;
 			assertAuthorStatus(valueToValidate as AuthorStatus, opts.context, {
 				requireCommit,
 			});
