@@ -239,9 +239,9 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("5x config show");
 	});
 
-	test("contains Session Reuse section", () => {
+	test("contains Task Reuse section", () => {
 		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("## Session Reuse");
+		expect(content).toContain("## Task Reuse");
 	});
 
 	test("documents Task tool delegation pattern", () => {

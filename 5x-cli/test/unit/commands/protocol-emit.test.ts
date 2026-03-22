@@ -166,7 +166,7 @@ describe("protocolEmitAuthor", () => {
 		expect(result.reason).toBe("Tests broken beyond repair");
 	});
 
-	test("--complete without --commit → error", async () => {
+	test("--complete without --commit → error (commit is required)", async () => {
 		try {
 			await protocolEmitAuthor({ complete: true });
 			expect.unreachable("should have thrown");

@@ -2,10 +2,11 @@
 name: author-fix-quality
 description: Fix quality gate failures for a plan phase
 version: 2
-variables: [plan_path, phase_number, user_notes]
+variables: [plan_path, phase_number, user_notes, run_id]
 step_name: "author:fix-quality"
 variable_defaults:
   user_notes: ""
+  run_id: ""
 ---
 
 You are fixing quality gate failures for Phase {{phase_number}} of `{{plan_path}}`.
@@ -55,9 +56,13 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
+CRITICAL: You MUST commit all changes using `5x commit` before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
 
-When finished, produce your structured result by running:
+When ready to commit, run:
+
+    5x commit --run {{run_id}} -m "<descriptive message>" --all-files
+
+Then produce your structured result:
 
     5x protocol emit author --complete --commit <hash>
 

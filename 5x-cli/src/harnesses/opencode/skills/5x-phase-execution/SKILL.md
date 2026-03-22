@@ -51,20 +51,22 @@ timeout handling.
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
 - `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
+- `5x commit --run <id> -m <msg> --all-files|--files <list>` — stage, commit, and record in the run journal
 - `5x diff --run <id>` — inspect changes in mapped worktree
 - `5x diff --since <ref>` — inspect changes (without run context)
 - `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
-### Session reuse
+### Task reuse
 
-Session reuse is optional and best-effort. Capture the `task_id` from
-the first reviewer invocation as `$REVIEWER_SESSION`. Pass it when
-resuming the reviewer for re-reviews within the same phase — this gives
-the reviewer conversational continuity with its prior findings. Pass
-`--session $REVIEWER_SESSION` to `5x template render` to auto-select a
-shorter continued-template variant if one exists. Omit to start fresh.
+Task reuse is optional and best-effort. Capture the `task_id` from
+the first reviewer invocation as `$REVIEWER_TASK_ID`. Pass it back to
+the Task tool when resuming the reviewer for re-reviews within the same
+phase — this gives the reviewer conversational continuity with its prior
+findings. Pass `--session $REVIEWER_TASK_ID` to `5x template render` to
+auto-select a shorter continued-template variant if one exists. Omit
+`task_id` to start fresh.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -122,7 +124,7 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
 Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
-Track $REVIEWER_SESSION = "" (for optional session reuse within this phase).
+Track $REVIEWER_TASK_ID = "" (for optional task reuse within this phase).
 
 #### Step 1: Author implements
 
@@ -141,7 +143,7 @@ echo "$RESULT" | 5x protocol validate author \
 ```
 
 Check the result:
-- `result: "complete"` with a commit hash — continue to Step 2.
+- `result: "complete"` with a commit hash (from `5x commit`) — continue to Step 2.
 - `result: "complete"` without a commit — **invariant violation**.
   See Recovery.
 - `result: "needs_human"` — present the reason and options:
@@ -199,12 +201,13 @@ Delegate to the reviewer via the Task tool:
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
   --var plan_path=$PLAN_PATH \
-  ${REVIEWER_SESSION:+--session $REVIEWER_SESSION})
+  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT>
+RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
+        task_id=$REVIEWER_TASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -219,12 +222,11 @@ review document was committed:
 If the review file was not committed, commit it on behalf of the
 reviewer before proceeding:
 
-    git -C $WORKTREE_PATH add $REVIEW_PATH
-    git -C $WORKTREE_PATH commit -m "review: phase $PHASE"
+    5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
 
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
-exists. Capture $REVIEWER_SESSION (the `task_id` from the Task tool)
+exists. Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)
 for optional reuse in subsequent reviews.
 
 #### Step 4: Route the verdict
@@ -363,10 +365,10 @@ This is an explicit failure mode. The audit trail must show `phase:checklist_mis
 
 **Symptom:** Author returns `complete` but the diff is empty, trivial,
 or doesn't address the task. Or author returns `complete` without a
-commit hash.
+commit hash (from `5x commit`).
 
 **Response:**
-1. Re-invoke with a fresh session (do NOT pass --session).
+1. Re-invoke with a fresh task (omit `task_id`, do NOT pass `--session`).
 2. If the second attempt also fails, escalate to the human with context:
    "Author may be experiencing context issues. Two attempts produced
    inadequate results."
@@ -412,7 +414,7 @@ still says not_ready on the same issues.
 `5x protocol validate`.
 
 **Response:**
-1. Retry once with a fresh session (no `task_id`).
+1. Retry once with a fresh task (omit `task_id`).
 2. If it fails again, escalate to the human.
 
 ### Structured output validation failure
@@ -421,7 +423,7 @@ still says not_ready on the same issues.
 `INVALID_STRUCTURED_OUTPUT`.
 
 **Response:**
-1. Retry once with a fresh session.
+1. Retry once with a fresh task (omit `task_id`).
 2. If it fails again, escalate to the human — the model may not support
    the structured output format or the prompt may need adjustment.
 

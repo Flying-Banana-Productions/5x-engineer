@@ -15,7 +15,11 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { loadConfig, resolveLayeredConfig } from "../config.js";
+import {
+	type FiveXConfig,
+	loadConfig,
+	resolveLayeredConfig,
+} from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import {
@@ -67,6 +71,7 @@ import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
 import {
+	type ControlPlaneResult,
 	DB_FILENAME,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
@@ -902,11 +907,22 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 /**
  * Record a step in the database. Pure persistence — no stdout, no CliError.
  * Throws RecordError on validation failures (caller decides how to surface).
+ *
+ * When `dbContext` is provided, the caller's already-resolved DB/control-plane
+ * is used instead of re-resolving via `resolveDbContext()`. This ensures the
+ * step is recorded against the same database that the caller used for run
+ * context resolution — critical for `5x commit` where re-discovery from cwd
+ * could target the wrong control-plane.
  */
 export async function recordStepInternal(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
+	dbContext?: {
+		db: Database;
+		config: FiveXConfig;
+		controlPlane?: ControlPlaneResult;
+	},
 ): Promise<RecordStepResult> {
-	const { config, db, controlPlane } = await resolveDbContext();
+	const { config, db, controlPlane } = dbContext ?? (await resolveDbContext());
 
 	// Verify run exists and is active
 	const run = getRunV1(db, params.run);

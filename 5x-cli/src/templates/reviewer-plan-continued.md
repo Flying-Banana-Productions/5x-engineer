@@ -2,8 +2,10 @@
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
 version: 2
-variables: [plan_path, review_path]
+variables: [plan_path, review_path, run_id]
 step_name: "reviewer:review"
+variable_defaults:
+  run_id: ""
 ---
 
 The plan at `{{plan_path}}` has been revised since your last review. Re-review it now.
@@ -26,9 +28,6 @@ You are running as a delegated non-interactive workflow. Do NOT use any interact
 
 Write your updated review to `{{review_path}}` and commit the file:
 
-```
-git add {{review_path}}
-git commit -m "docs: update plan review for <plan name>"
-```
+    5x commit --run {{run_id}} --files {{review_path}} -m "docs: update plan review for <plan name>"
 
 Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result.

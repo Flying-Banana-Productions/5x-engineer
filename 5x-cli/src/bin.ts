@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { CommanderError } from "@commander-js/extra-typings";
+import { registerCommit } from "./commands/commit.js";
 import { registerConfig } from "./commands/config.js";
 import { registerDiff } from "./commands/diff.js";
 import { registerHarness } from "./commands/harness.js";
@@ -80,6 +81,7 @@ const program = createProgram();
 
 // Register all commands eagerly
 registerRun(program);
+registerCommit(program);
 registerInvoke(program);
 registerQuality(program);
 registerPlan(program);

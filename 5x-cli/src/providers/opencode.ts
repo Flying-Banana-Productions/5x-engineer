@@ -147,9 +147,6 @@ function buildStructuredSummaryPrompt(schema: JSONSchema): string {
 
 	if (isStatus) {
 		return [
-			"IMPORTANT: Before responding, verify that all changes have been committed to git.",
-			"If you have uncommitted changes, commit them NOW — a 'complete' result without a",
-			"valid commit hash will be rejected and escalated as a failure.",
 			"Do not call any other tools. Base your answer only on work already completed in this session.",
 			"If result is complete, you MUST include the commit hash.",
 			"If result is needs_human or failed, include a concise reason.",

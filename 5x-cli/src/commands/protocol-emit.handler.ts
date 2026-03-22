@@ -223,7 +223,6 @@ export async function protocolEmitAuthor(
 			"--commit is required with --complete. Provide the git commit hash.",
 		);
 	}
-
 	if (result !== "complete" && !reason) {
 		outputError(
 			"INVALID_ARGS",
