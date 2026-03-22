@@ -100,3 +100,19 @@ None.
 
 - The fixture setup hand-creates `.5x/` instead of running the planned `5x init` bootstrap step. The tests still pass and exercise `5x commit`, but they no longer validate the exact end-to-end project setup path the Phase 3 plan called for. **Action:** `auto_fix`
 - The shared CLI helper uses `Bun.spawn(...)` plus awaited streams instead of the planned `Bun.spawnSync(...)`. This is not a correctness bug and remains concurrency-safe here, but it is a plan-compliance drift worth normalizing for consistency with the documented Phase 3 setup. **Action:** `auto_fix`
+
+## Addendum (2026-03-22) - Phase 4 template updates
+
+**Review type:** commit `5a2e02958c9c31afef4bdf0fec21c7a3d3d9e426`
+**Scope:** Phase 4 template and agent-definition updates for `5x commit`
+**Local verification:** `bun test test/integration/commands/template-render.test.ts` - passed (35 tests)
+
+### Assessment
+
+- The five author templates now declare `run_id`, update their CRITICAL language to require `5x commit`, and include the explicit `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` completion flow required by 4a.
+- The three reviewer templates now declare `run_id` and replace raw `git add` / `git commit` instructions with `5x commit --run {{run_id}} --files {{review_path}} ...`, matching 4b.
+- `src/harnesses/opencode/5x-code-author.md` preserves the commit-required invariant while swapping the instructions over to `5x commit`, which is the right shape for 4c.
+
+### Remaining Concerns
+
+- `src/harnesses/opencode/5x-plan-author.md:21` still defines `commit` as optional and says `result: "complete"` only needs a commit "if required," then the new prose says "When your task requires committing changes...". That does not satisfy Phase 4c's "keep the invariant" requirement and leaves the plan author contract inconsistent with the updated author templates and protocol validation. Make this agent definition explicitly require a commit for `result: "complete"`, parallel to `src/harnesses/opencode/5x-code-author.md`. **Action:** `auto_fix`
