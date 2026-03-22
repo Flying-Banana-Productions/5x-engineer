@@ -212,14 +212,14 @@ Report to the human: plan review is complete. Verdict: approved
   (`5x plan phases $PLAN_PATH` succeeds and returns the same phase count).
   Phase additions are acceptable; phase removals or reordering are suspect.
 - The review file must exist at the auto-generated review path after reviewer invocation.
-- Author revisions must produce a commit (AuthorStatus.commit is present).
+- Author revisions must produce a commit via `5x commit` (AuthorStatus.commit is present).
 
 ## Recovery
 
-- **Author revision produces no commit**: Likely the author made no
-  changes (disagreed with the review). Check the diff. If the plan is
-  genuinely unchanged, present both the review items and the author's
-  notes to the human for judgment.
+- **Author revision produces no commit** (no `5x commit` was run):
+  Likely the author made no changes (disagreed with the review). Check
+  the diff. If the plan is genuinely unchanged, present both the review
+  items and the author's notes to the human for judgment.
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
   with a fresh task (omit `task_id`) and explicit instructions to provide

@@ -90,8 +90,9 @@ task reuse is unavailable or awkward, start a fresh task (omit
 - **Task reuse is best-effort.** Never fail a workflow because
   task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
 - **`result: "complete"` without a commit = invariant violation** in any
-  author step. Re-invoke with a fresh task (omit `task_id`). If it fails
-  again, escalate to the human.
+  author step. Authors commit via `5x commit --run $RUN` (which records
+  the commit in the run journal). Re-invoke with a fresh task (omit
+  `task_id`). If it fails again, escalate to the human.
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.

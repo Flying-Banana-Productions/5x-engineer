@@ -413,7 +413,7 @@ The old "agent must commit" invariants stay — they just reference the
 `5x commit` command. No orchestrator-level commit calls are added. All
 existing tests pass.
 
-- [ ] **5a.** Update `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md`:
+- [x] **5a.** Update `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md`:
   - Keep the "After author completes" sections unchanged — they already
     reference the author producing a commit.
   - Update any prose that mentions `git commit` to mention `5x commit`.
@@ -422,22 +422,22 @@ existing tests pass.
   - Keep the invariant language — "result: complete without a commit"
     is still an error, but now the commit is produced via `5x commit`.
 
-- [ ] **5b.** Update `src/harnesses/opencode/skills/5x/SKILL.md`:
+- [x] **5b.** Update `src/harnesses/opencode/skills/5x/SKILL.md`:
   - Keep the "`result: "complete"` without a commit = invariant violation"
     guidance — agents still commit.
   - Update the delegation example prose to reference `5x commit` instead
     of raw git commands.
   - Keep the note that agents commit and report the hash.
 
-- [ ] **5c.** Update `src/harnesses/opencode/skills/5x-plan/SKILL.md`:
+- [x] **5c.** Update `src/harnesses/opencode/skills/5x-plan/SKILL.md`:
   - Keep the invariant about author producing a commit.
   - Update any `git commit` references to `5x commit`.
 
-- [ ] **5d.** Update `src/harnesses/opencode/skills/5x-plan-review/SKILL.md`:
+- [x] **5d.** Update `src/harnesses/opencode/skills/5x-plan-review/SKILL.md`:
   - Keep the invariant about author revisions producing a commit.
   - Update any `git commit` references to `5x commit`.
 
-- [ ] **5e.** Run full test suite: `bun test`. Verify template content
+- [x] **5e.** Run full test suite: `bun test`. Verify template content
   tests (if any assert on specific template strings) still pass.
 
 ## Files Touched

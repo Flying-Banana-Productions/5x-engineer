@@ -31,8 +31,8 @@ timeout handling.
 - Plan path must resolve inside `paths.plans` (from config)
 - After author generates plan, file must exist AND parse via
   `5x plan phases`
-- Author must produce a commit — no commit is an invariant violation;
-  re-invoke with a fresh task (omit `task_id`)
+- Author must produce a commit via `5x commit` — no commit is an
+  invariant violation; re-invoke with a fresh task (omit `task_id`)
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
 
 ## Tools
@@ -110,9 +110,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - After author generates the plan, the plan file must exist at $PLAN_PATH.
 - The plan must parse successfully (`5x plan phases $PLAN_PATH` returns phases).
 - The plan must have at least one phase.
-- Author must produce a commit (AuthorStatus.commit is present). All
-  author completions — plan generation, plan revision — must result
-  in a committed change.
+- Author must produce a commit via `5x commit` (AuthorStatus.commit is
+  present). All author completions — plan generation, plan revision —
+  must result in a committed change.
 
 ## Recovery
 
@@ -122,9 +122,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Plan has no parseable phases**: The author didn't follow the template
   structure. Re-invoke with a fresh task (omit `task_id`) and explicit
   instructions to follow the template format.
-- **Author claims complete but no commit**: Invariant violation — treat
-  as context loss. Re-invoke with a fresh task (omit `task_id`). If it
-  fails again, escalate to the human.
+- **Author claims complete but no commit** (no `5x commit` was run):
+  Invariant violation — treat as context loss. Re-invoke with a fresh
+  task (omit `task_id`). If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
 
