@@ -66,3 +66,20 @@ None.
 ### Remaining Concerns
 
 - No new blocking concerns. Phase 1 is ready to close; remaining `5x commit` subprocess coverage and template-render integration coverage belong to the planned Phase 2/3 test work, not this phase gate.
+
+## Addendum (2026-03-22) - Phase 2 unit tests
+
+**Review type:** commit `f2d25b9507789ec9a6dbe932ddaf18f752f1c510`
+**Scope:** Phase 2 test coverage for `commit.handler`, template-variable re-rooting, and `run_id` template integration
+**Local verification:** `bun test test/unit/commands/commit.test.ts` - passed (12 tests); `bun test test/unit/commands/template-vars.test.ts` - passed (21 tests); `bun test test/integration/commands/template-render.test.ts` - passed (35 tests); `bun test --concurrent test/unit/commands/commit.test.ts test/unit/commands/template-vars.test.ts test/integration/commands/template-render.test.ts` - passed (68 tests)
+
+### Assessment
+
+- Phase 2 matches the plan's intended coverage. `test/unit/commands/commit.test.ts` now covers all 11 named cases from 2a, plus the earlier dry-run failure regression path, without relying on CLI-layer validation.
+- `test/unit/commands/template-vars.test.ts` covers the six 2b cases directly: review-path behavior with and without worktrees, plan-review re-rooting, explicit override precedence, and `run_id` present/absent behavior.
+- `test/integration/commands/template-render.test.ts` adds the planned `run_id` rendering checks and verifies both the positive and no-`--run` cases at the CLI boundary.
+- The tests follow repo conventions for subprocess isolation (`cleanGitEnv()`, `stdin: "ignore"`, per-test timeouts) and are safe under concurrent execution.
+
+### Remaining Concerns
+
+- No blocking issues found in Phase 2. This work is ready to advance to Phase 3 integration coverage.
