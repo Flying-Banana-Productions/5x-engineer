@@ -83,3 +83,20 @@ None.
 ### Remaining Concerns
 
 - No blocking issues found in Phase 2. This work is ready to advance to Phase 3 integration coverage.
+
+## Addendum (2026-03-22) - Phase 3 integration tests
+
+**Review type:** commit `690e431f0bac6943ef9060faa100bb4707557cf4`
+**Scope:** Phase 3 integration coverage for `5x commit`
+**Local verification:** `bun test test/integration/commands/commit.test.ts` - passed (8 tests); `bun test --concurrent test/integration/commands/commit.test.ts` - passed (8 tests)
+
+### Assessment
+
+- The new `test/integration/commands/commit.test.ts` covers all eight Phase 3 scenarios: `--all-files`, `--files`, `--dry-run`, missing staging mode, `--text`, `run state` journaling, hook rejection, and mapped-worktree end-to-end behavior.
+- The suite follows the repo's integration-test safety conventions: every git or CLI subprocess uses `cleanGitEnv()`, every spawn sets `stdin: "ignore"`, and each subprocess-spawning test declares an explicit timeout.
+- Coverage is strongest where it matters most for this feature: the hook-failure case confirms no `git:commit` step is recorded on git rejection, and the mapped-worktree case validates the run-context indirection at the CLI boundary instead of only in unit tests.
+
+### Remaining Concerns
+
+- The fixture setup hand-creates `.5x/` instead of running the planned `5x init` bootstrap step. The tests still pass and exercise `5x commit`, but they no longer validate the exact end-to-end project setup path the Phase 3 plan called for. **Action:** `auto_fix`
+- The shared CLI helper uses `Bun.spawn(...)` plus awaited streams instead of the planned `Bun.spawnSync(...)`. This is not a correctness bug and remains concurrency-safe here, but it is a plan-compliance drift worth normalizing for consistency with the documented Phase 3 setup. **Action:** `auto_fix`
