@@ -116,3 +116,13 @@ None.
 ### Remaining Concerns
 
 - `src/harnesses/opencode/5x-plan-author.md:21` still defines `commit` as optional and says `result: "complete"` only needs a commit "if required," then the new prose says "When your task requires committing changes...". That does not satisfy Phase 4c's "keep the invariant" requirement and leaves the plan author contract inconsistent with the updated author templates and protocol validation. Make this agent definition explicitly require a commit for `result: "complete"`, parallel to `src/harnesses/opencode/5x-code-author.md`. **Action:** `auto_fix`
+
+## Addendum (2026-03-22) - Phase 4 re-review
+
+**Review type:** commit `ce81213`
+**Scope:** Verify R1 fix in `src/harnesses/opencode/5x-plan-author.md`
+
+### Assessment
+
+- `src/harnesses/opencode/5x-plan-author.md` now matches the required-commit pattern in `src/harnesses/opencode/5x-code-author.md`: the schema marks `commit` as required when `result` is `complete`, the bullet text says a commit must be included, and the Important section requires `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` before reporting completion.
+- R1 is resolved. No remaining Phase 4 blocking issues.
