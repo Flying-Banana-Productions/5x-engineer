@@ -126,3 +126,20 @@ None.
 
 - `src/harnesses/opencode/5x-plan-author.md` now matches the required-commit pattern in `src/harnesses/opencode/5x-code-author.md`: the schema marks `commit` as required when `result` is `complete`, the bullet text says a commit must be included, and the Important section requires `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` before reporting completion.
 - R1 is resolved. No remaining Phase 4 blocking issues.
+
+## Addendum (2026-03-22) - Phase 5 skill updates
+
+**Review type:** commit `4ac496e18464fb787ef4572a59a334b3bd5e8aa3`
+**Scope:** Phase 5 skill updates for author-owned commits
+**Local verification:** `bun test` - passed (1646 tests, 1 skipped)
+
+### Assessment
+
+- All four required skill files were updated in this commit: `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md`, `src/harnesses/opencode/skills/5x/SKILL.md`, `src/harnesses/opencode/skills/5x-plan/SKILL.md`, and `src/harnesses/opencode/skills/5x-plan-review/SKILL.md`.
+- `src/harnesses/opencode/skills/5x-phase-execution/SKILL.md` keeps the existing complete-without-commit invariant, updates the fallback reviewer-commit block to `5x commit --run $RUN ... --files $REVIEW_PATH`, and adds `5x commit` to the tool list, matching 5a.
+- `src/harnesses/opencode/skills/5x/SKILL.md`, `src/harnesses/opencode/skills/5x-plan/SKILL.md`, and `src/harnesses/opencode/skills/5x-plan-review/SKILL.md` preserve the commit-required invariants while making the prose explicitly refer to commits being produced via `5x commit`, matching 5b-5d.
+- I found no lingering `git add` / `git commit` instructions in those four skill files, and this commit does not introduce any orchestrator-level raw git commit flow.
+
+### Remaining Concerns
+
+- No blocking issues found. Phase 5 is complete.
