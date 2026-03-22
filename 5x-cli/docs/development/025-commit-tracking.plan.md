@@ -327,7 +327,7 @@ commit + recording, review-path re-rooting. All tests pass under
 and verify stdout JSON envelopes, exit codes, and git state. All tests
 pass under `bun test --concurrent`.
 
-- [ ] **3a.** Create `test/integration/commands/commit.test.ts`. Tests
+- [x] **3a.** Create `test/integration/commands/commit.test.ts`. Tests
   spawn the CLI binary via `Bun.spawnSync`. Setup:
   - Create temp dir with git repo and `5x init`.
   - Create a run via `5x run init --plan <path>`.
@@ -356,7 +356,7 @@ pass under `bun test --concurrent`.
      --all-files`. Verify: exit 0, commit exists in the worktree branch,
      `git:commit` step appears in `5x run state`.
 
-- [ ] **3b.** Verify all tests pass:
+- [x] **3b.** Verify all tests pass:
   `bun test test/integration/commands/commit.test.ts`.
 
 ## Phase 4: Update templates to use `5x commit`
