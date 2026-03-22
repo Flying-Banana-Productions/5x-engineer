@@ -481,6 +481,69 @@ describe("runCommit", () => {
 	);
 
 	test(
+		"rejects when neither --files nor --all-files provided",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+
+				try {
+					await runCommit({
+						run: runId,
+						message: "should fail",
+						// Neither files nor allFiles
+						startDir: ctx.tmp,
+						dbContext: ctx.dbContext,
+					});
+					expect(true).toBe(false);
+				} catch (err) {
+					expect(err).toBeInstanceOf(CliError);
+					expect((err as CliError).code).toBe("INVALID_ARGS");
+					expect((err as CliError).message).toContain(
+						"Either --files or --all-files is required",
+					);
+				}
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"rejects when both --files and --all-files provided",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+
+				try {
+					await runCommit({
+						run: runId,
+						message: "should fail",
+						files: ["some-file.ts"],
+						allFiles: true,
+						startDir: ctx.tmp,
+						dbContext: ctx.dbContext,
+					});
+					expect(true).toBe(false);
+				} catch (err) {
+					expect(err).toBeInstanceOf(CliError);
+					expect((err as CliError).code).toBe("INVALID_ARGS");
+					expect((err as CliError).message).toContain("mutually exclusive");
+				}
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"hook failure prevents journal recording",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});
@@ -542,6 +605,99 @@ describe("runCommit", () => {
 				);
 			} finally {
 				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"mapped worktree commit — creates commit in worktree branch and records step",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+
+				// Create a linked worktree
+				const wtDir = join(ctx.tmp, ".5x", "worktrees", "feature");
+				mkdirSync(join(ctx.tmp, ".5x", "worktrees"), { recursive: true });
+				Bun.spawnSync(["git", "worktree", "add", wtDir, "-b", "feature"], {
+					cwd: ctx.tmp,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				// Map the plan to the worktree in the plans table
+				ctx.db
+					.query(
+						`INSERT OR REPLACE INTO plans (plan_path, worktree_path, branch, created_at, updated_at)
+						 VALUES (?1, ?2, 'feature', datetime('now'), datetime('now'))`,
+					)
+					.run(ctx.planPath, wtDir);
+
+				// Create a file in the worktree
+				writeFileSync(join(wtDir, "wt-file.ts"), "worktree code\n");
+
+				await runCommit({
+					run: runId,
+					message: "commit in worktree",
+					allFiles: true,
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				// Verify commit exists in worktree branch
+				const logResult = Bun.spawnSync(["git", "log", "--oneline", "-1"], {
+					cwd: wtDir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const logLine = logResult.stdout.toString().trim();
+				expect(logLine).toContain("commit in worktree");
+
+				// Verify step was recorded in DB with correct hash
+				const steps = getSteps(ctx.db, runId);
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+
+				const result = JSON.parse(commitStep?.result_json ?? "{}");
+				expect(result.hash).toBeTruthy();
+				expect(result.message).toBe("commit in worktree");
+				expect(result.files).toContain("wt-file.ts");
+
+				// Verify the hash matches what git says in the worktree
+				const hashResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: wtDir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				expect(result.hash).toBe(hashResult.stdout.toString().trim());
+			} finally {
+				spy.mockRestore();
+				// Remove worktree before cleanup to avoid git lock issues
+				Bun.spawnSync(
+					[
+						"git",
+						"worktree",
+						"remove",
+						"--force",
+						join(ctx.tmp, ".5x", "worktrees", "feature"),
+					],
+					{
+						cwd: ctx.tmp,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				);
 				teardown(ctx);
 			}
 		},

@@ -314,4 +314,31 @@ describe("resolveInternalTemplateVariables — review-path re-rooting", () => {
 		expect(vars.review_path).toStartWith(worktreeRoot);
 		expect(vars.review_path).toContain("run_abc123-phase-2-review.md");
 	});
+
+	test("run_id variable is populated when runId is provided", () => {
+		const config = makeConfig();
+		const vars = resolveInternalTemplateVariables(
+			[],
+			{},
+			config,
+			projectRoot,
+			"author-next-phase",
+			"run_xyz789",
+		);
+
+		expect(vars.run_id).toBe("run_xyz789");
+	});
+
+	test("run_id variable is absent when runId is not provided", () => {
+		const config = makeConfig();
+		const vars = resolveInternalTemplateVariables(
+			[],
+			{},
+			config,
+			projectRoot,
+			"author-next-phase",
+		);
+
+		expect(vars.run_id).toBeUndefined();
+	});
 });

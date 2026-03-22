@@ -1483,6 +1483,84 @@ describe("5x template render", () => {
 		{ timeout: 20000 },
 	);
 
+	// ---------------------------------------------------------------------------
+	// Phase 2: run_id template variable integration tests (025-commit-tracking)
+	// ---------------------------------------------------------------------------
+
+	test(
+		"run_id appears in variables object when --run is provided",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const runId = "run_runid_var_001";
+				insertRun(dir, runId, planPath);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				const vars = data.variables as Record<string, string>;
+				// run_id should appear in the resolved variables
+				expect(vars.run_id).toBe(runId);
+				// Also present in the envelope
+				expect(data.run_id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"run_id is absent from variables when --run is not provided",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--var",
+					"plan_path=/tmp/some/plan.md",
+					"--var",
+					"review_path=/tmp/some/review.md",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const data = json.data as Record<string, unknown>;
+				const vars = data.variables as Record<string, string>;
+				// No --run means no run_id in variables
+				expect(vars.run_id).toBeUndefined();
+				expect(data.run_id).toBeUndefined();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
 	test(
 		"phase scoping: new phase has no prior steps",
 		async () => {

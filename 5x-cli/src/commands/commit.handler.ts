@@ -49,6 +49,17 @@ function formatCommitText(data: {
 // ---------------------------------------------------------------------------
 
 export async function runCommit(params: CommitParams): Promise<void> {
+	// 0. Validate file-staging flags (defensive — also checked in commander adapter)
+	if (params.files && params.allFiles) {
+		outputError(
+			"INVALID_ARGS",
+			"--files and --all-files are mutually exclusive. Provide one or the other.",
+		);
+	}
+	if (!params.files && !params.allFiles) {
+		outputError("INVALID_ARGS", "Either --files or --all-files is required.");
+	}
+
 	// 1. Resolve DB context (use injected context if provided — for testability)
 	const { config, db, controlPlane } =
 		params.dbContext ??

@@ -245,7 +245,7 @@ validation, inactive run rejection, nothing-to-commit error, worktree
 commit + recording, review-path re-rooting. All tests pass under
 `bun test --concurrent`.
 
-- [ ] **2a.** Create `test/unit/commands/commit.test.ts`. Tests call
+- [x] **2a.** Create `test/unit/commands/commit.test.ts`. Tests call
   `runCommit()` directly with a `startDir` temp directory containing a
   git repo. Setup helper:
   - Create temp dir, `git init`, configure `user.name`/`user.email`,
@@ -288,7 +288,7 @@ commit + recording, review-path re-rooting. All tests pass under
   pattern as `initScaffold`, `runDiff`). Add this to `CommitParams` as an
   optional field, defaulting to resolving from the run context.
 
-- [ ] **2b.** Create review-path re-rooting unit tests in
+- [x] **2b.** Create review-path re-rooting unit tests in
   `test/unit/commands/template-vars.test.ts` (or add to the existing
   file if one exists). Tests call `resolveInternalTemplateVariables()`
   directly.
@@ -310,13 +310,13 @@ commit + recording, review-path re-rooting. All tests pass under
   6. **`run_id` variable absent when not provided** — call without `runId`.
      Verify: `run_id` is not present in resolved variables.
 
-- [ ] **2c.** Add `run_id` template integration tests. Create a new file
+- [x] **2c.** Add `run_id` template integration tests. Create a new file
   `test/integration/commands/template-render.test.ts` or add to an existing
   template-related integration test file. Spawn `5x template render --run <id>
   author-next-phase` and verify the JSON output includes `run_id` in the
   `variables` object with the correct run ID.
 
-- [ ] **2d.** Verify all tests pass:
+- [x] **2d.** Verify all tests pass:
   `bun test test/unit/commands/commit.test.ts`,
   `bun test test/unit/commands/template-vars.test.ts`, and
   the relevant template integration test file from 2c.
