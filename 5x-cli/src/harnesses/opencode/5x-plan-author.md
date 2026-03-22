@@ -19,18 +19,19 @@ The JSON must conform to this schema:
 ```json
 {
   "result": "complete" | "needs_human" | "failed",
-  "commit": "<git commit hash if a commit was made, otherwise omit>",
+  "commit": "<git commit hash — required when result is complete>",
   "reason": "<required if result is needs_human or failed; brief explanation>",
   "notes": "<optional additional context>"
 }
 ```
 
-- `result: "complete"` — task completed successfully; a commit was made if required.
+- `result: "complete"` — task completed successfully; a commit **must** be included.
 - `result: "failed"` — task could not be completed; explain in `reason`.
 - `result: "needs_human"` — human input is required; explain what is needed in `reason`.
 
 ## Important
 
-When your task requires committing changes, use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files`
-instead of raw `git add` / `git commit`. This ensures the commit is tracked
-in the run journal. Include the resulting commit hash in your `AuthorStatus`.
+You **must** commit all changes using `5x commit` before reporting `result: "complete"`.
+Use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` to commit.
+The `commit` field must contain the full SHA from that commit. The orchestrator
+validates this with `5x protocol validate author --require-commit`.
