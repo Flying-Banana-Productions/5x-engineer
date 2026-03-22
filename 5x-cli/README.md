@@ -98,12 +98,6 @@ The orchestrator loads the skill, delegates author and reviewer work to native
 subagents (`5x-plan-author`, `5x-code-author`, `5x-reviewer`), and guides you
 through decision points.
 
-5. Monitor progress from another terminal:
-
-```bash
-5x run watch --run <run-id> --human-readable
-```
-
 ### Option B: Generic Harness Install (Any Harness)
 
 Works with Claude Code, Cursor, or any agent that supports skill/instruction
