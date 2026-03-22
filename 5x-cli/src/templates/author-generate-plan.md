@@ -2,8 +2,10 @@
 name: author-generate-plan
 description: Generate an implementation plan from requirements
 version: 2
-variables: [prd_path, plan_path, plan_template_path]
+variables: [prd_path, plan_path, plan_template_path, run_id]
 step_name: "author:generate-plan"
+variable_defaults:
+  run_id: ""
 ---
 
 You are implementing the 5x workflow. Generate an implementation plan from the provided requirements document.
@@ -47,9 +49,13 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-CRITICAL: You MUST commit all changes to git before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
+CRITICAL: You MUST commit all changes using `5x commit` before finishing. The pipeline validates that a commit hash is present in your structured output — omitting it will cause an automatic escalation failure. Do not return with a "complete" result unless you have committed and can provide the commit hash.
 
-When finished, produce your structured result by running:
+When ready to commit, run:
+
+    5x commit --run {{run_id}} -m "<descriptive message>" --all-files
+
+Then produce your structured result:
 
     5x protocol emit author --complete --commit <hash>
 

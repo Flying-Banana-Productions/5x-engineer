@@ -366,7 +366,7 @@ pass under `bun test --concurrent`.
 is declared in each template's frontmatter. Agents preserve the pre-commit
 hook feedback loop by calling `5x commit` directly. All existing tests pass.
 
-- [ ] **4a.** Update author templates. The author templates don't currently
+- [x] **4a.** Update author templates. The author templates don't currently
   show the actual `git add`/`git commit` commands — they only have a
   CRITICAL section stating that changes must be committed. Update each
   of the following files to:
@@ -392,7 +392,7 @@ hook feedback loop by calling `5x commit` directly. All existing tests pass.
   - `src/templates/author-process-plan-review.md`
   - `src/templates/author-process-impl-review.md`
 
-- [ ] **4b.** Update reviewer templates. Replace `git add` + `git commit`
+- [x] **4b.** Update reviewer templates. Replace `git add` + `git commit`
   with `5x commit`:
   - `src/templates/reviewer-plan.md` — replace with `5x commit --run {{run_id}} --files {{review_path}} -m "docs: add plan review"`.
   - `src/templates/reviewer-plan-continued.md` — use `5x commit --run {{run_id}} --files {{review_path}} -m "docs: update plan review"`.
@@ -400,7 +400,7 @@ hook feedback loop by calling `5x commit` directly. All existing tests pass.
 
   Add `run_id` to each template's `variables:` frontmatter.
 
-- [ ] **4c.** Update agent definitions in `src/harnesses/opencode/`:
+- [x] **4c.** Update agent definitions in `src/harnesses/opencode/`:
   - `5x-code-author.md` — update the "you must make a git commit"
     section to reference `5x commit --run {{run_id}} --all-files`. Keep
     the invariant — agents still commit, just via the tracked command.

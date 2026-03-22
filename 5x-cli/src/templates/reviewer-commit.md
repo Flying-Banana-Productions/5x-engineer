@@ -2,8 +2,10 @@
 name: reviewer-commit
 description: Review implementation commits
 version: 2
-variables: [commit_hash, review_path, plan_path, review_template_path]
+variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:review"
+variable_defaults:
+  run_id: ""
 ---
 
 You are a Staff Engineer reviewing the implementation work at commit `{{commit_hash}}` and any follow-on commits.
@@ -73,8 +75,7 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 Write your review to `{{review_path}}` and commit it:
 
-    git add {{review_path}}
-    git commit -m "review: <phase or context summary>"
+    5x commit --run {{run_id}} --files {{review_path}} -m "review: <phase or context summary>"
 
 The review document is part of the project audit trail and must be committed before you return.
 

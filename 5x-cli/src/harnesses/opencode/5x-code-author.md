@@ -32,6 +32,7 @@ The JSON must conform to this schema:
 
 ## Important
 
-You **must** make a git commit before reporting `result: "complete"`. The `commit`
-field must contain the full SHA of that commit. The orchestrator validates this
-with `5x protocol validate author --require-commit`.
+You **must** commit all changes using `5x commit` before reporting `result: "complete"`.
+Use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` to commit.
+The `commit` field must contain the full SHA from that commit. The orchestrator
+validates this with `5x protocol validate author --require-commit`.

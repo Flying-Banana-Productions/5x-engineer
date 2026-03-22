@@ -2,8 +2,10 @@
 name: reviewer-plan
 description: Review an implementation plan
 version: 2
-variables: [plan_path, review_path, review_template_path]
+variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:review"
+variable_defaults:
+  run_id: ""
 ---
 
 You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
@@ -64,10 +66,7 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 Write your review to `{{review_path}}` and commit the file before returning:
 
-```
-git add {{review_path}}
-git commit -m "docs: add plan review for <plan name>"
-```
+    5x commit --run {{run_id}} --files {{review_path}} -m "docs: add plan review for <plan name>"
 
 The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 

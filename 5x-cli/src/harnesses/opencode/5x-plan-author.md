@@ -28,3 +28,9 @@ The JSON must conform to this schema:
 - `result: "complete"` — task completed successfully; a commit was made if required.
 - `result: "failed"` — task could not be completed; explain in `reason`.
 - `result: "needs_human"` — human input is required; explain what is needed in `reason`.
+
+## Important
+
+When your task requires committing changes, use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files`
+instead of raw `git add` / `git commit`. This ensures the commit is tracked
+in the run journal. Include the resulting commit hash in your `AuthorStatus`.
