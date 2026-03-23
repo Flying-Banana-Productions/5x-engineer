@@ -42,6 +42,42 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Worktree execution requires manual verification.** 5x run-aware prompts append a `## Context` block containing the effective working directory. The Cursor orchestrator rule and subagent prompts must explicitly treat that path as authoritative. Manual release verification must prove that, for `5x run init --worktree`, Cursor-author edits land in the mapped worktree.
 
+## Phase 0: Verification Gate — Validate Cursor Discovery and Worktree Assumptions
+
+**Completion gate:** All live discovery assumptions verified before implementation proceeds. Items marked **human-gated** require manual IDE/CLI verification; all others can be verified via automated tests.
+
+- [ ] **Verify Cursor IDE discovers `.cursor/` project assets** (human-gated)
+  - Create `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/` with test files
+  - Open project in Cursor IDE and confirm subagents/rules appear in UI
+  - Document any path variations needed for discovery
+
+- [ ] **Verify Cursor IDE discovers `~/.cursor/` user assets** (human-gated)
+  - Create `~/.cursor/skills/` and `~/.cursor/agents/` with test files
+  - Open any project in Cursor IDE and confirm user subagents available
+  - Confirm user scope rules are settings-managed (not file-backed)
+
+- [ ] **Verify Cursor CLI discovery behavior** (human-gated)
+  - Run `cursor` CLI commands in a project with `.cursor/` assets
+  - Confirm CLI loads subagents/rules correctly
+  - Document any CLI-specific discovery paths or flags
+
+- [ ] **Verify omitted-`model` semantics** (automated)
+  - Test that subagent frontmatter without `model` field defaults to `inherit`
+  - Confirm no errors when model is omitted
+
+- [ ] **Verify Windows discovery paths** (human-gated)
+  - Test `.cursor/` discovery on Windows with path separator handling
+  - Test `~/.cursor/` resolution via `%USERPROFILE%` environment variable
+  - Confirm subagents appear in Cursor IDE/CLI on Windows
+
+- [ ] **Verify worktree editing behavior** (human-gated)
+  - Create a real `5x run init --worktree` mapped worktree
+  - Open Cursor in the mapped worktree directory
+  - Confirm Cursor author edits land in the mapped worktree, not main checkout
+  - Verify `5x diff --run` shows correct changes
+
+**Exit criteria:** This phase gates entry to Phases 1-5. If any verification fails, document the finding and either adjust the plan or escalate before proceeding.
+
 ## Phase 1: Add Optional Harness Rule Support
 
 **Completion gate:** The harness framework can install, list, and uninstall rules in addition to skills and agents. All existing harnesses (OpenCode) continue to work unchanged.
@@ -56,14 +92,26 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `HarnessDescription` with optional `ruleNames`** in `src/harnesses/types.ts` (line 61-65 area)
+- [ ] **Extend `HarnessDescription` with optional `ruleNames` and `capabilities`** in `src/harnesses/types.ts` (line 61-65 area)
   ```typescript
   export interface HarnessDescription {
     skillNames: string[];
     agentNames: string[];
     ruleNames?: string[];  // NEW: optional rule names
+    capabilities?: {        // NEW: scope-aware capability metadata
+      rules?: boolean;     // true if rules are supported in this scope
+    };
   }
   ```
+
+- [ ] **Extend `describe()` with optional scope parameter** in plugin contract
+  ```typescript
+  describe(scope?: HarnessScope): HarnessDescription;
+  ```
+  When `scope` is provided, the plugin returns scope-aware metadata:
+  - Project scope: `capabilities.rules = true` (supported), `ruleNames` populated
+  - User scope: `capabilities.rules = false` (unsupported for Cursor), `ruleNames` empty or omitted
+  When `scope` is omitted, returns global/default description.
 
 - [ ] **Extend `HarnessInstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 49-55 area)
   ```typescript
@@ -130,10 +178,21 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Update `harness list` handler** in `src/commands/harness.handler.ts` to check for rule files (around line 200-214)
-  - Add rule file detection loop similar to skills/agents
+- [ ] **Update `harness list` handler** in `src/commands/harness.handler.ts` (around line 200-214)
+  - Pass current scope to `plugin.describe(scope)` to get scope-aware metadata
+  - Add rule file detection loop similar to skills/agents (when `capabilities.rules` is true)
   - Include rules in `files` array with `rules/` prefix
-  - Show `rules: unsupported` in JSON output when harness reports it
+  - Show `rules: unsupported` in JSON output when `capabilities.rules === false` or `capabilities` field is missing and rulesDir is absent
+  - Example output structure:
+    ```typescript
+    {
+      name: "cursor",
+      scope: "user",
+      files: [...],
+      unsupported: { rules: true },  // when rules not supported in this scope
+      capabilities: { rules: false }  // from describe(scope)
+    }
+    ```
 
 - [ ] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` (line 348-380) to print rule installation results
 
@@ -142,6 +201,12 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 - [ ] **Add unit tests** in `test/unit/harnesses/installer.test.ts` for rule install/uninstall helpers
   - Rule file creation, overwrite, skip semantics
   - Directory cleanup on uninstall
+
+- [ ] **Add unit tests in `test/unit/commands/harness.test.ts`** for scope-aware unsupported/rules JSON shape
+  - `harness list --format json` includes `capabilities` field when plugin supports it
+  - `harness list --format json` includes `unsupported.rules: true` when scope doesn't support rules
+  - Handler correctly passes scope to `describe(scope)` call
+  - Regression coverage for list output schema stability
 
 ## Phase 2: Add Cursor Location Resolver
 
@@ -204,11 +269,27 @@ The key design decision is to match the OpenCode harness capabilities wherever C
     supportedScopes: ["project", "user"],
     locations: cursorLocationResolver,
     
-    describe(): HarnessDescription {
+    describe(scope?: HarnessScope): HarnessDescription {
       const skillNames = listSkillNames();
       const agentNames = listAgentTemplates().map((t) => t.name);
-      const ruleNames = ["5x-orchestrator"];  // Only for project scope
-      return { skillNames, agentNames, ruleNames };
+      
+      // Scope-aware rule support
+      if (scope === "user") {
+        return {
+          skillNames,
+          agentNames,
+          ruleNames: [],
+          capabilities: { rules: false },
+        };
+      }
+      
+      // Project scope (or default): rules supported
+      return {
+        skillNames,
+        agentNames,
+        ruleNames: ["5x-orchestrator"],
+        capabilities: { rules: true },
+      };
     },
 
     async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
@@ -264,12 +345,12 @@ The key design decision is to match the OpenCode harness capabilities wherever C
         ctx.projectRoot,
         ctx.homeDir,
       );
-      const { skillNames, agentNames, ruleNames } = this.describe();
+      const { skillNames, agentNames, ruleNames } = this.describe(ctx.scope);
 
       const skills = uninstallSkillFiles(locations.skillsDir, skillNames);
       const agents = uninstallAgentFiles(locations.agentsDir, agentNames);
 
-      if (ctx.scope === "project" && locations.rulesDir && ruleNames) {
+      if (ctx.scope === "project" && locations.rulesDir && ruleNames?.length) {
         const rules = uninstallRuleFiles(locations.rulesDir, ruleNames);
         return { skills, agents, rules };
       }
@@ -287,7 +368,11 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - Project scope resolves to `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/`
   - User scope resolves to `~/.cursor/skills/`, `~/.cursor/agents/`, no `rulesDir`
   - `describe()` returns correct skills, agents, and rule names
+  - `describe("user")` returns `capabilities: { rules: false }` and empty `ruleNames`
+  - `describe("project")` returns `capabilities: { rules: true }` and populated `ruleNames`
   - User scope reports `rules` as unsupported in install result
+  - Install result `unsupported.rules === true` when scope is user
+  - List output JSON includes `capabilities` and `unsupported` fields correctly
 
 ## Phase 3: Add Cursor Rules and Subagent Renderer
 
@@ -540,7 +625,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 | File | Change |
 |------|--------|
-| `src/harnesses/types.ts` | Add optional `rulesDir`, `ruleNames`, `rules`, `unsupported`, `warnings` to plugin contract |
+| `src/harnesses/types.ts` | Add optional `rulesDir`, `ruleNames`, `rules`, `unsupported`, `warnings`, `capabilities` to plugin contract; add optional `scope` parameter to `describe()` |
 | `src/harnesses/locations.ts` | Add `cursorLocationResolver` with project/user paths |
 | `src/harnesses/installer.ts` | Add `installRuleFiles()` and `uninstallRuleFiles()` helpers |
 | `src/harnesses/factory.ts` | Register `cursor` in `BUNDLED_HARNESSES` |
@@ -569,13 +654,13 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 | Type | Scope | File | Validates |
 |------|-------|------|-----------|
-| Unit | Harness | `test/unit/harnesses/cursor.test.ts` | Location resolution, plugin describe(), install/uninstall summaries, unsupported rules reporting |
+| Unit | Harness | `test/unit/harnesses/cursor.test.ts` | Location resolution, plugin describe(scope), install/uninstall summaries, unsupported rules reporting, capabilities metadata |
 | Unit | Harness | `test/unit/harnesses/cursor-skills.test.ts` | Skill frontmatter parsing, Cursor-native wording, delegation examples |
 | Unit | Harness | `test/unit/harnesses/cursor-loader.test.ts` | Model omission when unset, YAML escaping for special characters |
 | Unit | Harness | `test/unit/harnesses/installer.test.ts` | Rule file install/uninstall, directory cleanup |
-| Unit | Commands | `test/unit/commands/harness.test.ts` | Rules-aware list output, warning display, JSON stability |
+| Unit | Commands | `test/unit/commands/harness.test.ts` | Scope-aware list output, capabilities/unsupported JSON schema, warning display, regression coverage |
 | Integration | Commands | `test/integration/commands/harness.test.ts` | Full install/list/uninstall workflow for both scopes |
-| Integration | E2E | Manual | Cursor IDE/CLI discovery, worktree editing verification |
+| Integration | E2E | Manual | Cursor IDE/CLI discovery (macOS/Linux/Windows), worktree editing verification |
 
 ## Not In Scope
 
@@ -592,12 +677,13 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 | Phase | Duration | Work |
 |-------|----------|------|
+| Phase 0 | 0.5-1 day | Verify Cursor discovery assumptions before implementation |
 | Phase 1 | 1-2 days | Add optional rule support to harness framework |
 | Phase 2 | 1-2 days | Add Cursor location resolver and plugin shell |
 | Phase 3 | 2-3 days | Add orchestrator rule, subagent templates, and renderer |
 | Phase 4 | 2-3 days | Add Cursor-local skills with native terminology |
 | Phase 5 | 1-2 days | Documentation, UX polish, integration tests |
-| **Total** | **7-12 days** | |
+| **Total** | **7.5-13 days** | |
 
 ## Manual Verification Checklist
 
@@ -614,6 +700,14 @@ Before marking complete, manually verify:
 - [ ] A real `5x run init --worktree` run produces a mapped worktree, Cursor author edits files there, and `5x diff --run` shows the diff in the mapped worktree
 
 ## Revision History
+
+### v1.1 (March 23, 2026) — Review revisions
+
+- Added Phase 0 verification gate with explicit human-gated vs automated verification items (P0.1)
+- Defined scope-aware contract: `describe(scope?)` returns `capabilities` metadata for `harness list` to show `rules: unsupported` (P0.2)
+- Added Windows verification to manual checklist (P1.1)
+- Added explicit unit-test expectations for unsupported/rules JSON schema in `test/unit/commands/harness.test.ts` (P2)
+- Updated file tables and timeline to reflect Phase 0 addition
 
 ### v1.0 (March 23, 2026) — Initial plan
 
