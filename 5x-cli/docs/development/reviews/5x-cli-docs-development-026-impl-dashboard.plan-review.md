@@ -64,3 +64,21 @@ Phase 1 says the server always opens the DB with `openDbReadOnly()` and probes i
 - [ ] Restore localhost origin-validation requirements and tests.
 - [ ] Re-query active run status during polling.
 - [ ] Include protocol versioning in the concrete snapshot contract if the client depends on it.
+
+## Addendum (2026-03-23) — Revision 1.1 re-review
+
+### What's Addressed
+
+- Added explicit HTTP APIs for full run detail, log inventory, and log backfill; the earlier deep-link transport gap is closed.
+- Re-anchored plan language to resolved `stateDir` instead of hardcoded `.5x` paths.
+- Clarified no-project bootstrap: DB-absent startup now skips `openDbReadOnly()` probing and serves `status: "no_project"`.
+- Restored localhost-only WS Origin validation requirements and test coverage.
+- Added `runs.status` polling and `protocolVersion` to the concrete snapshot contract.
+
+### Remaining Concerns
+
+- **P1 — Validate `:filename` on the log backfill route.** The plan now exposes `GET /api/runs/:id/logs/:filename`, but it does not explicitly require constraining `:filename` to discovered inventory entries or the `agent-*.ndjson` pattern. Without that requirement, a naive `join()` implementation could become a path-traversal bug inside the state directory. **Action:** `auto_fix`
+
+### Updated Readiness
+
+**Readiness:** Ready with corrections — prior blockers are resolved; one mechanical hardening requirement remains for the log-file route.
