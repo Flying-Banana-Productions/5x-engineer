@@ -1,6 +1,6 @@
 # 5x Dashboard — Live Web Command Center
 
-**Implementation plan**: [development/026-impl-dashboard.md](development/026-impl-dashboard.md)
+**Implementation plan**: [development/026-impl-dashboard.plan.md](development/026-impl-dashboard.plan.md)
 
 ---
 
@@ -847,7 +847,7 @@ The token is also written to `.5x/dashboard-token.<port>.json` (mode 0600) so th
 
 ## See Also
 
-- [development/026-impl-dashboard.md](development/026-impl-dashboard.md) — Implementation plan (v1 architecture)
+- [development/026-impl-dashboard.plan.md](development/026-impl-dashboard.plan.md) — Implementation plan (v1 architecture)
 - [development/006-impl-dashboard.md](development/006-impl-dashboard.md) — Original implementation plan (v0, superseded)
 - [src/db/schema.ts](../src/db/schema.ts) — Database schema (v4 migration)
 - [src/db/operations-v1.ts](../src/db/operations-v1.ts) — v1 step operations
