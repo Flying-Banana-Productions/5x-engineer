@@ -55,3 +55,20 @@ The PRD explicitly keeps Windows user/project discovery as a pre-ship verificati
 **P1 recommended**
 - [ ] Restore Windows verification requirements from the PRD
 - [ ] Add explicit unit-test expectations for the new unsupported/rules list schema
+
+## Addendum (2026-03-23) — Re-review of plan v1.1 updates
+
+### What's Addressed
+
+- **P0.1 fixed:** The plan now restores an explicit Phase 0 verification gate that blocks implementation on live Cursor discovery, omitted-model semantics, Windows path checks, and worktree behavior.
+- **P0.2 fixed:** The plan now defines a scope-aware contract via `describe(scope?)` plus `capabilities` metadata, and threads that requirement into handler behavior and test coverage.
+- **P1.1 fixed at plan level:** Windows verification is now called out in Phase 0 and in the tests table, restoring the PRD's intended release bar.
+- **P2 fixed:** The plan now adds explicit unit-test expectations in `test/unit/commands/harness.test.ts` for `capabilities` and `unsupported.rules` JSON behavior.
+
+### Remaining Concerns
+
+- Minor doc inconsistency: the manual verification checklist still names macOS/Linux explicitly rather than repeating Windows, even though Phase 0 already covers Windows verification. This is non-blocking because the gating phase is now present.
+
+### Updated Readiness
+
+- **Plan readiness:** Ready with corrections — prior blocking issues are resolved; only a minor documentation consistency cleanup remains.
