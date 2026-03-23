@@ -10,6 +10,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-22 | Initial draft. Supersedes `006-impl-dashboard.md` (written against v0 schema). Rewritten for v1 architecture: unified `steps` table, no orchestrator loops, stateless CLI toolbelt model. |
 | 1.1 | 2026-03-23 | Revision per review feedback: added HTTP endpoints for run detail/log inventory (P0.1), replaced `.5x/` with resolved `stateDir` (P1.1), clarified no-project bootstrap behavior (P1.2), added WS Origin validation (P1.3), added `runs.status` polling (P2), added `protocolVersion` to snapshot contract (P2). |
+| 1.2 | 2026-03-23 | Addendum: added explicit filename validation for log backfill endpoint to prevent path traversal — filename must match `agent-*.ndjson` pattern and be validated against discovered inventory (P1). |
 
 ## Overview
 
@@ -127,7 +128,7 @@ export async function startDashboardServer(
 - [ ] Add HTTP API routes in `src/dashboard/routes.ts`:
   - `GET /api/runs/:id` — full run detail (steps, aggregates, metadata). Returns 404 if run not found.
   - `GET /api/runs/:id/logs` — log file inventory for the run. Returns 404 if run not found, empty array if no logs directory.
-  - `GET /api/runs/:id/logs/:filename?offset=0&limit=500` — paginated log lines from specific file. Enforce max 10,000 lines per response.
+  - `GET /api/runs/:id/logs/:filename?offset=0&limit=500` — paginated log lines from specific file. **Security constraint:** `:filename` must match `agent-*.ndjson` pattern and be validated against discovered log files for that run (via `getRunLogsInventory`). Reject with 403 if filename contains path separators (`..`, `/`, `\`) or is not in the inventory. Enforce max 10,000 lines per response.
 
 ```ts
 // src/dashboard/ws-protocol.ts
@@ -268,7 +269,7 @@ export function createStore(initialState) {
 - [ ] `ws-protocol.test.ts` — message serialization/deserialization, unknown message type handling, version mismatch rejection, protocolVersion field presence.
 - [ ] `log-watcher.test.ts` — offset tracking, new file discovery, rescan recovery after missed fs.watch events, partial-line buffering, subscriber lifecycle.
 - [ ] `poller.test.ts` — step diff computation, run status inference from terminal steps + runs.status polling, incremental update message construction.
-- [ ] `routes.test.ts` — HTTP API endpoints: run detail 200/404, log inventory 200/404, log backfill pagination, max limit enforcement.
+- [ ] `routes.test.ts` — HTTP API endpoints: run detail 200/404, log inventory 200/404, log backfill pagination, filename validation (reject path traversal, reject non-inventory files), max limit enforcement.
 
 **Integration tests** (`test/integration/commands/`):
 
@@ -281,6 +282,7 @@ export function createStore(initialState) {
 **Security hardening:**
 
 - [ ] WS input validation: schema check inbound messages, reject unknown types, enforce max message size (64KB).
+- [ ] Log backfill filename validation: validate `:filename` matches `agent-*.ndjson` pattern, verify file exists in run's discovered inventory, reject path traversal attempts (`..`, `/`, `\`) with 403.
 - [ ] Log backfill resource bounds: max 10,000 lines per response, 5MB response cap.
 - [ ] Per-connection memory bound: cap buffered outbound WS messages (1MB), drop connection on overflow.
 - [ ] Document token transport caveat (token-in-URL visible in browser history/referer) and local-tool risk acceptance.
@@ -326,7 +328,7 @@ export function createStore(initialState) {
 | Unit | `test/unit/dashboard/ws-protocol.test.ts` | Message schema, protocolVersion field, version handling, unknown type rejection. |
 | Unit | `test/unit/dashboard/log-watcher.test.ts` | Offset reads, rescan recovery, partial-line buffering, subscriber cleanup. |
 | Unit | `test/unit/dashboard/poller.test.ts` | Step diffing, run status inference + polling, incremental message construction. |
-| Unit | `test/unit/dashboard/routes.test.ts` | HTTP API endpoints, pagination, 404 handling. |
+| Unit | `test/unit/dashboard/routes.test.ts` | HTTP API endpoints, pagination, filename validation, path traversal rejection, 404 handling. |
 | Integration | `test/integration/commands/dashboard.test.ts` | CLI startup/shutdown, auth enforcement, origin validation, token file lifecycle, HTTP API, fresh-project bootstrap. |
 | Edge | `test/unit/dashboard/ws-protocol.test.ts` | Oversized message rejection, malformed JSON handling, connection memory caps.
 
