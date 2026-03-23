@@ -23,7 +23,7 @@ qualityGates = [
 
 # Author agent configuration (default provider: opencode)
 [author]
-model = "anthropic/claude-opus-4-6"
+model = "opencode/kimi-k2.5"
 # provider = "opencode"
 # model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
