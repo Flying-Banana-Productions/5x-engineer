@@ -1,41 +1,42 @@
 # 5x Dashboard — Live Web Command Center
 
-**Navigation**: [docs/development/001-impl-5x-cli.md](001-impl-5x-cli.md) > Dashboard
+**Implementation plan**: [development/026-impl-dashboard.md](development/026-impl-dashboard.md)
 
 ---
 
 ## Overview
 
-The 5x Dashboard is a real-time web interface served by `5x dashboard` on port 55555. It synthesizes the `.5x` data directory — SQLite database, NDJSON agent logs, quality gate output, worktree state, and debug traces — into a live command center for monitoring and controlling 5x automation runs.
+The 5x Dashboard is a real-time web interface served by `5x dashboard` on port 55555. It synthesizes the `.5x` data directory — SQLite database (`plans`, `runs`, `steps` tables), NDJSON agent logs, and quality gate output — into a live command center for monitoring 5x automation runs.
 
-The dashboard is a standalone command, independent of `5x run` or `5x plan-review`. It reads the same `.5x/5x.db` database and log files, connects to active orchestrator processes via a shared gate bridge, and presents a multi-plan overview with drill-down into individual runs, phases, and agent sessions. It is fully interactive: phase gates, escalation gates, and resume gates can be answered from the browser, competing with the terminal on a first-responder-wins basis.
+The dashboard is a standalone read-only process, independent of `5x run` or any other CLI command. It reads the same `.5x/5x.db` database and log files that the CLI writes to, and presents a multi-plan overview with drill-down into individual runs, step timelines, and agent sessions. The dashboard never writes to the database or modifies `.5x/` artifacts (except its own session token file).
 
 ### Design Goals
 
 | Goal | Description |
 |------|-------------|
 | **Information density** | Every pixel earns its keep. Dense telemetry grids, multi-panel layouts, no wasted whitespace. |
-| **Liveness** | Active processes pulse. Logs stream. State transitions animate. The dashboard feels alive when work is happening and calm when idle. |
+| **Liveness** | Active processes pulse. Logs stream. Step arrivals animate. The dashboard feels alive when work is happening and calm when idle. |
 | **Zero build step** | Vanilla HTML/CSS/JS served as static files from Bun's HTTP server. No npm dependencies, no bundler, no node_modules. |
-| **Interactive control** | Phase gates, escalation gates, and resume prompts appear in the dashboard and can be answered from the browser. |
+| **Read-only** | Dashboard observes; CLI commands mutate. No write paths to the database or `.5x/` directory from the dashboard process. |
 | **Standalone** | Works before, during, and after runs. Historical data is always browsable. |
 
 ### Scope
 
 **In scope:**
 - `5x dashboard` CLI command with Bun HTTP server on configurable port (default 55555)
-- WebSocket transport for real-time bidirectional communication
+- WebSocket transport for real-time data push
 - Multi-plan overview with drill-down navigation
-- Live process monitoring with state machine visualization
-- Streaming log viewer with search, filter, and ANSI color rendering
-- Interactive gate responses (phase, escalation, resume)
+- Step timeline with phase grouping and live updates
+- Streaming log viewer with ANSI color rendering and backfill
 - Historical run browsing and comparison
-- Cost/token analytics (secondary panel)
+- Cost/token analytics
 - Quality gate pass/fail status display
 - Browser localStorage for layout preferences
 - Configurable network binding (localhost default, `--host` for all interfaces)
+- Token-based authentication
 
 **Out of scope:**
+- Interactive gate control from the browser — agents interact with humans through the TUI (opencode), not the dashboard. A future plan may introduce dashboard→agent signaling.
 - Multi-user authorization (role-based access) — single-token auth is sufficient for a local dev tool
 - Multi-repo support — one dashboard per project
 - Persistent server mode — dashboard lifecycle matches the `5x dashboard` process
@@ -109,11 +110,10 @@ Monospace throughout reinforces the terminal/mission-control aesthetic and ensur
 | Context | Animation | Duration | Easing |
 |---------|-----------|----------|--------|
 | Active process indicator | Pulsing amber dot (opacity 0.4 → 1.0) | 2s | ease-in-out, infinite |
-| State transition | Panel border flash amber → fade | 400ms | ease-out |
+| Step arrival | Panel border flash amber → fade | 400ms | ease-out |
 | Log line arrival | Fade in from left + slight slide | 150ms | ease-out |
 | Metric counter change | Number rolls up/down (CSS counter or JS) | 300ms | ease-out |
-| Phase completion | Brief green flash on phase card | 600ms | ease-out |
-| Gate arrival | Amber border pulse + subtle scale bounce (1.0 → 1.02 → 1.0) | 500ms | spring |
+| Phase completion | Brief green flash on phase indicator | 600ms | ease-out |
 | Panel loading | Shimmer gradient sweep left-to-right | 1.5s | linear, infinite |
 | WebSocket connected | Cyan dot steady | — | — |
 | WebSocket reconnecting | Cyan dot blink | 1s | step-end, infinite |
@@ -152,33 +152,27 @@ Monospace throughout reinforces the terminal/mission-control aesthetic and ensur
  │  │  ┌─────────┐  ┌───────────┐  │  │
  │  │  │ SQLite  │  │ Log File  │  │  │
  │  │  │ Reader  │  │ Watcher   │  │  │
- │  │  │ (WAL)   │  │ (fs.watch)│  │  │
+ │  │  │ (WAL,   │  │ (fs.watch │  │  │
+ │  │  │ r/o)    │  │  + rescan)│  │  │
  │  │  └────┬────┘  └─────┬─────┘  │  │
  │  │       │              │        │  │
  │  │  ┌────┴──────────────┴─────┐  │  │
- │  │  │    Event Aggregator     │  │  │
+ │  │  │   Step Poller (2s)      │  │  │
+ │  │  │   + Log Aggregator      │  │  │
  │  │  └─────────────────────────┘  │  │
  │  └───────────────────────────────┘  │
- │                                     │
- │  ┌───────────────────────────────┐  │
- │  │       Gate Bridge             │  │
- │  │  (shared file / IPC for      │  │
- │  │   gate request routing)      │  │
- │  └───────────────────────────────┘  │
  └──────────────┬──────────────────────┘
-                │ reads
+                │ reads (never writes)
  ┌──────────────┴──────────────────────┐
  │            .5x/                     │
  │  ┌─────────┐  ┌──────────────────┐  │
  │  │ 5x.db   │  │ logs/            │  │
  │  │ (SQLite) │  │  <run-id>/      │  │
- │  │         │  │   agent-*.ndjson │  │
- │  │         │  │   quality-*.log  │  │
+ │  │ v4 WAL  │  │   agent-*.ndjson │  │
  │  └─────────┘  └──────────────────┘  │
- │  ┌─────────┐  ┌──────────────────┐  │
- │  │ locks/  │  │ debug/           │  │
- │  │         │  │  *-*.ndjson      │  │
- │  └─────────┘  └──────────────────┘  │
+ │  ┌─────────────────────────────────┐│
+ │  │ dashboard-token.<port>.json     ││
+ │  └─────────────────────────────────┘│
  └─────────────────────────────────────┘
 
  ┌─────────────────────────────────────┐
@@ -186,15 +180,16 @@ Monospace throughout reinforces the terminal/mission-control aesthetic and ensur
  │                                     │
  │  ┌────────────────────────────┐     │
  │  │ WebSocket Client           │     │
- │  │  - Subscribe to channels   │     │
- │  │  - Send gate responses     │     │
+ │  │  - Snapshot on connect     │     │
+ │  │  - Incremental updates     │     │
+ │  │  - Log subscriptions       │     │
  │  └─────────────┬──────────────┘     │
  │                │                    │
  │  ┌─────────────┴──────────────┐     │
  │  │ View Layer (vanilla JS)    │     │
+ │  │  - Reactive store          │     │
  │  │  - Component modules       │     │
- │  │  - State management        │     │
- │  │  - DOM rendering           │     │
+ │  │  - Direct DOM rendering    │     │
  │  └────────────────────────────┘     │
  └─────────────────────────────────────┘
 ```
@@ -203,135 +198,73 @@ Monospace throughout reinforces the terminal/mission-control aesthetic and ensur
 
 The `5x dashboard` command starts a Bun HTTP server that serves static files and upgrades connections to WebSocket for real-time data.
 
-**Static file serving**: HTML, CSS, and JS files are bundled inline within the CLI source (template literals or imported as text) to avoid runtime file resolution issues with compiled binaries. Alternative: embed as base64 or use Bun's `embed` if available.
+**Static file serving**: HTML, CSS, and JS files are embedded in the CLI binary (imported as text modules) for production use. A hidden `--dev` flag falls back to filesystem reads from `src/dashboard/static/` for rapid iteration.
 
-**Database access**: Opens `.5x/5x.db` in read-only WAL mode. The dashboard never writes to orchestration tables — it only reads. Gate responses are communicated via the gate bridge (see below), not by writing to the DB directly.
+**Database access**: Opens `.5x/5x.db` via `openDbReadOnly()` (`src/db/connection.ts`) in WAL mode. The dashboard never writes to the database. Read reliability is handled by the existing `busy_timeout=5000` pragma.
 
-**Log file watching**: Uses `fs.watch()` combined with periodic rescan (every 5s) on the `.5x/logs/` directory tree to detect new and updated log files. The rescan ensures reliability across platforms where `fs.watch()` may miss events. When an active run's agent log is appended to, the watcher reads new lines and pushes them to subscribed WebSocket clients.
+**Control-plane resolution**: The dashboard resolves the canonical `.5x/` location via `resolveControlPlaneRoot()` (`src/commands/control-plane.ts`), handling managed/isolated/none modes and linked worktrees. This ensures correct DB discovery when running from any checkout directory.
 
-**Lifecycle**: The server runs until the user sends SIGINT (Ctrl+C). On startup it prints the URL and connection info. No browser auto-open.
+**Log file watching**: Uses `fs.watch()` combined with periodic rescan (every 5s) on `.5x/logs/` to detect new and updated NDJSON log files. The rescan ensures reliability across platforms where `fs.watch()` may miss events.
+
+**Lifecycle**: The server runs until SIGINT (Ctrl+C) or SIGTERM. Command-owned signal handlers stop accepting connections, close watchers, and exit. No browser auto-open.
 
 ### WebSocket Protocol
 
-Bidirectional JSON messages over a single WebSocket connection per browser tab. The WebSocket upgrade requires a valid session token (passed as `?token=<value>` query parameter or `Sec-WebSocket-Protocol` header). Unauthenticated upgrade attempts are rejected with `401`.
+Bidirectional JSON messages over a single WebSocket connection per browser tab. All messages include a `v` field for protocol versioning.
 
 #### Server → Client Messages
 
 ```
-{type: "snapshot", data: {plans: [...], runs: [...], ...}}
-  Full state snapshot on connect and periodic refresh (every 5s)
+{v: 1, type: "snapshot", data: {status, plans, runs, activeRunIds, protocolVersion}}
+  Full state snapshot on connect and on request.snapshot
 
-{type: "run.update", data: {runId, ...fields}}
-  Run state change (status, current_phase, current_state)
+{v: 1, type: "steps.new", data: {runId, steps: [...]}}
+  New steps recorded for a run (from polling loop)
 
-{type: "event", data: {runId, eventType, phase, iteration, data, createdAt}}
-  New run_event journal entry
+{v: 1, type: "run.update", data: {runId, status, updatedAt}}
+  Run status change (inferred from terminal steps: run:complete, run:abort)
 
-{type: "agent.result", data: {runId, phase, iteration, role, ...}}
-  New agent result stored
+{v: 1, type: "log.lines", data: {runId, file, lines: [...]}}
+  New NDJSON log lines from agent session (for subscribed runs)
 
-{type: "quality.result", data: {runId, phase, attempt, passed, ...}}
-  Quality gate result
-
-{type: "log.line", data: {runId, logFile, line}}
-  New NDJSON log line from agent session
-
-{type: "gate.request", data: {gateId, gateType, runId, ...context}}
-  Gate awaiting human response (phase, escalation, resume)
-
-{type: "gate.resolved", data: {gateId, resolvedBy, response}}
-  Gate was answered (by terminal or another dashboard tab)
-
-{type: "phase.progress", data: {planPath, phase, ...fields}}
-  Phase progress update
+{v: 1, type: "error", data: {code, message}}
+  Server-side error notification
 ```
 
 #### Client → Server Messages
 
 ```
-{type: "gate.respond", data: {gateId, response}}
-  Answer a pending gate (phase: continue/exit, escalation: fix/override/abort, etc.)
-
-{type: "subscribe.logs", data: {runId, logFile?}}
-  Subscribe to log streaming for a specific run (optional specific log file)
-
-{type: "unsubscribe.logs", data: {runId}}
-  Stop log streaming
-
-{type: "request.snapshot"}
+{v: 1, type: "request.snapshot"}
   Request a full state refresh
+
+{v: 1, type: "subscribe.logs", data: {runId}}
+  Subscribe to log streaming for a specific run
+
+{v: 1, type: "unsubscribe.logs", data: {runId}}
+  Stop log streaming for a run
 ```
 
-### Gate Bridge
+### Protocol Versioning
 
-The gate bridge provides a unified "human decision" mechanism used by both orchestration loops (`plan-review` and `phase-execution`), across all input modes (headless terminal, TUI, dashboard). Today's gate functions in `src/gates/human.ts` (`phaseGate`, `escalationGate`, `resumeGate`) read from stdin directly; the bridge layer abstracts the resolution source.
-
-**Note on stale locks**: Stale locks are auto-stolen today (`src/lock.ts:acquireLock` — dead PID detection via `process.kill(pid, 0)`). There is no interactive stale-lock gate. The dashboard displays lock status as read-only telemetry, not as an interactive gate.
-
-**Unified gate layer** (`src/gates/bridge.ts`): A new module that both orchestration loops call instead of the current direct-prompt functions. The bridge:
-1. Writes a gate request file to `.5x/gates/<gate-id>.json`
-2. Records a `human_decision` run_event with `data.status: "pending"` for audit
-3. Races multiple resolution sources: terminal stdin (when interactive), gate file watch (for dashboard), and `--auto` policy (when applicable)
-4. On resolution: atomically writes `<gate-id>.resolved.json`, records a `human_decision` run_event with the response and `resolvedBy` source, cleans up
-5. Returns the typed response to the orchestrator
-
-**Existing gate functions become thin wrappers**: `phaseGate()`, `escalationGate()`, and `resumeGate()` in `src/gates/human.ts` delegate to `bridge.requestGate()` with their specific context types. The plan-review loop's escalation gates (which currently use the same `escalationGate()` function) share this same path — no separate bespoke gate mechanism.
-
-**TUI coexistence**: When TUI mode is active (`tui.active === true`), the dashboard operates in **observe-only mode** for gates — it displays gate status but does not accept gate responses. The TUI does not currently accept gate input either (gates remain CLI-driven per `src/commands/run.ts`), so the resolution sources in TUI mode are: terminal stdin + auto policy. When the dashboard is the only non-terminal interface (no TUI), it can respond to gates. This avoids three-way races.
-
-| Mode | Gate resolution sources |
-|------|------------------------|
-| Headless (no TUI, no dashboard) | Terminal stdin only (or `--auto` policy) |
-| Headless + dashboard | Terminal stdin + dashboard WebSocket (first-responder wins) |
-| TUI mode (no dashboard) | Terminal stdin only (TUI is observe-only for gates) |
-| TUI mode + dashboard | Terminal stdin only (both TUI and dashboard are observe-only) |
-
-**Dashboard server integration**: On receiving a `gate.respond` WebSocket message, the server validates the token (see Security), checks that the gate is unresolved, and writes `<gate-id>.resolved.json`. The orchestrator (separate process) detects resolution via file watch or polling.
-
-```
-  Orchestrator                Gate File                  Dashboard
-  (5x run)                (.5x/gates/)               (5x dashboard)
-       │                        │                          │
-       ├─── write gate ────────>│                          │
-       │    request file        │                          │
-       │                        │<──── fs.watch() ─────────┤
-       │                        │                          │
-       │                        │───── gate.request ──────>│ (WebSocket)
-       │                        │                          │
-       │    ┌───── terminal ────│                          │
-       │    │      prompt       │                          │
-       │    │                   │                          │
-       │    │              OR   │<──── gate.respond ───────┤ (user clicks)
-       │    │                   │      (atomic write)      │
-       │    v                   │                          │
-       ├─── poll / watch ──────>│                          │
-       │    sees resolved       │                          │
-       │                        │───── gate.resolved ─────>│ (WebSocket)
-       └────────────────────────┴──────────────────────────┘
-```
+The server includes `protocolVersion: 1` in the `snapshot` message. The client checks this on connect and displays a "dashboard out of date — reload" warning if the server version exceeds its known version.
 
 ---
 
 ## Data Model Reference
 
-The dashboard reads existing `.5x` artifacts. This section maps dashboard concepts to their actual DB/filesystem representations to prevent drift.
+The dashboard reads the v1 schema (migration v4). All table definitions are in `src/db/schema.ts`. Row types and operations are in `src/db/operations.ts` and `src/db/operations-v1.ts`.
 
 ### Source of Truth: Database Tables
 
-All table definitions are in `src/db/schema.ts` (migration v3). Row types are in `src/db/operations.ts`.
-
 | Table | Dashboard Use | Key Columns |
 |-------|--------------|-------------|
-| `plans` | Plan list, worktree info | `plan_path` (PK), `worktree_path`, `branch` |
-| `runs` | Run list, active state | `id`, `plan_path`, `status`, `current_phase`, `current_state`, `started_at`, `completed_at` |
-| `run_events` | Timeline, event stream | `id` (autoincrement), `run_id`, `event_type`, `phase`, `iteration`, `data` (JSON), `created_at` |
-| `agent_results` | Agent invocations, cost | `id`, `run_id`, `phase`, `iteration`, `role`, `template`, `result_type` (`status`\|`verdict`), `result_json`, `duration_ms`, `log_path`, `tokens_in`, `tokens_out`, `cost_usd` |
-| `quality_results` | Quality gate badges | `id`, `run_id`, `phase`, `attempt`, `passed` (0\|1), `results` (JSON), `duration_ms` |
-| `phase_progress` | Phase map status | `plan_path`, `phase`, `implementation_done` (0\|1), `latest_review_readiness`, `review_approved` (0\|1), `blocked_reason` |
+| `plans` | Plan list, worktree info | `plan_path` (PK), `worktree_path`, `branch`, `created_at`, `updated_at` |
+| `runs` | Run list, active state | `id` (PK), `plan_path`, `status`, `config_json`, `created_at`, `updated_at` |
+| `steps` | Step timeline, metrics, events | `id` (autoincrement), `run_id`, `step_name`, `phase`, `iteration`, `result_json`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `duration_ms`, `log_path`, `created_at` |
 
-### Run Statuses (DB values)
+### Run Statuses
 
-`runs.status` values: `active`, `completed`, `aborted`, `failed`
+`runs.status` values: `active`, `completed`, `aborted`
 
 Dashboard display mapping:
 
@@ -340,64 +273,28 @@ Dashboard display mapping:
 | `active` | ACTIVE | `◉` (pulsing) | `--amber-400` |
 | `completed` | COMPLETE | `✓` | `--status-success` |
 | `aborted` | ABORTED | `✗` | `--status-error` |
-| `failed` | FAILED | `✗` | `--status-error` |
 
-### Run Event Types (DB values)
+### Step Name Conventions
 
-`run_events.event_type` values as emitted by the orchestrators. The `data` column is JSON with event-specific fields.
+The `steps.step_name` column encodes the step type. The dashboard parses these to categorize and display steps:
 
-**Phase execution loop** (`src/orchestrator/phase-execution-loop.ts`):
-
-| Event Type | Phase | Description |
-|------------|-------|-------------|
-| `run_start` | — | Run begins |
-| `phase_start` | yes | Phase begins execution |
-| `agent_invoke` | yes | Author or reviewer agent invoked (data: role, template, resultId) |
-| `quality_gate` | yes | Quality gate result (data: passed, attempt, results) |
-| `verdict` | yes | Reviewer verdict stored (data: readiness, items) |
-| `escalation` | yes | Escalation event (data: reason, items, source) |
-| `human_decision` | yes | Human responded to gate (data: action, guidance) |
-| `auto_escalation_continue` | yes | Auto-mode continued past escalation |
-| `auto_escalation_abort` | yes | Auto-mode aborted at escalation |
-| `phase_force_approved` | yes | Human force-approved phase (override) |
-| `phase_complete` | yes | Phase finished successfully |
-| `phase_execute_skipped_plan_complete` | yes | Phase skipped (already complete) |
-| `phase_review_committed` | yes | Review committed to disk |
-| `run_paused` | yes | Run paused at human gate |
-| `run_complete` | — | All phases done |
-| `run_abort` | — | Run aborted |
-| `auto_start_fresh` | — | Previous active run marked aborted, starting fresh |
-
-**Plan review loop** (`src/orchestrator/plan-review-loop.ts`):
-
-| Event Type | Description |
-|------------|-------------|
-| `plan_review_start` | Review loop begins |
-| `agent_invoke` | Author or reviewer invoked |
-| `verdict` | Reviewer verdict stored |
-| `escalation` | Escalation event |
-| `human_decision` | Human responded to gate |
-| `auto_escalation_continue` | Auto-mode continued |
-| `auto_escalation_abort` | Auto-mode aborted |
-| `plan_review_complete` | Plan approved |
-| `plan_review_abort` | Plan review aborted |
-| `auto_start_fresh` | Previous run aborted, starting fresh |
-
-**Plan generation** (`src/commands/plan.ts`):
-
-| Event Type | Description |
-|------------|-------------|
-| `plan_generate_start` | Plan generation begins |
-| `plan_generate_complete` | Plan generated successfully |
-| `error` | Error during generation |
+| Pattern | Description | Key `result_json` fields |
+|---------|-------------|--------------------------|
+| `author:<template>` | Author agent invocation | `result` (`complete`/`needs_human`/`failed`), `summary` |
+| `reviewer:<template>` | Reviewer agent invocation | `readiness` (`ready`/`not_ready`), `items[]` |
+| `quality:check` | Quality gate execution | `passed`, `results[]` (per-command pass/fail/output) |
+| `phase:complete` | Phase marked complete | `phase`, phase metadata |
+| `run:complete` | Run completed successfully | Terminal step |
+| `run:abort` | Run aborted | Terminal step, may include `reason` |
+| `run:reopen` | Run reopened from terminal state | Lifecycle step |
+| `human:*` | Human interaction recorded | Context-dependent |
+| `git:commit` | Git commit recorded | `sha`, `message`, `files_changed` |
 
 ### Agent Log Filenames
 
-Agent logs are stored as `.5x/logs/<run-id>/agent-<resultId>.ndjson` where `<resultId>` is the `agent_results.id` value — a generated unique ID (not role/phase encoded). The `agent_results.log_path` column stores the full path.
+Agent logs are stored as `.5x/logs/<run-id>/agent-NNN.ndjson` where `NNN` is a sequential number. The `steps.log_path` column stores the path for each step that involved an agent invocation. The first line of each log file is a `session_start` metadata entry with `role`, `template`, `run`, and `phase_number`.
 
-To map a log file to its agent invocation context, join on `agent_results.log_path` or `agent_results.id` (extracted from the filename: `agent-<id>.ndjson` → `id`).
-
-Quality gate logs: `.5x/logs/<run-id>/quality-phase<N>-attempt<N>-<gate-name>.log`
+To map a log file to its agent invocation context, read the `session_start` line or join on `steps.log_path`.
 
 ### Derived Views
 
@@ -405,23 +302,31 @@ The dashboard computes these derived values from raw DB data:
 
 | View | Source | Computation |
 |------|--------|-------------|
-| Active phase | `runs.current_phase` | Direct read |
-| Current state | `runs.current_state` | Direct read |
-| Latest event | `run_events` | `MAX(id) WHERE run_id = ?` |
-| Phase count / progress | `phase_progress` | Count rows, sum `review_approved` |
-| Cost per run | `agent_results` | `SUM(cost_usd) WHERE run_id = ?` |
-| Tokens per run | `agent_results` | `SUM(tokens_in)`, `SUM(tokens_out)` |
-| Cost per plan | `agent_results` JOIN `runs` | Aggregate across all runs for a plan |
+| Run status | `runs.status` | Direct read |
+| Latest step | `steps` | `MAX(id) WHERE run_id = ?` |
+| Phases completed | `steps` | Count `step_name = 'phase:complete'` per run |
+| Phase in progress | `steps` | Latest step's `phase` value for active runs |
+| Cost per run | `steps` | `SUM(cost_usd) WHERE run_id = ?` |
+| Tokens per run | `steps` | `SUM(tokens_in)`, `SUM(tokens_out)` |
+| Cost per plan | `steps` JOIN `runs` | Aggregate across all runs for a plan |
+| Quality pass rate | `steps` | Count `step_name = 'quality:check'` where `result_json.passed = true` |
+| Review iterations | `steps` | Count `step_name LIKE 'reviewer:%'` per phase |
 
 ### Polling Strategy
 
-Poll using monotonically increasing `run_events.id` as the high-water mark — avoids the need for an `updated_at` column on `runs` (no schema migration required):
+Poll using the monotonically increasing `steps.id` as the high-water mark:
 
 ```
-SELECT * FROM run_events WHERE id > :lastSeenId ORDER BY id ASC
+SELECT * FROM steps WHERE id > :lastSeenId ORDER BY id ASC LIMIT 200
 ```
 
-Changes to `runs`, `agent_results`, `quality_results`, and `phase_progress` are detected by tracking their max `rowid` or by re-querying active runs on each poll cycle. Polling interval: 2 seconds.
+New steps are grouped by `run_id` and broadcast as `steps.new` messages. Run status changes are inferred from terminal step names (`run:complete`, `run:abort`) and broadcast as `run.update` messages.
+
+**Active runs**: Re-query `runs WHERE status = 'active'` on each poll cycle to detect status changes from external CLI commands.
+
+**Why polling, not triggers**: SQLite doesn't support cross-process change notifications. WAL mode allows concurrent reads while CLI commands write. Polling at 2s is cheap (indexed queries on small tables) and consistent regardless of whether CLI commands are co-located or separate processes.
+
+**No schema migration required.** The existing `steps.id` autoincrement column is the polling cursor.
 
 ---
 
@@ -433,11 +338,10 @@ Single-page application with hash-based routing. No page reloads.
 
 ```
 #/                          Multi-plan overview (landing page)
-#/plan/<plan-path>          Plan detail — phases, runs, progress
-#/run/<run-id>              Run detail — state machine, events, agents
+#/plan/<plan-path>          Plan detail — runs, phase progress, metrics
+#/run/<run-id>              Run detail — step timeline, phase grouping
 #/run/<run-id>/logs         Log viewer for a specific run
-#/history                   Historical runs table with filters
-#/analytics                 Cost/token analytics (secondary)
+#/analytics                 Cost/token analytics
 ```
 
 ### Layout
@@ -452,7 +356,7 @@ Single-page application with hash-based routing. No page reloads.
 │  (see individual page layouts below)                                │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│ GATES: [Phase 3 gate awaiting response ▸]    ◉ 2 active  ○ 3 idle  │  ← Status bar
+│ ◉ 2 active runs    ○ 3 idle    Steps: 847    Cost: $14.23          │  ← Status bar
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -463,9 +367,9 @@ Single-page application with hash-based routing. No page reloads.
 - Settings gear (localStorage prefs: scanline toggle, animation speed)
 
 **Status bar** (fixed, 36px):
-- Pending gate notifications (amber pulse, clickable to open gate modal)
-- Active/idle process count
-- Elapsed time for current run
+- Active/idle run count
+- Total steps recorded
+- Aggregate cost
 
 ### Page: Multi-Plan Overview (`#/`)
 
@@ -473,42 +377,38 @@ The landing page. Shows all known plans with their current state.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PLANS                                                        ⟳ 5s  │
+│ PLANS                                                        ⟳ 2s  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌─ 006-impl-dashboard ──────────────────────────────────────────┐  │
-│  │ STATUS: ◉ EXECUTING   Phase 3/7   State: QUALITY_CHECK       │  │
-│  │ ████████████░░░░░░░░░░ 42%                                   │  │
+│  ┌─ 026-impl-dashboard ──────────────────────────────────────────┐  │
+│  │ STATUS: ◉ ACTIVE   Phase 3   Steps: 47                       │  │
 │  │                                                               │  │
 │  │ Run: a1b2c3d4   Started: 14:23   Duration: 12m 34s           │  │
 │  │ Cost: $0.47     Tokens: 124K in / 18K out                    │  │
 │  │                                                               │  │
-│  │ Phases: [1 ✓] [2 ✓] [3 ◉] [4 ○] [5 ○] [6 ○] [7 ○]         │  │
-│  │         done   done  active                                   │  │
+│  │ Phases completed: [1 ✓] [2 ✓] [3 ◉] [4 ○] [5 ○]            │  │
+│  │                   done   done  active                         │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
-│  ┌─ 005-impl-console-cleanup ────────────────────────────────────┐  │
-│  │ STATUS: ✓ COMPLETE   7/7 phases   Total: 2h 14m              │  │
-│  │ ████████████████████ 100%                                     │  │
+│  ┌─ 025-commit-tracking ──────────────────────────────────────────┐  │
+│  │ STATUS: ✓ COMPLETE   5/5 phases   Total: 2h 14m               │  │
 │  │                                                               │  │
 │  │ Last run: f9e8d7c6   Completed: yesterday 16:45              │  │
 │  │ Total cost: $2.31   Tokens: 890K in / 156K out               │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
-│  ┌─ 004-impl-tui ────────────────────────────────────────────────┐  │
-│  │ STATUS: ✗ ABORTED   Phase 2/4   State: ESCALATE              │  │
-│  │ ██████████░░░░░░░░░░░ 50%                                    │  │
+│  ┌─ 024-skills-to-harness ─────────────────────────────────────────┐  │
+│  │ STATUS: ✗ ABORTED   Phase 2   Steps: 23                       │  │
 │  │                                                               │  │
 │  │ Last run: 1a2b3c4d   Aborted: 2 days ago                     │  │
-│  │ Reason: Human aborted at escalation gate                      │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Each plan card is clickable → navigates to `#/plan/<path>`. Active plans sort to top with amber border glow. Completed plans have green left border. Aborted/failed plans have red left border.
+Each plan card is clickable → navigates to `#/plan/<path>`. Active plans sort to top with amber border glow. Completed plans have green left border. Aborted plans have red left border.
 
-**Plan discovery**: The dashboard shows plans that exist in the `plans` database table — i.e., plans that have been the target of at least one `5x run`, `5x plan-review`, or `5x plan` command. It does not scan the filesystem for plan files. This matches the CLI's existing behavior where plans are upserted into the DB on first use (`upsertPlan()` in `src/db/operations.ts`). Plan paths are canonical (resolved via `canonicalizePlanPath()`).
+**Plan discovery**: The dashboard shows plans that exist in the `plans` database table — i.e., plans that have been the target of at least one `5x run` command. It does not scan the filesystem for plan files. Plan paths are canonical (resolved via `canonicalizePlanPath()`).
 
 ### Page: Plan Detail (`#/plan/<path>`)
 
@@ -516,55 +416,42 @@ Drill-down into a single plan's lifecycle.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ ◂ PLANS   006-impl-dashboard                        ◉ EXECUTING    │
+│ ◂ PLANS   026-impl-dashboard                        ◉ ACTIVE        │
 ├──────────────────────────────────┬──────────────────────────────────┤
-│ PHASE MAP                        │ ACTIVE RUN: a1b2c3d4            │
+│ PHASE PROGRESS                   │ ACTIVE RUN: a1b2c3d4            │
 │                                  │                                  │
-│  ┌──────┐   ┌──────┐   ┌──────┐ │ State: QUALITY_CHECK             │
-│  │  P1  │──>│  P2  │──>│  P3  │ │ Phase: 3 — "HTTP Server"        │
-│  │  ✓   │   │  ✓   │   │  ◉   │ │ Iteration: 2                    │
-│  └──────┘   └──────┘   └──┬───┘ │ Quality attempt: 1/3            │
-│                            │     │                                  │
-│  ┌──────┐   ┌──────┐   ┌──┴───┐ │ ┌─ TIMELINE (run_events) ─────┐ │
-│  │  P4  │──>│  P5  │──>│  P6  │ │ │ 14:23:01  run_start         │ │
-│  │  ○   │   │  ○   │   │  ○   │ │ │ 14:23:05  phase_start P1    │ │
-│  └──────┘   └──────┘   └──────┘ │ │ 14:24:30  agent_invoke P1   │ │
-│                                  │ │ 14:25:12  quality_gate P1 ✓ │ │
-│  ┌──────┐                        │ │ 14:25:45  verdict P1 ready  │ │
-│  │  P7  │                        │ │ 14:26:00  human_decision ✓  │ │
-│  │  ○   │                        │ │ 14:26:01  phase_complete P1 │ │
-│  └──────┘                        │ │ 14:26:03  phase_start P2    │ │
-│                                  │ │ 14:31:01  verdict P2 ready  │ │
-│ Phase 3 detail:                  │ │ 14:31:18  phase_start P3    │ │
-│ ┌────────────────────────────┐   │ │ 14:35:02  quality_gate P3.. │ │
-│ │ Implementation: ✓ done     │   │ │           ◉ waiting...      │ │
-│ │ Quality: ◉ running         │   │ └────────────────────────────┘ │
-│ │ Review: ○ pending          │   │                                  │
-│ │ Gate: ○ pending            │   │ Author result:                   │
-│ │                            │   │   result: complete               │
-│ │ Author: complete           │   │   commit: 8a3f2b1c              │
-│ │   commit: 8a3f2b1c        │   │   duration: 3m 44s               │
-│ │   duration: 3m 44s        │   │   tokens: 42K in / 8K out        │
-│ │   cost: $0.12             │   │   cost: $0.12                    │
-│ └────────────────────────────┘   │                                  │
+│  Phase 1 ████████████████████ ✓  │ Status: ACTIVE                   │
+│  Phase 2 ████████████████████ ✓  │ Phase: 3                        │
+│  Phase 3 ██████████░░░░░░░░░ ◉  │ Steps: 47                       │
+│  Phase 4 ░░░░░░░░░░░░░░░░░░ ○  │ Duration: 12m 34s               │
+│  Phase 5 ░░░░░░░░░░░░░░░░░░ ○  │                                  │
+│                                  │ ┌─ RECENT STEPS ──────────────┐ │
+│ Phases derived from              │ │ 14:35:02 quality:check  P3  │ │
+│ phase:complete steps             │ │   passed: true               │ │
+│ and step phase column            │ │ 14:34:58 author:impl   P3  │ │
+│                                  │ │   result: complete           │ │
+│                                  │ │   cost: $0.12                │ │
+│                                  │ │ 14:31:18 reviewer:rev  P2  │ │
+│                                  │ │   readiness: ready           │ │
+│                                  │ │ 14:31:01 phase:complete P2  │ │
+│                                  │ │ ...                          │ │
+│                                  │ └──────────────────────────────┘ │
 ├──────────────────────────────────┴──────────────────────────────────┤
 │ RUN HISTORY                                                         │
 │ ┌──────────┬────────┬───────┬────────┬─────────┬───────────────┐   │
-│ │ Run ID   │ Status │ Phase │ Phases │ Cost    │ Started       │   │
+│ │ Run ID   │ Status │ Steps │ Phases │ Cost    │ Started       │   │
 │ ├──────────┼────────┼───────┼────────┼─────────┼───────────────┤   │
-│ │ a1b2c3d4 │ ◉ act  │ 3/7   │ 2 done │ $0.47   │ today 14:23   │   │
-│ │ 9f8e7d6c │ ✗ abt  │ 1/7   │ 0 done │ $0.08   │ today 13:55   │   │
+│ │ a1b2c3d4 │ ◉ act  │ 47    │ 2 done │ $0.47   │ today 14:23   │   │
+│ │ 9f8e7d6c │ ✗ abt  │ 12    │ 0 done │ $0.08   │ today 13:55   │   │
 │ └──────────┴────────┴───────┴────────┴─────────┴───────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Phase map**: Visual graph of phases with status indicators. Active phase pulses amber. Completed phases show green check. Layout follows the plan's phase numbering (1, 1.1, 2, etc.) as a directed graph.
+**Phase progress**: Derived from `steps` table — count `phase:complete` steps for completed phases, identify current phase from the latest step's `phase` column for active runs.
 
-**Active run panel**: Real-time state machine position, current iteration, quality attempt counter, and a scrolling timeline of run events.
+**Recent steps**: Scrolling list of steps for the active run, grouped and labeled by `step_name` and `phase`. Auto-scrolls to newest; pauses on user scroll-up.
 
-**Phase detail**: Expandable section showing the inner state for the selected phase — implementation status, quality results, review verdict, and agent result summaries.
-
-**Run history**: Table of all runs for this plan, clickable to navigate to run detail.
+**Run history**: Table of all runs for this plan, clickable to navigate to `#/run/<id>`.
 
 ### Page: Run Detail (`#/run/<id>`)
 
@@ -574,49 +461,52 @@ Deep dive into a single run.
 ┌─────────────────────────────────────────────────────────────────────┐
 │ ◂ PLAN   RUN a1b2c3d4                    ◉ ACTIVE   12m 34s        │
 ├──────────────────────────────────┬──────────────────────────────────┤
-│ STATE MACHINE                    │ EVENTS                           │
+│ STEP TIMELINE                    │ STEP DETAIL                      │
 │                                  │                                  │
-│  ┌─────────┐    ┌────────────┐   │ ┌────────────────────────────┐  │
-│  │ EXECUTE │───>│  QUALITY   │   │ │ 14:35:02 quality_gate     │  │
-│  │         │    │  CHECK  ◉  │   │ │   phase: 3, attempt: 1    │  │
-│  └────┬────┘    └──────┬─────┘   │ │ 14:34:58 agent_invoke     │  │
-│       │                │         │ │   role: author, complete   │  │
-│       │         ┌──────┴─────┐   │ │   commit: 8a3f2b1c        │  │
-│       │         │  QUALITY   │   │ │ 14:31:18 phase_start      │  │
-│       │         │  RETRY     │   │ │   phase: 3                │  │
-│       │         └──────┬─────┘   │ │ 14:31:15 human_decision   │  │
-│       │                │         │ │   action: continue         │  │
-│  ┌────┴────┐    ┌──────┴─────┐   │ │ 14:31:01 verdict          │  │
-│  │ REVIEW  │<───│            │   │ │   readiness: ready         │  │
-│  │         │    │            │   │ │ ...                        │  │
-│  └────┬────┘    └────────────┘   │ └────────────────────────────┘  │
-│       │                          │                                  │
-│  ┌────┴────┐    ┌────────────┐   │ AGENT RESULTS                   │
-│  │AUTO_FIX │    │  ESCALATE  │   │ ┌────────────────────────────┐  │
-│  │         │    │            │   │ │ P3 Author   3m44s  $0.12  │  │
-│  └─────────┘    └────────────┘   │ │ P2 Reviewer 1m22s  $0.04  │  │
-│                                  │ │ P2 Author   4m11s  $0.15  │  │
-│  ┌─────────┐    ┌────────────┐   │ │ P1 Reviewer 1m05s  $0.03  │  │
-│  │  PHASE  │    │  PHASE     │   │ │ P1 Author   2m58s  $0.11  │  │
-│  │  GATE   │    │  COMPLETE  │   │ │ ...                        │  │
-│  └─────────┘    └────────────┘   │ └────────────────────────────┘  │
+│ ┌─ Phase 1 ──────────────────┐   │ ┌────────────────────────────┐  │
+│ │  14:23:05 author:impl      │   │ │ quality:check — Phase 3    │  │
+│ │    result: complete         │   │ │                            │  │
+│ │    tokens: 42K / 8K         │   │ │ Passed: true              │  │
+│ │    cost: $0.11              │   │ │ Duration: 4.2s            │  │
+│ │  14:25:12 quality:check  ✓ │   │ │                            │  │
+│ │  14:25:45 reviewer:rev     │   │ │ Results:                   │  │
+│ │    readiness: ready         │   │ │  ✓ bun run build    1.2s  │  │
+│ │  14:26:01 phase:complete ✓ │   │ │  ✓ bun run lint     0.8s  │  │
+│ └────────────────────────────┘   │ │  ✓ bun run typecheck 2.2s │  │
+│                                  │ │                            │  │
+│ ┌─ Phase 2 ──────────────────┐   │ │ Output (first 2KB):       │  │
+│ │  14:26:03 author:impl      │   │ │ > build completed          │  │
+│ │    result: complete         │   │ │ > 0 errors, 0 warnings    │  │
+│ │  14:28:44 quality:check  ✓ │   │ │                            │  │
+│ │  14:29:01 reviewer:rev     │   │ └────────────────────────────┘  │
+│ │    readiness: ready         │   │                                  │
+│ │  14:31:01 phase:complete ✓ │   │                                  │
+│ └────────────────────────────┘   │                                  │
 │                                  │                                  │
-│  Current: QUALITY_CHECK          │  [View Logs]                     │
-│  Arrows show valid transitions   │                                  │
+│ ┌─ Phase 3 (active) ─────────┐   │ AGENT INVOCATIONS               │
+│ │  14:31:18 author:impl      │   │ ┌────────────────────────────┐  │
+│ │    result: complete         │   │ │ P3 Author   3m44s  $0.12  │  │
+│ │  14:35:02 quality:check  ✓ │   │ │ P2 Reviewer 1m22s  $0.04  │  │
+│ │  ◉ waiting for next step   │   │ │ P2 Author   4m11s  $0.15  │  │
+│ └────────────────────────────┘   │ │ P1 Reviewer 1m05s  $0.03  │  │
+│                                  │ │ P1 Author   2m58s  $0.11  │  │
+│                                  │ └────────────────────────────┘  │
+│                                  │                                  │
+│                                  │  [View Logs]                     │
 ├──────────────────────────────────┴──────────────────────────────────┤
 │ QUALITY GATES                                                       │
-│ Phase 1: ✓ build  ✓ lint  ✓ test    Phase 2: ✓ build  ✓ lint  ✓   │
-│ Phase 3: ◉ running...                                               │
+│ Phase 1: ✓ build  ✓ lint  ✓ typecheck    Phase 2: ✓ all passed     │
+│ Phase 3: ✓ build  ✓ lint  ✓ typecheck                              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**State machine diagram**: Visual representation of the phase execution loop states. Current state highlighted with amber glow. Valid transitions shown as arrows. States already visited in this phase shown with subtle trail.
+**Step timeline**: Left panel showing all steps grouped by phase, in chronological order. Each step shows `step_name`, key result fields (parsed from `result_json`), cost, and tokens. Click a step to show full detail in the right panel. Active phase has amber border.
 
-**Events panel**: Scrolling list of run_events in reverse chronological order. Each event shows type, phase, iteration, and parsed data. Auto-scrolls to newest; pause on user scroll-up.
+**Step detail**: Right panel showing expanded `result_json` for the selected step, formatted by step type (author results, reviewer verdicts, quality gate output with per-command breakdown).
 
-**Agent results**: Compact table of all agent invocations for this run with role, phase, duration, cost, and a link to open the log viewer.
+**Agent invocations**: Compact table of all agent steps for this run, filtered from steps where `step_name` starts with `author:` or `reviewer:`, showing role, phase, duration, cost, and log link.
 
-**Quality gates**: Bottom bar showing pass/fail badges per phase for each configured quality gate command.
+**Quality gates**: Bottom bar showing pass/fail badges per phase, derived from `quality:check` steps. Each badge can be expanded to show per-command results.
 
 ### Page: Log Viewer (`#/run/<id>/logs`)
 
@@ -626,41 +516,40 @@ Full-screen streaming log viewer.
 ┌─────────────────────────────────────────────────────────────────────┐
 │ ◂ RUN a1b2c3d4   LOGS                    [Search: ________] [⏸ ▶]  │
 ├────────────────────┬────────────────────────────────────────────────┤
-│ LOG FILES          │ agent-ex_3f8a2b.ndjson                         │
-│ (from agent_       │                                                │
-│  results.log_path) │                                                │
-│                    │ {"type":"event","event":{"type":"assistant.    │
-│ ◉ P3 Author i2    │  message.start","data":{"messageId":"msg_01... │
-│   agent-ex_3f8a.. │ {"type":"event","event":{"type":"content.      │
-│ ○ P3 Author i1    │  delta","data":{"delta":{"type":"text","text": │
-│   agent-ex_2d7c.. │  "Let me start by examining the existing...    │
-│ ○ P2 Reviewer     │                                                │
-│   agent-rv_9e4f.. │ {"type":"event","event":{"type":"tool_use.     │
-│ ○ P2 Author       │  start","data":{"toolName":"Read","input":{... │
-│   agent-ex_7b3a.. │                                                │
-│ ○ P1 Reviewer     │ {"type":"event","event":{"type":"tool_use.     │
-│   agent-rv_1c5d.. │  result","data":{"output":"...file contents... │
-│ ○ P1 Author       │                                                │
-│                    │ {"type":"event","event":{"type":"content.      │
-│                    │  delta","data":{"delta":{"type":"text","text": │
-│                    │  "I'll implement the HTTP server module by...  │
+│ LOG FILES          │ agent-003.ndjson                               │
+│                    │                                                │
+│ ◉ P3 Author       │                                                │
+│   agent-003.ndjson │ {"type":"session_start","role":"author",...}   │
+│ ○ P2 Reviewer      │ {"type":"event","event":{"type":"assistant.   │
+│   agent-002.ndjson │  message.start",...}}                         │
+│ ○ P2 Author        │ {"type":"event","event":{"type":"content.     │
+│   agent-001.ndjson │  delta","data":{"delta":{"type":"text",...    │
+│ ○ P1 Reviewer      │ {"type":"event","event":{"type":"tool_use.    │
+│   agent-000.ndjson │  start","data":{"toolName":"Read",...}}       │
+│                    │                                                │
+│ Labels derived     │ {"type":"event","event":{"type":"tool_use.     │
+│ from session_start │  result","data":{"output":"..."}}}            │
+│ metadata line      │                                                │
+│ (role + phase)     │ {"type":"event","event":{"type":"content.      │
+│                    │  delta","data":{"delta":{"type":"text",...     │
 │                    │                                                │
 │                    │                    ◉ STREAMING — 342 lines     │
 │                    │                    ▼ auto-scroll active        │
 └────────────────────┴────────────────────────────────────────────────┘
 ```
 
-**Left panel**: List of log files for the run, derived from `agent_results` rows (join `agent_results.log_path` to resolve filenames). Displayed grouped by phase and labeled with role + iteration for readability (the raw filenames are `agent-<resultId>.ndjson`). Active log (being written to) gets a pulsing indicator. Click to switch.
+**Left panel**: List of log files for the run, derived from `steps` rows with non-null `log_path`. Labeled with phase + role by reading the `session_start` metadata line. Active log (being appended to) gets a pulsing indicator. Click to switch.
 
 **Right panel**: NDJSON log content rendered with:
-- Syntax highlighting for JSON structure
 - ANSI color code rendering for embedded terminal output
 - Line numbers
 - Search highlighting (Ctrl+F or search box)
 - Auto-scroll when at bottom; pauses when user scrolls up; "Jump to bottom" button appears
 - Click a line to copy its content
 
-**Streaming**: When viewing an active log, new lines appear in real-time via WebSocket `log.line` messages. A "STREAMING" indicator with line count is shown at the bottom.
+**Streaming**: When viewing an active log, new lines appear in real-time via WebSocket `log.lines` messages. A "STREAMING" indicator with line count is shown at the bottom.
+
+**Memory management**: Virtualized list capped at 10,000 lines per file in memory. Older lines are discarded from the front. A "Load earlier" button triggers an HTTP GET to the backfill endpoint for historical lines.
 
 ### Page: Analytics (`#/analytics`)
 
@@ -691,10 +580,10 @@ Secondary page for cost and token usage data.
 │ ┌──────────────────────────┬────────┬──────────┬────────┬─────────┐ │
 │ │ Plan                     │ Runs   │ Phases   │ Cost   │ Tokens  │ │
 │ ├──────────────────────────┼────────┼──────────┼────────┼─────────┤ │
-│ │ 006-impl-dashboard       │ 2      │ 3/7      │ $0.55  │ 166K    │ │
-│ │ 005-impl-console-cleanup │ 1      │ 7/7      │ $2.31  │ 890K    │ │
-│ │ 004-impl-tui             │ 3      │ 2/4      │ $4.12  │ 520K    │ │
-│ │ 003-impl-opencode        │ 2      │ 5/5      │ $5.89  │ 1.2M    │ │
+│ │ 026-impl-dashboard       │ 2      │ 2 done   │ $0.55  │ 166K    │ │
+│ │ 025-commit-tracking      │ 1      │ 5 done   │ $2.31  │ 890K    │ │
+│ │ 024-skills-to-harness    │ 3      │ 2 done   │ $4.12  │ 520K    │ │
+│ │ 023-skill-improvements   │ 2      │ 5 done   │ $5.89  │ 1.2M    │ │
 │ └──────────────────────────┴────────┴──────────┴────────┴─────────┘ │
 │                                                                     │
 │ COST BY ROLE                                                        │
@@ -703,44 +592,7 @@ Secondary page for cost and token usage data.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Charts are rendered with SVG (no charting library). Simple bar charts and horizontal progress bars. Data is aggregated from `agent_results` table.
-
-### Gate Modal
-
-When a gate fires, a modal overlay appears (in addition to the status bar notification).
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│    ┌─ PHASE GATE ──────────────────────────────────────────────┐    │
-│    │                                                           │    │
-│    │  Phase 3: "HTTP Server" — Complete                        │    │
-│    │                                                           │    │
-│    │  ┌─────────────────────────────────────────────────────┐  │    │
-│    │  │ Commit:       8a3f2b1c                              │  │    │
-│    │  │ Quality:      PASSED                                │  │    │
-│    │  │ Review:       ready                                 │  │    │
-│    │  │ Files changed: 12                                   │  │    │
-│    │  │ Duration:     3m 44s                                │  │    │
-│    │  └─────────────────────────────────────────────────────┘  │    │
-│    │                                                           │    │
-│    │  ┌──────────────────────┐  ┌─────────────────────────┐   │    │
-│    │  │  ▸ CONTINUE          │  │    EXIT (pause run)     │   │    │
-│    │  │    to Phase 4        │  │                         │   │    │
-│    │  └──────────────────────┘  └─────────────────────────┘   │    │
-│    │                                                           │    │
-│    └───────────────────────────────────────────────────────────┘    │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-**Phase gate modal**: Shows phase summary, two action buttons (continue / exit).
-
-**Escalation gate modal**: Shows reason, review items with priorities, three action buttons (fix with guidance / override / abort). Guidance input appears as a text area when "fix" is selected. Used by both `plan-review` and `phase-execution` loops.
-
-**Resume gate modal**: Shows interrupted run info, three action buttons (resume / start fresh / abort).
-
-All gate modals have an amber pulsing border and auto-dismiss when resolved (by any responder). If resolved by terminal, the modal shows "Resolved via terminal" briefly before dismissing. When TUI mode is active, gate modals display in read-only mode with a "Gate controlled via terminal" notice.
+Charts are rendered with SVG (no charting library). Simple bar charts and horizontal progress bars. Data aggregated from `steps` table where `step_name` matches `author:*` or `reviewer:*`.
 
 ---
 
@@ -748,18 +600,16 @@ All gate modals have an amber pulsing border and auto-dismiss when resolved (by 
 
 ### Database Polling
 
-The dashboard polls the SQLite database on a 2-second interval using the strategy defined in [Data Model Reference > Polling Strategy](#polling-strategy):
+The dashboard polls the SQLite database on a 2-second interval:
 
-- **Run events**: `SELECT * FROM run_events WHERE id > :lastSeenId` — monotonically increasing ID, no schema change needed
-- **Active runs**: Re-query `runs WHERE status = 'active'` and diff against in-memory state for `current_phase`/`current_state` changes
-- **Agent results / quality results**: Track max `rowid` per table, query new rows
-- **Phase progress**: Re-query for active plans, diff against cached state
+- **Steps**: `SELECT * FROM steps WHERE id > :lastSeenId ORDER BY id ASC LIMIT 200` — monotonically increasing ID, no schema change needed
+- **Active runs**: Re-query `runs WHERE status = 'active'` and diff against in-memory state for status changes
 
 Changes are diffed against in-memory state and broadcast as targeted WebSocket messages to connected clients.
 
-**Why polling, not triggers**: SQLite doesn't support cross-process change notifications. The WAL mode allows concurrent reads while the orchestrator writes. Polling at 2s is cheap (indexed queries on small tables) and provides consistent behavior regardless of whether the orchestrator is co-located or a separate process.
+**Why polling, not triggers**: SQLite doesn't support cross-process change notifications. WAL mode allows concurrent reads while CLI commands write. Polling at 2s is cheap (indexed queries on small tables) and provides consistent behavior regardless of process topology.
 
-**No schema migration required.** The existing `run_events.id` autoincrement column serves as the polling cursor.
+**No schema migration required.** The existing `steps.id` autoincrement column serves as the polling cursor.
 
 ### Log File Streaming
 
@@ -784,16 +634,15 @@ fs.watch(".5x/logs/")         Periodic rescan (every 5s)
 
 - `fs.watch()` is treated as an **optimization** (immediate notification) not a guarantee
 - A periodic rescan (every 5 seconds) catches any events missed by `fs.watch()` — bounded cost: `readdir` + `stat` on a small directory tree
-- Each log file gets a tracked read offset and mtime. On change (watch or rescan), the server reads from the last offset to EOF, splits on newlines, and sends each complete line as a `log.line` WebSocket message
-- Gate files in `.5x/gates/` use the same watch + rescan pattern
+- Each log file gets a tracked read offset. On change (watch or rescan), the server reads from the last offset to EOF, splits on newlines, sends each complete line as a `log.lines` WebSocket message
+- Uses the same pattern as the existing `NdjsonTailer` in `src/utils/ndjson-tailer.ts` (64KB read chunks, 1MB partial-line buffer cap)
 
 ### State Snapshot
 
-On WebSocket connect, the server sends a full `snapshot` message containing:
+On WebSocket connect (and on `request.snapshot`), the server sends a full `snapshot` message containing:
 - All plans (from `plans` table)
-- All runs (from `runs` table) with their latest events
-- Phase progress for all plans
-- All pending gates (from `.5x/gates/` directory)
+- All runs (from `runs` table) with computed summaries
+- Active run IDs
 - Active log files and their line counts
 
 This ensures the client can render immediately without waiting for incremental updates.
@@ -810,17 +659,17 @@ Usage: 5x dashboard [options]
 Options:
   --port <number>     Port to listen on (default: 55555)
   --host <address>    Bind address (default: 127.0.0.1)
-  --no-gate-bridge    Disable gate bridge (read-only mode)
 ```
 
+Hidden: `--dev` (serve static files from filesystem instead of embedded).
+
 **Startup sequence**:
-1. Resolve project root (same logic as other 5x commands)
-2. Load config (for DB path, quality gate names)
-3. Open database in read-only WAL mode
-4. Scan `.5x/gates/` for pending gate files
-5. Start file watchers on `.5x/logs/` and `.5x/gates/`
-6. Start HTTP server on configured host:port
-7. Print startup banner:
+1. Resolve control-plane root (same logic as other 5x commands, via `resolveControlPlaneRoot()`)
+2. Open database in read-only WAL mode via `openDbReadOnly()`
+3. Generate session token, write to `.5x/dashboard-token.<port>.json`
+4. Start log file watcher on `.5x/logs/`
+5. Start HTTP server on configured host:port
+6. Print startup banner:
 
 ```
   5X COMMAND CENTER
@@ -833,7 +682,9 @@ Options:
   Press Ctrl+C to stop.
 ```
 
-**Shutdown**: SIGINT triggers graceful shutdown — close WebSocket connections, stop file watchers, close database, exit.
+**Fresh project**: If `.5x/` or `.5x/5x.db` is absent, the server still starts and serves the app shell. The snapshot payload returns `status: "no_project"` and the UI displays a clear "awaiting first run" state.
+
+**Shutdown**: SIGINT/SIGTERM triggers graceful shutdown — stop accepting connections, close WebSocket connections, stop log watcher, close database, clean up token file, exit.
 
 ### Config
 
@@ -845,8 +696,6 @@ Dashboard settings are **CLI flags only** — no config file section. This avoid
 5x dashboard --host 0.0.0.0         # all interfaces:55555
 ```
 
-If a `dashboard` config section is needed later (e.g., for team-shared port conventions), it can be added to the schema at that time with a migration to the allowlist in `warnUnknownConfigKeys()`.
-
 ---
 
 ## File Organization
@@ -856,94 +705,36 @@ All dashboard source lives within the `5x-cli` package:
 ```
 5x-cli/src/
   commands/
-    dashboard.ts              CLI command definition (citty)
-  gates/
-    bridge.ts                 Unified gate mechanism (new — used by both loops)
+    dashboard.ts              CLI command definition (Commander adapter)
+    dashboard.handler.ts      Handler: control-plane resolution, server startup
   dashboard/
     server.ts                 Bun HTTP server + WebSocket setup
     routes.ts                 Static file serving + API routes
-    ws-protocol.ts            WebSocket message types and handlers
-    data.ts                   Database polling + state diffing
+    ws-protocol.ts            WebSocket message types and validation
+    data.ts                   Database snapshot/polling/diff layer
+    poller.ts                 Polling loop: step cursor, diff, WS broadcast
     log-watcher.ts            Log file watching + streaming
-    gate-responder.ts         Dashboard-side gate file writer (reads WS, writes .resolved.json)
     static/
       index.html              Single HTML entry point
-      style.css               All styles
+      style.css               All styles (mission-control design tokens)
       app.js                  Main application module
       components/
         top-bar.js            Top navigation bar
         status-bar.js         Bottom status bar
-        plan-overview.js      Multi-plan landing page
+        overview.js           Multi-plan landing page
         plan-detail.js        Plan drill-down
-        run-detail.js         Run state machine + events
+        run-detail.js         Step timeline + phase grouping
         log-viewer.js         Streaming log viewer
         analytics.js          Cost/token charts
-        gate-modal.js         Gate response modals
-        phase-map.js          Phase graph visualization
-        state-machine.js      State machine diagram
       lib/
         ws-client.js          WebSocket client with reconnect
         router.js             Hash-based SPA router
         store.js              Reactive state management
-        render.js             DOM rendering utilities
         format.js             Number/date/duration formatters
         ansi.js               ANSI escape code → HTML converter
 ```
 
-Static files are embedded into the compiled binary using Bun's `embed` macro or by inlining as template literals during the build step, ensuring `5x dashboard` works without needing the source tree.
-
----
-
-## Gate Bridge Protocol
-
-### Gate File Format
-
-```json
-{
-  "gateId": "gate_a1b2c3d4",
-  "gateType": "phase",
-  "runId": "run_5678",
-  "createdAt": "2026-02-26T14:31:15.000Z",
-  "resolved": false,
-  "resolvedBy": null,
-  "resolvedAt": null,
-  "context": {
-    "phaseNumber": "3",
-    "phaseTitle": "HTTP Server",
-    "commit": "8a3f2b1c",
-    "qualityPassed": true,
-    "reviewVerdict": "ready",
-    "filesChanged": 12,
-    "duration": 224000
-  },
-  "response": null
-}
-```
-
-Gate types and their response shapes (shared by both `plan-review` and `phase-execution` loops):
-
-| Gate Type | Context Fields | Response Shape | Used By |
-|-----------|---------------|----------------|---------|
-| `phase` | `PhaseSummary` (`src/gates/human.ts`) | `{action: "continue"\|"exit"}` | phase-execution |
-| `escalation` | `EscalationEvent` (`src/gates/human.ts`) | `{action: "continue"\|"approve"\|"abort", guidance?: string}` | both loops |
-| `resume` | `{runId, phase, state}` | `{action: "resume"\|"start-fresh"\|"abort"}` | phase-execution |
-
-**Not a gate**: Stale lock resolution is handled automatically by `src/lock.ts` (dead PID → auto-steal). No interactive gate exists today.
-
-### Resolution Protocol
-
-1. Orchestrator calls `bridge.requestGate()` which writes `<gateId>.json` with `resolved: false`
-2. Orchestrator records `human_decision` run_event with `data: {gateId, gateType, status: "pending"}`
-3. Responder (terminal stdin or dashboard) writes `<gateId>.resolved.json` with the response (atomic via rename from temp file)
-4. Orchestrator detects resolution via `fs.watch()` or polling (combined — see P1.1)
-5. Orchestrator records `human_decision` run_event with `data: {gateId, response, resolvedBy: "terminal"|"dashboard"}`
-6. Orchestrator reads response and continues state machine
-
-The two-file approach (separate `.resolved.json`) avoids read-write races on the same file. The orchestrator only acts when it sees the `.resolved.json` file appear.
-
-### Cleanup
-
-Resolved gate files are deleted after the orchestrator reads them. The `human_decision` run_events in the database serve as the audit trail (gate files are ephemeral coordination artifacts, not permanent records).
+Static files are embedded into the compiled binary using text module imports for production. The `--dev` flag serves from the filesystem for rapid iteration.
 
 ---
 
@@ -962,7 +753,6 @@ store = {
   connection: "connected" | "reconnecting" | "disconnected",
   plans: Map<planPath, PlanState>,
   runs: Map<runId, RunState>,
-  activeGates: Map<gateId, GateState>,
   logs: {
     subscribed: Set<runId>,
     lines: Map<logFile, string[]>,
@@ -981,38 +771,12 @@ store = {
 
 Auto-reconnecting WebSocket client with:
 - Exponential backoff (1s → 2s → 4s → 8s → 16s max)
-- Automatic re-subscribe on reconnect
-- Snapshot request on reconnect to resync state
+- Automatic snapshot request on reconnect to resync state
 - Connection state reflected in top bar indicator
-
-### Protocol Versioning
-
-All WebSocket messages include a `v` field indicating the protocol version:
-
-```
-{v: 1, type: "snapshot", data: {...}}
-{v: 1, type: "gate.respond", data: {...}}
-```
-
-The server includes `protocolVersion: 1` in the initial `snapshot` message. The client checks this on connect and displays a "dashboard out of date — reload" warning if the server version exceeds its known version. This mirrors the structured-signal versioning pattern in the existing CLI and allows the UI and server to evolve independently.
 
 ---
 
 ## Implementation Considerations
-
-### Database Schema
-
-No schema migrations required. The dashboard reads existing tables via WAL-mode read-only access. Polling uses `run_events.id` (autoincrement) as the high-water mark — see [Data Model Reference](#data-model-reference).
-
-### Orchestrator Changes
-
-A new `src/gates/bridge.ts` module provides `requestGate()` — the single entry point for all human decisions across both orchestration loops:
-
-1. **New module**: `src/gates/bridge.ts` — `requestGate(db, runId, gateType, context, options)` → typed response
-2. **Existing functions become wrappers**: `phaseGate()`, `escalationGate()`, `resumeGate()` in `src/gates/human.ts` delegate to `requestGate()` with their typed context. Plan-review and phase-execution loops both use the same gate primitives.
-3. **Resolution race**: `requestGate()` races terminal `readLine()` (when `isInteractive()`) against file-based resolution (`.5x/gates/` watch + poll). The `--auto` policy short-circuits both.
-4. **Backward compatible**: When no `.5x/gates/` directory exists (no dashboard running), resolution falls back to terminal-only. The `isInteractive()` check is preserved — non-interactive mode auto-resolves per current behavior.
-5. **Audit**: Every gate request and resolution is recorded as a `human_decision` run_event in the database.
 
 ### Performance Budget
 
@@ -1031,7 +795,7 @@ Modern evergreen browsers only (Chrome, Firefox, Safari, Edge). ES2022+ features
 
 ### Security
 
-**Threat model**: The `.5x/` directory contains NDJSON agent logs that may include file contents, environment variables, or other sensitive data from the project. Interactive gate control allows affecting running orchestrator processes. The security model must prevent unauthorized access to both data and control surfaces.
+**Threat model**: The `.5x/` directory contains NDJSON agent logs that may include file contents, environment variables, or other sensitive data from the project. The security model must prevent unauthorized access to this data.
 
 **Token authentication**: On startup, `5x dashboard` generates a cryptographically random token (32 bytes, hex-encoded) and prints it to the local terminal alongside the URL:
 
@@ -1041,88 +805,79 @@ Modern evergreen browsers only (Chrome, Firefox, Safari, Edge). ES2022+ features
   URL:   http://127.0.0.1:55555?token=a3f8...
   Token: a3f8b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1
   DB:    .5x/5x.db (14 runs, 3 active plans)
-
-  Press Ctrl+C to stop.
 ```
 
-The token is also written to `.5x/dashboard-token` (mode 0600) so that future integrations (e.g., `5x run --dashboard`) can read it.
+The token is also written to `.5x/dashboard-token.<port>.json` (mode 0600) so that future integrations can read it.
 
 **Token enforcement**:
-- **HTTP requests**: Token required as `?token=<value>` query parameter or `Authorization: Bearer <value>` header. Requests without a valid token receive `401 Unauthorized`. The initial HTML page load must include the token in the URL.
-- **WebSocket upgrade**: Token required in the `Sec-WebSocket-Protocol` header or as a query parameter during the upgrade handshake. Connections without a valid token are rejected with `401`.
-- **Gate responses**: `gate.respond` WebSocket messages are only accepted on authenticated connections (enforced by the upgrade check).
+- **Bootstrap**: Initial HTML page load at `/?token=...` validates the token and sets `Set-Cookie: dashboard_token=<token>; HttpOnly; SameSite=Strict; Path=/`.
+- **HTTP requests**: Subsequent requests (static assets, API endpoints) accept the cookie or query token. Requests without a valid token receive `401 Unauthorized`.
+- **WebSocket upgrade**: Token required via cookie or query parameter during the upgrade handshake. Connections without a valid token are rejected with `401`.
 
 **Network binding**:
 - Default: `127.0.0.1` (localhost only)
 - `--host 0.0.0.0`: Binds to all interfaces with a loud warning:
 
 ```
-  ⚠ WARNING: Dashboard bound to 0.0.0.0 — accessible from the network.
-  ⚠ All access is gated by the session token. Do not share the URL.
+  WARNING: Dashboard bound to 0.0.0.0 — accessible from the network.
+  All access is gated by the session token. Do not share the URL.
 ```
 
 - **Origin validation**: When bound to localhost, WebSocket upgrade requests are validated against `Origin: http://localhost:*` or `http://127.0.0.1:*`. When bound to all interfaces, origin validation is relaxed (token is the primary gate).
 
 **Data exposure**: NDJSON agent logs may contain project file contents, environment variables, and other sensitive context. This is the same data accessible via `cat .5x/logs/*` on the local filesystem — the dashboard does not increase the attack surface for localhost users, but non-localhost binding exposes it over the network (hence the token requirement).
 
+**Token transport caveat**: The bootstrap URL includes the token as a query parameter, which is visible in browser history and potentially in Referer headers. This is accepted as a trade-off for a local development tool. The cookie-based auth for subsequent requests minimizes exposure after the initial bootstrap.
+
 ---
 
 ## Design Decisions (Resolved)
 
-These were originally open questions, now resolved:
+1. **Co-location vs. separate process**: Standalone `5x dashboard` only. The dashboard reads `.5x/` artifacts via filesystem and DB — no IPC needed. A future `5x run --dashboard` flag could embed the dashboard, but the file-based interface would remain the same.
 
-1. **Co-location vs. separate process**: Start with standalone `5x dashboard` only. The gate bridge uses file-based coordination which works across process boundaries. A future `5x run --dashboard` flag can be added later with an in-memory event emitter short-circuit — the bridge abstraction supports both paths without changing the dashboard code.
+2. **Multi-tab coordination**: No tab-to-tab coordination. Each browser tab gets its own WebSocket connection. Server broadcasts identically to all authenticated connections. Simple and correct.
 
-2. **Multi-tab coordination**: No tab-to-tab coordination. Each browser tab gets its own WebSocket connection. Gate responses are deduplicated at the server level (first write to `.resolved.json` wins). Subsequent tabs see `gate.resolved` and auto-dismiss. Simple and correct.
+3. **Log file size limits**: The server streams only new lines to the client (not full history). The client uses a virtualized list for display and caps in-memory lines at **10,000 per log file**. Older lines are discarded from the front. A "Load earlier" button triggers an HTTP GET to the backfill endpoint with byte-range offsets. This bounds browser memory while keeping the common case (watching a live log) fast.
 
-3. **Log file size limits**: The server streams only new lines to the client (not full history). The client uses a virtualized list for display and caps in-memory lines at **10,000 per log file**. Older lines are discarded from the front. A "Load earlier" button triggers an HTTP GET for the full log file with byte-range offsets. This bounds browser memory while keeping the common case (watching a live log) fast.
+4. **Embedded vs. external static files**: Production builds embed static files in the binary via text module imports. A hidden `--dev` flag serves from the filesystem (`src/dashboard/static/`) for rapid iteration.
 
-4. **Embedded vs. external static files**: Production builds embed static files in the binary (Bun `embed` macro or template literals). A `--dev` flag serves from the filesystem (`src/dashboard/static/`) for rapid iteration with browser refresh. The `--dev` flag is omitted from `--help` output (developer convenience, not user-facing).
-
----
-
-## User Workflows: TUI vs. Dashboard
-
-Three expected usage patterns:
-
-| Mode | How to run | Gate control | Best for |
-|------|-----------|-------------|----------|
-| **Dashboard only** | `5x run <plan>` in one terminal + `5x dashboard` in another, open browser | Terminal + dashboard (first-responder) | Multi-plan monitoring, visual gate control |
-| **TUI only** | `5x run <plan> --tui-listen`, attach with `opencode attach <url>` | Terminal only (TUI is observe-only) | Agent session visibility, debugging prompts |
-| **Dashboard + TUI** | All three running simultaneously | Terminal only (dashboard + TUI both observe-only for gates) | Maximum observability, gate control via terminal |
-
-The dashboard never conflicts with TUI mode because gate control is arbitrated at the bridge level (see [Gate Bridge](#gate-bridge)). Both dashboard and TUI provide observability; only the terminal (or dashboard in non-TUI mode) can resolve gates.
+5. **Read-only vs. interactive**: The dashboard is strictly read-only in v1. No database writes, no gate responses, no agent signaling. This eliminates race conditions with CLI command writers and keeps the CLI as the single source of orchestration truth. Interactive features (gate bridge, agent signaling) are deferred to a future plan.
 
 ---
 
 ## See Also
 
-- [001-impl-5x-cli.md](001-impl-5x-cli.md) — Core CLI implementation plan (orchestrator, DB, gates)
-- [src/gates/human.ts](../src/gates/human.ts) — Current terminal gate implementations
-- [src/db/schema.ts](../src/db/schema.ts) — Database schema and migrations
-- [src/orchestrator/phase-execution-loop.ts](../src/orchestrator/phase-execution-loop.ts) — Phase execution state machine
-- [src/orchestrator/plan-review-loop.ts](../src/orchestrator/plan-review-loop.ts) — Plan review state machine
+- [development/026-impl-dashboard.md](development/026-impl-dashboard.md) — Implementation plan (v1 architecture)
+- [development/006-impl-dashboard.md](development/006-impl-dashboard.md) — Original implementation plan (v0, superseded)
+- [src/db/schema.ts](../src/db/schema.ts) — Database schema (v4 migration)
+- [src/db/operations-v1.ts](../src/db/operations-v1.ts) — v1 step operations
+- [src/db/connection.ts](../src/db/connection.ts) — `openDbReadOnly()` and connection management
+- [src/commands/control-plane.ts](../src/commands/control-plane.ts) — Control-plane root resolution
+- [src/utils/ndjson-tailer.ts](../src/utils/ndjson-tailer.ts) — NDJSON tailing pattern (reference for log watcher)
 
 ---
 
 ## Revision History
 
+### v2.0 (March 22, 2026) — Rewrite for v1 architecture
+
+Supersedes v1.1. Complete rewrite to align with the v1 architecture migration (`007-impl-v1-architecture.md`):
+
+- **Data model**: Replaced references to deleted tables (`run_events`, `agent_results`, `quality_results`, `phase_progress`) with unified `steps` table. Updated all derived views, polling strategy, and WS protocol messages.
+- **Gate bridge removed**: Deleted gate bridge protocol, gate file format, gate modals, `gate-responder.ts`, and `--no-gate-bridge` flag. Dashboard is now strictly read-only. Interactive gate control deferred to future work.
+- **Orchestrator references removed**: Deleted references to `phase-execution-loop.ts`, `plan-review-loop.ts`, `gates/human.ts`, and orchestrator state machine visualization. These files no longer exist in v1.
+- **Run detail page**: Replaced state machine diagram with step timeline grouped by phase. Removed orchestrator state visualization.
+- **WS protocol simplified**: Replaced per-table message types (`event`, `agent.result`, `quality.result`, `phase.progress`, `gate.request`, `gate.resolved`) with steps-centric messages (`steps.new`, `run.update`).
+- **Polling simplified**: `steps.id` autoincrement cursor replaces the multi-table `rowid` tracking strategy.
+- **File organization updated**: Added `dashboard.handler.ts` (per current handler convention), `poller.ts`. Removed `gate-responder.ts`.
+- **See Also links**: Updated to reference existing files.
+
 ### v1.1 (February 26, 2026) — Review corrections
 
-**Review**: [2026-02-26-10-dashboard-design-review.md](development/reviews/2026-02-26-10-dashboard-design-review.md)
+**Review**: [development/reviews/2026-02-26-10-dashboard-design-review.md](development/reviews/2026-02-26-10-dashboard-design-review.md)
 
-**P0 blockers resolved:**
-- **P0.1**: Updated `001-impl-5x-cli.md` to reference dashboard as a separate initiative (was listed as "out of scope")
-- **P0.2**: Replaced ad-hoc gate bridge with unified gate mechanism (`src/gates/bridge.ts`) shared by both loops. Removed stale-lock gate (auto-stolen by `src/lock.ts`, no interactive gate exists). Added TUI coexistence matrix. Gate resolutions recorded as `human_decision` run_events for audit.
-- **P0.3**: Added Data Model Reference section mapping dashboard views to actual DB tables, `run_events.event_type` vocabulary, `runs.status` values, and `agent-<resultId>.ndjson` log naming. Replaced `updated_at`-based polling with `run_events.id` high-water mark (no schema migration). Fixed wireframe event names and log filenames.
-- **P0.4**: Added token-based security model — random token generated at startup, required for all HTTP/WS access, printed to terminal only. Token written to `.5x/dashboard-token`. Origin validation for localhost binding. Documented data exposure risks for NDJSON logs.
+- Added unified gate mechanism, TUI coexistence matrix, data model reference, security model, protocol versioning, log viewer virtualization, and user workflow table.
 
-**P1 items resolved:**
-- **P1.1**: Hardened file watching with periodic rescan (5s) as fallback for unreliable `fs.watch()` across platforms.
-- **P1.2**: Defined "plans shown" as DB-only (`plans` table rows) — no filesystem scanning.
-- **P1.3**: Dashboard settings are CLI flags only — no config file section, avoiding `FiveXConfigSchema` changes.
+### v1.0 (February 26, 2026) — Initial design
 
-**P2 items resolved:**
-- Added protocol versioning (`v: 1` field on all WS messages, `protocolVersion` in snapshot).
-- Specified log viewer virtualization (10K line cap per file, "Load earlier" for history).
-- Added TUI vs. Dashboard workflow table documenting expected usage patterns and gate control ownership.
+- Created dashboard design specification with aesthetic direction, architecture, page wireframes, and implementation considerations.

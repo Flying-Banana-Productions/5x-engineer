@@ -49,6 +49,27 @@ The 006 gate bridge concept (dashboard resolving human gates for the orchestrato
 
 **Read-only dashboard with no write paths.** Dashboard never mutates the DB or writes to `.5x/` (except its own token file). All state changes flow through CLI commands invoked by agents or operators. Trade-off: no interactive gate responses from the browser (deferred to future work), but eliminates an entire class of race conditions and keeps the CLI as single source of truth.
 
+**Multi-tab: no coordination.** Each browser tab gets its own WebSocket connection and independent snapshot. No tab-to-tab synchronization. Server broadcasts identically to all authenticated connections. Trade-off: duplicate bandwidth per tab, but simple and correct.
+
+### Design Specification
+
+The visual design, page wireframes, color system, typography, animation language, and detailed UX are specified in `docs/10-dashboard.md`. This implementation plan references that document for frontend specifics rather than duplicating them. The Phase 4 frontend tasks implement the design spec.
+
+### Performance Budget
+
+| Metric | Target |
+|--------|--------|
+| Initial page load (HTML + CSS + JS) | < 200KB total |
+| Time to first paint | < 500ms |
+| WebSocket message processing | < 5ms per message |
+| Database poll query time | < 10ms |
+| Log line render (batch of 100) | < 50ms |
+| Memory (1000 log lines cached) | < 10MB |
+
+### Browser Support
+
+Modern evergreen browsers only (Chrome, Firefox, Safari, Edge). ES2022+ features. No transpilation or polyfills.
+
 ## Phase 1: Command + Server Foundation
 
 **Completion gate:** `5x dashboard` serves HTML/CSS/JS over HTTP, enforces token auth on HTTP+WS handshake, resolves control-plane root, and exits deterministically on SIGINT/SIGTERM.
@@ -175,7 +196,7 @@ export function createLogWatcher(opts: {
 
 - [ ] Add static entry files: `src/dashboard/static/index.html` (app shell, `<noscript>` fallback), `src/dashboard/static/style.css` (mission-control design tokens), `src/dashboard/static/app.js` (hash-router bootstrap, WS connection, store wiring).
 - [ ] Implement client-side store in `src/dashboard/static/lib/store.js` — path-scoped subscriptions, immutable updates, targeted re-render notification.
-- [ ] Implement WS client in `src/dashboard/static/lib/ws-client.js` — auto-reconnect with exponential backoff (1s→30s), request snapshot on connect, message dispatch to store.
+- [ ] Implement WS client in `src/dashboard/static/lib/ws-client.js` — auto-reconnect with exponential backoff (1s → 2s → 4s → 8s → 16s max), request snapshot on reconnect to resync state, message dispatch to store, connection state reflected in top bar.
 - [ ] Implement hash router in `src/dashboard/static/lib/router.js` — routes: `#/` (overview), `#/plan/:planPath` (plan detail), `#/run/:runId` (run detail + step timeline), `#/run/:runId/logs` (log viewer), `#/analytics` (cross-run metrics).
 
 **Views:**
@@ -183,14 +204,15 @@ export function createLogWatcher(opts: {
 - [ ] **Overview** (`src/dashboard/static/components/overview.js`): plan list with active run counts, global status indicators, recent activity feed from latest steps across all runs.
 - [ ] **Plan detail** (`src/dashboard/static/components/plan-detail.js`): run history for a plan, status breakdown, aggregate metrics (total cost, tokens, duration).
 - [ ] **Run detail** (`src/dashboard/static/components/run-detail.js`): step timeline grouped by phase, expandable step results (author status, reviewer verdict, quality gate output), live step arrivals via `steps.new` messages. Phase progress bar derived from `phase:complete` steps.
-- [ ] **Log viewer** (`src/dashboard/static/components/log-viewer.js`): live-tailing NDJSON display with ANSI color rendering, file selector for multi-agent logs, scroll-lock toggle, backfill via HTTP endpoint. Virtualized rendering for large logs.
+- [ ] **Log viewer** (`src/dashboard/static/components/log-viewer.js`): live-tailing NDJSON display with ANSI color rendering, file selector for multi-agent logs (labeled by phase + role for readability), scroll-lock toggle (auto-scroll when at bottom, pause on scroll-up, "Jump to bottom" button), backfill via HTTP endpoint. Virtualized list capped at 10,000 lines per file in memory; older lines discarded from front.
 - [ ] **Analytics** (`src/dashboard/static/components/analytics.js`): cost-per-run trends, token usage breakdown (in/out by role), quality gate pass/fail rates, average phase durations, review iteration counts.
 - [ ] **Top bar** (`src/dashboard/static/components/top-bar.js`): connection status indicator, active run count, nav links.
 
-**Styling:**
+**Styling** (per design spec in `docs/10-dashboard.md`):
 
-- [ ] Mission-control aesthetic: dark background, monospace type, high-contrast status colors, dense information layout. Subtle grid/scanline texture (toggleable via localStorage). No decorative animation — transitions reserved for state changes.
+- [ ] Implement mission-control color system, typography (JetBrains Mono), and animation language from design spec. Scanline/noise texture toggleable via localStorage.
 - [ ] Implement ANSI-to-HTML renderer in `src/dashboard/static/lib/ansi.js` for quality gate output and log lines.
+- [ ] Implement number/date/duration formatters in `src/dashboard/static/lib/format.js` with tabular-nums for metric alignment.
 
 ```js
 // src/dashboard/static/lib/store.js
@@ -231,7 +253,7 @@ export function createStore(initialState) {
 
 **Documentation:**
 
-- [ ] Add docs section in `docs/` for `5x dashboard` startup, token behavior, and operator workflow.
+- [ ] Update `docs/10-dashboard.md` to reflect implemented behavior (verify design spec matches implementation).
 - [ ] Add usage examples to `--help` output.
 
 **Verification:**
