@@ -564,7 +564,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
     echo "$RESULT" | 5x protocol validate <role> \
       --run $RUN --record --step $STEP
     ```
-    
+     
     ## Session Reuse
     
     **Session reuse** is optional and best-effort. Cursor may provide a
@@ -575,7 +575,6 @@ The key design decision is to match the OpenCode harness capabilities wherever C
     the `--session` value to `5x template render --session <id>`. If
     session reuse is unavailable, start a fresh subagent — never fail a
     workflow because reuse didn't work.
-    ```
 
 - [ ] **Update `src/harnesses/cursor/skills/5x-plan/SKILL.md`**, **`5x-plan-review/SKILL.md`**, and **`5x-phase-execution/SKILL.md`** with similar Cursor-native adaptations
 
