@@ -82,3 +82,19 @@ Phase 1 says the server always opens the DB with `openDbReadOnly()` and probes i
 ### Updated Readiness
 
 **Readiness:** Ready with corrections — prior blockers are resolved; one mechanical hardening requirement remains for the log-file route.
+
+## Addendum (2026-03-23) — Revision 1.2 re-review
+
+### What's Addressed
+
+- Added explicit filename validation requirements for the log backfill route: pattern check, inventory membership check, and path-separator rejection.
+- Added matching unit-test coverage for filename validation and path traversal rejection.
+- Added a dedicated security-hardening checklist item for log backfill filename validation.
+
+### Remaining Concerns
+
+- None. The previously raised plan gaps are now addressed in an implementable, testable way.
+
+### Updated Readiness
+
+**Readiness:** Ready — the plan is now implementation-ready as written.
