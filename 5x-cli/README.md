@@ -127,8 +127,8 @@ agentskills.io convention paths. Delegation runs through `5x invoke`.
 4. Start your agent session and load the skill:
 
 ```bash
-# Example with OpenCode:
-opencode
+# Example with any AI coding tool (e.g., Claude Code or Windsurf):
+<your-tool-command>
 # Then in the session, load the 5x-plan skill and point it at your PRD:
 # "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
 ```
@@ -228,7 +228,6 @@ Use one harness per install scope:
 | Harness | Use when | Delegation mode |
 | --- | --- | --- |
 | `opencode` | You use OpenCode and want native subagents in the harness UI | Native subagents (`Task` tool + `5x protocol validate`) |
-| `cursor` (dedicated plugin) | You use Cursor with a dedicated 5x harness plugin | Native subagents for that harness |
 | `universal` | Your tool has no dedicated 5x harness plugin | `5x invoke` |
 
 ### Installing Skills
