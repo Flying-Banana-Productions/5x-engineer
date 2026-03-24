@@ -23,10 +23,10 @@ This plan introduces two things:
    conditional blocks for delegation method. This eliminates maintaining near-
    duplicate skill files per harness.
 
-The universal harness follows the [agentskills.io](https://agentskills.io/specification)
-standard for file format and discovery paths, installing to `.agents/skills/` (the
-cross-client interop convention) so any compliant client discovers the skills
-automatically.
+The universal harness writes skills to the [agentskills.io](https://agentskills.io/specification)
+standard paths (`.agents/skills/`). This is an agentskills.io-conforming install —
+files are placed at the documented discovery paths. Client discovery and orchestration
+behavior depend on the host tool's implementation of the agentskills.io spec.
 
 ## Design Decisions
 
@@ -35,11 +35,10 @@ tool IS the orchestrator. The user is responsible for configuring their tool to 
 skills and follow them. This keeps the universal harness truly universal: it doesn't
 need to know the host tool's agent/rule format.
 
-**Install location follows agentskills.io cross-client convention.** Project scope
-installs to `<project>/.agents/skills/`, user scope to `~/.agents/skills/`. These are
-the documented interop paths that compliant clients scan. This means any tool that
-implements the agentskills.io client spec discovers 5x skills without additional
-configuration.
+**Install location follows agentskills.io paths.** Project scope installs to
+`<project>/.agents/skills/`, user scope to `~/.agents/skills/`. These are the documented
+paths from the agentskills.io spec. The 5x CLI writes files to these locations; actual
+discovery and loading behavior depends on the host tool's agentskills.io implementation.
 
 **All delegation in universal skills uses `5x invoke`.** `5x invoke` handles template
 rendering, provider invocation, structured output validation, and run recording in a
@@ -185,62 +184,119 @@ skill tests pass unchanged.
 
 - [ ] **2c.** Convert `5x/SKILL.md` to `5x/SKILL.tmpl.md` with conditional blocks:
 
-  The "Delegating to Subagents" section (lines 42–69) and "Task Reuse" section
-  (lines 74–84) are entirely delegation-specific. The `{{#if native}}` branch
-  retains the current Task tool pattern. The `{{else}}` branch describes `5x invoke`
-  delegation:
+  **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
+  - "Delegating to Subagents" section (lines 42–69) — main delegation pattern
+  - "Task Reuse" section (lines 74–84) — task reuse guidance
+
+  The `{{#if native}}` branch retains the current Task tool pattern. The `{{else}}` branch describes `5x invoke` delegation:
   - No subagent table (no Task tool `subagent_type` parameter)
   - Delegation via `5x invoke <role> <template> --run $RUN ...`
   - Session reuse via `--session <id>` flag on `5x invoke`
   - `5x invoke --record` as the single recording point
 
-  Gotchas section: references to `task_id` become conditional (native: `task_id`,
-  invoke: `session_id`).
+  **Gotchas section (conditionalize specific items):**
+  - Line 91: "Task reuse is best-effort" — change `task_id` reference to `{{#if native}}task_id{{else}}session_id{{/if}}`
+  - Line 94-95: "Re-invoke with a fresh task (omit `task_id`)" — wrap in native block
+  - Line 99: "Retry once with a fresh task (omit `task_id`)" — wrap in native block
 
-  All other sections (Tools, Human Interaction Model, non-delegation Gotchas) are
-  shared and have no conditional blocks.
+  **All other sections are truly shared:** Tools, Human Interaction Model, and Gotchas items that don't reference `task_id` or `subagent_type`.
 
 - [ ] **2d.** Convert `5x-plan/SKILL.md` to `5x-plan/SKILL.tmpl.md`:
 
-  Step 2 "Generate the plan" (lines 72–84): delegation block becomes conditional.
-  Native retains Task tool pattern. Invoke uses:
+  **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
+  - Step 2 "Generate the plan" (lines 72–84) — the entire delegation block with Task tool and `5x protocol validate`
+
+  The `{{#if native}}` branch retains the Task tool pattern:
+  ```bash
+  RENDERED=$(5x template render author-generate-plan --run $RUN \
+    --var prd_path=$PRD_PATH)
+  PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
+  STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+  RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
+  echo "$RESULT" | 5x protocol validate author \
+    --run $RUN --record --step $STEP
   ```
-  5x invoke author author-generate-plan --run $RUN \
+
+  The `{{else}}` branch uses `5x invoke`:
+  ```bash
+  RESULT=$(5x invoke author author-generate-plan --run $RUN \
     --var prd_path=$PRD_PATH \
-    --record --step author:generate-plan
+    --record --step author:generate-plan)
   ```
   Result checking reads from `.data.result` in the invoke output envelope.
 
-  All other sections (Prerequisites, Tools, Invariants, Recovery, Completion) are
-  shared.
+  **Gotchas section (conditionalize specific items):**
+  - Line 35: "re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
 
-- [ ] **2e.** Convert `5x-plan-review/SKILL.tmpl.md`:
+  **Recovery section (conditionalize specific items):**
+  - Line 126-127: "re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 129: "Re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 135: "Retry once with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
 
-  Three delegation blocks become conditional:
-  - "Delegating sub-agent work" section (lines 49–89) — canonical example
-  - Step 1 "Review" (lines 100–125) — reviewer delegation
-  - Step 3 "Author fix" (lines 148–163) — author delegation
+  **All other sections are truly shared:** Prerequisites, Tools, Invariants, Recovery items without `task_id` references, and Completion.
 
-  Workflow intro (lines 91–98) references `task_id` / `session_id` conditionally.
-  Recovery section SESSION_REQUIRED item references `--session` in both paths.
+- [ ] **2e.** Convert `5x-plan-review/SKILL.md` to `5x-plan-review/SKILL.tmpl.md`:
 
-- [ ] **2f.** Convert `5x-phase-execution/SKILL.tmpl.md`:
+  **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
+  - "Delegating sub-agent work" section under Tools (lines 49–89) — canonical Task tool example
+  - Step 1 "Review" (lines 100–125) — reviewer delegation with Task tool
+  - Step 3 "Author fix" (lines 148–163) — author delegation with Task tool
 
-  Five delegation blocks become conditional:
-  - "Task reuse" subsection (lines 61–69)
-  - Step 1 "Author implements" (lines 129–143)
-  - Step 2a "Quality retry" delegation (lines 179–193)
-  - Step 3 "Code review" (lines 196–230)
-  - Step 5 "Author fixes review items" (lines 254–267)
+  The `{{#if native}}` branches retain Task tool patterns with `subagent_type`,
+  `task_id` parameter, and `5x protocol validate --record` calls. The `{{else}}`
+  branches use `5x invoke reviewer ... --record` and `5x invoke author ... --record`
+  patterns with session reuse via `--session` flag.
 
-  All non-delegation content (prerequisites, quality gates, verdict routing,
-  escalation, invariants, recovery logic, phase gate) is shared.
+  **Workflow intro (conditionalize):**
+  - Lines 94-97: References to `$REVIEWER_TASK_ID` and `task_id=$REVIEWER_TASK_ID` to Task tool — wrap in `{{#if native}}` block. Invoke path uses `$SESSION_ID` and omits the Task tool `task_id` parameter.
 
-  Known difference for invoke-path Step 3 (reviewer): the native path extracts
-  `review_path` from `5x template render` output to verify the review file commit.
-  The invoke path performs a separate `5x template render` call to extract
-  `review_path` before calling `5x invoke`. This is noted in the template as a
-  comment.
+  **Gotchas section (conditionalize specific items):**
+  - Line 33: "`SESSION_REQUIRED` error → pass `--new-session` to `5x template render`" — this is actually shared (both paths use `--new-session` for recovery)
+
+  **Recovery section (conditionalize specific items):**
+  - Line 225: "re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 232: "Re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 237-239: "`SESSION_REQUIRED` error... pass the reviewer's `task_id` as `--session`" — wrap `task_id` reference in `{{#if native}}task_id{{else}}session_id{{/if}}`
+
+  **All other sections are truly shared:** Prerequisites, Tools (non-delegation items), Invariants, most Recovery items, and Completion.
+
+- [ ] **2f.** Convert `5x-phase-execution/SKILL.md` to `5x-phase-execution/SKILL.tmpl.md`:
+
+  **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
+  - "Task reuse" subsection under Tools (lines 61–69) — the entire task reuse explanation
+  - Step 1 "Author implements" (lines 129–143) — author delegation with Task tool
+  - Step 2a "Quality retry" delegation (lines 179–193) — author delegation with Task tool
+  - Step 3 "Code review" (lines 196–230) — reviewer delegation with Task tool
+  - Step 5 "Author fixes review items" (lines 254–267) — author delegation with Task tool
+
+  The `{{#if native}}` branches retain Task tool patterns with `subagent_type`,
+  `task_id` parameter, and `5x protocol validate --record`. The `{{else}}` branches
+  use `5x invoke <role> <template> --run $RUN ... --record` patterns with `--session`
+  for continuity.
+
+  **Tools section — Worktree-aware execution subsection (conditionalize):**
+  - Lines 88-91: "For native subagents, the effective working directory is communicated via the `## Context` block..." — wrap in `{{#if native}}` block
+
+  **Workflow tracking (conditionalize):**
+  - Line 127: Track `$REVIEWER_TASK_ID = ""` — change to `{{#if native}}$REVIEWER_TASK_ID{{else}}$SESSION_ID{{/if}}`
+
+  **Step 3 — Code review (additional conditional note):**
+  - Lines 229-230: "Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)" — wrap in `{{#if native}}` block. Invoke path captures from `.data.session_id`.
+
+  **Recovery section (conditionalize specific items):**
+  - Line 371: "Re-invoke with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 417: "Retry once with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+  - Line 426: "Retry once with a fresh task (omit `task_id`)" — wrap in `{{#if native}}` block
+
+  **Known difference for invoke-path Step 3 (reviewer):** Add a comment in the `{{else}}`
+  branch noting that the native path extracts `review_path` from `5x template render`
+  output, but the invoke path renders the template internally. For v1, the invoke-path
+  skills perform a separate `5x template render` call to extract `review_path` before
+  calling `5x invoke`.
+
+  **All other sections are truly shared:** Prerequisites, Quality gates, most Tools
+  (non-delegation items), Verdict routing, Escalation, Invariants, Phase gate, and
+  most Recovery logic.
 
 - [ ] **2g.** Rewire OpenCode harness skill loader (`src/harnesses/opencode/skills/loader.ts`)
   to use `renderAllSkillTemplates({ native: true })` from the shared loader instead
@@ -256,16 +312,22 @@ skill tests pass unchanged.
   - All four templates load and parse frontmatter
   - `renderAllSkillTemplates({ native: true })` produces valid SkillMetadata[]
   - `renderAllSkillTemplates({ native: false })` produces valid SkillMetadata[]
-  - Native output contains "Task tool" / "subagent_type" references
-  - Invoke output contains "5x invoke" references and does NOT contain "Task tool"
+  - Native output contains "Task tool" / "subagent_type" references (structure only, content placeholders ok)
+  - Invoke output does NOT contain "Task tool" / "subagent_type" (structure only, content placeholders ok)
   - Frontmatter is identical in both render contexts
+  - Placeholder invoke content (if any) is wrapped in `{{else}}` blocks correctly
+
+  **Note:** This phase validates template structure and conditional block placement.
+  The actual invoke-path content (what goes in `{{else}}` branches) is authored in
+  Phase 4. Tests here check that the templates render without errors and that
+  conditional blocks separate native/invoke paths correctly.
 
 ## Phase 3: Universal Harness Plugin
 
 **Completion gate:** `5x harness install universal --scope project` writes skills to
 `.agents/skills/` following the agentskills.io convention.
 `5x harness install universal --scope user` writes to `~/.agents/skills/`.
-`5x harness list universal` shows installed skills.
+`5x harness list` shows installed skills including `universal` entries.
 
 - [ ] **3a.** Add universal location resolver in `src/harnesses/locations.ts`:
 
@@ -352,20 +414,22 @@ skill tests pass unchanged.
 
 - [ ] **3e.** Add integration tests in `test/integration/commands/harness-universal.test.ts`:
   - `5x harness install universal --scope project` creates `.agents/skills/5x/SKILL.md` etc.
-  - `5x harness list universal --scope project` shows installed skills
+  - `5x harness list --scope project` shows installed skills (inspect output for `universal`)
   - `5x harness uninstall universal --scope project` removes all skill files
   - `--force` overwrites existing skills
   - Skill directory structure matches agentskills.io convention: `<name>/SKILL.md`
 
-## Phase 4: Invoke-Path Skill Content
+## Phase 4: Author Invoke-Path Skill Content
 
-**Completion gate:** Skills rendered with `{ native: false }` describe a complete
-`5x invoke`-based workflow that an orchestrating LLM can follow. All delegation
-steps use `5x invoke`, session reuse uses `--session`, and result checking reads
-from the invoke output envelope.
+**Completion gate:** The `{{else}}` branches in all base templates contain complete,
+usable `5x invoke`-based workflow descriptions. All delegation steps in these
+branches use `5x invoke`, session reuse uses `--session`, and result checking reads
+from the invoke output envelope. Phase 4d tests verify the authored content.
 
 - [ ] **4a.** Author the invoke-path content for the `{{else}}` branches in each
-  base template. The invoke delegation pattern for each step follows this shape:
+  base template (created in Phase 2 with conditional structure). Write complete
+  delegation examples that an orchestrating LLM can follow. The invoke delegation
+  pattern for each step follows this shape:
 
   **Author delegation (all author steps):**
   ```markdown
@@ -429,12 +493,13 @@ from the invoke output envelope.
   and `5x protocol validate --record`.
 
 - [ ] **4d.** Add unit tests in `test/unit/skills/invoke-content.test.ts`:
-  - Invoke-rendered skills contain `5x invoke author` and `5x invoke reviewer`
+  - Invoke-rendered skills contain `5x invoke author` and `5x invoke reviewer` commands
   - Invoke-rendered skills do NOT contain `Task tool`, `subagent_type`, or `task_id`
   - Invoke-rendered `5x` foundation skill references `session_id` in Gotchas
   - Invoke-rendered `5x-phase-execution` includes `review_path` extraction step
   - All four invoke-rendered skills contain `--record` in delegation blocks
   - Invoke-rendered skills reference `.data.result` for result checking
+  - No native-only references (`5x protocol validate`, `Task tool`) appear in invoke output
 
 ## Phase 5: Documentation
 
@@ -465,7 +530,7 @@ describes when to use it vs harness-specific plugins. `harness list` includes
   - Install to a test project
   - Confirm skills are discoverable by reading `.agents/skills/*/SKILL.md`
   - Confirm skill content uses `5x invoke` for all delegation
-  - Confirm `5x harness list universal` reports correct state
+  - Confirm `5x harness list` reports skills at the universal location
 
 ## Files Touched
 
@@ -516,6 +581,15 @@ describes when to use it vs harness-specific plugins. `harness list` includes
 - Harness-specific `compatibility` frontmatter field in rendered skills
 
 ## Revision History
+
+### v1.1 — March 24, 2026
+
+**Changes per review:** `/docs/development/reviews/5x-cli-docs-development-028-universal-harness.plan-review.md`
+
+- **R1 (P0.1):** Narrowed interoperability claims. Removed language implying "any compliant client discovers automatically" or validated client compatibility. Now describes the install as "agentskills.io-conforming" — files are written to spec paths; discovery depends on host tool implementation.
+- **R2 (P0.2):** Expanded per-template conversion specs in phases 2c–2f. Explicitly enumerated every section containing native-only references (`task_id`, `subagent_type`, `Task tool`, `5x protocol validate`) that needs `{{#if native}}` conditionalization, including Gotchas and Recovery sections previously marked as "shared."
+- **R3 (P1.1):** Fixed `5x harness list universal` → `5x harness list` throughout. The CLI does not support a harness-name argument.
+- **P1.2:** Clarified phase sequencing. Phase 2 now validates template structure and conditional block placement only; Phase 4 is where invoke-path content is authored (filled into `{{else}}` branches). Updated test descriptions in 2i and 4d to reflect this separation.
 
 ### v1.0 — March 24, 2026
 
