@@ -11,8 +11,30 @@ src/harnesses/
   installer.ts          Shared file installation helpers (harness-agnostic)
   locations.ts          Location resolver types and bundled resolvers
   opencode/             Bundled OpenCode harness plugin
+  universal/            Bundled universal harness plugin (skills-only, invoke path)
   README.md             This file
 ```
+
+## Shared Skill Templates
+
+Harnesses should render skills from the shared base template system in
+`src/skills/` instead of maintaining harness-local `SKILL.md` copies.
+
+Use `renderAllSkillTemplates()` with a delegation context:
+
+```ts
+import { renderAllSkillTemplates } from "../skills/loader.js";
+
+// Native harnesses (OpenCode, dedicated Cursor plugin, etc.)
+const nativeSkills = renderAllSkillTemplates({ native: true });
+
+// Universal/invoke harnesses
+const invokeSkills = renderAllSkillTemplates({ native: false });
+```
+
+Then install with `installSkillFiles(skillsDir, skills, force)`.
+
+This keeps all harnesses in sync with one source of truth for workflow docs.
 
 ## Plugin Contract
 
@@ -126,6 +148,9 @@ Plugins can (and should) use the shared installer helpers in `installer.ts`:
 - **`installSkillFiles(skillsDir, skills, force)`** -- installs skills following the `<skillsDir>/<name>/SKILL.md` convention.
 - **`installAgentFiles(agentsDir, agents, force)`** -- installs agent profiles as `<agentsDir>/<name>.md`.
 - **`installFiles(targetDir, files, force)`** -- generic flat file installer.
+
+For skills, pair `installSkillFiles()` with shared rendering from
+`src/skills/loader.ts` (`renderAllSkillTemplates()` / `listBaseSkillNames()`).
 
 All three return `InstallSummary { created[], overwritten[], skipped[] }` and handle directory creation, existence checks, and force-overwrite semantics.
 

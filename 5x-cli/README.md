@@ -98,11 +98,13 @@ The orchestrator loads the skill, delegates author and reviewer work to native
 subagents (`5x-plan-author`, `5x-code-author`, `5x-reviewer`), and guides you
 through decision points.
 
-### Option B: Generic Harness Install (Any Harness)
+### Option B: Universal Harness Workflow (Any Tool)
 
-Works with Claude Code, Cursor, or any agent that supports skill/instruction
-discovery. Author and reviewer work falls back to `5x invoke` (external
-subprocess) when native subagents are not available.
+Use this when your tool does **not** have a dedicated 5x harness plugin (for
+example: Claude Code, Windsurf, Aider, or custom setups).
+
+The universal harness installs only skills (no agent profiles) to
+agentskills.io convention paths. Delegation runs through `5x invoke`.
 
 1. Initialize in your repo:
 
@@ -112,10 +114,14 @@ subprocess) when native subagents are not available.
 
 2. Edit `5x.toml` -- set your models, quality gates, and paths.
 
-3. Install skills and agent profiles:
+3. Install universal skills:
 
 ```bash
-5x harness install opencode --scope project
+# Project scope -> .agents/skills/
+5x harness install universal --scope project
+
+# User scope -> ~/.agents/skills/
+5x harness install universal --scope user
 ```
 
 4. Start your agent session and load the skill:
@@ -128,8 +134,8 @@ opencode
 ```
 
 The skill guides the agent through the full workflow: plan generation, review
-cycles, phase execution with quality gates. When no native subagents are
-installed, the skill falls back to `5x invoke` automatically.
+cycles, phase execution with quality gates. In this mode, author/reviewer
+delegation uses `5x invoke`.
 
 5. Monitor progress from another terminal:
 
@@ -215,10 +221,21 @@ Skills are markdown documents that teach an agent how to drive the 5x workflow. 
 | `5x-plan-review` | Run iterative review/fix cycles on an existing plan |
 | `5x-phase-execution` | Execute phases: author, quality gates, code review, fix loops |
 
+### Choosing a Harness
+
+Use one harness per install scope:
+
+| Harness | Use when | Delegation mode |
+| --- | --- | --- |
+| `opencode` | You use OpenCode and want native subagents in the harness UI | Native subagents (`Task` tool + `5x protocol validate`) |
+| `cursor` (dedicated plugin) | You use Cursor with a dedicated 5x harness plugin | Native subagents for that harness |
+| `universal` | Your tool has no dedicated 5x harness plugin | `5x invoke` |
+
 ### Installing Skills
 
-Skills are installed via the harness system. The OpenCode harness installs
-skills and native subagent profiles together:
+Skills are installed via the harness system.
+
+OpenCode installs skills **and** native subagent profiles:
 
 ```bash
 # Project scope: installs skills under .opencode/skills/ AND
@@ -230,7 +247,20 @@ skills and native subagent profiles together:
 5x harness install opencode --scope user
 ```
 
-Skills follow the [agentskills.io](https://agentskills.io) convention. Once installed, agents that support skill discovery will find them automatically.
+Universal installs skills only (cross-client agentskills.io convention):
+
+```bash
+# Project scope: .agents/skills/<name>/SKILL.md
+5x harness install universal --scope project
+
+# User scope: ~/.agents/skills/<name>/SKILL.md
+5x harness install universal --scope user
+```
+
+`.agents/skills/` (project) and `~/.agents/skills/` (user) are the
+[agentskills.io](https://agentskills.io) cross-client convention paths.
+5x writes files there; discovery behavior depends on each host tool's
+implementation.
 
 > **OpenCode path note:** OpenCode discovers user-scope assets at
 > `~/.config/opencode/skills/` and `~/.config/opencode/agents/` (XDG-style),
@@ -240,7 +270,13 @@ Skills follow the [agentskills.io](https://agentskills.io) convention. Once inst
 
 ### Customizing
 
-Skills are plain markdown. The installed copies in `.opencode/skills/` (or `~/.config/opencode/skills/` for user scope) are what agents actually load. Edit them freely. Re-run `5x harness install opencode --force` to reset them to the bundled defaults.
+Skills are plain markdown. Edit the installed copies directly:
+
+- OpenCode: `.opencode/skills/` or `~/.config/opencode/skills/`
+- Universal: `.agents/skills/` or `~/.agents/skills/`
+
+Re-run `5x harness install <harness> --scope <scope> --force` to reset them
+to bundled defaults.
 
 ## Commands
 

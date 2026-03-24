@@ -507,30 +507,42 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
 describes when to use it vs harness-specific plugins. `harness list` includes
 `universal` in its output.
 
-- [ ] **5a.** Update `README.md`:
+- [x] **5a.** Update `README.md`:
   - Add `universal` to supported harnesses list
   - Document `5x harness install universal --scope project` and `--scope user`
   - Explain when to use universal (any tool without a dedicated harness) vs
     opencode/cursor (native sub-agent support)
   - Note that `.agents/skills/` is the agentskills.io cross-client convention
 
-- [ ] **5b.** Add `src/harnesses/universal/README.md` with plugin internals
+- [x] **5b.** Add `src/harnesses/universal/README.md` with plugin internals
   (how it renders from base templates, location conventions, no agents).
 
-- [ ] **5c.** Update `src/harnesses/README.md` to document the shared skill
+- [x] **5c.** Update `src/harnesses/README.md` to document the shared skill
   template system and how new harnesses should use `renderAllSkillTemplates()`.
 
-- [ ] **5d.** Update `src/skills/README.md` (new) documenting:
+- [x] **5d.** Update `src/skills/README.md` (new) documenting:
   - Base template location and format
   - Conditional block syntax
   - How to add a new conditional variable
   - Rendering pipeline: base template → renderer → harness loader → installer
 
-- [ ] **5e.** Verify `5x harness install universal` end-to-end:
+- [x] **5e.** Verify `5x harness install universal` end-to-end:
   - Install to a test project
   - Confirm skills are discoverable by reading `.agents/skills/*/SKILL.md`
   - Confirm skill content uses `5x invoke` for all delegation
   - Confirm `5x harness list` reports skills at the universal location
+
+  Verified on March 24, 2026 in a temporary git repo via:
+
+  - `bun run src/bin.ts init`
+  - `bun run src/bin.ts harness install universal --scope project`
+  - `bun run src/bin.ts harness list`
+
+  Observed:
+
+  - `.agents/skills/{5x,5x-plan,5x-plan-review,5x-phase-execution}/SKILL.md` created
+  - Installed skills contain `5x invoke` and no `Task tool`/`subagent_type`
+  - `harness list` shows the universal install at `.agents/skills/`
 
 ## Files Touched
 
