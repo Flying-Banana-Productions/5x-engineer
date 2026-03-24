@@ -1,5 +1,4 @@
 import type { SkillMetadata } from "../harnesses/installer.js";
-import { parseSkillFrontmatter } from "../harnesses/opencode/skills/loader.js";
 import skill5xTemplate from "./base/5x/SKILL.tmpl.md" with { type: "text" };
 import skillPhaseExecutionTemplate from "./base/5x-phase-execution/SKILL.tmpl.md" with {
 	type: "text",
@@ -10,6 +9,7 @@ import skillPlanTemplate from "./base/5x-plan/SKILL.tmpl.md" with {
 import skillPlanReviewTemplate from "./base/5x-plan-review/SKILL.tmpl.md" with {
 	type: "text",
 };
+import { parseSkillFrontmatter } from "./frontmatter.js";
 import type { SkillRenderContext } from "./renderer.js";
 import { renderSkillTemplate } from "./renderer.js";
 

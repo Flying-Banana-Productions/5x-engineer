@@ -172,17 +172,17 @@ in template strings, with unit tests covering all edge cases.
 OpenCode harness renders them with `{ native: true }`, and all existing OpenCode
 skill tests pass unchanged.
 
-- [ ] **2a.** Create `src/skills/base/` directory with four template files:
+- [x] **2a.** Create `src/skills/base/` directory with four template files:
   - `5x/SKILL.tmpl.md`
   - `5x-plan/SKILL.tmpl.md`
   - `5x-plan-review/SKILL.tmpl.md`
   - `5x-phase-execution/SKILL.tmpl.md`
 
-- [ ] **2b.** Move `parseSkillFrontmatter()` from
+- [x] **2b.** Move `parseSkillFrontmatter()` from
   `src/harnesses/opencode/skills/loader.ts` to `src/skills/frontmatter.ts` as a
   shared utility. Update the OpenCode loader import.
 
-- [ ] **2c.** Convert `5x/SKILL.md` to `5x/SKILL.tmpl.md` with conditional blocks:
+- [x] **2c.** Convert `5x/SKILL.md` to `5x/SKILL.tmpl.md` with conditional blocks:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Delegating to Subagents" section (lines 42–69) — main delegation pattern
@@ -201,7 +201,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Tools, Human Interaction Model, and Gotchas items that don't reference `task_id` or `subagent_type`.
 
-- [ ] **2d.** Convert `5x-plan/SKILL.md` to `5x-plan/SKILL.tmpl.md`:
+- [x] **2d.** Convert `5x-plan/SKILL.md` to `5x-plan/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - Step 2 "Generate the plan" (lines 72–84) — the entire delegation block with Task tool and `5x protocol validate`
@@ -235,7 +235,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Prerequisites, Tools, Invariants, Recovery items without `task_id` references, and Completion.
 
-- [ ] **2e.** Convert `5x-plan-review/SKILL.md` to `5x-plan-review/SKILL.tmpl.md`:
+- [x] **2e.** Convert `5x-plan-review/SKILL.md` to `5x-plan-review/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Delegating sub-agent work" section under Tools (lines 49–89) — canonical Task tool example
@@ -260,7 +260,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Prerequisites, Tools (non-delegation items), Invariants, most Recovery items, and Completion.
 
-- [ ] **2f.** Convert `5x-phase-execution/SKILL.md` to `5x-phase-execution/SKILL.tmpl.md`:
+- [x] **2f.** Convert `5x-phase-execution/SKILL.md` to `5x-phase-execution/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Task reuse" subsection under Tools (lines 61–69) — the entire task reuse explanation
@@ -298,17 +298,17 @@ skill tests pass unchanged.
   (non-delegation items), Verdict routing, Escalation, Invariants, Phase gate, and
   most Recovery logic.
 
-- [ ] **2g.** Rewire OpenCode harness skill loader (`src/harnesses/opencode/skills/loader.ts`)
+- [x] **2g.** Rewire OpenCode harness skill loader (`src/harnesses/opencode/skills/loader.ts`)
   to use `renderAllSkillTemplates({ native: true })` from the shared loader instead
   of directly importing raw SKILL.md files. The OpenCode-specific SKILL.md files
   in `src/harnesses/opencode/skills/` are deleted — the base templates are the
   source of truth.
 
-- [ ] **2h.** Verify all existing OpenCode skill tests pass. The rendered output for
+- [x] **2h.** Verify all existing OpenCode skill tests pass. The rendered output for
   `{ native: true }` must be byte-identical (modulo stripped directive lines) to
   the current SKILL.md content.
 
-- [ ] **2i.** Add unit tests in `test/unit/skills/loader.test.ts`:
+- [x] **2i.** Add unit tests in `test/unit/skills/loader.test.ts`:
   - All four templates load and parse frontmatter
   - `renderAllSkillTemplates({ native: true })` produces valid SkillMetadata[]
   - `renderAllSkillTemplates({ native: false })` produces valid SkillMetadata[]
