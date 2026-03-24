@@ -329,7 +329,7 @@ skill tests pass unchanged.
 `5x harness install universal --scope user` writes to `~/.agents/skills/`.
 `5x harness list` shows installed skills including `universal` entries.
 
-- [ ] **3a.** Add universal location resolver in `src/harnesses/locations.ts`:
+- [x] **3a.** Add universal location resolver in `src/harnesses/locations.ts`:
 
   ```typescript
   export const universalLocationResolver: HarnessLocationResolver = {
@@ -354,7 +354,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3b.** Create `src/harnesses/universal/plugin.ts`:
+- [x] **3b.** Create `src/harnesses/universal/plugin.ts`:
 
   ```typescript
   const universalPlugin: HarnessPlugin = {
@@ -393,7 +393,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3c.** Register `universal` in bundled harnesses in `src/harnesses/factory.ts`:
+- [x] **3c.** Register `universal` in bundled harnesses in `src/harnesses/factory.ts`:
 
   ```typescript
   const BUNDLED_HARNESSES = {
@@ -402,7 +402,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3d.** Add unit tests in `test/unit/harnesses/universal.test.ts`:
+- [x] **3d.** Add unit tests in `test/unit/harnesses/universal.test.ts`:
   - Project scope resolves to `.agents/skills/`
   - User scope resolves to `~/.agents/skills/`
   - `describe()` returns skill names and empty agent names
@@ -412,7 +412,7 @@ skill tests pass unchanged.
   - Uninstall removes skill directories
   - `agentsDir` is not written to (no agent files created)
 
-- [ ] **3e.** Add integration tests in `test/integration/commands/harness-universal.test.ts`:
+- [x] **3e.** Add integration tests in `test/integration/commands/harness-universal.test.ts`:
   - `5x harness install universal --scope project` creates `.agents/skills/5x/SKILL.md` etc.
   - `5x harness list --scope project` shows installed skills (inspect output for `universal`)
   - `5x harness uninstall universal --scope project` removes all skill files

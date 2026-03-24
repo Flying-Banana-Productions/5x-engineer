@@ -93,3 +93,40 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 		};
 	},
 };
+
+// ---------------------------------------------------------------------------
+// Universal location resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Universal harness location resolver.
+ *
+ * Uses agentskills.io convention paths:
+ * - Project scope: <project>/.agents/agents/ and <project>/.agents/skills/
+ * - User scope:    ~/.agents/agents/ and ~/.agents/skills/
+ */
+export const universalLocationResolver: HarnessLocationResolver = {
+	name: "universal",
+	resolve(
+		scope: HarnessScope,
+		projectRoot: string,
+		homeDir?: string,
+	): HarnessLocations {
+		if (scope === "project") {
+			const base = join(projectRoot, ".agents");
+			return {
+				rootDir: base,
+				agentsDir: join(base, "agents"),
+				skillsDir: join(base, "skills"),
+			};
+		}
+
+		const home = homeDir ?? process.env.HOME ?? homedir();
+		const base = join(home, ".agents");
+		return {
+			rootDir: base,
+			agentsDir: join(base, "agents"),
+			skillsDir: join(base, "skills"),
+		};
+	},
+};
