@@ -48,7 +48,11 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+{{#if native}}
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+{{else}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
@@ -95,6 +99,10 @@ Delegate to the plan author via `5x invoke`:
 RESULT=$(5x invoke author author-generate-plan --run $RUN \
   --var prd_path=$PRD_PATH \
   --record --step author:generate-plan --phase plan)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
@@ -140,8 +148,8 @@ Report to the human: plan is ready at $PLAN_PATH.
   instructions to follow the template format.
 {{else}}
 - **Plan has no parseable phases**: The author didn't follow the template
-  structure. Re-invoke without `--session` and explicit instructions to follow the
-  instructions to follow the template format.
+  structure. Re-invoke without `--session` and explicit instructions to follow
+  the template format.
 {{/if}}
 - **Author claims complete but no commit** (no `5x commit` was run):
 {{#if native}}

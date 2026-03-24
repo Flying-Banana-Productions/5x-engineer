@@ -48,7 +48,11 @@ timeout handling.
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x run reopen --run <id>` — reopen a completed/aborted run
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+{{#if native}}
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+{{else}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{/if}}
 - `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
 - `5x commit --run <id> -m <msg> --all-files|--files <list>` — stage, commit, and record in the run journal
@@ -166,6 +170,10 @@ Delegate to the code author via `5x invoke`:
 RESULT=$(5x invoke author author-next-phase --run $RUN \
   --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER \
   --record --step author:next-phase --phase $PHASE)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
@@ -226,6 +234,10 @@ RESULT=$(5x invoke author author-fix-quality --run $RUN \
   --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES" \
   --record --step author:fix-quality --phase $PHASE)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
@@ -270,6 +282,7 @@ RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
   --iteration $REVIEW_ITERATIONS)
 
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
+ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
@@ -340,6 +353,10 @@ RESULT=$(5x invoke author author-process-impl-review --run $RUN \
   --var plan_path=$PLAN_PATH \
   --record --step author:process-impl-review --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
@@ -492,7 +509,11 @@ still says not_ready on the same issues.
 ### Subagent returns empty or invalid output
 
 **Symptom:** Subagent returns no output or output that fails
+{{#if native}}
 `5x protocol validate`.
+{{else}}
+`5x invoke` structured output validation.
+{{/if}}
 
 **Response:**
 {{#if native}}
@@ -504,7 +525,11 @@ still says not_ready on the same issues.
 
 ### Structured output validation failure
 
+{{#if native}}
 **Symptom:** `5x protocol validate` returns an error with code
+{{else}}
+**Symptom:** `5x invoke` returns an error with code
+{{/if}}
 `INVALID_STRUCTURED_OUTPUT`.
 
 **Response:**

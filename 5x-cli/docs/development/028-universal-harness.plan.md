@@ -426,7 +426,7 @@ usable `5x invoke`-based workflow descriptions. All delegation steps in these
 branches use `5x invoke`, session reuse uses `--session`, and result checking reads
 from the invoke output envelope. Phase 4d tests verify the authored content.
 
-- [ ] **4a.** Author the invoke-path content for the `{{else}}` branches in each
+- [x] **4a.** Author the invoke-path content for the `{{else}}` branches in each
   base template (created in Phase 2 with conditional structure). Write complete
   delegation examples that an orchestrating LLM can follow. The invoke delegation
   pattern for each step follows this shape:
@@ -477,7 +477,7 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
   a workflow because session reuse didn't work.
   ```
 
-- [ ] **4b.** For the reviewer step in `5x-phase-execution`, the invoke path adds
+- [x] **4b.** For the reviewer step in `5x-phase-execution`, the invoke path adds
   a separate `5x template render` call before `5x invoke` to extract `review_path`
   for the post-review commit verification:
 
@@ -488,11 +488,11 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
     | jq -r '.data.variables.review_path')
   ```
 
-- [ ] **4c.** Update the `5x` foundation template's Gotchas section invoke-path
+- [x] **4c.** Update the `5x` foundation template's Gotchas section invoke-path
   variant to reference `session_id` and `5x invoke --record` instead of `task_id`
   and `5x protocol validate --record`.
 
-- [ ] **4d.** Add unit tests in `test/unit/skills/invoke-content.test.ts`:
+- [x] **4d.** Add unit tests in `test/unit/skills/invoke-content.test.ts`:
   - Invoke-rendered skills contain `5x invoke author` and `5x invoke reviewer` commands
   - Invoke-rendered skills do NOT contain `Task tool`, `subagent_type`, or `task_id`
   - Invoke-rendered `5x` foundation skill references `session_id` in Gotchas

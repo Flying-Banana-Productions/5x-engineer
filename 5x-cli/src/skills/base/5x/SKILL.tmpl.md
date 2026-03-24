@@ -86,6 +86,7 @@ RESULT=$(5x invoke <author|reviewer> <template> --run $RUN \
   --record --step <step_name>)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result // .data.result.readiness')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
@@ -112,6 +113,8 @@ task reuse is unavailable or awkward, start a fresh task (omit
 `session_id` from each invocation. Pass it back via `--session` to resume
 the same provider session with full prior context.
 
+To also get a shorter continued-template variant, pass `--session`
+to `5x invoke` (it forwards the value to template rendering internally).
 If session reuse is unavailable or awkward, start a fresh invocation
 (omit `--session`) — never fail a workflow because session reuse didn't
 work.
@@ -130,8 +133,9 @@ work.
 - **Task reuse is best-effort.** Never fail a workflow because
   task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
 {{else}}
-- **Task reuse is best-effort.** Never fail a workflow because
-  task reuse didn't work. Start a fresh session_id and move on.
+- **Session reuse is best-effort.** Never fail a workflow because
+  session reuse didn't work. Drop the stale `session_id` (omit `--session`)
+  and move on.
 {{/if}}
 - **`result: "complete"` without a commit = invariant violation** in any
   author step. Authors commit via `5x commit --run $RUN` (which records

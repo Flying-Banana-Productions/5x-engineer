@@ -41,7 +41,11 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+{{#if native}}
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+{{else}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
@@ -96,6 +100,7 @@ RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
   --record --step reviewer:plan --phase plan --iteration $ITERATION)
 
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
+ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
@@ -120,7 +125,11 @@ Track $SESSION_ID (initially empty). Session reuse is enforced when
 `reviewer.continuePhaseSessions` is enabled — pass `--session $SESSION_ID`
 on subsequent invoke calls.
 {{/if}}
+{{#if native}}
 Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
+{{else}}
+Read $REVIEW_PATH from a separate template render call before each reviewer invoke.
+{{/if}}
 
 ### Step 1: Review
 
@@ -153,19 +162,26 @@ reuse in subsequent reviews.
 Delegate to the reviewer via `5x invoke`:
 
 ```bash
+# Extract review_path for reporting/audit
+REVIEW_PATH=$(5x template render reviewer-plan --run $RUN \
+  --var plan_path=$PLAN_PATH \
+  ${SESSION_ID:+--session $SESSION_ID} \
+  | jq -r '.data.variables.review_path')
+
 RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
   --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --step reviewer:plan --phase plan --iteration $ITERATION)
 
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
+ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
 ### Step 2: Route the verdict
 
-Read the verdict from the `5x protocol validate` output:
+Read the verdict from `READINESS` (`.data.result.readiness`):
 
 **If `readiness: "ready"`:**
   Plan is approved. Go to Step 5 (Complete).
@@ -208,6 +224,10 @@ Delegate to the plan author via `5x invoke`:
 RESULT=$(5x invoke author author-process-plan-review --run $RUN \
   --var plan_path=$PLAN_PATH \
   --record --step author:process-plan-review --phase plan)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
@@ -253,7 +273,7 @@ Present the situation to the human:
 
 Report to the human: plan review is complete. Verdict: approved
 (or overridden). Review document is at the auto-generated review path
-(read from `.data.variables.review_path` in the template render output).
+(`$REVIEW_PATH`).
 
 ## Invariants
 
