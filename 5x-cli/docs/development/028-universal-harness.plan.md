@@ -94,7 +94,7 @@ The existing frontmatter is already compliant.
 **Completion gate:** A `renderSkillTemplate()` function processes conditional blocks
 in template strings, with unit tests covering all edge cases.
 
-- [ ] **1a.** Create `src/skills/renderer.ts` with the template engine:
+- [x] **1a.** Create `src/skills/renderer.ts` with the template engine:
 
   ```typescript
   export interface SkillRenderContext {
@@ -129,7 +129,7 @@ in template strings, with unit tests covering all edge cases.
   when `!inBlock || blockActive`. Throw on unmatched `{{else}}`/`{{/if}}` or
   unclosed blocks.
 
-- [ ] **1b.** Create `src/skills/loader.ts` — loads base templates from `src/skills/base/`:
+- [x] **1b.** Create `src/skills/loader.ts` — loads base templates from `src/skills/base/`:
 
   ```typescript
   import type { SkillMetadata } from "../harnesses/installer.js";
@@ -154,7 +154,7 @@ in template strings, with unit tests covering all edge cases.
   parses frontmatter via the existing `parseSkillFrontmatter()` (moved to a shared
   location — see Phase 2).
 
-- [ ] **1c.** Add unit tests in `test/unit/skills/renderer.test.ts`:
+- [x] **1c.** Add unit tests in `test/unit/skills/renderer.test.ts`:
   - `{{#if native}}` block included when `native: true`, stripped when `false`
   - `{{#if invoke}}` block included when `native: false`, stripped when `true`
   - `{{#if native}}...{{else}}...{{/if}}` selects correct branch
