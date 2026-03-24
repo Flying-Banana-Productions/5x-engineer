@@ -134,29 +134,26 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Plan file missing after author claims complete**: The author likely
   wrote to the wrong path. Re-invoke with explicit emphasis on the
   output path. If it fails again, ask the human.
-- **Plan has no parseable phases**: The author didn't follow the template
-  structure.
 {{#if native}}
-  Re-invoke with a fresh task (omit `task_id`) and explicit
+- **Plan has no parseable phases**: The author didn't follow the template
+  structure. Re-invoke with a fresh task (omit `task_id`) and explicit
   instructions to follow the template format.
 {{else}}
-  Re-invoke without `--session` and explicit instructions to follow the
-  template format.
+- **Plan has no parseable phases**: The author didn't follow the template
+  structure. Re-invoke without `--session` and explicit instructions to follow the
+  instructions to follow the template format.
 {{/if}}
 - **Author claims complete but no commit** (no `5x commit` was run):
-  Invariant violation — treat as context loss.
 {{#if native}}
-  Re-invoke with a fresh
+  Invariant violation — treat as context loss. Re-invoke with a fresh
+  task (omit `task_id`). If it fails again, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
 {{else}}
-  Re-invoke without `--session`. If it fails again, escalate to the human.
-{{/if}}
-- **Subagent returns empty or invalid output**:
-{{#if native}}
-  Retry once with a fresh
-  task (omit `task_id`). If it fails again, escalate to the human.
-{{else}}
-  Retry once without `--session`. If it fails again, escalate to the human.
+  Invariant violation — treat as context loss. Re-invoke without `--session`.
+  If it fails again, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once without `--session`.
+  If it fails again, escalate to the human.
 {{/if}}
 
 ## Completion

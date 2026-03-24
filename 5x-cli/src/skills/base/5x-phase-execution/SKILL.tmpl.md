@@ -284,12 +284,15 @@ reviewer before proceeding:
 
     5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
 
+{{#if native}}
+When `--session` is passed to `5x template render`, the command
+automatically selects an abbreviated continued-template variant if one
+exists. Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)
+for optional reuse in subsequent reviews.
+{{else}}
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
 exists.
-{{#if native}}
-Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)
-for optional reuse in subsequent reviews.
 {{/if}}
 
 #### Step 4: Route the verdict

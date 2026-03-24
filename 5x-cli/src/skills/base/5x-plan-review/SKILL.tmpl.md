@@ -289,11 +289,12 @@ Report to the human: plan review is complete. Verdict: approved
   Suspect context loss (compaction). Re-invoke without `--session`.
   If it happens twice, escalate to the human.
 {{/if}}
-- **Subagent returns empty or invalid output**:
 {{#if native}}
-  Retry once with a fresh task (omit `task_id`). If it fails again, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once with a fresh
+  task (omit `task_id`). If it fails again, escalate to the human.
 {{else}}
-  Retry once without `--session`. If it fails again, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once without `--session`.
+  If it fails again, escalate to the human.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires `--session`
   or `--new-session` because `continuePhaseSessions` is enabled and prior
