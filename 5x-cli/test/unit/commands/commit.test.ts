@@ -28,7 +28,11 @@ import { join, resolve } from "node:path";
 import { runCommit } from "../../../src/commands/commit.handler.js";
 import type { DbContext } from "../../../src/commands/context.js";
 import { FiveXConfigSchema } from "../../../src/config.js";
-import { createRunV1, getSteps } from "../../../src/db/operations-v1.js";
+import {
+	createRunV1,
+	getSteps,
+	recordStep,
+} from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -166,6 +170,7 @@ describe("runCommit", () => {
 					run: runId,
 					message: "add src.ts",
 					allFiles: true,
+					phase: "1",
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
 				});
@@ -215,6 +220,7 @@ describe("runCommit", () => {
 					run: runId,
 					message: "add a.ts only",
 					files: ["a.ts"],
+					phase: "1",
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
 				});
@@ -277,6 +283,7 @@ describe("runCommit", () => {
 					message: "should not appear",
 					allFiles: true,
 					dryRun: true,
+					phase: "1",
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
 				});
@@ -330,6 +337,7 @@ describe("runCommit", () => {
 					message: "should not appear",
 					files: ["dry-test.ts"],
 					dryRun: true,
+					phase: "1",
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
 				});
@@ -367,6 +375,7 @@ describe("runCommit", () => {
 						message: "should fail",
 						files: ["nonexistent-file-that-does-not-exist.xyz"],
 						dryRun: true,
+						phase: "1",
 						startDir: ctx.tmp,
 						dbContext: ctx.dbContext,
 					});
@@ -432,6 +441,7 @@ describe("runCommit", () => {
 						run: runId,
 						message: "nothing to commit",
 						allFiles: true,
+						phase: "1",
 						startDir: ctx.tmp,
 						dbContext: ctx.dbContext,
 					});
@@ -481,22 +491,26 @@ describe("runCommit", () => {
 	);
 
 	test(
-		"auto-detects phase from plan when --phase omitted",
+		"inherits phase from run's most recent step",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});
 			const ctx = setup();
 			try {
-				// Write a plan with Phase 2 as the first incomplete phase
-				writeFileSync(
-					ctx.planPath,
-					"# Plan\n\n## Phase 1: Setup — COMPLETE\n\n- [x] done\n\n## Phase 2: Build\n\n- [ ] task\n",
-				);
 				const runId = createTestRun(ctx.db, ctx.planPath);
-				writeFileSync(join(ctx.tmp, "auto-phase.ts"), "auto phase code\n");
+
+				// Record a prior step with phase "2"
+				recordStep(ctx.db, {
+					run_id: runId,
+					step_name: "author:implement",
+					phase: "2",
+					result_json: JSON.stringify({ result: "complete" }),
+				});
+
+				writeFileSync(join(ctx.tmp, "inherit-phase.ts"), "inherit phase\n");
 
 				await runCommit({
 					run: runId,
-					message: "auto phase detect",
+					message: "inherit phase from step",
 					allFiles: true,
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
@@ -515,27 +529,27 @@ describe("runCommit", () => {
 	);
 
 	test(
-		"falls back to null phase when plan has no phases",
+		"errors when no phase and no prior steps",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});
 			const ctx = setup();
 			try {
-				// Default plan from setup() is just "# Plan\n" — no phase headings
 				const runId = createTestRun(ctx.db, ctx.planPath);
 				writeFileSync(join(ctx.tmp, "no-phase.ts"), "no phase code\n");
 
-				await runCommit({
-					run: runId,
-					message: "no phase",
-					allFiles: true,
-					startDir: ctx.tmp,
-					dbContext: ctx.dbContext,
-				});
-
-				const steps = getSteps(ctx.db, runId);
-				const commitStep = steps.find((s) => s.step_name === "git:commit");
-				expect(commitStep).toBeDefined();
-				expect(commitStep?.phase).toBeNull();
+				try {
+					await runCommit({
+						run: runId,
+						message: "no phase",
+						allFiles: true,
+						startDir: ctx.tmp,
+						dbContext: ctx.dbContext,
+					});
+					expect(true).toBe(false);
+				} catch (err) {
+					expect(err).toBeInstanceOf(CliError);
+					expect((err as CliError).code).toBe("PHASE_REQUIRED");
+				}
 			} finally {
 				spy.mockRestore();
 				teardown(ctx);
@@ -545,17 +559,21 @@ describe("runCommit", () => {
 	);
 
 	test(
-		"explicit --phase overrides auto-detected phase",
+		"explicit --phase overrides inherited phase",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});
 			const ctx = setup();
 			try {
-				// Plan has Phase 2 as current, but we pass --phase 5
-				writeFileSync(
-					ctx.planPath,
-					"# Plan\n\n## Phase 2: Build\n\n- [ ] task\n",
-				);
 				const runId = createTestRun(ctx.db, ctx.planPath);
+
+				// Prior step has phase "2", but we pass --phase 5
+				recordStep(ctx.db, {
+					run_id: runId,
+					step_name: "author:implement",
+					phase: "2",
+					result_json: JSON.stringify({ result: "complete" }),
+				});
+
 				writeFileSync(join(ctx.tmp, "override.ts"), "override code\n");
 
 				await runCommit({
@@ -571,6 +589,36 @@ describe("runCommit", () => {
 				const commitStep = steps.find((s) => s.step_name === "git:commit");
 				expect(commitStep).toBeDefined();
 				expect(commitStep?.phase).toBe("5");
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"explicit --phase plan (semantic) passes through correctly",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				writeFileSync(join(ctx.tmp, "plan-phase.ts"), "plan phase code\n");
+
+				await runCommit({
+					run: runId,
+					message: "plan review commit",
+					allFiles: true,
+					phase: "plan",
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const steps = getSteps(ctx.db, runId);
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+				expect(commitStep?.phase).toBe("plan");
 			} finally {
 				spy.mockRestore();
 				teardown(ctx);
@@ -676,6 +724,7 @@ describe("runCommit", () => {
 						run: runId,
 						message: "should fail due to hook",
 						allFiles: true,
+						phase: "1",
 						startDir: ctx.tmp,
 						dbContext: ctx.dbContext,
 					});
@@ -744,6 +793,7 @@ describe("runCommit", () => {
 					run: runId,
 					message: "commit in worktree",
 					allFiles: true,
+					phase: "1",
 					startDir: ctx.tmp,
 					dbContext: ctx.dbContext,
 				});

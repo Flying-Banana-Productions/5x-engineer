@@ -8,9 +8,8 @@
  * Framework-independent: no CLI framework imports.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import type { Database } from "bun:sqlite";
 import { outputError, outputSuccess } from "../output.js";
-import { parsePlan } from "../parsers/plan.js";
 import { subprocess } from "../utils/subprocess.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -44,6 +43,23 @@ function formatCommitText(data: {
 	console.log(
 		`[${data.short_hash}] ${data.message} (${data.files.length} files)`,
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Inherit the phase from the run's most recent step that has a non-null phase.
+ * Returns undefined if no prior steps exist with a phase.
+ */
+function inheritPhaseFromRun(db: Database, runId: string): string | undefined {
+	const row = db
+		.query(
+			"SELECT phase FROM steps WHERE run_id = ?1 AND phase IS NOT NULL ORDER BY id DESC LIMIT 1",
+		)
+		.get(runId) as { phase: string } | null;
+	return row?.phase ?? undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,17 +114,15 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		);
 	}
 
-	// 3b. Auto-detect phase from plan when --phase not provided
+	// 3b. Resolve phase: explicit --phase wins, then inherit from run history
 	let resolvedPhase = params.phase;
 	if (!resolvedPhase) {
-		try {
-			const planPath = ctx.effectivePlanPath;
-			if (existsSync(planPath)) {
-				const plan = parsePlan(readFileSync(planPath, "utf-8"));
-				resolvedPhase = plan.currentPhase?.number;
-			}
-		} catch {
-			// Plan unreadable/unparseable — fall through with phase undefined
+		resolvedPhase = inheritPhaseFromRun(db, params.run);
+		if (!resolvedPhase) {
+			outputError(
+				"PHASE_REQUIRED",
+				"Cannot determine phase for git:commit. Pass --phase explicitly or ensure the run has prior steps with a phase.",
+			);
 		}
 	}
 

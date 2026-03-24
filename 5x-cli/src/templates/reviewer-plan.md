@@ -64,9 +64,11 @@ You are running as a delegated non-interactive workflow. There is no human opera
 
 ## Completion
 
-Write your review to `{{review_path}}` and commit the file before returning:
+CRITICAL: You MUST use `5x commit` (not `git commit`) to commit your review. The pipeline tracks commits via `5x commit` — using raw git commands will leave the commit unrecorded.
 
-    5x commit --run {{run_id}} --files {{review_path}} -m "docs: add plan review for <plan name>"
+Write your review to `{{review_path}}` and commit the file:
+
+    5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: add plan review for <plan name>"
 
 The structured verdict (readiness assessment and review items) is captured separately via structured output — you do not need to embed any special blocks in the review document.
 

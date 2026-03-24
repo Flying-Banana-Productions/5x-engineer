@@ -131,6 +131,8 @@ describe("5x commit (integration)", () => {
 					"-m",
 					"add feature",
 					"--all-files",
+					"--phase",
+					"1",
 				]);
 
 				expect(result.exitCode).toBe(0);
@@ -172,6 +174,8 @@ describe("5x commit (integration)", () => {
 					"add a only",
 					"--files",
 					"a.ts",
+					"--phase",
+					"1",
 				]);
 
 				expect(result.exitCode).toBe(0);
@@ -214,6 +218,8 @@ describe("5x commit (integration)", () => {
 					"dry run test",
 					"--all-files",
 					"--dry-run",
+					"--phase",
+					"1",
 				]);
 
 				expect(result.exitCode).toBe(0);
@@ -279,6 +285,8 @@ describe("5x commit (integration)", () => {
 					"-m",
 					"text mode commit",
 					"--all-files",
+					"--phase",
+					"1",
 				]);
 
 				expect(result.exitCode).toBe(0);
@@ -311,6 +319,8 @@ describe("5x commit (integration)", () => {
 					"-m",
 					"state check commit",
 					"--all-files",
+					"--phase",
+					"1",
 				]);
 				expect(commitResult.exitCode).toBe(0);
 
@@ -366,6 +376,8 @@ describe("5x commit (integration)", () => {
 					"-m",
 					"should be rejected",
 					"--all-files",
+					"--phase",
+					"1",
 				]);
 
 				expect(result.exitCode).not.toBe(0);
@@ -427,6 +439,8 @@ describe("5x commit (integration)", () => {
 					"-m",
 					"worktree commit",
 					"--all-files",
+					"--phase",
+					"1",
 				]);
 
 				expect(commitResult.exitCode).toBe(0);
@@ -458,22 +472,34 @@ describe("5x commit (integration)", () => {
 	);
 
 	test(
-		"auto-detects phase from plan file when --phase omitted",
+		"inherits phase from run's most recent step when --phase omitted",
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				// setupProject writes a plan with "## Phase 1: Setup\n\n- [ ] Do thing\n"
 				const { planPath } = setupProject(dir);
 				const runId = await initRun(dir, planPath);
 
-				writeFileSync(join(dir, "auto-phase.ts"), "auto phase\n");
+				// Record a prior step with phase "3"
+				await run5x(dir, [
+					"run",
+					"record",
+					"author:implement",
+					"--run",
+					runId,
+					"--phase",
+					"3",
+					"--result",
+					'{"result":"complete"}',
+				]);
+
+				writeFileSync(join(dir, "inherit-phase.ts"), "inherit\n");
 
 				const result = await run5x(dir, [
 					"commit",
 					"--run",
 					runId,
 					"-m",
-					"auto phase commit",
+					"inherit phase commit",
 					"--all-files",
 				]);
 
@@ -481,7 +507,7 @@ describe("5x commit (integration)", () => {
 				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(true);
 
-				// Verify step was recorded with auto-detected phase
+				// Verify step was recorded with inherited phase
 				const stateResult = await run5x(dir, ["run", "state", "--run", runId]);
 				expect(stateResult.exitCode).toBe(0);
 				const stateData = parseJson(stateResult.stdout).data as Record<
@@ -491,7 +517,38 @@ describe("5x commit (integration)", () => {
 				const steps = stateData.steps as Array<Record<string, unknown>>;
 				const commitStep = steps.find((s) => s.step_name === "git:commit");
 				expect(commitStep).toBeDefined();
-				expect(commitStep?.phase).toBe("1");
+				expect(commitStep?.phase).toBe("3");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"errors when no --phase and no prior steps with phase",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+
+				writeFileSync(join(dir, "no-phase.ts"), "no phase\n");
+
+				const result = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"should fail",
+					"--all-files",
+				]);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const error = json.error as { code: string };
+				expect(error.code).toBe("PHASE_REQUIRED");
 			} finally {
 				cleanupDir(dir);
 			}

@@ -26,8 +26,10 @@ You are running as a delegated non-interactive workflow. Do NOT use any interact
 
 ## Completion
 
+CRITICAL: You MUST use `5x commit` (not `git commit`) to commit your review. The pipeline tracks commits via `5x commit` — using raw git commands will leave the commit unrecorded.
+
 Write your updated review to `{{review_path}}` and commit the file:
 
-    5x commit --run {{run_id}} --files {{review_path}} -m "docs: update plan review for <plan name>"
+    5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: update plan review for <plan name>"
 
 Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result.
