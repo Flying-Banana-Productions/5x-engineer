@@ -370,10 +370,10 @@ describe("listTemplates", () => {
 		expect(templates.length).toBe(8);
 	});
 
-	test("all templates have version 2", () => {
+	test("all templates have version >= 2", () => {
 		const templates = listTemplates();
 		for (const t of templates) {
-			expect(t.version).toBe(2);
+			expect(t.version).toBeGreaterThanOrEqual(2);
 		}
 	});
 });

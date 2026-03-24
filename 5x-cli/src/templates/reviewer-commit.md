@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 2
+version: 3
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:review"
 variable_defaults:
@@ -54,10 +54,22 @@ If `{{review_path}}` does not exist, create a new review document. Look for a re
 
 For each issue, you MUST classify its `action` for the 5x orchestrator:
 
-- **`auto_fix`**: Mechanical fix that an agent can resolve without human judgment. Examples: missing null check, incorrect type, missing test case, off-by-one error, missing error handling, dead code, inconsistent naming.
-- **`human_required`**: Requires human judgment, taste, or domain knowledge. Examples: API design choices, architectural trade-offs, business logic ambiguity, performance optimization strategy, security policy decisions.
+- **`auto_fix`**: The correct fix is directly derivable from the codebase, plan, or git history
+  without judgment calls. Ask: *could a competent engineer look at the existing code and arrive
+  at the fix with high confidence, without asking anyone?* If yes, it's `auto_fix`. Examples:
+  missing null check, incorrect type, missing test case, off-by-one error, missing error handling
+  for a documented edge case, restoring content from git history, adding a flag already used
+  elsewhere in the same file, correcting a doc claim that contradicts what the code actually does,
+  replacing wording that has an obvious canonical form in the codebase.
 
-When in doubt, classify as `human_required` — false negatives are safer than false positives.
+- **`human_required`**: The correct fix requires choosing between legitimate alternatives, a policy
+  or scope decision, or information not present in the codebase. Examples: API design choices,
+  architectural trade-offs, scope decisions, business logic ambiguity, security policy, UX
+  decisions, anything where two reasonable engineers could disagree.
+
+Classify as `human_required` only when the fix genuinely requires a choice that cannot be derived
+from what already exists. The "when in doubt" fallback is for true ambiguity — not for fixes that
+feel uncertain but have an objectively correct answer in context.
 
 ### Readiness Assessment
 
