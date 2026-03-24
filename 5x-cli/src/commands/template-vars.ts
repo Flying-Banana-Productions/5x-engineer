@@ -272,9 +272,12 @@ export function resolveInternalTemplateVariables(
 		effectivePlanPath,
 	);
 	if (generatedReviewPath) {
-		// Re-root review_path to the worktree when a worktree is mapped,
-		// following the same pattern used for plan_path via effectivePlanPath.
-		if (worktreeRoot) {
+		// Re-root review_path into the worktree when a worktree is mapped AND
+		// the generated path is not already inside the worktree. In production,
+		// layered config resolution makes config.paths.reviews worktree-aware,
+		// so generatedReviewPath is already correct. The re-rooting only applies
+		// when config paths are repo-relative (e.g. in tests or non-layered configs).
+		if (worktreeRoot && !generatedReviewPath.startsWith(worktreeRoot)) {
 			const absReviewPath = resolve(projectRoot, generatedReviewPath);
 			const relReviewPath = relative(projectRoot, absReviewPath);
 			internalVars.review_path = join(worktreeRoot, relReviewPath);
