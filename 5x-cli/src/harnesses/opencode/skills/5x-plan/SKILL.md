@@ -80,7 +80,7 @@ STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP
+  --run $RUN --record --step $STEP --phase plan
 ```
 
 Check the result:

@@ -214,14 +214,14 @@ skill tests pass unchanged.
   STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
   RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
   echo "$RESULT" | 5x protocol validate author \
-    --run $RUN --record --step $STEP
+    --run $RUN --record --step $STEP --phase plan
   ```
 
   The `{{else}}` branch uses `5x invoke`:
   ```bash
   RESULT=$(5x invoke author author-generate-plan --run $RUN \
     --var prd_path=$PRD_PATH \
-    --record --step author:generate-plan)
+    --record --step author:generate-plan --phase plan)
   ```
   Result checking reads from `.data.result` in the invoke output envelope.
 
