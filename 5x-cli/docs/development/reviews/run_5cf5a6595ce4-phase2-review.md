@@ -39,3 +39,37 @@ These are mechanical edits, but they break the phase completion gate and weaken 
 ## Recommendation
 
 - Restore byte-identical native output for `5x` and `5x-plan`, then rerun the same tests plus the native-render comparison before moving to Phase 3.
+
+## Addendum — re-review after `0573fd0b591e02245b488d8634e40225c6e64a91`
+
+### Updated verdict
+
+- **Readiness:** ready
+
+### What I re-checked
+
+- Reviewed commit `0573fd0b591e02245b488d8634e40225c6e64a91`
+- Re-ran:
+  - `bun test test/unit/skills/loader.test.ts`
+  - `bun test test/unit/harnesses`
+- Re-compared current `{ native: true }` renders against the original deleted OpenCode skills from `8ce03018c2753c31d4e56d161ac8abde62a8b508^`
+
+### Results
+
+- `5x`: byte-identical parity restored
+- `5x-plan`: byte-identical parity restored
+- `5x-plan-review`: still byte-identical
+- `5x-phase-execution`: still byte-identical
+
+### R1 status
+
+- **Resolved.** Native-render parity now holds for all four extracted base skills, satisfying the Phase 2 completion gate.
+
+### New issues introduced by the fix
+
+- No new blocking issues found.
+- I did notice a minor invoke-branch wording duplication in `src/skills/base/5x-plan/SKILL.tmpl.md` (`"instructions to follow the instructions to follow the template format"`), but this does not affect native parity, OpenCode behavior, or the stated Phase 2 completion gate.
+
+### Assessment
+
+- Phase 2 is now complete and ready for Phase 3.
