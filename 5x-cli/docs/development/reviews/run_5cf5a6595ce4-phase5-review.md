@@ -47,3 +47,28 @@ Either mark Cursor support as planned/not yet shipped, or remove it from the cur
 
 - Not ready to call Phase 5 complete as written.
 - Fix the two README accuracy issues above; both are mechanical doc corrections.
+
+## Addendum — re-review after `782162ea5fabace672c37a0ed8616c022ba372db`
+
+### Summary
+
+- Re-reviewed the README fixes for R1 and R2.
+- R1 is fixed: the universal harness walkthrough now uses generic host-tool wording instead of OpenCode-specific instructions.
+- R2 is fixed: the harness-selection table now lists only currently shipped harnesses.
+- I did not find new issues in the touched documentation.
+
+### What I checked
+
+- Reviewed commit `782162ea5fabace672c37a0ed8616c022ba372db`
+- Inspected:
+  - `README.md`
+
+### Findings
+
+- R1 closed.
+- R2 closed.
+- No additional blocking or mechanical issues found in this follow-up review.
+
+### Updated Assessment
+
+- Phase 5 is now complete and ready.
