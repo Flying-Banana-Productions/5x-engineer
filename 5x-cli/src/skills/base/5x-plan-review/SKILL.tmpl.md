@@ -28,7 +28,12 @@ timeout handling.
 
 - Only completed review-then-author cycles count toward
   `maxReviewIterations` — retries from timeout/empty output don't count
-- Empty diff after author "completes" = context loss → start fresh task
+- Empty diff after author "completes" = context loss →
+{{#if native}}
+  start fresh task (omit `task_id`)
+{{else}}
+  start fresh session (omit `--session`)
+{{/if}}
 - `not_ready` with no actionable items → escalate, don't loop
 - `SESSION_REQUIRED` error → pass `--new-session` to `5x template render`
 - Read `maxReviewIterations` from `5x config show` for the iteration limit

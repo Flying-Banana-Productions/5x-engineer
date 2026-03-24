@@ -273,6 +273,7 @@ Delegate to the reviewer via `5x invoke`:
 # template internally, so v1 does a separate render here.
 REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
 RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
