@@ -50,3 +50,34 @@ Phase 4's goal was usable invoke-path content with session-oriented delegation l
 
 - Not ready to call Phase 4 fully complete as written, but issues are mechanical.
 - Fix the missing `--session` propagation in the phase-execution review-path render and clean the leftover invoke-path wording, then proceed to Phase 5.
+
+## Addendum — re-review after `54269cd59c879a3509267f79375c68c1f976c7d0`
+
+### Summary
+
+- Re-reviewed the Phase 4 fixes for R1 and R2.
+- R1 is fixed: the invoke-path `reviewer-commit` template-render step in `5x-phase-execution` now propagates `${SESSION_ID:+--session $SESSION_ID}` before extracting `review_path`.
+- R2 is fixed: the invoke-rendered `5x-plan-review` skill now uses session-oriented wording (`start fresh session`, `omit --session`) instead of native task terminology.
+- I did not find new issues in the touched invoke-path content.
+
+### What I checked
+
+- Reviewed commit `54269cd59c879a3509267f79375c68c1f976c7d0`
+- Inspected:
+  - `src/skills/base/5x-phase-execution/SKILL.tmpl.md`
+  - `src/skills/base/5x-plan-review/SKILL.tmpl.md`
+- Rendered invoke output for:
+  - `5x-plan-review`
+  - `5x-phase-execution`
+- Ran:
+  - `bun test test/unit/skills/invoke-content.test.ts`
+
+### Findings
+
+- R1 closed.
+- R2 closed.
+- No additional blocking or mechanical issues found in this follow-up review.
+
+### Updated Assessment
+
+- Phase 4 is now complete and ready for Phase 5.
