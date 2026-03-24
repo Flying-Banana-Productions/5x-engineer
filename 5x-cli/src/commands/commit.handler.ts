@@ -8,7 +8,9 @@
  * Framework-independent: no CLI framework imports.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { outputError, outputSuccess } from "../output.js";
+import { parsePlan } from "../parsers/plan.js";
 import { subprocess } from "../utils/subprocess.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -96,6 +98,20 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		);
 	}
 
+	// 3b. Auto-detect phase from plan when --phase not provided
+	let resolvedPhase = params.phase;
+	if (!resolvedPhase) {
+		try {
+			const planPath = ctx.effectivePlanPath;
+			if (existsSync(planPath)) {
+				const plan = parsePlan(readFileSync(planPath, "utf-8"));
+				resolvedPhase = plan.currentPhase?.number;
+			}
+		} catch {
+			// Plan unreadable/unparseable — fall through with phase undefined
+		}
+	}
+
 	const workdir = ctx.effectiveWorkingDirectory;
 
 	// 4. Dry-run mode
@@ -124,7 +140,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 				git_add_output: dryResult.stdout || dryResult.stderr || "(no changes)",
 				step_shape: {
 					step_name: "git:commit",
-					phase: params.phase ?? null,
+					phase: resolvedPhase ?? null,
 					message: params.message,
 				},
 			},
@@ -194,7 +210,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		{
 			run: params.run,
 			stepName: "git:commit",
-			phase: params.phase,
+			phase: resolvedPhase,
 			result: JSON.stringify({
 				hash,
 				short_hash,

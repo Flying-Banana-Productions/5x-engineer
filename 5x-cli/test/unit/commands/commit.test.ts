@@ -481,6 +481,105 @@ describe("runCommit", () => {
 	);
 
 	test(
+		"auto-detects phase from plan when --phase omitted",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				// Write a plan with Phase 2 as the first incomplete phase
+				writeFileSync(
+					ctx.planPath,
+					"# Plan\n\n## Phase 1: Setup — COMPLETE\n\n- [x] done\n\n## Phase 2: Build\n\n- [ ] task\n",
+				);
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				writeFileSync(join(ctx.tmp, "auto-phase.ts"), "auto phase code\n");
+
+				await runCommit({
+					run: runId,
+					message: "auto phase detect",
+					allFiles: true,
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const steps = getSteps(ctx.db, runId);
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+				expect(commitStep?.phase).toBe("2");
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"falls back to null phase when plan has no phases",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				// Default plan from setup() is just "# Plan\n" — no phase headings
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				writeFileSync(join(ctx.tmp, "no-phase.ts"), "no phase code\n");
+
+				await runCommit({
+					run: runId,
+					message: "no phase",
+					allFiles: true,
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const steps = getSteps(ctx.db, runId);
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+				expect(commitStep?.phase).toBeNull();
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"explicit --phase overrides auto-detected phase",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				// Plan has Phase 2 as current, but we pass --phase 5
+				writeFileSync(
+					ctx.planPath,
+					"# Plan\n\n## Phase 2: Build\n\n- [ ] task\n",
+				);
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				writeFileSync(join(ctx.tmp, "override.ts"), "override code\n");
+
+				await runCommit({
+					run: runId,
+					message: "explicit phase",
+					allFiles: true,
+					phase: "5",
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const steps = getSteps(ctx.db, runId);
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+				expect(commitStep?.phase).toBe("5");
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"rejects when neither --files nor --all-files provided",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});

@@ -60,7 +60,7 @@ CRITICAL: You MUST commit all changes using `5x commit` before finishing. The pi
 
 When ready to commit, run:
 
-    5x commit --run {{run_id}} -m "<descriptive message>" --all-files
+    5x commit --run {{run_id}} --phase {{phase_number}} -m "<descriptive message>" --all-files
 
 Then produce your structured result:
 

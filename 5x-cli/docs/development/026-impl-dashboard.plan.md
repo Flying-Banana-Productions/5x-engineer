@@ -195,11 +195,11 @@ export interface LogFileInfo {
 
 **Completion gate:** active log files stream to subscribed WS clients in near-real-time; missed `fs.watch` events recovered by periodic rescan; backfill endpoint serves historical lines; log file inventory available via HTTP API.
 
-- [ ] Implement log watcher in new `src/dashboard/log-watcher.ts` using the same watch+poll pattern as `src/utils/ndjson-tailer.ts` (fs.watch + interval rescan at 5s, 64KB read chunks, 1MB partial-line buffer cap). Track per-file byte offsets.
-- [ ] Watch `<stateDir>/logs/<run-id>/` directories for `agent-*.ndjson` files. Discover new run log dirs from `steps` rows with non-null `log_path`.
-- [ ] Route parsed NDJSON lines through the poller to connected WS clients subscribed to that `runId`.
-- [ ] Handle log subscription lifecycle: `subscribe.logs` starts watching (or attaches to existing watcher), `unsubscribe.logs` detaches. Clean up watchers when all subscribers disconnect.
-- [ ] Add HTTP endpoint `GET /api/runs/:runId/logs/:filename?offset=0&limit=500` for backfill/history, supporting pagination via byte offset. Enforce max 10,000 lines per response. Log inventory available via `GET /api/runs/:runId/logs` (Phase 2).
+- [x] Implement log watcher in new `src/dashboard/log-watcher.ts` using the same watch+poll pattern as `src/utils/ndjson-tailer.ts` (fs.watch + interval rescan at 5s, 64KB read chunks, 1MB partial-line buffer cap). Track per-file byte offsets.
+- [x] Watch `<stateDir>/logs/<run-id>/` directories for `agent-*.ndjson` files. Discover new run log dirs from `steps` rows with non-null `log_path`.
+- [x] Route parsed NDJSON lines through the poller to connected WS clients subscribed to that `runId`.
+- [x] Handle log subscription lifecycle: `subscribe.logs` starts watching (or attaches to existing watcher), `unsubscribe.logs` detaches. Clean up watchers when all subscribers disconnect.
+- [x] Add HTTP endpoint `GET /api/runs/:runId/logs/:filename?offset=0&limit=500` for backfill/history, supporting pagination via byte offset. Enforce max 10,000 lines per response. Log inventory available via `GET /api/runs/:runId/logs` (Phase 2).
 
 ```ts
 // src/dashboard/log-watcher.ts
@@ -267,7 +267,7 @@ export function createStore(initialState) {
 
 - [ ] `data.test.ts` — snapshot composition from seeded DB, `pollSteps` cursor correctness, `pollRunStatus` status re-query, `getRunDetail` phase grouping, `getRunLogsInventory` file scanning, empty-DB/no-project handling.
 - [ ] `ws-protocol.test.ts` — message serialization/deserialization, unknown message type handling, version mismatch rejection, protocolVersion field presence.
-- [ ] `log-watcher.test.ts` — offset tracking, new file discovery, rescan recovery after missed fs.watch events, partial-line buffering, subscriber lifecycle.
+- [x] `log-watcher.test.ts` — offset tracking, new file discovery, rescan recovery after missed fs.watch events, partial-line buffering, subscriber lifecycle.
 - [ ] `poller.test.ts` — step diff computation, run status inference from terminal steps + runs.status polling, incremental update message construction.
 - [ ] `routes.test.ts` — HTTP API endpoints: run detail 200/404, log inventory 200/404, log backfill pagination, filename validation (reject path traversal, reject non-inventory files), max limit enforcement.
 

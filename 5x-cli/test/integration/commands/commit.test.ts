@@ -456,4 +456,46 @@ describe("5x commit (integration)", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"auto-detects phase from plan file when --phase omitted",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				// setupProject writes a plan with "## Phase 1: Setup\n\n- [ ] Do thing\n"
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+
+				writeFileSync(join(dir, "auto-phase.ts"), "auto phase\n");
+
+				const result = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"auto phase commit",
+					"--all-files",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				// Verify step was recorded with auto-detected phase
+				const stateResult = await run5x(dir, ["run", "state", "--run", runId]);
+				expect(stateResult.exitCode).toBe(0);
+				const stateData = parseJson(stateResult.stdout).data as Record<
+					string,
+					unknown
+				>;
+				const steps = stateData.steps as Array<Record<string, unknown>>;
+				const commitStep = steps.find((s) => s.step_name === "git:commit");
+				expect(commitStep).toBeDefined();
+				expect(commitStep?.phase).toBe("1");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });
