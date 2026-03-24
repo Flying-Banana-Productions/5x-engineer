@@ -73,3 +73,20 @@ Phase 2 already expects `renderAllSkillTemplates({ native: false })` to produce 
 **P1 recommended**
 - [ ] Align all `harness list` references/tests with the current CLI shape.
 - [ ] Remove the Phase 2/Phase 4 overlap so invoke content is introduced and verified in a consistent order.
+
+## Addendum (2026-03-24) — Re-review of plan v1.1 updates
+
+### What's Addressed
+
+- **P0.1 fixed:** The plan now narrows the universal-harness claim to an agentskills.io-conforming install at standard paths and explicitly says discovery/orchestration depend on host-tool behavior, removing the prior implied compatibility guarantee.
+- **P0.2 fixed:** The per-template conversion steps now enumerate the native-only `Task tool` / `task_id` / `5x protocol validate` references that must be conditionalized across Gotchas, Recovery, workflow tracking, and worktree notes.
+- **P1.1 fixed:** `harness list` references now match the actual CLI shape (`5x harness list`).
+- **P1.2 fixed:** Phase 2 is now clearly limited to template structure/conditional placement, while Phase 4 authors and verifies the invoke-path content.
+
+### Remaining Concerns
+
+- **P2:** The plan still does not mention the current project-scope `5x init` prerequisite enforced by `harnessInstall` before `5x harness install universal --scope project` can succeed. Either document that prerequisite in the plan/docs/verification steps or explicitly plan a handler change if universal project installs are meant to work before init.
+
+### Updated Readiness
+
+- **Plan readiness:** Ready with corrections — prior blocking issues are resolved; only a non-blocking completeness cleanup remains.
