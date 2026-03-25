@@ -39,6 +39,14 @@ describe("cursor skills loader", () => {
 		expect(combined).not.toContain("task_id");
 	});
 
+	test("does not retain opencode wording in cursor-rendered skills", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+
+		expect(combined).not.toMatch(/opencode/i);
+	});
+
 	test("keeps frontmatter valid after cursor terminology adaptation", () => {
 		for (const skill of listSkills()) {
 			const frontmatter = parseSkillFrontmatter(skill.content);

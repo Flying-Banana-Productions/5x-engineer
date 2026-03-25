@@ -8,6 +8,10 @@ function adaptCursorTerminology(content: string): string {
 	let adapted = content;
 
 	adapted = adapted
+		.replaceAll(
+			"These skills assume an opencode environment with the 5x harness installed.",
+			"These skills assume your project has the 5x harness installed.",
+		)
 		.replaceAll("## Task Reuse", "## Session Reuse")
 		.replace(/task reuse/gi, "session reuse")
 		.replace(/Task\s+tool/g, "Cursor subagent invocation")
