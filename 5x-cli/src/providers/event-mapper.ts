@@ -369,7 +369,18 @@ export function mapSseToAgentEvent(
 			// Preferred: delta on properties
 			const delta = props.delta as string | undefined;
 			if (delta) {
-				if (pid) trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
+				if (pid) {
+					trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
+					// Track text state so full-text fallback events (no delta,
+					// only part.text) can compute correct incremental diffs.
+					const partText = part?.text;
+					if (typeof partText === "string") {
+						state.partTextById.set(pid, partText);
+					} else {
+						const prev = state.partTextById.get(pid) ?? "";
+						state.partTextById.set(pid, prev + delta);
+					}
+				}
 				return { type: "text", delta };
 			}
 
@@ -392,7 +403,16 @@ export function mapSseToAgentEvent(
 
 			const delta = props.delta as string | undefined;
 			if (delta) {
-				if (pid) trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
+				if (pid) {
+					trackUpdatedDeltaPartId(state.updatedDeltaPartIds, pid);
+					const partText = part?.text;
+					if (typeof partText === "string") {
+						state.partTextById.set(pid, partText);
+					} else {
+						const prev = state.partTextById.get(pid) ?? "";
+						state.partTextById.set(pid, prev + delta);
+					}
+				}
 				return { type: "reasoning", delta };
 			}
 
