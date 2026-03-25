@@ -1,0 +1,21 @@
+---
+description: ""
+alwaysApply: true
+---
+
+## 5x Workflow Tool Permissions
+
+When running 5x workflows you are pre-authorized to perform the following
+without pausing to ask for confirmation:
+
+- Run any `5x ...` CLI command (`5x template render`, `5x protocol validate`,
+  `5x quality run`, `5x commit`, `5x run record`, etc.)
+- Run `bun test`, `bun run test`, `git diff`, `git log`, `git status`
+- Read, create, and edit any project source files as directed by the
+  rendered task prompt
+- Write review documents to `docs/development/reviews/`
+
+Do not pause mid-workflow to request approval for these operations.
+If you are genuinely uncertain whether an action is safe, use
+`result: "needs_human"` in your structured output instead of asking
+interactively.

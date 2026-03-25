@@ -168,6 +168,24 @@ export function installAgentFiles(
 	);
 }
 
+/**
+ * Install a set of rule files directly into a rules directory:
+ * `<rulesDir>/<ruleName>.mdc`.
+ *
+ * @returns Summary of created, overwritten, and skipped file names.
+ */
+export function installRuleFiles(
+	rulesDir: string,
+	rules: Array<{ name: string; content: string }>,
+	force: boolean,
+): InstallSummary {
+	return installFiles(
+		rulesDir,
+		rules.map((r) => ({ filename: `${r.name}.mdc`, content: r.content })),
+		force,
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Uninstall helpers
 // ---------------------------------------------------------------------------
@@ -255,6 +273,38 @@ export function uninstallAgentFiles(
 	}
 
 	removeDirIfEmpty(agentsDir);
+
+	return { removed, notFound };
+}
+
+/**
+ * Uninstall a set of rule files from a rules directory:
+ * `<rulesDir>/<ruleName>.mdc`.
+ *
+ * For each name: removes the .mdc file if it exists. After all rules,
+ * removes the rulesDir itself if empty.
+ *
+ * @returns Summary with entries formatted as `<name>.mdc`.
+ */
+export function uninstallRuleFiles(
+	rulesDir: string,
+	ruleNames: string[],
+): UninstallSummary {
+	const removed: string[] = [];
+	const notFound: string[] = [];
+
+	for (const name of ruleNames) {
+		const filePath = join(rulesDir, `${name}.mdc`);
+
+		if (existsSync(filePath)) {
+			rmSync(filePath);
+			removed.push(`${name}.mdc`);
+		} else {
+			notFound.push(`${name}.mdc`);
+		}
+	}
+
+	removeDirIfEmpty(rulesDir);
 
 	return { removed, notFound };
 }

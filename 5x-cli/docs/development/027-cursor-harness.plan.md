@@ -46,31 +46,31 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** All live discovery assumptions verified before implementation proceeds. Items marked **human-gated** require manual IDE/CLI verification; all others can be verified via automated tests.
 
-- [ ] **Verify Cursor IDE discovers `.cursor/` project assets** (human-gated)
+- [x] **Verify Cursor IDE discovers `.cursor/` project assets** (human-gated)
   - Create `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/` with test files
   - Open project in Cursor IDE and confirm subagents/rules appear in UI
   - Document any path variations needed for discovery
 
-- [ ] **Verify Cursor IDE discovers `~/.cursor/` user assets** (human-gated)
+- [x] **Verify Cursor IDE discovers `~/.cursor/` user assets** (human-gated)
   - Create `~/.cursor/skills/` and `~/.cursor/agents/` with test files
   - Open any project in Cursor IDE and confirm user subagents available
   - Confirm user scope rules are settings-managed (not file-backed)
 
-- [ ] **Verify Cursor CLI discovery behavior** (human-gated)
+- [x] **Verify Cursor CLI discovery behavior** (human-gated)
   - Run `cursor` CLI commands in a project with `.cursor/` assets
   - Confirm CLI loads subagents/rules correctly
   - Document any CLI-specific discovery paths or flags
 
-- [ ] **Verify omitted-`model` semantics** (automated)
+- [x] **Verify omitted-`model` semantics** (automated)
   - Test that subagent frontmatter without `model` field defaults to `inherit`
   - Confirm no errors when model is omitted
 
-- [ ] **Verify Windows discovery paths** (human-gated)
+- [x] **Verify Windows discovery paths** (human-gated)
   - Test `.cursor/` discovery on Windows with path separator handling
   - Test `~/.cursor/` resolution via `%USERPROFILE%` environment variable
   - Confirm subagents appear in Cursor IDE/CLI on Windows
 
-- [ ] **Verify worktree editing behavior** (human-gated)
+- [x] **Verify worktree editing behavior** (human-gated)
   - Create a real `5x run init --worktree` mapped worktree
   - Open Cursor in the mapped worktree directory
   - Confirm Cursor author edits land in the mapped worktree, not main checkout
@@ -82,7 +82,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** The harness framework can install, list, and uninstall rules in addition to skills and agents. All existing harnesses (OpenCode) continue to work unchanged.
 
-- [ ] **Extend `HarnessLocations` with optional `rulesDir`** in `src/harnesses/types.ts` (line 32-39 area)
+- [x] **Extend `HarnessLocations` with optional `rulesDir`** in `src/harnesses/types.ts` (line 32-39 area)
   ```typescript
   export interface HarnessLocations {
     rootDir: string;
@@ -92,7 +92,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `HarnessDescription` with optional `ruleNames` and `capabilities`** in `src/harnesses/types.ts` (line 61-65 area)
+- [x] **Extend `HarnessDescription` with optional `ruleNames` and `capabilities`** in `src/harnesses/types.ts` (line 61-65 area)
   ```typescript
   export interface HarnessDescription {
     skillNames: string[];
@@ -104,7 +104,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `describe()` with optional scope parameter** in plugin contract
+- [x] **Extend `describe()` with optional scope parameter** in plugin contract
   ```typescript
   describe(scope?: HarnessScope): HarnessDescription;
   ```
@@ -113,7 +113,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - User scope: `capabilities.rules = false` (unsupported for Cursor), `ruleNames` empty or omitted
   When `scope` is omitted, returns global/default description.
 
-- [ ] **Extend `HarnessInstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 49-55 area)
+- [x] **Extend `HarnessInstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 49-55 area)
   ```typescript
   export interface HarnessInstallResult {
     skills: InstallSummary;
@@ -126,7 +126,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `HarnessUninstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 77-83 area)
+- [x] **Extend `HarnessUninstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 77-83 area)
   ```typescript
   export interface HarnessUninstallResult {
     skills: UninstallSummary;
@@ -138,7 +138,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add `installRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 169)
+- [x] **Add `installRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 169)
   ```typescript
   export function installRuleFiles(
     rulesDir: string,
@@ -153,7 +153,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add `uninstallRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 259)
+- [x] **Add `uninstallRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 259)
   ```typescript
   export function uninstallRuleFiles(
     rulesDir: string,
@@ -178,7 +178,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Update `harness list` handler** in `src/commands/harness.handler.ts` (around line 200-214)
+- [x] **Update `harness list` handler** in `src/commands/harness.handler.ts` (around line 200-214)
   - Pass current scope to `plugin.describe(scope)` to get scope-aware metadata
   - Add rule file detection loop similar to skills/agents (when `capabilities.rules` is true)
   - Include rules in `files` array with `rules/` prefix
@@ -194,15 +194,15 @@ The key design decision is to match the OpenCode harness capabilities wherever C
     }
     ```
 
-- [ ] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` (line 348-380) to print rule installation results
+- [x] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` (line 348-380) to print rule installation results
 
-- [ ] **Update `src/harnesses/README.md`** to document the optional rule contract for plugin authors
+- [x] **Update `src/harnesses/README.md`** to document the optional rule contract for plugin authors
 
-- [ ] **Add unit tests** in `test/unit/harnesses/installer.test.ts` for rule install/uninstall helpers
+- [x] **Add unit tests** in `test/unit/harnesses/installer.test.ts` for rule install/uninstall helpers
   - Rule file creation, overwrite, skip semantics
   - Directory cleanup on uninstall
 
-- [ ] **Add unit tests in `test/unit/commands/harness.test.ts`** for scope-aware unsupported/rules JSON shape
+- [x] **Add unit tests in `test/unit/commands/harness.test.ts`** for scope-aware unsupported/rules JSON shape
   - `harness list --format json` includes `capabilities` field when plugin supports it
   - `harness list --format json` includes `unsupported.rules: true` when scope doesn't support rules
   - Handler correctly passes scope to `describe(scope)` call
@@ -212,7 +212,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** `loadHarnessPlugin("cursor")` resolves a bundled plugin and the plugin can describe its assets for both scopes.
 
-- [ ] **Add Cursor location resolver** in `src/harnesses/locations.ts` (after line 95)
+- [x] **Add Cursor location resolver** in `src/harnesses/locations.ts` (after line 95)
   ```typescript
   export const cursorLocationResolver: HarnessLocationResolver = {
     name: "cursor",
@@ -244,7 +244,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Register `cursor` in bundled harnesses** in `src/harnesses/factory.ts` (line 22-27)
+- [x] **Register `cursor` in bundled harnesses** in `src/harnesses/factory.ts` (line 22-27)
   ```typescript
   const BUNDLED_HARNESSES: Record<string, () => Promise<{ default: HarnessPlugin }>> = {
     opencode: () => import("./opencode/plugin.js"),
@@ -253,7 +253,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Create `src/harnesses/cursor/` directory** with initial structure:
+- [x] **Create `src/harnesses/cursor/` directory** with initial structure:
   - `plugin.ts` - main harness plugin implementation
   - `loader.ts` - subagent template loader and renderer
   - `skills/` - directory for Cursor-local skills
@@ -262,7 +262,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - `5x-code-author.md` - code author subagent template
   - `5x-reviewer.md` - reviewer subagent template
 
-- [ ] **Implement `src/harnesses/cursor/plugin.ts`**
+- [x] **Implement `src/harnesses/cursor/plugin.ts`**
   ```typescript
   const cursorPlugin: HarnessPlugin = {
     name: "cursor",
@@ -365,7 +365,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Add unit tests** in `test/unit/harnesses/cursor.test.ts`
+- [x] **Add unit tests** in `test/unit/harnesses/cursor.test.ts`
   - Project scope resolves to `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/`
   - User scope resolves to `~/.cursor/skills/`, `~/.cursor/agents/`, no `rulesDir`
   - `describe()` returns correct skills, agents, and rule names
@@ -379,7 +379,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Project-scope install writes a usable orchestrator rule and all three subagents; user-scope install writes all three subagents. Model injection correctly omits `model` when unset and YAML-escapes when set.
 
-- [ ] **Add `src/harnesses/cursor/5x-orchestrator.mdc`** with Cursor rule frontmatter:
+- [x] **Add `src/harnesses/cursor/5x-orchestrator.mdc`** with Cursor rule frontmatter:
   ```markdown
   ---
   description: Use for 5x plan generation, plan review, and phased implementation workflows. Load the matching 5x skill, delegate author/reviewer work to the 5x subagents, and keep the main Cursor agent in an orchestration role.
@@ -430,7 +430,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
      fresh subagent invocation before escalating.
   ```
 
-- [ ] **Add `src/harnesses/cursor/5x-plan-author.md`**:
+- [x] **Add `src/harnesses/cursor/5x-plan-author.md`**:
   ```markdown
   ---
   name: 5x-plan-author
@@ -471,9 +471,9 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   main checkout.
   ```
 
-- [ ] **Add `src/harnesses/cursor/5x-code-author.md`** and **`src/harnesses/cursor/5x-reviewer.md`** with similar structure adapted from OpenCode templates
+- [x] **Add `src/harnesses/cursor/5x-code-author.md`** and **`src/harnesses/cursor/5x-reviewer.md`** with similar structure adapted from OpenCode templates
 
-- [ ] **Implement `src/harnesses/cursor/loader.ts`** with Cursor-specific rendering:
+- [x] **Implement `src/harnesses/cursor/loader.ts`** with Cursor-specific rendering:
   ```typescript
   import codeAuthorRaw from "./5x-code-author.md" with { type: "text" };
   import planAuthorRaw from "./5x-plan-author.md" with { type: "text" };
@@ -519,7 +519,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add unit tests** in `test/unit/harnesses/cursor-loader.test.ts`
+- [x] **Add unit tests** in `test/unit/harnesses/cursor-loader.test.ts`
   - Omits `model` frontmatter field when unset
   - YAML-escapes configured `model` values containing `:`, `"`, `\`, and newlines
   - Correctly injects author model into author subagents
@@ -529,26 +529,26 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Cursor installs skills rendered from shared base templates (no per-harness skill copies), with Cursor-native terminology while preserving all 5x workflow behavior and protocol invariants.
 
-- [ ] **Use shared base skill templates as the source of truth**
+- [x] **Use shared base skill templates as the source of truth**
   - Do not copy `src/harnesses/opencode/skills/*/SKILL.md` into a Cursor-local tree
   - Render all four base skills from `src/skills/base/*/SKILL.tmpl.md` via shared loader APIs
   - Use native delegation mode: `renderAllSkillTemplates({ native: true })`
 
-- [ ] **Adapt only terminology for Cursor after native render**
+- [x] **Adapt only terminology for Cursor after native render**
   - Keep base template logic and invariant text shared across harnesses
   - Apply a lightweight Cursor terminology substitution pass (best fit for current renderer, which supports `native`/`invoke` but not harness-specific conditionals):
     - "Task tool" / `subagent_type` → Cursor subagent invocation wording
     - `task_id` → "agent session ID" / resumable session wording
   - Keep workflow steps, validation calls, and recovery behavior unchanged
 
-- [ ] **Wire Cursor skill loading to shared loader output**
+- [x] **Wire Cursor skill loading to shared loader output**
   - Cursor harness/plugin skill install path should consume shared rendered skills, not local `src/harnesses/cursor/skills/*` files
   - Any Cursor wording adaptation should be applied to the rendered shared-skill content before install
 
-- [ ] **Add minimal template deltas only if substitution is insufficient**
+- [x] **Add minimal template deltas only if substitution is insufficient**
   - If specific lines cannot be safely transformed by substitution, add small conditional edits to `src/skills/base/*/SKILL.tmpl.md` while preserving OpenCode and Universal behavior
 
-- [ ] **Update unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
+- [x] **Update unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
   - All four skills load from shared template pipeline
   - Cursor wording is present (Cursor subagent/session terminology)
   - OpenCode-only wording (`Task tool`, raw `task_id` usage) is not present in Cursor-rendered skills
@@ -558,30 +558,30 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Users can install and use the Cursor harness without reading source code. Install output clearly distinguishes skills, agents, and rules with appropriate warnings for user-scope limitations.
 
-- [ ] **Update `README.md`** with Cursor harness install instructions:
+- [x] **Update `README.md`** with Cursor harness install instructions:
   - Add Cursor to the list of supported harnesses
   - Document `5x harness install cursor --scope project` and `--scope user`
   - Add "how to start a 5x workflow in Cursor" section
   - Document the user-scope limitation for rules
   - Document that project-scope harness install requires `5x init` first
 
-- [ ] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` to:
+- [x] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` to:
   - Print rule installation results when present
   - Print warnings array from install result
   - For Cursor user scope, explicitly state: "Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule."
 
-- [ ] **Update `buildHarnessListData()`** in `src/commands/harness.handler.ts`:
+- [x] **Update `buildHarnessListData()`** in `src/commands/harness.handler.ts`:
   - Check for rule files (`.mdc`) in `rulesDir` when present
   - Include `rules/` prefix in file listings
   - Include `unsupported` field in JSON output when harness reports it
 
-- [ ] **Ensure `harness list` readable output** shows:
+- [x] **Ensure `harness list` readable output** shows:
   - Skills: `skills/5x/SKILL.md`, etc.
   - Agents: `agents/5x-reviewer.md`, etc.
   - Rules: `rules/5x-orchestrator.mdc` (project scope only for Cursor)
   - For user scope: "rules: unsupported (Cursor user rules are settings-managed)"
 
-- [ ] **Add integration tests** in `test/integration/commands/harness.test.ts`:
+- [x] **Add integration tests** in `test/integration/commands/harness.test.ts`:
   - `5x harness install cursor --scope project` writes `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/`
   - `5x harness install cursor --scope user` writes `~/.cursor/skills/` and `~/.cursor/agents/`, not rules
   - `5x harness list` shows correct installed state for both scopes

@@ -67,8 +67,8 @@ feel uncertain but have an objectively correct answer in context.
 Provide an overall readiness assessment:
 
 - **ready**: Plan is ready for implementation as-is.
-- **ready_with_corrections**: Plan needs corrections but they are all mechanical (auto_fix). No human judgment needed.
-- **not_ready**: Plan has fundamental issues requiring human decisions or significant rework.
+- **ready_with_corrections**: Plan needs corrections but they are all mechanical (auto_fix). No human judgment needed. Use this when only low-priority cosmetic `auto_fix` items remain.
+- **not_ready**: Plan has fundamental issues requiring human decisions or significant rework. Reserve this for blockers or items that require `human_required` action.
 
 ## Non-Interactive Execution
 

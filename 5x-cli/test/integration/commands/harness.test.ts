@@ -25,6 +25,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { listAgentTemplates as listCursorAgentTemplates } from "../../../src/harnesses/cursor/loader.js";
+import { listSkillNames as listCursorSkillNames } from "../../../src/harnesses/cursor/skills/loader.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -433,6 +435,160 @@ describe("5x harness install opencode --scope user", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Cursor harness integration flows
+// ---------------------------------------------------------------------------
+
+describe("5x harness install cursor", () => {
+	test(
+		"project scope installs skills, agents, and rules under .cursor/",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				const { exitCode } = await runHarnessInstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				for (const name of listCursorSkillNames()) {
+					expect(
+						existsSync(join(tmp, ".cursor", "skills", name, "SKILL.md")),
+					).toBe(true);
+				}
+
+				for (const name of listCursorAgentTemplates().map((a) => a.name)) {
+					expect(existsSync(join(tmp, ".cursor", "agents", `${name}.md`))).toBe(
+						true,
+					);
+				}
+
+				expect(
+					existsSync(join(tmp, ".cursor", "rules", "5x-orchestrator.mdc")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"user scope installs ~/.cursor skills+agents and reports rules unsupported",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = join(tmp, "fake-home");
+			mkdirSync(fakeHome, { recursive: true });
+
+			try {
+				const install = await runHarnessInstall(
+					tmp,
+					"cursor",
+					["--scope", "user"],
+					{ HOME: fakeHome },
+				);
+				expect(install.exitCode).toBe(0);
+				expect(install.stdout).toContain(
+					"Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule.",
+				);
+
+				for (const name of listCursorSkillNames()) {
+					expect(
+						existsSync(join(fakeHome, ".cursor", "skills", name, "SKILL.md")),
+					).toBe(true);
+				}
+
+				for (const name of listCursorAgentTemplates().map((a) => a.name)) {
+					expect(
+						existsSync(join(fakeHome, ".cursor", "agents", `${name}.md`)),
+					).toBe(true);
+				}
+
+				expect(existsSync(join(fakeHome, ".cursor", "rules"))).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"harness list reports cursor installed state for project and user scopes",
+		async () => {
+			const tmp = makeTmpDir();
+			const fakeHome = join(tmp, "fake-home");
+			mkdirSync(fakeHome, { recursive: true });
+
+			try {
+				await bootstrapProject(tmp);
+				await runHarnessInstall(tmp, "cursor", ["--scope", "project"]);
+				await runHarnessInstall(tmp, "cursor", ["--scope", "user"], {
+					HOME: fakeHome,
+				});
+
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"], {
+					HOME: fakeHome,
+				});
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const cursor = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "cursor",
+				);
+				expect(cursor.scopes.project.installed).toBe(true);
+				expect(cursor.scopes.project.files).toContain(
+					"rules/5x-orchestrator.mdc",
+				);
+				expect(cursor.scopes.user.installed).toBe(true);
+				expect(cursor.scopes.user.unsupported).toEqual({ rules: true });
+				expect(cursor.scopes.user.files).not.toContain(
+					"rules/5x-orchestrator.mdc",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"project scope uninstall removes .cursor skills, agents, and rules",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				await runHarnessInstall(tmp, "cursor", ["--scope", "project"]);
+
+				const uninstall = await runHarnessUninstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(uninstall.exitCode).toBe(0);
+
+				for (const name of listCursorSkillNames()) {
+					expect(
+						existsSync(join(tmp, ".cursor", "skills", name, "SKILL.md")),
+					).toBe(false);
+				}
+
+				for (const name of listCursorAgentTemplates().map((a) => a.name)) {
+					expect(existsSync(join(tmp, ".cursor", "agents", `${name}.md`))).toBe(
+						false,
+					);
+				}
+
+				expect(
+					existsSync(join(tmp, ".cursor", "rules", "5x-orchestrator.mdc")),
+				).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
 	);
 });
 

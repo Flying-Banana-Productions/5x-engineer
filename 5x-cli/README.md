@@ -28,7 +28,7 @@ The CLI does not decide what to do next -- it provides building blocks. Orchestr
 
 ### Native-First Subagent Execution
 
-When running inside a supported harness (OpenCode), author and reviewer work is
+When running inside a supported harness (OpenCode or Cursor), author and reviewer work is
 delegated to **native subagents** rather than external subprocess invocations.
 The `5x-orchestrator` agent renders task prompts with `5x template render`,
 launches the appropriate native child agent, and validates structured results
@@ -143,7 +143,56 @@ delegation uses `5x invoke`.
 5x run watch --run <run-id> --human-readable
 ```
 
-### Option C: Bash Scripting
+### Option C: Native Cursor Workflow
+
+Use this when you run 5x from Cursor IDE or `cursor-agent` CLI.
+
+1. Initialize in your repo:
+
+```bash
+5x init
+```
+
+2. Install Cursor harness assets:
+
+```bash
+# Project scope (recommended): installs to .cursor/skills/, .cursor/agents/, .cursor/rules/
+# Requires `5x init` first.
+5x harness install cursor --scope project
+
+# User scope: installs to ~/.cursor/skills/ and ~/.cursor/agents/
+# (rules are not file-backed at user scope)
+5x harness install cursor --scope user
+```
+
+3. Start Cursor in the repo and trigger a workflow:
+
+```text
+Use 5x to generate an implementation plan from docs/product/my-feature-prd.md
+```
+
+Cursor will use the installed `5x-orchestrator` rule (project scope), load the
+right skill (`5x-plan`, `5x-plan-review`, or `5x-phase-execution`), and
+delegate to `5x-plan-author`, `5x-code-author`, and `5x-reviewer`.
+
+> **User-scope limitation:** Cursor user rules are settings-managed (not
+> file-backed). `5x harness install cursor --scope user` installs skills and
+> subagents only.
+
+> **Reducing approval prompts:** By default Cursor asks for confirmation on
+> terminal commands and file edits. To run 5x workflows without interruption:
+>
+> - **Terminal commands:** `Cursor Settings → Agents → Auto-run mode` →
+>   set to **"Run everything"** (full auto) or **"Use allowlist"** and add
+>   `bun`, `git`, `5x` to the list.
+> - **File edits:** `Cursor Settings → Agents` → disable
+>   **"External file edit protection"**.
+>
+> The installed `5x-permissions.mdc` rule (`alwaysApply: true`) also
+> pre-authorizes subagents to run `5x` commands and edit files without
+> asking in-chat, reducing the "may I?" pauses independent of IDE settings.
+
+### Option D: Bash Scripting
 
 Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.
 
@@ -228,6 +277,7 @@ Use one harness per install scope:
 | Harness | Use when | Delegation mode |
 | --- | --- | --- |
 | `opencode` | You use OpenCode and want native subagents in the harness UI | Native subagents (`Task` tool + `5x protocol validate`) |
+| `cursor` | You use Cursor IDE / `cursor-agent` and want native subagents + project rule orchestration | Native Cursor subagents + `5x protocol validate` |
 | `universal` | Your tool has no dedicated 5x harness plugin | `5x invoke` |
 
 ### Installing Skills
@@ -256,6 +306,18 @@ Universal installs skills only (cross-client agentskills.io convention):
 5x harness install universal --scope user
 ```
 
+Cursor installs skills + native subagents in both scopes, and installs the
+orchestrator rule in project scope:
+
+```bash
+# Project scope: .cursor/skills/, .cursor/agents/, .cursor/rules/
+# Requires `5x init` first.
+5x harness install cursor --scope project
+
+# User scope: ~/.cursor/skills/ and ~/.cursor/agents/ (no rules)
+5x harness install cursor --scope user
+```
+
 `.agents/skills/` (project) and `~/.agents/skills/` (user) are the
 [agentskills.io](https://agentskills.io) cross-client convention paths.
 5x writes files there; discovery behavior depends on each host tool's
@@ -272,6 +334,7 @@ implementation.
 Skills are plain markdown. Edit the installed copies directly:
 
 - OpenCode: `.opencode/skills/` or `~/.config/opencode/skills/`
+- Cursor: `.cursor/skills/` or `~/.cursor/skills/`
 - Universal: `.agents/skills/` or `~/.agents/skills/`
 
 Re-run `5x harness install <harness> --scope <scope> --force` to reset them

@@ -377,12 +377,12 @@ describe("createRunV1", () => {
 		createRunV1(db, {
 			id: "run1",
 			planPath: "/plan.md",
-			configJson: '{"maxStepsPerRun":50}',
+			configJson: '{"maxStepsPerRun":250}',
 		});
 
 		const run = getRunV1(db, "run1");
 		expect(run).not.toBeNull();
-		expect(run?.config_json).toBe('{"maxStepsPerRun":50}');
+		expect(run?.config_json).toBe('{"maxStepsPerRun":250}');
 	});
 
 	test("canonicalizes plan path", () => {

@@ -56,7 +56,7 @@ function makeConfig(overrides: Partial<FiveXConfig> = {}): FiveXConfig {
 		},
 		db: { path: ".5x/5x.db" },
 		worktree: {},
-		maxStepsPerRun: 50,
+		maxStepsPerRun: 250,
 		maxReviewIterations: 5,
 		maxQualityRetries: 3,
 		maxAutoIterations: 10,
@@ -244,7 +244,7 @@ describe("config resolution via resolveLayeredConfig", () => {
 			expect(result.config.author.provider).toBe("opencode");
 			expect(result.config.maxReviewIterations).toBe(5);
 			expect(result.config.maxQualityRetries).toBe(3);
-			expect(result.config.maxStepsPerRun).toBe(50);
+			expect(result.config.maxStepsPerRun).toBe(250);
 			expect(result.rootConfigPath).toBeNull();
 			expect(result.isLayered).toBe(false);
 		} finally {

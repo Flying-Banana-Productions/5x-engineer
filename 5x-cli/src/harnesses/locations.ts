@@ -36,6 +36,8 @@ export interface HarnessLocations {
 	agentsDir: string;
 	/** Absolute path to the skills directory for this scope. */
 	skillsDir: string;
+	/** Optional absolute path to rules directory for this scope. */
+	rulesDir?: string;
 }
 
 /**
@@ -123,6 +125,46 @@ export const universalLocationResolver: HarnessLocationResolver = {
 
 		const home = homeDir ?? process.env.HOME ?? homedir();
 		const base = join(home, ".agents");
+		return {
+			rootDir: base,
+			agentsDir: join(base, "agents"),
+			skillsDir: join(base, "skills"),
+		};
+	},
+};
+
+// ---------------------------------------------------------------------------
+// Cursor location resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Cursor harness location resolver.
+ *
+ * Uses Cursor's native project/user asset paths:
+ * - Project scope: <project>/.cursor/{skills,agents,rules}
+ * - User scope:    ~/.cursor/{skills,agents}
+ *
+ * Note: user-scope rules are intentionally not file-backed in v1.
+ */
+export const cursorLocationResolver: HarnessLocationResolver = {
+	name: "cursor",
+	resolve(
+		scope: HarnessScope,
+		projectRoot: string,
+		homeDir?: string,
+	): HarnessLocations {
+		if (scope === "project") {
+			const base = join(projectRoot, ".cursor");
+			return {
+				rootDir: base,
+				agentsDir: join(base, "agents"),
+				skillsDir: join(base, "skills"),
+				rulesDir: join(base, "rules"),
+			};
+		}
+
+		const home = homeDir ?? process.env.HOME ?? homedir();
+		const base = join(home, ".cursor");
 		return {
 			rootDir: base,
 			agentsDir: join(base, "agents"),

@@ -60,6 +60,12 @@ export interface HarnessScopeStatus {
 	installed: boolean;
 	root: string;
 	files: string[];
+	unsupported?: {
+		rules?: boolean;
+	};
+	capabilities?: {
+		rules?: boolean;
+	};
 }
 
 /** A single harness entry in list output. */
@@ -154,6 +160,8 @@ export async function harnessInstall(
 		locations.rootDir,
 		result.skills,
 		result.agents,
+		result.rules,
+		result.warnings,
 	);
 }
 
@@ -167,8 +175,9 @@ export async function harnessInstall(
 export async function harnessList(
 	params?: HarnessListParams,
 ): Promise<HarnessListOutput> {
+	const log = console.log;
 	const output = await buildHarnessListData(params?.startDir, params?.homeDir);
-	outputSuccess(output);
+	outputSuccess(output, (data) => formatHarnessListText(data, log));
 	return output;
 }
 
@@ -189,11 +198,12 @@ export async function buildHarnessListData(
 	for (const name of names) {
 		const { plugin, source } = await loadHarnessPlugin(name);
 		const description = plugin.description;
-		const { skillNames, agentNames } = plugin.describe();
 
 		const scopes: Partial<Record<HarnessScope, HarnessScopeStatus>> = {};
 
 		for (const scope of plugin.supportedScopes) {
+			const { skillNames, agentNames, ruleNames, capabilities } =
+				plugin.describe(scope);
 			const locations = plugin.locations.resolve(scope, projectRoot, homeDir);
 			const files: string[] = [];
 
@@ -213,10 +223,26 @@ export async function buildHarnessListData(
 				}
 			}
 
+			// Check rule files
+			if (capabilities?.rules === true && locations.rulesDir) {
+				for (const ruleName of ruleNames ?? []) {
+					const filePath = join(locations.rulesDir, `${ruleName}.mdc`);
+					if (existsSync(filePath)) {
+						files.push(`rules/${ruleName}.mdc`);
+					}
+				}
+			}
+
+			const unsupportedRules =
+				capabilities?.rules === false ||
+				(capabilities?.rules === undefined && !locations.rulesDir);
+
 			scopes[scope] = {
 				installed: files.length > 0,
 				root: locations.rootDir,
 				files,
+				unsupported: unsupportedRules ? { rules: true } : undefined,
+				capabilities,
 			};
 		}
 
@@ -351,6 +377,8 @@ function printInstallSummary(
 	rootDir: string,
 	skills: { created: string[]; overwritten: string[]; skipped: string[] },
 	agents: { created: string[]; overwritten: string[]; skipped: string[] },
+	rules?: { created: string[]; overwritten: string[]; skipped: string[] },
+	warnings?: string[],
 ): void {
 	const label = scope === "user" ? "user" : "project";
 
@@ -376,5 +404,88 @@ function printInstallSummary(
 		console.log(`  Skipped agent: ${name} (already exists)`);
 	}
 
+	if (rules) {
+		for (const name of rules.created) {
+			console.log(`  Created rule: ${name}`);
+		}
+		for (const name of rules.overwritten) {
+			console.log(`  Overwrote rule: ${name}`);
+		}
+		for (const name of rules.skipped) {
+			console.log(`  Skipped rule: ${name} (already exists)`);
+		}
+	}
+
+	for (const warning of warnings ?? []) {
+		console.log(`  Warning: ${warning}`);
+	}
+
+	if (harnessName === "cursor" && scope === "user") {
+		console.log(
+			"  Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule.",
+		);
+	}
+
 	console.log(`  ${harnessName} ${label} install complete.`);
+}
+
+/**
+ * Print a human-readable harness list grouped by scope and file type.
+ */
+function formatHarnessListText(
+	data: HarnessListOutput,
+	log: (...args: unknown[]) => void = console.log,
+): void {
+	for (const [i, harness] of data.harnesses.entries()) {
+		log(`harness: ${harness.name}`);
+		log(`source: ${harness.source}`);
+		log(`description: ${harness.description}`);
+
+		for (const scope of ["project", "user"] as const) {
+			const status = harness.scopes[scope];
+			if (!status) continue;
+
+			log(`${scope}:`);
+			log(`  installed: ${status.installed}`);
+			log(`  root: ${status.root}`);
+
+			const skills = status.files.filter((file) => file.startsWith("skills/"));
+			const agents = status.files.filter((file) => file.startsWith("agents/"));
+			const rules = status.files.filter((file) => file.startsWith("rules/"));
+
+			log("  skills:");
+			if (skills.length === 0) {
+				log("    (none)");
+			} else {
+				for (const file of skills) log(`    ${file}`);
+			}
+
+			log("  agents:");
+			if (agents.length === 0) {
+				log("    (none)");
+			} else {
+				for (const file of agents) log(`    ${file}`);
+			}
+
+			if (status.unsupported?.rules === true) {
+				log("  rules: unsupported");
+				if (harness.name === "cursor" && scope === "user") {
+					log(
+						"  Note: Cursor user rules are settings-managed and not file-backed. Install with --scope project to add the orchestrator rule.",
+					);
+				}
+			} else {
+				log("  rules:");
+				if (rules.length === 0) {
+					log("    (none)");
+				} else {
+					for (const file of rules) log(`    ${file}`);
+				}
+			}
+		}
+
+		if (i < data.harnesses.length - 1) {
+			log("");
+		}
+	}
 }

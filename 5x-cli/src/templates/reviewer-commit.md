@@ -76,8 +76,8 @@ feel uncertain but have an objectively correct answer in context.
 Provide an overall readiness assessment:
 
 - **ready**: Implementation is production-ready and phase can be considered complete.
-- **ready_with_corrections**: Implementation needs corrections but they are all mechanical (auto_fix).
-- **not_ready**: Implementation has fundamental issues requiring human decisions or significant rework.
+- **ready_with_corrections**: Implementation needs corrections but they are all mechanical (auto_fix). Use this when only P2/cosmetic `auto_fix` items remain — if there are no blockers and no `human_required` items, the implementation is ready with corrections, not "not ready".
+- **not_ready**: Implementation has fundamental issues requiring human decisions or significant rework. Reserve this for P0/P1 blockers or items that require `human_required` action. Do not use `not_ready` when the only remaining items are low-priority cosmetic fixes.
 
 ## Non-Interactive Execution
 

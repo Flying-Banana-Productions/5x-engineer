@@ -17,9 +17,11 @@ import { join } from "node:path";
 import {
 	installAgentFiles,
 	installFiles,
+	installRuleFiles,
 	installSkillFiles,
 	removeDirIfEmpty,
 	uninstallAgentFiles,
+	uninstallRuleFiles,
 	uninstallSkillFiles,
 } from "../../../src/harnesses/installer.js";
 
@@ -314,6 +316,75 @@ describe("installAgentFiles", () => {
 });
 
 // ---------------------------------------------------------------------------
+// installRuleFiles tests
+// ---------------------------------------------------------------------------
+
+describe("installRuleFiles", () => {
+	test("installs rules as <name>.mdc files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "rule content" }],
+				false,
+			);
+
+			expect(existsSync(join(rulesDir, "5x-orchestrator.mdc"))).toBe(true);
+			expect(result.created).toContain("5x-orchestrator.mdc");
+			expect(result.overwritten).toHaveLength(0);
+			expect(result.skipped).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips existing rule files without --force", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(join(rulesDir, "5x-orchestrator.mdc"), "ORIGINAL", "utf-8");
+
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "NEW CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
+				"ORIGINAL",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing rule files with --force", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(join(rulesDir, "5x-orchestrator.mdc"), "ORIGINAL", "utf-8");
+
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "NEW CONTENT" }],
+				true,
+			);
+
+			expect(result.overwritten).toContain("5x-orchestrator.mdc");
+			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
+				"NEW CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // removeDirIfEmpty tests
 // ---------------------------------------------------------------------------
 
@@ -598,6 +669,65 @@ describe("uninstallAgentFiles", () => {
 			expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
 			// Directory still exists (not empty)
 			expect(existsSync(agentsDir)).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// uninstallRuleFiles tests
+// ---------------------------------------------------------------------------
+
+describe("uninstallRuleFiles", () => {
+	test("removes known rule files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "rule content" }],
+				false,
+			);
+
+			const result = uninstallRuleFiles(rulesDir, ["5x-orchestrator"]);
+
+			expect(result.removed).toContain("5x-orchestrator.mdc");
+			expect(result.notFound).toHaveLength(0);
+			expect(existsSync(join(rulesDir, "5x-orchestrator.mdc"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports not-found for missing rules", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+
+			const result = uninstallRuleFiles(rulesDir, ["5x-orchestrator"]);
+
+			expect(result.notFound).toContain("5x-orchestrator.mdc");
+			expect(result.removed).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("cleans empty rules directory after removal", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "rule content" }],
+				false,
+			);
+
+			uninstallRuleFiles(rulesDir, ["5x-orchestrator"]);
+
+			expect(existsSync(rulesDir)).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}

@@ -68,7 +68,7 @@ describe("5x upgrade", () => {
 					string,
 					unknown
 				>;
-				expect(parsed.maxStepsPerRun).toBe(50);
+				expect(parsed.maxStepsPerRun).toBe(250);
 			} finally {
 				cleanupDir(tmp);
 			}

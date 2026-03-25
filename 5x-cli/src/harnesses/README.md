@@ -1,6 +1,6 @@
 # Harness Plugin System
 
-A harness plugin adapts the 5x workflow for a specific AI coding agent (OpenCode, Claude Code, Cursor, etc.). It installs **skills** and **agent profiles** into the correct locations for that harness.
+A harness plugin adapts the 5x workflow for a specific AI coding agent (OpenCode, Claude Code, Cursor, etc.). It installs **skills** and **agent profiles** into the correct locations for that harness, and may optionally manage **rules**.
 
 ## Architecture
 
@@ -45,9 +45,14 @@ interface HarnessPlugin {
   readonly name: string;
   readonly description: string;
   readonly supportedScopes: HarnessScope[];  // "project" | "user"
+  describe(scope?: HarnessScope): HarnessDescription;
   install(ctx: HarnessInstallContext): Promise<HarnessInstallResult>;
 }
 ```
+
+`describe(scope?)` can return scope-aware metadata. This is used by
+`5x harness list` to report optional capabilities (for example, whether
+rules are supported in that scope).
 
 ### `supportedScopes`
 
@@ -78,6 +83,11 @@ The return value reports what was installed:
 interface HarnessInstallResult {
   skills: InstallSummary;   // { created[], overwritten[], skipped[] }
   agents: InstallSummary;
+  rules?: InstallSummary;
+  unsupported?: {
+    rules?: boolean;
+  };
+  warnings?: string[];
 }
 ```
 
@@ -147,12 +157,19 @@ Plugins can (and should) use the shared installer helpers in `installer.ts`:
 
 - **`installSkillFiles(skillsDir, skills, force)`** -- installs skills following the `<skillsDir>/<name>/SKILL.md` convention.
 - **`installAgentFiles(agentsDir, agents, force)`** -- installs agent profiles as `<agentsDir>/<name>.md`.
+- **`installRuleFiles(rulesDir, rules, force)`** -- installs rules as `<rulesDir>/<name>.mdc`.
 - **`installFiles(targetDir, files, force)`** -- generic flat file installer.
 
 For skills, pair `installSkillFiles()` with shared rendering from
 `src/skills/loader.ts` (`renderAllSkillTemplates()` / `listBaseSkillNames()`).
 
-All three return `InstallSummary { created[], overwritten[], skipped[] }` and handle directory creation, existence checks, and force-overwrite semantics.
+All installer helpers return `InstallSummary { created[], overwritten[], skipped[] }` and handle directory creation, existence checks, and force-overwrite semantics.
+
+For uninstall flows, matching helpers are available:
+
+- `uninstallSkillFiles(skillsDir, skillNames)`
+- `uninstallAgentFiles(agentsDir, agentNames)`
+- `uninstallRuleFiles(rulesDir, ruleNames)`
 
 ## Command Interface
 

@@ -69,11 +69,11 @@ describe("config v1 extensions", () => {
 		expect(result.success).toBe(false);
 	});
 
-	test("maxStepsPerRun defaults to 50", () => {
+	test("maxStepsPerRun defaults to 250", () => {
 		const result = FiveXConfigSchema.safeParse({});
 		expect(result.success).toBe(true);
 		if (result.success) {
-			expect(result.data.maxStepsPerRun).toBe(50);
+			expect(result.data.maxStepsPerRun).toBe(250);
 		}
 	});
 
@@ -426,7 +426,7 @@ describe("config v1 extensions", () => {
 			expect(config.author.provider).toBe("opencode");
 			expect(config.reviewer.provider).toBe("opencode");
 			expect(config.opencode.url).toBeUndefined();
-			expect(config.maxStepsPerRun).toBe(50);
+			expect(config.maxStepsPerRun).toBe(250);
 			// Explicit values preserved
 			expect(config.author.model).toBe("anthropic/claude-sonnet-4-6");
 			expect(config.qualityGates).toEqual(["bun test"]);

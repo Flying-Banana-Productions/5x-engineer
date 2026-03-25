@@ -19,12 +19,14 @@ import { join } from "node:path";
 import {
 	buildHarnessListData,
 	harnessInstall,
+	harnessList,
 	harnessUninstall,
 } from "../../../src/commands/harness.handler.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { isValidPlugin } from "../../../src/harnesses/factory.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
+import { setOutputFormat } from "../../../src/output.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -589,6 +591,78 @@ describe("buildHarnessListData", () => {
 		}
 	});
 
+	test("includes scope-aware capabilities metadata in JSON output", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			const output = await buildHarnessListData(tmp, fakeHome);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			if (!opencode?.scopes.project || !opencode.scopes.user) {
+				throw new Error("Expected both scopes for opencode");
+			}
+
+			expect(opencode.scopes.project.capabilities).toEqual({ rules: false });
+			expect(opencode.scopes.user.capabilities).toEqual({ rules: false });
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("marks rules unsupported when scope does not support rule assets", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			const output = await buildHarnessListData(tmp, fakeHome);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			if (!opencode?.scopes.project || !opencode.scopes.user) {
+				throw new Error("Expected both scopes for opencode");
+			}
+
+			expect(opencode.scopes.project.unsupported).toEqual({ rules: true });
+			expect(opencode.scopes.user.unsupported).toEqual({ rules: true });
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves existing file-list schema with added metadata fields", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const output = await buildHarnessListData(tmp, fakeHome);
+			const opencode = output.harnesses.find((h) => h.name === "opencode");
+			expect(opencode).toBeDefined();
+			if (!opencode?.scopes.project) {
+				throw new Error("Expected project scope for opencode");
+			}
+
+			expect(opencode.scopes.project.files).toContain(
+				"skills/5x-plan/SKILL.md",
+			);
+			expect(opencode.scopes.project.files).toContain("agents/5x-reviewer.md");
+			expect(
+				opencode.scopes.project.files.some((f) => f.startsWith("rules/")),
+			).toBe(false);
+			expect(opencode.scopes.project.installed).toBe(true);
+			expect(opencode.scopes.project.capabilities).toEqual({ rules: false });
+			expect(opencode.scopes.project.unsupported).toEqual({ rules: true });
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
 	test("shows installed state when files exist on disk", async () => {
 		const tmp = makeTmpDir();
 		const fakeHome = join(tmp, "fake-home");
@@ -732,6 +806,79 @@ describe("buildHarnessListData", () => {
 				),
 			).toBe(true);
 		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `harnessList` --text readable output
+// ---------------------------------------------------------------------------
+
+describe("harnessList readable output", () => {
+	test("lists rules files when present in scope files", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+
+		const originalLog = console.log;
+		const logs: string[] = [];
+
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "cursor",
+				scope: "project",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			setOutputFormat("text");
+			console.log = (...args: unknown[]) => {
+				logs.push(args.join(" "));
+			};
+
+			await harnessList({ startDir: tmp, homeDir: fakeHome });
+
+			expect(logs.join("\n")).toContain("rules/5x-orchestrator.mdc");
+		} finally {
+			console.log = originalLog;
+			setOutputFormat("json");
+			cleanupDir(tmp);
+		}
+	});
+
+	test("shows unsupported rules note for cursor user scope", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+
+		const originalLog = console.log;
+		const logs: string[] = [];
+
+		try {
+			await harnessInstall({
+				name: "cursor",
+				scope: "user",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			setOutputFormat("text");
+			console.log = (...args: unknown[]) => {
+				logs.push(args.join(" "));
+			};
+
+			await harnessList({ startDir: tmp, homeDir: fakeHome });
+
+			const output = logs.join("\n");
+			expect(output).toContain("rules: unsupported");
+			expect(output).toContain(
+				"Note: Cursor user rules are settings-managed and not file-backed. Install with --scope project to add the orchestrator rule.",
+			);
+		} finally {
+			console.log = originalLog;
+			setOutputFormat("json");
 			cleanupDir(tmp);
 		}
 	});

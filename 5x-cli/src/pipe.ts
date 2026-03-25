@@ -91,7 +91,36 @@ export async function readUpstreamEnvelope(): Promise<{
 		return null;
 	}
 
-	const raw = await new Response(Bun.stdin.stream()).text();
+	// In a legitimate pipe (cmd1 | cmd2), upstream data arrives immediately.
+	// In agent/IDE harness contexts, stdin is piped but empty with no EOF —
+	// a blocking read would hang forever. Use a timeout on the first chunk
+	// to distinguish the two cases.
+	const reader = Bun.stdin.stream().getReader();
+	const first = await Promise.race([
+		reader.read(),
+		Bun.sleep(200).then(
+			() =>
+				({
+					done: true,
+					value: undefined,
+				}) as ReadableStreamReadResult<Uint8Array>,
+		),
+	]);
+
+	if (first.done || !first.value) {
+		reader.releaseLock();
+		return null;
+	}
+
+	const chunks: Uint8Array[] = [first.value];
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		if (value) chunks.push(value);
+	}
+	reader.releaseLock();
+
+	const raw = Buffer.concat(chunks).toString("utf-8");
 	if (!raw.trim()) {
 		return null;
 	}
