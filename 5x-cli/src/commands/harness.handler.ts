@@ -176,7 +176,7 @@ export async function harnessList(
 	params?: HarnessListParams,
 ): Promise<HarnessListOutput> {
 	const output = await buildHarnessListData(params?.startDir, params?.homeDir);
-	outputSuccess(output);
+	outputSuccess(output, formatHarnessListText);
 	return output;
 }
 
@@ -426,4 +426,62 @@ function printInstallSummary(
 	}
 
 	console.log(`  ${harnessName} ${label} install complete.`);
+}
+
+/**
+ * Print a human-readable harness list grouped by scope and file type.
+ */
+function formatHarnessListText(data: HarnessListOutput): void {
+	for (const [i, harness] of data.harnesses.entries()) {
+		console.log(`harness: ${harness.name}`);
+		console.log(`source: ${harness.source}`);
+		console.log(`description: ${harness.description}`);
+
+		for (const scope of ["project", "user"] as const) {
+			const status = harness.scopes[scope];
+			if (!status) continue;
+
+			console.log(`${scope}:`);
+			console.log(`  installed: ${status.installed}`);
+			console.log(`  root: ${status.root}`);
+
+			const skills = status.files.filter((file) => file.startsWith("skills/"));
+			const agents = status.files.filter((file) => file.startsWith("agents/"));
+			const rules = status.files.filter((file) => file.startsWith("rules/"));
+
+			console.log("  skills:");
+			if (skills.length === 0) {
+				console.log("    (none)");
+			} else {
+				for (const file of skills) console.log(`    ${file}`);
+			}
+
+			console.log("  agents:");
+			if (agents.length === 0) {
+				console.log("    (none)");
+			} else {
+				for (const file of agents) console.log(`    ${file}`);
+			}
+
+			if (status.unsupported?.rules === true) {
+				console.log("  rules: unsupported");
+				if (harness.name === "cursor" && scope === "user") {
+					console.log(
+						"  Note: Cursor user rules are settings-managed and not file-backed. Install with --scope project to add the orchestrator rule.",
+					);
+				}
+			} else {
+				console.log("  rules:");
+				if (rules.length === 0) {
+					console.log("    (none)");
+				} else {
+					for (const file of rules) console.log(`    ${file}`);
+				}
+			}
+		}
+
+		if (i < data.harnesses.length - 1) {
+			console.log("");
+		}
+	}
 }
