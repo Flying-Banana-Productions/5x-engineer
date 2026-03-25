@@ -98,7 +98,7 @@ Delegate to the plan author via `5x invoke`:
 ```bash
 RESULT=$(5x invoke author author-generate-plan --run $RUN \
   --var prd_path=$PRD_PATH \
-  --record --step author:generate-plan --phase plan)
+  --record --record-step author:generate-plan --phase plan)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')

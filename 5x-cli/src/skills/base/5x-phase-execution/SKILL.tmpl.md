@@ -169,7 +169,7 @@ Delegate to the code author via `5x invoke`:
 ```bash
 RESULT=$(5x invoke author author-next-phase --run $RUN \
   --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER \
-  --record --step author:next-phase --phase $PHASE)
+  --record --record-step author:next-phase --phase $PHASE)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
@@ -233,7 +233,7 @@ Delegate fix to the code author via `5x invoke`:
 RESULT=$(5x invoke author author-fix-quality --run $RUN \
   --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES" \
-  --record --step author:fix-quality --phase $PHASE)
+  --record --record-step author:fix-quality --phase $PHASE)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
@@ -279,7 +279,7 @@ REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
 RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
-  --record --step reviewer:commit --phase $PHASE \
+  --record --record-step reviewer:commit --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
@@ -352,7 +352,7 @@ Delegate to the code author via `5x invoke`:
 ```bash
 RESULT=$(5x invoke author author-process-impl-review --run $RUN \
   --var plan_path=$PLAN_PATH \
-  --record --step author:process-impl-review --phase $PHASE \
+  --record --record-step author:process-impl-review --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')

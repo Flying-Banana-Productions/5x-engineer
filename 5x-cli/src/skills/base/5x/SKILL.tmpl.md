@@ -83,7 +83,7 @@ Delegate work by invoking the role/template pair directly and letting
 ```bash
 RESULT=$(5x invoke <author|reviewer> <template> --run $RUN \
   --var key=value \
-  --record --step <step_name>)
+  --record --record-step <step_name>)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result // .data.result.readiness')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
