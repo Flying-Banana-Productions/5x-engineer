@@ -529,26 +529,26 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Cursor installs skills rendered from shared base templates (no per-harness skill copies), with Cursor-native terminology while preserving all 5x workflow behavior and protocol invariants.
 
-- [ ] **Use shared base skill templates as the source of truth**
+- [x] **Use shared base skill templates as the source of truth**
   - Do not copy `src/harnesses/opencode/skills/*/SKILL.md` into a Cursor-local tree
   - Render all four base skills from `src/skills/base/*/SKILL.tmpl.md` via shared loader APIs
   - Use native delegation mode: `renderAllSkillTemplates({ native: true })`
 
-- [ ] **Adapt only terminology for Cursor after native render**
+- [x] **Adapt only terminology for Cursor after native render**
   - Keep base template logic and invariant text shared across harnesses
   - Apply a lightweight Cursor terminology substitution pass (best fit for current renderer, which supports `native`/`invoke` but not harness-specific conditionals):
     - "Task tool" / `subagent_type` → Cursor subagent invocation wording
     - `task_id` → "agent session ID" / resumable session wording
   - Keep workflow steps, validation calls, and recovery behavior unchanged
 
-- [ ] **Wire Cursor skill loading to shared loader output**
+- [x] **Wire Cursor skill loading to shared loader output**
   - Cursor harness/plugin skill install path should consume shared rendered skills, not local `src/harnesses/cursor/skills/*` files
   - Any Cursor wording adaptation should be applied to the rendered shared-skill content before install
 
-- [ ] **Add minimal template deltas only if substitution is insufficient**
+- [x] **Add minimal template deltas only if substitution is insufficient**
   - If specific lines cannot be safely transformed by substitution, add small conditional edits to `src/skills/base/*/SKILL.tmpl.md` while preserving OpenCode and Universal behavior
 
-- [ ] **Update unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
+- [x] **Update unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
   - All four skills load from shared template pipeline
   - Cursor wording is present (Cursor subagent/session terminology)
   - OpenCode-only wording (`Task tool`, raw `task_id` usage) is not present in Cursor-rendered skills
