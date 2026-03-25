@@ -153,3 +153,50 @@ None.
 
 **P1 recommended**
 - [x] Proceed to Phase 4
+
+## Addendum — Phase 4 assessment
+
+**Review type:** commit `dc7fa41001d200e86128218bb2e067cb94d5623d` (no follow-on commits)
+**Scope:** Phase 4 changes for Cursor skills rendered from shared base templates with terminology adaptation
+**Reviewer:** Staff engineer
+**Local verification:** file inspection ✅, `bun test test/unit/harnesses/cursor-skills.test.ts test/unit/harnesses/cursor.test.ts test/unit/harnesses/cursor-loader.test.ts` ✅
+
+## Summary
+
+Phase 4 is close, but not complete. The Cursor harness now installs skills from the shared base template pipeline via `renderAllSkillTemplates({ native: true })`, and the substitution pass removes the main OpenCode-only `Task tool` / `task_id` terms. However, one OpenCode-specific sentence still ships in the rendered Cursor skills, so the installed Cursor skill set is not yet fully Cursor-native.
+
+**Readiness:** Ready with corrections — one mechanical wording fix remains before the phase completion gate is met.
+
+## Strengths
+
+- `src/harnesses/cursor/skills/loader.ts` correctly uses the shared base-skill renderer and applies adaptation after native render, avoiding per-harness skill copies.
+- `src/harnesses/cursor/plugin.ts` installs Cursor skills through the shared loader output rather than a Cursor-local skill tree.
+- `test/unit/harnesses/cursor-skills.test.ts` covers the main Phase 4 goals: shared-template sourcing, Cursor terminology presence, removal of `Task tool` / `subagent_type` / `task_id`, and frontmatter validity after adaptation.
+- OpenCode and Universal harness skill renderers were not modified by this change, limiting regression risk outside Cursor.
+
+## Production Readiness Blockers
+
+- The rendered Cursor `5x` foundation skill still contains the sentence `These skills assume an opencode environment with the 5x harness installed.` This is OpenCode-specific wording in shipped Cursor output and violates the Phase 4 requirement that Cursor-rendered skills not retain OpenCode-only wording. The issue is directly in the installed asset path because `adaptCursorTerminology()` does not rewrite or remove this sentence.
+
+## High Priority (P1)
+
+- Remove or neutralize the remaining `opencode environment` sentence in the Cursor-rendered foundation skill and add a regression assertion in `test/unit/harnesses/cursor-skills.test.ts` so Cursor output rejects both `Task tool`/`task_id` wording and other OpenCode-only references.
+  - Classification: `auto_fix`
+  - Location: `src/skills/base/5x/SKILL.tmpl.md`, rendered via `src/harnesses/cursor/skills/loader.ts`; missing test coverage in `test/unit/harnesses/cursor-skills.test.ts`
+
+## Medium Priority (P2)
+
+- None.
+
+## Readiness Checklist
+
+**P0 blockers**
+- [x] Cursor plugin skill install path uses shared rendered skills, not harness-local copies
+- [x] Cursor terminology substitution is applied to rendered shared skills
+- [x] Tests verify shared-template sourcing, terminology substitution, and frontmatter validity
+- [x] Skill frontmatter remains valid after render + adaptation
+- [x] No code-path regressions found for OpenCode or Universal harness rendering
+- [ ] Remaining OpenCode-only wording removed from rendered Cursor skill output
+
+**P1 recommended**
+- [ ] Add regression coverage for OpenCode-specific wording beyond `Task tool` / `task_id`
