@@ -200,3 +200,27 @@ Phase 4 is close, but not complete. The Cursor harness now installs skills from 
 
 **P1 recommended**
 - [ ] Add regression coverage for OpenCode-specific wording beyond `Task tool` / `task_id`
+
+## Addendum — Phase 4 wording fix confirmation
+
+**Review type:** commit `9486d3492ee46fed59c39ea37bcb67fa17119fb8`
+**Scope:** Confirmation of the remaining OpenCode-wording fix in Cursor-rendered skills
+**Reviewer:** Staff engineer
+**Local verification:** file inspection ✅, `bun test test/unit/harnesses/cursor-skills.test.ts test/unit/harnesses/opencode.test.ts test/unit/harnesses/universal.test.ts` ✅
+
+## Summary
+
+Confirmed fixed. Cursor-rendered skills no longer ship the prior OpenCode-specific sentence, and the rendered Cursor `5x` foundation skill now uses neutral wording: `These skills assume your project has the 5x harness installed.` Regression coverage was added to assert Cursor-rendered skills do not contain `opencode`, and OpenCode/Universal harness tests still pass.
+
+**Readiness:** Ready — the prior Phase 4 blocker is resolved.
+
+## Fix validation
+
+- `src/harnesses/cursor/skills/loader.ts` now rewrites the remaining OpenCode-specific sentence during Cursor terminology adaptation, producing neutral Cursor-appropriate rendered output.
+- The rendered Cursor `5x` foundation skill no longer contains `opencode` and still preserves the expected native-subagent workflow wording.
+- `test/unit/harnesses/cursor-skills.test.ts` now includes an explicit `not.toMatch(/opencode/i)` regression assertion across the combined rendered Cursor skills.
+- `bun test test/unit/harnesses/opencode.test.ts test/unit/harnesses/universal.test.ts` passed, with no regression signal for the existing OpenCode or Universal render/install paths.
+
+## Remaining notes
+
+- The fix lands in the Cursor adaptation layer rather than the base template itself. That is still sufficient for the Phase 4 requirement because the shipped Cursor-rendered skills are now correct and covered by regression tests.
