@@ -274,3 +274,33 @@ Phase 5 is not complete. README coverage, Cursor install summary polish, rule-fi
 
 **P1 recommended**
 - [ ] After the readable-output path lands, rerun Cursor harness integration coverage with explicit text-output assertions before final approval
+
+## Addendum — Phase 5 fix confirmation and final readiness
+
+**Review type:** commits `26a9e9f7746d9cc7af2c770013bcf0ca94a0b749` and `ae796c189a0b5f0520f81f3b36a417a4ec0fc5db`
+**Scope:** Confirmation of readable `harness list` output fix and follow-on test stabilization
+**Reviewer:** Staff engineer
+**Local verification:** file inspection ✅, readable CLI output spot-check ✅, `bun test` ✅
+
+## Summary
+
+Confirmed fixed. `harness list` now has the missing readable output path, shows `rules/5x-orchestrator.mdc` for Cursor project scope, and shows `rules: unsupported` plus the explicit settings-managed note for Cursor user scope. The follow-on logger-capture adjustment in `ae796c1` is appropriate and the full test suite now passes.
+
+**Readiness:** ready — Phase 5 is complete and the full Cursor harness implementation is production-ready across Phases 1-5.
+
+## Fix validation
+
+- `src/commands/harness.handler.ts` now routes `harness list` through a readable formatter in text mode rather than only emitting the JSON envelope.
+- The formatter groups installed files by `skills`, `agents`, and `rules`, and correctly prints `rules/5x-orchestrator.mdc` for installed Cursor project scope.
+- Cursor user scope now prints `rules: unsupported` and the explicit note that user rules are settings-managed and not file-backed.
+- `ae796c1` captures the logger function before emitting text output, which avoids the concurrent-test capture instability without changing the visible CLI behavior.
+- Full repo verification passed with `bun test` (1723 pass, 1 skip, 0 fail).
+
+## Final production-readiness check
+
+- README/install UX, scope-specific Cursor behavior, rule support, shared-template skill rendering, subagent templates, model injection, install/list/uninstall flows, and test coverage are all in place.
+- No remaining correctness, operability, or release-blocking gaps found for the Cursor harness v1 scope defined in the plan.
+
+## Remaining notes
+
+- No new issues found in the fix or the final readiness pass.
