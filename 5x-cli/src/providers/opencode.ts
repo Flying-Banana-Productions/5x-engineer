@@ -385,6 +385,10 @@ class OpenCodeSession implements AgentSession {
 				);
 			}
 
+			// Stop SSE stream before phase 2 — structured summary events
+			// (repeated conclusion text, prompt echo) should not be streamed.
+			sseController.abort();
+
 			// Phase 2: structured output (if schema provided)
 			if (opts?.outputSchema) {
 				const summaryFormat: OutputFormat = {
@@ -755,6 +759,7 @@ export class OpenCodeProvider implements AgentProvider {
 				hostname: "127.0.0.1",
 				port: 0,
 				timeout: 15_000,
+				config: { permission: "allow" },
 			});
 			return new OpenCodeProvider(client, server, opts?.model);
 		} catch (err) {

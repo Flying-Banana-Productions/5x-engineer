@@ -343,7 +343,7 @@ export function mapSseToAgentEvent(
 			const partStatus = partState?.status as string | undefined;
 			const input = partState?.input;
 
-			if (partStatus === "running" || partStatus === "pending") {
+			if (partStatus === "running") {
 				const inputSummary = summarizeToolInput(tool, input);
 				return { type: "tool_start", tool, input_summary: inputSummary };
 			}
