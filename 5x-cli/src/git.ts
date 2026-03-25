@@ -289,6 +289,20 @@ export async function createWorktree(
 	branch: string,
 	path: string,
 ): Promise<WorktreeInfo> {
+	// Guard: git worktree add on a repo with no commits creates an orphan
+	// worktree that is not enumerable by `git worktree list`, causing every
+	// subsequent --run-scoped command to report WORKTREE_MISSING. Detect
+	// this early and surface a clear remediation message.
+	const headCheck = await run(["rev-parse", "HEAD"], repoRoot);
+	if (headCheck.exitCode !== 0) {
+		throw new Error(
+			"Cannot create a worktree in a repository with no commits. " +
+				"Create an initial commit first:\n\n" +
+				"  git commit --allow-empty -m 'init'\n\n" +
+				"Then re-run your 5x command.",
+		);
+	}
+
 	const exists = await branchExists(branch, repoRoot);
 
 	const args = exists
