@@ -7,6 +7,13 @@ const AgentConfigSchema = z.object({
 	/** Provider name — open string to allow third-party plugins (e.g. "opencode", "codex", "@acme/provider-foo"). */
 	provider: z.string().default("opencode"),
 	model: z.string().optional(),
+	/**
+	 * Optional per-harness model id overrides for `5x harness install`.
+	 * Keys are harness plugin names (e.g. `opencode`, `cursor`). When set for the
+	 * harness being installed, values replace `[author|reviewer].model` in generated
+	 * agent frontmatter for that harness only.
+	 */
+	harnessModels: z.record(z.string(), z.string()).optional(),
 	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
 	timeout: z.number().int().positive().optional(),
 	/** When true, enforce session continuity across steps within the same phase.
@@ -68,6 +75,29 @@ const FiveXConfigSchema = z
 	.passthrough(); // Allow plugin-specific config keys (e.g. codex: { ... })
 
 export type FiveXConfig = z.infer<typeof FiveXConfigSchema>;
+
+/** Role key for {@link resolveHarnessModelForRole}. */
+export type AgentConfigRole = "author" | "reviewer";
+
+/**
+ * Resolve which model string to inject for a harness install.
+ *
+ * Uses `[role].harnessModels[<harnessName>]` when non-empty after trim; otherwise
+ * falls back to `[role].model`. Returns `undefined` when neither yields a value.
+ */
+export function resolveHarnessModelForRole(
+	config: FiveXConfig,
+	role: AgentConfigRole,
+	harnessName: string,
+): string | undefined {
+	const agent = config[role];
+	const key = harnessName.trim();
+	const override =
+		key.length > 0 ? agent.harnessModels?.[key]?.trim() : undefined;
+	if (override) return override;
+	const fallback = agent.model?.trim();
+	return fallback || undefined;
+}
 
 export interface ModelOverrides {
 	authorModel?: string;
@@ -301,6 +331,7 @@ function warnUnknownConfigKeys(
 	const allowedAgent = new Set([
 		"provider",
 		"model",
+		"harnessModels",
 		"timeout",
 		"continuePhaseSessions",
 	]);
@@ -370,6 +401,16 @@ function warnUnknownConfigKeys(
 			const nextPrefix = prefix ? `${prefix}.${key}` : key;
 			if (key === "author" || key === "reviewer") {
 				collect(value, allowedAgent, nextPrefix);
+			} else if (
+				key === "harnessModels" &&
+				(prefix === "author" || prefix === "reviewer")
+			) {
+				for (const hk of Object.keys(value).sort()) {
+					const hv = value[hk];
+					if (typeof hv !== "string") {
+						unknown.push(`${nextPrefix}.${hk}`);
+					}
+				}
 			} else if (key === "opencode") {
 				collect(value, allowedOpencode, nextPrefix);
 			} else if (key === "worktree") {

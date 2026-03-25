@@ -37,7 +37,11 @@ export interface HarnessInstallContext {
 	projectRoot: string;
 	/** Whether to overwrite existing files. */
 	force: boolean;
-	/** Model config extracted from 5x.toml (may be empty). */
+	/**
+	 * Resolved model strings for agent frontmatter (from `5x.toml` `[author]` /
+	 * `[reviewer]`, including optional `harnessModels.<harnessName>` for the
+	 * harness being installed — see `resolveHarnessModelForRole` in config).
+	 */
 	config: {
 		authorModel?: string;
 		reviewerModel?: string;

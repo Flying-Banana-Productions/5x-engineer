@@ -24,8 +24,15 @@ qualityGates = [
 # Author agent configuration (default provider: opencode)
 [author]
 # provider = "opencode"
+# Default model for `5x invoke` and fallback for `5x harness install` when no
+# per-harness override is set for the harness you are installing.
 # model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
+#
+# Optional: different model id strings per harness (keys match `5x harness install <name>`).
+# [author.harnessModels]
+# opencode = "anthropic/claude-sonnet-4-6"
+# cursor = "claude-sonnet-4-6"
 #
 # When true, enforce session continuity across steps within the same phase.
 continuePhaseSessions = false
@@ -35,6 +42,10 @@ continuePhaseSessions = false
 # provider = "opencode"
 # model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
+#
+# [reviewer.harnessModels]
+# opencode = "openai/gpt-5.4"
+# cursor = "gpt-5.4"
 #
 # When true, enforce session continuity across steps within the same phase.
 continuePhaseSessions = true

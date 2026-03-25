@@ -59,6 +59,65 @@ async function bootstrapProject(dir: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 describe("harnessInstall --scope project", () => {
+	test("injects per-harness model strings from harnessModels", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]
+model = "fallback-author"
+[author.harnessModels]
+opencode = "anthropic/sonnet-for-opencode"
+cursor = "claude-sonnet-for-cursor"
+
+[reviewer]
+model = "fallback-reviewer"
+[reviewer.harnessModels]
+opencode = "openai/gpt-for-opencode"
+cursor = "gpt-for-cursor"
+`,
+				"utf-8",
+			);
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const planAuthor = readFileSync(
+				join(tmp, ".opencode", "agents", "5x-plan-author.md"),
+				"utf-8",
+			);
+			expect(planAuthor).toContain("anthropic/sonnet-for-opencode");
+			const reviewer = readFileSync(
+				join(tmp, ".opencode", "agents", "5x-reviewer.md"),
+				"utf-8",
+			);
+			expect(reviewer).toContain("openai/gpt-for-opencode");
+
+			await harnessInstall({
+				name: "cursor",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const cursorPlan = readFileSync(
+				join(tmp, ".cursor", "agents", "5x-plan-author.md"),
+				"utf-8",
+			);
+			expect(cursorPlan).toContain("claude-sonnet-for-cursor");
+			const cursorRev = readFileSync(
+				join(tmp, ".cursor", "agents", "5x-reviewer.md"),
+				"utf-8",
+			);
+			expect(cursorRev).toContain("gpt-for-cursor");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
 	test("installs all bundled skills under .opencode/skills/", async () => {
 		const tmp = makeTmpDir();
 		try {

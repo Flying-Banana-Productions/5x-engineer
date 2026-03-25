@@ -43,4 +43,8 @@ Universal is intentionally harness-agnostic:
 - Orchestrating LLM reads skills and executes delegation via `5x invoke`.
 
 If you need native subagents and harness-specific UX, use a dedicated harness
-plugin (for example `opencode`, or Cursor when available).
+plugin (for example `opencode` or `cursor`).
+
+## Per-harness model config
+
+The universal harness does **not** install agent profiles, so `[author|reviewer].harnessModels.universal` has no effect on install output. You may still use `[author]` / `[reviewer]` `model` for `5x invoke`. Optional `harnessModels` keys for other harness names are ignored by this plugin.

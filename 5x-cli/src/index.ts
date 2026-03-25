@@ -1,8 +1,12 @@
 // Public API exports — v1
 
 // Config
-export type { FiveXConfig } from "./config.js";
-export { defineConfig, loadConfig } from "./config.js";
+export type { AgentConfigRole, FiveXConfig } from "./config.js";
+export {
+	defineConfig,
+	loadConfig,
+	resolveHarnessModelForRole,
+} from "./config.js";
 // DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
 // DB — operations (valid on v4 schema: runs, plans, steps tables)

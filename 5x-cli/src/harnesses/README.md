@@ -11,6 +11,7 @@ src/harnesses/
   installer.ts          Shared file installation helpers (harness-agnostic)
   locations.ts          Location resolver types and bundled resolvers
   opencode/             Bundled OpenCode harness plugin
+  cursor/               Bundled Cursor harness plugin
   universal/            Bundled universal harness plugin (skills-only, invoke path)
   README.md             This file
 ```
@@ -71,11 +72,17 @@ interface HarnessInstallContext {
   projectRoot: string;          // absolute path to project root
   force: boolean;               // overwrite existing files?
   config: {
-    authorModel?: string;       // from 5x.toml [author].model
-    reviewerModel?: string;     // from 5x.toml [reviewer].model
+    authorModel?: string;       // resolved for this harness (see below)
+    reviewerModel?: string;
   };
 }
 ```
+
+`authorModel` and `reviewerModel` are resolved by the CLI from `5x.toml`:
+`[author|reviewer].harnessModels.<harnessName>` when set for the harness
+being installed (where `<harnessName>` matches `5x harness install <name>`),
+otherwise `[author|reviewer].model`. See `resolveHarnessModelForRole` in
+`src/config.ts` and the commented examples in `src/templates/5x.default.toml`.
 
 The return value reports what was installed:
 

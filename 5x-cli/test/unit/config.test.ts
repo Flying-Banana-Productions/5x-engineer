@@ -7,6 +7,7 @@ import {
 	defineConfig,
 	FiveXConfigSchema,
 	loadConfig,
+	resolveHarnessModelForRole,
 } from "../../src/config.js";
 
 function makeTmpDir(): string {
@@ -259,6 +260,49 @@ describe("config", () => {
 	});
 });
 
+describe("resolveHarnessModelForRole", () => {
+	test("uses harnessModels entry when present", () => {
+		const config = FiveXConfigSchema.parse({
+			author: {
+				model: "fallback-a",
+				harnessModels: { opencode: "oc-a", cursor: "cu-a" },
+			},
+			reviewer: {
+				model: "fallback-r",
+				harnessModels: { opencode: "oc-r", cursor: "cu-r" },
+			},
+		});
+		expect(resolveHarnessModelForRole(config, "author", "opencode")).toBe(
+			"oc-a",
+		);
+		expect(resolveHarnessModelForRole(config, "author", "cursor")).toBe("cu-a");
+		expect(resolveHarnessModelForRole(config, "reviewer", "opencode")).toBe(
+			"oc-r",
+		);
+	});
+
+	test("falls back to model when harness override missing", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { model: "only-a", harnessModels: { cursor: "cu" } },
+			reviewer: { model: "only-r" },
+		});
+		expect(resolveHarnessModelForRole(config, "author", "opencode")).toBe(
+			"only-a",
+		);
+		expect(resolveHarnessModelForRole(config, "author", "cursor")).toBe("cu");
+		expect(resolveHarnessModelForRole(config, "reviewer", "opencode")).toBe(
+			"only-r",
+		);
+	});
+
+	test("empty override string falls back to model", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { model: "fb", harnessModels: { opencode: "   " } },
+		});
+		expect(resolveHarnessModelForRole(config, "author", "opencode")).toBe("fb");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // TOML config loading
 // ---------------------------------------------------------------------------
@@ -276,6 +320,29 @@ describe("TOML config", () => {
 			expect(config.maxStepsPerRun).toBe(25);
 			expect(config.author.model).toBe("anthropic/claude-sonnet-4-6");
 			expect(config.reviewer.model).toBeUndefined(); // default
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("loads 5x.toml with author.harnessModels", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]
+model = "fallback-author"
+[author.harnessModels]
+opencode = "anthropic/oc"
+cursor = "claude-3-5-cursor"
+`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.author.model).toBe("fallback-author");
+			expect(config.author.harnessModels).toEqual({
+				opencode: "anthropic/oc",
+				cursor: "claude-3-5-cursor",
+			});
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

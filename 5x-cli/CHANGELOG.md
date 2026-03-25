@@ -9,6 +9,11 @@ source of truth for the corresponding GitHub Release.
 
 ### Features
 
+- **Per-harness model overrides** — optional `[author|reviewer].harnessModels` in
+  `5x.toml` maps harness names (e.g. `opencode`, `cursor`) to model id strings
+  for `5x harness install`, with fallback to `[author|reviewer].model`. Exported
+  helper: `resolveHarnessModelForRole`. Documented in the default config template
+  and each bundled harness README.
 - **Universal harness** — new `universal` harness plugin installs 5x skills
   and agents into any directory (`.agents/`, `.skills/`), suitable for agents
   and tools not covered by a dedicated harness.

@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig } from "../config.js";
+import { loadConfig, resolveHarnessModelForRole } from "../config.js";
 import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
@@ -130,8 +130,8 @@ export async function harnessInstall(
 	let reviewerModel: string | undefined;
 	try {
 		const { config } = await loadConfig(projectRoot);
-		authorModel = config.author?.model?.trim() || undefined;
-		reviewerModel = config.reviewer?.model?.trim() || undefined;
+		authorModel = resolveHarnessModelForRole(config, "author", name);
+		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
 	} catch {
 		// Config load failure is non-fatal — agent templates will be
 		// rendered without model fields.

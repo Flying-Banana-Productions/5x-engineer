@@ -61,13 +61,15 @@ Four markdown templates with YAML frontmatter, bundled as static text imports:
 
 ### Model Injection (`loader.ts`)
 
-At install time, `renderAgentTemplates()` injects a `model:` line into each agent's YAML frontmatter based on the 5x config:
+At install time, `renderAgentTemplates()` injects a `model:` line into each agent's YAML frontmatter. The CLI resolves strings from `5x.toml` **for this harness** (`opencode`):
 
-- **Author agents** (`5x-plan-author`, `5x-code-author`) get `config.author.model`.
-- **Reviewer agent** (`5x-reviewer`) gets `config.reviewer.model`.
+- **Author agents** (`5x-plan-author`, `5x-code-author`) use the resolved author model (see below).
+- **Reviewer agent** (`5x-reviewer`) uses the resolved reviewer model.
 - **Orchestrator** never gets a model field -- it inherits whatever the user selects in the OpenCode UI.
 
-When a model is not configured, the field is omitted entirely (OpenCode inherits the primary agent's model for subagents).
+Resolution order for each role: `[author|reviewer].harnessModels.opencode` when non-empty, else `[author|reviewer].model`. Use `harnessModels` when one repo installs multiple harnesses (e.g. OpenCode and Cursor) that expect different provider/model id strings. OpenCode typically uses provider-style ids such as `anthropic/claude-sonnet-4-6`.
+
+When no resolved model is available, the field is omitted entirely (OpenCode inherits the primary agent's model for subagents).
 
 The injection uses `yamlQuote()` to safely escape special characters (backslashes, quotes, newlines) in model strings.
 
