@@ -224,3 +224,53 @@ Confirmed fixed. Cursor-rendered skills no longer ship the prior OpenCode-specif
 ## Remaining notes
 
 - The fix lands in the Cursor adaptation layer rather than the base template itself. That is still sufficient for the Phase 4 requirement because the shipped Cursor-rendered skills are now correct and covered by regression tests.
+
+## Addendum — Phase 5 assessment
+
+**Review type:** commit `b343b78d24c0af9fc4e42ed2837f3aeb200c6f25` (no follow-on commits)
+**Scope:** Phase 5 changes for Cursor docs, install UX polish, and integration coverage
+**Reviewer:** Staff engineer
+**Local verification:** file inspection ✅, `bun test test/integration/commands/harness.test.ts` ✅
+
+## Summary
+
+Phase 5 is not complete. README coverage, Cursor install summary polish, rule-file detection, and project/user integration coverage all landed. But the phase still misses the required readable `harness list` UX: the command only emits the JSON envelope and does not print the human-readable skills/agents/rules summary or the required `rules: unsupported (Cursor user rules are settings-managed)` line.
+
+**Readiness:** not_ready — final-phase acceptance is not met, so the Cursor harness should not yet be treated as production-ready.
+
+## Strengths
+
+- `README.md` now documents Cursor as a supported harness, both `--scope project` and `--scope user`, the need to run `5x init` before project-scope install, and a clear "start a 5x workflow in Cursor" path.
+- `printInstallSummary()` now reports rules and warning strings, and the Cursor user-scope note is explicit and user-friendly.
+- `buildHarnessListData()` now detects `.mdc` rules and surfaces `unsupported.rules` metadata for user scope.
+- Integration coverage now exercises Cursor install/list/uninstall flows for both scopes, including the user-scope no-rules case.
+
+## Production Readiness Blockers
+
+- The Phase 5 plan explicitly requires readable `harness list` output that shows installed skills, agents, project-scope rules, and a user-scope unsupported-rules message. That output path was not implemented. `src/commands/harness.handler.ts` only builds data and emits the JSON envelope via `outputSuccess(output)`, and `src/commands/harness.ts` exposes no text-mode or readable summary branch for `harness list`. As shipped, users cannot get the required readable Cursor state summary from the CLI.
+  - Classification: `auto_fix`
+  - Location: `src/commands/harness.handler.ts`, `src/commands/harness.ts`
+
+## High Priority (P1)
+
+- Add the missing human-readable `harness list` summary and cover it with integration assertions for Cursor project/user scopes. The text output should show installed skills/agents/rules for project scope and the explicit unsupported-rules message for user scope.
+  - Classification: `auto_fix`
+  - Location: `src/commands/harness.handler.ts`, `test/integration/commands/harness.test.ts`
+
+## Medium Priority (P2)
+
+- None.
+
+## Readiness Checklist
+
+**P0 blockers**
+- [x] `README.md` documents Cursor project/user install commands
+- [x] `README.md` includes how to start a 5x workflow in Cursor
+- [x] `README.md` documents the user-scope rules limitation
+- [x] `printInstallSummary()` prints rule results and warning strings
+- [x] `buildHarnessListData()` checks `.mdc` files and includes `unsupported`
+- [x] Integration tests cover Cursor project/user install state and uninstall cleanup
+- [ ] `harness list` readable output shows skills, agents, rules, and user-scope unsupported-rules messaging
+
+**P1 recommended**
+- [ ] After the readable-output path lands, rerun Cursor harness integration coverage with explicit text-output assertions before final approval
