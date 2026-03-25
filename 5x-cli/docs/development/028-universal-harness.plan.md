@@ -94,7 +94,7 @@ The existing frontmatter is already compliant.
 **Completion gate:** A `renderSkillTemplate()` function processes conditional blocks
 in template strings, with unit tests covering all edge cases.
 
-- [ ] **1a.** Create `src/skills/renderer.ts` with the template engine:
+- [x] **1a.** Create `src/skills/renderer.ts` with the template engine:
 
   ```typescript
   export interface SkillRenderContext {
@@ -129,7 +129,7 @@ in template strings, with unit tests covering all edge cases.
   when `!inBlock || blockActive`. Throw on unmatched `{{else}}`/`{{/if}}` or
   unclosed blocks.
 
-- [ ] **1b.** Create `src/skills/loader.ts` — loads base templates from `src/skills/base/`:
+- [x] **1b.** Create `src/skills/loader.ts` — loads base templates from `src/skills/base/`:
 
   ```typescript
   import type { SkillMetadata } from "../harnesses/installer.js";
@@ -154,7 +154,7 @@ in template strings, with unit tests covering all edge cases.
   parses frontmatter via the existing `parseSkillFrontmatter()` (moved to a shared
   location — see Phase 2).
 
-- [ ] **1c.** Add unit tests in `test/unit/skills/renderer.test.ts`:
+- [x] **1c.** Add unit tests in `test/unit/skills/renderer.test.ts`:
   - `{{#if native}}` block included when `native: true`, stripped when `false`
   - `{{#if invoke}}` block included when `native: false`, stripped when `true`
   - `{{#if native}}...{{else}}...{{/if}}` selects correct branch
@@ -172,17 +172,17 @@ in template strings, with unit tests covering all edge cases.
 OpenCode harness renders them with `{ native: true }`, and all existing OpenCode
 skill tests pass unchanged.
 
-- [ ] **2a.** Create `src/skills/base/` directory with four template files:
+- [x] **2a.** Create `src/skills/base/` directory with four template files:
   - `5x/SKILL.tmpl.md`
   - `5x-plan/SKILL.tmpl.md`
   - `5x-plan-review/SKILL.tmpl.md`
   - `5x-phase-execution/SKILL.tmpl.md`
 
-- [ ] **2b.** Move `parseSkillFrontmatter()` from
+- [x] **2b.** Move `parseSkillFrontmatter()` from
   `src/harnesses/opencode/skills/loader.ts` to `src/skills/frontmatter.ts` as a
   shared utility. Update the OpenCode loader import.
 
-- [ ] **2c.** Convert `5x/SKILL.md` to `5x/SKILL.tmpl.md` with conditional blocks:
+- [x] **2c.** Convert `5x/SKILL.md` to `5x/SKILL.tmpl.md` with conditional blocks:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Delegating to Subagents" section (lines 42–69) — main delegation pattern
@@ -201,7 +201,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Tools, Human Interaction Model, and Gotchas items that don't reference `task_id` or `subagent_type`.
 
-- [ ] **2d.** Convert `5x-plan/SKILL.md` to `5x-plan/SKILL.tmpl.md`:
+- [x] **2d.** Convert `5x-plan/SKILL.md` to `5x-plan/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - Step 2 "Generate the plan" (lines 72–84) — the entire delegation block with Task tool and `5x protocol validate`
@@ -235,7 +235,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Prerequisites, Tools, Invariants, Recovery items without `task_id` references, and Completion.
 
-- [ ] **2e.** Convert `5x-plan-review/SKILL.md` to `5x-plan-review/SKILL.tmpl.md`:
+- [x] **2e.** Convert `5x-plan-review/SKILL.md` to `5x-plan-review/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Delegating sub-agent work" section under Tools (lines 49–89) — canonical Task tool example
@@ -260,7 +260,7 @@ skill tests pass unchanged.
 
   **All other sections are truly shared:** Prerequisites, Tools (non-delegation items), Invariants, most Recovery items, and Completion.
 
-- [ ] **2f.** Convert `5x-phase-execution/SKILL.md` to `5x-phase-execution/SKILL.tmpl.md`:
+- [x] **2f.** Convert `5x-phase-execution/SKILL.md` to `5x-phase-execution/SKILL.tmpl.md`:
 
   **Delegation sections (wrap in `{{#if native}}`/`{{else}}`/`{{/if}}`):**
   - "Task reuse" subsection under Tools (lines 61–69) — the entire task reuse explanation
@@ -298,17 +298,17 @@ skill tests pass unchanged.
   (non-delegation items), Verdict routing, Escalation, Invariants, Phase gate, and
   most Recovery logic.
 
-- [ ] **2g.** Rewire OpenCode harness skill loader (`src/harnesses/opencode/skills/loader.ts`)
+- [x] **2g.** Rewire OpenCode harness skill loader (`src/harnesses/opencode/skills/loader.ts`)
   to use `renderAllSkillTemplates({ native: true })` from the shared loader instead
   of directly importing raw SKILL.md files. The OpenCode-specific SKILL.md files
   in `src/harnesses/opencode/skills/` are deleted — the base templates are the
   source of truth.
 
-- [ ] **2h.** Verify all existing OpenCode skill tests pass. The rendered output for
+- [x] **2h.** Verify all existing OpenCode skill tests pass. The rendered output for
   `{ native: true }` must be byte-identical (modulo stripped directive lines) to
   the current SKILL.md content.
 
-- [ ] **2i.** Add unit tests in `test/unit/skills/loader.test.ts`:
+- [x] **2i.** Add unit tests in `test/unit/skills/loader.test.ts`:
   - All four templates load and parse frontmatter
   - `renderAllSkillTemplates({ native: true })` produces valid SkillMetadata[]
   - `renderAllSkillTemplates({ native: false })` produces valid SkillMetadata[]
@@ -329,7 +329,7 @@ skill tests pass unchanged.
 `5x harness install universal --scope user` writes to `~/.agents/skills/`.
 `5x harness list` shows installed skills including `universal` entries.
 
-- [ ] **3a.** Add universal location resolver in `src/harnesses/locations.ts`:
+- [x] **3a.** Add universal location resolver in `src/harnesses/locations.ts`:
 
   ```typescript
   export const universalLocationResolver: HarnessLocationResolver = {
@@ -354,7 +354,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3b.** Create `src/harnesses/universal/plugin.ts`:
+- [x] **3b.** Create `src/harnesses/universal/plugin.ts`:
 
   ```typescript
   const universalPlugin: HarnessPlugin = {
@@ -393,7 +393,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3c.** Register `universal` in bundled harnesses in `src/harnesses/factory.ts`:
+- [x] **3c.** Register `universal` in bundled harnesses in `src/harnesses/factory.ts`:
 
   ```typescript
   const BUNDLED_HARNESSES = {
@@ -402,7 +402,7 @@ skill tests pass unchanged.
   };
   ```
 
-- [ ] **3d.** Add unit tests in `test/unit/harnesses/universal.test.ts`:
+- [x] **3d.** Add unit tests in `test/unit/harnesses/universal.test.ts`:
   - Project scope resolves to `.agents/skills/`
   - User scope resolves to `~/.agents/skills/`
   - `describe()` returns skill names and empty agent names
@@ -412,7 +412,7 @@ skill tests pass unchanged.
   - Uninstall removes skill directories
   - `agentsDir` is not written to (no agent files created)
 
-- [ ] **3e.** Add integration tests in `test/integration/commands/harness-universal.test.ts`:
+- [x] **3e.** Add integration tests in `test/integration/commands/harness-universal.test.ts`:
   - `5x harness install universal --scope project` creates `.agents/skills/5x/SKILL.md` etc.
   - `5x harness list --scope project` shows installed skills (inspect output for `universal`)
   - `5x harness uninstall universal --scope project` removes all skill files
@@ -426,7 +426,7 @@ usable `5x invoke`-based workflow descriptions. All delegation steps in these
 branches use `5x invoke`, session reuse uses `--session`, and result checking reads
 from the invoke output envelope. Phase 4d tests verify the authored content.
 
-- [ ] **4a.** Author the invoke-path content for the `{{else}}` branches in each
+- [x] **4a.** Author the invoke-path content for the `{{else}}` branches in each
   base template (created in Phase 2 with conditional structure). Write complete
   delegation examples that an orchestrating LLM can follow. The invoke delegation
   pattern for each step follows this shape:
@@ -477,7 +477,7 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
   a workflow because session reuse didn't work.
   ```
 
-- [ ] **4b.** For the reviewer step in `5x-phase-execution`, the invoke path adds
+- [x] **4b.** For the reviewer step in `5x-phase-execution`, the invoke path adds
   a separate `5x template render` call before `5x invoke` to extract `review_path`
   for the post-review commit verification:
 
@@ -488,11 +488,11 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
     | jq -r '.data.variables.review_path')
   ```
 
-- [ ] **4c.** Update the `5x` foundation template's Gotchas section invoke-path
+- [x] **4c.** Update the `5x` foundation template's Gotchas section invoke-path
   variant to reference `session_id` and `5x invoke --record` instead of `task_id`
   and `5x protocol validate --record`.
 
-- [ ] **4d.** Add unit tests in `test/unit/skills/invoke-content.test.ts`:
+- [x] **4d.** Add unit tests in `test/unit/skills/invoke-content.test.ts`:
   - Invoke-rendered skills contain `5x invoke author` and `5x invoke reviewer` commands
   - Invoke-rendered skills do NOT contain `Task tool`, `subagent_type`, or `task_id`
   - Invoke-rendered `5x` foundation skill references `session_id` in Gotchas
@@ -507,30 +507,42 @@ from the invoke output envelope. Phase 4d tests verify the authored content.
 describes when to use it vs harness-specific plugins. `harness list` includes
 `universal` in its output.
 
-- [ ] **5a.** Update `README.md`:
+- [x] **5a.** Update `README.md`:
   - Add `universal` to supported harnesses list
   - Document `5x harness install universal --scope project` and `--scope user`
   - Explain when to use universal (any tool without a dedicated harness) vs
     opencode/cursor (native sub-agent support)
   - Note that `.agents/skills/` is the agentskills.io cross-client convention
 
-- [ ] **5b.** Add `src/harnesses/universal/README.md` with plugin internals
+- [x] **5b.** Add `src/harnesses/universal/README.md` with plugin internals
   (how it renders from base templates, location conventions, no agents).
 
-- [ ] **5c.** Update `src/harnesses/README.md` to document the shared skill
+- [x] **5c.** Update `src/harnesses/README.md` to document the shared skill
   template system and how new harnesses should use `renderAllSkillTemplates()`.
 
-- [ ] **5d.** Update `src/skills/README.md` (new) documenting:
+- [x] **5d.** Update `src/skills/README.md` (new) documenting:
   - Base template location and format
   - Conditional block syntax
   - How to add a new conditional variable
   - Rendering pipeline: base template → renderer → harness loader → installer
 
-- [ ] **5e.** Verify `5x harness install universal` end-to-end:
+- [x] **5e.** Verify `5x harness install universal` end-to-end:
   - Install to a test project
   - Confirm skills are discoverable by reading `.agents/skills/*/SKILL.md`
   - Confirm skill content uses `5x invoke` for all delegation
   - Confirm `5x harness list` reports skills at the universal location
+
+  Verified on March 24, 2026 in a temporary git repo via:
+
+  - `bun run src/bin.ts init`
+  - `bun run src/bin.ts harness install universal --scope project`
+  - `bun run src/bin.ts harness list`
+
+  Observed:
+
+  - `.agents/skills/{5x,5x-plan,5x-plan-review,5x-phase-execution}/SKILL.md` created
+  - Installed skills contain `5x invoke` and no `Task tool`/`subagent_type`
+  - `harness list` shows the universal install at `.agents/skills/`
 
 ## Files Touched
 

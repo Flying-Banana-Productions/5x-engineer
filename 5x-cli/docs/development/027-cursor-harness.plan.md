@@ -248,6 +248,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   ```typescript
   const BUNDLED_HARNESSES: Record<string, () => Promise<{ default: HarnessPlugin }>> = {
     opencode: () => import("./opencode/plugin.js"),
+    universal: () => import("./universal/plugin.js"),
     cursor: () => import("./cursor/plugin.js"),  // NEW
   };
   ```
@@ -524,67 +525,34 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - Correctly injects author model into author subagents
   - Correctly injects reviewer model into reviewer subagent
 
-## Phase 4: Add Cursor-Local Skills
+## Phase 4: Cursor Skills via Shared Base Templates
 
-**Completion gate:** Cursor skill prose uses native Cursor terminology while preserving the same 5x workflow behavior and protocol invariants. Skills include a canonical Cursor-native delegation example.
+**Completion gate:** Cursor installs skills rendered from shared base templates (no per-harness skill copies), with Cursor-native terminology while preserving all 5x workflow behavior and protocol invariants.
 
-- [ ] **Copy OpenCode skills** from `src/harnesses/opencode/skills/` to `src/harnesses/cursor/skills/`:
-  - `5x/SKILL.md`
-  - `5x-plan/SKILL.md`
-  - `5x-plan-review/SKILL.md`
-  - `5x-phase-execution/SKILL.md`
+- [ ] **Use shared base skill templates as the source of truth**
+  - Do not copy `src/harnesses/opencode/skills/*/SKILL.md` into a Cursor-local tree
+  - Render all four base skills from `src/skills/base/*/SKILL.tmpl.md` via shared loader APIs
+  - Use native delegation mode: `renderAllSkillTemplates({ native: true })`
 
-- [ ] **Update `src/harnesses/cursor/skills/5x/SKILL.md`** with Cursor-native terminology:
-  - Replace "Task tool" / `subagent_type` references with "launch the `{name}` subagent"
-  - Replace `task_id` with "resumable agent ID" or "session ID"
-  - Keep the same workflow steps, invariants, validation calls, and recovery logic
-  - Add canonical delegation example showing Cursor-native pattern:
-    ```markdown
-    ## Delegating to Subagents
-    
-    These skills assume a Cursor environment with the 5x harness installed.
-    Available subagents: `5x-plan-author`, `5x-code-author`, `5x-reviewer`.
-    
-    Delegate work by rendering the prompt, launching the Cursor subagent,
-    then validating and recording the result:
-    
-    ```bash
-    # 1. Render the prompt
-    RENDERED=$(5x template render <template> --run $RUN \
-      --var key=value)
-    PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
-    STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
-    
-    # 2. Launch the appropriate Cursor subagent in the foreground
-    #    (use the rendered prompt as the subagent's task)
-    
-    # 3. Capture the subagent's final structured JSON output
-    
-    # 4. Validate + record
-    echo "$RESULT" | 5x protocol validate <role> \
-      --run $RUN --record --step $STEP
-    ```
-     
-    ## Session Reuse
-    
-    **Session reuse** is optional and best-effort. Cursor may provide a
-    resumable agent ID from each subagent invocation. Pass it back to resume
-    the same subagent conversation with full prior context.
-    
-    To also get a shorter continued-template variant, pass the agent ID as
-    the `--session` value to `5x template render --session <id>`. If
-    session reuse is unavailable, start a fresh subagent — never fail a
-    workflow because reuse didn't work.
+- [ ] **Adapt only terminology for Cursor after native render**
+  - Keep base template logic and invariant text shared across harnesses
+  - Apply a lightweight Cursor terminology substitution pass (best fit for current renderer, which supports `native`/`invoke` but not harness-specific conditionals):
+    - "Task tool" / `subagent_type` → Cursor subagent invocation wording
+    - `task_id` → "agent session ID" / resumable session wording
+  - Keep workflow steps, validation calls, and recovery behavior unchanged
 
-- [ ] **Update `src/harnesses/cursor/skills/5x-plan/SKILL.md`**, **`5x-plan-review/SKILL.md`**, and **`5x-phase-execution/SKILL.md`** with similar Cursor-native adaptations
+- [ ] **Wire Cursor skill loading to shared loader output**
+  - Cursor harness/plugin skill install path should consume shared rendered skills, not local `src/harnesses/cursor/skills/*` files
+  - Any Cursor wording adaptation should be applied to the rendered shared-skill content before install
 
-- [ ] **Add skill loader** in `src/harnesses/cursor/skills/loader.ts` (similar structure to OpenCode loader)
+- [ ] **Add minimal template deltas only if substitution is insufficient**
+  - If specific lines cannot be safely transformed by substitution, add small conditional edits to `src/skills/base/*/SKILL.tmpl.md` while preserving OpenCode and Universal behavior
 
-- [ ] **Add unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
-  - Skill frontmatter parses correctly
-  - Cursor-specific wording references Cursor subagents, not OpenCode task IDs
-  - Cursor skills include a canonical delegation example
-  - All four skills are loadable
+- [ ] **Update unit tests** in `test/unit/harnesses/cursor-skills.test.ts`
+  - All four skills load from shared template pipeline
+  - Cursor wording is present (Cursor subagent/session terminology)
+  - OpenCode-only wording (`Task tool`, raw `task_id` usage) is not present in Cursor-rendered skills
+  - Skill frontmatter remains valid after render + adaptation
 
 ## Phase 5: Documentation and UX Polish
 
@@ -636,14 +604,10 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 | `src/harnesses/cursor/5x-plan-author.md` | New Cursor subagent template |
 | `src/harnesses/cursor/5x-code-author.md` | New Cursor subagent template |
 | `src/harnesses/cursor/5x-reviewer.md` | New Cursor subagent template |
-| `src/harnesses/cursor/skills/5x/SKILL.md` | Cursor-local foundation skill |
-| `src/harnesses/cursor/skills/5x-plan/SKILL.md` | Cursor-local plan generation skill |
-| `src/harnesses/cursor/skills/5x-plan-review/SKILL.md` | Cursor-local plan review skill |
-| `src/harnesses/cursor/skills/5x-phase-execution/SKILL.md` | Cursor-local phase execution skill |
-| `src/harnesses/cursor/skills/loader.ts` | Cursor skill loader |
+| `src/skills/base/*/SKILL.tmpl.md` | Optional minor Cursor wording conditionals only if substitution pass is insufficient |
 | `README.md` | Document Cursor harness install and usage |
 | `test/unit/harnesses/cursor.test.ts` | Cursor resolver/plugin/loader coverage |
-| `test/unit/harnesses/cursor-skills.test.ts` | Cursor skill content coverage |
+| `test/unit/harnesses/cursor-skills.test.ts` | Shared-template Cursor skill rendering + terminology adaptation coverage |
 | `test/unit/harnesses/cursor-loader.test.ts` | Model injection and YAML escaping tests |
 | `test/unit/harnesses/installer.test.ts` | Rule install/uninstall helper tests |
 | `test/unit/commands/harness.test.ts` | Rules-aware handler coverage |
@@ -654,7 +618,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 | Type | Scope | File | Validates |
 |------|-------|------|-----------|
 | Unit | Harness | `test/unit/harnesses/cursor.test.ts` | Location resolution, plugin describe(scope), install/uninstall summaries, unsupported rules reporting, capabilities metadata |
-| Unit | Harness | `test/unit/harnesses/cursor-skills.test.ts` | Skill frontmatter parsing, Cursor-native wording, delegation examples |
+| Unit | Harness | `test/unit/harnesses/cursor-skills.test.ts` | Shared-template skill rendering, Cursor terminology adaptation, frontmatter validity |
 | Unit | Harness | `test/unit/harnesses/cursor-loader.test.ts` | Model omission when unset, YAML escaping for special characters |
 | Unit | Harness | `test/unit/harnesses/installer.test.ts` | Rule file install/uninstall, directory cleanup |
 | Unit | Commands | `test/unit/commands/harness.test.ts` | Scope-aware list output, capabilities/unsupported JSON schema, warning display, regression coverage |
@@ -680,7 +644,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 | Phase 1 | 1-2 days | Add optional rule support to harness framework |
 | Phase 2 | 1-2 days | Add Cursor location resolver and plugin shell |
 | Phase 3 | 2-3 days | Add orchestrator rule, subagent templates, and renderer |
-| Phase 4 | 2-3 days | Add Cursor-local skills with native terminology |
+| Phase 4 | 2-3 days | Add Cursor skills via shared templates + native terminology |
 | Phase 5 | 1-2 days | Documentation, UX polish, integration tests |
 | **Total** | **7.5-13 days** | |
 
@@ -699,6 +663,13 @@ Before marking complete, manually verify:
 - [ ] A real `5x run init --worktree` run produces a mapped worktree, Cursor author edits files there, and `5x diff --run` shows the diff in the mapped worktree
 
 ## Revision History
+
+### v1.2 (March 24, 2026) — Plan 028 alignment
+
+- Updated Phase 4 to use the shared skill-template system introduced by plan 028 (`renderAllSkillTemplates({ native: true })`) instead of copying OpenCode SKILL.md files into `src/harnesses/cursor/skills/`
+- Switched Cursor skill customization strategy to lightweight Cursor terminology substitution over shared rendered content (with optional minimal base-template edits only if required)
+- Updated Phase 2 bundled harness snippet to include `universal` alongside `opencode` and `cursor`
+- Removed per-harness Cursor skill-copy files from Files Touched and aligned skill-test expectations with shared-template rendering
 
 ### v1.1 (March 23, 2026) — Review revisions
 

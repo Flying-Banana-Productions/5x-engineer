@@ -39,6 +39,7 @@ capabilities:
    is available. Pass `--default` to provide a fallback for non-interactive
    environments.
 
+{{#if native}}
 ## Delegating to Subagents
 
 These skills assume an opencode environment with the 5x harness installed.
@@ -70,7 +71,30 @@ echo "$RESULT" | 5x protocol validate <role> \
 
 This pattern works for all author and reviewer delegation steps.
 `5x protocol validate --record` is the single recording point.
+{{else}}
+## Delegating with 5x invoke
 
+These skills assume a universal harness environment where delegation is
+handled through `5x invoke`.
+
+Delegate work by invoking the role/template pair directly and letting
+`5x invoke --record` validate and record in one step:
+
+```bash
+RESULT=$(5x invoke <author|reviewer> <template> --run $RUN \
+  --var key=value \
+  --record --record-step <step_name>)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result // .data.result.readiness')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+```
+
+This pattern works for all author and reviewer delegation steps.
+`5x invoke --record` is the single recording point.
+{{/if}}
+
+{{#if native}}
 ## Task Reuse
 
 **Task reuse** is optional and best-effort. The Task tool returns a
@@ -82,19 +106,52 @@ To also get a shorter continued-template variant, pass the `task_id` as
 the `--session` value to `5x template render --session <task_id>`. If
 task reuse is unavailable or awkward, start a fresh task (omit
 `task_id`) — never fail a workflow because task reuse didn't work.
+{{else}}
+## Session Reuse
+
+**Session reuse** is optional and best-effort. `5x invoke` returns a
+`session_id` from each invocation. Pass it back via `--session` to resume
+the same provider session with full prior context.
+
+To also get a shorter continued-template variant, pass `--session`
+to `5x invoke` (it forwards the value to template rendering internally).
+If session reuse is unavailable or awkward, start a fresh invocation
+(omit `--session`) — never fail a workflow because session reuse didn't
+work.
+{{/if}}
 
 ## Gotchas
 
+{{#if native}}
 - **`5x protocol validate --record` is the single recording point.**
   Never record separately — validate handles it.
+{{else}}
+- **`5x invoke --record` is the single recording point.**
+  Never record separately — invoke handles validation + recording together.
+{{/if}}
+{{#if native}}
 - **Task reuse is best-effort.** Never fail a workflow because
   task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
+{{else}}
+- **Session reuse is best-effort.** Never fail a workflow because
+  session reuse didn't work. Drop the stale `session_id` (omit `--session`)
+  and move on.
+{{/if}}
 - **`result: "complete"` without a commit = invariant violation** in any
   author step. Authors commit via `5x commit --run $RUN` (which records
+{{#if native}}
   the commit in the run journal). Re-invoke with a fresh task (omit
   `task_id`). If it fails again, escalate to the human.
+{{else}}
+  the commit in the run journal). Re-invoke without `--session`. If it fails again, escalate to the human.
+{{/if}}
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
+{{#if native}}
 - **Empty or invalid subagent output**: Retry once with a fresh task
   (omit `task_id`). If it fails again, escalate to the human.
+{{else}}
+- **Empty or invalid subagent output**: Retry once without `--session`.
+  If it fails again, escalate to the human.
+{{/if}}

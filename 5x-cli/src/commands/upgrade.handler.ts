@@ -118,7 +118,7 @@ function transformConfigObject(raw: Record<string, unknown>): {
  *    with defaults, write back via `patch()` to preserve comments.
  */
 async function upgradeConfig(projectRoot: string): Promise<string[]> {
-	const configPath = discoverConfigFile(projectRoot);
+	const configPath = discoverConfigFile(projectRoot, projectRoot);
 	const log: string[] = [];
 
 	if (!configPath) {
@@ -340,7 +340,7 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 
 	// 2. Database — need config to know DB path
 	// Re-discover config after potential migration
-	const configPath = discoverConfigFile(projectRoot);
+	const configPath = discoverConfigFile(projectRoot, projectRoot);
 	let dbRelPath = ".5x/5x.db";
 	if (configPath) {
 		try {

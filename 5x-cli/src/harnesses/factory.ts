@@ -24,6 +24,7 @@ const BUNDLED_HARNESSES: Record<
 	() => Promise<{ default: HarnessPlugin }>
 > = {
 	opencode: () => import("./opencode/plugin.js"),
+	universal: () => import("./universal/plugin.js"),
 };
 
 // ---------------------------------------------------------------------------

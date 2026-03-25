@@ -32,11 +32,11 @@ export function resolveProjectRoot(startDir?: string): string {
 	const start = resolve(startDir ?? ".");
 
 	// Prefer config file location — most explicit signal of project root
-	const configPath = discoverConfigFile(start);
+	const gitRoot = findGitRoot(start);
+	const configPath = discoverConfigFile(start, gitRoot ?? start);
 	if (configPath) return dirname(configPath);
 
 	// Fall back to git root
-	const gitRoot = findGitRoot(start);
 	if (gitRoot) return gitRoot;
 
 	// Last resort: the starting directory itself

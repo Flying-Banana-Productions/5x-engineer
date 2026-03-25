@@ -31,8 +31,13 @@ timeout handling.
 - Plan path must resolve inside `paths.plans` (from config)
 - After author generates plan, file must exist AND parse via
   `5x plan phases`
+{{#if native}}
 - Author must produce a commit via `5x commit` — no commit is an
   invariant violation; re-invoke with a fresh task (omit `task_id`)
+{{else}}
+- Author must produce a commit via `5x commit` — no commit is an
+  invariant violation; re-invoke without `--session`
+{{/if}}
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
 
 ## Tools
@@ -43,7 +48,11 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+{{#if native}}
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+{{else}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
@@ -69,6 +78,7 @@ and skip to the appropriate step based on recorded history.
 
 ### Step 2: Generate the plan
 
+{{#if native}}
 Delegate to the plan author via the Task tool:
 
 ```bash
@@ -82,6 +92,19 @@ RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase plan
 ```
+{{else}}
+Delegate to the plan author via `5x invoke`:
+
+```bash
+RESULT=$(5x invoke author author-generate-plan --run $RUN \
+  --var prd_path=$PRD_PATH \
+  --record --record-step author:generate-plan --phase plan)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+```
+{{/if}}
 
 Check the result:
 - If `result: "complete"` — continue to Step 3.
@@ -119,14 +142,27 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Plan file missing after author claims complete**: The author likely
   wrote to the wrong path. Re-invoke with explicit emphasis on the
   output path. If it fails again, ask the human.
+{{#if native}}
 - **Plan has no parseable phases**: The author didn't follow the template
   structure. Re-invoke with a fresh task (omit `task_id`) and explicit
   instructions to follow the template format.
+{{else}}
+- **Plan has no parseable phases**: The author didn't follow the template
+  structure. Re-invoke without `--session` and explicit instructions to follow
+  the template format.
+{{/if}}
 - **Author claims complete but no commit** (no `5x commit` was run):
+{{#if native}}
   Invariant violation — treat as context loss. Re-invoke with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
+{{else}}
+  Invariant violation — treat as context loss. Re-invoke without `--session`.
+  If it fails again, escalate to the human.
+- **Subagent returns empty or invalid output**: Retry once without `--session`.
+  If it fails again, escalate to the human.
+{{/if}}
 
 ## Completion
 

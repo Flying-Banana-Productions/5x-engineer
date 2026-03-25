@@ -28,7 +28,12 @@ timeout handling.
 
 - Only completed review-then-author cycles count toward
   `maxReviewIterations` — retries from timeout/empty output don't count
-- Empty diff after author "completes" = context loss → start fresh task
+- Empty diff after author "completes" = context loss →
+{{#if native}}
+  start fresh task (omit `task_id`)
+{{else}}
+  start fresh session (omit `--session`)
+{{/if}}
 - `not_ready` with no actionable items → escalate, don't loop
 - `SESSION_REQUIRED` error → pass `--new-session` to `5x template render`
 - Read `maxReviewIterations` from `5x config show` for the iteration limit
@@ -41,11 +46,16 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+{{#if native}}
 - `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
+{{else}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 
+{{#if native}}
 ### Delegating sub-agent work
 
 **Canonical delegation example (reviewer:review):**
@@ -83,6 +93,25 @@ value. Use `--new-session` only for recovery (context loss, empty output).
 
 When `--session` is passed, the command automatically selects the shorter
 `reviewer-plan-continued` template variant if one exists.
+{{else}}
+### Delegating review/author work with invoke
+
+**Canonical delegation example (reviewer:review):**
+
+```bash
+RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
+  --var plan_path=$PLAN_PATH \
+  ${SESSION_ID:+--session $SESSION_ID} \
+  --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
+
+READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
+ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+```
+
+Session reuse is best-effort. Pass `--session $SESSION_ID` when
+continuing context. Use `--new-session` only for recovery.
+{{/if}}
 
 Projects using plan-review should enable
 `reviewer.continuePhaseSessions = true` in their `5x.toml` once they have
@@ -91,14 +120,25 @@ confirmed all reviewer templates have `-continued` variants.
 ## Workflow
 
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
+{{#if native}}
 Track $REVIEWER_TASK_ID (initially empty). Task reuse is enforced when
 `reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_TASK_ID`
 to `5x template render` and pass `task_id=$REVIEWER_TASK_ID` to the Task tool
 on subsequent reviews.
+{{else}}
+Track $SESSION_ID (initially empty). Session reuse is enforced when
+`reviewer.continuePhaseSessions` is enabled — pass `--session $SESSION_ID`
+on subsequent invoke calls.
+{{/if}}
+{{#if native}}
 Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
+{{else}}
+Read $REVIEW_PATH from a separate template render call before each reviewer invoke.
+{{/if}}
 
 ### Step 1: Review
 
+{{#if native}}
 Delegate to the reviewer via the Task tool:
 
 ```bash
@@ -123,10 +163,30 @@ in the prior task context.
 
 Capture `$REVIEWER_TASK_ID` from the Task tool's returned `task_id` for
 reuse in subsequent reviews.
+{{else}}
+Delegate to the reviewer via `5x invoke`:
+
+```bash
+# Extract review_path for reporting/audit
+REVIEW_PATH=$(5x template render reviewer-plan --run $RUN \
+  --var plan_path=$PLAN_PATH \
+  ${SESSION_ID:+--session $SESSION_ID} \
+  | jq -r '.data.variables.review_path')
+
+RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
+  --var plan_path=$PLAN_PATH \
+  ${SESSION_ID:+--session $SESSION_ID} \
+  --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
+
+READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
+ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+```
+{{/if}}
 
 ### Step 2: Route the verdict
 
-Read the verdict from the `5x protocol validate` output:
+Read the verdict from `READINESS` (`.data.result.readiness`):
 
 **If `readiness: "ready"`:**
   Plan is approved. Go to Step 5 (Complete).
@@ -147,6 +207,7 @@ Read the verdict from the `5x protocol validate` output:
 
 ### Step 3: Author fix
 
+{{#if native}}
 Delegate to the plan author via the Task tool:
 
 ```bash
@@ -161,6 +222,19 @@ echo "$RESULT" | 5x protocol validate author \
   --run $RUN --record --step $STEP --phase plan \
   --no-phase-checklist-validate
 ```
+{{else}}
+Delegate to the plan author via `5x invoke`:
+
+```bash
+RESULT=$(5x invoke author author-process-plan-review --run $RUN \
+  --var plan_path=$PLAN_PATH \
+  --record --record-step author:process-plan-review --phase plan)
+
+STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
+COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
+SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+```
+{{/if}}
 
 Check the result:
 - `result: "complete"` — go to Step 1 (next review cycle).
@@ -204,7 +278,7 @@ Present the situation to the human:
 
 Report to the human: plan review is complete. Verdict: approved
 (or overridden). Review document is at the auto-generated review path
-(read from `.data.variables.review_path` in the template render output).
+(`$REVIEW_PATH`).
 
 ## Invariants
 
@@ -222,21 +296,39 @@ Report to the human: plan review is complete. Verdict: approved
   items and the author's notes to the human for judgment.
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
+{{#if native}}
   with a fresh task (omit `task_id`) and explicit instructions to provide
+{{else}}
+  without `--session` and explicit instructions to provide
+{{/if}}
   actionable items. If it happens again, escalate to the human.
 - **Phase count changed after revision**: The author restructured the
   plan significantly. This may be valid (reviewer asked for it) or a
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
+{{#if native}}
   Suspect context loss (compaction). Re-invoke with a fresh task (omit
   `task_id`). If it happens twice, escalate to the human.
+{{else}}
+  Suspect context loss (compaction). Re-invoke without `--session`.
+  If it happens twice, escalate to the human.
+{{/if}}
+{{#if native}}
 - **Subagent returns empty or invalid output**: Retry once with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
+{{else}}
+- **Subagent returns empty or invalid output**: Retry once without `--session`.
+  If it fails again, escalate to the human.
+{{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires `--session`
   or `--new-session` because `continuePhaseSessions` is enabled and prior
   steps exist. Pass `--new-session` to recover, or pass the reviewer's
+{{#if native}}
   `task_id` as `--session` to continue normally.
+{{else}}
+  `session_id` as `--session` to continue normally.
+{{/if}}
 
 ## Completion
 
