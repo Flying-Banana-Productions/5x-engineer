@@ -84,3 +84,26 @@ Phase 2 mostly lands cleanly. The Cursor resolver is correct for both scopes, th
 
 **P1 recommended**
 - [x] Proceed to Phase 3 after the template contract typo is fixed
+
+## Addendum — Phase 2 fix confirmation
+
+**Review type:** commit `36ff6c9d78b73f5e34447c88447b3640be9bbf16`
+**Scope:** Confirmation of the Cursor reviewer template contract fix
+**Reviewer:** Staff engineer
+**Local verification:** template diff + file inspection ✅
+
+## Summary
+
+Confirmed fixed. `src/harnesses/cursor/5x-reviewer.md` now matches the OpenCode reviewer contract, names `ReviewerVerdict` correctly, and restores the missing reviewer guidance that was required for the installed Cursor asset.
+
+**Readiness:** Ready — the prior Phase 2 blocker is resolved.
+
+## Fix validation
+
+- The incorrect `ReviewVerdict` reference has been replaced with `ReviewerVerdict`.
+- The file now aligns with the OpenCode reviewer template's protocol wording and schema guidance.
+- This removes the previously identified protocol mismatch for installed Cursor reviewer assets.
+
+## Remaining notes
+
+- No new issues found in this fix.
