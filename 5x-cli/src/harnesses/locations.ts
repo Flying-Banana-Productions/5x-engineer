@@ -36,6 +36,8 @@ export interface HarnessLocations {
 	agentsDir: string;
 	/** Absolute path to the skills directory for this scope. */
 	skillsDir: string;
+	/** Optional absolute path to rules directory for this scope. */
+	rulesDir?: string;
 }
 
 /**

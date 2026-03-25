@@ -52,6 +52,14 @@ export interface HarnessInstallResult {
 	skills: InstallSummary;
 	/** Summary of installed agent profile files. */
 	agents: InstallSummary;
+	/** Summary of installed rule files. */
+	rules?: InstallSummary;
+	/** Explicitly unsupported asset types for this scope. */
+	unsupported?: {
+		rules?: boolean;
+	};
+	/** Optional human-readable warnings for install output. */
+	warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +70,10 @@ export interface HarnessInstallResult {
 export interface HarnessDescription {
 	skillNames: string[];
 	agentNames: string[];
+	ruleNames?: string[];
+	capabilities?: {
+		rules?: boolean;
+	};
 }
 
 /** Context provided to a harness plugin's uninstall function. */
@@ -80,6 +92,12 @@ export interface HarnessUninstallResult {
 	skills: UninstallSummary;
 	/** Summary of uninstalled agent profile files. */
 	agents: UninstallSummary;
+	/** Summary of uninstalled rule files. */
+	rules?: UninstallSummary;
+	/** Explicitly unsupported asset types for this scope. */
+	unsupported?: {
+		rules?: boolean;
+	};
 }
 
 /**
@@ -101,8 +119,8 @@ export interface HarnessPlugin {
 			homeDir?: string,
 		): HarnessLocations;
 	};
-	/** Return names of managed skills and agents. */
-	describe(): HarnessDescription;
+	/** Return names of managed assets (optionally scope-aware). */
+	describe(scope?: HarnessScope): HarnessDescription;
 	/** Install skills and agent profiles for this harness. */
 	install(ctx: HarnessInstallContext): Promise<HarnessInstallResult>;
 	/** Uninstall skills and agent profiles for this harness. */

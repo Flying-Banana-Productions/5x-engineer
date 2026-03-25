@@ -82,7 +82,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** The harness framework can install, list, and uninstall rules in addition to skills and agents. All existing harnesses (OpenCode) continue to work unchanged.
 
-- [ ] **Extend `HarnessLocations` with optional `rulesDir`** in `src/harnesses/types.ts` (line 32-39 area)
+- [x] **Extend `HarnessLocations` with optional `rulesDir`** in `src/harnesses/types.ts` (line 32-39 area)
   ```typescript
   export interface HarnessLocations {
     rootDir: string;
@@ -92,7 +92,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `HarnessDescription` with optional `ruleNames` and `capabilities`** in `src/harnesses/types.ts` (line 61-65 area)
+- [x] **Extend `HarnessDescription` with optional `ruleNames` and `capabilities`** in `src/harnesses/types.ts` (line 61-65 area)
   ```typescript
   export interface HarnessDescription {
     skillNames: string[];
@@ -104,7 +104,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `describe()` with optional scope parameter** in plugin contract
+- [x] **Extend `describe()` with optional scope parameter** in plugin contract
   ```typescript
   describe(scope?: HarnessScope): HarnessDescription;
   ```
@@ -113,7 +113,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - User scope: `capabilities.rules = false` (unsupported for Cursor), `ruleNames` empty or omitted
   When `scope` is omitted, returns global/default description.
 
-- [ ] **Extend `HarnessInstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 49-55 area)
+- [x] **Extend `HarnessInstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 49-55 area)
   ```typescript
   export interface HarnessInstallResult {
     skills: InstallSummary;
@@ -126,7 +126,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Extend `HarnessUninstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 77-83 area)
+- [x] **Extend `HarnessUninstallResult` with optional `rules`** and `unsupported` in `src/harnesses/types.ts` (line 77-83 area)
   ```typescript
   export interface HarnessUninstallResult {
     skills: UninstallSummary;
@@ -138,7 +138,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add `installRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 169)
+- [x] **Add `installRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 169)
   ```typescript
   export function installRuleFiles(
     rulesDir: string,
@@ -153,7 +153,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add `uninstallRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 259)
+- [x] **Add `uninstallRuleFiles()` helper** in `src/harnesses/installer.ts` (after line 259)
   ```typescript
   export function uninstallRuleFiles(
     rulesDir: string,
@@ -178,7 +178,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Update `harness list` handler** in `src/commands/harness.handler.ts` (around line 200-214)
+- [x] **Update `harness list` handler** in `src/commands/harness.handler.ts` (around line 200-214)
   - Pass current scope to `plugin.describe(scope)` to get scope-aware metadata
   - Add rule file detection loop similar to skills/agents (when `capabilities.rules` is true)
   - Include rules in `files` array with `rules/` prefix
@@ -194,15 +194,15 @@ The key design decision is to match the OpenCode harness capabilities wherever C
     }
     ```
 
-- [ ] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` (line 348-380) to print rule installation results
+- [x] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` (line 348-380) to print rule installation results
 
-- [ ] **Update `src/harnesses/README.md`** to document the optional rule contract for plugin authors
+- [x] **Update `src/harnesses/README.md`** to document the optional rule contract for plugin authors
 
-- [ ] **Add unit tests** in `test/unit/harnesses/installer.test.ts` for rule install/uninstall helpers
+- [x] **Add unit tests** in `test/unit/harnesses/installer.test.ts` for rule install/uninstall helpers
   - Rule file creation, overwrite, skip semantics
   - Directory cleanup on uninstall
 
-- [ ] **Add unit tests in `test/unit/commands/harness.test.ts`** for scope-aware unsupported/rules JSON shape
+- [x] **Add unit tests in `test/unit/commands/harness.test.ts`** for scope-aware unsupported/rules JSON shape
   - `harness list --format json` includes `capabilities` field when plugin supports it
   - `harness list --format json` includes `unsupported.rules: true` when scope doesn't support rules
   - Handler correctly passes scope to `describe(scope)` call

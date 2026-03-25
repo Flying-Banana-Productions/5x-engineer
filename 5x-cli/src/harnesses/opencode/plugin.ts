@@ -21,6 +21,7 @@ import type {
 	HarnessInstallContext,
 	HarnessInstallResult,
 	HarnessPlugin,
+	HarnessScope,
 	HarnessUninstallContext,
 	HarnessUninstallResult,
 } from "../types.js";
@@ -34,9 +35,19 @@ const opencodePlugin: HarnessPlugin = {
 
 	locations: opencodeLocationResolver,
 
-	describe(): HarnessDescription {
+	describe(scope?: HarnessScope): HarnessDescription {
 		const skillNames = listSkillNames();
 		const agentNames = listAgentTemplates().map((t) => t.name);
+
+		if (scope) {
+			return {
+				skillNames,
+				agentNames,
+				ruleNames: [],
+				capabilities: { rules: false },
+			};
+		}
+
 		return { skillNames, agentNames };
 	},
 

@@ -60,6 +60,12 @@ export interface HarnessScopeStatus {
 	installed: boolean;
 	root: string;
 	files: string[];
+	unsupported?: {
+		rules?: boolean;
+	};
+	capabilities?: {
+		rules?: boolean;
+	};
 }
 
 /** A single harness entry in list output. */
@@ -154,6 +160,8 @@ export async function harnessInstall(
 		locations.rootDir,
 		result.skills,
 		result.agents,
+		result.rules,
+		result.warnings,
 	);
 }
 
@@ -189,11 +197,12 @@ export async function buildHarnessListData(
 	for (const name of names) {
 		const { plugin, source } = await loadHarnessPlugin(name);
 		const description = plugin.description;
-		const { skillNames, agentNames } = plugin.describe();
 
 		const scopes: Partial<Record<HarnessScope, HarnessScopeStatus>> = {};
 
 		for (const scope of plugin.supportedScopes) {
+			const { skillNames, agentNames, ruleNames, capabilities } =
+				plugin.describe(scope);
 			const locations = plugin.locations.resolve(scope, projectRoot, homeDir);
 			const files: string[] = [];
 
@@ -213,10 +222,26 @@ export async function buildHarnessListData(
 				}
 			}
 
+			// Check rule files
+			if (capabilities?.rules === true && locations.rulesDir) {
+				for (const ruleName of ruleNames ?? []) {
+					const filePath = join(locations.rulesDir, `${ruleName}.mdc`);
+					if (existsSync(filePath)) {
+						files.push(`rules/${ruleName}.mdc`);
+					}
+				}
+			}
+
+			const unsupportedRules =
+				capabilities?.rules === false ||
+				(capabilities?.rules === undefined && !locations.rulesDir);
+
 			scopes[scope] = {
 				installed: files.length > 0,
 				root: locations.rootDir,
 				files,
+				unsupported: unsupportedRules ? { rules: true } : undefined,
+				capabilities,
 			};
 		}
 
@@ -351,6 +376,8 @@ function printInstallSummary(
 	rootDir: string,
 	skills: { created: string[]; overwritten: string[]; skipped: string[] },
 	agents: { created: string[]; overwritten: string[]; skipped: string[] },
+	rules?: { created: string[]; overwritten: string[]; skipped: string[] },
+	warnings?: string[],
 ): void {
 	const label = scope === "user" ? "user" : "project";
 
@@ -374,6 +401,22 @@ function printInstallSummary(
 	}
 	for (const name of agents.skipped) {
 		console.log(`  Skipped agent: ${name} (already exists)`);
+	}
+
+	if (rules) {
+		for (const name of rules.created) {
+			console.log(`  Created rule: ${name}`);
+		}
+		for (const name of rules.overwritten) {
+			console.log(`  Overwrote rule: ${name}`);
+		}
+		for (const name of rules.skipped) {
+			console.log(`  Skipped rule: ${name} (already exists)`);
+		}
+	}
+
+	for (const warning of warnings ?? []) {
+		console.log(`  Warning: ${warning}`);
 	}
 
 	console.log(`  ${harnessName} ${label} install complete.`);

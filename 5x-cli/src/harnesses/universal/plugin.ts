@@ -9,6 +9,7 @@ import type {
 	HarnessInstallContext,
 	HarnessInstallResult,
 	HarnessPlugin,
+	HarnessScope,
 	HarnessUninstallContext,
 	HarnessUninstallResult,
 } from "../types.js";
@@ -21,11 +22,21 @@ const universalPlugin: HarnessPlugin = {
 
 	locations: universalLocationResolver,
 
-	describe(): HarnessDescription {
-		return {
+	describe(scope?: HarnessScope): HarnessDescription {
+		const description: HarnessDescription = {
 			skillNames: listBaseSkillNames(),
 			agentNames: [],
 		};
+
+		if (scope) {
+			return {
+				...description,
+				ruleNames: [],
+				capabilities: { rules: false },
+			};
+		}
+
+		return description;
 	},
 
 	async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
