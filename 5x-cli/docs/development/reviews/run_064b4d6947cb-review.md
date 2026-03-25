@@ -107,3 +107,49 @@ Confirmed fixed. `src/harnesses/cursor/5x-reviewer.md` now matches the OpenCode 
 ## Remaining notes
 
 - No new issues found in this fix.
+
+## Addendum — Phase 3 assessment
+
+**Review type:** commit `5c1c8bc24ba81a3d980aad9244591d23232a2480` (no follow-on commits)
+**Scope:** Phase 3 changes for Cursor orchestrator rule, subagent templates, and model-aware template rendering
+**Reviewer:** Staff engineer
+**Local verification:** file inspection ✅, `bun test test/unit/harnesses/cursor-loader.test.ts test/unit/harnesses/cursor.test.ts` ✅
+
+## Summary
+
+Phase 3 is complete. The Cursor harness now ships a usable orchestrator rule, fully fleshed-out author/reviewer subagent templates, and loader-driven model injection that matches the phase contract.
+
+**Readiness:** Ready — Phase 3 completion gate met; no blocking correctness, architecture, security, or test coverage gaps found.
+
+## Strengths
+
+- `src/harnesses/cursor/5x-orchestrator.mdc` has the required Cursor rule frontmatter (`description`, `alwaysApply: false`) and captures the expected orchestration/worktree guidance from the plan.
+- All three subagent templates are now full workflow prompts rather than stubs, including protocol contract text and working-directory authority guidance.
+- `src/harnesses/cursor/loader.ts` cleanly centralizes template metadata plus `yamlQuote()` / `injectModel()` behavior, with omission of `model` when unset and quoted YAML-safe injection when configured.
+- Loader tests cover the critical rendering cases: omit-when-unset, author/reviewer role routing, and escaping for `:`, `"`, `\\`, `\n`, and `\r`.
+- The previously flagged reviewer contract issue remains fixed; the installed Cursor reviewer template now correctly requires `ReviewerVerdict`.
+
+## Production Readiness Blockers
+
+None.
+
+## High Priority (P1)
+
+- None.
+
+## Medium Priority (P2)
+
+- None.
+
+## Readiness Checklist
+
+**P0 blockers**
+- [x] `5x-orchestrator.mdc` exists with correct frontmatter
+- [x] `5x-plan-author.md`, `5x-code-author.md`, and `5x-reviewer.md` are fully fleshed out
+- [x] `loader.ts` implements `renderAgentTemplates()` with `yamlQuote()` and `injectModel()`
+- [x] Model injection omits `model` when unset and injects quoted YAML-safe values when set
+- [x] Unit tests cover omission and escaping behavior
+- [x] Reviewer template uses the correct `ReviewerVerdict` contract
+
+**P1 recommended**
+- [x] Proceed to Phase 4
