@@ -26,16 +26,18 @@ qualityGates = [
 # provider = "opencode"
 # model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
-# Enable after confirming all author templates have -continued variants
-# continuePhaseSessions = false
+#
+# When true, enforce session continuity across steps within the same phase.
+continuePhaseSessions = false
 
 # Reviewer agent configuration (default provider: opencode)
 [reviewer]
 # provider = "opencode"
 # model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
-# Enable after confirming all reviewer templates have -continued variants
-# continuePhaseSessions = false
+#
+# When true, enforce session continuity across steps within the same phase.
+continuePhaseSessions = true
 
 # Optional hook run after creating a new worktree
 [worktree]
