@@ -558,30 +558,30 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Users can install and use the Cursor harness without reading source code. Install output clearly distinguishes skills, agents, and rules with appropriate warnings for user-scope limitations.
 
-- [ ] **Update `README.md`** with Cursor harness install instructions:
+- [x] **Update `README.md`** with Cursor harness install instructions:
   - Add Cursor to the list of supported harnesses
   - Document `5x harness install cursor --scope project` and `--scope user`
   - Add "how to start a 5x workflow in Cursor" section
   - Document the user-scope limitation for rules
   - Document that project-scope harness install requires `5x init` first
 
-- [ ] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` to:
+- [x] **Update `printInstallSummary()`** in `src/commands/harness.handler.ts` to:
   - Print rule installation results when present
   - Print warnings array from install result
   - For Cursor user scope, explicitly state: "Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule."
 
-- [ ] **Update `buildHarnessListData()`** in `src/commands/harness.handler.ts`:
+- [x] **Update `buildHarnessListData()`** in `src/commands/harness.handler.ts`:
   - Check for rule files (`.mdc`) in `rulesDir` when present
   - Include `rules/` prefix in file listings
   - Include `unsupported` field in JSON output when harness reports it
 
-- [ ] **Ensure `harness list` readable output** shows:
+- [x] **Ensure `harness list` readable output** shows:
   - Skills: `skills/5x/SKILL.md`, etc.
   - Agents: `agents/5x-reviewer.md`, etc.
   - Rules: `rules/5x-orchestrator.mdc` (project scope only for Cursor)
   - For user scope: "rules: unsupported (Cursor user rules are settings-managed)"
 
-- [ ] **Add integration tests** in `test/integration/commands/harness.test.ts`:
+- [x] **Add integration tests** in `test/integration/commands/harness.test.ts`:
   - `5x harness install cursor --scope project` writes `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/`
   - `5x harness install cursor --scope user` writes `~/.cursor/skills/` and `~/.cursor/agents/`, not rules
   - `5x harness list` shows correct installed state for both scopes

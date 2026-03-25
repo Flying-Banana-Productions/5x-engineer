@@ -419,5 +419,11 @@ function printInstallSummary(
 		console.log(`  Warning: ${warning}`);
 	}
 
+	if (harnessName === "cursor" && scope === "user") {
+		console.log(
+			"  Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule.",
+		);
+	}
+
 	console.log(`  ${harnessName} ${label} install complete.`);
 }
