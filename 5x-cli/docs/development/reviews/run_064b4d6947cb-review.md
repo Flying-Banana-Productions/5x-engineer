@@ -40,3 +40,47 @@ None.
 
 **P1 recommended**
 - [x] Proceed to Phase 2
+
+## Addendum — Phase 2 assessment
+
+**Review type:** commit `ce035bfb4b582af4dea2eab9fd4921d9d87494ca`
+**Scope:** Phase 2 changes for Cursor resolver, bundled plugin registration, and initial Cursor harness shell
+**Reviewer:** Staff engineer
+**Local verification:** `bun test test/unit/harnesses/cursor.test.ts` ✅
+
+## Summary
+
+Phase 2 mostly lands cleanly. The Cursor resolver is correct for both scopes, the plugin is bundled and loadable, and scope-aware `describe()`/install behavior matches the plan's project-vs-user rule split.
+
+**Readiness:** Ready with corrections — Phase 2 completion gate is effectively met, but the newly installed Cursor reviewer asset currently points agents at the wrong verdict contract and should be corrected before treating the harness shell as a safe base for Phase 3.
+
+## Strengths
+
+- `cursorLocationResolver` matches the documented `.cursor/` / `~/.cursor/` layout and correctly omits `rulesDir` for user scope.
+- Bundled harness registration is minimal and consistent with the existing factory pattern.
+- `cursorPlugin.describe(scope)` exposes the right scope-aware rule capability metadata for downstream list/install flows.
+- Unit coverage exercises resolver behavior, bundle loading, project/user install behavior, and list data shape.
+
+## Production Readiness Blockers
+
+- The installed reviewer template tells Cursor to return a `ReviewVerdict` object, but the 5x contract is `ReviewerVerdict` (or normalized `verdict/issues` shape). Shipping this template would mis-specify the protocol for the reviewer subagent and create avoidable validation failures once Phase 3 starts exercising the installed assets.
+
+## High Priority (P1)
+
+- Fix the Cursor reviewer template contract text to reference `ReviewerVerdict`, not `ReviewVerdict`, and keep the naming aligned with the existing OpenCode reviewer template and protocol normalization rules.
+
+## Medium Priority (P2)
+
+- The Cursor agent/rule prompt files are currently very skeletal relative to the Phase 3 plan (no commit requirement, no worktree-authority guidance, no reviewer non-edit constraint copyover). That's acceptable for a Phase 2 shell, but it means the currently installable harness should still be treated as incomplete until Phase 3 lands.
+
+## Readiness Checklist
+
+**P0 blockers**
+- [x] `loadHarnessPlugin("cursor")` resolves the bundled plugin
+- [x] Project scope resolves `.cursor/{skills,agents,rules}`
+- [x] User scope resolves `~/.cursor/{skills,agents}` with rules unsupported
+- [x] Plugin describes scope-aware assets and rule capability metadata
+- [ ] Reviewer asset contract text corrected before using installed assets as a Phase 3 baseline
+
+**P1 recommended**
+- [x] Proceed to Phase 3 after the template contract typo is fixed
