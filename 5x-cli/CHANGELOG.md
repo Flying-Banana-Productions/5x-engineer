@@ -5,6 +5,62 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.0 (2026-03-25)
+
+### Features
+
+- **Universal harness** — new `universal` harness plugin installs 5x skills
+  and agents into any directory (`.agents/`, `.skills/`), suitable for agents
+  and tools not covered by a dedicated harness.
+- **Cursor harness** — new `cursor` harness installs skills, subagents
+  (`5x-plan-author`, `5x-code-author`, `5x-reviewer`), an orchestrator rule,
+  and a permissions rule into `.cursor/` (project scope) or `~/.cursor/`
+  (user scope). Covers both Cursor IDE and cursor-agent CLI. User-scope rule
+  limitation is surfaced explicitly in install output.
+- **Shared skill template system** — base skill templates extracted to
+  `src/skills/base/` and rendered via `renderAllSkillTemplates()`. Harnesses
+  consume shared templates with harness-specific terminology adaptation
+  (`native` mode for non-OpenCode harnesses), eliminating per-harness skill
+  copies.
+- **`5x commit` command** — dedicated commit command that stages files,
+  commits, and records the commit in the run journal. Authors use
+  `5x commit --run <id>` in place of raw `git commit`.
+- **Harness rule support** — optional `rulesDir`, `ruleNames`, `rules`
+  install/uninstall summaries, `unsupported`, `warnings`, and `capabilities`
+  fields added to the harness plugin contract. `installRuleFiles()` and
+  `uninstallRuleFiles()` helpers added to the installer.
+- **Scope-aware `describe(scope?)`** — harness plugins return scope-aware
+  metadata including `capabilities.rules` used by `harness list` to show
+  rules or an unsupported notice per scope.
+
+### Fixes
+
+- Prevent `readUpstreamEnvelope` from blocking on dangling stdin pipe.
+- Fix `review_path` doubling when worktree path is already inside
+  `worktreeRoot`.
+- Fix quality gates using sub-project cwd for layered configs instead of
+  worktree root.
+- Fix `git:commit` phase resolution and reviewer template compliance.
+- Fix native skill template parity with historical OpenCode content.
+- Fix text duplication after tool calls in stream output.
+- Fix OpenCode provider permission hang and duplicate stream output.
+- Fix `discoverConfigFile` escaping project root boundary.
+- Fix clear error when creating a worktree in an empty repo (no commits).
+- Fix `--record-step` flag usage in `5x invoke` blocks.
+
+### Improvements
+
+- `continuePhaseSessions` now defaults to `true` for the reviewer agent.
+- `harness list` shows rule files and a "rules: unsupported" notice for user
+  scope; includes `capabilities` and `unsupported` fields in JSON output.
+- `printInstallSummary` prints rule install results and warnings array.
+- `5x-permissions.mdc` rule (`alwaysApply: true`) installed alongside the
+  orchestrator rule in the Cursor harness to pre-authorize `5x` CLI commands
+  and file edits, reducing in-agent approval prompts.
+- Reviewer issue classification refined to reduce over-escalation of
+  auto-fixable items to `human_required`.
+- Skills updated to reference `5x commit` instead of raw `git commit`.
+
 ## 1.0.0 (2026-03-18)
 
 ### Breaking Changes
