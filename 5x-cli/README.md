@@ -179,6 +179,19 @@ delegate to `5x-plan-author`, `5x-code-author`, and `5x-reviewer`.
 > file-backed). `5x harness install cursor --scope user` installs skills and
 > subagents only.
 
+> **Reducing approval prompts:** By default Cursor asks for confirmation on
+> terminal commands and file edits. To run 5x workflows without interruption:
+>
+> - **Terminal commands:** `Cursor Settings → Agents → Auto-run mode` →
+>   set to **"Run everything"** (full auto) or **"Use allowlist"** and add
+>   `bun`, `git`, `5x` to the list.
+> - **File edits:** `Cursor Settings → Agents` → disable
+>   **"External file edit protection"**.
+>
+> The installed `5x-permissions.mdc` rule (`alwaysApply: true`) also
+> pre-authorizes subagents to run `5x` commands and edit files without
+> asking in-chat, reducing the "may I?" pauses independent of IDE settings.
+
 ### Option D: Bash Scripting
 
 Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.

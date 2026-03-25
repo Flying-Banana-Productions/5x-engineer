@@ -17,6 +17,7 @@ import type {
 	HarnessUninstallResult,
 } from "../types.js";
 import ruleTemplate from "./5x-orchestrator.mdc" with { type: "text" };
+import permissionsTemplate from "./5x-permissions.mdc" with { type: "text" };
 import { listAgentTemplates, renderAgentTemplates } from "./loader.js";
 import { listSkillNames, listSkills } from "./skills/loader.js";
 
@@ -43,7 +44,7 @@ const cursorPlugin: HarnessPlugin = {
 		return {
 			skillNames,
 			agentNames,
-			ruleNames: ["5x-orchestrator"],
+			ruleNames: ["5x-orchestrator", "5x-permissions"],
 			capabilities: { rules: true },
 		};
 	},
@@ -74,7 +75,10 @@ const cursorPlugin: HarnessPlugin = {
 		if (ctx.scope === "project" && locations.rulesDir) {
 			const rules = installRuleFiles(
 				locations.rulesDir,
-				[{ name: "5x-orchestrator", content: ruleTemplate }],
+				[
+					{ name: "5x-orchestrator", content: ruleTemplate },
+					{ name: "5x-permissions", content: permissionsTemplate },
+				],
 				ctx.force,
 			);
 			return { skills, agents, rules };

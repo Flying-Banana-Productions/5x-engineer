@@ -86,7 +86,7 @@ describe("cursor plugin describe()", () => {
 	test("describe() default includes project rule support", () => {
 		const desc = cursorPlugin.describe();
 		expect(desc.capabilities).toEqual({ rules: true });
-		expect(desc.ruleNames).toEqual(["5x-orchestrator"]);
+		expect(desc.ruleNames).toEqual(["5x-orchestrator", "5x-permissions"]);
 	});
 });
 
@@ -104,10 +104,14 @@ describe("cursor plugin install/uninstall", () => {
 			expect(result.skills.created.length).toBeGreaterThan(0);
 			expect(result.agents.created.length).toBe(3);
 			expect(result.rules?.created).toContain("5x-orchestrator.mdc");
+			expect(result.rules?.created).toContain("5x-permissions.mdc");
 			expect(result.unsupported).toBeUndefined();
 
 			expect(
 				existsSync(join(tmp, ".cursor", "rules", "5x-orchestrator.mdc")),
+			).toBe(true);
+			expect(
+				existsSync(join(tmp, ".cursor", "rules", "5x-permissions.mdc")),
 			).toBe(true);
 		} finally {
 			cleanupDir(tmp);
