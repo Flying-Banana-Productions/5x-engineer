@@ -212,7 +212,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** `loadHarnessPlugin("cursor")` resolves a bundled plugin and the plugin can describe its assets for both scopes.
 
-- [ ] **Add Cursor location resolver** in `src/harnesses/locations.ts` (after line 95)
+- [x] **Add Cursor location resolver** in `src/harnesses/locations.ts` (after line 95)
   ```typescript
   export const cursorLocationResolver: HarnessLocationResolver = {
     name: "cursor",
@@ -244,7 +244,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Register `cursor` in bundled harnesses** in `src/harnesses/factory.ts` (line 22-27)
+- [x] **Register `cursor` in bundled harnesses** in `src/harnesses/factory.ts` (line 22-27)
   ```typescript
   const BUNDLED_HARNESSES: Record<string, () => Promise<{ default: HarnessPlugin }>> = {
     opencode: () => import("./opencode/plugin.js"),
@@ -253,7 +253,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Create `src/harnesses/cursor/` directory** with initial structure:
+- [x] **Create `src/harnesses/cursor/` directory** with initial structure:
   - `plugin.ts` - main harness plugin implementation
   - `loader.ts` - subagent template loader and renderer
   - `skills/` - directory for Cursor-local skills
@@ -262,7 +262,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   - `5x-code-author.md` - code author subagent template
   - `5x-reviewer.md` - reviewer subagent template
 
-- [ ] **Implement `src/harnesses/cursor/plugin.ts`**
+- [x] **Implement `src/harnesses/cursor/plugin.ts`**
   ```typescript
   const cursorPlugin: HarnessPlugin = {
     name: "cursor",
@@ -365,7 +365,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   };
   ```
 
-- [ ] **Add unit tests** in `test/unit/harnesses/cursor.test.ts`
+- [x] **Add unit tests** in `test/unit/harnesses/cursor.test.ts`
   - Project scope resolves to `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/`
   - User scope resolves to `~/.cursor/skills/`, `~/.cursor/agents/`, no `rulesDir`
   - `describe()` returns correct skills, agents, and rule names

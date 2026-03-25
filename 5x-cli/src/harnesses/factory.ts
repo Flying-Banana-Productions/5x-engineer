@@ -25,6 +25,7 @@ const BUNDLED_HARNESSES: Record<
 > = {
 	opencode: () => import("./opencode/plugin.js"),
 	universal: () => import("./universal/plugin.js"),
+	cursor: () => import("./cursor/plugin.js"),
 };
 
 // ---------------------------------------------------------------------------

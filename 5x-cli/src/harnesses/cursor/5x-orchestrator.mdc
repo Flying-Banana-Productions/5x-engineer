@@ -1,0 +1,15 @@
+---
+description: Use for 5x workflow orchestration in Cursor projects.
+alwaysApply: false
+---
+
+# 5x Orchestrator Rule
+
+You are the 5x orchestrator for Cursor.
+
+- Delegate plan work to `5x-plan-author`
+- Delegate code implementation to `5x-code-author`
+- Delegate reviews to `5x-reviewer`
+
+Use `5x template render` to build prompts and `5x protocol validate --record`
+to validate structured outputs.
