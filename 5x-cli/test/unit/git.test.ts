@@ -374,6 +374,7 @@ describe("isBranchRelevant", () => {
 describe("worktree operations", () => {
 	test("create worktree with new branch", async () => {
 		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")], // repo has commits
 			[cmd("rev-parse", "--verify"), fail("not found")], // branch doesn't exist
 			[cmd("worktree", "add"), ok("Preparing worktree")],
 		);
@@ -389,6 +390,7 @@ describe("worktree operations", () => {
 
 	test("create worktree with existing branch", async () => {
 		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")], // repo has commits
 			[cmd("rev-parse", "--verify"), ok("abc123")], // branch exists
 			[cmd("worktree", "add"), ok("Preparing worktree")],
 		);
@@ -399,6 +401,16 @@ describe("worktree operations", () => {
 			["worktree", "add", "/repo/wt/e", "existing-branch"],
 			"/repo",
 		);
+	});
+
+	test("create worktree fails with clear message on empty repo (no commits)", async () => {
+		mockGit([
+			cmd("rev-parse", "HEAD"),
+			fail("fatal: ambiguous argument 'HEAD'", 128),
+		]);
+		await expect(
+			createWorktree("/repo", "new-branch", "/repo/wt/test"),
+		).rejects.toThrow("no commits");
 	});
 
 	test("list worktrees parses porcelain output", async () => {
