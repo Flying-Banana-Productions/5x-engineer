@@ -38,6 +38,9 @@ timeout handling.
 - Read `maxReviewIterations` and `maxQualityRetries` from
   `5x config show` — never hardcode limits
 - Phase count should not change during a run — if it does, flag to human
+- `run init --worktree` automatically skips the dirty-worktree check
+  (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
+  if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
 
 ## Tools
 
@@ -129,6 +132,12 @@ the existing run.
 
 If resuming an existing run (including runs migrated from v0), call
 `5x run state --run $RUN` to review recorded history.
+
+**Budget check:** Run `5x config show` and note `maxStepsPerRun`. Each
+phase with one review-fix cycle burns roughly 10–12 steps. If
+`(number of phases) * 12 > maxStepsPerRun`, warn the human that the
+step budget may be tight and suggest increasing `maxStepsPerRun` in
+`5x.toml` before proceeding.
 
 Get the phase list: `5x plan phases $PLAN_PATH`
 
@@ -252,6 +261,7 @@ Delegate to the reviewer via the Task tool:
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
   --var plan_path=$PLAN_PATH \
+  --var phase_number=$PHASE_NUMBER \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -273,6 +283,7 @@ Delegate to the reviewer via `5x invoke`:
 # template internally, so v1 does a separate render here.
 REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  --var phase_number=$PHASE \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 

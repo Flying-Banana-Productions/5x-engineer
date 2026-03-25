@@ -542,26 +542,25 @@ describe("5x run lifecycle", () => {
 			try {
 				const { planPath, projectRoot } = setupProject(dir);
 
+				// Set maxStepsPerRun=3 via config file (enforcement uses live config)
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 3\n");
+
 				const init = await run5x(projectRoot, [
 					"run",
 					"init",
 					"--plan",
 					planPath,
+					"--allow-dirty",
 				]);
 				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
 					.run_id as string;
 
-				// Set maxStepsPerRun=3 and insert 3 dummy steps directly via DB
-				// to avoid 3 subprocess spawns (the previous loop was the timeout
-				// culprit under concurrent execution).
+				// Insert 3 dummy steps directly via DB to avoid subprocess spawns
 				const { getDb } = await import("../../../src/db/connection.js");
 				const { _resetForTest, closeDb } = await import(
 					"../../../src/db/connection.js"
 				);
 				const db = getDb(projectRoot);
-				db.exec(
-					`UPDATE runs SET config_json = '{"maxStepsPerRun":3}' WHERE id = '${runId}'`,
-				);
 				for (let i = 0; i < 3; i++) {
 					db.exec(
 						`INSERT INTO steps (run_id, step_name, iteration, result_json)
@@ -1219,7 +1218,7 @@ describe("5x run lifecycle", () => {
 	// they added no coverage beyond the unit tests and caused CI timeouts.
 
 	test(
-		"corrupt config_json falls back to default maxStepsPerRun",
+		"corrupt config_json does not affect maxStepsPerRun (uses live config)",
 		async () => {
 			const dir = makeTmpDir();
 			try {

@@ -58,7 +58,7 @@ const FiveXConfigSchema = z
 		worktree: WorktreeSchema.default({}),
 		paths: PathsSchema.default({}),
 		db: DbSchema.default({}),
-		maxStepsPerRun: z.number().int().positive().default(50),
+		maxStepsPerRun: z.number().int().positive().default(250),
 		// Preserved for backward compat, deprecated
 		maxReviewIterations: z.number().int().positive().default(5),
 		maxQualityRetries: z.number().int().positive().default(3),

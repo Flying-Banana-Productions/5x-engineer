@@ -205,7 +205,7 @@ describe("5x config show (integration)", () => {
 				const data = envelope.data as Record<string, unknown>;
 				expect(data.maxReviewIterations).toBe(5);
 				expect(data.maxQualityRetries).toBe(3);
-				expect(data.maxStepsPerRun).toBe(50);
+				expect(data.maxStepsPerRun).toBe(250);
 
 				const author = data.author as Record<string, unknown>;
 				expect(author.provider).toBe("opencode");

@@ -39,6 +39,9 @@ timeout handling.
   invariant violation; re-invoke without `--session`
 {{/if}}
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
+- `run init --worktree` automatically skips the dirty-worktree check
+  (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
+  if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
 
 ## Tools
 

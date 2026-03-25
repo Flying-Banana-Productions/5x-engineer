@@ -195,7 +195,7 @@ function getMaxStepsPerRun(config: Record<string, unknown>): number {
 	) {
 		return config.maxAutoIterations;
 	}
-	return 50; // default
+	return 250; // default
 }
 
 type WorktreeAction = "reused" | "attached" | "created";
@@ -765,8 +765,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			);
 		}
 
-		// 2. Check git safety
-		if (!params.allowDirty) {
+		// 2. Check git safety (skip when --worktree: worktrees are isolated)
+		if (!params.allowDirty && !params.worktree) {
 			try {
 				const safety = await checkGitSafety(projectRoot);
 				if (!safety.safe) {
@@ -953,18 +953,11 @@ export async function recordStepInternal(
 		}
 	}
 
-	// Enforce maxStepsPerRun (guard against corrupt config_json)
-	let runConfig: Record<string, unknown> | null = null;
-	if (run.config_json) {
-		try {
-			runConfig = JSON.parse(run.config_json) as Record<string, unknown>;
-		} catch {
-			// Corrupt config_json — fall through to global config default
-		}
-	}
-	const maxSteps = runConfig
-		? getMaxStepsPerRun(runConfig)
-		: getMaxStepsPerRun(config as unknown as Record<string, unknown>);
+	// Enforce maxStepsPerRun from live config (not the snapshot in config_json,
+	// so users can bump the limit in 5x.toml without editing the database)
+	const maxSteps = getMaxStepsPerRun(
+		config as unknown as Record<string, unknown>,
+	);
 
 	const summary = computeRunSummary(db, params.run);
 	if (summary.total_steps >= maxSteps) {
