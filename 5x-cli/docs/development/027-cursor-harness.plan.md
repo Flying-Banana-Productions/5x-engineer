@@ -379,7 +379,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** Project-scope install writes a usable orchestrator rule and all three subagents; user-scope install writes all three subagents. Model injection correctly omits `model` when unset and YAML-escapes when set.
 
-- [ ] **Add `src/harnesses/cursor/5x-orchestrator.mdc`** with Cursor rule frontmatter:
+- [x] **Add `src/harnesses/cursor/5x-orchestrator.mdc`** with Cursor rule frontmatter:
   ```markdown
   ---
   description: Use for 5x plan generation, plan review, and phased implementation workflows. Load the matching 5x skill, delegate author/reviewer work to the 5x subagents, and keep the main Cursor agent in an orchestration role.
@@ -430,7 +430,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
      fresh subagent invocation before escalating.
   ```
 
-- [ ] **Add `src/harnesses/cursor/5x-plan-author.md`**:
+- [x] **Add `src/harnesses/cursor/5x-plan-author.md`**:
   ```markdown
   ---
   name: 5x-plan-author
@@ -471,9 +471,9 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   main checkout.
   ```
 
-- [ ] **Add `src/harnesses/cursor/5x-code-author.md`** and **`src/harnesses/cursor/5x-reviewer.md`** with similar structure adapted from OpenCode templates
+- [x] **Add `src/harnesses/cursor/5x-code-author.md`** and **`src/harnesses/cursor/5x-reviewer.md`** with similar structure adapted from OpenCode templates
 
-- [ ] **Implement `src/harnesses/cursor/loader.ts`** with Cursor-specific rendering:
+- [x] **Implement `src/harnesses/cursor/loader.ts`** with Cursor-specific rendering:
   ```typescript
   import codeAuthorRaw from "./5x-code-author.md" with { type: "text" };
   import planAuthorRaw from "./5x-plan-author.md" with { type: "text" };
@@ -519,7 +519,7 @@ The key design decision is to match the OpenCode harness capabilities wherever C
   }
   ```
 
-- [ ] **Add unit tests** in `test/unit/harnesses/cursor-loader.test.ts`
+- [x] **Add unit tests** in `test/unit/harnesses/cursor-loader.test.ts`
   - Omits `model` frontmatter field when unset
   - YAML-escapes configured `model` values containing `:`, `"`, `\`, and newlines
   - Correctly injects author model into author subagents

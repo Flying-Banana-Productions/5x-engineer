@@ -41,3 +41,8 @@ The JSON must conform to this schema:
 - `verdict: "rejected"` — blocking issues found; the author must address them.
 - `verdict: "escalate"` — the decision requires human judgment; explain why in `summary`.
 - `issues` may be an empty array when approving with no observations.
+
+## Working Directory
+
+The rendered prompt includes a `## Context` block with the effective working
+directory. Treat this path as authoritative for all file operations.
