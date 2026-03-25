@@ -46,31 +46,31 @@ The key design decision is to match the OpenCode harness capabilities wherever C
 
 **Completion gate:** All live discovery assumptions verified before implementation proceeds. Items marked **human-gated** require manual IDE/CLI verification; all others can be verified via automated tests.
 
-- [ ] **Verify Cursor IDE discovers `.cursor/` project assets** (human-gated)
+- [x] **Verify Cursor IDE discovers `.cursor/` project assets** (human-gated)
   - Create `.cursor/skills/`, `.cursor/agents/`, `.cursor/rules/` with test files
   - Open project in Cursor IDE and confirm subagents/rules appear in UI
   - Document any path variations needed for discovery
 
-- [ ] **Verify Cursor IDE discovers `~/.cursor/` user assets** (human-gated)
+- [x] **Verify Cursor IDE discovers `~/.cursor/` user assets** (human-gated)
   - Create `~/.cursor/skills/` and `~/.cursor/agents/` with test files
   - Open any project in Cursor IDE and confirm user subagents available
   - Confirm user scope rules are settings-managed (not file-backed)
 
-- [ ] **Verify Cursor CLI discovery behavior** (human-gated)
+- [x] **Verify Cursor CLI discovery behavior** (human-gated)
   - Run `cursor` CLI commands in a project with `.cursor/` assets
   - Confirm CLI loads subagents/rules correctly
   - Document any CLI-specific discovery paths or flags
 
-- [ ] **Verify omitted-`model` semantics** (automated)
+- [x] **Verify omitted-`model` semantics** (automated)
   - Test that subagent frontmatter without `model` field defaults to `inherit`
   - Confirm no errors when model is omitted
 
-- [ ] **Verify Windows discovery paths** (human-gated)
+- [x] **Verify Windows discovery paths** (human-gated)
   - Test `.cursor/` discovery on Windows with path separator handling
   - Test `~/.cursor/` resolution via `%USERPROFILE%` environment variable
   - Confirm subagents appear in Cursor IDE/CLI on Windows
 
-- [ ] **Verify worktree editing behavior** (human-gated)
+- [x] **Verify worktree editing behavior** (human-gated)
   - Create a real `5x run init --worktree` mapped worktree
   - Open Cursor in the mapped worktree directory
   - Confirm Cursor author edits land in the mapped worktree, not main checkout
