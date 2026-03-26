@@ -61,4 +61,21 @@ None — no P0 blockers in the **plan document** itself; blocking issues are cor
 
 ## Addendum
 
-_(None — initial review.)_
+### Re-review (March 25, 2026 — revised plan)
+
+The plan at `029-windows-support.plan.md` was updated per the revision history. Cross-check against prior feedback:
+
+| Prior issue | Status |
+|-------------|--------|
+| **P1.1 Phase 3 / preload** | **Addressed.** Phase 3 now states that `bunfig.toml` already preloads `./test/setup.ts` (GIT_* cleanup), explicitly forbids a second preload, and describes `package.json` as removing the bash `unset` wrapper while relying on that preload — consistent with this repo’s `bunfig.toml`. |
+| **P1.2 HOME verification / JSDoc** | **Addressed.** Verification lists Option A (update JSDoc in `harness.handler.ts` / `types.ts`) or Option B (grep excluding comments / production-only). |
+| **P2 example script (Issue 9)** | **Addressed.** Audit marks `examples/author-review-loop.sh` as out of scope; Phase 4 and Known limitations repeat that; Files Changed lists it under “Out of scope (not modified).” |
+| **P2 stdin path** | **Addressed.** Graceful-degradation row uses `src/utils/stdin.ts:35-41`. |
+| **P2 CMD semantics (optional)** | **Unchanged.** No new bullet on `cmd /c` vs user-authored bash gates; still an optional doc enhancement, not blocking. |
+
+**Assessment:** Prior P1 items are resolved in the plan text. The document is **ready for implementation** with the same overall strengths noted in the initial review. Update the Readiness Checklist P1 rows to `[x]` when tracking this work if desired.
+</think>
+Removing accidental duplicate content from the addendum.
+
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+Read
