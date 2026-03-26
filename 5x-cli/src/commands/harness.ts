@@ -6,6 +6,7 @@
  * Business logic lives in harness.handler.ts.
  */
 
+import { homedir } from "node:os";
 import { type Command, Option } from "@commander-js/extra-typings";
 import {
 	harnessInstall,
@@ -51,7 +52,7 @@ export function registerHarness(parent: Command) {
 				name,
 				scope: opts.scope,
 				force: opts.force,
-				homeDir: process.env.HOME,
+				homeDir: homedir(),
 			});
 		});
 
@@ -63,7 +64,7 @@ export function registerHarness(parent: Command) {
 		)
 		.addHelpText("after", "\nExamples:\n" + "  $ 5x harness list")
 		.action(async () => {
-			await harnessList({ homeDir: process.env.HOME });
+			await harnessList({ homeDir: homedir() });
 		});
 
 	harness
@@ -92,7 +93,7 @@ export function registerHarness(parent: Command) {
 				name,
 				scope: opts.scope,
 				all: opts.all,
-				homeDir: process.env.HOME,
+				homeDir: homedir(),
 			});
 		});
 }

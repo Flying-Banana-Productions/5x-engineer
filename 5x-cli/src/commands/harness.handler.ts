@@ -31,7 +31,7 @@ export interface HarnessInstallParams {
 	force?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
-	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;
 }
 
@@ -44,7 +44,7 @@ export interface HarnessUninstallParams {
 	all?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
-	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;
 }
 
@@ -85,7 +85,7 @@ export interface HarnessListOutput {
 export interface HarnessListParams {
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
-	/** Home directory override for user scope — defaults to `process.env.HOME`. */
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;
 }
 

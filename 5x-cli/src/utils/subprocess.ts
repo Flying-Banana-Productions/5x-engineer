@@ -5,6 +5,8 @@
  * to mock subprocess calls without spawning real processes.
  */
 
+import { shellArgs } from "./platform.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -65,12 +67,12 @@ export const subprocess = {
 
 	/**
 	 * Execute a shell command asynchronously.
-	 * Spawns `sh -c <command>` with the given working directory.
+	 * Spawns via `shellArgs(command)` (sh/cmd) with the given working directory.
 	 * stdin is inherited so interactive commands work.
 	 * Strips GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE for safety.
 	 */
 	async execShell(command: string, workdir: string): Promise<ExecResult> {
-		const proc = Bun.spawn(["sh", "-c", command], {
+		const proc = Bun.spawn(shellArgs(command), {
 			cwd: workdir,
 			env: cleanEnv(),
 			stdin: "inherit",

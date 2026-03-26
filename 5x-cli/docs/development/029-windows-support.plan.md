@@ -115,6 +115,13 @@ export function userHomeDir(): string {
 
 ### Phase 2: Fix blocking issues
 
+- [x] `src/utils/subprocess.ts` — `shellArgs()` for shell spawn
+- [x] `src/gates/quality.ts` — `shellArgs()` for quality gate commands
+- [x] `src/commands/harness.ts` — `homedir()` from `node:os` instead of `process.env.HOME`
+- [x] `src/harnesses/locations.ts` — home fallback to `homedir()` only (keep `homeDir` for tests)
+- [x] `src/commands/run-v1.handler.ts` — guard permission-mode stat on non-Windows
+- [x] JSDoc in `harness.handler.ts` / `types.ts` aligned with `homedir()` usage
+
 **`src/utils/subprocess.ts`** — Replace `["sh", "-c", command]` with
 `shellArgs(command)` (line 73). Import `shellArgs` from `./platform.js`.
 
