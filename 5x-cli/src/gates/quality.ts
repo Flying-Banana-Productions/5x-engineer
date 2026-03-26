@@ -5,6 +5,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { shellArgs } from "../utils/platform.js";
 import { endStream } from "../utils/stream.js";
 
 // ---------------------------------------------------------------------------
@@ -242,7 +243,7 @@ export async function runSingleCommand(
 	const start = performance.now();
 
 	try {
-		const proc = Bun.spawn(["sh", "-c", command], {
+		const proc = Bun.spawn(shellArgs(command), {
 			cwd: workdir,
 			stdout: "pipe",
 			stderr: "pipe",

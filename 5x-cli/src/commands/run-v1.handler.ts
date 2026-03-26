@@ -1302,16 +1302,19 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	// Ensure log dir exists with restricted permissions (run may have been init'd but no invoke yet)
 	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
-	// Warn if an existing log dir has overly-permissive mode (e.g., manually created without 0o700)
-	try {
-		const dirMode = statSync(logDir).mode & 0o777;
-		if (dirMode & 0o077) {
-			process.stderr.write(
-				`[watch] Warning: log directory has mode ${dirMode.toString(8).padStart(3, "0")} (group/other access); expected 700\n`,
-			);
+	// Warn if an existing log dir has overly-permissive mode (e.g., manually created without 0o700).
+	// Unix stat bits are not meaningful for this check on Windows.
+	if (process.platform !== "win32") {
+		try {
+			const dirMode = statSync(logDir).mode & 0o777;
+			if (dirMode & 0o077) {
+				process.stderr.write(
+					`[watch] Warning: log directory has mode ${dirMode.toString(8).padStart(3, "0")} (group/other access); expected 700\n`,
+				);
+			}
+		} catch {
+			// stat failure is non-fatal — proceed
 		}
-	} catch {
-		// stat failure is non-fatal — proceed
 	}
 
 	// Set up abort on SIGINT

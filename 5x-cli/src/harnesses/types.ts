@@ -46,7 +46,7 @@ export interface HarnessInstallContext {
 		authorModel?: string;
 		reviewerModel?: string;
 	};
-	/** Home directory override for user scope — defaults to process.env.HOME or homedir(). */
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;
 }
 
@@ -86,7 +86,7 @@ export interface HarnessUninstallContext {
 	scope: HarnessScope;
 	/** Absolute path to the project root (git checkout root or cwd). */
 	projectRoot: string;
-	/** Home directory override for user scope — defaults to process.env.HOME or homedir(). */
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;
 }
 

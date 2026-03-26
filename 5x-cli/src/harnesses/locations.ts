@@ -85,8 +85,8 @@ export const opencodeLocationResolver: HarnessLocationResolver = {
 			};
 		}
 
-		// user scope: XDG config directory (respect HOME env var for testability)
-		const home = homeDir ?? process.env.HOME ?? homedir();
+		// user scope: XDG config directory (homeDir optional for test injection)
+		const home = homeDir ?? homedir();
 		const base = join(home, ".config", "opencode");
 		return {
 			rootDir: base,
@@ -123,7 +123,7 @@ export const universalLocationResolver: HarnessLocationResolver = {
 			};
 		}
 
-		const home = homeDir ?? process.env.HOME ?? homedir();
+		const home = homeDir ?? homedir();
 		const base = join(home, ".agents");
 		return {
 			rootDir: base,
@@ -163,7 +163,7 @@ export const cursorLocationResolver: HarnessLocationResolver = {
 			};
 		}
 
-		const home = homeDir ?? process.env.HOME ?? homedir();
+		const home = homeDir ?? homedir();
 		const base = join(home, ".cursor");
 		return {
 			rootDir: base,

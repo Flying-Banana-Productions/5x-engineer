@@ -93,6 +93,8 @@ requiring manual verification.
 
 ### Phase 1: Cross-platform shell helper
 
+- [x] New file `src/utils/platform.ts` with `shellArgs()` and `userHomeDir()` as specified below.
+
 **New file: `src/utils/platform.ts`**
 
 ```typescript
@@ -113,6 +115,13 @@ export function userHomeDir(): string {
 
 ### Phase 2: Fix blocking issues
 
+- [x] `src/utils/subprocess.ts` — `shellArgs()` for shell spawn
+- [x] `src/gates/quality.ts` — `shellArgs()` for quality gate commands
+- [x] `src/commands/harness.ts` — `homedir()` from `node:os` instead of `process.env.HOME`
+- [x] `src/harnesses/locations.ts` — home fallback to `homedir()` only (keep `homeDir` for tests)
+- [x] `src/commands/run-v1.handler.ts` — guard permission-mode stat on non-Windows
+- [x] JSDoc in `harness.handler.ts` / `types.ts` aligned with `homedir()` usage
+
 **`src/utils/subprocess.ts`** — Replace `["sh", "-c", command]` with
 `shellArgs(command)` (line 73). Import `shellArgs` from `./platform.js`.
 
@@ -130,6 +139,9 @@ The `homeDir` param still exists for test injection.
 with `process.platform !== "win32"` at lines 1306-1315.
 
 ### Phase 3: Test infrastructure
+
+- [x] `package.json` — `bun test --concurrent --dots` without bash `unset`; rely on `bunfig.toml` preload for `GIT_*` cleanup
+- [x] `test/integration/lock.test.ts` — long-running subprocess via `bun -e` + `Bun.sleep` instead of `sleep`
 
 **`bunfig.toml` already preloads `./test/setup.ts`.** That file deletes
 `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` before tests run (see
@@ -150,17 +162,17 @@ with `Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"])` at lines 110, 245,
 
 These are explicitly left as-is:
 
-- **`examples/author-review-loop.sh`** — **Out of scope** for this
+- [x] **`examples/author-review-loop.sh`** — **Out of scope** for this
   implementation; it remains bash-only. Windows users should run it under WSL,
   Git Bash, or wait for a follow-up (e.g. a portable script or documented
   alternative).
-- `/dev/tty` fallback — graceful degradation, no crash
-- `SIGTERM` handlers — harmless no-ops on Windows, `exit` handler is the real
+- [x] `/dev/tty` fallback — graceful degradation, no crash
+- [x] `SIGTERM` handlers — harmless no-ops on Windows, `exit` handler is the real
   cleanup
-- `proc.kill("SIGTERM")`/`proc.kill("SIGKILL")` — Bun maps both to
+- [x] `proc.kill("SIGTERM")`/`proc.kill("SIGKILL")` — Bun maps both to
   `TerminateProcess()` on Windows
-- `mode: 0o700` on `mkdirSync` — silently ignored on Windows
-- `.5x/` hidden directories — work fine, just not visually hidden in Explorer
+- [x] `mode: 0o700` on `mkdirSync` — silently ignored on Windows
+- [x] `.5x/` hidden directories — work fine, just not visually hidden in Explorer
 
 ## Files Changed
 
