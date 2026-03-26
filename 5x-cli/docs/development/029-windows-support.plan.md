@@ -50,7 +50,7 @@ benefit.
 
 | # | Issue | Files | Impact |
 |---|-------|-------|--------|
-| 4 | `/dev/tty` fallback for piped stdin | `stdin.ts:35-41` | `existsSync("/dev/tty")` returns false — degrades to no-tty-fallback. Normal TTY prompts work. |
+| 4 | `/dev/tty` fallback for piped stdin | `src/utils/stdin.ts:35-41` | `existsSync("/dev/tty")` returns false — degrades to no-tty-fallback. Normal TTY prompts work. |
 | 5 | `SIGTERM`/`SIGKILL` signal handling | `lock.ts:305-312`, `connection.ts:47-54`, `quality.ts:285,296` | SIGTERM handlers are no-ops on Windows (harmless — `exit` handler is the safety net). `proc.kill("SIGTERM")` maps to `TerminateProcess()` in Bun on Windows. |
 | 6 | `mode: 0o700` on `mkdirSync` | 5 files | Silently ignored on Windows — harmless |
 
@@ -72,7 +72,7 @@ benefit.
 |---|-------|-------|
 | 7 | `unset` bash builtin in test script | `package.json:41` |
 | 8 | `Bun.spawn(["sleep", "60"])` | `lock.test.ts:110,245,324` |
-| 9 | Example script is bash-only | `examples/author-review-loop.sh` |
+| 9 | Example script is bash-only | `examples/author-review-loop.sh` (out of scope for this implementation — see Known limitations) |
 
 ## Cursor Harness: Detailed Assessment
 
@@ -131,10 +131,16 @@ with `process.platform !== "win32"` at lines 1306-1315.
 
 ### Phase 3: Test infrastructure
 
-**`package.json`** — Replace
-`(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; bun test ...)` with
-`bun test --concurrent --dots`. Add a test preload file that deletes those env
-vars cross-platform.
+**`bunfig.toml` already preloads `./test/setup.ts`.** That file deletes
+`GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` before tests run (see
+`test/setup.ts`). No duplicate preload is needed; extend documentation only if
+implementers need extra clarity on hook-inherited `GIT_*` vs. `cleanGitEnv()`
+in tests.
+
+**`package.json`** — Remove the bash-only
+`(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; …)` wrapper and invoke tests with
+`bun test --concurrent --dots` (or equivalent). Rely on the existing preload for
+cross-platform `GIT_*` cleanup; do **not** add a second preload.
 
 **`test/integration/lock.test.ts`** — Replace `Bun.spawn(["sleep", "60"])`
 with `Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"])` at lines 110, 245,
@@ -144,6 +150,10 @@ with `Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"])` at lines 110, 245,
 
 These are explicitly left as-is:
 
+- **`examples/author-review-loop.sh`** — **Out of scope** for this
+  implementation; it remains bash-only. Windows users should run it under WSL,
+  Git Bash, or wait for a follow-up (e.g. a portable script or documented
+  alternative).
 - `/dev/tty` fallback — graceful degradation, no crash
 - `SIGTERM` handlers — harmless no-ops on Windows, `exit` handler is the real
   cleanup
@@ -165,6 +175,9 @@ These are explicitly left as-is:
 | `package.json` | Cross-platform test script | P2 |
 | `test/integration/lock.test.ts` | Replace `sleep` with Bun-native process | P2 |
 
+**Out of scope (not modified):** `examples/author-review-loop.sh` — remains
+bash-only; see Phase 4 and Known limitations.
+
 **Total: 1 new file, 7 modified files. No architectural changes. No new
 dependencies.**
 
@@ -175,8 +188,15 @@ dependencies.**
 1. `bun test --concurrent --dots` — all existing tests still pass
 2. Grep for remaining `"sh"` in spawn calls — should be zero outside
    `platform.ts`
-3. Grep for `process.env.HOME` in `src/` — should only remain in
-   `locations.ts` comments
+3. **`process.env.HOME` in `src/`** — either:
+   - **Option A:** Update JSDoc in `src/commands/harness.handler.ts` and
+     `src/harnesses/types.ts` so they no longer reference `process.env.HOME`
+     where the implementation uses `os.homedir()`, then grep `src/` and expect
+     matches only where intentionally documented (e.g. `locations.ts` comments); or
+   - **Option B:** Run grep restricted to **production code**, excluding
+     comments and docs — e.g. `rg 'process\.env\.HOME' src --glob '*.ts'`
+     with a filter that omits comment-only lines, or verify by file that only
+     allowed call sites remain after the harness changes.
 
 ### Manual (requires Windows 10/11 with Bun + Git for Windows)
 
@@ -191,3 +211,14 @@ dependencies.**
 6. Quality gate with `echo hello` — runs via `cmd /c`
 7. `bun test` — test suite passes
 8. Ctrl+C during `5x run watch` — clean exit, lock released
+
+## Known limitations
+
+- **`examples/author-review-loop.sh`** is not ported in this work; it stays
+  bash-only. Use WSL, Git Bash, or a future follow-up for Windows-native usage.
+
+## Revision history
+
+| Date | Summary |
+|------|---------|
+| March 25, 2026 | Review-driven edits: Phase 3 aligned with existing `bunfig.toml` preload (`test/setup.ts` clears `GIT_*`); removed duplicate-preload wording; `package.json` change described as dropping bash `unset` only. Verification: explicit options for `process.env.HOME` (JSDoc in `harness.handler.ts` / `types.ts` vs. grep excluding comments). `examples/author-review-loop.sh` marked out of scope. Audit: `stdin.ts` → `src/utils/stdin.ts`. |
