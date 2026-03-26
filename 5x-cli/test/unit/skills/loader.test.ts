@@ -51,6 +51,16 @@ describe("shared skill template loader", () => {
 		expect(native).toContain("subagent_type");
 	});
 
+	test("native output prefers native UI for human gates over 5x prompt in Tools sections", () => {
+		const foundation = renderSkillByName("5x", { native: true }).content;
+		expect(foundation).toContain("native UI");
+		expect(foundation).toContain("AskQuestion");
+		const planReview = renderSkillByName("5x-plan-review", {
+			native: true,
+		}).content;
+		expect(planReview).toContain("Human gates");
+	});
+
 	test("invoke output omits Task tool/subagent_type references", () => {
 		const invoke = renderAllSkillTemplates({ native: false })
 			.map((s) => s.content)

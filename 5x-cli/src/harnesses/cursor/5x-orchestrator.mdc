@@ -38,6 +38,9 @@ workflow:
 
 4. **Guide human decisions.** When a workflow requires human input,
    present the situation with enough context for the human to decide.
+   Prefer **AskQuestion** (or the chat thread) over spawning `5x prompt`
+   subprocesses — agent terminals often lack a TTY; see the `5x` foundation
+   skill’s Human Interaction Model.
 
 5. **Verify before proceeding.** After each subagent completes, check
    the result against the skill's invariants.

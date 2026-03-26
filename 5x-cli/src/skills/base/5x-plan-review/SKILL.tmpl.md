@@ -52,8 +52,13 @@ timeout handling.
 - `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
 {{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
+{{#if native}}
+- Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes below.
+- **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
+{{else}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
+{{/if}}
 
 {{#if native}}
 ### Delegating sub-agent work
@@ -254,6 +259,26 @@ Loop back to Step 1.
 
 ### Step 4: Escalate
 
+{{#if native}}
+Present the situation to the human using your **native UI** (multiple choice + freeform where needed). Match the semantics of:
+
+- **Options:** continue-with-guidance, approve-override, abort
+- **CLI equivalent (fallback only):**  
+  `5x prompt choose "Review requires human input: $REASON" --options continue-with-guidance,approve-override,abort`
+
+**If "continue-with-guidance":**
+  Collect guidance, then record:  
+  `5x run record "human:gate" --run $RUN --phase plan --result '{"choice":"continue","guidance":"..."}'`  
+  Re-invoke the author (Step 3) with `--var user_notes="$GUIDANCE"`.
+
+**If "approve-override":**
+  Record: `5x run record "human:gate" --run $RUN --phase plan --result '{"choice":"override"}'`
+  Go to Step 5 (Complete).
+
+**If "abort":**
+  `5x run complete --run $RUN --status aborted --reason "Human chose to abort"`
+  Stop.
+{{else}}
 Present the situation to the human:
 
     5x prompt choose "Review requires human input: $REASON" \
@@ -271,6 +296,7 @@ Present the situation to the human:
 **If "abort":**
   `5x run complete --run $RUN --status aborted --reason "Human chose to abort"`
   Stop.
+{{/if}}
 
 ### Step 5: Complete
 

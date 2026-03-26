@@ -57,8 +57,13 @@ timeout handling.
 - `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
 {{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
+{{#if native}}
+- Human gates — use your **native UI** (see `5x` foundation skill: e.g. AskQuestion / chat in Cursor). Record outcomes with `5x run record` as the skill specifies.
+- **`5x prompt` fallback** — `5x prompt choose` / `input` only when no chat UI exists (e.g. headless shell); use `--default` if stdin is not a TTY.
+{{else}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
+{{/if}}
 
 ## Workflow
 
@@ -111,10 +116,14 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 Check the result:
 - If `result: "complete"` — continue to Step 3.
+{{#if native}}
+- If `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If the human provides guidance, re-invoke with `--var user_notes="$GUIDANCE"`.
+{{else}}
 - If `result: "needs_human"` — present the reason to the human via
   `5x prompt choose` with options: provide-guidance, abort.
   If guidance, collect it via `5x prompt input` and re-invoke with
   `--var user_notes="$GUIDANCE"`.
+{{/if}}
 - If `result: "failed"` — present the reason to the human and abort.
 
 ### Step 3: Review loop

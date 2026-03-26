@@ -24,9 +24,12 @@ Load this skill alongside `5x-plan`, `5x-plan-review`, or
 
 ## Human Interaction Model
 
-The workflow steps reference `5x prompt` commands to describe **what to
-ask the human and when**. How you collect the response depends on your
-capabilities:
+Workflow steps describe human gates **by intent** (message, allowed choices,
+what to record next). Inline `5x prompt choose` / `5x prompt input` examples
+are the **CLI contract** for that intent — they are **not** a requirement to
+spawn subprocesses when you already have a working chat or question UI.
+
+How you collect the response:
 
 1. **You have a question/input tool** (e.g., MCP question tool, built-in
    ask-user tool): use it directly. This is preferred — it keeps the
@@ -35,11 +38,25 @@ capabilities:
    and use their reply.
 3. **Neither of the above**: spawn `5x prompt choose` / `5x prompt input`
    as a subprocess. This works in direct terminal sessions and shell
-   scripts but will fail with `NON_INTERACTIVE` (exit 3) if no terminal
-   is available. Pass `--default` to provide a fallback for non-interactive
+   scripts but can fail when no TTY is available (e.g. some agent
+   terminals). Pass `--default` to provide a fallback for non-interactive
    environments.
 
 {{#if native}}
+### Native harness (orchestrator with a chat or question UI)
+
+You are the **orchestrator**, not a headless shell. **Default to (1) or (2)** above
+and map each gate to the same choices and branching the skill describes. **Do not**
+rely on `5x prompt` subprocesses for routine gates — they may lack `/dev/tty` and
+fail in agent-driven terminals.
+
+- **Cursor:** use **AskQuestion** (or equivalent) for multiple choice; use the chat
+  thread for freeform guidance.
+- **Other native harnesses:** use that environment’s chat / native tools the same way.
+
+Use `5x run record` with the same JSON shapes the skill specifies after the human
+chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat UI.
+
 ## Delegating to Subagents
 
 These skills assume an opencode environment with the 5x harness installed.

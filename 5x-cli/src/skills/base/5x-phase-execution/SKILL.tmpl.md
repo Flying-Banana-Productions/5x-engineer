@@ -62,8 +62,13 @@ timeout handling.
 - `5x diff --run <id>` — inspect changes in mapped worktree
 - `5x diff --since <ref>` — inspect changes (without run context)
 - `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
+{{#if native}}
+- Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes the workflow specifies.
+- **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
+{{else}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
+{{/if}}
 
 {{#if native}}
 ### Task reuse
@@ -190,10 +195,14 @@ Check the result:
 - `result: "complete"` with a commit hash (from `5x commit`) — continue to Step 2.
 - `result: "complete"` without a commit — **invariant violation**.
   See Recovery.
+{{#if native}}
+- `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If guidance: re-invoke with `--var user_notes="$GUIDANCE"`.
+{{else}}
 - `result: "needs_human"` — present the reason and options:
   `5x prompt choose "Author needs help: $REASON" --options provide-guidance,abort`
   If guidance: collect via `5x prompt input`, re-invoke with
   `--var user_notes="$GUIDANCE"`.
+{{/if}}
 - `result: "failed"` — present to human, abort or retry.
 
 Capture $COMMIT from the result for the reviewer.
@@ -215,7 +224,12 @@ Check the result:
 Increment $QUALITY_RETRIES.
 
 If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
+{{#if native}}
+  Escalate via your **native UI** with options **retry**, **skip**, **abort** (same semantics as  
+  `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`).
+{{else}}
   Escalate: `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`
+{{/if}}
   - retry: reset $QUALITY_RETRIES, go to Step 2a below
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
@@ -380,6 +394,24 @@ Check the result:
 
 #### Step 5a: Escalate
 
+{{#if native}}
+Present the situation using your **native UI** (options: continue-with-guidance, approve-override, abort).  
+**CLI equivalent (fallback):**  
+`5x prompt choose "Phase $PHASE: $REASON" --options continue-with-guidance,approve-override,abort`
+
+**"continue-with-guidance":**
+  Collect guidance, then record:  
+  `5x run record "human:gate" --run $RUN --phase $PHASE --result '{"choice":"continue","guidance":"..."}'`  
+  Re-invoke author (Step 5) with `--var user_notes="$GUIDANCE"`.
+
+**"approve-override":**
+  Record: `5x run record "human:gate" --run $RUN --phase $PHASE --result '{"choice":"override"}'`
+  Go to Step 6 (Phase gate).
+
+**"abort":**
+  `5x run complete --run $RUN --status aborted`
+  Stop.
+{{else}}
 Present the situation to the human:
 
     5x prompt choose "Phase $PHASE: $REASON" \
@@ -397,6 +429,7 @@ Present the situation to the human:
 **"abort":**
   `5x run complete --run $RUN --status aborted`
   Stop.
+{{/if}}
 
 #### Step 6: Phase gate
 
@@ -416,9 +449,15 @@ If `PHASE_STATUS` is `true`, record phase completion:
     5x run record "phase:complete" --run $RUN --phase $PHASE --result '{"phase":"$PHASE"}'
 
 If this is NOT the last phase, confirm with the human:
+{{#if native}}
+Using your **native UI**, ask whether to **continue** to the next phase, **exit** (leave run active), or **abort**.  
+**CLI equivalent (fallback):**  
+`5x prompt choose "Phase $PHASE complete. Continue to next phase?" --options continue,exit,abort`
+{{else}}
 
     5x prompt choose "Phase $PHASE complete. Continue to next phase?" \
       --options continue,exit,abort
+{{/if}}
 
 - continue: proceed to next phase
 - exit: leave the run active for later resume, stop
