@@ -140,6 +140,9 @@ with `process.platform !== "win32"` at lines 1306-1315.
 
 ### Phase 3: Test infrastructure
 
+- [x] `package.json` — `bun test --concurrent --dots` without bash `unset`; rely on `bunfig.toml` preload for `GIT_*` cleanup
+- [x] `test/integration/lock.test.ts` — long-running subprocess via `bun -e` + `Bun.sleep` instead of `sleep`
+
 **`bunfig.toml` already preloads `./test/setup.ts`.** That file deletes
 `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` before tests run (see
 `test/setup.ts`). No duplicate preload is needed; extend documentation only if

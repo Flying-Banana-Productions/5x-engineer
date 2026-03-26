@@ -107,7 +107,7 @@ describe("acquireLock", () => {
 			const tmp = withTmp();
 			// Simulate a lock held by a different PID that is alive.
 			// We use a long-running subprocess so we have a live PID we can signal.
-			const child = Bun.spawn(["sleep", "60"], {
+			const child = Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"], {
 				stdout: "ignore",
 				stderr: "ignore",
 				stdin: "ignore",
@@ -242,7 +242,7 @@ describe("releaseLock", () => {
 		() => {
 			const tmp = withTmp();
 			// Spawn a real subprocess so we have a live PID
-			const child = Bun.spawn(["sleep", "60"], {
+			const child = Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"], {
 				stdout: "ignore",
 				stderr: "ignore",
 				stdin: "ignore",
@@ -321,7 +321,7 @@ describe("forceReleaseLock", () => {
 		"removes lock regardless of ownership",
 		() => {
 			const tmp = withTmp();
-			const child = Bun.spawn(["sleep", "60"], {
+			const child = Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"], {
 				stdout: "ignore",
 				stderr: "ignore",
 				stdin: "ignore",
