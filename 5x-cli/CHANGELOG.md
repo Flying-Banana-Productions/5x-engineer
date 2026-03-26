@@ -5,6 +5,28 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.1-beta.0 (2026-03-26)
+
+### Features
+
+- **Windows platform helpers** — new `src/utils/platform.ts` exports
+  `getPlatformShell()` and `getPlatformHome()` helpers that return
+  platform-appropriate values on Windows vs. POSIX, laying the groundwork
+  for Windows 10/11 support.
+
+### Fixes
+
+- **Windows blocking fixes** — wired platform helpers throughout the CLI
+  to resolve shell and home-directory resolution failures on Windows.
+
+### Improvements
+
+- **Cross-platform test infrastructure** — added `test/integration/` script
+  and lock tests that exercise the CLI binary on non-POSIX paths, ensuring
+  CI coverage for Windows compatibility.
+- **Cursor harness model overrides** — `harnessModels` overrides now apply
+  correctly when the `cursor` harness is selected via `harness install`.
+
 ## 1.1.0 (2026-03-25)
 
 ### Features
