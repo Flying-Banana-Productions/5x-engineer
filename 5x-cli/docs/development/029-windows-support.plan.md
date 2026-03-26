@@ -162,17 +162,17 @@ with `Bun.spawn(["bun", "-e", "await Bun.sleep(60000)"])` at lines 110, 245,
 
 These are explicitly left as-is:
 
-- **`examples/author-review-loop.sh`** — **Out of scope** for this
+- [x] **`examples/author-review-loop.sh`** — **Out of scope** for this
   implementation; it remains bash-only. Windows users should run it under WSL,
   Git Bash, or wait for a follow-up (e.g. a portable script or documented
   alternative).
-- `/dev/tty` fallback — graceful degradation, no crash
-- `SIGTERM` handlers — harmless no-ops on Windows, `exit` handler is the real
+- [x] `/dev/tty` fallback — graceful degradation, no crash
+- [x] `SIGTERM` handlers — harmless no-ops on Windows, `exit` handler is the real
   cleanup
-- `proc.kill("SIGTERM")`/`proc.kill("SIGKILL")` — Bun maps both to
+- [x] `proc.kill("SIGTERM")`/`proc.kill("SIGKILL")` — Bun maps both to
   `TerminateProcess()` on Windows
-- `mode: 0o700` on `mkdirSync` — silently ignored on Windows
-- `.5x/` hidden directories — work fine, just not visually hidden in Explorer
+- [x] `mode: 0o700` on `mkdirSync` — silently ignored on Windows
+- [x] `.5x/` hidden directories — work fine, just not visually hidden in Explorer
 
 ## Files Changed
 
