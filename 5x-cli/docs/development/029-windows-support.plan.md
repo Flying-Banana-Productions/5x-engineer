@@ -93,6 +93,8 @@ requiring manual verification.
 
 ### Phase 1: Cross-platform shell helper
 
+- [x] New file `src/utils/platform.ts` with `shellArgs()` and `userHomeDir()` as specified below.
+
 **New file: `src/utils/platform.ts`**
 
 ```typescript
