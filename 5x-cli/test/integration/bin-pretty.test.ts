@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import packageJson from "../../package.json";
 import { cleanGitEnv } from "../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../src/bin.ts");
@@ -34,6 +35,23 @@ async function runCli(
 	extraArgs: string[] = [],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const proc = Bun.spawn(["bun", "run", BIN, "harness", "list", ...extraArgs], {
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+		stdin: "ignore",
+		env: cleanGitEnv(),
+	});
+	const stdout = await new Response(proc.stdout).text();
+	const stderr = await new Response(proc.stderr).text();
+	const exitCode = await proc.exited;
+	return { stdout, stderr, exitCode };
+}
+
+async function runCliArgs(
+	cwd: string,
+	args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",
@@ -137,6 +155,21 @@ describe("bin.ts global pretty flag parsing", () => {
 				expect(isPretty(stdout)).toBe(true);
 				const envelope = JSON.parse(stdout.trim());
 				expect(envelope.ok).toBe(true);
+			} finally {
+				rmSync(tmp, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--version matches package.json version",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { stdout, exitCode } = await runCliArgs(tmp, ["--version"]);
+				expect(exitCode).toBe(0);
+				expect(stdout.trim()).toBe(packageJson.version);
 			} finally {
 				rmSync(tmp, { recursive: true, force: true });
 			}

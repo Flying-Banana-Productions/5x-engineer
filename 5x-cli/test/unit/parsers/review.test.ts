@@ -103,6 +103,31 @@ Description.
 		expect(summary.p2Count).toBe(3);
 	});
 
+	test("handles CRLF line endings", () => {
+		const md = [
+			"# Review: Test",
+			"",
+			"**Readiness:** Ready with corrections",
+			"",
+			"### P0.1 - Blocker",
+			"Description.",
+			"",
+			"## Medium priority (P2)",
+			"",
+			"- **Docs**: Update examples",
+			"",
+			"## Addendum (2026-03-27) - Follow-up",
+		].join("\r\n");
+
+		const summary = parseReviewSummary(md);
+		expect(summary.subject).toBe("Test");
+		expect(summary.readiness).toBe("Ready with corrections");
+		expect(summary.p0Count).toBe(1);
+		expect(summary.p2Count).toBe(1);
+		expect(summary.hasAddendums).toBe(true);
+		expect(summary.latestAddendumDate).toBe("2026-03-27");
+	});
+
 	test("detects addendums", () => {
 		const md = `# Review: Test
 

@@ -16,7 +16,7 @@ const ADDENDUM_RE = /^##\s+Addendum\s*\(([^)]+)\)/;
 const READINESS_RE = /\*\*Readiness:\*\*\s*(.+)/;
 
 export function parseReviewSummary(markdown: string): ReviewSummary {
-	const lines = markdown.split("\n");
+	const lines = markdown.split(/\r\n|\n|\r/);
 
 	let subject = "";
 	let readiness = "";
