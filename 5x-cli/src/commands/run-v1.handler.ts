@@ -57,7 +57,7 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
-import { canonicalizePlanPath } from "../paths.js";
+import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
 import {
 	extractInvokeMetadata,
 	extractPipeContext,
@@ -249,7 +249,7 @@ function deriveDefaultWorktreeDir(
 	planPath: string,
 	stateDir = ".5x",
 ): string {
-	const slug = planPath.replace(/^.*\//, "").replace(/\.md$/, "");
+	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }
@@ -407,7 +407,20 @@ async function ensureRunWorktree(
 		);
 	}
 
-	await createWorktree(projectRoot, branch, wtPath);
+	try {
+		await createWorktree(projectRoot, branch, wtPath);
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		outputError(
+			"WORKTREE_ERROR",
+			`Failed to create worktree for plan \`${planPath}\`: ${detail} No worktree was attached or created for this run. Re-run without --worktree to use the current checkout, or fix the worktree error and retry.`,
+			{
+				plan_path: planPath,
+				worktree_path: wtPath,
+				branch,
+			},
+		);
+	}
 
 	const warnings: string[] = [];
 	if (postCreateHook) {

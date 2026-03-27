@@ -2,7 +2,27 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalizePlanPath } from "../../src/paths.js";
+import { canonicalizePlanPath, planSlugFromPath } from "../../src/paths.js";
+
+describe("planSlugFromPath", () => {
+	test("extracts slug from POSIX path", () => {
+		expect(planSlugFromPath("docs/development/001-feature.md")).toBe(
+			"001-feature",
+		);
+	});
+
+	test("extracts slug from Windows relative path", () => {
+		expect(planSlugFromPath("docs\\development\\001-feature.md")).toBe(
+			"001-feature",
+		);
+	});
+
+	test("extracts slug from Windows absolute path", () => {
+		expect(
+			planSlugFromPath("D:\\github\\repo\\docs\\development\\001-feature.md"),
+		).toBe("001-feature");
+	});
+});
 
 describe("canonicalizePlanPath", () => {
 	test("returns a stable absolute path for missing files", () => {

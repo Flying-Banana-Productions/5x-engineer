@@ -53,7 +53,7 @@ CRITICAL: You MUST commit all changes using `5x commit` before finishing. The pi
 
 When ready to commit, run:
 
-    5x commit --run {{run_id}} --phase plan -m "<descriptive message>" --all-files
+    5x commit --run {{run_id}} --phase plan --files {{plan_path}} -m "<descriptive message>"
 
 Then produce your structured result:
 
@@ -64,4 +64,5 @@ Or if you need human help:
     5x protocol emit author --needs-human --reason "..."
 
 Include the command's JSON output verbatim as your structured result.
+Do not wrap it in markdown fences.
 The output is raw canonical JSON — do not wrap or modify it.

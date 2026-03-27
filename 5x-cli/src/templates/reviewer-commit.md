@@ -101,4 +101,5 @@ When your review is complete, produce your structured verdict by running:
 
 Use `--ready` or `--no-ready`. Items imply corrections (`--ready` + items → `ready_with_corrections`).
 Include the command's JSON output verbatim as your structured result.
+Do not wrap it in markdown fences.
 The output is raw canonical JSON — do not wrap or modify it.

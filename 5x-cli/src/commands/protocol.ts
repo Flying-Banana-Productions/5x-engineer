@@ -34,7 +34,8 @@ export function registerProtocol(parent: Command) {
 		.summary("Validate structured JSON against protocol schemas")
 		.description(
 			"Parse and validate JSON from a file or stdin against the author or reviewer\n" +
-				"protocol schema. Returns the validated and normalized result.",
+				"protocol schema. Accepts raw JSON or a single fenced JSON block and returns\n" +
+				"the validated and normalized result.",
 		);
 
 	validate

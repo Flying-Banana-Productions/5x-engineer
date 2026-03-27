@@ -91,6 +91,19 @@ export function _resetWorktreeCache(): void {
 // Plan path canonicalization
 // ---------------------------------------------------------------------------
 
+/**
+ * Derive a stable plan slug from a path string.
+ *
+ * Uses string-level separator normalization rather than node:path basename()
+ * so Windows-style paths are handled correctly even when tests run on
+ * non-Windows hosts.
+ */
+export function planSlugFromPath(planPath: string): string {
+	const normalized = planPath.replace(/\\/g, "/");
+	const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+	return base.replace(/\.md$/i, "");
+}
+
 export function canonicalizePlanPath(rawPath: string): string {
 	const abs = resolve(rawPath);
 	let real: string;

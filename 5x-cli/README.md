@@ -361,6 +361,10 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 
 `run init --plan` takes the implementation plan output path, not the requirements doc path. The file may not exist yet, but it must live under `paths.plans`.
 
+**Windows notes:**
+- In PowerShell, prefer `--result @path/to/result.json` or `Get-Content result.json -Raw | 5x run record ... --result -` over inline JSON.
+- On older Windows PowerShell, use `;` or separate lines instead of `&&`.
+
 ### Native Subagent Primitives
 
 ```bash
@@ -404,8 +408,9 @@ automatically. `--new-session` forces a fresh session (skips continued-template 
 Accepts JSON via stdin or `--input`. Auto-detects input format: if the JSON
 contains an `ok` field (from `5x invoke`), unwraps `.data.result` before
 validation; otherwise treats the input as raw structured JSON (from a native
-subagent). With `--record`, records the validated result as a run step in one
-command.
+subagent). A single fenced JSON block is also accepted as input, but native
+subagents should still return raw JSON with no markdown fences. With `--record`,
+records the validated result as a run step in one command.
 
 `--require-commit` defaults to `true` for author validation. Use
 `--no-require-commit` to opt out.
@@ -482,7 +487,7 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 5x worktree list                                      # List active worktrees
 ```
 
-`run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path.
+`run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path. If worktree creation fails, `run init` now errors clearly and does not silently fall back to the main checkout; rerun without `--worktree` only when shared-checkout execution is intentional.
 
 `worktree detach` reports the post-detach state (`worktree_path: null`, `branch: null`) and also includes `previous_worktree_path` / `previous_branch` for confirmation.
 

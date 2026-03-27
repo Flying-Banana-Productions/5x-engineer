@@ -104,6 +104,10 @@ describe("author-generate-plan template", () => {
 		const result = renderTemplate("author-generate-plan", vars);
 		expect(result.prompt).toContain("Completion");
 		expect(result.prompt).toContain(
+			"--phase plan --files docs/development/370-impl-feature.md",
+		);
+		expect(result.prompt).not.toContain("--all-files");
+		expect(result.prompt).toContain(
 			"5x protocol emit author --complete --commit",
 		);
 		expect(result.prompt).toContain("structured result");
@@ -163,6 +167,10 @@ describe("author-process-plan-review template", () => {
 	test("includes completion section (no signal blocks)", () => {
 		const result = renderTemplate("author-process-plan-review", vars);
 		expect(result.prompt).toContain("Completion");
+		expect(result.prompt).toContain(
+			"--phase plan --files docs/development/001-impl-cli.md",
+		);
+		expect(result.prompt).not.toContain("--all-files");
 		expect(result.prompt).toContain("structured output");
 		expect(result.prompt).not.toContain("5x:status");
 	});

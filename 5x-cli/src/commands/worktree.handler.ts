@@ -12,7 +12,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	getPlan,
 	listPlansByWorktreePath,
@@ -30,7 +30,7 @@ import {
 	runWorktreeSetupCommand,
 } from "../git.js";
 import { outputError, outputSuccess } from "../output.js";
-import { canonicalizePlanPath } from "../paths.js";
+import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
@@ -90,7 +90,7 @@ function worktreeDir(
 	planPath: string,
 	stateDir = ".5x",
 ): string {
-	const slug = basename(planPath).replace(/\.md$/, "");
+	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }

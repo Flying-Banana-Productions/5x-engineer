@@ -66,4 +66,5 @@ Or if you need human help:
     5x protocol emit author --needs-human --reason "..."
 
 Include the command's JSON output verbatim as your structured result.
+Do not wrap it in markdown fences.
 The output is raw canonical JSON — do not wrap or modify it.

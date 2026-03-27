@@ -6,6 +6,7 @@
  * spawning real processes.
  */
 
+import { planSlugFromPath } from "./paths.js";
 import { subprocess } from "./utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
@@ -244,10 +245,7 @@ export async function getBranchCommits(
  * e.g. "docs/development/001-impl-5x-cli.md" → "5x/001-impl-5x-cli"
  */
 export function branchNameFromPlan(planPath: string): string {
-	const base = planPath
-		.replace(/^.*\//, "") // strip directory
-		.replace(/\.md$/, ""); // strip extension
-	return `5x/${base}`;
+	return `5x/${planSlugFromPath(planPath)}`;
 }
 
 /**
@@ -258,10 +256,7 @@ export function isBranchRelevant(
 	branchName: string,
 	planPath: string,
 ): boolean {
-	const planSlug = planPath
-		.replace(/^.*\//, "")
-		.replace(/\.md$/, "")
-		.toLowerCase();
+	const planSlug = planSlugFromPath(planPath).toLowerCase();
 	return branchName.toLowerCase().includes(planSlug);
 }
 

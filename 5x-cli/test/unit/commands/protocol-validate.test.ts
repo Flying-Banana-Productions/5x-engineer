@@ -48,6 +48,12 @@ function writeInput(dir: string, data: unknown): string {
 	return p;
 }
 
+function writeRawInput(dir: string, raw: string): string {
+	const p = join(dir, "input.json");
+	writeFileSync(p, raw);
+	return p;
+}
+
 /** Set up a minimal 5x project dir with git + DB (no subprocesses). */
 function setupProjectDir(dir: string): void {
 	// Git repo (minimal — only needs .git to exist for control-plane resolution)
@@ -287,6 +293,23 @@ describe("protocol validate — auto-detect input format (unit)", () => {
 				summary: "Looks good",
 			};
 			const inputPath = writeInput(dir, raw);
+			await protocolValidate({ role: "reviewer", input: inputPath });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("accepts a single fenced JSON block", async () => {
+		const dir = makeTmpDir();
+		try {
+			const inputPath = writeRawInput(
+				dir,
+				[
+					"```json",
+					'{"readiness":"ready","items":[],"summary":"Looks good"}',
+					"```",
+				].join("\n"),
+			);
 			await protocolValidate({ role: "reviewer", input: inputPath });
 		} finally {
 			cleanupDir(dir);

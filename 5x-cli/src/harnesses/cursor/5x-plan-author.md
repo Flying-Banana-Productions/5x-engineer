@@ -26,8 +26,10 @@ The JSON must conform to this schema:
 ## Important
 
 You **must** commit all changes using `5x commit` before reporting `result: "complete"`.
-Use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` to commit.
+For plan-only tasks, follow the rendered prompt's scoped commit command and commit only the plan file.
 The `commit` field must contain the full SHA from that commit.
+
+Return only raw JSON in your final message — never wrap it in markdown fences.
 
 ## Working Directory
 

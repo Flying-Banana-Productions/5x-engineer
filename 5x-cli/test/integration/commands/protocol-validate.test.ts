@@ -198,4 +198,35 @@ describe("5x protocol validate --record (E2E)", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	test(
+		"accepts fenced JSON on stdin",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const input = [
+					"```json",
+					'{"readiness":"ready","items":[],"summary":"Looks good"}',
+					"```",
+				].join("\n");
+
+				const result = await run5xWithStdin(
+					dir,
+					["protocol", "validate", "reviewer"],
+					input,
+				);
+
+				expect(result.exitCode).toBe(0);
+				const json = JSON.parse(result.stdout) as Record<string, unknown>;
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.role).toBe("reviewer");
+				expect(data.valid).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });

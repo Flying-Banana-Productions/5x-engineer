@@ -67,6 +67,13 @@ async function readInput(input: string | undefined): Promise<string> {
 	return Buffer.concat(chunks).toString("utf-8").trim();
 }
 
+function stripOptionalJsonFence(input: string): string {
+	const trimmed = input.trim();
+	const match = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
+	if (!match) return input;
+	return (match[1] ?? "").trim();
+}
+
 /**
  * Auto-detect input format and extract the structured result.
  *
@@ -255,9 +262,28 @@ export async function protocolValidate(
 	try {
 		parsed = JSON.parse(rawInput);
 	} catch {
-		outputError("INVALID_JSON", "Input is not valid JSON", {
-			raw: rawInput.slice(0, 200),
-		});
+		const strippedInput = stripOptionalJsonFence(rawInput);
+		if (strippedInput !== rawInput) {
+			try {
+				parsed = JSON.parse(strippedInput);
+			} catch {
+				outputError(
+					"INVALID_JSON",
+					"Input is not valid JSON. Pass raw JSON or a single fenced JSON block.",
+					{
+						raw: rawInput.slice(0, 200),
+					},
+				);
+			}
+		} else {
+			outputError(
+				"INVALID_JSON",
+				"Input is not valid JSON. Pass raw JSON or a single fenced JSON block.",
+				{
+					raw: rawInput.slice(0, 200),
+				},
+			);
+		}
 	}
 
 	// Auto-detect and extract structured result

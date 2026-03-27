@@ -338,6 +338,18 @@ describe("branchNameFromPlan", () => {
 			"5x/002-feature",
 		);
 	});
+
+	test("handles Windows absolute paths", () => {
+		expect(
+			branchNameFromPlan("D:\\github\\repo\\docs\\development\\003-feature.md"),
+		).toBe("5x/003-feature");
+	});
+
+	test("handles Windows relative paths", () => {
+		expect(branchNameFromPlan("docs\\development\\004-feature.md")).toBe(
+			"5x/004-feature",
+		);
+	});
 });
 
 describe("isBranchRelevant", () => {
@@ -364,6 +376,15 @@ describe("isBranchRelevant", () => {
 				"docs/development/001-impl-5x-cli.md",
 			),
 		).toBe(false);
+	});
+
+	test("matches Windows-style plan paths", () => {
+		expect(
+			isBranchRelevant(
+				"5x/005-win-feature",
+				"D:\\github\\repo\\docs\\development\\005-win-feature.md",
+			),
+		).toBe(true);
 	});
 });
 

@@ -32,4 +32,4 @@ Write your updated review to `{{review_path}}` and commit the file:
 
     5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: update plan review for <plan name>"
 
-Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result.
+Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.
