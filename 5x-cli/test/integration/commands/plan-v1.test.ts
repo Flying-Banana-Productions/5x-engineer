@@ -214,6 +214,57 @@ describe("5x plan phases (integration)", () => {
 	);
 
 	test(
+		"reads mapped worktree plan when canonical file is missing",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const planDir = join(dir, "docs");
+				mkdirSync(planDir, { recursive: true });
+				const planPath = join(planDir, "plan.md");
+
+				const wtDir = join(dir, ".5x", "worktrees", "wt-missing-root");
+				const wtPlanDir = join(wtDir, "docs");
+				mkdirSync(wtPlanDir, { recursive: true });
+				writeFileSync(
+					join(wtPlanDir, "plan.md"),
+					"# Plan\n\n## Phase 1: Setup\n\n- [x] Task A\n",
+				);
+
+				const { getDb } = await import("../../../src/db/connection.js");
+				const { runMigrations } = await import("../../../src/db/schema.js");
+				const { upsertPlan } = await import("../../../src/db/operations.js");
+				const { _resetForTest } = await import("../../../src/db/connection.js");
+
+				const db = getDb(dir, ".5x/5x.db");
+				runMigrations(db);
+				upsertPlan(db, { planPath, worktreePath: wtDir });
+				db.close();
+				_resetForTest();
+
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				expect(result.exitCode).toBe(0);
+
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					phases: Array<{ done: boolean; checklist_done: number }>;
+					filePaths: { root: string; worktree?: string };
+				};
+
+				expect(payload.phases[0]?.done).toBe(true);
+				expect(payload.phases[0]?.checklist_done).toBe(1);
+				expect(payload.filePaths.root).toBe(planPath);
+				expect(payload.filePaths.worktree).toBe(join(wtPlanDir, "plan.md"));
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"falls back to original path when worktree copy does not exist",
 		async () => {
 			const dir = makeTmpDir();

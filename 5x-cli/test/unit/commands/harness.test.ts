@@ -158,7 +158,7 @@ cursor = "gpt-for-cursor"
 		}
 	});
 
-	test("installs 3 skills and 4 agents (3 subagents + 1 orchestrator)", async () => {
+	test("installs 5 skills and 4 agents (3 subagents + 1 orchestrator)", async () => {
 		const tmp = makeTmpDir();
 		try {
 			await bootstrapProject(tmp);
@@ -172,7 +172,7 @@ cursor = "gpt-for-cursor"
 			const agentsDir = join(tmp, ".opencode", "agents");
 
 			const skillNames = listSkillNames();
-			expect(skillNames).toHaveLength(4);
+			expect(skillNames).toHaveLength(5);
 
 			const agentNames = listAgentTemplates().map((a) => a.name);
 			expect(agentNames).toHaveLength(4);

@@ -9,12 +9,16 @@ import skillPlanTemplate from "./base/5x-plan/SKILL.tmpl.md" with {
 import skillPlanReviewTemplate from "./base/5x-plan-review/SKILL.tmpl.md" with {
 	type: "text",
 };
+import skill5xWindowsTemplate from "./base/5x-windows/SKILL.tmpl.md" with {
+	type: "text",
+};
 import { parseSkillFrontmatter } from "./frontmatter.js";
 import type { SkillRenderContext } from "./renderer.js";
 import { renderSkillTemplate } from "./renderer.js";
 
 const BASE_SKILL_TEMPLATES: Record<string, string> = {
 	"5x": skill5xTemplate,
+	"5x-windows": skill5xWindowsTemplate,
 	"5x-plan": skillPlanTemplate,
 	"5x-plan-review": skillPlanReviewTemplate,
 	"5x-phase-execution": skillPhaseExecutionTemplate,

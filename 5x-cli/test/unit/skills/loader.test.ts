@@ -6,10 +6,11 @@ import {
 } from "../../../src/skills/loader.js";
 
 describe("shared skill template loader", () => {
-	test("all four templates load and parse frontmatter", () => {
+	test("all shared templates load and parse frontmatter", () => {
 		const names = listBaseSkillNames();
 		expect(names).toEqual([
 			"5x",
+			"5x-windows",
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
@@ -25,7 +26,7 @@ describe("shared skill template loader", () => {
 
 	test("renderAllSkillTemplates(native=true) returns valid SkillMetadata[]", () => {
 		const skills = renderAllSkillTemplates({ native: true });
-		expect(skills.length).toBe(4);
+		expect(skills.length).toBe(5);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
 			expect(skill.description.length).toBeGreaterThan(0);
@@ -35,7 +36,7 @@ describe("shared skill template loader", () => {
 
 	test("renderAllSkillTemplates(native=false) returns valid SkillMetadata[]", () => {
 		const skills = renderAllSkillTemplates({ native: false });
-		expect(skills.length).toBe(4);
+		expect(skills.length).toBe(5);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
 			expect(skill.description.length).toBeGreaterThan(0);
@@ -84,5 +85,14 @@ describe("shared skill template loader", () => {
 
 		const foundation = renderSkillByName("5x", { native: false }).content;
 		expect(foundation).toContain("session_id");
+	});
+
+	test("foundation skill points Windows users at the optional supplemental skill", () => {
+		const foundation = renderSkillByName("5x", { native: true }).content;
+		const windows = renderSkillByName("5x-windows", { native: true }).content;
+
+		expect(foundation).toContain("also load `5x-windows`");
+		expect(windows).toContain("PowerShell");
+		expect(windows).toContain("ConvertFrom-Json");
 	});
 });

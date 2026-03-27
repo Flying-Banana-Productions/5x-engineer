@@ -64,13 +64,15 @@ function formatPhasesText(data: Record<string, unknown>): void {
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	const planPath = resolve(params.path);
 
-	if (!existsSync(planPath)) {
-		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`);
-	}
-
 	// Try to resolve the plan through worktree mapping
 	const worktreePlanPath = resolveWorktreePlanPath(planPath);
 	const effectivePath = worktreePlanPath ?? planPath;
+	if (!existsSync(effectivePath)) {
+		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+			plan_path: planPath,
+			...(worktreePlanPath ? { worktree_plan_path: worktreePlanPath } : {}),
+		});
+	}
 
 	const markdown = readFileSync(effectivePath, "utf-8");
 	const plan = parsePlan(markdown);

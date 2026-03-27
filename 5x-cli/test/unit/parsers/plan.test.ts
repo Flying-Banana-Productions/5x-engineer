@@ -181,6 +181,30 @@ describe("parsePlan", () => {
 		expect(plan.phases.length).toBe(2);
 	});
 
+	test("handles CRLF line endings", () => {
+		const md = [
+			"# Plan",
+			"",
+			"**Version:** 1.0",
+			"**Status:** In Progress",
+			"",
+			"## Phase 1: Setup",
+			"",
+			"**Completion gate:** Tests pass.",
+			"",
+			"- [x] Task A",
+			"### P1.1 - Extra [ ]",
+		].join("\r\n");
+
+		const plan = parsePlan(md);
+		expect(plan.phases.length).toBe(1);
+		expect(plan.phases[0]?.title).toBe("Setup");
+		expect(plan.phases[0]?.completionGate).toBe("Tests pass.");
+		expect(plan.phases[0]?.items).toHaveLength(2);
+		expect(plan.phases[0]?.items[0]?.checked).toBe(true);
+		expect(plan.phases[0]?.items[1]?.checked).toBe(false);
+	});
+
 	test("handles plan with no phases", () => {
 		const md = `# Empty Plan
 

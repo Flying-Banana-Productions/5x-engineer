@@ -7,17 +7,18 @@ import { parseSkillFrontmatter } from "../../../src/skills/frontmatter.js";
 import { listBaseSkillNames } from "../../../src/skills/loader.js";
 
 describe("cursor skills loader", () => {
-	test("loads all four skills from shared base template names", () => {
+	test("loads all shared skills from shared base template names", () => {
 		expect(listSkillNames()).toEqual(listBaseSkillNames());
 		expect(listSkillNames()).toEqual([
 			"5x",
+			"5x-windows",
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
 		]);
 
 		const skills = listSkills();
-		expect(skills).toHaveLength(4);
+		expect(skills).toHaveLength(5);
 	});
 
 	test("applies cursor-native subagent and session terminology", () => {

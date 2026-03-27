@@ -9,6 +9,7 @@ harness plugins.
 src/skills/
   base/
     5x/SKILL.tmpl.md
+    5x-windows/SKILL.tmpl.md
     5x-plan/SKILL.tmpl.md
     5x-plan-review/SKILL.tmpl.md
     5x-phase-execution/SKILL.tmpl.md

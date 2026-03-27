@@ -364,6 +364,9 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 **Windows notes:**
 - In PowerShell, prefer `--result @path/to/result.json` or `Get-Content result.json -Raw | 5x run record ... --result -` over inline JSON.
 - On older Windows PowerShell, use `;` or separate lines instead of `&&`.
+- Prefer `ConvertFrom-Json` over `jq` in PowerShell-based examples.
+- If you are using 5x skills in a Windows-native harness, load the optional `5x-windows` skill alongside the core 5x skills.
+- If `5x plan phases <canonical-path>` cannot resolve a mapped worktree copy, use `worktree_plan_path` from `5x run state`.
 
 ### Native Subagent Primitives
 

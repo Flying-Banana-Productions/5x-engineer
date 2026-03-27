@@ -32,7 +32,7 @@ const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
 const COMPLETE_SUFFIX_RE = /\s*[-–—]\s*COMPLETE\s*$/i;
 
 export function parsePlan(markdown: string): ParsedPlan {
-	const lines = markdown.split("\n");
+	const lines = markdown.split(/\r\n|\n|\r/);
 
 	// Extract metadata from early lines
 	let title = "";

@@ -15,6 +15,10 @@ Cross-cutting orchestration knowledge shared by all 5x process skills.
 Load this skill alongside `5x-plan`, `5x-plan-review`, or
 `5x-phase-execution` — it is never used independently.
 
+If you are running in Windows or PowerShell, also load `5x-windows` for
+shell-specific examples and host ergonomics. Do not load it on non-Windows
+platforms unless you specifically need those examples.
+
 ## Tools
 
 - `5x config show [--context <dir>]` — read the resolved runtime config
