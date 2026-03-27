@@ -171,7 +171,7 @@ hash, and diff managed files against their recorded state. Unit tests cover
 all classification outcomes (create, update, skip, conflict, stale-clean,
 stale-modified) including bootstrap with both matching and divergent files.
 
-- [ ] Create `src/managed-assets.ts` with types and helpers:
+- [x] Create `src/managed-assets.ts` with types and helpers:
       - `ManifestEntry`: `{ relativePath: string; owner: string; contentHash: string; cliVersion: string }`.
       - `Manifest`: `{ version: 1; entries: ManifestEntry[] }`.
       - `AssetAction`: `"create" | "update" | "skip" | "remove" | "conflict" | "stale-modified"`.
@@ -186,7 +186,7 @@ stale-modified) including bootstrap with both matching and divergent files.
         reconciliation logic. Takes desired assets (path + content + owner),
         existing manifest entries, and a disk-hash lookup function. Returns
         a plan of classified actions.
-- [ ] The `reconcileAssets` function implements these rules:
+- [x] The `reconcileAssets` function implements these rules:
       - Desired asset not on disk and not in manifest → `create`.
       - Desired asset not on disk but in manifest → `create` (was deleted,
         re-create from bundled source).
@@ -207,7 +207,7 @@ stale-modified) including bootstrap with both matching and divergent files.
         hash → `stale-modified` (stale but user-edited; keep and report).
       - Manifest entry with no matching desired asset, file missing from
         disk → silently drop from manifest (already gone).
-- [ ] Add unit tests in `test/unit/managed-assets.test.ts` covering every
+- [x] Add unit tests in `test/unit/managed-assets.test.ts` covering every
       classification branch above, plus:
       - Round-trip manifest read/write.
       - `hashContent` determinism.
@@ -223,7 +223,7 @@ stale-modified) including bootstrap with both matching and divergent files.
 either prints it (`--dry-run`) or executes it. `--dry-run` writes nothing to
 disk. Unit tests verify plan generation and dry-run behavior.
 
-- [ ] Define `UpgradePlan` type in `src/commands/upgrade.handler.ts`:
+- [x] Define `UpgradePlan` type in `src/commands/upgrade.handler.ts`:
       ```ts
       interface UpgradePlan {
         controlPlaneRoot: string;
@@ -239,21 +239,21 @@ disk. Unit tests verify plan generation and dry-run behavior.
       `HarnessUpgradePlan` groups per-harness, per-scope asset plans.
       The plan carries `controlPlaneRoot` and `stateDir` so that
       `applyUpgradePlan()` does not need to re-resolve paths.
-- [ ] Add `--dry-run` boolean arg to `src/commands/upgrade.ts` citty definition.
-- [ ] Extend `UpgradeParams` with `dryRun?: boolean`.
-- [ ] Refactor `runUpgrade()` into two internal phases:
+- [x] Add `--dry-run` boolean arg to `src/commands/upgrade.ts` citty definition.
+- [x] Extend `UpgradeParams` with `dryRun?: boolean`.
+- [x] Refactor `runUpgrade()` into two internal phases:
       - `buildUpgradePlan(params): Promise<UpgradePlan>` — calls
         `resolveControlPlaneRoot(params.startDir)` first, then reads current
         state and computes all planned actions using the resolved root for
         every asset path. Writes nothing.
       - `applyUpgradePlan(plan, params): Promise<void>` — executes the plan
         actions and writes the updated manifest.
-- [ ] `runUpgrade()` calls `buildUpgradePlan()`, prints the plan, and then
+- [x] `runUpgrade()` calls `buildUpgradePlan()`, prints the plan, and then
       calls `applyUpgradePlan()` only if `dryRun` is false.
-- [ ] Printer formats the plan as a human-readable summary grouped by phase
+- [x] Printer formats the plan as a human-readable summary grouped by phase
       (Config, Database, Templates, Harnesses), using the same `console.log`
       style as the current output.
-- [ ] Add unit tests in `test/unit/commands/upgrade.test.ts` (new file):
+- [x] Add unit tests in `test/unit/commands/upgrade.test.ts` (new file):
       - `buildUpgradePlan` returns correct plan for various scenarios.
       - `runUpgrade({ dryRun: true })` produces a plan but writes no files.
       - `buildUpgradePlan` from a subdirectory resolves to the correct
@@ -261,24 +261,22 @@ disk. Unit tests verify plan generation and dry-run behavior.
 
 ## Phase 3: Config Key Addition
 
-**Completion gate:** TOML→TOML upgrade adds missing keys from the default
-template while preserving existing user values and comments. Dry-run reports
-which keys would be added.
+**Completion gate:** TOML→TOML upgrade adds missing keys from the default template while preserving existing user values and comments. Dry-run reports which keys would be added.
 
-- [ ] In `upgradeTomlConfig()`, after deprecated-key transforms, compare the
+- [x] In `upgradeTomlConfig()`, after deprecated-key transforms, compare the
       user's parsed config against the default template parsed from
       `generateTomlConfig()`.
-- [ ] Identify keys present in the default but absent from the user config.
+- [x] Identify keys present in the default but absent from the user config.
       Walk nested objects (e.g. `[author]`, `[paths]`, `[db]`) to detect
       missing sub-keys.
-- [ ] For each missing key, add it to the transform output. Use `tomlPatch()`
+- [x] For each missing key, add it to the transform output. Use `tomlPatch()`
       to merge — this preserves existing comments and formatting.
-- [ ] Add missing keys as commented-out entries (matching the default template
+- [x] Add missing keys as commented-out entries (matching the default template
       style) when the default value is itself commented out, and as active
       entries when the default is active. This requires inspecting the raw
       TOML template text to determine comment state.
-- [ ] Return `ConfigAction` entries describing each addition for the plan.
-- [ ] Add unit tests covering:
+- [x] Return `ConfigAction` entries describing each addition for the plan.
+- [x] Add unit tests covering:
       - Missing top-level key is added.
       - Missing nested key (e.g. `[worktree].postCreate`) is added.
       - Existing keys are not overwritten.
