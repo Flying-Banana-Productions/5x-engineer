@@ -5,6 +5,29 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.1-beta.2 (2026-03-27)
+
+### Fixes
+
+- **CRLF-safe phase parsing** — `5x plan phases` now parses Windows-authored
+  plans with CRLF line endings correctly, restoring phase headings,
+  completion gates, and checklist detection.
+- **Mapped worktree plan lookup** — `5x plan phases` now reads the mapped
+  worktree copy even when the canonical repo path has not been created yet,
+  eliminating false `PLAN_NOT_FOUND` failures in worktree-first flows.
+
+### Improvements
+
+- **Optional Windows skill** — added a bundled `5x-windows` supplemental skill
+  with PowerShell, path quoting, JSON parsing, and worktree-path guidance so
+  Windows-specific ergonomics stay out of the main foundation skill by default.
+- **Windows command help** — `5x plan phases --help` and README examples now
+  include PowerShell-friendly parsing guidance and a `worktree_plan_path`
+  fallback hint.
+- **Regression coverage** — added parser, integration, harness, and skill-loader
+  tests for CRLF handling, missing canonical plans with mapped worktree copies,
+  and supplemental-skill installation.
+
 ## 1.1.1-beta.1 (2026-03-27)
 
 ### Fixes
