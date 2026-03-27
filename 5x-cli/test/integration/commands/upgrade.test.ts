@@ -121,16 +121,15 @@ describe("5x upgrade", () => {
 	);
 
 	test(
-		"reports 5x.toml as up-to-date when fully configured",
+		"reports 5x.toml as up-to-date when no changes needed",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				// Use the actual default template to ensure no keys are missing
-				const { generateTomlConfig } = await import(
-					"../../../src/commands/init.handler.js"
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`maxStepsPerRun = 50\n\n[author]\nprovider = "opencode"\n`,
+					"utf-8",
 				);
-				const defaultConfig = generateTomlConfig();
-				writeFileSync(join(tmp, "5x.toml"), defaultConfig, "utf-8");
 
 				const { stdout, exitCode } = await runUpgrade(tmp);
 
@@ -199,9 +198,8 @@ describe("5x upgrade", () => {
 				expect(existsSync(join(tmp, ".5x", "templates", "prompts"))).toBe(
 					false,
 				);
-				// Core templates should be created, config may have keys added
-				expect(stdout).toContain("Templates:");
-				expect(stdout).toContain("implementation-plan-template.md");
+				// Should report templates as up-to-date
+				expect(stdout).toContain("up-to-date");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -227,11 +225,10 @@ describe("5x upgrade", () => {
 				const { stdout, exitCode } = await runUpgrade(tmp);
 
 				expect(exitCode).toBe(0);
-				// New format uses "Conflict:" instead of "Warning:"
 				expect(stdout).toContain(
-					"Conflict: .5x/templates/prompts/author-next-phase.md",
+					"Warning: .5x/templates/prompts/author-next-phase.md differs from the bundled version",
 				);
-				expect(stdout).toContain("File has been customized");
+				expect(stdout).toContain("5x init --install-templates --force");
 
 				// File should NOT be modified
 				const content = readFileSync(
@@ -263,11 +260,10 @@ describe("5x upgrade", () => {
 				const { stdout, exitCode } = await runUpgrade(tmp);
 
 				expect(exitCode).toBe(0);
-				// New behavior: adopts files that match bundled content
 				expect(stdout).toContain(
-					"Adopted .5x/templates/prompts/author-next-phase.md (matches bundled)",
+					"Skipped .5x/templates/prompts/author-next-phase.md (matches bundled)",
 				);
-				expect(stdout).not.toContain("Conflict");
+				expect(stdout).not.toContain("Warning");
 			} finally {
 				cleanupDir(tmp);
 			}
