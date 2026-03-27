@@ -29,6 +29,12 @@ You are fixing quality gate failures for Phase {{phase_number}} of `{{plan_path}
 5. Update the implementation plan checklist items (`[x]`) only if your fixes complete previously incomplete items.
 6. Commit your changes with a message referencing the quality fixes.
 
+### Working Directory
+
+**Your effective working directory is shown in the `## Context` block at the bottom of this prompt. You MUST `cd` into that directory before reading, editing, running tests, or committing any files.**
+
+The correct branch is already checked out in that directory — do not create, switch, or validate branches. All `git` operations must be run from within that directory. Never run `git commit` directly; always use `5x commit --run {{run_id}}`.
+
 ### Scope of Changes
 
 This is a **quality remediation** task. You are fixing code to pass quality gates, not addressing code review feedback (that uses a separate workflow).

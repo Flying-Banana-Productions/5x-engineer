@@ -26,6 +26,12 @@ You are revising the implementation plan at `{{plan_path}}` based on review feed
    - **P1 items**: Should be resolved.
    - **P2 items**: Address if straightforward; note any deferred items.
 
+### Working Directory
+
+**Your effective working directory is shown in the `## Context` block at the bottom of this prompt. You MUST `cd` into that directory before reading, editing, or committing any files.**
+
+The correct branch is already checked out in that directory — do not create, switch, or validate branches. All `git` operations must be run from within that directory. Never run `git commit` directly; always use `5x commit --run {{run_id}}`.
+
 ### Scope of Changes
 
 This is a **document-only** task. You are revising the implementation plan, not writing code.

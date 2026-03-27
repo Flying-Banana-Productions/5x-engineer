@@ -37,7 +37,9 @@ validates this with `5x protocol validate author --require-commit`.
 
 ## Working Directory
 
-The rendered prompt includes a `## Context` block with the effective working
-directory. Treat this path as authoritative for all file operations. This is
-essential for worktree runs where the working directory is mapped outside the
-main checkout.
+The task prompt includes a `## Context` block specifying your effective working
+directory. **`cd` into that directory as your very first action** — before reading
+files, editing code, running tests, or committing anything. The correct branch is
+already checked out there; do not create, switch, or validate branches. Never run
+`git commit` directly; always use `5x commit --run <run_id>` so that staging and
+run-journal recording happen correctly.

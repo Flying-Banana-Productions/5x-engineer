@@ -21,6 +21,12 @@ You are implementing phase {{phase_number}} of the implementation plan at `{{pla
 6. Update the implementation plan: mark completed checklist items with `[x]`.
 7. Commit your changes with a message referencing the implementation plan and phase number.
 
+### Working Directory
+
+**Your effective working directory is shown in the `## Context` block at the bottom of this prompt. You MUST `cd` into that directory before reading, editing, running tests, or committing any files.**
+
+The correct branch is already checked out in that directory — do not create, switch, or validate branches. All `git` operations (status, add, commit, log) must be run from within that directory. Never run `git commit` directly; always use `5x commit --run {{run_id}}` which handles staging and recording automatically.
+
 ### Implementation Guidelines
 
 - Follow existing code patterns and conventions in the codebase.
@@ -28,12 +34,6 @@ You are implementing phase {{phase_number}} of the implementation plan at `{{pla
 - Keep commits focused — one logical change per commit where practical.
 - If a checklist item is ambiguous, implement the most reasonable interpretation.
 - If you encounter a design decision not covered by the plan, choose the simplest approach that satisfies the requirements and note your decision.
-
-### Branch Management
-
-- Validate you are on an appropriate branch for this work.
-- If no suitable branch exists, create one (e.g., `impl/NNN-feature-name` or similar).
-- Do NOT force-push or rewrite history on shared branches.
 
 ### Quality Checks
 

@@ -36,3 +36,12 @@ You **must** commit all changes using `5x commit` before reporting `result: "com
 Use `5x commit --run {{run_id}} -m "<descriptive message>" --all-files` to commit.
 The `commit` field must contain the full SHA from that commit. The orchestrator
 validates this with `5x protocol validate author --require-commit`.
+
+## Working Directory
+
+The task prompt includes a `## Context` block specifying your effective working
+directory. **`cd` into that directory as your very first action** — before reading
+files, editing code, running tests, or committing anything. The correct branch is
+already checked out there; do not create, switch, or validate branches. Never run
+`git commit` directly; always use `5x commit --run <run_id>` so that staging and
+run-journal recording happen correctly.
