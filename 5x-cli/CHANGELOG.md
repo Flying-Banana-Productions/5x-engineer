@@ -5,6 +5,22 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.1-beta.3 (2026-03-27)
+
+### Fixes
+
+- **CRLF-safe review parsing** — review summary parsing now handles Windows
+  CRLF line endings correctly, preventing dropped readiness/addendum and
+  priority-item detection in review markdown.
+- **CLI version reporting** — `5x --version` now reads directly from
+  `package.json`, keeping the reported CLI version aligned with published npm
+  releases.
+
+### Improvements
+
+- **Version regression coverage** — added a CLI integration test that asserts
+  `--version` matches `package.json`, alongside CRLF review-parser coverage.
+
 ## 1.1.1-beta.2 (2026-03-27)
 
 ### Fixes
