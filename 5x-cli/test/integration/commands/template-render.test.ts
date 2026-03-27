@@ -597,8 +597,10 @@ describe("5x template render", () => {
 				const data = json.data as Record<string, unknown>;
 				const prompt = data.prompt as string;
 
-				// No worktree mapping → no ## Context block
-				expect(prompt).not.toContain("## Context");
+				// No worktree mapping → no appended ## Context block
+				expect(prompt).not.toContain(
+					"## Context\n\nEffective working directory:",
+				);
 				expect(prompt).not.toContain("Effective working directory:");
 				expect(data.worktree_root).toBeUndefined();
 			} finally {
