@@ -1,6 +1,6 @@
 # Upgrade Command Enhancements
 
-**Version:** 1.3
+**Version:** 1.2
 **Created:** March 13, 2026
 **Status:** Ready for implementation
 
@@ -24,13 +24,9 @@ command:
 - **Ad hoc DB path resolution.** The upgrade handler reads `db.path` directly
   from raw config instead of using the control-plane resolver, which may diverge
   in worktree or custom-path setups.
-- **No standalone harness upgrade command.** Users cannot upgrade a single
-  harness — they must run the full `5x upgrade` or manually
-  `uninstall` + `install`.
 
 This change extends `5x upgrade` into a manifest-driven reconciler with a
-plan-then-apply architecture, `--dry-run` support, harness asset refresh, and a
-standalone `5x harness upgrade` command.
+plan-then-apply architecture, `--dry-run` support, and harness asset refresh.
 
 ## Goals
 
@@ -46,11 +42,6 @@ standalone `5x harness upgrade` command.
   `5x.toml` while preserving comments and user values.
 - Installed project-scope harness assets are refreshed for all harnesses where
   they are currently installed.
-- Installed user-scope harness assets are upgraded via force-reinstall during
-  both `5x upgrade` and `5x harness upgrade`. No manifest tracking for user
-  scope.
-- `5x harness upgrade <name> [--scope]` upgrades a single harness using the
-  manifest reconciler (project scope) or force-reinstall (user scope).
 - Database migration uses the control-plane resolver for consistent DB path
   discovery.
 
@@ -64,12 +55,11 @@ standalone `5x harness upgrade` command.
   CI and post-install hooks.
 - Upgrading external (third-party) harness plugins — only bundled harness
   assets are refreshed. External plugins manage their own upgrade lifecycle.
-- **User-scope manifest tracking.** User-scoped harness assets are upgraded
-  via force-reinstall (equivalent to `harness install --force`), not via the
-  manifest reconciler. Tracking them in a project-scoped manifest creates
-  cross-repo collisions. Manifest-based tracking for user scope is deferred
-  to a future iteration that introduces a separate user-scoped manifest at
-  `~/.config/5x/`.
+- **User-scope harness asset refresh.** User-scoped harness assets (installed
+  under `$HOME`) live outside any single repo and can be refreshed from many
+  repos. Tracking them in a project-scoped manifest creates cross-repo
+  collisions. User-scope refresh is deferred to a future iteration that
+  introduces a separate user-scoped manifest at `~/.config/5x/`.
 
 ## Design Decisions
 
@@ -151,27 +141,17 @@ user's config, and patches them in. Commented-out keys in the default template
 are added as comments (preserving the "opt-in" style). Existing user values
 are never overwritten by defaults.
 
-**User-scope harness upgrade uses force-reinstall, not the manifest.** Since
-user-scope assets live outside any single repo and the manifest is
-project-scoped, user-scope harness upgrades call `plugin.install({ force: true })`
-directly. This provides the upgrade capability users need without cross-repo
-manifest collisions. Both the standalone `5x harness upgrade <name> --scope user`
-and the `5x upgrade` harness phase use this path for user scope.
-
-**Harness refresh is auto-detected, not opt-in.** The
-upgrade handler inspects each bundled harness plugin's scopes and
+**Harness refresh is auto-detected, not opt-in (project scope only).** The
+upgrade handler inspects each bundled harness plugin's `"project"` scope and
 checks whether assets are currently installed (using `plugin.describe()` +
-`plugin.locations.resolve()` + existence checks). In addition, project-scope
-harness scopes are considered installed if the manifest contains any entries
-with a matching harness owner prefix (e.g. `harness:opencode:*`). This dual
-check — current files OR manifest entries — ensures that stale-only installs
-(where all currently bundled files were removed/renamed but manifest-managed
-files still exist on disk) still enter reconciliation for cleanup. For project
-scope, the manifest reconciler is used; for user scope, force-reinstall is
-used. Users do not need to pass `--scope` or harness names — upgrade discovers
-what is installed and refreshes it. The standalone `5x harness upgrade <name>`
-command targets a single harness and requires `--scope` for multi-scope
-plugins.
+`plugin.locations.resolve()` + existence checks). In addition, harness scopes
+are considered installed if the manifest contains any entries with a matching
+harness owner prefix (e.g. `harness:opencode:*`). This dual check — current
+files OR manifest entries — ensures that stale-only installs (where all
+currently bundled files were removed/renamed but manifest-managed files still
+exist on disk) still enter reconciliation for cleanup. Users do not need to
+pass `--scope` or harness names — upgrade discovers what is installed and
+refreshes it.
 
 **DB path resolution uses `resolveControlPlaneRoot()`.** The current ad hoc
 config-read for `db.path` in the upgrade handler is replaced with the canonical
@@ -191,7 +171,7 @@ hash, and diff managed files against their recorded state. Unit tests cover
 all classification outcomes (create, update, skip, conflict, stale-clean,
 stale-modified) including bootstrap with both matching and divergent files.
 
-- [x] Create `src/managed-assets.ts` with types and helpers:
+- [ ] Create `src/managed-assets.ts` with types and helpers:
       - `ManifestEntry`: `{ relativePath: string; owner: string; contentHash: string; cliVersion: string }`.
       - `Manifest`: `{ version: 1; entries: ManifestEntry[] }`.
       - `AssetAction`: `"create" | "update" | "skip" | "remove" | "conflict" | "stale-modified"`.
@@ -206,7 +186,7 @@ stale-modified) including bootstrap with both matching and divergent files.
         reconciliation logic. Takes desired assets (path + content + owner),
         existing manifest entries, and a disk-hash lookup function. Returns
         a plan of classified actions.
-- [x] The `reconcileAssets` function implements these rules:
+- [ ] The `reconcileAssets` function implements these rules:
       - Desired asset not on disk and not in manifest → `create`.
       - Desired asset not on disk but in manifest → `create` (was deleted,
         re-create from bundled source).
@@ -227,7 +207,7 @@ stale-modified) including bootstrap with both matching and divergent files.
         hash → `stale-modified` (stale but user-edited; keep and report).
       - Manifest entry with no matching desired asset, file missing from
         disk → silently drop from manifest (already gone).
-- [x] Add unit tests in `test/unit/managed-assets.test.ts` covering every
+- [ ] Add unit tests in `test/unit/managed-assets.test.ts` covering every
       classification branch above, plus:
       - Round-trip manifest read/write.
       - `hashContent` determinism.
@@ -344,16 +324,12 @@ template and manifest paths are resolved via `resolveControlPlaneRoot()`.
         reported, file preserved.
       - `--force` overwrites conflicts and removes stale-modified files.
 
-## Phase 5: Harness Asset Refresh and Standalone Upgrade Command
+## Phase 5: Harness Asset Refresh (Project Scope Only)
 
-**Completion gate:** `5x upgrade` detects installed harness assets across all
-scopes and refreshes them — project scope via the manifest reconciler, user
-scope via force-reinstall. Stale project-scope harness assets (skills/agents
-removed from the bundled set) are cleaned up. A standalone
-`5x harness upgrade <name> [--scope]` command is available for upgrading a
-single harness.
-
-### 5a: `desiredAssets()` Plugin Interface
+**Completion gate:** `5x upgrade` detects installed project-scope harness
+assets and refreshes skills and agent profiles using the manifest reconciler.
+Stale harness assets (skills/agents removed from the bundled set) are cleaned
+up. User-scope harness assets are not touched.
 
 - [ ] Add optional `desiredAssets?(ctx)` method to `HarnessPlugin` interface
       in `src/harnesses/types.ts`:
@@ -379,42 +355,16 @@ single harness.
       full set of files the plugin would install, without writing anything.
       The existing `install()` method is kept for backward compatibility.
       Third-party plugins that do not implement `desiredAssets()` are simply
-      skipped during manifest-driven upgrade; user-scope upgrades fall back
-      to `install({ force: true })` regardless.
-- [ ] Update `isValidPlugin()` in `src/harnesses/factory.ts` to accept
-      plugins without `desiredAssets()` (already optional via `?` in the
-      interface; `isValidPlugin` must not require it).
-
-### 5b: Implement `desiredAssets()` on All Bundled Plugins
-
-- [ ] Implement `desiredAssets()` on the **OpenCode** plugin
-      (`src/harnesses/opencode/plugin.ts`):
-      - Skills: `listSkills()` mapped to `skills/<name>/SKILL.md` paths +
-        content.
-      - Agents: `renderAgentTemplates()` mapped to `agents/<name>.md` paths +
-        content.
-- [ ] Implement `desiredAssets()` on the **Cursor** plugin
-      (`src/harnesses/cursor/plugin.ts`):
-      - Skills: `listSkills()` mapped to `skills/<name>/SKILL.md` paths +
-        content.
-      - Agents: `renderAgentTemplates()` mapped to `agents/<name>.md` paths +
-        content.
-      - Rules (project scope only): `5x-orchestrator.mdc` and
-        `5x-permissions.mdc` mapped to `rules/<name>.mdc` paths + content.
-      - User scope: returns skills + agents only (rules unsupported in user
-        scope).
-- [ ] Implement `desiredAssets()` on the **Universal** plugin
-      (`src/harnesses/universal/plugin.ts`):
-      - Skills only: `renderAllSkillTemplates({ native: false })` mapped to
-        `skills/<name>/SKILL.md` paths + content.
-      - No agents or rules.
-
-### 5c: Harness Refresh in `5x upgrade`
-
+      skipped during upgrade harness refresh.
+- [ ] Implement `desiredAssets()` on the OpenCode plugin:
+      - Skills: map `ctx.skills` through `installSkillFiles`-equivalent logic
+        to produce `skills/<name>/SKILL.md` paths + content.
+      - Agents: call `renderAgentTemplates()` to produce `agents/<name>.md`
+        paths + content.
 - [ ] In `buildUpgradePlan()`, for each bundled harness:
       - Load the plugin via `loadHarnessPlugin()`.
-      - For `"project"` scope:
-        - Skip if the plugin does not implement `desiredAssets()`.
+      - Skip if the plugin does not implement `desiredAssets()`.
+      - For `"project"` scope only (skip `"user"` scope entirely):
         - Check if any managed files are currently installed (existence check
           on known paths from `describe()` + `locations.resolve()`).
         - Additionally check if the manifest contains any entries with a
@@ -428,81 +378,22 @@ single harness.
           `plugin.locations.resolve("project", controlPlaneRoot)` so that
           paths become control-plane-root-relative (e.g.
           `"skills/5x-plan/SKILL.md"` →
-          `".opencode/skills/5x-plan/SKILL.md"`). This ensures manifest
+          `".claude/skills/5x-plan/SKILL.md"`). This ensures manifest
           `relativePath` values are consistent with the manifest's
           control-plane-root-relative keying. Then call
           `reconcileAssets()` to produce the plan.
-        - Compute manifest owner strings as `harness:<name>:skill`,
-          `harness:<name>:agent`, and `harness:<name>:rule`.
-      - For `"user"` scope:
-        - Check if any managed files are currently installed (existence check
-          on known paths from `describe()` + `locations.resolve()`).
-        - If installed: plan a force-reinstall via `plugin.install({ force:
-          true })`. No manifest involvement.
-- [ ] In `applyUpgradePlan()`, execute project-scope harness asset plans
-      using the same create/update/remove/skip logic as templates. Execute
-      user-scope plans via `plugin.install({ force: true })`.
-- [ ] After apply, update the manifest with the new project-scope harness
-      asset state. User-scope assets are not tracked in the manifest.
-- [ ] Per-harness/scope errors are caught and logged (non-fatal) — one
-      broken harness should not block the others.
-
-### 5d: Standalone `5x harness upgrade` Command
-
-- [ ] Add `HarnessUpgradeParams` and `HarnessUpgradeOutput` types to
-      `src/commands/harness.handler.ts`:
-      ```ts
-      interface HarnessUpgradeParams {
-        name: string;
-        scope?: string;
-        force?: boolean;
-        startDir?: string;
-        homeDir?: string;
-      }
-      interface HarnessUpgradeOutput {
-        harnessName: string;
-        scope: HarnessScope;
-        skills: InstallSummary;
-        agents: InstallSummary;
-        rules?: InstallSummary;
-        warnings?: string[];
-      }
-      ```
-- [ ] Add `harnessUpgradeCore(params)` data layer function in
-      `src/commands/harness.handler.ts`:
-      - **Project scope**: Load plugin → call `desiredAssets(ctx)` → read
-        manifest → `reconcileAssets()` → return plan. On apply: execute
-        plan, update manifest.
-      - **User scope**: Load plugin → call `plugin.install({ force: true })`
-        → return `InstallSummary`. No manifest involvement.
-      - Reuses existing `resolveScope()` helper for scope validation (auto-
-        infer for single-scope plugins, require `--scope` for multi-scope).
-      - `--force` for project scope: overwrite even user-modified files
-        (same as `5x upgrade --force`).
-      - `--force` for user scope: no-op (always force-overwrites).
-- [ ] Add `harnessUpgrade(params)` public handler — calls
-      `harnessUpgradeCore`, formats output via generalized
-      `printInstallSummary` (add `verb` parameter, default `"Install"`,
-      pass `"Upgrade"` for upgrade calls).
-- [ ] Add `upgradeInstalledHarnesses(params)` function — called by
-      `runUpgrade()` for the Harnesses phase. Calls
-      `buildHarnessListData()` to discover installed state, then calls
-      `harnessUpgradeCore()` for each installed harness+scope. Returns
-      `string[]` log lines matching the convention of the other upgrade
-      phases.
-- [ ] Register `upgrade` subcommand on the `harness` command group in
-      `src/commands/harness.ts`:
-      ```
-      5x harness upgrade <name> [--scope user|project] [--force]
-      ```
-      Update the parent command description to mention "upgrade" alongside
-      install, list, and uninstall.
-
-### 5e: Tests
-
+      - Compute manifest owner strings as `harness:<name>:skill` and
+        `harness:<name>:agent`.
+- [ ] In `applyUpgradePlan()`, execute harness asset plans using the same
+      create/update/remove/skip logic as templates.
+- [ ] After apply, update the manifest with the new harness asset state.
+- [ ] Update `isValidPlugin()` in `src/harnesses/factory.ts` to accept
+      plugins without `desiredAssets()` (already optional via `?` in the
+      interface; `isValidPlugin` must not require it).
 - [ ] Add unit tests covering:
       - Installed project-scope harness is detected and included in plan.
       - Non-installed scope is excluded from plan.
+      - User-scope is always excluded from plan (even if installed).
       - Skill/agent content changes trigger update for untouched files.
       - User-modified harness files are reported as conflicts.
       - Removed bundled skill/agent produces stale removal.
@@ -510,13 +401,6 @@ single harness.
         remain) still enters reconciliation and cleans up.
       - Agent model re-rendering (config change) triggers update.
       - Plugin without `desiredAssets()` is gracefully skipped.
-      - User-scope harness upgrade uses force-reinstall, not manifest.
-      - `5x harness upgrade opencode --scope user` overwrites user-scope
-        files.
-      - `5x upgrade` upgrades both project-scope (manifest) and user-scope
-        (force-reinstall) harnesses.
-      - `harnessUpgradeCore` for project scope (manifest) and user scope
-        (force-reinstall).
 
 ## Phase 6: DB Path Resolution Fix and Migration Safety
 
@@ -553,8 +437,6 @@ path including `--dry-run`, and the AGENTS.md and README are updated.
       - Full upgrade creates missing templates, updates unchanged templates,
         writes manifest.
       - Upgrade after harness install refreshes project-scope harness assets.
-      - Upgrade after harness install refreshes user-scope harness assets
-        (force-reinstall, no manifest).
       - Stale template removed on upgrade (pre-seed manifest with an extra
         entry, verify file is removed).
       - User-modified template is not overwritten (modify a managed file,
@@ -565,56 +447,36 @@ path including `--dry-run`, and the AGENTS.md and README are updated.
       - Config key addition (start with minimal TOML, verify new keys added).
       - Subdirectory invocation produces the same plan as root invocation.
       - Linked-worktree invocation resolves to the correct control-plane root.
-- [ ] Add integration tests in `test/integration/commands/harness.test.ts`
-      for `5x harness upgrade`:
-      - `5x harness upgrade opencode -s project` refreshes project-scope
-        assets via manifest reconciler.
-      - `5x harness upgrade opencode -s project --dry-run` prints plan,
-        writes nothing (inherits from upgrade dry-run infrastructure).
-      - `5x harness upgrade cursor -s user` force-reinstalls user-scope
-        assets.
-      - `5x harness upgrade` with multi-scope plugin and no `--scope` errors
-        with supported scopes hint.
-      - `5x harness upgrade nonexistent` errors with harness-not-found.
 - [ ] Update `AGENTS.md` handler documentation to include the new `dryRun`
-      parameter in the `runUpgrade()` entry and the new `harnessUpgrade()`
-      handler.
-- [ ] Update `src/commands/upgrade.ts` description to mention dry-run,
-      harness refresh, and the new Harnesses phase.
-- [ ] Ensure all existing upgrade and harness tests still pass.
+      parameter in the `runUpgrade()` entry.
+- [ ] Update `src/commands/upgrade.ts` description to mention dry-run and
+      harness refresh.
+- [ ] Ensure all existing upgrade tests still pass.
 
 ## Files Touched
 
 | File | Change |
 |------|--------|
 | `src/managed-assets.ts` | New: manifest types, read/write, hashing, reconciliation engine |
-| `src/commands/upgrade.ts` | Add `--dry-run` arg; update description to mention harness refresh |
-| `src/commands/upgrade.handler.ts` | Refactor into plan/apply; add config key addition, template reconciliation, harness refresh (project + user scope), DB path fix; single `resolveControlPlaneRoot()` call anchors all paths; add Harnesses phase calling `upgradeInstalledHarnesses()` |
-| `src/commands/harness.ts` | Register `upgrade` subcommand; update parent command description |
-| `src/commands/harness.handler.ts` | Add `harnessUpgradeCore`, `harnessUpgrade`, `upgradeInstalledHarnesses`; generalize `printInstallSummary` with verb parameter |
+| `src/commands/upgrade.ts` | Add `--dry-run` arg |
+| `src/commands/upgrade.handler.ts` | Refactor into plan/apply; add config key addition, template reconciliation, harness refresh, DB path fix; single `resolveControlPlaneRoot()` call anchors all paths |
 | `src/harnesses/types.ts` | Add optional `desiredAssets?()` to `HarnessPlugin` |
 | `src/harnesses/factory.ts` | Update `isValidPlugin()` (keep `desiredAssets` optional) |
 | `src/harnesses/opencode/plugin.ts` | Implement `desiredAssets()` |
-| `src/harnesses/cursor/plugin.ts` | Implement `desiredAssets()` (skills, agents, rules for project scope) |
-| `src/harnesses/universal/plugin.ts` | Implement `desiredAssets()` (skills only) |
 | `src/commands/control-plane.ts` | No change — consumed by upgrade handler |
 | `src/commands/init.handler.ts` | No change — `ensureTemplateFiles` / `ensurePromptTemplates` still used by init; upgrade takes its own path |
 | `test/unit/managed-assets.test.ts` | New: manifest and reconciliation tests (incl. bootstrap adoption/conflict) |
-| `test/unit/commands/upgrade.test.ts` | Extend: plan-building, dry-run, subdirectory-invocation, harness phase unit tests |
-| `test/unit/commands/harness.test.ts` | Extend: `harnessUpgradeCore` for project scope (manifest) and user scope (force-reinstall) |
-| `test/integration/commands/upgrade.test.ts` | Extend: dry-run, harness refresh (project + user scope), stale cleanup, conflict detection, bootstrap conflict, subdirectory, linked-worktree |
-| `test/integration/commands/harness.test.ts` | Extend: `5x harness upgrade` CLI path for project + user scope, dry-run, error cases |
-| `AGENTS.md` | Update `runUpgrade()` docs; add `harnessUpgrade()` docs |
+| `test/unit/commands/upgrade.test.ts` | New: plan-building, dry-run, subdirectory-invocation unit tests |
+| `test/integration/commands/upgrade.test.ts` | Extend: dry-run, harness refresh, stale cleanup, conflict detection, bootstrap conflict, subdirectory, linked-worktree |
+| `AGENTS.md` | Update `runUpgrade()` docs |
 
 ## Tests
 
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/managed-assets.test.ts` | Manifest read/write, hashing, all reconciliation branches, bootstrap adoption vs conflict |
-| Unit | `test/unit/commands/upgrade.test.ts` | Plan building for config/db/templates/harnesses, dry-run no-write, subdirectory root resolution, harness phase (project + user scope) |
-| Unit | `test/unit/commands/harness.test.ts` | `harnessUpgradeCore` for project scope (manifest) and user scope (force-reinstall) |
-| Integration | `test/integration/commands/upgrade.test.ts` | End-to-end CLI `--dry-run`, template reconciliation, harness refresh (project + user scope), stale cleanup, conflict preservation, bootstrap conflict detection, `--force` behavior, config key addition, subdirectory invocation, linked-worktree invocation |
-| Integration | `test/integration/commands/harness.test.ts` | `5x harness upgrade` CLI path for project + user scope, dry-run, scope validation, error cases |
+| Unit | `test/unit/commands/upgrade.test.ts` | Plan building for config/db/templates/harnesses, dry-run no-write, subdirectory root resolution |
+| Integration | `test/integration/commands/upgrade.test.ts` | End-to-end CLI `--dry-run`, template reconciliation, harness refresh (project scope), stale cleanup, conflict preservation, bootstrap conflict detection, `--force` behavior, config key addition, subdirectory invocation, linked-worktree invocation |
 
 ## Risks
 
@@ -626,7 +488,7 @@ path including `--dry-run`, and the AGENTS.md and README are updated.
 | `desiredAssets()` rendering depends on config (model injection) | Low | Low | Config is loaded before harness planning; missing config falls back to no-model rendering (matching current install behavior) |
 | Stale file removal deletes a file the user intended to keep | Low | High | Only removes files whose on-disk hash matches manifest hash; `stale-modified` files are always preserved unless `--force` |
 | Third-party harness plugins lack `desiredAssets()` | Likely | Low | Method is optional (`?` in interface); plugins without it are skipped during upgrade harness refresh |
-| User-scope upgrade overwrites user customizations without warning | Medium | Medium | User-scope has no manifest protection; accepted trade-off until user-scoped manifest is built. `5x harness upgrade` and `5x upgrade` are explicit user actions. Document the behavior in command help text |
+| User-scope harness assets not refreshed by upgrade | Certain (deferred) | Low | Out of scope for this iteration; users can `harness uninstall` + `harness install` for user-scope. Future iteration adds user-scoped manifest |
 | Stale-only harness scope missed during reconciliation | N/A (eliminated) | N/A | Scope inclusion driven by manifest entries OR current-file existence, so stale-only installs still enter reconciliation |
 
 ## Revision History
@@ -670,17 +532,3 @@ step in the `buildUpgradePlan()` bullet: `desiredAssets()` output must be
 re-rooted through `plugin.locations.resolve("project", controlPlaneRoot)`
 before being passed to `reconcileAssets()`, ensuring manifest `relativePath`
 values remain control-plane-root-relative.
-
-### v1.3 — Add `5x harness upgrade` command; extend to all harnesses and user scope
-
-- Added standalone `5x harness upgrade <name> [--scope] [--force]` command.
-  Project scope uses the manifest reconciler; user scope uses force-reinstall.
-- Extended `desiredAssets()` requirement to Cursor and Universal plugins
-  (previously only OpenCode).
-- Added user-scope harness upgrade via force-reinstall to both the standalone
-  command and the `5x upgrade` harness phase.
-- Softened the user-scope non-goal: user-scope upgrades now supported, but
-  without manifest tracking.
-- Split Phase 5 into sub-phases (5a–5e) for clarity.
-- Added integration tests for the new command.
-- Updated Files Touched, Tests, and Risks tables.
