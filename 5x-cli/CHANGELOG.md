@@ -5,6 +5,32 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.1-beta.1 (2026-03-27)
+
+### Fixes
+
+- **Windows worktree branch naming** — plan-derived branch and worktree slugs
+  now normalize Windows-style paths before generating git refs, preventing
+  invalid branch names like `5x/D:\...` during `5x run init --worktree`.
+- **Protocol validation input** — `5x protocol validate` now accepts a single
+  fenced JSON block in addition to raw JSON, reducing friction when native
+  subagents accidentally wrap structured output in markdown fences.
+- **Plan commit scope** — plan-generation and plan-review author prompts now use
+  file-scoped `5x commit --files <plan>` commands instead of `--all-files`,
+  reducing scope bleed into unrelated bootstrap or harness files.
+
+### Improvements
+
+- **Worktree failure messaging** — `run init --worktree` now reports more
+  clearly when no worktree was created or attached, making fallback behavior
+  explicit.
+- **Windows docs and guardrails** — README guidance now includes PowerShell-
+  friendly `run record` usage, and plan-author harness prompts explicitly
+  require raw JSON final output with no markdown fences.
+- **Regression coverage** — added tests for Windows-style plan paths, fenced
+  protocol input, scoped plan commits, and the template-render no-worktree
+  context assertion.
+
 ## 1.1.1-beta.0 (2026-03-26)
 
 ### Features
