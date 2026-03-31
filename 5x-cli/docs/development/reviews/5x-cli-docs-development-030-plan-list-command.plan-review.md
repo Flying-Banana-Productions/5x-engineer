@@ -83,3 +83,18 @@ The planned integration cases are useful, but the new behavior includes sorting,
 ### Updated Readiness
 
 - **Plan readiness:** Ready with corrections — prior substantive issues are addressed; one minor mechanical doc-inventory fix remains.
+
+## Addendum (2026-03-31) — Re-review of plan v1.2 updates
+
+### What's Addressed
+
+- **Prior remaining P2 fixed:** The plan now marks `test/unit/commands/plan-v1.handler.test.ts` as a new file and updates the totals to `1 new file, 7 modified files`, so the `Files Changed` inventory is internally consistent.
+- The revision history explicitly records this inventory correction, making the update traceable.
+
+### Remaining Concerns
+
+- None.
+
+### Updated Readiness
+
+- **Plan readiness:** Ready — previously raised issues are addressed and the plan is implementation-ready as written.
