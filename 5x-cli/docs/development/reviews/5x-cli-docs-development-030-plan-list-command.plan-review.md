@@ -66,3 +66,20 @@ The planned integration cases are useful, but the new behavior includes sorting,
 - [ ] Recurse through the full `paths.plans` tree (`auto_fix`)
 - [ ] Expose a path-based plan identifier in JSON/text output (`auto_fix`)
 - [ ] Add direct-call tests for listing/filtering/sorting/worktree resolution logic (`auto_fix`)
+
+## Addendum (2026-03-31) — Re-review of plan v1.1 updates
+
+### What's Addressed
+
+- **P1.1 fixed:** The plan now explicitly recurses through the full `paths.plans` tree and adds both unit and integration coverage for nested discovery.
+- **P1.2 fixed:** Output is now path-first via `plan_path`, and the text table uses `Plan Path` rather than basename-only identity.
+- **P1.3 fixed:** The plan now adds direct-call handler coverage in `test/unit/commands/plan-v1.handler.test.ts` for discovery, filtering, sorting, worktree preference, and parse fallback.
+- **P2 fixed:** The default sort order is now inspection-oriented (`unfinished` first, then `complete`) and is justified in the design decisions.
+
+### Remaining Concerns
+
+- **P2:** The `Files Changed` summary says `0 new files, 8 modified files`, but the plan also adds `test/unit/commands/plan-v1.handler.test.ts`, which makes this inventory internally inconsistent. Update the file-count summary to match the listed changes. (`action: auto_fix`)
+
+### Updated Readiness
+
+- **Plan readiness:** Ready with corrections — prior substantive issues are addressed; one minor mechanical doc-inventory fix remains.
