@@ -207,11 +207,11 @@ Uses existing `makeTmpDir`, `setupProject`, `run5x`, `parseJson` helpers.
 
 ### Phase 4: Documentation updates
 
-- [ ] Add `5x plan list` to `README.md` Inspection section (~line 456)
-- [ ] Add `### 5x plan list` subsection to `docs/v1/101-cli-primitives.md` Section 6: Inspection (after `5x plan phases`, before `5x diff`)
-- [ ] Update command group table in `docs/v1/101-cli-primitives.md` (~line 87) to include `plan list`
-- [ ] Add `5x plan list` to `src/harnesses/opencode/5x-orchestrator.md` state-tracking guidance (~line 36)
-- [ ] Add `5x plan list` to `src/harnesses/cursor/5x-orchestrator.mdc` state-tracking guidance (~line 36)
+- [x] Add `5x plan list` to `README.md` Inspection section (~line 456)
+- [x] Add `### 5x plan list` subsection to `docs/v1/101-cli-primitives.md` Section 6: Inspection (after `5x plan phases`, before `5x diff`)
+- [x] Update command group table in `docs/v1/101-cli-primitives.md` (~line 87) to include `plan list`
+- [x] Add `5x plan list` to `src/harnesses/opencode/5x-orchestrator.md` state-tracking guidance (~line 36)
+- [x] Add `5x plan list` to `src/harnesses/cursor/5x-orchestrator.mdc` state-tracking guidance (~line 36)
 
 **Completion gate:** All references to plan inspection commands include
 `plan list`. Orchestrator harness profiles mention it as a state-tracking tool.

@@ -453,6 +453,7 @@ Runs each command in `qualityGates` from config sequentially. Returns `{ passed:
 ### Inspection
 
 ```bash
+5x plan list [--exclude-finished]       # List all plans with completion status
 5x plan phases <path>                   # Parse plan into phases with progress
 5x diff [--since <ref>] [--stat]        # Git diff (working tree or since ref)
 ```

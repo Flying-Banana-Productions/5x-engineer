@@ -33,8 +33,9 @@ recovery procedures. Follow them closely.
    results with `5x protocol validate --record`. The skills describe
    each delegation step in detail.
 
-2. **Track state.** Use `5x run state --run <id>` and
-   `5x plan phases <path>` to know where a run stands before acting.
+2. **Track state.** Use `5x run state --run <id>`,
+   `5x plan list` for an overview, and
+   `5x plan phases <path>` for detailed phase status.
    Always check state when resuming a workflow.
 
 3. **Guide human decisions.** When a workflow requires human input

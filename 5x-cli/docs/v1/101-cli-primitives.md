@@ -49,7 +49,7 @@ JSON is always the default to ensure deterministic pipe-chain behavior. A user b
 
 **Text mode behavior:**
 
-- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan phases` prints a checklist).
+- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan list` prints a summary table, `plan phases` prints a checklist).
 - Commands without a custom formatter use a built-in generic formatter that renders aligned key-value pairs with nested indentation.
 - Errors produce a single `Error: <message>` line on stderr (no JSON envelope, no Commander help text).
 
@@ -84,7 +84,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | **Run lifecycle** | `run init`, `run state`, `run record`, `run list` | Create runs, query state, record steps |
 | **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
 | **Quality** | `quality run` | Execute quality gates |
-| **Inspection** | `plan phases`, `diff` | Read plan structure, inspect git changes |
+| **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
 | **Worktree** | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
 
@@ -486,6 +486,47 @@ Parse a plan and return its phases.
 ```
 
 Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"`, `"2"`), matching the regex `\d+(\.\d+)?`. This matches the current v0 plan parser output. Phases are sorted numerically (`CAST(phase AS REAL)`).
+
+### `5x plan list`
+
+List all markdown plans under `paths.plans` (recursive), with completion status and run summaries joined from the DB.
+
+```
+5x plan list [--exclude-finished]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--exclude-finished` | No | Omit plans that are 100% complete (all phases done). |
+
+**Returns:**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "plans_dir": "/path/to/docs/development",
+    "plans": [
+      {
+        "plan_path": "features/015-test-separation.md",
+        "name": "015-test-separation",
+        "file": "015-test-separation.md",
+        "title": "Test Separation Plan",
+        "status": "complete",
+        "completion_pct": 100,
+        "phases_done": 3,
+        "phases_total": 3,
+        "active_run": null,
+        "runs_total": 2
+      }
+    ]
+  }
+}
+```
+
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested directories are included). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
+
+**Text mode:** Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). Plans are sorted with incomplete first, then complete, with alphabetical tie-break by `plan_path`. Empty result prints `(no plans)`.
 
 ### `5x diff`
 
