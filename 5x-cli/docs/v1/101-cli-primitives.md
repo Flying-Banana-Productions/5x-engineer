@@ -528,7 +528,7 @@ Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable id
 
 **Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the same file used for parsing (worktree copy when mapped).
 
-**Text mode:** Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). Empty result prints `(no plans)`.
+**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). When there are no plans, prints `(no plans)` on the line after the directory (no table).
 
 ### `5x diff`
 

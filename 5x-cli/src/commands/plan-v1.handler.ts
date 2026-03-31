@@ -109,12 +109,16 @@ export function formatPlanListText(data: {
 	plans_dir: string;
 	plans: PlanListEntry[];
 }): void {
-	const { plans } = data;
+	const { plans_dir, plans } = data;
+
+	console.log(`Plans directory: ${plans_dir}`);
 
 	if (plans.length === 0) {
 		console.log("(no plans)");
 		return;
 	}
+
+	console.log();
 
 	const rows = plans.map((p) => ({
 		planPath: p.plan_path,

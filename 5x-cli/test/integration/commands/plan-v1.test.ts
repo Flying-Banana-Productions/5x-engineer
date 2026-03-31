@@ -179,6 +179,28 @@ describe("5x plan list (integration)", () => {
 	);
 
 	test(
+		"--text empty plans dir prints Plans directory then (no plans)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Plans directory:");
+				expect(result.stdout).toContain(devDir);
+				expect(result.stdout).toContain("(no plans)");
+				expect(result.stdout).not.toContain("Plan Path");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"missing plans dir yields plans: [] and exit 0",
 		async () => {
 			const dir = makeTmpDir();
@@ -360,6 +382,11 @@ describe("5x plan list (integration)", () => {
 
 				const result = await run5x(dir, ["--text", "plan", "list"]);
 				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Plans directory:");
+				expect(result.stdout).toContain(devDir);
+				expect(result.stdout.indexOf("Plans directory:")).toBeLessThan(
+					result.stdout.indexOf("Plan Path"),
+				);
 				expect(result.stdout).toContain("Plan Path");
 				expect(result.stdout).toContain("Status");
 				expect(result.stdout).toContain("Active Run");
