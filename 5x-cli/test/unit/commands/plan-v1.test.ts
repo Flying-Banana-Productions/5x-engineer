@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePlan } from "../../../src/parsers/plan.js";
+import { parsedPlanHasPhases, parsePlan } from "../../../src/parsers/plan.js";
 
 // ===========================================================================
 // Phase parsing
@@ -87,6 +87,17 @@ describe("parsePlan — phase extraction (unit)", () => {
 
 		const plan = parsePlan(md);
 		expect(plan.phases).toEqual([]);
+		expect(parsedPlanHasPhases(plan)).toBe(false);
+	});
+
+	test("parsedPlanHasPhases is true when at least one Phase heading exists", () => {
+		const md = `# P
+
+## Phase 1: A
+
+- [ ] x
+`;
+		expect(parsedPlanHasPhases(parsePlan(md))).toBe(true);
 	});
 
 	test("handles sub-phase numbering", () => {

@@ -16,7 +16,7 @@ import type { PlanRow } from "../db/operations.js";
 import { listRuns } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
-import { parsePlan } from "../parsers/plan.js";
+import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
 import { resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
@@ -251,8 +251,17 @@ export async function planList(params: PlanListParams): Promise<void> {
 				phases_total > 0 && phases_done === phases_total
 					? "complete"
 					: "incomplete";
-		} catch {
-			// Per-file parse/read failure: incomplete / 0% fallback
+			if (!parsedPlanHasPhases(parsed)) {
+				process.stderr.write(
+					`Warning: ${plan_path} has no implementation-plan phases (expected "## Phase N:" headings). ` +
+						`It is still listed; move or edit the file if it is not a plan.\n`,
+				);
+			}
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err);
+			process.stderr.write(
+				`Warning: could not read ${plan_path} for plan listing: ${detail}\n`,
+			);
 		}
 
 		const runs = runsByPlanPath.get(canonical) ?? [];

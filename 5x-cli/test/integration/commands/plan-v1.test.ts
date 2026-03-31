@@ -114,6 +114,66 @@ function parseJson(stdout: string): Record<string, unknown> {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("5x plan list (integration)", () => {
+	test(
+		"stderr warns on markdown without plan phases; JSON lists file with no warning fields",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(
+					join(devDir, "README.md"),
+					"# Notes\n\nNot an implementation plan.\n",
+				);
+				writeFileSync(
+					join(devDir, "real.plan.md"),
+					"# Real\n\n## Phase 1: One\n\n- [ ] Task\n",
+				);
+
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "plans"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+
+				expect(result.stderr).toContain("README.md");
+				expect(result.stderr).toContain("no implementation-plan phases");
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+				expect(JSON.stringify(envelope)).not.toMatch(/warn|Warning/i);
+
+				const data = envelope.data as {
+					plans: Array<{ plan_path: string; phases_total: number }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["README.md", "real.plan.md"]);
+				expect(
+					data.plans.find((p) => p.plan_path === "README.md")?.phases_total,
+				).toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+});
+
 describe("5x plan phases (integration)", () => {
 	test(
 		"returns PLAN_NOT_FOUND for missing file",
