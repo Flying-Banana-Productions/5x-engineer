@@ -1,6 +1,6 @@
 # Plan List Command
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** March 31, 2026
 **Status:** Draft
 
@@ -10,6 +10,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-31 | Initial draft for `5x plan list`. |
 | 1.1 | 2026-03-31 | Address review feedback in `reviews/5x-cli-docs-development-030-plan-list-command.plan-review.md`: recurse full `paths.plans` tree, make relative path the primary identifier in JSON/text output, add direct-call handler unit coverage, and switch default sort to unfinished-first. |
+| 1.2 | 2026-03-31 | Address addendum in `reviews/5x-cli-docs-development-030-plan-list-command.plan-review.md` by fixing Files Changed inventory consistency (unit handler test file marked as new; totals updated). |
 
 ## Overview
 
@@ -169,7 +170,7 @@ Empty state: `(no plans)`
 
 ### Phase 2: Handler unit tests (direct-call)
 
-- [ ] Add `describe("planList handler")` block in `test/unit/commands/plan-v1.handler.test.ts`
+- [ ] Add new file `test/unit/commands/plan-v1.handler.test.ts` with `describe("planList handler")` coverage
 
 **Completion gate:** Direct-call tests cover discovery, filtering, sorting,
 worktree resolution, empty-dir handling, and parse-failure fallback without
@@ -251,14 +252,14 @@ Add `5x plan list` alongside existing state-tracking commands in both
 |------|--------|
 | `src/commands/plan-v1.ts` | Register `list` subcommand with `--exclude-finished` option |
 | `src/commands/plan-v1.handler.ts` | Add `planList` handler + `formatPlanListText` formatter |
-| `test/unit/commands/plan-v1.handler.test.ts` | Direct-call tests for recursive discovery, filtering, sorting, worktree precedence, and parse fallback |
+| `test/unit/commands/plan-v1.handler.test.ts` | New direct-call tests for recursive discovery, filtering, sorting, worktree precedence, and parse fallback |
 | `test/integration/commands/plan-v1.test.ts` | Integration tests for new subcommand |
 | `README.md` | Add `5x plan list` to Inspection section |
 | `docs/v1/101-cli-primitives.md` | Add `5x plan list` spec in Section 6 + update command group table |
 | `src/harnesses/opencode/5x-orchestrator.md` | Add `5x plan list` to state-tracking guidance |
 | `src/harnesses/cursor/5x-orchestrator.mdc` | Add `5x plan list` to state-tracking guidance |
 
-**Total: 0 new files, 8 modified files. No schema changes. No new dependencies.**
+**Total: 1 new file, 7 modified files. No schema changes. No new dependencies.**
 
 ## Edge Cases
 
