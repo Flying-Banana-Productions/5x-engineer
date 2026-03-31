@@ -188,7 +188,7 @@ Test cases:
 
 ### Phase 3: Integration tests
 
-- [ ] Add `describe("5x plan list (integration)")` block in `test/integration/commands/plan-v1.test.ts`
+- [x] Add `describe("5x plan list (integration)")` block in `test/integration/commands/plan-v1.test.ts`
 
 **Completion gate:** All new and existing tests pass.
 
