@@ -9,14 +9,14 @@
  * orchestrating from the repo root.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import type { PlanRow } from "../db/operations.js";
 import { listRuns } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
-import { outputError, outputSuccess } from "../output.js";
+import { getOutputFormat, outputError, outputSuccess } from "../output.js";
 import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
 import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
 import { resolveDbContext } from "./context.js";
@@ -77,6 +77,31 @@ export interface PlanListEntry {
 	phases_total: number;
 	active_run: string | null;
 	runs_total: number;
+}
+
+/** Internal row with file mtime for `--text` sort only (omitted from JSON). */
+interface PlanListRow extends PlanListEntry {
+	mtime_ms: number;
+}
+
+function stripMtime(p: PlanListRow): PlanListEntry {
+	const { mtime_ms: _, ...rest } = p;
+	return rest;
+}
+
+function sortPlanListJson(a: PlanListRow, b: PlanListRow): number {
+	const aDone = a.status === "complete";
+	const bDone = b.status === "complete";
+	if (aDone !== bDone) return aDone ? 1 : -1;
+	return a.plan_path.localeCompare(b.plan_path);
+}
+
+/** Text table: oldest file first, then higher completion % first, then path. */
+function sortPlanListText(a: PlanListRow, b: PlanListRow): number {
+	if (a.mtime_ms !== b.mtime_ms) return a.mtime_ms - b.mtime_ms;
+	if (a.completion_pct !== b.completion_pct)
+		return b.completion_pct - a.completion_pct;
+	return a.plan_path.localeCompare(b.plan_path);
 }
 
 /**
@@ -249,7 +274,7 @@ export async function planList(params: PlanListParams): Promise<void> {
 		runsByPlanPath.set(run.plan_path, list);
 	}
 
-	const entries: PlanListEntry[] = [];
+	const entries: PlanListRow[] = [];
 
 	for (const absPath of mdAbsPaths) {
 		const canonical = canonicalizePlanPath(absPath);
@@ -301,6 +326,14 @@ export async function planList(params: PlanListParams): Promise<void> {
 		const slash = plan_path.lastIndexOf("/");
 		const file = slash >= 0 ? plan_path.slice(slash + 1) : plan_path;
 
+		let mtime_ms = 0;
+		try {
+			const stPath = existsSync(readPath) ? readPath : canonical;
+			mtime_ms = Math.trunc(statSync(stPath).mtimeMs);
+		} catch {
+			mtime_ms = 0;
+		}
+
 		entries.push({
 			plan_path,
 			name,
@@ -312,6 +345,7 @@ export async function planList(params: PlanListParams): Promise<void> {
 			phases_total,
 			active_run,
 			runs_total,
+			mtime_ms,
 		});
 	}
 
@@ -320,14 +354,11 @@ export async function planList(params: PlanListParams): Promise<void> {
 		plans = plans.filter((e) => e.status !== "complete");
 	}
 
-	plans.sort((a, b) => {
-		const aDone = a.status === "complete";
-		const bDone = b.status === "complete";
-		if (aDone !== bDone) return aDone ? 1 : -1;
-		return a.plan_path.localeCompare(b.plan_path);
-	});
+	const sortFn =
+		getOutputFormat() === "text" ? sortPlanListText : sortPlanListJson;
+	const ordered = [...plans].sort(sortFn).map(stripMtime);
 
-	outputSuccess({ plans_dir: plansDir, plans }, formatPlanListText);
+	outputSuccess({ plans_dir: plansDir, plans: ordered }, formatPlanListText);
 }
 
 // ---------------------------------------------------------------------------

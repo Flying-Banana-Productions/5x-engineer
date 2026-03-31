@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -139,6 +139,17 @@ const PLAN_ONE_PHASE_DONE = `# Done Plan
 ## Phase 1: Only
 
 - [x] Task
+`;
+
+const PLAN_TWO_PHASE_ONE_DONE = `# Partial
+
+## Phase 1: A
+
+- [x] a
+
+## Phase 2: B
+
+- [ ] b
 `;
 
 // ---------------------------------------------------------------------------
@@ -295,6 +306,40 @@ describe("5x plan list (integration)", () => {
 					plans: Array<{ plan_path: string }>;
 				};
 				expect(data.plans.map((p) => p.plan_path)).toEqual(["open.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text sorts rows by mtime ascending then completion % descending",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				const older = new Date("2020-01-01T00:00:00Z");
+				const newer = new Date("2020-06-01T00:00:00Z");
+
+				writeFileSync(join(devDir, "newer-fresh.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "old-todo.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "old-partial.md"), PLAN_TWO_PHASE_ONE_DONE);
+				utimesSync(join(devDir, "old-todo.md"), older, older);
+				utimesSync(join(devDir, "old-partial.md"), older, older);
+				utimesSync(join(devDir, "newer-fresh.md"), newer, newer);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const out = result.stdout;
+				const iPartial = out.indexOf("old-partial.md");
+				const iTodo = out.indexOf("old-todo.md");
+				const iNewer = out.indexOf("newer-fresh.md");
+				expect(iPartial).toBeGreaterThan(-1);
+				expect(iPartial < iTodo && iTodo < iNewer).toBe(true);
 			} finally {
 				cleanupDir(dir);
 			}
