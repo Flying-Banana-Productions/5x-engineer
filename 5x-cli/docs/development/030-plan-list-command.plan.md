@@ -170,7 +170,7 @@ Empty state: `(no plans)`
 
 ### Phase 2: Handler unit tests (direct-call)
 
-- [ ] Add new file `test/unit/commands/plan-v1.handler.test.ts` with `describe("planList handler")` coverage
+- [x] Add new file `test/unit/commands/plan-v1.handler.test.ts` with `describe("planList handler")` coverage
 
 **Completion gate:** Direct-call tests cover discovery, filtering, sorting,
 worktree resolution, empty-dir handling, and parse-failure fallback without
