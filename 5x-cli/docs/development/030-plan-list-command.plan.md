@@ -57,10 +57,10 @@ the top while preserving stable output.
 
 ### Phase 1: Command registration and handler
 
-- [ ] Add `PlanListParams` interface to `plan-v1.handler.ts`
-- [ ] Add `planList` handler function to `plan-v1.handler.ts`
-- [ ] Add `formatPlanListText` text formatter to `plan-v1.handler.ts`
-- [ ] Register `list` subcommand in `plan-v1.ts`
+- [x] Add `PlanListParams` interface to `plan-v1.handler.ts`
+- [x] Add `planList` handler function to `plan-v1.handler.ts`
+- [x] Add `formatPlanListText` text formatter to `plan-v1.handler.ts`
+- [x] Register `list` subcommand in `plan-v1.ts`
 
 **Completion gate:** `5x plan list` and `5x --text plan list` execute without
 error in a project with plans. `5x plan list --exclude-finished` filters

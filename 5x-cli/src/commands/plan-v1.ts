@@ -7,7 +7,7 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
-import { planPhases } from "./plan-v1.handler.js";
+import { planList, planPhases } from "./plan-v1.handler.js";
 
 export function registerPlan(parent: Command) {
 	const plan = parent
@@ -39,5 +39,28 @@ export function registerPlan(parent: Command) {
 		)
 		.action(async (path) => {
 			await planPhases({ path });
+		});
+
+	plan
+		.command("list")
+		.summary("List plans and their completion status")
+		.description(
+			"Scan the configured plans directory tree for markdown plans and summarize\n" +
+				"completion status, phase progress, and associated runs. Disk discovery uses\n" +
+				"`paths.plans` from config; run data comes from the project database.",
+		)
+		.option(
+			"--exclude-finished",
+			"Omit plans whose phases are all complete (100%)",
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x plan list\n" +
+				"  $ 5x --text plan list\n" +
+				"  $ 5x plan list --exclude-finished\n",
+		)
+		.action(async (opts) => {
+			await planList({ excludeFinished: opts.excludeFinished });
 		});
 }

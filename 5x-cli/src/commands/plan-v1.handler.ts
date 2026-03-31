@@ -9,12 +9,16 @@
  * orchestrating from the repo root.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { getDb } from "../db/connection.js";
+import type { PlanRow } from "../db/operations.js";
+import { listRuns } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
+import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
+import { resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +27,10 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 
 export interface PlanPhasesParams {
 	path: string;
+}
+
+export interface PlanListParams {
+	excludeFinished?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +62,68 @@ function formatPhasesText(data: Record<string, unknown>): void {
 		console.log(
 			`  [${check}] Phase ${phase.id}: ${phase.title} (${phase.checklist_done}/${phase.checklist_total})`,
 		);
+	}
+}
+
+export interface PlanListEntry {
+	plan_path: string;
+	name: string;
+	file: string;
+	title: string;
+	status: "complete" | "incomplete";
+	completion_pct: number;
+	phases_done: number;
+	phases_total: number;
+	active_run: string | null;
+	runs_total: number;
+}
+
+/**
+ * Human-readable text formatter for `plan list` output.
+ *
+ * Column-aligned table (ColDef / padEnd) matching `run list` text style.
+ */
+export function formatPlanListText(data: {
+	plans_dir: string;
+	plans: PlanListEntry[];
+}): void {
+	const { plans } = data;
+
+	if (plans.length === 0) {
+		console.log("(no plans)");
+		return;
+	}
+
+	const rows = plans.map((p) => ({
+		planPath: p.plan_path,
+		status: p.status,
+		progress: `${p.completion_pct}%`,
+		phases: `${p.phases_done}/${p.phases_total}`,
+		runs: String(p.runs_total),
+		activeRun: p.active_run ?? "-",
+	}));
+
+	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
+	const cols: ColDef[] = [
+		{ header: "Plan Path", key: "planPath", width: 9 },
+		{ header: "Status", key: "status", width: 6 },
+		{ header: "Progress", key: "progress", width: 8 },
+		{ header: "Phases", key: "phases", width: 6 },
+		{ header: "Runs", key: "runs", width: 4 },
+		{ header: "Active Run", key: "activeRun", width: 10 },
+	];
+
+	for (const col of cols) {
+		for (const row of rows) {
+			col.width = Math.max(col.width, row[col.key].length);
+		}
+	}
+
+	const headerLine = cols.map((c) => c.header.padEnd(c.width)).join("  ");
+	console.log(headerLine);
+	for (const row of rows) {
+		const line = cols.map((c) => row[c.key].padEnd(c.width)).join("  ");
+		console.log(line);
 	}
 }
 
@@ -91,6 +161,136 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	};
 
 	outputSuccess(result, formatPhasesText);
+}
+
+function posixRelativeDir(fromDir: string, toPath: string): string {
+	return relative(fromDir, toPath).replace(/\\/g, "/");
+}
+
+function collectMarkdownFiles(dir: string): string[] {
+	if (!existsSync(dir)) return [];
+
+	const out: string[] = [];
+	const entries = readdirSync(dir, { withFileTypes: true });
+	for (const ent of entries) {
+		const full = join(dir, ent.name);
+		if (ent.isDirectory()) {
+			out.push(...collectMarkdownFiles(full));
+		} else if (ent.isFile() && ent.name.toLowerCase().endsWith(".md")) {
+			out.push(full);
+		}
+	}
+	return out;
+}
+
+/**
+ * Prefer the worktree copy of a plan when mapped and the file exists there
+ * (same re-root rule as `plan phases`).
+ */
+function effectivePlanReadPath(
+	projectRoot: string,
+	canonicalPlanPath: string,
+	worktreePath: string | null | undefined,
+): string {
+	if (!worktreePath) return canonicalPlanPath;
+	const relPlanPath = relative(projectRoot, canonicalPlanPath);
+	if (relPlanPath.startsWith("..") || isAbsolute(relPlanPath)) {
+		return canonicalPlanPath;
+	}
+	const candidate = join(worktreePath, relPlanPath);
+	return existsSync(candidate) ? candidate : canonicalPlanPath;
+}
+
+export async function planList(params: PlanListParams): Promise<void> {
+	const { projectRoot, config, db } = await resolveDbContext();
+	const plansDir = config.paths.plans;
+
+	const mdAbsPaths = collectMarkdownFiles(plansDir);
+
+	const planRows = db.query("SELECT * FROM plans").all() as PlanRow[];
+	const worktreeByPlanPath = new Map<string, string | null>();
+	for (const row of planRows) {
+		worktreeByPlanPath.set(row.plan_path, row.worktree_path);
+	}
+
+	const allRuns = listRuns(db, { limit: 10000 });
+	const runsByPlanPath = new Map<string, typeof allRuns>();
+	for (const run of allRuns) {
+		const list = runsByPlanPath.get(run.plan_path) ?? [];
+		list.push(run);
+		runsByPlanPath.set(run.plan_path, list);
+	}
+
+	const entries: PlanListEntry[] = [];
+
+	for (const absPath of mdAbsPaths) {
+		const canonical = canonicalizePlanPath(absPath);
+		const plan_path = posixRelativeDir(plansDir, canonical);
+		const worktreePath = worktreeByPlanPath.get(canonical) ?? null;
+		const readPath = effectivePlanReadPath(
+			projectRoot,
+			canonical,
+			worktreePath,
+		);
+
+		let title = "";
+		let phases_total = 0;
+		let phases_done = 0;
+		let completion_pct = 0;
+		let status: "complete" | "incomplete" = "incomplete";
+
+		try {
+			const markdown = readFileSync(readPath, "utf-8");
+			const parsed = parsePlan(markdown);
+			title = parsed.title;
+			phases_total = parsed.phases.length;
+			phases_done = parsed.phases.filter((p) => p.isComplete).length;
+			completion_pct =
+				phases_total > 0 ? Math.round((phases_done / phases_total) * 100) : 0;
+			status =
+				phases_total > 0 && phases_done === phases_total
+					? "complete"
+					: "incomplete";
+		} catch {
+			// Per-file parse/read failure: incomplete / 0% fallback
+		}
+
+		const runs = runsByPlanPath.get(canonical) ?? [];
+		const runs_total = runs.length;
+		const active = runs.find((r) => r.status === "active");
+		const active_run = active?.id ?? null;
+
+		const name = planSlugFromPath(plan_path);
+		const slash = plan_path.lastIndexOf("/");
+		const file = slash >= 0 ? plan_path.slice(slash + 1) : plan_path;
+
+		entries.push({
+			plan_path,
+			name,
+			file,
+			title,
+			status,
+			completion_pct,
+			phases_done,
+			phases_total,
+			active_run,
+			runs_total,
+		});
+	}
+
+	let plans = entries;
+	if (params.excludeFinished) {
+		plans = plans.filter((e) => e.status !== "complete");
+	}
+
+	plans.sort((a, b) => {
+		const aDone = a.status === "complete";
+		const bDone = b.status === "complete";
+		if (aDone !== bDone) return aDone ? 1 : -1;
+		return a.plan_path.localeCompare(b.plan_path);
+	});
+
+	outputSuccess({ plans_dir: plansDir, plans }, formatPlanListText);
 }
 
 // ---------------------------------------------------------------------------
