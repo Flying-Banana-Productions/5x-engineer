@@ -56,6 +56,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v != null && !Array.isArray(v);
 }
 
+/** Recursively merge `base` and `override`; `override` values win. */
+function deepMerge(
+	base: Record<string, unknown>,
+	override: Record<string, unknown>,
+): Record<string, unknown> {
+	const result: Record<string, unknown> = { ...base };
+	for (const key of Object.keys(override)) {
+		if (isRecord(result[key]) && isRecord(override[key])) {
+			result[key] = deepMerge(
+				result[key] as Record<string, unknown>,
+				override[key] as Record<string, unknown>,
+			);
+		} else {
+			result[key] = override[key];
+		}
+	}
+	return result;
+}
+
 /**
  * Transform a raw v0 config object into a clean v1 object.
  * - Renames deprecated keys
@@ -187,9 +206,15 @@ async function upgradeJsToToml(
 		rawConfig as Record<string, unknown>,
 	);
 
-	// Patch our curated TOML template with the user's values
+	// Patch our curated TOML template with the user's values.
+	// Deep-merge template defaults under the transformed config so that
+	// sub-tables present in the template (e.g. [author.harnessModels]) are
+	// never absent from the patch object — toml-patch throws when it tries
+	// to remove a sub-table node that isn't in the replacement value.
 	const template = generateTomlConfig();
-	const toml = tomlPatch(template, transformed);
+	const templateDefaults = tomlParse(template) as Record<string, unknown>;
+	const merged = deepMerge(templateDefaults, transformed);
+	const toml = tomlPatch(template, merged);
 
 	// Write new TOML config
 	const tomlPath = join(projectRoot, "5x.toml");
