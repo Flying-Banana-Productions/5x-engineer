@@ -56,3 +56,19 @@ None for Phase 1 scope.
 ### Remaining Concerns
 
 - Phases 2–4 of the plan (tests, README, primitives doc, orchestrator harness text) are out of scope for this review but should still be executed before calling the overall feature complete.
+
+## Addendum (2026-03-31) — Second pass after author fix (`1b4fe6f`)
+
+**Reviewed:** `1b4fe6ff839e6fefdd5267d5e11170f862faeb8a` (branch tip; no later commits).
+
+### What's Addressed
+
+- **P1.1 / Scope A:** Human confirmation to keep listing **all** `.md` files under `paths.plans` is preserved. The author mitigated the earlier “misleading plan row” risk by emitting a **stderr-only** warning when parsed markdown has **no implementation-plan phase headings**, via `parsedPlanHasPhases` (`parsed.phases.length > 0`). Listed files remain in **JSON unchanged** (no warning fields); integration coverage asserts the serialized envelope does not contain “warn”/“Warning”.
+- **Read/parse errors:** The per-file `catch` path now logs a **stderr** warning with message detail instead of staying silent, while still appending the same fallback row semantics as before.
+- **Tests:** Unit tests for `parsedPlanHasPhases`; new `describe("5x plan list (integration)")` case for mixed README + real plan files.
+- **Local verification:** `bun test test/unit/commands/plan-v1.test.ts test/integration/commands/plan-v1.test.ts` (pass).
+
+### Remaining Concerns
+
+- Warning copy refers to `## Phase N:` headings; the parser also matches `###` phase headings — optional wording alignment only.
+- Plan **Phase 3** integration work is partially started (this commit adds `plan list` integration coverage) while Phase 2 handler unit-test file remains unchecked in the plan; track completion against the plan checkboxes, not only this review.
