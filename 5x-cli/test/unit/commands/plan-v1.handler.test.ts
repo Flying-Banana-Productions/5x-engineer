@@ -12,6 +12,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -306,7 +307,7 @@ describe("planList handler", () => {
 		});
 	});
 
-	test("sorts unfinished first, then complete; ties broken by plan_path alpha", async () => {
+	test("sorts by completion pct desc then mtime asc; plan_path tie-break", async () => {
 		await withProject(async ({ plansDir }) => {
 			mkdirSync(plansDir, { recursive: true });
 			writeFileSync(
@@ -321,6 +322,12 @@ describe("planList handler", () => {
 				join(plansDir, "aaa_incomplete.md"),
 				`# A\n\n## Phase 1: C\n\n- [ ] c\n`,
 			);
+			const tZ = new Date("2019-01-01T00:00:00Z");
+			const tM = new Date("2019-02-01T00:00:00Z");
+			const tA = new Date("2019-03-01T00:00:00Z");
+			utimesSync(join(plansDir, "zzz_complete.md"), tZ, tZ);
+			utimesSync(join(plansDir, "mmm_complete.md"), tM, tM);
+			utimesSync(join(plansDir, "aaa_incomplete.md"), tA, tA);
 
 			const logs: string[] = [];
 			const logSpy = spyOn(console, "log").mockImplementation(
@@ -337,14 +344,15 @@ describe("planList handler", () => {
 			const env = JSON.parse(logs[0] ?? "{}") as {
 				data: { plans: { plan_path: string; status: string }[] };
 			};
+			// 100% rows first (mtime asc: zzz written before mmm), then 0%.
 			expect(env.data.plans.map((p) => p.plan_path)).toEqual([
-				"aaa_incomplete.md",
-				"mmm_complete.md",
 				"zzz_complete.md",
+				"mmm_complete.md",
+				"aaa_incomplete.md",
 			]);
-			expect(env.data.plans[0]?.status).toBe("incomplete");
+			expect(env.data.plans[0]?.status).toBe("complete");
 			expect(env.data.plans[1]?.status).toBe("complete");
-			expect(env.data.plans[2]?.status).toBe("complete");
+			expect(env.data.plans[2]?.status).toBe("incomplete");
 		});
 	});
 

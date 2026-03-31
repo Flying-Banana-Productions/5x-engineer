@@ -258,7 +258,7 @@ describe("5x plan list (integration)", () => {
 	);
 
 	test(
-		"sorts unfinished plans before complete; alphabetical within each group",
+		"sorts by completion pct desc then mtime within each pct group",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -278,8 +278,8 @@ describe("5x plan list (integration)", () => {
 					plans: Array<{ plan_path: string; status: string }>;
 				};
 				expect(data.plans.map((p) => p.plan_path)).toEqual([
-					"zdir/later-todo.md",
 					"aaa-done.md",
+					"zdir/later-todo.md",
 				]);
 			} finally {
 				cleanupDir(dir);
@@ -314,7 +314,7 @@ describe("5x plan list (integration)", () => {
 	);
 
 	test(
-		"--text sorts rows by mtime ascending then completion % descending",
+		"--text sorts rows by completion % desc then mtime asc within each pct",
 		async () => {
 			const dir = makeTmpDir();
 			try {

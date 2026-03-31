@@ -524,9 +524,11 @@ List all markdown plans under `paths.plans` (recursive into subdirectories), wit
 }
 ```
 
-Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`). **JSON sort order:** unfinished plans first, then complete, with alphabetical tie-break by `plan_path`.
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
 
-**Text mode:** Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). Rows are sorted by the plan file’s modified time ascending (oldest first), then by completion percentage descending, then by `plan_path`. Empty result prints `(no plans)`.
+**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the same file used for parsing (worktree copy when mapped).
+
+**Text mode:** Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). Empty result prints `(no plans)`.
 
 ### `5x diff`
 
