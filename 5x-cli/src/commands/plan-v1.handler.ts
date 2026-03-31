@@ -11,6 +11,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { FiveXConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import type { PlanRow } from "../db/operations.js";
 import { listRuns } from "../db/operations-v1.js";
@@ -167,15 +168,41 @@ function posixRelativeDir(fromDir: string, toPath: string): string {
 	return relative(fromDir, toPath).replace(/\\/g, "/");
 }
 
-function collectMarkdownFiles(dir: string): string[] {
+/** True when `childPath` is `parentPath` or a path inside it (same semantics as run-v1). */
+function isPathUnder(childPath: string, parentPath: string): boolean {
+	const relPath = relative(parentPath, childPath);
+	return !relPath.startsWith("..") && !isAbsolute(relPath);
+}
+
+/**
+ * Subtrees under `paths.plans` that hold review / audit markdown, not implementation plans.
+ * `plan list` recurses into other subdirectories but skips these roots entirely.
+ */
+function planListSkipSubtrees(
+	plansDir: string,
+	paths: FiveXConfig["paths"],
+): string[] {
+	const roots: string[] = [];
+	const plansAbs = resolve(plansDir);
+	for (const p of [paths.reviews, paths.planReviews, paths.runReviews]) {
+		if (!p) continue;
+		const abs = resolve(p);
+		if (abs === plansAbs || isPathUnder(abs, plansAbs)) roots.push(abs);
+	}
+	return roots;
+}
+
+function collectMarkdownFiles(dir: string, skipSubtrees: string[]): string[] {
 	if (!existsSync(dir)) return [];
 
 	const out: string[] = [];
 	const entries = readdirSync(dir, { withFileTypes: true });
 	for (const ent of entries) {
-		const full = join(dir, ent.name);
+		const full = resolve(join(dir, ent.name));
 		if (ent.isDirectory()) {
-			out.push(...collectMarkdownFiles(full));
+			const skip = skipSubtrees.some((root) => isPathUnder(full, root));
+			if (skip) continue;
+			out.push(...collectMarkdownFiles(full, skipSubtrees));
 		} else if (ent.isFile() && ent.name.toLowerCase().endsWith(".md")) {
 			out.push(full);
 		}
@@ -204,8 +231,9 @@ function effectivePlanReadPath(
 export async function planList(params: PlanListParams): Promise<void> {
 	const { projectRoot, config, db } = await resolveDbContext();
 	const plansDir = config.paths.plans;
+	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
 
-	const mdAbsPaths = collectMarkdownFiles(plansDir);
+	const mdAbsPaths = collectMarkdownFiles(plansDir, skipSubtrees);
 
 	const planRows = db.query("SELECT * FROM plans").all() as PlanRow[];
 	const worktreeByPlanPath = new Map<string, string | null>();

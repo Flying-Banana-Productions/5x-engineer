@@ -489,7 +489,7 @@ Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"
 
 ### `5x plan list`
 
-List all markdown plans under `paths.plans` (recursive), with completion status and run summaries joined from the DB.
+List all markdown plans under `paths.plans` (recursive into subdirectories), with completion status and run summaries joined from the DB. Entire subtrees rooted at `paths.reviews`, `paths.planReviews`, and `paths.runReviews` are skipped when they fall under `paths.plans` (so implementation-plan reviews and similar folders do not pollute the list).
 
 ```
 5x plan list [--exclude-finished]
@@ -524,7 +524,7 @@ List all markdown plans under `paths.plans` (recursive), with completion status 
 }
 ```
 
-Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested directories are included). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
 
 **Text mode:** Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). Plans are sorted with incomplete first, then complete, with alphabetical tie-break by `plan_path`. Empty result prints `(no plans)`.
 

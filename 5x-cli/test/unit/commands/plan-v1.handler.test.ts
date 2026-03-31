@@ -147,7 +147,7 @@ afterEach(() => {
 });
 
 describe("planList handler", () => {
-	test("recursively discovers nested markdown plans under paths.plans", async () => {
+	test("recursively discovers nested markdown plans but skips paths.reviews under paths.plans", async () => {
 		await withProject(async ({ plansDir }) => {
 			mkdirSync(join(plansDir, "deep", "nest"), { recursive: true });
 			writeFileSync(
@@ -181,6 +181,41 @@ describe("planList handler", () => {
 			const paths = env.data.plans.map((p) => p.plan_path).sort();
 			expect(paths).toEqual(["deep/nest/inner.md", "root.md"]);
 			expect(lines.join("")).toBe("");
+		});
+	});
+
+	test("does not list markdown under paths.reviews inside paths.plans", async () => {
+		await withProject(async ({ plansDir }) => {
+			const reviewsDir = join(plansDir, "reviews");
+			mkdirSync(join(reviewsDir, "nested"), { recursive: true });
+			writeFileSync(
+				join(reviewsDir, "nested", "impl-review.md"),
+				`# Review\n\n## Phase 1: A\n\n- [x] t\n`,
+			);
+			writeFileSync(
+				join(plansDir, "real.md"),
+				`# Real\n\n## Phase 1: B\n\n- [ ] u\n`,
+			);
+
+			const logs: string[] = [];
+			const logSpy = spyOn(console, "log").mockImplementation(
+				(msg?: unknown) => {
+					logs.push(String(msg));
+				},
+			);
+			try {
+				await planList({});
+			} finally {
+				logSpy.mockRestore();
+			}
+
+			const env = JSON.parse(logs[0] ?? "{}") as {
+				ok: boolean;
+				data: { plans: { plan_path: string }[] };
+			};
+			expect(env.ok).toBe(true);
+			const paths = env.data.plans.map((p) => p.plan_path).sort();
+			expect(paths).toEqual(["real.md"]);
 		});
 	});
 

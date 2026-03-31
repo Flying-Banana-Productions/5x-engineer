@@ -188,7 +188,37 @@ describe("5x plan list (integration)", () => {
 	);
 
 	test(
-		"discovers nested markdown plans recursively",
+		"skips markdown under docs/development/reviews",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				const reviewsDir = join(devDir, "reviews");
+				mkdirSync(join(reviewsDir, "nested"), { recursive: true });
+				writeFileSync(
+					join(reviewsDir, "nested", "run-review.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+				writeFileSync(join(devDir, "root.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["root.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"discovers nested markdown plans recursively outside reviews",
 		async () => {
 			const dir = makeTmpDir();
 			try {
