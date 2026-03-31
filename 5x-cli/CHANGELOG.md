@@ -5,6 +5,32 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.1.1 (2026-03-31)
+
+### Features
+
+- **Plan inputs** — new `plan-inputs` concept aids in slicing large, complex PRD document trees into inputs for discreet implementation plan generation.
+- **Working directory guidance** — added to all author templates for better context.
+
+### Fixes
+
+- **CRLF-safe review parsing** — review summary parsing now handles Windows CRLF line endings correctly.
+- **CRLF-safe phase parsing** — `5x plan phases` now parses Windows-authored plans with CRLF line endings correctly.
+- **Mapped worktree plan lookup** — `5x plan phases` now reads the mapped worktree copy even when the canonical repo path has not been created yet.
+- **Windows worktree branch naming** — plan-derived branch and worktree slugs now normalize Windows-style paths before generating git refs.
+- **Protocol validation input** — `5x protocol validate` now accepts a single fenced JSON block in addition to raw JSON.
+- **Plan commit scope** — plan-generation and plan-review author prompts now use file-scoped `5x commit --files <plan>` commands instead of `--all-files`.
+- **CLI version reporting** — `5x --version` now reads directly from `package.json`.
+- **Windows blocking fixes** — wired platform helpers throughout the CLI to resolve shell and home-directory resolution failures on Windows.
+
+### Improvements
+
+- **Optional Windows skill** — added a bundled `5x-windows` supplemental skill with PowerShell, path quoting, JSON parsing, and worktree-path guidance.
+- **Windows command help** — `5x plan phases --help` and README examples now include PowerShell-friendly parsing guidance.
+- **Cross-platform test infrastructure** — added `test/integration/` script and lock tests that exercise the CLI binary on non-POSIX paths.
+- **Cursor harness model overrides** — `harnessModels` overrides now apply correctly when the `cursor` harness is selected.
+- **Regression coverage** — added parser, integration, harness, and skill-loader tests for CRLF handling, worktree flows, and Windows compatibility.
+
 ## 1.1.1-beta.3 (2026-03-27)
 
 ### Fixes
