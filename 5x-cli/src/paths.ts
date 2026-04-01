@@ -104,6 +104,25 @@ export function planSlugFromPath(planPath: string): string {
 	return base.replace(/\.md$/i, "");
 }
 
+/**
+ * Resolve a user-supplied plan argument to an absolute path.
+ *
+ * Resolution order:
+ * 1. If `raw` resolves to an existing file relative to CWD, use that.
+ * 2. If `join(plansDir, raw)` exists, use that (bare filename lookup).
+ * 3. Fall back to CWD-relative `resolve(raw)`.
+ */
+export function resolvePlanArg(raw: string, plansDir: string): string {
+	const resolved = resolve(raw);
+	if (existsSync(resolved)) return resolved;
+
+	const inPlansDir = join(plansDir, raw);
+	if (existsSync(inPlansDir)) return resolve(inPlansDir);
+
+	// Fall back — let downstream existence checks produce the error.
+	return resolved;
+}
+
 export function canonicalizePlanPath(rawPath: string): string {
 	const abs = resolve(rawPath);
 	let real: string;
