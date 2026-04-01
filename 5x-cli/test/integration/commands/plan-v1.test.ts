@@ -11,7 +11,13 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -863,6 +869,296 @@ describe("5x plan phases (integration)", () => {
 				expect(result.stderr).not.toContain(
 					"reading plan from mapped worktree",
 				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// plan archive
+// ---------------------------------------------------------------------------
+
+/** Setup a project with a plan and optionally init+complete a run for it. */
+async function setupArchiveProject(
+	dir: string,
+	opts?: { initRun?: boolean; completeRun?: boolean },
+): Promise<{ planPath: string; runId?: string }> {
+	setupProject(dir);
+	const planDir = join(dir, "docs", "development");
+	mkdirSync(planDir, { recursive: true });
+	const planPath = join(planDir, "test-plan.md");
+	writeFileSync(planPath, PLAN_ONE_PHASE_TODO);
+	commitAll(dir, "add plan");
+
+	if (!opts?.initRun) return { planPath };
+
+	const initResult = await run5x(dir, ["run", "init", "--plan", planPath]);
+	const runId = (parseJson(initResult.stdout).data as Record<string, unknown>)
+		.run_id as string;
+
+	if (opts?.completeRun) {
+		await run5x(dir, ["run", "complete", "--run", runId]);
+	}
+
+	return { planPath, runId };
+}
+
+describe("5x plan archive", () => {
+	test(
+		"archives plan with completed run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = await setupArchiveProject(dir, {
+					initRun: true,
+					completeRun: true,
+				});
+
+				const result = await run5x(dir, ["plan", "archive", planPath]);
+				expect(result.exitCode).toBe(0);
+
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				const payload = data.data as {
+					archived: { plan_path: string; archive_path: string }[];
+				};
+				expect(payload.archived).toHaveLength(1);
+				expect(existsSync(planPath)).toBe(false);
+				expect(existsSync(join(dir, "docs", "archive", "test-plan.md"))).toBe(
+					true,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"rejects plan with active run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = await setupArchiveProject(dir, {
+					initRun: true,
+				});
+
+				const result = await run5x(dir, ["plan", "archive", planPath]);
+				expect(result.exitCode).toBe(1);
+				const data = parseJson(result.stdout);
+				expect((data.error as Record<string, unknown>).code).toBe(
+					"PLAN_HAS_ACTIVE_RUN",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--force aborts active run and archives",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = await setupArchiveProject(dir, {
+					initRun: true,
+				});
+
+				const result = await run5x(dir, [
+					"plan",
+					"archive",
+					planPath,
+					"--force",
+				]);
+				expect(result.exitCode).toBe(0);
+				const payload = (
+					parseJson(result.stdout).data as Record<string, unknown>
+				).archived as { run_aborted: string }[];
+				expect(payload[0]?.run_aborted).toBeTruthy();
+				expect(existsSync(planPath)).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"repoints run plan_path after archive",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, runId } = await setupArchiveProject(dir, {
+					initRun: true,
+					completeRun: true,
+				});
+
+				await run5x(dir, ["plan", "archive", planPath]);
+
+				const stateResult = await run5x(dir, [
+					"run",
+					"state",
+					"--run",
+					runId as string,
+				]);
+				expect(stateResult.exitCode).toBe(0);
+				const stateData = (
+					parseJson(stateResult.stdout).data as Record<string, unknown>
+				).run as Record<string, unknown>;
+				expect(stateData.plan_path as string).toContain("docs/archive/");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--all skips plans with no runs",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				await setupArchiveProject(dir, {
+					initRun: true,
+					completeRun: true,
+				});
+				// Add a second plan with no run
+				writeFileSync(
+					join(dir, "docs", "development", "no-run.md"),
+					PLAN_ONE_PHASE_DONE,
+				);
+				commitAll(dir, "add no-run plan");
+
+				const result = await run5x(dir, ["plan", "archive", "--all"]);
+				expect(result.exitCode).toBe(0);
+
+				const payload = parseJson(result.stdout).data as {
+					archived: unknown[];
+					skipped: { reason: string }[];
+				};
+				expect(payload.archived).toHaveLength(1);
+				expect(
+					payload.skipped.some((s) => s.reason === "no associated runs"),
+				).toBe(true);
+				expect(result.stderr).toContain("no associated runs");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--all skips plans with active run when no --force",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				// Plan with active run
+				await setupArchiveProject(dir, { initRun: true });
+				// Second plan with completed run
+				const plan2 = join(dir, "docs", "development", "done.md");
+				writeFileSync(plan2, PLAN_ONE_PHASE_DONE);
+				commitAll(dir, "add done plan");
+				const init2 = await run5x(dir, ["run", "init", "--plan", plan2]);
+				const runId2 = (parseJson(init2.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				await run5x(dir, ["run", "complete", "--run", runId2]);
+
+				const result = await run5x(dir, ["plan", "archive", "--all"]);
+				expect(result.exitCode).toBe(0);
+
+				const payload = parseJson(result.stdout).data as {
+					archived: unknown[];
+					skipped: { reason: string }[];
+				};
+				expect(payload.archived).toHaveLength(1); // done.md
+				expect(payload.skipped.some((s) => s.reason === "has active run")).toBe(
+					true,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"archive conflict when target exists",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = await setupArchiveProject(dir, {
+					initRun: true,
+					completeRun: true,
+				});
+				// Pre-create archive target
+				mkdirSync(join(dir, "docs", "archive"), { recursive: true });
+				writeFileSync(join(dir, "docs", "archive", "test-plan.md"), "# Old\n");
+
+				const result = await run5x(dir, ["plan", "archive", planPath]);
+				expect(result.exitCode).toBe(1);
+				expect(
+					(parseJson(result.stdout).error as Record<string, unknown>).code,
+				).toBe("ARCHIVE_CONFLICT");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"bare filename resolves via plans dir",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				await setupArchiveProject(dir, {
+					initRun: true,
+					completeRun: true,
+				});
+
+				const result = await run5x(dir, ["plan", "archive", "test-plan.md"]);
+				expect(result.exitCode).toBe(0);
+				expect(existsSync(join(dir, "docs", "archive", "test-plan.md"))).toBe(
+					true,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"exit 2 for missing plan",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, ["plan", "archive", "nonexistent.md"]);
+				expect(result.exitCode).toBe(2);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"no args errors INVALID_ARGS",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const result = await run5x(dir, ["plan", "archive"]);
+				expect(result.exitCode).toBe(1);
+				expect(
+					(parseJson(result.stdout).error as Record<string, unknown>).code,
+				).toBe("INVALID_ARGS");
 			} finally {
 				cleanupDir(dir);
 			}

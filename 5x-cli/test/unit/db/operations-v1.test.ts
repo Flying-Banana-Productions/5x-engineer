@@ -17,6 +17,7 @@ import {
 	nextIteration,
 	recordStep,
 	reopenRun,
+	updateRunPlanPath,
 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 
@@ -636,5 +637,34 @@ describe("computeRunSummary", () => {
 		expect(summary.phases_completed).toEqual(["1"]);
 		// The NULL-phase step should still count in total_steps
 		expect(summary.total_steps).toBe(2);
+	});
+});
+
+// --- updateRunPlanPath ---
+
+describe("updateRunPlanPath", () => {
+	test("updates plan_path to new canonical value", () => {
+		const planFile = join(tmp, "old.md");
+		writeFileSync(planFile, "# Old\n");
+		createRunV1(db, { id: "run-relink", planPath: planFile });
+
+		const newFile = join(tmp, "new.md");
+		writeFileSync(newFile, "# New\n");
+		updateRunPlanPath(db, "run-relink", newFile);
+
+		const after = getRunV1(db, "run-relink");
+		expect(after?.plan_path).toBe(resolve(newFile));
+		expect(after?.plan_path).not.toBe(resolve(planFile));
+	});
+
+	test("canonicalizes the new path", () => {
+		const planFile = join(tmp, "plan.md");
+		writeFileSync(planFile, "# Plan\n");
+		createRunV1(db, { id: "run-canon", planPath: planFile });
+
+		// Pass with redundant segments
+		updateRunPlanPath(db, "run-canon", join(tmp, "sub", "..", "plan.md"));
+		const run = getRunV1(db, "run-canon");
+		expect(run?.plan_path).toBe(resolve(tmp, "plan.md"));
 	});
 });
