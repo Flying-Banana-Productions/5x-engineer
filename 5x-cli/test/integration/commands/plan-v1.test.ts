@@ -9,10 +9,11 @@
  * sub-phase numbering) are in test/unit/commands/plan-v1.test.ts.
  */
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -34,6 +35,14 @@ function cleanupDir(dir: string): void {
 	try {
 		rmSync(dir, { recursive: true });
 	} catch {}
+}
+
+/** Create `.5x/5x.db` so `resolveControlPlaneRoot` selects managed mode (nested config layering). */
+function ensureManagedStateDb(dir: string): void {
+	const dbPath = join(dir, ".5x", "5x.db");
+	mkdirSync(dirname(dbPath), { recursive: true });
+	const db = new Database(dbPath);
+	db.close();
 }
 
 function setupProject(dir: string): void {
@@ -213,6 +222,59 @@ describe("5x plan list (integration)", () => {
 				expect(envelope.ok).toBe(true);
 				const data = envelope.data as { plans: unknown[] };
 				expect(data.plans).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"nested 5x.toml: cwd in subpackage uses that package paths.plans (managed mode)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				ensureManagedStateDb(dir);
+
+				writeFileSync(
+					join(dir, "5x.toml"),
+					`[paths]
+plans = "plans-at-root"
+reviews = "reviews-at-root"
+`,
+					"utf-8",
+				);
+				mkdirSync(join(dir, "plans-at-root"), { recursive: true });
+				writeFileSync(
+					join(dir, "plans-at-root", "root-only.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+
+				const pkg = join(dir, "5x-cli");
+				mkdirSync(pkg, { recursive: true });
+				writeFileSync(
+					join(pkg, "5x.toml"),
+					`[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+`,
+					"utf-8",
+				);
+				const devDir = join(pkg, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "pkg-plan.md"), PLAN_ONE_PHASE_TODO);
+
+				commitAll(dir, "nested-config");
+
+				const result = await run5x(pkg, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans_dir: string;
+					plans: Array<{ plan_path: string }>;
+				};
+				expect(resolve(data.plans_dir)).toBe(resolve(devDir));
+				expect(data.plans.map((p) => p.plan_path)).toEqual(["pkg-plan.md"]);
 			} finally {
 				cleanupDir(dir);
 			}

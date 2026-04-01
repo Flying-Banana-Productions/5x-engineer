@@ -61,6 +61,9 @@ export function registerPlan(parent: Command) {
 				"  $ 5x plan list --exclude-finished\n",
 		)
 		.action(async (opts) => {
-			await planList({ excludeFinished: opts.excludeFinished });
+			await planList({
+				excludeFinished: opts.excludeFinished,
+				startDir: process.cwd(),
+			});
 		});
 }

@@ -491,6 +491,8 @@ Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"
 
 List all markdown plans under `paths.plans` (recursive into subdirectories), with completion status and run summaries joined from the DB. Entire subtrees rooted at `paths.reviews`, `paths.planReviews`, and `paths.runReviews` are skipped when they fall under `paths.plans` (so implementation-plan reviews and similar folders do not pollute the list).
 
+**Config resolution:** Uses layered config with `contextDir` set to the current working directory (same idea as `5x config show` with a context directory). In a monorepo with a root `5x.toml` and a nested `5x.toml` (for example under `5x-cli/`), running `5x plan list` from that subdirectory merges root + nearest config and resolves `paths.plans` relative to the nearest config file—so package-local `docs/development` applies to that package, not the repository root.
+
 ```
 5x plan list [--exclude-finished]
 ```

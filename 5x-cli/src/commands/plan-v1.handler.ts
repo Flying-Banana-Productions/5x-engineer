@@ -32,6 +32,8 @@ export interface PlanPhasesParams {
 
 export interface PlanListParams {
 	excludeFinished?: boolean;
+	/** Working directory for config layering and cwd-relative resolution (default `.`). */
+	startDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +256,11 @@ function effectivePlanReadPath(
 }
 
 export async function planList(params: PlanListParams): Promise<void> {
-	const { projectRoot, config, db } = await resolveDbContext();
+	const cwd = resolve(params.startDir ?? ".");
+	const { projectRoot, config, db } = await resolveDbContext({
+		startDir: cwd,
+		contextDir: cwd,
+	});
 	const plansDir = config.paths.plans;
 	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
 
