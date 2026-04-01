@@ -290,6 +290,20 @@ export function getActiveRunV1(
 }
 
 /**
+ * Update a run's plan_path (for relinking to a different plan file).
+ */
+export function updateRunPlanPath(
+	db: Database,
+	runId: string,
+	newPlanPath: string,
+): void {
+	const canonical = canonicalizePlanPath(newPlanPath);
+	db.query(
+		`UPDATE runs SET plan_path = ?1, updated_at = datetime('now') WHERE id = ?2`,
+	).run(canonical, runId);
+}
+
+/**
  * Update run status to completed or aborted.
  */
 export function completeRun(

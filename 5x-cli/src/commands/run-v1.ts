@@ -13,6 +13,7 @@ import {
 	runV1Init,
 	runV1List,
 	runV1Record,
+	runV1Relink,
 	runV1Reopen,
 	runV1State,
 	runV1Watch,
@@ -277,6 +278,39 @@ export function registerRun(parent: Command) {
 				plan: opts.plan,
 				status: opts.status,
 				limit: opts.limit,
+			});
+		});
+
+	// ── relink ────────────────────────────────────────────────────────
+	run
+		.command("relink")
+		.summary("Change a run's plan path or worktree path")
+		.description(
+			"Update the plan file and/or worktree path associated with a run. Useful when\n" +
+				"plan files have been moved or worktrees reorganized. New paths are validated\n" +
+				"before updating (must exist; plan files must parse as a valid plan).\n\n" +
+				"When --plan is given without a path, searches for a file with the same name\n" +
+				"in the configured plans directory (paths.plans in 5x.toml).",
+		)
+		.requiredOption("-r, --run <id>", "Run ID")
+		.option(
+			"--plan [path]",
+			"New plan path, or omit path to auto-search by filename in paths.plans",
+		)
+		.option("--worktree <path>", "New worktree path")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x run relink -r abc123 --plan docs/development/015-feature-v2.md\n" +
+				"  $ 5x run relink -r abc123 --plan              # auto-find by filename\n" +
+				"  $ 5x run relink -r abc123 --worktree /tmp/wt\n" +
+				"  $ 5x run relink -r abc123 --plan new.md --worktree /tmp/wt",
+		)
+		.action(async (opts) => {
+			await runV1Relink({
+				run: opts.run,
+				plan: opts.plan,
+				worktree: opts.worktree,
 			});
 		});
 

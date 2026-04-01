@@ -14,7 +14,14 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import {
 	type FiveXConfig,
 	loadConfig,
@@ -34,6 +41,7 @@ import {
 	recordStep,
 	reopenRun,
 	type StepRow,
+	updateRunPlanPath,
 } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import {
@@ -57,7 +65,12 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
-import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
+import { parsePlan } from "../parsers/plan.js";
+import {
+	canonicalizePlanPath,
+	planSlugFromPath,
+	resolvePlanArg,
+} from "../paths.js";
 import {
 	extractInvokeMetadata,
 	extractPipeContext,
@@ -125,6 +138,12 @@ export interface RunListParams {
 	plan?: string;
 	status?: string;
 	limit?: number;
+}
+
+export interface RunRelinkParams {
+	run: string;
+	plan?: string | true; // path, or true for auto-search by filename
+	worktree?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,8 +691,6 @@ function formatListText(data: {
 // ---------------------------------------------------------------------------
 
 export async function runV1Init(params: RunInitParams): Promise<void> {
-	const planPath = canonicalizePlanPath(params.plan);
-
 	// Phase 3b: resolve control-plane root for DB location.
 	// `run init` from a linked worktree creates the run in the root DB.
 	const controlPlane = resolveControlPlaneRoot();
@@ -683,6 +700,13 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			: resolveProjectRoot();
 	const stateDir = controlPlane.stateDir;
 	const lockOpts: LockDirOpts = { stateDir };
+
+	// Load root config first for plan arg resolution (bare filename → plans dir).
+	// Layered config is loaded below once the plan path is known.
+	const rootResult = await loadConfig(projectRoot);
+	const planPath = canonicalizePlanPath(
+		resolvePlanArg(params.plan, rootResult.config.paths.plans),
+	);
 
 	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
 	// (or projectRoot in none mode). This ensures stored plan_path values
@@ -710,9 +734,8 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		config = result.config;
 		configPath = result.nearestConfigPath ?? result.rootConfigPath;
 	} else {
-		const result = await loadConfig(projectRoot);
-		config = result.config;
-		configPath = result.configPath;
+		config = rootResult.config;
+		configPath = rootResult.configPath;
 	}
 
 	const configuredPlansDir = resolveConfiguredPath(
@@ -852,14 +875,16 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { db, controlPlane } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext();
 
 	// Resolve run by ID or plan path
 	let run: RunRowV1 | null = null;
 	if (params.run) {
 		run = getRunV1(db, params.run);
 	} else if (params.plan) {
-		const planPath = canonicalizePlanPath(params.plan);
+		const planPath = canonicalizePlanPath(
+			resolvePlanArg(params.plan, config.paths.plans),
+		);
 		run = getActiveRunV1(db, planPath);
 	} else {
 		outputError("INVALID_ARGS", "Either --run or --plan is required");
@@ -1233,10 +1258,12 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 }
 
 export async function runV1List(params: RunListParams): Promise<void> {
-	const { db } = await resolveDbContext();
+	const { config, db } = await resolveDbContext();
 
 	const runs = listRuns(db, {
-		planPath: params.plan ? canonicalizePlanPath(params.plan) : undefined,
+		planPath: params.plan
+			? canonicalizePlanPath(resolvePlanArg(params.plan, config.paths.plans))
+			: undefined,
 		status: params.status,
 		limit: params.limit,
 	});
@@ -1253,6 +1280,135 @@ export async function runV1List(params: RunListParams): Promise<void> {
 			})),
 		},
 		formatListText,
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Relink
+// ---------------------------------------------------------------------------
+
+function formatRelinkText(data: Record<string, unknown>): void {
+	const changes = data.changes as Record<
+		string,
+		{ old: string | null; new: string | null }
+	>;
+	console.log(`Run ${data.run_id}:`);
+	if (changes.plan) {
+		console.log(
+			`  plan:     ${changes.plan.old ?? "(none)"} → ${changes.plan.new}`,
+		);
+	}
+	if (changes.worktree) {
+		console.log(
+			`  worktree: ${changes.worktree.old ?? "(none)"} → ${changes.worktree.new}`,
+		);
+	}
+}
+
+export async function runV1Relink(params: RunRelinkParams): Promise<void> {
+	if (params.plan === undefined && params.worktree === undefined) {
+		outputError(
+			"RELINK_NO_OPTIONS",
+			"At least one of --plan or --worktree must be provided",
+		);
+	}
+
+	const { db, config } = await resolveDbContext();
+
+	const run = getRunV1(db, params.run);
+	if (!run) {
+		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+	}
+
+	const changes: Record<string, { old: string | null; new: string | null }> =
+		{};
+	let effectivePlanPath = run.plan_path;
+
+	// ── Plan relink ──────────────────────────────────────────────────
+	if (params.plan !== undefined) {
+		let newPlanPath: string;
+
+		if (params.plan === true) {
+			// Auto-search: find file with same basename in config.paths.plans
+			const filename = basename(run.plan_path);
+			const candidate = join(config.paths.plans, filename);
+			if (!existsSync(candidate)) {
+				outputError(
+					"PLAN_NOT_FOUND",
+					`Could not find ${filename} in ${config.paths.plans}`,
+					{ searched: candidate },
+				);
+			}
+			newPlanPath = candidate;
+		} else {
+			newPlanPath = resolvePlanArg(params.plan, config.paths.plans);
+		}
+
+		if (!existsSync(newPlanPath)) {
+			outputError("PLAN_NOT_FOUND", `Plan file not found: ${newPlanPath}`, {
+				plan_path: newPlanPath,
+			});
+		}
+
+		// Validate plan parses correctly
+		try {
+			const markdown = readFileSync(newPlanPath, "utf-8");
+			parsePlan(markdown);
+		} catch (err) {
+			outputError(
+				"INVALID_PLAN",
+				`File does not parse as a valid plan: ${newPlanPath}`,
+				{
+					plan_path: newPlanPath,
+					detail: err instanceof Error ? err.message : String(err),
+				},
+			);
+		}
+
+		const canonical = canonicalizePlanPath(newPlanPath);
+		const oldPlanPath = run.plan_path;
+		updateRunPlanPath(db, params.run, canonical);
+		upsertPlan(db, { planPath: canonical });
+		effectivePlanPath = canonical;
+
+		changes.plan = { old: oldPlanPath, new: canonical };
+	}
+
+	// ── Worktree relink ──────────────────────────────────────────────
+	if (params.worktree !== undefined) {
+		const newWorktreePath = resolve(params.worktree);
+		if (!existsSync(newWorktreePath)) {
+			outputError(
+				"WORKTREE_NOT_FOUND",
+				`Worktree path not found: ${newWorktreePath}`,
+				{ path: newWorktreePath },
+			);
+		}
+
+		const plan = getPlan(db, effectivePlanPath);
+		const oldWorktreePath = plan?.worktree_path ?? null;
+		upsertPlan(db, {
+			planPath: effectivePlanPath,
+			worktreePath: newWorktreePath,
+		});
+
+		changes.worktree = { old: oldWorktreePath, new: newWorktreePath };
+	}
+
+	// Fetch final state for output
+	const updatedRun = getRunV1(db, params.run) as NonNullable<
+		ReturnType<typeof getRunV1>
+	>;
+	const updatedPlan = getPlan(db, effectivePlanPath);
+
+	outputSuccess(
+		{
+			run_id: params.run,
+			plan_path: updatedRun.plan_path,
+			worktree_path: updatedPlan?.worktree_path ?? null,
+			changes,
+		},
+		formatRelinkText,
 	);
 }
 

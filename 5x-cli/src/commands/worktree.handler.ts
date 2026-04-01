@@ -30,7 +30,11 @@ import {
 	runWorktreeSetupCommand,
 } from "../git.js";
 import { outputError, outputSuccess } from "../output.js";
-import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
+import {
+	canonicalizePlanPath,
+	planSlugFromPath,
+	resolvePlanArg,
+} from "../paths.js";
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
@@ -162,15 +166,6 @@ function emitIsolatedModeWarning(
 export async function worktreeCreate(
 	params: WorktreeCreateParams,
 ): Promise<void> {
-	const planPath = resolve(params.plan);
-
-	// Validate that the plan file exists before proceeding
-	if (!existsSync(planPath)) {
-		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
-			path: planPath,
-		});
-	}
-
 	// Phase 6: linked-worktree guard — prevent accidental nested worktree
 	// creation from a linked-worktree context. Use --allow-nested to bypass.
 	const cwd = resolve(params.startDir ?? ".");
@@ -194,7 +189,6 @@ export async function worktreeCreate(
 	// Phase 6: split-brain detection
 	emitSplitBrainWarning(controlPlane, params.startDir);
 
-	const canonical = canonicalizePlanPath(planPath);
 	const {
 		projectRoot,
 		config,
@@ -202,6 +196,17 @@ export async function worktreeCreate(
 		controlPlane: cp,
 	} = await resolveDbContext({ startDir: cwd });
 	const stateDir = cp?.stateDir ?? ".5x";
+
+	const planPath = resolvePlanArg(params.plan, config.paths.plans);
+
+	// Validate that the plan file exists before proceeding
+	if (!existsSync(planPath)) {
+		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+			path: planPath,
+		});
+	}
+
+	const canonical = canonicalizePlanPath(planPath);
 
 	// Check if worktree already exists for this plan
 	const existingPlan = getPlan(db, canonical);
@@ -263,7 +268,17 @@ export async function worktreeCreate(
 export async function worktreeAttach(
 	params: WorktreeAttachParams,
 ): Promise<void> {
-	const planPath = resolve(params.plan);
+	// Phase 6: isolated-mode and split-brain warnings
+	const cwd = resolve(params.startDir ?? ".");
+	const cpEarly = resolveControlPlaneRoot(cwd);
+	emitIsolatedModeWarning(cpEarly, "attach");
+	emitSplitBrainWarning(cpEarly, params.startDir);
+
+	const { config, projectRoot, db } = await resolveDbContext({
+		startDir: cwd,
+	});
+
+	const planPath = resolvePlanArg(params.plan, config.paths.plans);
 	if (!existsSync(planPath)) {
 		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
 			path: planPath,
@@ -278,14 +293,6 @@ export async function worktreeAttach(
 			path: wtPath,
 		});
 	}
-
-	// Phase 6: isolated-mode and split-brain warnings
-	const cwd = resolve(params.startDir ?? ".");
-	const cpEarly = resolveControlPlaneRoot(cwd);
-	emitIsolatedModeWarning(cpEarly, "attach");
-	emitSplitBrainWarning(cpEarly, params.startDir);
-
-	const { projectRoot, db } = await resolveDbContext({ startDir: cwd });
 	let gitWorktrees: Array<{ path: string; branch: string }> = [];
 	try {
 		gitWorktrees = await listWorktrees(projectRoot);
@@ -327,16 +334,18 @@ export async function worktreeAttach(
 export async function worktreeRemove(
 	params: WorktreeRemoveParams,
 ): Promise<void> {
-	const planPath = resolve(params.plan);
-	const canonical = canonicalizePlanPath(planPath);
-
 	// Phase 6: isolated-mode and split-brain warnings
 	const cwd = resolve(params.startDir ?? ".");
 	const cpEarly = resolveControlPlaneRoot(cwd);
 	emitIsolatedModeWarning(cpEarly, "remove");
 	emitSplitBrainWarning(cpEarly, params.startDir);
 
-	const { projectRoot, db } = await resolveDbContext({ startDir: cwd });
+	const { config, projectRoot, db } = await resolveDbContext({
+		startDir: cwd,
+	});
+
+	const planPath = resolvePlanArg(params.plan, config.paths.plans);
+	const canonical = canonicalizePlanPath(planPath);
 
 	const plan = getPlan(db, canonical);
 	if (!plan?.worktree_path) {
@@ -433,15 +442,15 @@ export async function worktreeRemove(
 export async function worktreeDetach(
 	params: WorktreeDetachParams,
 ): Promise<void> {
-	const planPath = resolve(params.plan);
-	const canonical = canonicalizePlanPath(planPath);
-
 	const cwd = resolve(params.startDir ?? ".");
 	const cpEarly = resolveControlPlaneRoot(cwd);
 	emitIsolatedModeWarning(cpEarly, "detach");
 	emitSplitBrainWarning(cpEarly, params.startDir);
 
-	const { db } = await resolveDbContext({ startDir: cwd });
+	const { config, db } = await resolveDbContext({ startDir: cwd });
+
+	const planPath = resolvePlanArg(params.plan, config.paths.plans);
+	const canonical = canonicalizePlanPath(planPath);
 	const plan = getPlan(db, canonical);
 	if (!plan?.worktree_path) {
 		outputError("WORKTREE_NOT_FOUND", "No worktree associated with this plan");

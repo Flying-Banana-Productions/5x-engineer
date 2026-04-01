@@ -7,7 +7,7 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
-import { planList, planPhases } from "./plan-v1.handler.js";
+import { planArchive, planList, planPhases } from "./plan-v1.handler.js";
 
 export function registerPlan(parent: Command) {
 	const plan = parent
@@ -64,6 +64,33 @@ export function registerPlan(parent: Command) {
 			await planList({
 				excludeFinished: opts.excludeFinished,
 				startDir: process.cwd(),
+			});
+		});
+
+	plan
+		.command("archive")
+		.summary("Archive a plan by moving it to the archive folder")
+		.description(
+			"Move a plan file to the configured archive directory (paths.archive in 5x.toml).\n" +
+				"Refuses to archive plans with an active run unless --force is used, which aborts\n" +
+				"the active run first. Use --all to archive every plan in the plans directory.",
+		)
+		.argument("[path]", "Path to the plan file to archive")
+		.option("--force", "Abort active runs before archiving")
+		.option("--all", "Archive all .md files in the configured plans directory")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x plan archive docs/development/015-feature.md\n" +
+				"  $ 5x plan archive docs/development/015-feature.md --force\n" +
+				"  $ 5x plan archive --all\n" +
+				"  $ 5x plan archive --all --force",
+		)
+		.action(async (path, opts) => {
+			await planArchive({
+				path,
+				force: opts.force,
+				all: opts.all,
 			});
 		});
 }

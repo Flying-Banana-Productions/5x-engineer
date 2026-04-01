@@ -9,16 +9,33 @@
  * orchestrating from the repo root.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+} from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
-import type { PlanRow } from "../db/operations.js";
-import { listRuns } from "../db/operations-v1.js";
+import { type PlanRow, upsertPlan } from "../db/operations.js";
+import {
+	completeRun,
+	listRuns,
+	recordStep,
+	updateRunPlanPath,
+} from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
+import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
-import { canonicalizePlanPath, planSlugFromPath } from "../paths.js";
+import {
+	canonicalizePlanPath,
+	planSlugFromPath,
+	resolvePlanArg,
+} from "../paths.js";
 import { resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
@@ -363,6 +380,173 @@ export async function planList(params: PlanListParams): Promise<void> {
 	const ordered = [...plans].sort(sortPlanListRows).map(stripMtime);
 
 	outputSuccess({ plans_dir: plansDir, plans: ordered }, formatPlanListText);
+}
+
+// ---------------------------------------------------------------------------
+// Archive
+// ---------------------------------------------------------------------------
+
+export interface PlanArchiveParams {
+	path?: string;
+	force?: boolean;
+	all?: boolean;
+}
+
+interface ArchiveResult {
+	plan_path: string;
+	archive_path: string;
+	runs_updated: number;
+	run_aborted?: string; // run ID if force-aborted
+}
+
+interface ArchiveSkip {
+	plan_path: string;
+	reason: string;
+	run_id?: string;
+}
+
+function formatArchiveText(data: {
+	archived: ArchiveResult[];
+	skipped: ArchiveSkip[];
+}): void {
+	if (data.archived.length === 0 && data.skipped.length === 0) {
+		console.log("No plans to archive.");
+		return;
+	}
+	for (const a of data.archived) {
+		const parts: string[] = [];
+		if (a.run_aborted) parts.push(`aborted run ${a.run_aborted}`);
+		if (a.runs_updated > 0) parts.push(`${a.runs_updated} run(s) updated`);
+		const suffix = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+		console.log(`  archived: ${a.plan_path} → ${a.archive_path}${suffix}`);
+	}
+	for (const s of data.skipped) {
+		console.log(`  skipped:  ${s.plan_path} — ${s.reason}`);
+	}
+}
+
+export async function planArchive(params: PlanArchiveParams): Promise<void> {
+	if (!params.path && !params.all) {
+		outputError(
+			"INVALID_ARGS",
+			"Provide a plan path or use --all to archive all plans",
+		);
+	}
+
+	const { db, config, projectRoot, controlPlane } = await resolveDbContext();
+	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
+	const archiveDir = config.paths.archive;
+
+	// Collect plan paths to process
+	let planPaths: string[];
+	if (params.all) {
+		if (!existsSync(config.paths.plans)) {
+			outputSuccess({ archived: [], skipped: [] }, formatArchiveText);
+			return;
+		}
+		planPaths = readdirSync(config.paths.plans)
+			.filter((f) => f.endsWith(".md"))
+			.map((f) => join(config.paths.plans, f));
+	} else {
+		planPaths = [resolvePlanArg(params.path as string, config.paths.plans)];
+	}
+
+	const archived: ArchiveResult[] = [];
+	const skipped: ArchiveSkip[] = [];
+
+	for (const planPath of planPaths) {
+		// Validate file exists
+		if (!existsSync(planPath)) {
+			if (params.all) {
+				skipped.push({ plan_path: planPath, reason: "file not found" });
+				continue;
+			}
+			outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
+				plan_path: planPath,
+			});
+		}
+
+		const canonical = canonicalizePlanPath(planPath);
+		const planRuns = listRuns(db, { planPath: canonical, limit: 10000 });
+
+		// Skip plans with no runs in --all mode (unexecuted plans stay in place)
+		if (params.all && planRuns.length === 0) {
+			process.stderr.write(
+				`Skipping ${basename(planPath)}: no associated runs\n`,
+			);
+			skipped.push({ plan_path: planPath, reason: "no associated runs" });
+			continue;
+		}
+
+		// Check for active run
+		const activeRun = planRuns.find((r) => r.status === "active") ?? null;
+		if (activeRun) {
+			if (!params.force) {
+				if (params.all) {
+					skipped.push({
+						plan_path: planPath,
+						reason: "has active run",
+						run_id: activeRun.id,
+					});
+					continue;
+				}
+				outputError(
+					"PLAN_HAS_ACTIVE_RUN",
+					`Plan has an active run (${activeRun.id}). Use --force to abort it.`,
+					{ plan_path: planPath, run_id: activeRun.id },
+				);
+			}
+
+			// Force-abort the active run
+			recordStep(db, {
+				run_id: activeRun.id,
+				step_name: "run:abort",
+				result_json: JSON.stringify({
+					status: "aborted",
+					reason: "plan archived with --force",
+				}),
+			});
+			completeRun(db, activeRun.id, "aborted");
+			releaseLock(projectRoot, canonical, lockOpts);
+		}
+
+		// Check archive target doesn't already exist
+		const targetPath = join(archiveDir, basename(planPath));
+		if (existsSync(targetPath)) {
+			if (params.all) {
+				skipped.push({
+					plan_path: planPath,
+					reason: `archive target already exists: ${targetPath}`,
+				});
+				continue;
+			}
+			outputError(
+				"ARCHIVE_CONFLICT",
+				`A file already exists at the archive destination: ${targetPath}`,
+				{ plan_path: planPath, archive_path: targetPath },
+			);
+		}
+
+		// Ensure archive directory exists and move file
+		mkdirSync(archiveDir, { recursive: true });
+		renameSync(planPath, targetPath);
+
+		// Update DB: repoint all runs and the plan record to the new path
+		const canonicalTarget = canonicalizePlanPath(targetPath);
+		for (const run of planRuns) {
+			updateRunPlanPath(db, run.id, canonicalTarget);
+		}
+		upsertPlan(db, { planPath: canonicalTarget });
+
+		archived.push({
+			plan_path: planPath,
+			archive_path: targetPath,
+			runs_updated: planRuns.length,
+			...(activeRun ? { run_aborted: activeRun.id } : {}),
+		});
+	}
+
+	outputSuccess({ archived, skipped }, formatArchiveText);
 }
 
 // ---------------------------------------------------------------------------
