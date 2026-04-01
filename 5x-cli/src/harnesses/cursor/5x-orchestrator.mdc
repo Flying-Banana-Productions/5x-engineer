@@ -33,8 +33,9 @@ workflow:
    critical for worktree-backed runs where the working directory is mapped
    to `.5x/worktrees/...`.
 
-3. **Track state.** Use `5x run state --run <id>` and
-   `5x plan phases <path>` to know where a run stands before acting.
+3. **Track state.** Use `5x run state --run <id>`,
+   `5x plan list` for an overview, and
+   `5x plan phases <path>` for detailed phase status.
 
 4. **Guide human decisions.** When a workflow requires human input,
    present the situation with enough context for the human to decide.

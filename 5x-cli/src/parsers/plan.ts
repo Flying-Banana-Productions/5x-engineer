@@ -165,3 +165,12 @@ export function parsePlan(markdown: string): ParsedPlan {
 		completionPercentage,
 	};
 }
+
+/**
+ * True when {@link parsePlan} found at least one `## Phase N:` / `### Phase …`
+ * heading. Markdown under `paths.plans` without phase sections is still listed
+ * by `plan list` but is not treated as an implementation plan shape.
+ */
+export function parsedPlanHasPhases(parsed: ParsedPlan): boolean {
+	return parsed.phases.length > 0;
+}

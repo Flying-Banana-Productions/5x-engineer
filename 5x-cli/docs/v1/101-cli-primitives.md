@@ -49,7 +49,7 @@ JSON is always the default to ensure deterministic pipe-chain behavior. A user b
 
 **Text mode behavior:**
 
-- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan phases` prints a checklist).
+- Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan list` prints a summary table, `plan phases` prints a checklist).
 - Commands without a custom formatter use a built-in generic formatter that renders aligned key-value pairs with nested indentation.
 - Errors produce a single `Error: <message>` line on stderr (no JSON envelope, no Commander help text).
 
@@ -84,7 +84,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | **Run lifecycle** | `run init`, `run state`, `run record`, `run list` | Create runs, query state, record steps |
 | **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
 | **Quality** | `quality run` | Execute quality gates |
-| **Inspection** | `plan phases`, `diff` | Read plan structure, inspect git changes |
+| **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
 | **Worktree** | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
 
@@ -486,6 +486,51 @@ Parse a plan and return its phases.
 ```
 
 Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"`, `"2"`), matching the regex `\d+(\.\d+)?`. This matches the current v0 plan parser output. Phases are sorted numerically (`CAST(phase AS REAL)`).
+
+### `5x plan list`
+
+List all markdown plans under `paths.plans` (recursive into subdirectories), with completion status and run summaries joined from the DB. Entire subtrees rooted at `paths.reviews`, `paths.planReviews`, and `paths.runReviews` are skipped when they fall under `paths.plans` (so implementation-plan reviews and similar folders do not pollute the list).
+
+**Config resolution:** Uses layered config with `contextDir` set to the current working directory (same idea as `5x config show` with a context directory). In a monorepo with a root `5x.toml` and a nested `5x.toml` (for example under `5x-cli/`), running `5x plan list` from that subdirectory merges root + nearest config and resolves `paths.plans` relative to the nearest config file—so package-local `docs/development` applies to that package, not the repository root.
+
+```
+5x plan list [--exclude-finished]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--exclude-finished` | No | Omit plans that are 100% complete (all phases done). |
+
+**Returns:**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "plans_dir": "/path/to/docs/development",
+    "plans": [
+      {
+        "plan_path": "features/015-test-separation.md",
+        "name": "015-test-separation",
+        "file": "015-test-separation.md",
+        "title": "Test Separation Plan",
+        "status": "complete",
+        "completion_pct": 100,
+        "phases_done": 3,
+        "phases_total": 3,
+        "active_run": null,
+        "runs_total": 2
+      }
+    ]
+  }
+}
+```
+
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
+
+**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the same file used for parsing (worktree copy when mapped).
+
+**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). When there are no plans, prints `(no plans)` on the line after the directory (no table).
 
 ### `5x diff`
 

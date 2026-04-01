@@ -9,10 +9,11 @@
  * sub-phase numbering) are in test/unit/commands/plan-v1.test.ts.
  */
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -34,6 +35,14 @@ function cleanupDir(dir: string): void {
 	try {
 		rmSync(dir, { recursive: true });
 	} catch {}
+}
+
+/** Create `.5x/5x.db` so `resolveControlPlaneRoot` selects managed mode (nested config layering). */
+function ensureManagedStateDb(dir: string): void {
+	const dbPath = join(dir, ".5x", "5x.db");
+	mkdirSync(dirname(dbPath), { recursive: true });
+	const db = new Database(dbPath);
+	db.close();
 }
 
 function setupProject(dir: string): void {
@@ -110,9 +119,477 @@ function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+function commitAll(dir: string, message: string): void {
+	Bun.spawnSync(["git", "add", "-A"], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	Bun.spawnSync(["git", "commit", "-m", message], {
+		cwd: dir,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+}
+
+const PLAN_ONE_PHASE_TODO = `# Todo Plan
+
+## Phase 1: Only
+
+- [ ] Task
+`;
+
+const PLAN_ONE_PHASE_DONE = `# Done Plan
+
+## Phase 1: Only
+
+- [x] Task
+`;
+
+const PLAN_TWO_PHASE_ONE_DONE = `# Partial
+
+## Phase 1: A
+
+- [x] a
+
+## Phase 2: B
+
+- [ ] b
+`;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("5x plan list (integration)", () => {
+	test(
+		"empty plans dir yields plans: [] and exit 0",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				mkdirSync(join(dir, "docs", "development"), { recursive: true });
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+				const data = envelope.data as { plans: unknown[] };
+				expect(data.plans).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text empty plans dir prints Plans directory then (no plans)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Plans directory:");
+				expect(result.stdout).toContain(devDir);
+				expect(result.stdout).toContain("(no plans)");
+				expect(result.stdout).not.toContain("Plan Path");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"missing plans dir yields plans: [] and exit 0",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+				const data = envelope.data as { plans: unknown[] };
+				expect(data.plans).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"nested 5x.toml: cwd in subpackage uses that package paths.plans (managed mode)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				ensureManagedStateDb(dir);
+
+				writeFileSync(
+					join(dir, "5x.toml"),
+					`[paths]
+plans = "plans-at-root"
+reviews = "reviews-at-root"
+`,
+					"utf-8",
+				);
+				mkdirSync(join(dir, "plans-at-root"), { recursive: true });
+				writeFileSync(
+					join(dir, "plans-at-root", "root-only.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+
+				const pkg = join(dir, "5x-cli");
+				mkdirSync(pkg, { recursive: true });
+				writeFileSync(
+					join(pkg, "5x.toml"),
+					`[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+`,
+					"utf-8",
+				);
+				const devDir = join(pkg, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "pkg-plan.md"), PLAN_ONE_PHASE_TODO);
+
+				commitAll(dir, "nested-config");
+
+				const result = await run5x(pkg, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans_dir: string;
+					plans: Array<{ plan_path: string }>;
+				};
+				expect(resolve(data.plans_dir)).toBe(resolve(devDir));
+				expect(data.plans.map((p) => p.plan_path)).toEqual(["pkg-plan.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"skips markdown under docs/development/reviews",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				const reviewsDir = join(devDir, "reviews");
+				mkdirSync(join(reviewsDir, "nested"), { recursive: true });
+				writeFileSync(
+					join(reviewsDir, "nested", "run-review.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+				writeFileSync(join(devDir, "root.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["root.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"discovers nested markdown plans recursively outside reviews",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(join(devDir, "nested", "deep"), { recursive: true });
+				writeFileSync(join(devDir, "root.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(
+					join(devDir, "nested", "deep", "leaf.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["nested/deep/leaf.md", "root.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"sorts by completion pct desc then mtime within each pct group",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(join(devDir, "zdir"), { recursive: true });
+				writeFileSync(
+					join(devDir, "zdir", "later-todo.md"),
+					PLAN_ONE_PHASE_TODO,
+				);
+				writeFileSync(join(devDir, "aaa-done.md"), PLAN_ONE_PHASE_DONE);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string; status: string }>;
+				};
+				expect(data.plans.map((p) => p.plan_path)).toEqual([
+					"aaa-done.md",
+					"zdir/later-todo.md",
+				]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--exclude-finished omits complete plans",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "open.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "shipped.md"), PLAN_ONE_PHASE_DONE);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list", "--exclude-finished"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string }>;
+				};
+				expect(data.plans.map((p) => p.plan_path)).toEqual(["open.md"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text sorts rows by completion % desc then mtime asc within each pct",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				const older = new Date("2020-01-01T00:00:00Z");
+				const newer = new Date("2020-06-01T00:00:00Z");
+
+				writeFileSync(join(devDir, "newer-fresh.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "old-todo.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "old-partial.md"), PLAN_TWO_PHASE_ONE_DONE);
+				utimesSync(join(devDir, "old-todo.md"), older, older);
+				utimesSync(join(devDir, "old-partial.md"), older, older);
+				utimesSync(join(devDir, "newer-fresh.md"), newer, newer);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const out = result.stdout;
+				const iPartial = out.indexOf("old-partial.md");
+				const iTodo = out.indexOf("old-todo.md");
+				const iNewer = out.indexOf("newer-fresh.md");
+				expect(iPartial).toBeGreaterThan(-1);
+				expect(iPartial < iTodo && iTodo < iNewer).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text prints Plan Path column header and plan rows",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "text-mode.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Plans directory:");
+				expect(result.stdout).toContain(devDir);
+				expect(result.stdout.indexOf("Plans directory:")).toBeLessThan(
+					result.stdout.indexOf("Plan Path"),
+				);
+				expect(result.stdout).toContain("Plan Path");
+				expect(result.stdout).toContain("Status");
+				expect(result.stdout).toContain("Active Run");
+				expect(result.stdout).toContain("text-mode.md");
+				expect(result.stdout).not.toContain('"ok"');
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"JSON lists active run id for plan with an active run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "with-run.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const initResult = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					"docs/development/with-run.md",
+				]);
+				expect(initResult.exitCode).toBe(0);
+				const initData = parseJson(initResult.stdout) as {
+					ok: boolean;
+					data: { run_id: string };
+				};
+				expect(initData.ok).toBe(true);
+				const runId = initData.data.run_id;
+
+				const listResult = await run5x(dir, ["plan", "list"]);
+				expect(listResult.exitCode).toBe(0);
+				const data = parseJson(listResult.stdout).data as {
+					plans: Array<{ plan_path: string; active_run: string | null }>;
+				};
+				const row = data.plans.find((p) => p.plan_path === "with-run.md");
+				expect(row).toBeDefined();
+				expect(row?.active_run).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"plan on disk with no run init shows runs_total 0 and active_run null",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "no-db-run.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{
+						plan_path: string;
+						runs_total: number;
+						active_run: string | null;
+					}>;
+				};
+				const row = data.plans.find((p) => p.plan_path === "no-db-run.md");
+				expect(row).toBeDefined();
+				expect(row?.runs_total).toBe(0);
+				expect(row?.active_run).toBeNull();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"stderr warns on markdown without plan phases; JSON lists file with no warning fields",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(
+					join(devDir, "README.md"),
+					"# Notes\n\nNot an implementation plan.\n",
+				);
+				writeFileSync(
+					join(devDir, "real.plan.md"),
+					"# Real\n\n## Phase 1: One\n\n- [ ] Task\n",
+				);
+
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "plans"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+
+				expect(result.stderr).toContain("README.md");
+				expect(result.stderr).toContain("no implementation-plan phases");
+
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+				expect(JSON.stringify(envelope)).not.toMatch(/warn|Warning/i);
+
+				const data = envelope.data as {
+					plans: Array<{ plan_path: string; phases_total: number }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["README.md", "real.plan.md"]);
+				expect(
+					data.plans.find((p) => p.plan_path === "README.md")?.phases_total,
+				).toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+});
 
 describe("5x plan phases (integration)", () => {
 	test(
