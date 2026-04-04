@@ -78,19 +78,24 @@ export function registerPlan(parent: Command) {
 		.argument("[path]", "Path to the plan file to archive")
 		.option("--force", "Abort active runs before archiving")
 		.option("--all", "Archive all .md files in the configured plans directory")
+		.option(
+			"--dry-run",
+			"Preview what would be archived without making changes",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x plan archive docs/development/015-feature.md\n" +
 				"  $ 5x plan archive docs/development/015-feature.md --force\n" +
 				"  $ 5x plan archive --all\n" +
-				"  $ 5x plan archive --all --force",
+				"  $ 5x plan archive --all --dry-run",
 		)
 		.action(async (path, opts) => {
 			await planArchive({
 				path,
 				force: opts.force,
 				all: opts.all,
+				dryRun: opts.dryRun,
 			});
 		});
 }

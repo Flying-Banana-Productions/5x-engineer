@@ -390,6 +390,7 @@ export interface PlanArchiveParams {
 	path?: string;
 	force?: boolean;
 	all?: boolean;
+	dryRun?: boolean;
 }
 
 interface ArchiveResult {
@@ -433,7 +434,11 @@ export async function planArchive(params: PlanArchiveParams): Promise<void> {
 		);
 	}
 
-	const { db, config, projectRoot, controlPlane } = await resolveDbContext();
+	const cwd = resolve(".");
+	const { db, config, projectRoot, controlPlane } = await resolveDbContext({
+		startDir: cwd,
+		contextDir: cwd,
+	});
 	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 	const archiveDir = config.paths.archive;
 
@@ -498,16 +503,18 @@ export async function planArchive(params: PlanArchiveParams): Promise<void> {
 			}
 
 			// Force-abort the active run
-			recordStep(db, {
-				run_id: activeRun.id,
-				step_name: "run:abort",
-				result_json: JSON.stringify({
-					status: "aborted",
-					reason: "plan archived with --force",
-				}),
-			});
-			completeRun(db, activeRun.id, "aborted");
-			releaseLock(projectRoot, canonical, lockOpts);
+			if (!params.dryRun) {
+				recordStep(db, {
+					run_id: activeRun.id,
+					step_name: "run:abort",
+					result_json: JSON.stringify({
+						status: "aborted",
+						reason: "plan archived with --force",
+					}),
+				});
+				completeRun(db, activeRun.id, "aborted");
+				releaseLock(projectRoot, canonical, lockOpts);
+			}
 		}
 
 		// Check archive target doesn't already exist
@@ -527,16 +534,18 @@ export async function planArchive(params: PlanArchiveParams): Promise<void> {
 			);
 		}
 
-		// Ensure archive directory exists and move file
-		mkdirSync(archiveDir, { recursive: true });
-		renameSync(planPath, targetPath);
+		if (!params.dryRun) {
+			// Ensure archive directory exists and move file
+			mkdirSync(archiveDir, { recursive: true });
+			renameSync(planPath, targetPath);
 
-		// Update DB: repoint all runs and the plan record to the new path
-		const canonicalTarget = canonicalizePlanPath(targetPath);
-		for (const run of planRuns) {
-			updateRunPlanPath(db, run.id, canonicalTarget);
+			// Update DB: repoint all runs and the plan record to the new path
+			const canonicalTarget = canonicalizePlanPath(targetPath);
+			for (const run of planRuns) {
+				updateRunPlanPath(db, run.id, canonicalTarget);
+			}
+			upsertPlan(db, { planPath: canonicalTarget });
 		}
-		upsertPlan(db, { planPath: canonicalTarget });
 
 		archived.push({
 			plan_path: planPath,
