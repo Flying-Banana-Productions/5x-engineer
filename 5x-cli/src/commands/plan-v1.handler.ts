@@ -177,7 +177,8 @@ export function formatPlanListText(data: {
 // ---------------------------------------------------------------------------
 
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
-	const planPath = resolve(params.path);
+	const { config } = await resolveDbContext({ migrate: false });
+	const planPath = resolvePlanArg(params.path, config.paths.plans);
 
 	// Try to resolve the plan through worktree mapping
 	const worktreePlanPath = resolveWorktreePlanPath(planPath);
