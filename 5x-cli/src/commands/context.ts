@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -80,6 +80,12 @@ export async function resolveDbContext(opts?: {
 	migrate?: boolean;
 	contextDir?: string;
 }): Promise<DbContext> {
+	// Default contextDir to startDir/CWD so layered config resolution is
+	// always active. This ensures sub-project 5x.toml overrides (e.g.
+	// paths.plans) are picked up without callers opting in explicitly.
+	const effectiveContextDir =
+		opts?.contextDir ?? opts?.startDir ?? resolve(".");
+
 	// Resolve control-plane root first for DB location
 	const controlPlane = resolveControlPlaneRoot(opts?.startDir);
 
@@ -87,13 +93,10 @@ export async function resolveDbContext(opts?: {
 		// Managed or isolated mode: use control-plane root for config + DB
 		const root = controlPlane.controlPlaneRoot;
 
-		// Config resolution: layered when contextDir is provided
+		// Config resolution: always layered from effectiveContextDir
 		let config: FiveXConfig;
-		if (opts?.contextDir) {
-			const result = await resolveLayeredConfig(root, opts.contextDir);
-			config = result.config;
-		} else {
-			const result = await loadConfig(root, opts?.providerNames);
+		{
+			const result = await resolveLayeredConfig(root, effectiveContextDir);
 			config = result.config;
 		}
 
@@ -119,7 +122,7 @@ export async function resolveDbContext(opts?: {
 	const { projectRoot, config } = await resolveProjectContext({
 		startDir: opts?.startDir,
 		providerNames: opts?.providerNames,
-		contextDir: opts?.contextDir,
+		contextDir: effectiveContextDir,
 	});
 	// Normalize db.path: treat as directory, append DB_FILENAME.
 	// Backward compat: `.5x/5x.db` normalizes to `.5x` → `.5x/5x.db`.

@@ -276,7 +276,6 @@ export async function planList(params: PlanListParams): Promise<void> {
 	const cwd = resolve(params.startDir ?? ".");
 	const { projectRoot, config, db } = await resolveDbContext({
 		startDir: cwd,
-		contextDir: cwd,
 	});
 	const plansDir = config.paths.plans;
 	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
@@ -434,11 +433,7 @@ export async function planArchive(params: PlanArchiveParams): Promise<void> {
 		);
 	}
 
-	const cwd = resolve(".");
-	const { db, config, projectRoot, controlPlane } = await resolveDbContext({
-		startDir: cwd,
-		contextDir: cwd,
-	});
+	const { db, config, projectRoot, controlPlane } = await resolveDbContext();
 	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 	const archiveDir = config.paths.archive;
 
