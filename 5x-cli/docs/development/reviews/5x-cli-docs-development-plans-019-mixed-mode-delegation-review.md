@@ -49,3 +49,16 @@ The plan expands `SkillRenderContext` beyond `{ native: boolean }`, but it only 
 - [ ] Redesign or narrow the `describe()` / uninstall changes so asset discovery remains correct even after config changes.
 - [ ] Add explicit Phase 1 work for all `SkillRenderContext` call sites, including the universal harness and renderer test fixtures.
 - [ ] Reclassify direct renderer/template coverage as unit tests.
+
+## Addendum (2026-04-04) — Re-review after v1.1 revision
+
+### What's Addressed
+
+- Previous P0 is fixed: the plan now defines strict all-native/all-invoke semantics for legacy `native` / `invoke`, and introduces `any_native` / `any_invoke` for mixed-mode cross-cutting blocks.
+- Previous P1 on dynamic agent inventory is fixed: the plan now keeps `describe()` static and defines install-time filtering plus config-independent uninstall behavior.
+- Previous P1 on render-context call sites is fixed: Phase 1 now explicitly includes universal-harness, native-loader, and test-fixture updates.
+- Prior P2 on test tiering is fixed: direct template rendering coverage is now correctly classified as unit testing.
+
+### Remaining Concerns
+
+- The plan now requires uninstall to remove managed assets by filesystem enumeration rather than static `describe()` names, but the phase checklist still does not name the concrete code changes needed in `src/harnesses/installer.ts` and plugin uninstall paths to implement that behavior. The design is sound; the implementation steps are just underspecified.
