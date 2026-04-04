@@ -46,6 +46,10 @@ export function registerTemplate(parent: Command) {
 			[] as string[],
 		)
 		.option(
+			"--allow-plan-path-override",
+			"Allow explicit --var plan_path override even when it mismatches run/worktree context",
+		)
+		.option(
 			"--session <id>",
 			"Session ID — triggers continued-template selection when available",
 		)
@@ -69,6 +73,7 @@ export function registerTemplate(parent: Command) {
 				template,
 				run: opts.run,
 				vars: opts.var,
+				allowPlanPathOverride: opts.allowPlanPathOverride,
 				session: opts.session,
 				newSession: opts.newSession,
 				workdir: opts.workdir,

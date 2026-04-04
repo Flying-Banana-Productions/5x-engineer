@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	checkPlanPathOverrideMismatch,
 	checkReviewPathMismatch,
 	isPlanReviewTemplate,
 	resolveInternalTemplateVariables,
@@ -202,6 +203,34 @@ describe("checkReviewPathMismatch", () => {
 		);
 		expect(result).not.toBeNull();
 		expect(result).toContain("/other/dir/review.md");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// checkPlanPathOverrideMismatch
+// ---------------------------------------------------------------------------
+
+describe("checkPlanPathOverrideMismatch", () => {
+	const projectRoot = "/project";
+
+	test("returns null when explicit plan_path matches run-resolved path", () => {
+		const result = checkPlanPathOverrideMismatch(
+			"docs/development/plan.md",
+			"/project/docs/development/plan.md",
+			projectRoot,
+		);
+		expect(result).toBeNull();
+	});
+
+	test("returns mismatch message when explicit plan_path differs", () => {
+		const result = checkPlanPathOverrideMismatch(
+			"docs/development/plan.md",
+			"/project/.5x/worktrees/wt1/docs/development/plan.md",
+			projectRoot,
+		);
+		expect(result).not.toBeNull();
+		expect(result).toContain("plan_path override mismatch");
+		expect(result).toContain("--allow-plan-path-override");
 	});
 });
 

@@ -37,6 +37,7 @@ export interface TemplateRenderParams {
 	session?: string;
 	newSession?: boolean;
 	workdir?: string;
+	allowPlanPathOverride?: boolean;
 }
 
 export interface TemplateRenderOutput {
@@ -176,6 +177,7 @@ export async function templateRender(
 		session: effectiveSession,
 		newSession: params.newSession,
 		explicitVars,
+		allowPlanPathOverride: params.allowPlanPathOverride,
 		resolvedPlanPath,
 		config,
 		projectRoot,

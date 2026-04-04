@@ -27,6 +27,10 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 			collect,
 			[] as string[],
 		)
+		.option(
+			"--allow-plan-path-override",
+			"Allow explicit --var plan_path override even when it mismatches run/worktree context",
+		)
 		.option("-m, --model <name>", "Model override")
 		.option(
 			"-w, --workdir <path>",
@@ -121,6 +125,7 @@ export function registerInvoke(parent: Command) {
 				template,
 				run: opts.run,
 				vars: opts.var,
+				allowPlanPathOverride: opts.allowPlanPathOverride,
 				model: opts.model,
 				workdir: opts.workdir,
 				session: opts.session,
@@ -161,6 +166,7 @@ export function registerInvoke(parent: Command) {
 				template,
 				run: opts.run,
 				vars: opts.var,
+				allowPlanPathOverride: opts.allowPlanPathOverride,
 				model: opts.model,
 				workdir: opts.workdir,
 				session: opts.session,
