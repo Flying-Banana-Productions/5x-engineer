@@ -1313,7 +1313,11 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 		);
 	}
 
-	const { db, config } = await resolveDbContext();
+	const cwd = resolve(".");
+	const { db, config } = await resolveDbContext({
+		startDir: cwd,
+		contextDir: cwd,
+	});
 
 	const run = getRunV1(db, params.run);
 	if (!run) {
