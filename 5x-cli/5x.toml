@@ -12,7 +12,7 @@ qualityGates = [
 
 # Paths are relative to repository root unless absolute
 [paths]
-plans = "docs/development"
+plans = "docs/development/plans"
 reviews = "docs/development/reviews"
 # planReviews = "docs/development/reviews/plans"
 # runReviews = "docs/development/reviews/impl"
