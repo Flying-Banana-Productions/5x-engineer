@@ -110,13 +110,13 @@ the behavior is identical to today.
 the config type, and the `SkillRenderContext` type carries per-role flags.
 Unit tests cover config parsing and the new render context derivation.
 
-- [ ] Add `delegationMode` to `AgentConfigSchema` in `src/config.ts`:
+- [x] Add `delegationMode` to `AgentConfigSchema` in `src/config.ts`:
       ```ts
       delegationMode: z.enum(["native", "invoke"]).default("native"),
       ```
       This makes `delegationMode` available on both `config.author` and
       `config.reviewer` with a default of `"native"`.
-- [ ] Add a helper `resolveDelegationContext(config: FiveXConfig)` in
+- [x] Add a helper `resolveDelegationContext(config: FiveXConfig)` in
       `src/config.ts` that returns:
       ```ts
       { authorNative: boolean; reviewerNative: boolean }
@@ -124,7 +124,7 @@ Unit tests cover config parsing and the new render context derivation.
       Where `authorNative = config.author.delegationMode !== "invoke"` and
       similarly for reviewer. This is the bridge between config and the
       render context.
-- [ ] Expand `SkillRenderContext` in `src/skills/renderer.ts`:
+- [x] Expand `SkillRenderContext` in `src/skills/renderer.ts`:
       ```ts
       export interface SkillRenderContext {
         /** Legacy backward-compatibility: true when both roles are native. */
@@ -145,13 +145,13 @@ Unit tests cover config parsing and the new render context derivation.
       - `invoke` is `true` only when both `authorNative` and `reviewerNative` are `false`.
       - `anyNative` is `true` when either role is native (authorNative || reviewerNative).
       - `anyInvoke` is `true` when either role is invoke (!authorNative || !reviewerNative).
-- [ ] Add unit tests in `test/unit/config.test.ts`:
+- [x] Add unit tests in `test/unit/config.test.ts`:
       - Default config has `delegationMode: "native"` for both roles.
       - Explicit `delegationMode: "invoke"` on author is parsed correctly.
       - `resolveDelegationContext` returns correct flags for all
         combinations (native/native, invoke/native, native/invoke,
         invoke/invoke).
-- [ ] Add unit tests in `test/unit/skills/renderer.test.ts`:
+- [x] Add unit tests in `test/unit/skills/renderer.test.ts`:
       - Verify the new context type is accepted by `renderSkillTemplate`.
       - Verify `native` is only `true` when both roles are native.
 

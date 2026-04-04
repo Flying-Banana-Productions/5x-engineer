@@ -21,6 +21,13 @@ const AgentConfigSchema = z.object({
 	 *  same run/step/phase. Default false — enable after confirming all relevant
 	 *  templates have -continued variants. */
 	continuePhaseSessions: z.boolean().default(false),
+	/**
+	 * Delegation mode for this role when running under a native harness.
+	 * - "native" (default): orchestrator uses harness Task tool / subagents
+	 * - "invoke": orchestrator calls `5x invoke` for this role
+	 * Only applies to native harnesses; universal harness always uses invoke.
+	 */
+	delegationMode: z.enum(["native", "invoke"]).default("native"),
 });
 
 const PathsSchema = z.object({
@@ -76,8 +83,32 @@ const FiveXConfigSchema = z
 
 export type FiveXConfig = z.infer<typeof FiveXConfigSchema>;
 
-/** Role key for {@link resolveHarnessModelForRole}. */
+/** Role key for {@link resolveHarnessModelForRole} and {@link resolveDelegationContext}. */
 export type AgentConfigRole = "author" | "reviewer";
+
+/**
+ * Per-role delegation context derived from config.
+ * Used by SkillRenderContext to determine which delegation patterns to render.
+ */
+export interface DelegationContext {
+	/** true when author uses native delegation (Task tool), false when using 5x invoke */
+	authorNative: boolean;
+	/** true when reviewer uses native delegation (Task tool), false when using 5x invoke */
+	reviewerNative: boolean;
+}
+
+/**
+ * Resolve delegation mode flags from config for both roles.
+ * Returns native flags based on each role's delegationMode setting.
+ */
+export function resolveDelegationContext(
+	config: FiveXConfig,
+): DelegationContext {
+	return {
+		authorNative: config.author.delegationMode !== "invoke",
+		reviewerNative: config.reviewer.delegationMode !== "invoke",
+	};
+}
 
 /**
  * Resolve which model string to inject for a harness install.
@@ -334,6 +365,7 @@ function warnUnknownConfigKeys(
 		"harnessModels",
 		"timeout",
 		"continuePhaseSessions",
+		"delegationMode",
 	]);
 	const allowedOpencode = new Set(["url"]);
 	const allowedWorktree = new Set(["postCreate"]);

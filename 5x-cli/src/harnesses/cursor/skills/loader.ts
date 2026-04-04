@@ -2,6 +2,7 @@ import {
 	listBaseSkillNames,
 	renderAllSkillTemplates,
 } from "../../../skills/loader.js";
+import { createRenderContext } from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
 function adaptCursorTerminology(content: string): string {
@@ -29,7 +30,7 @@ export function listSkillNames(): string[] {
 }
 
 export function listSkills(): SkillMetadata[] {
-	return renderAllSkillTemplates({ native: true }).map((skill) => ({
+	return renderAllSkillTemplates(createRenderContext(true)).map((skill) => ({
 		...skill,
 		content: adaptCursorTerminology(skill.content),
 	}));

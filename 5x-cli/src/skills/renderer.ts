@@ -1,16 +1,60 @@
 export interface SkillRenderContext {
-	/** true = native harness delegation (Task tool, subagents), false = CLI invoke delegation (5x invoke) */
+	/** Legacy backward-compatibility: true when both roles are native. */
 	native: boolean;
+	/** Legacy backward-compatibility: true when both roles are invoke. */
+	invoke: boolean;
+	/** Per-role delegation: true = Task tool, false = 5x invoke. */
+	authorNative: boolean;
+	reviewerNative: boolean;
+	/** Cross-cutting: true when at least one role uses native delegation. */
+	anyNative: boolean;
+	/** Cross-cutting: true when at least one role uses invoke delegation. */
+	anyInvoke: boolean;
+}
+
+/**
+ * Create a full SkillRenderContext from simple native/invoke flags.
+ * This is a backward-compatibility helper for code that hasn't been
+ * updated to use per-role delegation flags yet.
+ *
+ * When native=true: both roles are native (native/native mode)
+ * When native=false: both roles are invoke (invoke/invoke mode)
+ */
+export function createRenderContext(
+	native: boolean,
+	authorNative?: boolean,
+	reviewerNative?: boolean,
+): SkillRenderContext {
+	// If per-role flags not provided, derive from the legacy native flag
+	const author = authorNative ?? native;
+	const reviewer = reviewerNative ?? native;
+	const anyNative = author || reviewer;
+	const anyInvoke = !author || !reviewer;
+
+	return {
+		native: author && reviewer,
+		invoke: !author && !reviewer,
+		authorNative: author,
+		reviewerNative: reviewer,
+		anyNative,
+		anyInvoke,
+	};
 }
 
 /**
  * Render a skill template by processing conditional blocks.
  *
  * Syntax (each directive must be on its own line, no leading content):
- *   {{#if native}}   — include block when ctx.native is true
- *   {{#if invoke}}   — include block when ctx.native is false
- *   {{else}}         — switch to the opposite branch
- *   {{/if}}          — end conditional block
+ *   {{#if native}}           — include block when BOTH roles are native (legacy)
+ *   {{#if invoke}}           — include block when BOTH roles are invoke (legacy)
+ *   {{#if author_native}}    — include block when author uses native delegation
+ *   {{#if author_invoke}}    — include block when author uses invoke delegation
+ *   {{#if reviewer_native}}  — include block when reviewer uses native delegation
+ *   {{#if reviewer_invoke}}  — include block when reviewer uses invoke delegation
+ *   {{#if any_native}}       — include block when at least one role is native
+ *   {{#if any_invoke}}       — include block when at least one role is invoke
+ *   {{else}}                 — switch to the opposite branch
+ *   {{/if}}                  — end conditional block
  *
  * Directive lines are stripped from output. Content lines are
  * included/excluded based on the active condition.
@@ -28,13 +72,47 @@ export function renderSkillTemplate(
 	let seenElse = false;
 
 	for (const line of lines) {
-		if (line === "{{#if native}}" || line === "{{#if invoke}}") {
+		// Handle all {{#if ...}} directives
+		const ifMatch = line.match(/^\{\{#if\s+(\w+)\}\}$/);
+		if (ifMatch) {
 			if (inBlock) {
 				throw new Error("Nested {{#if}} blocks are not supported");
 			}
 			inBlock = true;
 			seenElse = false;
-			blockActive = line === "{{#if native}}" ? ctx.native : !ctx.native;
+
+			const directive = ifMatch[1];
+			switch (directive) {
+				// Legacy directives (both roles must match)
+				case "native":
+					blockActive = ctx.native;
+					break;
+				case "invoke":
+					blockActive = ctx.invoke;
+					break;
+				// Per-role directives
+				case "author_native":
+					blockActive = ctx.authorNative;
+					break;
+				case "author_invoke":
+					blockActive = !ctx.authorNative;
+					break;
+				case "reviewer_native":
+					blockActive = ctx.reviewerNative;
+					break;
+				case "reviewer_invoke":
+					blockActive = !ctx.reviewerNative;
+					break;
+				// Cross-cutting directives
+				case "any_native":
+					blockActive = ctx.anyNative;
+					break;
+				case "any_invoke":
+					blockActive = ctx.anyInvoke;
+					break;
+				default:
+					throw new Error(`Unknown directive: {{#if ${directive}}}`);
+			}
 			continue;
 		}
 

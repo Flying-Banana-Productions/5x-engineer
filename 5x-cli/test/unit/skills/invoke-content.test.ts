@@ -3,10 +3,11 @@ import {
 	renderAllSkillTemplates,
 	renderSkillByName,
 } from "../../../src/skills/loader.js";
+import { createRenderContext } from "../../../src/skills/renderer.js";
 
 describe("invoke-path skill content", () => {
 	test("invoke-rendered skills include author/reviewer invoke commands", () => {
-		const invoke = renderAllSkillTemplates({ native: false })
+		const invoke = renderAllSkillTemplates(createRenderContext(false))
 			.map((skill) => skill.content)
 			.join("\n\n");
 
@@ -15,7 +16,7 @@ describe("invoke-path skill content", () => {
 	});
 
 	test("invoke-rendered skills omit native-only Task tool references", () => {
-		const invoke = renderAllSkillTemplates({ native: false })
+		const invoke = renderAllSkillTemplates(createRenderContext(false))
 			.map((skill) => skill.content)
 			.join("\n\n");
 
@@ -25,15 +26,19 @@ describe("invoke-path skill content", () => {
 	});
 
 	test("invoke-rendered 5x foundation skill references session_id in gotchas", () => {
-		const foundation = renderSkillByName("5x", { native: false }).content;
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(false),
+		).content;
 		expect(foundation).toContain("session_id");
 		expect(foundation).toContain("5x invoke --record");
 	});
 
 	test("invoke-rendered 5x-phase-execution includes review_path extraction", () => {
-		const phaseExecution = renderSkillByName("5x-phase-execution", {
-			native: false,
-		}).content;
+		const phaseExecution = renderSkillByName(
+			"5x-phase-execution",
+			createRenderContext(false),
+		).content;
 
 		expect(phaseExecution).toContain("Extract review_path");
 		expect(phaseExecution).toContain("5x template render reviewer-commit");
@@ -41,16 +46,16 @@ describe("invoke-path skill content", () => {
 	});
 
 	test("all invoke-rendered skills include --record and .data.result checks", () => {
-		for (const skill of renderAllSkillTemplates({ native: false }).filter(
-			(skill) => skill.name !== "5x-windows",
-		)) {
+		for (const skill of renderAllSkillTemplates(
+			createRenderContext(false),
+		).filter((skill) => skill.name !== "5x-windows")) {
 			expect(skill.content).toContain("--record");
 			expect(skill.content).toContain(".data.result");
 		}
 	});
 
 	test("invoke-rendered output has no native-only protocol validation references", () => {
-		const invoke = renderAllSkillTemplates({ native: false })
+		const invoke = renderAllSkillTemplates(createRenderContext(false))
 			.map((skill) => skill.content)
 			.join("\n\n");
 

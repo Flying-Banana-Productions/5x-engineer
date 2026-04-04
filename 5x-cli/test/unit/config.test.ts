@@ -7,6 +7,7 @@ import {
 	defineConfig,
 	FiveXConfigSchema,
 	loadConfig,
+	resolveDelegationContext,
 	resolveHarnessModelForRole,
 } from "../../src/config.js";
 
@@ -524,5 +525,106 @@ describe("loadConfig path normalization", () => {
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// delegationMode config (Phase 1, 019-mixed-mode-delegation)
+// ---------------------------------------------------------------------------
+
+describe("delegationMode config", () => {
+	test("default config has delegationMode: native for both roles", () => {
+		const config = FiveXConfigSchema.parse({});
+		expect(config.author.delegationMode).toBe("native");
+		expect(config.reviewer.delegationMode).toBe("native");
+	});
+
+	test("explicit delegationMode: invoke on author is parsed correctly", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("invoke");
+		expect(config.reviewer.delegationMode).toBe("native"); // default
+	});
+
+	test("explicit delegationMode: invoke on reviewer is parsed correctly", () => {
+		const config = FiveXConfigSchema.parse({
+			reviewer: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("native"); // default
+		expect(config.reviewer.delegationMode).toBe("invoke");
+	});
+
+	test("both roles can have delegationMode: invoke", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("invoke");
+		expect(config.reviewer.delegationMode).toBe("invoke");
+	});
+
+	test("delegationMode loads from TOML config", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\ndelegationMode = "invoke"\n\n[reviewer]\ndelegationMode = "native"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.author.delegationMode).toBe("invoke");
+			expect(config.reviewer.delegationMode).toBe("native");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("resolveDelegationContext", () => {
+	test("native/native returns both native flags true", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "native" },
+			reviewer: { delegationMode: "native" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(true);
+	});
+
+	test("invoke/native returns authorNative false, reviewerNative true", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "native" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(false);
+		expect(ctx.reviewerNative).toBe(true);
+	});
+
+	test("native/invoke returns authorNative true, reviewerNative false", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "native" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(false);
+	});
+
+	test("invoke/invoke returns both native flags false", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(false);
+		expect(ctx.reviewerNative).toBe(false);
+	});
+
+	test("default config (no explicit delegationMode) returns both native", () => {
+		const config = FiveXConfigSchema.parse({});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(true);
 	});
 });

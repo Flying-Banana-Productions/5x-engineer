@@ -4,6 +4,7 @@ import {
 	renderAllSkillTemplates,
 	renderSkillByName,
 } from "../../../src/skills/loader.js";
+import { createRenderContext } from "../../../src/skills/renderer.js";
 
 describe("shared skill template loader", () => {
 	test("all shared templates load and parse frontmatter", () => {
@@ -17,7 +18,7 @@ describe("shared skill template loader", () => {
 		]);
 
 		for (const name of names) {
-			const nativeSkill = renderSkillByName(name, { native: true });
+			const nativeSkill = renderSkillByName(name, createRenderContext(true));
 			expect(nativeSkill.name).toBe(name);
 			expect(nativeSkill.description.length).toBeGreaterThan(10);
 			expect(nativeSkill.content.startsWith("---\nname:")).toBe(true);
@@ -25,7 +26,7 @@ describe("shared skill template loader", () => {
 	});
 
 	test("renderAllSkillTemplates(native=true) returns valid SkillMetadata[]", () => {
-		const skills = renderAllSkillTemplates({ native: true });
+		const skills = renderAllSkillTemplates(createRenderContext(true));
 		expect(skills.length).toBe(5);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
@@ -35,7 +36,7 @@ describe("shared skill template loader", () => {
 	});
 
 	test("renderAllSkillTemplates(native=false) returns valid SkillMetadata[]", () => {
-		const skills = renderAllSkillTemplates({ native: false });
+		const skills = renderAllSkillTemplates(createRenderContext(false));
 		expect(skills.length).toBe(5);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
@@ -45,7 +46,7 @@ describe("shared skill template loader", () => {
 	});
 
 	test("native output contains Task tool/subagent_type references", () => {
-		const native = renderAllSkillTemplates({ native: true })
+		const native = renderAllSkillTemplates(createRenderContext(true))
 			.map((s) => s.content)
 			.join("\n\n");
 		expect(native).toContain("Task tool");
@@ -53,17 +54,21 @@ describe("shared skill template loader", () => {
 	});
 
 	test("native output prefers native UI for human gates over 5x prompt in Tools sections", () => {
-		const foundation = renderSkillByName("5x", { native: true }).content;
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(true),
+		).content;
 		expect(foundation).toContain("native UI");
 		expect(foundation).toContain("AskQuestion");
-		const planReview = renderSkillByName("5x-plan-review", {
-			native: true,
-		}).content;
+		const planReview = renderSkillByName(
+			"5x-plan-review",
+			createRenderContext(true),
+		).content;
 		expect(planReview).toContain("Human gates");
 	});
 
 	test("invoke output omits Task tool/subagent_type references", () => {
-		const invoke = renderAllSkillTemplates({ native: false })
+		const invoke = renderAllSkillTemplates(createRenderContext(false))
 			.map((s) => s.content)
 			.join("\n\n");
 		expect(invoke).not.toContain("Task tool");
@@ -72,24 +77,36 @@ describe("shared skill template loader", () => {
 
 	test("frontmatter is identical in native/invoke contexts", () => {
 		for (const name of listBaseSkillNames()) {
-			const native = renderSkillByName(name, { native: true });
-			const invoke = renderSkillByName(name, { native: false });
+			const native = renderSkillByName(name, createRenderContext(true));
+			const invoke = renderSkillByName(name, createRenderContext(false));
 			expect(invoke.name).toBe(native.name);
 			expect(invoke.description).toBe(native.description);
 		}
 	});
 
 	test("invoke-only placeholders render from else branches", () => {
-		const plan = renderSkillByName("5x-plan", { native: false }).content;
+		const plan = renderSkillByName(
+			"5x-plan",
+			createRenderContext(false),
+		).content;
 		expect(plan).toContain("5x invoke author author-generate-plan");
 
-		const foundation = renderSkillByName("5x", { native: false }).content;
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(false),
+		).content;
 		expect(foundation).toContain("session_id");
 	});
 
 	test("foundation skill points Windows users at the optional supplemental skill", () => {
-		const foundation = renderSkillByName("5x", { native: true }).content;
-		const windows = renderSkillByName("5x-windows", { native: true }).content;
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(true),
+		).content;
+		const windows = renderSkillByName(
+			"5x-windows",
+			createRenderContext(true),
+		).content;
 
 		expect(foundation).toContain("also load `5x-windows`");
 		expect(windows).toContain("PowerShell");

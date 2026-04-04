@@ -10,6 +10,7 @@ import {
 	renderAllSkillTemplates,
 	renderSkillByName,
 } from "../../../skills/loader.js";
+import { createRenderContext } from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
 export {
@@ -23,7 +24,7 @@ export {
  */
 export function getDefaultSkillRaw(name: string): string {
 	try {
-		return renderSkillByName(name, { native: true }).content;
+		return renderSkillByName(name, createRenderContext(true)).content;
 	} catch (error) {
 		if (
 			error instanceof Error &&
@@ -49,5 +50,5 @@ export function listSkillNames(): string[] {
  * Get metadata for all bundled skills.
  */
 export function listSkills(): SkillMetadata[] {
-	return renderAllSkillTemplates({ native: true });
+	return renderAllSkillTemplates(createRenderContext(true));
 }
