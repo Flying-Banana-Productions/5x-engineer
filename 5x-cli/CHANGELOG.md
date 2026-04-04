@@ -5,6 +5,25 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 1.2.1 (2026-04-04)
+
+### Features
+
+- **Plan list command** — added `5x plan list` with text and JSON output, completion-aware sorting, and `plans_dir` context in text mode.
+- **Plan archive command** — added `5x plan archive` to move completed or stale plans out of the active plans tree, with `--dry-run` support.
+- **Run relink command** — added `5x run relink` to repair run-to-plan associations after plan moves, alongside shared plan-argument resolution.
+
+### Fixes
+
+- **Layered config path resolution** — `plan list`, `plan archive`, `run relink`, database context resolution, and related plan flows now resolve layered `5x.toml` paths from the current working directory, fixing nested-project and moved-plan workflows.
+- **Plan phase filename resolution** — `5x plan phases` now resolves bare plan filenames through the shared plan-argument lookup instead of requiring a direct relative path.
+- **Control-plane git-dir comparison** — control-plane checks now normalize `git-dir` and `git-common-dir` to absolute paths before comparing, preventing false mismatches in linked worktrees.
+- **Plan list filtering** — `5x plan list` skips review subtrees and sends non-plan markdown warnings to stderr only.
+
+### Improvements
+
+- **Plan workflow coverage** — added unit and integration coverage for `plan list`, `plan archive`, `run relink`, and layered config resolution regressions.
+
 ## 1.1.1 (2026-03-31)
 
 ### Features
