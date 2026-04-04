@@ -25,20 +25,20 @@ qualityGates = [
 [author]
 model = "opencode/kimi-k2.5"
 # provider = "opencode"
-# model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
 
 # Reviewer agent configuration (default provider: opencode)
 [author.harnessModels]
+opencode = "opencode/kimi-k2.5"
 cursor = 'composer-2'
 
 [reviewer]
 model = "openai/gpt-5.4"
 continuePhaseSessions = true
 # provider = "opencode"
-# model = "anthropic/claude-sonnet-4-6"
 # timeout = 900
 [reviewer.harnessModels]
+opencode = "openai/gpt-5.4"
 cursor = "gpt-5.4-high"
 
 # Optional hook run after creating a new worktree
