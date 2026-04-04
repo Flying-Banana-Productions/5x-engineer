@@ -41,6 +41,9 @@ timeout handling.
 - `run init --worktree` automatically skips the dirty-worktree check
   (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
   if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
+- When using `--run`, do not pass `--var plan_path=...` unless you are
+  intentionally overriding run-linked plan resolution. Let the CLI resolve
+  the mapped worktree plan path automatically.
 
 ## Tools
 
@@ -168,7 +171,7 @@ Delegate to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER)
+  --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -182,7 +185,7 @@ Delegate to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER \
+  --var phase_number=$PHASE_NUMBER \
   --record --record-step author:next-phase --phase $PHASE)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
@@ -239,7 +242,7 @@ Delegate fix to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-fix-quality --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+  --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES")
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -254,7 +257,7 @@ Delegate fix to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-fix-quality --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+  --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES" \
   --record --record-step author:fix-quality --phase $PHASE)
 
@@ -274,7 +277,6 @@ Delegate to the reviewer via the Task tool:
 ```bash
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
-  --var plan_path=$PLAN_PATH \
   --var phase_number=$PHASE_NUMBER \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
@@ -296,13 +298,13 @@ Delegate to the reviewer via `5x invoke`:
 # Native path reads this from `5x template render`; invoke renders the
 # template internally, so v1 does a separate render here.
 REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
-  --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  --var commit_hash=$COMMIT \
   --var phase_number=$PHASE \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
 RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
-  --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  --var commit_hash=$COMMIT \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:commit --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
@@ -360,8 +362,7 @@ If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
 Delegate to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-impl-review --run $RUN \
-  --var plan_path=$PLAN_PATH)
+RENDERED=$(5x template render author-process-impl-review --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -376,7 +377,6 @@ Delegate to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-  --var plan_path=$PLAN_PATH \
   --record --record-step author:process-impl-review --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 

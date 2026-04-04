@@ -16,7 +16,7 @@ approved by the reviewer or the human overrides.
 
 ## Prerequisites
 
-- An implementation plan exists at a known path (under the repository root)
+- An implementation plan exists and is associated with the run
 - The plan parses successfully (`5x plan phases` returns phases)
 
 ## Prerequisite Skill
@@ -37,6 +37,9 @@ timeout handling.
 - `not_ready` with no actionable items → escalate, don't loop
 - `SESSION_REQUIRED` error → pass `--new-session` to `5x template render`
 - Read `maxReviewIterations` from `5x config show` for the iteration limit
+- When using `--run`, do not pass `--var plan_path=...` unless you are
+  intentionally overriding run-linked plan resolution. Let the CLI resolve
+  the mapped worktree copy automatically.
 
 ## Tools
 
@@ -72,7 +75,6 @@ timeout handling.
 #    Task lifecycle: first review has no $REVIEWER_TASK_ID, subsequent
 #    reviews pass --session $REVIEWER_TASK_ID for the continued template.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -105,7 +107,6 @@ When `--session` is passed, the command automatically selects the shorter
 
 ```bash
 RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -148,7 +149,6 @@ Delegate to the reviewer via the Task tool:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -174,12 +174,10 @@ Delegate to the reviewer via `5x invoke`:
 ```bash
 # Extract review_path for reporting/audit
 REVIEW_PATH=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
 RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -216,8 +214,7 @@ Read the verdict from `READINESS` (`.data.result.readiness`):
 Delegate to the plan author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-plan-review --run $RUN \
-  --var plan_path=$PLAN_PATH)
+RENDERED=$(5x template render author-process-plan-review --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -232,7 +229,6 @@ Delegate to the plan author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-process-plan-review --run $RUN \
-  --var plan_path=$PLAN_PATH \
   --record --record-step author:process-plan-review --phase plan)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
