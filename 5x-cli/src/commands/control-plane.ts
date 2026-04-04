@@ -212,19 +212,19 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 	}
 
 	// Step 2: resolve common-dir to absolute path
-	// git-dir is relative to cwd; resolve to absolute first
+	// git-dir may be absolute or relative to cwd depending on context.
 	const absoluteGitDir = isAbsolute(gitDir) ? gitDir : resolve(cwd, gitDir);
-	// git-common-dir resolution:
-	// - If absolute, use directly.
-	// - If same string as git-dir (main checkout), both are relative to cwd
-	//   → use the already-resolved absoluteGitDir.
-	// - Otherwise (linked worktree), it's relative to git-dir → resolve
-	//   relative to absoluteGitDir.
+	// git-common-dir is relative to cwd in main checkouts, but git may
+	// return it in a different form (absolute vs relative) than git-dir
+	// even when they point to the same directory. Resolve both to absolute
+	// before comparing to detect main checkout vs linked worktree.
+	const absoluteCommonDirViaCwd = isAbsolute(gitCommonDir)
+		? gitCommonDir
+		: resolve(cwd, gitCommonDir);
+
 	let absoluteCommonDir: string;
-	if (isAbsolute(gitCommonDir)) {
-		absoluteCommonDir = gitCommonDir;
-	} else if (gitCommonDir === gitDir) {
-		// Main checkout: common-dir and git-dir are the same, both relative to cwd
+	if (resolve(absoluteCommonDirViaCwd) === resolve(absoluteGitDir)) {
+		// Main checkout: common-dir and git-dir resolve to the same path
 		absoluteCommonDir = absoluteGitDir;
 	} else {
 		// Linked worktree: common-dir is relative to git-dir
