@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -79,7 +79,10 @@ function setupMonorepo(dir: string): {
 	const rootPlanDir = join(dir, "docs", "development");
 	mkdirSync(rootPlanDir, { recursive: true });
 	const rootPlanPath = join(rootPlanDir, "root-plan.md");
-	writeFileSync(rootPlanPath, "# Root Plan\n\n## Phase 1\n\n- [ ] Task\n");
+	writeFileSync(
+		rootPlanPath,
+		"# Root Plan\n\n## Phase 1: Setup\n\n- [ ] Task\n",
+	);
 
 	// Sub-project with its own config
 	// paths.plans is relative to the config file's directory (sub-project/)
@@ -87,14 +90,17 @@ function setupMonorepo(dir: string): {
 	mkdirSync(subDir, { recursive: true });
 	writeFileSync(
 		join(subDir, "5x.toml"),
-		'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "docs/development"\n',
+		'qualityGates = ["echo sub-gate"]\n\n[paths]\nplans = "docs/development"\narchive = "docs/archive"\n',
 	);
 
 	// Sub-project plan
 	const subPlanDir = join(subDir, "docs", "development");
 	mkdirSync(subPlanDir, { recursive: true });
 	const subPlanPath = join(subPlanDir, "sub-plan.md");
-	writeFileSync(subPlanPath, "# Sub Plan\n\n## Phase 1\n\n- [ ] Sub Task\n");
+	writeFileSync(
+		subPlanPath,
+		"# Sub Plan\n\n## Phase 1: Setup\n\n- [ ] Sub Task\n",
+	);
 
 	git(["add", "-A"], dir);
 	git(["commit", "-m", "init monorepo"], dir);
@@ -390,5 +396,217 @@ describe("config layering integration", () => {
 			}
 		},
 		{ timeout: 30000 },
+	);
+});
+
+// ===========================================================================
+// Config layering — path resolution
+//
+// Verifies that path-dependent commands (plan phases, plan list, plan archive,
+// run state/list/relink) resolve config.paths.plans and config.paths.archive
+// relative to the sub-project's config file when CWD is the sub-project.
+// ===========================================================================
+
+describe("config layering — path resolution", () => {
+	test(
+		"plan phases resolves bare filename from sub-project paths.plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				const result = await run5x(subCwd, ["plan", "phases", "sub-plan.md"]);
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as { phases: unknown[] };
+				expect(data.phases.length).toBeGreaterThan(0);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan list from sub-project CWD lists sub-project plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				const result = await run5x(subCwd, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as {
+					plans_dir: string;
+					plans: { plan_path: string }[];
+				};
+				// plans_dir should point to the sub-project's plans directory
+				expect(data.plans_dir).toContain("sub-project");
+				// Should find the sub-project plan, not the root plan
+				const paths = data.plans.map((p) => p.plan_path);
+				expect(paths.some((p) => p.includes("sub-plan"))).toBe(true);
+				expect(paths.some((p) => p.includes("root-plan"))).toBe(false);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan archive from sub-project CWD archives to sub-project paths.archive",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { subPlanPath } = setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				// Init + complete a run so the plan is archivable
+				const init = await run5x(tmp, ["run", "init", "--plan", subPlanPath]);
+				const runId = (parseJson(init.stdout).data as { run_id: string })
+					.run_id;
+				await run5x(tmp, ["run", "complete", "--run", runId]);
+
+				// Archive using bare filename from sub-project CWD
+				const result = await run5x(subCwd, ["plan", "archive", "sub-plan.md"]);
+				expect(result.exitCode).toBe(0);
+
+				// File should be in sub-project/docs/archive/, not root docs/archive/
+				const subArchive = join(subCwd, "docs", "archive", "sub-plan.md");
+				expect(existsSync(subArchive)).toBe(true);
+				expect(existsSync(subPlanPath)).toBe(false);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan archive --all from sub-project CWD scans sub-project plans dir",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { subPlanPath } = setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				// Init + complete a run for the sub-project plan
+				const init = await run5x(tmp, ["run", "init", "--plan", subPlanPath]);
+				const runId = (parseJson(init.stdout).data as { run_id: string })
+					.run_id;
+				await run5x(tmp, ["run", "complete", "--run", runId]);
+
+				const result = await run5x(subCwd, ["plan", "archive", "--all"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					archived: { plan_path: string }[];
+				};
+				// Should archive sub-project plan, not root plan
+				expect(data.archived.length).toBe(1);
+				expect(data.archived[0]?.plan_path).toContain("sub-project");
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"run state --plan resolves bare filename from sub-project paths.plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { subPlanPath } = setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				const init = await run5x(tmp, ["run", "init", "--plan", subPlanPath]);
+				const runId = (parseJson(init.stdout).data as { run_id: string })
+					.run_id;
+
+				// Query state using bare filename from sub-project CWD
+				const result = await run5x(subCwd, [
+					"run",
+					"state",
+					"--plan",
+					"sub-plan.md",
+				]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					run: { id: string };
+				};
+				expect(data.run.id).toBe(runId);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"run list --plan resolves bare filename from sub-project paths.plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { subPlanPath } = setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				const init = await run5x(tmp, ["run", "init", "--plan", subPlanPath]);
+				const runId = (parseJson(init.stdout).data as { run_id: string })
+					.run_id;
+
+				const result = await run5x(subCwd, [
+					"run",
+					"list",
+					"--plan",
+					"sub-plan.md",
+				]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					runs: { id: string }[];
+				};
+				expect(data.runs.some((r) => r.id === runId)).toBe(true);
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"run relink --plan auto-search uses sub-project paths.plans",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const { subPlanPath } = setupMonorepo(tmp);
+				const subCwd = join(tmp, "sub-project");
+
+				const init = await run5x(tmp, ["run", "init", "--plan", subPlanPath]);
+				const runId = (parseJson(init.stdout).data as { run_id: string })
+					.run_id;
+				await run5x(tmp, ["run", "complete", "--run", runId]);
+
+				// Auto-search from sub-project CWD should find the plan
+				const result = await run5x(subCwd, [
+					"run",
+					"relink",
+					"--run",
+					runId,
+					"--plan",
+				]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plan_path: string;
+				};
+				expect(data.plan_path).toContain("sub-project");
+			} finally {
+				cleanup([tmp]);
+			}
+		},
+		{ timeout: 15000 },
 	);
 });
