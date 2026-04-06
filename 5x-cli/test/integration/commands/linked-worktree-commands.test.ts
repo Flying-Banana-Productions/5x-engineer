@@ -57,7 +57,7 @@ function initRepo(dir: string): void {
 	git(["init"], dir);
 	git(["config", "user.email", "test@test.com"], dir);
 	git(["config", "user.name", "Test"], dir);
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(join(dir, "README.md"), "# Test\n");
 	git(["add", "."], dir);
 	git(["commit", "-m", "initial"], dir);
@@ -198,6 +198,7 @@ describe("commands from linked worktree", () => {
 					"invoke",
 					"author",
 					"author-next-phase",
+					"--allow-plan-path-override",
 					"--var",
 					`plan_path=${planPath}`,
 					"--var",

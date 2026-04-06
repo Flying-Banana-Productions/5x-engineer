@@ -77,7 +77,7 @@ describe("canonicalizePlanPath worktree re-root", () => {
 				writeFileSync(planFile, "# Plan\n\n## Phase 1\n\n- [ ] Task\n");
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
-				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 				git(dir, ["add", "-A"]);
 				git(dir, ["commit", "-m", "init"]);
@@ -177,7 +177,7 @@ describe("canonicalizePlanPath worktree re-root", () => {
 				writeFileSync(planFile, "# Plan\n\n## Phase 1\n\n- [ ] Task\n");
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
-				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 				git(dir, ["add", "-A"]);
 				git(dir, ["commit", "-m", "init"]);
@@ -236,7 +236,7 @@ describe("canonicalizePlanPath worktree re-root", () => {
 				git(dir, ["config", "user.name", "Test"]);
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
-				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 				writeFileSync(join(dir, "README.md"), "# Test\n");
 
 				git(dir, ["add", "-A"]);

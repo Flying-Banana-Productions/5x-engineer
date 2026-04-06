@@ -5,6 +5,12 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## Unreleased
+
+### Features
+
+- **`5x.toml.local` overlays** — optional TOML file merged after the resolved main config (`loadConfig` and layered resolution). Control-plane root local may override `[db]`; sub-project local `[db]` is ignored with a warning. Bootstrap `db.path` reading honors root `5x.toml.local` over `5x.toml`. `5x init` appends `5x.toml.local` to `.gitignore` idempotently.
+
 ## 1.2.1 (2026-04-04)
 
 ### Features

@@ -72,7 +72,7 @@ async function setupProjectWithRun(dir: string): Promise<{
 
 	// Create .5x directory and gitignore it
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Configure sample provider with valid structured output
 	writeFileSync(

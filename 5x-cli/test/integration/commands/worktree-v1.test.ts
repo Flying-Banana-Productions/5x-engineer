@@ -54,7 +54,7 @@ function setupProject(dir: string): { planPath: string } {
 
 	// Create .5x directory
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Initial commit
 	Bun.spawnSync(["git", "add", "-A"], {

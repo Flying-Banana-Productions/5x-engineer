@@ -66,7 +66,7 @@ function setupProject(dir: string): string {
 	const db = new Database(join(dir, ".5x", "5x.db"));
 	runMigrations(db);
 	db.close();
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	writeFileSync(
 		join(dir, "5x.toml"),
