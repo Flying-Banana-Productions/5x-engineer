@@ -2,14 +2,14 @@ export interface SkillRenderContext {
 	/** Legacy backward-compatibility: true when both roles are native. */
 	native: boolean;
 	/** Legacy backward-compatibility: true when both roles are invoke. */
-	invoke: boolean;
+	invoke?: boolean;
 	/** Per-role delegation: true = Task tool, false = 5x invoke. */
-	authorNative: boolean;
-	reviewerNative: boolean;
+	authorNative?: boolean;
+	reviewerNative?: boolean;
 	/** Cross-cutting: true when at least one role uses native delegation. */
-	anyNative: boolean;
+	anyNative?: boolean;
 	/** Cross-cutting: true when at least one role uses invoke delegation. */
-	anyInvoke: boolean;
+	anyInvoke?: boolean;
 }
 
 /**
@@ -71,6 +71,13 @@ export function renderSkillTemplate(
 	let blockActive = false;
 	let seenElse = false;
 
+	// Derive per-role flags for backward compatibility with legacy { native: boolean } context
+	const authorNative = ctx.authorNative ?? ctx.native;
+	const reviewerNative = ctx.reviewerNative ?? ctx.native;
+	const anyNative = ctx.anyNative ?? (authorNative || reviewerNative);
+	const anyInvoke = ctx.anyInvoke ?? (!authorNative || !reviewerNative);
+	const invoke = ctx.invoke ?? !ctx.native;
+
 	for (const line of lines) {
 		// Handle all {{#if ...}} directives
 		const ifMatch = line.match(/^\{\{#if\s+(\w+)\}\}$/);
@@ -88,27 +95,27 @@ export function renderSkillTemplate(
 					blockActive = ctx.native;
 					break;
 				case "invoke":
-					blockActive = ctx.invoke;
+					blockActive = invoke;
 					break;
 				// Per-role directives
 				case "author_native":
-					blockActive = ctx.authorNative;
+					blockActive = authorNative;
 					break;
 				case "author_invoke":
-					blockActive = !ctx.authorNative;
+					blockActive = !authorNative;
 					break;
 				case "reviewer_native":
-					blockActive = ctx.reviewerNative;
+					blockActive = reviewerNative;
 					break;
 				case "reviewer_invoke":
-					blockActive = !ctx.reviewerNative;
+					blockActive = !reviewerNative;
 					break;
 				// Cross-cutting directives
 				case "any_native":
-					blockActive = ctx.anyNative;
+					blockActive = anyNative;
 					break;
 				case "any_invoke":
-					blockActive = ctx.anyInvoke;
+					blockActive = anyInvoke;
 					break;
 				default:
 					throw new Error(`Unknown directive: {{#if ${directive}}}`);

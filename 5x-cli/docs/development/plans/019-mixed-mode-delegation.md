@@ -162,7 +162,7 @@ Unit tests cover config parsing and the new render context derivation.
 `{{#if any_native}}`, and `{{#if any_invoke}}` directives alongside the legacy
 `{{#if native}}` / `{{#if invoke}}`. Unit tests cover all directive combinations.
 
-- [ ] Extend `renderSkillTemplate()` in `src/skills/renderer.ts` to recognize
+- [x] Extend `renderSkillTemplate()` in `src/skills/renderer.ts` to recognize
       the new directives:
       - `{{#if author_native}}` → active when `ctx.authorNative` is true.
       - `{{#if author_invoke}}` → active when `ctx.authorNative` is false.
@@ -175,7 +175,7 @@ Unit tests cover config parsing and the new render context derivation.
         `invoke` is true only when both are invoke.
       - `{{else}}` and `{{/if}}` work the same as today.
       - Nesting remains unsupported (consistent with current design).
-- [ ] Add unit tests in `test/unit/skills/renderer.test.ts`:
+- [x] Add unit tests in `test/unit/skills/renderer.test.ts`:
       - `{{#if author_native}}` includes block when author is native.
       - `{{#if author_invoke}}` includes block when author is invoke.
       - Same for reviewer variants.
