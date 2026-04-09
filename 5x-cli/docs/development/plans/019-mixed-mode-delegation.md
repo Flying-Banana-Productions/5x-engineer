@@ -201,7 +201,7 @@ This is the largest phase — each `{{#if native}}` block in the skill
 templates must be audited and either kept (cross-cutting) or replaced with
 the role-specific variant.
 
-- [ ] Refactor `src/skills/base/5x/SKILL.tmpl.md` (foundation skill):
+- [x] Refactor `src/skills/base/5x/SKILL.tmpl.md` (foundation skill):
       - **"Delegating to Subagents" section:** This section currently renders
         entirely under `{{#if native}}` or `{{else}}` (invoke). In mixed
         mode both patterns are needed. Split into two subsections: one for
@@ -216,7 +216,7 @@ the role-specific variant.
         limits) and can stay ungated. Role-specific recovery advice (e.g.
         "start fresh task" vs "omit --session") should use role-scoped
         conditionals (`{{#if author_native}}`, `{{#if author_invoke}}`, etc.).
-- [ ] Refactor `src/skills/base/5x-phase-execution/SKILL.tmpl.md`:
+- [x] Refactor `src/skills/base/5x-phase-execution/SKILL.tmpl.md`:
       - **Step 1 (Author implements):** Replace `{{#if native}}` with
         `{{#if author_native}}` and `{{else}}` (author invoke path).
       - **Step 2a (Quality retry — author fix):** Same — replace with
@@ -245,12 +245,12 @@ the role-specific variant.
         human gates, not role delegation. Use `{{#if any_native}}` since
         these paths are only relevant when at least one role uses native
         delegation.
-- [ ] Refactor `src/skills/base/5x-plan/SKILL.tmpl.md`:
+- [x] Refactor `src/skills/base/5x-plan/SKILL.tmpl.md`:
       - **Step 2 (Generate the plan):** Author delegation — replace with
         `{{#if author_native}}`.
       - **Gotchas and Recovery:** Use role-scoped conditionals where the
         advice references a specific role's retry mechanism.
-- [ ] Refactor `src/skills/base/5x-plan-review/SKILL.tmpl.md`:
+- [x] Refactor `src/skills/base/5x-plan-review/SKILL.tmpl.md`:
       - **Step 1 (Review):** Reviewer delegation — replace with
         `{{#if reviewer_native}}`.
       - **Delegating sub-agent work example section:** This section shows
@@ -264,7 +264,7 @@ the role-specific variant.
       - **Escalation (Step 4):** Orchestrator-level human gate, use
         `{{#if any_native}}` since this path is only relevant when at
         least one role uses native delegation.
-- [ ] Add unit tests in `test/unit/skills/renderer.test.ts` that render each
+- [x] Add unit tests in `test/unit/skills/renderer.test.ts` that render each
       skill template with all four context combinations (native/native,
       invoke/native, native/invoke, invoke/invoke) and verify:
       - No unclosed or unmatched directives.

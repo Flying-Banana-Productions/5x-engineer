@@ -4,7 +4,24 @@ import {
 	renderAllSkillTemplates,
 	renderSkillByName,
 } from "../../../src/skills/loader.js";
-import { createRenderContext } from "../../../src/skills/renderer.js";
+import {
+	createRenderContext,
+	type SkillRenderContext,
+} from "../../../src/skills/renderer.js";
+
+function makeMixedContext(
+	authorNative: boolean,
+	reviewerNative: boolean,
+): SkillRenderContext {
+	return {
+		native: authorNative && reviewerNative,
+		invoke: !authorNative && !reviewerNative,
+		authorNative,
+		reviewerNative,
+		anyNative: authorNative || reviewerNative,
+		anyInvoke: !authorNative || !reviewerNative,
+	};
+}
 
 describe("shared skill template loader", () => {
 	test("all shared templates load and parse frontmatter", () => {
@@ -111,5 +128,180 @@ describe("shared skill template loader", () => {
 		expect(foundation).toContain("also load `5x-windows`");
 		expect(windows).toContain("PowerShell");
 		expect(windows).toContain("ConvertFrom-Json");
+	});
+
+	describe("mixed-mode delegation context combinations", () => {
+		test("native/native renders only native blocks", () => {
+			const ctx = makeMixedContext(true, true);
+			for (const name of listBaseSkillNames()) {
+				const skill = renderSkillByName(name, ctx);
+				expect(skill.content).toBeTruthy();
+				expect(skill.content.length).toBeGreaterThan(100);
+			}
+
+			// Foundation skill should have native delegation patterns
+			const foundation = renderSkillByName("5x", ctx).content;
+			expect(foundation).toContain("Task tool");
+			expect(foundation).toContain("subagent_type");
+			expect(foundation).not.toContain("5x invoke <author|reviewer>");
+		});
+
+		test("invoke/invoke renders only invoke blocks", () => {
+			const ctx = makeMixedContext(false, false);
+			for (const name of listBaseSkillNames()) {
+				const skill = renderSkillByName(name, ctx);
+				expect(skill.content).toBeTruthy();
+				expect(skill.content.length).toBeGreaterThan(100);
+			}
+
+			// Foundation skill should have invoke patterns, not Task tool
+			const foundation = renderSkillByName("5x", ctx).content;
+			expect(foundation).toContain("5x invoke");
+			expect(foundation).not.toContain("Task tool: subagent_type");
+			expect(foundation).not.toContain("<Task tool:");
+		});
+
+		test("invoke/native (author invoke, reviewer native) renders correct mixed content", () => {
+			const ctx = makeMixedContext(false, true);
+
+			// Phase execution should have author invoke and reviewer native patterns
+			const phaseExec = renderSkillByName("5x-phase-execution", ctx).content;
+
+			// Should contain invoke patterns for author
+			expect(phaseExec).toContain("5x invoke author");
+
+			// Should contain native patterns for reviewer
+			expect(phaseExec).toContain("Task tool");
+			expect(phaseExec).toContain('subagent_type="5x-reviewer"');
+		});
+
+		test("native/invoke (author native, reviewer invoke) renders correct mixed content", () => {
+			const ctx = makeMixedContext(true, false);
+
+			// Phase execution should have author native and reviewer invoke patterns
+			const phaseExec = renderSkillByName("5x-phase-execution", ctx).content;
+
+			// Should contain native patterns for author
+			expect(phaseExec).toContain('subagent_type="5x-code-author"');
+
+			// Should contain invoke patterns for reviewer
+			expect(phaseExec).toContain("5x invoke reviewer");
+		});
+
+		test("any_native blocks appear when at least one role is native", () => {
+			const nativeNative = renderSkillByName(
+				"5x",
+				makeMixedContext(true, true),
+			).content;
+			const nativeInvoke = renderSkillByName(
+				"5x",
+				makeMixedContext(true, false),
+			).content;
+			const invokeNative = renderSkillByName(
+				"5x",
+				makeMixedContext(false, true),
+			).content;
+			const invokeInvoke = renderSkillByName(
+				"5x",
+				makeMixedContext(false, false),
+			).content;
+
+			// any_native blocks should appear in native/native and mixed modes
+			expect(nativeNative).toContain("Task Reuse (Native)");
+			expect(nativeInvoke).toContain("Task Reuse (Native)");
+			expect(invokeNative).toContain("Task Reuse (Native)");
+
+			// any_native blocks should NOT appear in invoke/invoke
+			expect(invokeInvoke).not.toContain("Task Reuse (Native)");
+		});
+
+		test("any_invoke blocks appear when at least one role is invoke", () => {
+			const nativeNative = renderSkillByName(
+				"5x",
+				makeMixedContext(true, true),
+			).content;
+			const nativeInvoke = renderSkillByName(
+				"5x",
+				makeMixedContext(true, false),
+			).content;
+			const invokeNative = renderSkillByName(
+				"5x",
+				makeMixedContext(false, true),
+			).content;
+			const invokeInvoke = renderSkillByName(
+				"5x",
+				makeMixedContext(false, false),
+			).content;
+
+			// any_invoke blocks should appear in invoke/invoke and mixed modes
+			expect(nativeInvoke).toContain("Session Reuse (Invoke)");
+			expect(invokeNative).toContain("Session Reuse (Invoke)");
+			expect(invokeInvoke).toContain("Session Reuse (Invoke)");
+
+			// any_invoke blocks should NOT appear in native/native
+			expect(nativeNative).not.toContain("Session Reuse (Invoke)");
+		});
+
+		test("backward compatibility: native/native matches legacy { native: true }", () => {
+			const legacy = renderSkillByName(
+				"5x-phase-execution",
+				createRenderContext(true),
+			).content;
+			const mixed = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(true, true),
+			).content;
+
+			// Both should have the same native-only content
+			expect(legacy).toContain("Task tool");
+			expect(mixed).toContain("Task tool");
+			expect(legacy).toContain("subagent_type");
+			expect(mixed).toContain("subagent_type");
+
+			// Both should NOT have invoke patterns
+			expect(legacy).not.toContain("5x invoke author author-next-phase");
+			expect(mixed).not.toContain("5x invoke author author-next-phase");
+		});
+
+		test("backward compatibility: invoke/invoke matches legacy { native: false }", () => {
+			const legacy = renderSkillByName(
+				"5x-phase-execution",
+				createRenderContext(false),
+			).content;
+			const mixed = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(false, false),
+			).content;
+
+			// Both should have invoke patterns
+			expect(legacy).toContain("5x invoke author");
+			expect(mixed).toContain("5x invoke author");
+
+			// Both should NOT have Task tool patterns
+			expect(legacy).not.toContain('subagent_type="5x-code-author"');
+			expect(mixed).not.toContain('subagent_type="5x-code-author"');
+		});
+
+		test("all four context combinations produce valid output", () => {
+			const combinations = [
+				{ author: true, reviewer: true, name: "native/native" },
+				{ author: false, reviewer: false, name: "invoke/invoke" },
+				{ author: true, reviewer: false, name: "native/invoke" },
+				{ author: false, reviewer: true, name: "invoke/native" },
+			];
+
+			for (const combo of combinations) {
+				const ctx = makeMixedContext(combo.author, combo.reviewer);
+				for (const name of listBaseSkillNames()) {
+					const skill = renderSkillByName(name, ctx);
+					expect(skill.content).toBeTruthy();
+					expect(skill.content.length).toBeGreaterThan(100);
+					// Verify no template directive markers remain
+					expect(skill.content).not.toContain("{{#if");
+					expect(skill.content).not.toContain("{{else}}");
+					expect(skill.content).not.toContain("{{/if}}");
+				}
+			}
+		});
 	});
 });
