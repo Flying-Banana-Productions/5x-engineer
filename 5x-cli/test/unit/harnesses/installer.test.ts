@@ -20,6 +20,7 @@ import {
 	installRuleFiles,
 	installSkillFiles,
 	removeDirIfEmpty,
+	removeStaleAgentFiles,
 	uninstallAgentFiles,
 	uninstallRuleFiles,
 	uninstallSkillFiles,
@@ -728,6 +729,197 @@ describe("uninstallRuleFiles", () => {
 			uninstallRuleFiles(rulesDir, ["5x-orchestrator"]);
 
 			expect(existsSync(rulesDir)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// removeStaleAgentFiles tests
+// ---------------------------------------------------------------------------
+
+describe("removeStaleAgentFiles", () => {
+	test("removes stale 5x-managed agent files not in keep-set", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			// Install 5x-managed agents
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-plan-author", content: "plan author content" },
+					{ name: "5x-code-author", content: "code author content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Simulate mixed-mode transition: keep only reviewer and orchestrator
+			const keepNames = ["5x-reviewer", "5x-orchestrator"];
+			const managedNames = [
+				"5x-reviewer",
+				"5x-plan-author",
+				"5x-code-author",
+				"5x-orchestrator",
+			];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Should have removed the stale author agents
+			expect(removed).toContain("5x-plan-author.md");
+			expect(removed).toContain("5x-code-author.md");
+			expect(removed).toHaveLength(2);
+
+			// Verify files are actually gone
+			expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(false);
+			expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(false);
+
+			// Kept files should remain
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves user-authored and third-party agent files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			// Install 5x-managed agents
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Add user-authored and third-party agents
+			writeFileSync(
+				join(agentsDir, "my-custom-agent.md"),
+				"custom agent content",
+				"utf-8",
+			);
+			writeFileSync(
+				join(agentsDir, "third-party-helper.md"),
+				"third party content",
+				"utf-8",
+			);
+
+			// Simulate transition to invoke/invoke (only orchestrator kept)
+			const keepNames = ["5x-orchestrator"];
+			const managedNames = ["5x-reviewer", "5x-orchestrator"];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Should have removed only the stale 5x-managed file
+			expect(removed).toContain("5x-reviewer.md");
+			expect(removed).toHaveLength(1);
+
+			// User-authored files should be preserved
+			expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+			// Orchestrator should remain
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+
+			// Reviewer should be removed
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("no-ops when agents directory does not exist", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "nonexistent", "agents");
+			const removed = removeStaleAgentFiles(
+				agentsDir,
+				["5x-reviewer"],
+				["5x-reviewer", "5x-orchestrator"],
+			);
+			expect(removed).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("no-ops when all managed agents are in keep-set", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Keep all managed agents
+			const keepNames = ["5x-reviewer", "5x-orchestrator"];
+			const managedNames = ["5x-reviewer", "5x-orchestrator"];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			expect(removed).toHaveLength(0);
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("cleans empty agents directory after removing all stale files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "reviewer content" }],
+				false,
+			);
+
+			// Remove all managed agents (transition to invoke mode)
+			const keepNames: string[] = [];
+			const managedNames = ["5x-reviewer"];
+			removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Directory should be removed since it was empty
+			expect(existsSync(agentsDir)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves non-.md files in agents directory", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "reviewer content" }],
+				false,
+			);
+
+			// Add non-.md files
+			writeFileSync(join(agentsDir, "config.json"), "{}", "utf-8");
+			writeFileSync(join(agentsDir, "notes.txt"), "notes", "utf-8");
+
+			// Remove all managed agents
+			const keepNames: string[] = [];
+			const managedNames = ["5x-reviewer"];
+			removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Non-.md files should be preserved
+			expect(existsSync(join(agentsDir, "config.json"))).toBe(true);
+			expect(existsSync(join(agentsDir, "notes.txt"))).toBe(true);
+
+			// Managed .md file should be removed
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}

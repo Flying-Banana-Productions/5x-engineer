@@ -284,19 +284,25 @@ export function uninstallAgentFiles(
  * list of agents to keep. Used during mixed-mode delegation transitions
  * to clean up agent files for roles that switched to invoke mode.
  *
+ * Only deletes 5x-managed agent files (those in the managedAgentNames list),
+ * preserving user-authored or third-party agent profiles in shared directories.
+ *
  * @param agentsDir - The agents directory path
  * @param keepAgentNames - Array of agent names that should be kept (without .md extension)
+ * @param managedAgentNames - Array of 5x-managed agent names that are safe to delete (from bundled inventory)
  * @returns Array of removed file names (e.g., "5x-plan-author.md")
  */
 export function removeStaleAgentFiles(
 	agentsDir: string,
 	keepAgentNames: string[],
+	managedAgentNames: string[],
 ): string[] {
 	if (!existsSync(agentsDir)) {
 		return [];
 	}
 
 	const keepSet = new Set(keepAgentNames);
+	const managedSet = new Set(managedAgentNames);
 	const removed: string[] = [];
 
 	const entries = readdirSync(agentsDir);
@@ -305,7 +311,11 @@ export function removeStaleAgentFiles(
 		if (!entry.endsWith(".md")) continue;
 
 		const agentName = entry.slice(0, -3); // Remove .md extension
-		if (!keepSet.has(agentName)) {
+
+		// Only delete if:
+		// 1. The file is a 5x-managed agent (in managedSet)
+		// 2. The agent is NOT in the keep-set (stale)
+		if (managedSet.has(agentName) && !keepSet.has(agentName)) {
 			const filePath = join(agentsDir, entry);
 			rmSync(filePath);
 			removed.push(entry);

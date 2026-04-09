@@ -1169,6 +1169,77 @@ delegationMode = "native"
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"config change preserves user-authored agent files while removing stale 5x-managed files",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Add user-authored agent files
+				const agentsDir = join(tmp, ".opencode", "agents");
+				writeFileSync(
+					join(agentsDir, "my-custom-agent.md"),
+					"# My Custom Agent\n\nCustom instructions here",
+					"utf-8",
+				);
+				writeFileSync(
+					join(agentsDir, "third-party-helper.md"),
+					"# Third Party Helper\n\nThird party instructions",
+					"utf-8",
+				);
+
+				// Verify all files exist
+				expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+				// Change config to invoke/native (author invoke, reviewer native)
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall with force to trigger stale cleanup
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+					"--force",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Stale 5x-managed author agents should be removed
+				expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(false);
+				expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(false);
+
+				// User-authored and third-party agents should be preserved
+				expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+				// Native-mode agents should remain
+				expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });
 
 // ---------------------------------------------------------------------------

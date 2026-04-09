@@ -78,9 +78,12 @@ const cursorPlugin: HarnessPlugin = {
 		);
 
 		// Remove stale agent files (e.g., when switching from native to invoke mode)
+		// Only delete 5x-managed files, preserving user-authored or third-party agents
+		const allManagedAgents = listAgentTemplates().map((t) => t.name);
 		const staleRemoved = removeStaleAgentFiles(
 			locations.agentsDir,
 			agentTemplates.map((t) => t.name),
+			allManagedAgents,
 		);
 		// Include stale removals in the result for reporting
 		if (staleRemoved.length > 0) {
