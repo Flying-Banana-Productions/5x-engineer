@@ -40,3 +40,16 @@ The follow-up closes the original stale-asset gap for managed 5x agent files, bu
 
 **P1 recommended**
 - [ ] None.
+
+## Addendum (2026-04-09) — R1 verification
+
+### What's Addressed
+
+- `removeStaleAgentFiles()` now deletes only bundled 5x-managed agent names, using the full static inventory as the deletion allowlist and the rendered subset as the keep-set.
+- OpenCode and Cursor install paths both pass the managed inventory through, preserving non-5x agent files in shared agent directories.
+- New unit coverage exercises stale managed-file removal, preservation of unrelated `.md` files, empty-directory cleanup, and no-op cases.
+- New integration coverage verifies an OpenCode reinstall removes stale 5x author agents while preserving user-authored and third-party agent files.
+
+### Remaining Concerns
+
+- None. Phase 4 stale-agent cleanup now matches the ownership model in the plan and is ready to proceed.
