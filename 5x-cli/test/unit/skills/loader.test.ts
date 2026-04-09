@@ -282,6 +282,59 @@ describe("shared skill template loader", () => {
 			expect(mixed).not.toContain('subagent_type="5x-code-author"');
 		});
 
+		test("backward compatibility: invoke/invoke foundation skill excludes native harness section", () => {
+			// This is a P1.1 regression test - invoke/invoke mode should NOT include
+			// the "Native harness" section since there are no native-delegated roles
+			const legacy = renderSkillByName(
+				"5x",
+				createRenderContext(false),
+			).content;
+			const mixed = renderSkillByName(
+				"5x",
+				makeMixedContext(false, false),
+			).content;
+
+			// Neither should contain "Native harness" section (pure invoke mode)
+			expect(legacy).not.toContain("Native harness");
+			expect(legacy).not.toContain("orchestrator with a chat or question UI");
+			expect(mixed).not.toContain("Native harness");
+			expect(mixed).not.toContain("orchestrator with a chat or question UI");
+
+			// Both should still have invoke delegation patterns
+			expect(legacy).toContain("5x invoke");
+			expect(mixed).toContain("5x invoke");
+		});
+
+		test("mixed-mode quality-retry escalation uses native UI when any role is native", () => {
+			// This is a P2 regression test - the quality-retry escalation should use
+			// native UI (any_native) not require all roles to be native
+			const nativeNative = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(true, true),
+			).content;
+			const nativeInvoke = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(true, false),
+			).content;
+			const invokeNative = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(false, true),
+			).content;
+			const invokeInvoke = renderSkillByName(
+				"5x-phase-execution",
+				makeMixedContext(false, false),
+			).content;
+
+			// When any role is native, the escalation should mention "native UI"
+			expect(nativeNative).toContain("Escalate via your **native UI**");
+			expect(nativeInvoke).toContain("Escalate via your **native UI**");
+			expect(invokeNative).toContain("Escalate via your **native UI**");
+
+			// When no roles are native (invoke/invoke), use CLI prompt
+			expect(invokeInvoke).not.toContain("Escalate via your **native UI**");
+			expect(invokeInvoke).toContain('5x prompt choose "Quality gates failing');
+		});
+
 		test("all four context combinations produce valid output", () => {
 			const combinations = [
 				{ author: true, reviewer: true, name: "native/native" },

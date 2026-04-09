@@ -227,7 +227,7 @@ Check the result:
 Increment $QUALITY_RETRIES.
 
 If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
-{{#if native}}
+{{#if any_native}}
   Escalate via your **native UI** with options **retry**, **skip**, **abort** (same semantics as  
   `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`).
 {{else}}

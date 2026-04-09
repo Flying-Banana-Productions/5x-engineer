@@ -46,6 +46,7 @@ How you collect the response:
    terminals). Pass `--default` to provide a fallback for non-interactive
    environments.
 
+{{#if any_native}}
 ### Native harness (orchestrator with a chat or question UI)
 
 You are the **orchestrator**, not a headless shell. **Default to (1) or (2)** above
@@ -59,6 +60,7 @@ fail in agent-driven terminals.
 
 Use `5x run record` with the same JSON shapes the skill specifies after the human
 chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat UI.
+{{/if}}
 
 ## Delegating to Subagents
 
