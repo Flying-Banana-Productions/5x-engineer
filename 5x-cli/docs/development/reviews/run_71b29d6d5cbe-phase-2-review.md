@@ -39,3 +39,15 @@ None.
 
 **P1 recommended**
 - [ ] Correct legacy `invoke` fallback derivation and add regression coverage for partial mixed contexts.
+
+## Addendum (2026-04-09) — Follow-up on legacy invoke fallback fix
+
+### What's Addressed
+
+- `renderSkillTemplate()` now derives legacy `invoke` from the per-role flags when `ctx.invoke` is omitted, restoring the documented “both roles invoke” compatibility behavior.
+- Regression coverage was added for all omitted-`ctx.invoke` permutations, including both mixed-mode cases, both-invoke, both-native, and explicit override behavior.
+- Local verification passed: `bun test test/unit/skills/renderer.test.ts test/unit/skills/loader.test.ts test/unit/skills/invoke-content.test.ts`.
+
+### Remaining Concerns
+
+- None. The prior P1 issue is resolved, and Phase 2 now meets its renderer correctness and test coverage gate.
