@@ -10,6 +10,10 @@ export interface SkillRenderContext {
 	anyNative?: boolean;
 	/** Cross-cutting: true when at least one role uses invoke delegation. */
 	anyInvoke?: boolean;
+	/** Cross-cutting: true when both roles use native delegation. */
+	allNative?: boolean;
+	/** Cross-cutting: true when both roles use invoke delegation. */
+	allInvoke?: boolean;
 }
 
 /**
@@ -30,14 +34,18 @@ export function createRenderContext(
 	const reviewer = reviewerNative ?? native;
 	const anyNative = author || reviewer;
 	const anyInvoke = !author || !reviewer;
+	const allNative = author && reviewer;
+	const allInvoke = !author && !reviewer;
 
 	return {
-		native: author && reviewer,
-		invoke: !author && !reviewer,
+		native: allNative,
+		invoke: allInvoke,
 		authorNative: author,
 		reviewerNative: reviewer,
 		anyNative,
 		anyInvoke,
+		allNative,
+		allInvoke,
 	};
 }
 
@@ -53,6 +61,8 @@ export function createRenderContext(
  *   {{#if reviewer_invoke}}  — include block when reviewer uses invoke delegation
  *   {{#if any_native}}       — include block when at least one role is native
  *   {{#if any_invoke}}       — include block when at least one role is invoke
+ *   {{#if all_native}}       — include block when BOTH roles are native
+ *   {{#if all_invoke}}       — include block when BOTH roles are invoke
  *   {{else}}                 — switch to the opposite branch
  *   {{/if}}                  — end conditional block
  *
@@ -76,8 +86,10 @@ export function renderSkillTemplate(
 	const reviewerNative = ctx.reviewerNative ?? ctx.native;
 	const anyNative = ctx.anyNative ?? (authorNative || reviewerNative);
 	const anyInvoke = ctx.anyInvoke ?? (!authorNative || !reviewerNative);
+	const allNative = ctx.allNative ?? (authorNative && reviewerNative);
+	const allInvoke = ctx.allInvoke ?? (!authorNative && !reviewerNative);
 	// Legacy invoke: true only when BOTH roles are invoke (strict all-invoke semantics)
-	const invoke = ctx.invoke ?? (!authorNative && !reviewerNative);
+	const invoke = ctx.invoke ?? allInvoke;
 
 	for (const line of lines) {
 		// Handle all {{#if ...}} directives
@@ -117,6 +129,12 @@ export function renderSkillTemplate(
 					break;
 				case "any_invoke":
 					blockActive = anyInvoke;
+					break;
+				case "all_native":
+					blockActive = allNative;
+					break;
+				case "all_invoke":
+					blockActive = allInvoke;
 					break;
 				default:
 					throw new Error(`Unknown directive: {{#if ${directive}}}`);

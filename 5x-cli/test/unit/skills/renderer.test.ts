@@ -331,5 +331,42 @@ describe("renderSkillTemplate", () => {
 				"start\nauthor-invoke\nreviewer-invoke\nany-invoke\nend",
 			);
 		});
+
+		test("{{#if all_native}} includes block only when both roles are native", () => {
+			const template = "{{#if all_native}}\nall-native-content\n{{/if}}";
+			expect(renderSkillTemplate(template, makeContext(true, true))).toBe(
+				"all-native-content",
+			);
+			expect(renderSkillTemplate(template, makeContext(true, false))).toBe("");
+			expect(renderSkillTemplate(template, makeContext(false, true))).toBe("");
+			expect(renderSkillTemplate(template, makeContext(false, false))).toBe("");
+		});
+
+		test("{{#if all_invoke}} includes block only when both roles are invoke", () => {
+			const template = "{{#if all_invoke}}\nall-invoke-content\n{{/if}}";
+			expect(renderSkillTemplate(template, makeContext(false, false))).toBe(
+				"all-invoke-content",
+			);
+			expect(renderSkillTemplate(template, makeContext(true, false))).toBe("");
+			expect(renderSkillTemplate(template, makeContext(false, true))).toBe("");
+			expect(renderSkillTemplate(template, makeContext(true, true))).toBe("");
+		});
+
+		test("all directives work together correctly", () => {
+			const template =
+				"start\n{{#if all_native}}\nall-native\n{{/if}}\n{{#if all_invoke}}\nall-invoke\n{{/if}}\n{{#if any_native}}\nany-native\n{{/if}}\n{{#if any_invoke}}\nany-invoke\n{{/if}}\nend";
+			// native/native: all_native=true, all_invoke=false, any_native=true, any_invoke=false
+			expect(renderSkillTemplate(template, makeContext(true, true))).toBe(
+				"start\nall-native\nany-native\nend",
+			);
+			// invoke/invoke: all_native=false, all_invoke=true, any_native=false, any_invoke=true
+			expect(renderSkillTemplate(template, makeContext(false, false))).toBe(
+				"start\nall-invoke\nany-invoke\nend",
+			);
+			// native/invoke: all_native=false, all_invoke=false, any_native=true, any_invoke=true
+			expect(renderSkillTemplate(template, makeContext(true, false))).toBe(
+				"start\nany-native\nany-invoke\nend",
+			);
+		});
 	});
 });
