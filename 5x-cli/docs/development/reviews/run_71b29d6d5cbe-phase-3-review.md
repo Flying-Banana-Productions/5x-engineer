@@ -40,3 +40,16 @@ None.
 **P1 recommended**
 - [ ] Re-gate the foundation skill so invoke/invoke rendering matches the legacy non-native output.
 - [ ] Replace the leftover legacy `{{#if native}}` branch in phase execution and cover it with a mixed-mode render test.
+
+## Addendum (2026-04-09) — Follow-up on Phase 3 template fixes
+
+### What's Addressed
+
+- The foundation skill now gates the “Native harness” section on `{{#if any_native}}`, so invoke/invoke renders no longer include native-only operator guidance.
+- `5x-phase-execution` now uses `{{#if any_native}}` for the quality-retry escalation branch, fixing the mixed-mode fallback bug.
+- Regression coverage was added for both prior findings: invoke/invoke foundation output excludes the native-harness section, and mixed-mode phase-execution renders keep native-UI escalation when either role is native.
+- Local verification passed: `bun test test/unit/skills/renderer.test.ts test/unit/skills/loader.test.ts`.
+
+### Remaining Concerns
+
+- None. The previously identified Phase 3 issues are resolved, and the phase now meets its template-refactor completion gate.
