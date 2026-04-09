@@ -71,10 +71,14 @@ export interface UninstallSummary {
  * Install a list of files into a target directory.
  *
  * Each file is written to `<targetDir>/<file.filename>`.
- * With `force = false`, existing files are skipped only if content matches.
+ * With `force = false`, existing files are skipped (preserving local edits).
  * With `force = true`, existing files are always overwritten.
  *
  * The target directory is created if it does not exist.
+ *
+ * Note: This is the default behavior for non-skill assets (agents, rules).
+ * For skill files that need content-diff refresh on config changes,
+ * use `installSkillFiles()` which has overwrite-on-diff behavior.
  *
  * @returns Summary of created, overwritten, and skipped file names.
  */
@@ -94,13 +98,9 @@ export function installFiles(
 		const exists = existsSync(filePath);
 
 		if (exists && !force) {
-			// Compare content - skip only if identical
-			const existingContent = readFileSync(filePath, "utf-8");
-			if (existingContent === file.content) {
-				skipped.push(file.filename);
-				continue;
-			}
-			// Content differs - overwrite (config change scenario)
+			// Skip existing files unless force is true (preserves local edits)
+			skipped.push(file.filename);
+			continue;
 		}
 
 		writeFileSync(filePath, file.content, "utf-8");
