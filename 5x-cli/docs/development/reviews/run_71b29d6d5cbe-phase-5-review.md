@@ -52,3 +52,15 @@ The plan explicitly calls for lifecycle-transition coverage where a native/nativ
 ### Remaining Concerns
 
 - The fix broadened content-diff overwrite semantics from skills to the shared `installFiles()` helper, so a plain `5x harness install` now overwrites modified agent/rule files whenever bundled content differs. This regresses the existing force contract (`--force` required to overwrite existing files) and can silently discard local edits to managed harness assets outside the phase-5 skill-refresh scope.
+
+## Addendum (2026-04-09) — Follow-up on overwrite-policy fix and config boundary regression
+
+### What's Addressed
+
+- The overwrite-policy regression is fixed: non-skill harness assets once again preserve local edits unless `--force` is passed, while skill files still refresh on content changes during reinstall.
+- The follow-on config fix correctly bounds root config discovery to the resolved project/control-plane root, avoiding accidental pickup of parent-directory config files outside the repository.
+- Local verification passed: `bun test test/unit/harnesses/installer.test.ts`, `bun test test/unit/config.test.ts`, `bun test test/integration/commands/harness.test.ts -t 'mixed-mode skill rendering'`, and `bun test test/integration/commands/harness.test.ts -t 'mixed-mode delegation lifecycle'`.
+
+### Remaining Concerns
+
+- None.
