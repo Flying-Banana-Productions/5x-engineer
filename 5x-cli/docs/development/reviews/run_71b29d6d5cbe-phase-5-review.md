@@ -42,3 +42,13 @@ The plan explicitly calls for lifecycle-transition coverage where a native/nativ
 
 **P1 recommended**
 - [ ] Refresh managed skill files on reinstall after delegation-mode config changes, and cover that default path with an integration test.
+
+## Addendum (2026-04-09) — Follow-up on skill refresh fix
+
+### What's Addressed
+
+- The prior P1.1 issue is fixed: skill reinstall now refreshes changed `SKILL.md` content without requiring `--force`, and the lifecycle integration test now exercises the plain reinstall path.
+
+### Remaining Concerns
+
+- The fix broadened content-diff overwrite semantics from skills to the shared `installFiles()` helper, so a plain `5x harness install` now overwrites modified agent/rule files whenever bundled content differs. This regresses the existing force contract (`--force` required to overwrite existing files) and can silently discard local edits to managed harness assets outside the phase-5 skill-refresh scope.
