@@ -143,6 +143,71 @@ describe("renderSkillTemplate", () => {
 		);
 	});
 
+	describe("legacy invoke fallback with omitted ctx.invoke", () => {
+		test("{{#if invoke}} is false in mixed mode when ctx.invoke is omitted", () => {
+			const template = "{{#if invoke}}\ninvoke content\n{{/if}}";
+			// Mixed mode: author invoke, reviewer native - omit ctx.invoke
+			const ctx1: SkillRenderContext = {
+				native: false, // not both native
+				authorNative: false,
+				reviewerNative: true,
+				anyNative: true,
+				anyInvoke: true,
+			};
+			expect(renderSkillTemplate(template, ctx1)).toBe("");
+
+			// Mixed mode: author native, reviewer invoke - omit ctx.invoke
+			const ctx2: SkillRenderContext = {
+				native: false, // not both native
+				authorNative: true,
+				reviewerNative: false,
+				anyNative: true,
+				anyInvoke: true,
+			};
+			expect(renderSkillTemplate(template, ctx2)).toBe("");
+		});
+
+		test("{{#if invoke}} is true only when both roles are invoke (omitted ctx.invoke)", () => {
+			const template = "{{#if invoke}}\ninvoke content\n{{/if}}";
+			// Both invoke - omit ctx.invoke
+			const ctx: SkillRenderContext = {
+				native: false,
+				authorNative: false,
+				reviewerNative: false,
+				anyNative: false,
+				anyInvoke: true,
+			};
+			expect(renderSkillTemplate(template, ctx)).toBe("invoke content");
+		});
+
+		test("{{#if invoke}} is false when both roles are native (omitted ctx.invoke)", () => {
+			const template = "{{#if invoke}}\ninvoke content\n{{/if}}";
+			// Both native - omit ctx.invoke
+			const ctx: SkillRenderContext = {
+				native: true,
+				authorNative: true,
+				reviewerNative: true,
+				anyNative: true,
+				anyInvoke: false,
+			};
+			expect(renderSkillTemplate(template, ctx)).toBe("");
+		});
+
+		test("{{#if invoke}} respects explicit ctx.invoke when provided", () => {
+			const template = "{{#if invoke}}\ninvoke content\n{{/if}}";
+			// Even in mixed mode, explicit invoke: true should include the block
+			const ctx: SkillRenderContext = {
+				native: false,
+				invoke: true, // explicitly set
+				authorNative: true,
+				reviewerNative: false,
+				anyNative: true,
+				anyInvoke: true,
+			};
+			expect(renderSkillTemplate(template, ctx)).toBe("invoke content");
+		});
+	});
+
 	describe("per-role conditionals", () => {
 		test("{{#if author_native}} includes block when author is native", () => {
 			const template = "{{#if author_native}}\nauthor native content\n{{/if}}";

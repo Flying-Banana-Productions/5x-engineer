@@ -76,7 +76,8 @@ export function renderSkillTemplate(
 	const reviewerNative = ctx.reviewerNative ?? ctx.native;
 	const anyNative = ctx.anyNative ?? (authorNative || reviewerNative);
 	const anyInvoke = ctx.anyInvoke ?? (!authorNative || !reviewerNative);
-	const invoke = ctx.invoke ?? !ctx.native;
+	// Legacy invoke: true only when BOTH roles are invoke (strict all-invoke semantics)
+	const invoke = ctx.invoke ?? (!authorNative && !reviewerNative);
 
 	for (const line of lines) {
 		// Handle all {{#if ...}} directives
