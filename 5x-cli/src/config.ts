@@ -521,8 +521,9 @@ export async function loadConfig(
 	projectRoot: string,
 	cliProviderNames?: Set<string>,
 	warn?: (...args: unknown[]) => void,
+	stopDir?: string,
 ): Promise<LoadConfigResult> {
-	const configPath = discoverConfigFile(projectRoot);
+	const configPath = discoverConfigFile(projectRoot, stopDir);
 
 	if (!configPath) {
 		// No config file — Zod defaults only. Resolve default paths against projectRoot.

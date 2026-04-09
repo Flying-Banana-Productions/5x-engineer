@@ -137,7 +137,12 @@ export async function templateRender(
 		const result = await resolveLayeredConfig(projectRoot, configContextDir);
 		config = result.config;
 	} else {
-		const result = await loadConfig(projectRoot);
+		const result = await loadConfig(
+			projectRoot,
+			undefined,
+			undefined,
+			projectRoot,
+		);
 		config = result.config;
 	}
 

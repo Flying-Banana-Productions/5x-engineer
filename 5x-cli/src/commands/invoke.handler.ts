@@ -282,6 +282,8 @@ export async function invokeAgent(
 		const result = await loadConfig(
 			projectRoot,
 			cliProviderNames.size > 0 ? cliProviderNames : undefined,
+			undefined,
+			projectRoot,
 		);
 		baseConfig = result.config;
 	}

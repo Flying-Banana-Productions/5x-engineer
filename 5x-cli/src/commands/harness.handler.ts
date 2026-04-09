@@ -131,7 +131,12 @@ export async function harnessInstall(
 	let authorDelegationMode: "native" | "invoke" | undefined;
 	let reviewerDelegationMode: "native" | "invoke" | undefined;
 	try {
-		const { config } = await loadConfig(projectRoot);
+		const { config } = await loadConfig(
+			projectRoot,
+			undefined,
+			undefined,
+			projectRoot,
+		);
 		authorModel = resolveHarnessModelForRole(config, "author", name);
 		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
 		authorDelegationMode = config.author.delegationMode;

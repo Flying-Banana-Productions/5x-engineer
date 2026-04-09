@@ -24,7 +24,12 @@ describe("config", () => {
 	test("missing config uses defaults", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { config, configPath } = await loadConfig(tmp);
+			const { config, configPath } = await loadConfig(
+				tmp,
+				undefined,
+				undefined,
+				tmp,
+			);
 			expect(configPath).toBeNull();
 			// Phase 1: adapter field removed — model field is optional string
 			expect(config.author.model).toBeUndefined();
@@ -47,7 +52,7 @@ describe("config", () => {
 				join(tmp, "5x.config.js"),
 				`export default { worktree: { postCreate: "bun run setup:worktree" } };`,
 			);
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			expect(config.worktree.postCreate).toBe("bun run setup:worktree");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -78,7 +83,7 @@ describe("config", () => {
 				join(tmp, "5x.config.js"),
 				`export default { maxReviewIterations: 10 };`,
 			);
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			expect(config.maxReviewIterations).toBe(10);
 			expect(config.maxQualityRetries).toBe(3); // default
 			// paths.* default resolved to absolute against projectRoot
@@ -463,7 +468,7 @@ describe("loadConfig path normalization", () => {
 	test("no config file (Zod defaults only) returns absolute paths resolved against projectRoot", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			// All Zod default paths resolved against projectRoot
 			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
 			expect(config.paths.reviews).toBe(join(tmp, "docs/development/reviews"));
