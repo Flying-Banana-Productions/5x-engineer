@@ -23,9 +23,13 @@ workflow:
 ## Key principles
 
 1. **Delegate, don't implement.** Render task prompts with
-   `5x template render`, launch the appropriate Cursor subagent
-   (`5x-plan-author`, `5x-code-author`, or `5x-reviewer`), and validate
-   results with `5x protocol validate --record`.
+   `5x template render`, then follow each skill step's delegation
+   pattern exactly. Some steps use Cursor subagent invocation
+   (`5x-plan-author`, `5x-code-author`, or `5x-reviewer`); invoke-mode
+   steps use `5x invoke`. Validate native subagent output with
+   `5x protocol validate --record`. For `5x invoke` steps, expect
+   the JSON envelope on stdout and treat that envelope as the
+   canonical result format.
 
 2. **Honor the effective working directory.** The rendered prompt includes
    a `## Context` block with the effective working directory. All file reads,

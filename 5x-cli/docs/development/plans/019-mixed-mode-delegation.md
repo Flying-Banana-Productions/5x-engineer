@@ -408,7 +408,7 @@ configured mode.
 acknowledge mixed delegation and guide the orchestrator correctly when some
 roles use `5x invoke`.
 
-- [ ] Update `src/harnesses/opencode/5x-orchestrator.md`:
+- [x] Update `src/harnesses/opencode/5x-orchestrator.md`:
       - Add a note under "Key principles" or a new section explaining that
         when some roles are configured for invoke delegation, the skill
         templates will contain `5x invoke` blocks for those roles instead
@@ -417,12 +417,12 @@ roles use `5x invoke`.
       - The orchestrator should expect that invoke-mode steps return a JSON
         envelope on stdout (the `5x invoke` output format) rather than raw
         subagent output.
-- [ ] Update `src/harnesses/cursor/5x-orchestrator.mdc` with the same
+- [x] Update `src/harnesses/cursor/5x-orchestrator.mdc` with the same
       mixed-mode awareness.
-- [ ] These changes are static content updates — no conditional rendering
+- [x] These changes are static content updates — no conditional rendering
       needed in the orchestrator profiles themselves, since the skills
       already encode the correct delegation pattern per step.
-- [ ] Verify by manually inspecting the rendered orchestrator + skill
+- [x] Verify by manually inspecting the rendered orchestrator + skill
       combination for each mode.
 
 ## Risks and Mitigations
