@@ -294,7 +294,7 @@ Accurate installed-state reporting for mixed-mode configurations is handled by
 Uninstall removes all managed assets unconditionally to ensure no stale files
 remain when config changes after installation.
 
-- [ ] Extend `AgentRenderConfig` in `src/harnesses/opencode/loader.ts` to
+- [x] Extend `AgentRenderConfig` in `src/harnesses/opencode/loader.ts` to
       accept delegation mode flags:
       ```ts
       export interface AgentRenderConfig {
@@ -306,15 +306,15 @@ remain when config changes after installation.
         reviewerInvoke?: boolean;
       }
       ```
-- [ ] Update `renderAgentTemplates()` in `src/harnesses/opencode/loader.ts`
+- [x] Update `renderAgentTemplates()` in `src/harnesses/opencode/loader.ts`
       to filter out templates whose role matches an invoke-mode flag:
       - Skip `role: "author"` templates when `config.authorInvoke` is true.
       - Skip `role: "reviewer"` template when `config.reviewerInvoke` is true.
       - Always include `role: null` (orchestrator).
-- [ ] Apply the same changes to `src/harnesses/cursor/loader.ts` (the Cursor
+- [x] Apply the same changes to `src/harnesses/cursor/loader.ts` (the Cursor
       agent loader has the same `AgentRenderConfig` / `renderAgentTemplates`
       pattern).
-- [ ] Update `HarnessInstallContext` in `src/harnesses/types.ts` to carry
+- [x] Update `HarnessInstallContext` in `src/harnesses/types.ts` to carry
       delegation mode:
       ```ts
       config: {
@@ -324,21 +324,21 @@ remain when config changes after installation.
         reviewerDelegationMode?: "native" | "invoke";
       };
       ```
-- [ ] Update the harness install handler (`src/commands/harness.handler.ts`
+- [x] Update the harness install handler (`src/commands/harness.handler.ts`
       or equivalent) to read `delegationMode` from config and pass it through
       `HarnessInstallContext.config`.
-- [ ] Update `opencodePlugin.install()` in
+- [x] Update `opencodePlugin.install()` in
       `src/harnesses/opencode/plugin.ts` to pass the delegation flags to
       `renderAgentTemplates()`.
-- [ ] Update `cursorPlugin.install()` in `src/harnesses/cursor/plugin.ts`
+- [x] Update `cursorPlugin.install()` in `src/harnesses/cursor/plugin.ts`
       similarly.
-- [ ] Keep `describe()` on both plugins unchanged — it returns the static
+- [x] Keep `describe()` on both plugins unchanged — it returns the static
       bundled asset inventory. The `harness list` command already inspects
       the filesystem to report what is actually installed.
-- [ ] Verify that `uninstall()` on both plugins removes all managed agent
+- [x] Verify that `uninstall()` on both plugins removes all managed agent
       files regardless of current config state (already the current behavior;
       confirm no regression).
-- [ ] Add unit tests:
+- [x] Add unit tests:
       - `renderAgentTemplates` with `authorInvoke: true` returns only
         reviewer + orchestrator.
       - `renderAgentTemplates` with `reviewerInvoke: true` returns only
@@ -351,7 +351,7 @@ remain when config changes after installation.
         author agent files.
       - `harness list` after mixed-mode install reports only installed agents
         (via filesystem inspection), not the full bundled inventory.
-- [ ] Add integration tests for lifecycle transitions (P1.1 — stale-asset handling):
+- [x] Add integration tests for lifecycle transitions (P1.1 — stale-asset handling):
       - Install with native/native config, verify both author and reviewer
         agents are on disk.
       - Change config to invoke/native (author invoke, reviewer native),

@@ -128,10 +128,14 @@ export async function harnessInstall(
 	// 5. Load config for model settings (non-fatal for user scope)
 	let authorModel: string | undefined;
 	let reviewerModel: string | undefined;
+	let authorDelegationMode: "native" | "invoke" | undefined;
+	let reviewerDelegationMode: "native" | "invoke" | undefined;
 	try {
 		const { config } = await loadConfig(projectRoot);
 		authorModel = resolveHarnessModelForRole(config, "author", name);
 		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
+		authorDelegationMode = config.author.delegationMode;
+		reviewerDelegationMode = config.reviewer.delegationMode;
 	} catch {
 		// Config load failure is non-fatal — agent templates will be
 		// rendered without model fields.
@@ -149,7 +153,12 @@ export async function harnessInstall(
 		scope,
 		projectRoot,
 		force,
-		config: { authorModel, reviewerModel },
+		config: {
+			authorModel,
+			reviewerModel,
+			authorDelegationMode,
+			reviewerDelegationMode,
+		},
 		homeDir: params.homeDir,
 	});
 

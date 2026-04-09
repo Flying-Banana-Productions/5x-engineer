@@ -49,6 +49,10 @@ export interface AgentRenderConfig {
 	authorModel?: string;
 	/** Model string for reviewer agent (from config.reviewer.model). */
 	reviewerModel?: string;
+	/** When true, skip author agent templates (author uses 5x invoke). */
+	authorInvoke?: boolean;
+	/** When true, skip reviewer agent template (reviewer uses 5x invoke). */
+	reviewerInvoke?: boolean;
 }
 
 /** Result of rendering an agent template. */
@@ -147,11 +151,26 @@ export function listAgentTemplates(): AgentTemplateMetadata[] {
  *
  * The orchestrator never gets a model field (it inherits whatever the
  * user selects in the harness UI before prompting).
+ *
+ * When authorInvoke or reviewerInvoke is true, the corresponding role's
+ * agent templates are skipped (they're not needed when using 5x invoke).
+ * The orchestrator (role: null) is always included.
  */
 export function renderAgentTemplates(
 	config: AgentRenderConfig,
 ): RenderedAgentTemplate[] {
-	return AGENT_TEMPLATES.map((tmpl) => {
+	return AGENT_TEMPLATES.filter((tmpl) => {
+		// Skip author templates when author uses invoke mode
+		if (tmpl.role === "author" && config.authorInvoke) {
+			return false;
+		}
+		// Skip reviewer template when reviewer uses invoke mode
+		if (tmpl.role === "reviewer" && config.reviewerInvoke) {
+			return false;
+		}
+		// Always include orchestrator (role: null) and any non-skipped templates
+		return true;
+	}).map((tmpl) => {
 		let model: string | undefined;
 
 		if (tmpl.role === "author") {

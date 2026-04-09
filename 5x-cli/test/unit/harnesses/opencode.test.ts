@@ -420,6 +420,76 @@ describe("agent templates — no cwd field", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Mixed-mode delegation: conditional agent template installation
+// ---------------------------------------------------------------------------
+
+describe("renderAgentTemplates — mixed-mode delegation filtering", () => {
+	test("with authorInvoke: true returns only reviewer + orchestrator", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: true,
+			reviewerInvoke: false,
+		});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-reviewer");
+		expect(names).toContain("5x-orchestrator");
+		expect(names).not.toContain("5x-plan-author");
+		expect(names).not.toContain("5x-code-author");
+		expect(templates).toHaveLength(2);
+	});
+
+	test("with reviewerInvoke: true returns only author agents + orchestrator", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: false,
+			reviewerInvoke: true,
+		});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-plan-author");
+		expect(names).toContain("5x-code-author");
+		expect(names).toContain("5x-orchestrator");
+		expect(names).not.toContain("5x-reviewer");
+		expect(templates).toHaveLength(3);
+	});
+
+	test("with both invoke flags returns only orchestrator", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: true,
+			reviewerInvoke: true,
+		});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-orchestrator");
+		expect(names).not.toContain("5x-plan-author");
+		expect(names).not.toContain("5x-code-author");
+		expect(names).not.toContain("5x-reviewer");
+		expect(templates).toHaveLength(1);
+	});
+
+	test("default behavior (no invoke flags) returns all templates", () => {
+		const templates = renderAgentTemplates({});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-plan-author");
+		expect(names).toContain("5x-code-author");
+		expect(names).toContain("5x-reviewer");
+		expect(names).toContain("5x-orchestrator");
+		expect(templates).toHaveLength(4);
+	});
+
+	test("orchestrator is always included regardless of flags", () => {
+		const withBoth = renderAgentTemplates({
+			authorInvoke: true,
+			reviewerInvoke: true,
+		});
+		const withNone = renderAgentTemplates({});
+
+		expect(withBoth.find((t) => t.name === "5x-orchestrator")).toBeDefined();
+		expect(withNone.find((t) => t.name === "5x-orchestrator")).toBeDefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Plugin describe()
 // ---------------------------------------------------------------------------
 

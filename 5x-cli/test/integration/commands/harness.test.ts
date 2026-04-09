@@ -854,6 +854,324 @@ describe("5x harness uninstall — round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Mixed-mode delegation: lifecycle transitions and stale-asset handling
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — mixed-mode delegation lifecycle", () => {
+	test(
+		"install with invoke/native config skips author agents but installs reviewer + orchestrator",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in invoke mode, reviewer in native mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Author agents should NOT be installed (invoke mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+
+				// Reviewer and orchestrator should be installed (native mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with native/invoke config installs author agents but skips reviewer",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in native mode, reviewer in invoke mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+delegationMode = "native"
+
+[reviewer]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Author agents should be installed (native mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(true);
+
+				// Reviewer should NOT be installed (invoke mode), but orchestrator should
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with invoke/invoke config only installs orchestrator",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with both roles in invoke mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "invoke"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Only orchestrator should be installed
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"config change from native/native to invoke/native removes author agents on reinstall",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Verify all agents are present
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(true);
+
+				// Change config to invoke/native
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall with force
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+					"--force",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Author agents should be removed, reviewer and orchestrator remain
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"harness list accurately reports installed agents after mixed-mode install",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install with invoke/native (author invoke, reviewer native)
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// List and verify
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(true);
+
+				// Should list only installed files (reviewer + orchestrator, not author)
+				const agentFiles = opencode.scopes.project.files.filter((f: string) =>
+					f.startsWith("agents/"),
+				);
+				expect(agentFiles).toContain("agents/5x-reviewer.md");
+				expect(agentFiles).toContain("agents/5x-orchestrator.md");
+				expect(agentFiles).not.toContain("agents/5x-plan-author.md");
+				expect(agentFiles).not.toContain("agents/5x-code-author.md");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"uninstall removes all managed agents regardless of current config",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// Install with mixed mode
+				await bootstrapProject(tmp);
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// Change config to native/native before uninstall
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "native"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Uninstall should still remove all files
+				const result = await runHarnessUninstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(result.exitCode).toBe(0);
+
+				// All agents should be removed
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
 // Legacy compatibility: bare `5x init --force` still works
 // ---------------------------------------------------------------------------
 

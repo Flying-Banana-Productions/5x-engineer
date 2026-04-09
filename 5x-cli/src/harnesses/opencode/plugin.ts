@@ -66,9 +66,12 @@ const opencodePlugin: HarnessPlugin = {
 		);
 
 		// Render and install agent profiles
+		// Skip agent templates for roles that use invoke delegation
 		const agentTemplates = renderAgentTemplates({
 			authorModel: ctx.config.authorModel,
 			reviewerModel: ctx.config.reviewerModel,
+			authorInvoke: ctx.config.authorDelegationMode === "invoke",
+			reviewerInvoke: ctx.config.reviewerDelegationMode === "invoke",
 		});
 		const agents = installAgentFiles(
 			locations.agentsDir,

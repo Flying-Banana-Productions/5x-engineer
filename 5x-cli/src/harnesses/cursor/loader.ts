@@ -11,6 +11,10 @@ export interface AgentTemplateMetadata {
 export interface AgentRenderConfig {
 	authorModel?: string;
 	reviewerModel?: string;
+	/** When true, skip author agent templates (author uses 5x invoke). */
+	authorInvoke?: boolean;
+	/** When true, skip reviewer agent template (reviewer uses 5x invoke). */
+	reviewerInvoke?: boolean;
 }
 
 export interface RenderedAgentTemplate {
@@ -57,10 +61,26 @@ export function listAgentTemplates(): AgentTemplateMetadata[] {
 	return [...AGENT_TEMPLATES];
 }
 
+/**
+ * Render all bundled agent templates with model config applied.
+ *
+ * When authorInvoke or reviewerInvoke is true, the corresponding role's
+ * agent templates are skipped (they're not needed when using 5x invoke).
+ */
 export function renderAgentTemplates(
 	config: AgentRenderConfig,
 ): RenderedAgentTemplate[] {
-	return AGENT_TEMPLATES.map((tmpl) => {
+	return AGENT_TEMPLATES.filter((tmpl) => {
+		// Skip author templates when author uses invoke mode
+		if (tmpl.role === "author" && config.authorInvoke) {
+			return false;
+		}
+		// Skip reviewer template when reviewer uses invoke mode
+		if (tmpl.role === "reviewer" && config.reviewerInvoke) {
+			return false;
+		}
+		return true;
+	}).map((tmpl) => {
 		const model =
 			tmpl.role === "author"
 				? config.authorModel?.trim() || undefined
