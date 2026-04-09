@@ -296,6 +296,8 @@ OpenCode installs skills **and** native subagent profiles:
 5x harness install opencode --scope user
 ```
 
+Resolved model strings for agent frontmatter use **cwd-anchored** layered config (`5x.toml` / `5x.toml.local`), consistent with `5x invoke`—run the command from a monorepo package directory when that package owns the overrides.
+
 Universal installs skills only (cross-client agentskills.io convention):
 
 ```bash

@@ -54,6 +54,20 @@ async function bootstrapProject(dir: string): Promise<void> {
 	await initScaffold({ startDir: dir });
 }
 
+/** Minimal git repo so `resolveControlPlaneRoot` / `resolveCheckoutRoot` use repo root as project root. */
+function initGitRepo(dir: string): void {
+	const r = Bun.spawnSync(["git", "init"], {
+		cwd: dir,
+		stdout: "ignore",
+		stderr: "pipe",
+	});
+	if (r.exitCode !== 0) {
+		throw new Error(`git init failed: ${r.stderr.toString()}`);
+	}
+	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: dir });
+	Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: dir });
+}
+
 // ---------------------------------------------------------------------------
 // `harnessInstall` — project scope, filesystem side-effect tests
 // ---------------------------------------------------------------------------
@@ -113,6 +127,64 @@ cursor = "gpt-for-cursor"
 				"utf-8",
 			);
 			expect(cursorRev).toContain("gpt-for-cursor");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("sub-project 5x.toml.local overrides root harnessModels when startDir is sub-package", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			initGitRepo(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]
+model = "fallback-author"
+[author.harnessModels]
+opencode = "anthropic/root-opencode"
+
+[reviewer]
+model = "fallback-reviewer"
+[reviewer.harnessModels]
+opencode = "openai/root-reviewer-opencode"
+`,
+				"utf-8",
+			);
+			const sub = join(tmp, "subpkg");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(
+				join(sub, "5x.toml"),
+				`[paths]\nplans = "docs/plans-sub"\n`,
+				"utf-8",
+			);
+			writeFileSync(
+				join(sub, "5x.toml.local"),
+				`[author.harnessModels]
+opencode = "anthropic/sub-local-author"
+[reviewer.harnessModels]
+opencode = "openai/sub-local-reviewer"
+`,
+				"utf-8",
+			);
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: sub,
+			});
+
+			// With git, project root is checkout root (tmp), not sub.
+			const planAuthor = readFileSync(
+				join(tmp, ".opencode", "agents", "5x-plan-author.md"),
+				"utf-8",
+			);
+			expect(planAuthor).toContain("anthropic/sub-local-author");
+			const reviewer = readFileSync(
+				join(tmp, ".opencode", "agents", "5x-reviewer.md"),
+				"utf-8",
+			);
+			expect(reviewer).toContain("openai/sub-local-reviewer");
 		} finally {
 			cleanupDir(tmp);
 		}
