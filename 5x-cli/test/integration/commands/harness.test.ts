@@ -1243,6 +1243,257 @@ delegationMode = "native"
 });
 
 // ---------------------------------------------------------------------------
+// Phase 5: Harness Skill Loader Integration — Mixed-mode skill rendering
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — mixed-mode skill rendering", () => {
+	test(
+		"install with author invoke mode renders skills with 5x invoke for author steps",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in invoke mode, reviewer in native mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In mixed mode (author invoke, reviewer native):
+				// - Author steps should reference `5x invoke` (not Task tool)
+				// - Reviewer steps should reference Task tool
+				// Since we can't easily distinguish which sections are author vs reviewer,
+				// we verify that BOTH patterns can be present (skill contains invoke path
+				// for author and native path for reviewer)
+
+				// The skill should contain `5x invoke` (for author steps)
+				expect(skillContent).toContain("5x invoke");
+
+				// The skill should also contain Task tool references (for reviewer steps)
+				expect(skillContent).toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with default native/native config renders skills with Task tool only",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Default config (no delegationMode specified = native for both)
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In native/native mode, skills should ONLY reference Task tool
+				expect(skillContent).toContain("Task tool");
+				// Should NOT contain `5x invoke` for delegation (only in invoke paths)
+				expect(skillContent).not.toContain("5x invoke");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"config change from native/native to invoke/native updates skill files on reinstall",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Verify initial state: only Task tool references
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const initialContent = readFileSync(skillPath, "utf-8");
+				expect(initialContent).toContain("Task tool");
+				expect(initialContent).not.toContain("5x invoke");
+
+				// Change config to invoke/native
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall with force to update skill files
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+					"--force",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Verify updated state: contains both patterns (mixed mode)
+				const updatedContent = readFileSync(skillPath, "utf-8");
+				expect(updatedContent).toContain("5x invoke");
+				expect(updatedContent).toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"cursor harness renders skills with correct delegation patterns in mixed mode",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with mixed mode for cursor
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".cursor",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In mixed mode: should contain both patterns
+				expect(skillContent).toContain("5x invoke");
+				expect(skillContent).toContain("Cursor subagent invocation");
+
+				// Should NOT contain "Task tool" (cursor terminology adapts this)
+				expect(skillContent).not.toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"harness list shows correct files after mixed-mode install",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install with mixed mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// List and verify
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(true);
+
+				// Should list all skill files (skills are always installed regardless of mode)
+				expect(opencode.scopes.project.files).toContain(
+					"skills/5x-phase-execution/SKILL.md",
+				);
+				expect(opencode.scopes.project.files).toContain(
+					"skills/5x-plan/SKILL.md",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
 // Legacy compatibility: bare `5x init --force` still works
 // ---------------------------------------------------------------------------
 

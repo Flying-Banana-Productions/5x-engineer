@@ -9,6 +9,7 @@
  * having it installed in the project.
  */
 
+import { createRenderContext } from "../../skills/renderer.js";
 import {
 	installAgentFiles,
 	installSkillFiles,
@@ -59,10 +60,20 @@ const opencodePlugin: HarnessPlugin = {
 			ctx.homeDir,
 		);
 
-		// Install skills
+		// Resolve skill render context from delegation config
+		// authorNative = true when delegationMode is NOT "invoke"
+		const authorNative = ctx.config.authorDelegationMode !== "invoke";
+		const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
+		const skillRenderContext = createRenderContext(
+			authorNative && reviewerNative, // legacy native flag (both native)
+			authorNative,
+			reviewerNative,
+		);
+
+		// Install skills with the correct render context
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			listSkills(),
+			listSkills(skillRenderContext),
 			ctx.force,
 		);
 
@@ -71,8 +82,8 @@ const opencodePlugin: HarnessPlugin = {
 		const agentTemplates = renderAgentTemplates({
 			authorModel: ctx.config.authorModel,
 			reviewerModel: ctx.config.reviewerModel,
-			authorInvoke: ctx.config.authorDelegationMode === "invoke",
-			reviewerInvoke: ctx.config.reviewerDelegationMode === "invoke",
+			authorInvoke: !authorNative,
+			reviewerInvoke: !reviewerNative,
 		});
 		const agents = installAgentFiles(
 			locations.agentsDir,

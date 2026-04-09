@@ -1,3 +1,4 @@
+import { createRenderContext } from "../../skills/renderer.js";
 import {
 	installAgentFiles,
 	installRuleFiles,
@@ -57,9 +58,19 @@ const cursorPlugin: HarnessPlugin = {
 			ctx.homeDir,
 		);
 
+		// Resolve skill render context from delegation config
+		// authorNative = true when delegationMode is NOT "invoke"
+		const authorNative = ctx.config.authorDelegationMode !== "invoke";
+		const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
+		const skillRenderContext = createRenderContext(
+			authorNative && reviewerNative, // legacy native flag (both native)
+			authorNative,
+			reviewerNative,
+		);
+
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			listSkills(),
+			listSkills(skillRenderContext),
 			ctx.force,
 		);
 
@@ -68,8 +79,8 @@ const cursorPlugin: HarnessPlugin = {
 		const agentTemplates = renderAgentTemplates({
 			authorModel: ctx.config.authorModel,
 			reviewerModel: ctx.config.reviewerModel,
-			authorInvoke: ctx.config.authorDelegationMode === "invoke",
-			reviewerInvoke: ctx.config.reviewerDelegationMode === "invoke",
+			authorInvoke: !authorNative,
+			reviewerInvoke: !reviewerNative,
 		});
 		const agents = installAgentFiles(
 			locations.agentsDir,

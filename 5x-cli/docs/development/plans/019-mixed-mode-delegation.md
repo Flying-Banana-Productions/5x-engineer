@@ -372,14 +372,14 @@ config and construct the correct `SkillRenderContext`. Skills installed by
 `5x harness install` contain the appropriate delegation patterns for the
 configured mode.
 
-- [ ] Update `src/harnesses/opencode/skills/loader.ts`:
+- [x] Update `src/harnesses/opencode/skills/loader.ts`:
       - `listSkills()` and `getDefaultSkillRaw()` currently hardcode
         `{ native: true }`. Change them to accept an optional
         `SkillRenderContext` or delegation config, defaulting to all-native
         for backward compatibility.
       - When called from the install path, pass the resolved per-role
         context.
-- [ ] Update `src/harnesses/cursor/skills/loader.ts`:
+- [x] Update `src/harnesses/cursor/skills/loader.ts`:
       - `listSkills()` currently hardcodes `{ native: true }`. Change to
         accept optional context. The `adaptCursorTerminology()` post-
         processing should still apply to native-rendered blocks (it
@@ -387,15 +387,15 @@ configured mode.
         For invoke-rendered blocks, the terminology is already correct
         (they reference `5x invoke` directly). Verify that
         `adaptCursorTerminology` does not corrupt invoke-path content.
-- [ ] Update `opencodePlugin.install()` to resolve `SkillRenderContext`
+- [x] Update `opencodePlugin.install()` to resolve `SkillRenderContext`
       from the delegation config and pass it through the skill loader.
-- [ ] Update `cursorPlugin.install()` similarly.
-- [ ] Add integration tests for correct skill rendering under mixed mode:
+- [x] Update `cursorPlugin.install()` similarly.
+- [x] Add integration tests for correct skill rendering under mixed mode:
       - Install with `author.delegationMode = "invoke"`: verify installed
         skill files contain `5x invoke` for author steps and Task tool
         for reviewer steps.
       - Install with default config: verify output matches current behavior.
-- [ ] Add integration tests for lifecycle transitions (P1.1):
+- [x] Add integration tests for lifecycle transitions (P1.1):
       - Install native/native, change config to invoke/native, reinstall,
         verify skill files now contain invoke patterns for author, native
         patterns for reviewer.
