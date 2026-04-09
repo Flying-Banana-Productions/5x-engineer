@@ -52,6 +52,8 @@ export interface InstallSummary {
 	created: string[];
 	overwritten: string[];
 	skipped: string[];
+	/** Files removed during install (e.g., stale assets from mode transitions). */
+	removed?: string[];
 }
 
 /** Summary of an asset uninstall operation. */
@@ -275,6 +277,44 @@ export function uninstallAgentFiles(
 	removeDirIfEmpty(agentsDir);
 
 	return { removed, notFound };
+}
+
+/**
+ * Remove stale agent files that exist on disk but are not in the
+ * list of agents to keep. Used during mixed-mode delegation transitions
+ * to clean up agent files for roles that switched to invoke mode.
+ *
+ * @param agentsDir - The agents directory path
+ * @param keepAgentNames - Array of agent names that should be kept (without .md extension)
+ * @returns Array of removed file names (e.g., "5x-plan-author.md")
+ */
+export function removeStaleAgentFiles(
+	agentsDir: string,
+	keepAgentNames: string[],
+): string[] {
+	if (!existsSync(agentsDir)) {
+		return [];
+	}
+
+	const keepSet = new Set(keepAgentNames);
+	const removed: string[] = [];
+
+	const entries = readdirSync(agentsDir);
+	for (const entry of entries) {
+		// Only process .md files
+		if (!entry.endsWith(".md")) continue;
+
+		const agentName = entry.slice(0, -3); // Remove .md extension
+		if (!keepSet.has(agentName)) {
+			const filePath = join(agentsDir, entry);
+			rmSync(filePath);
+			removed.push(entry);
+		}
+	}
+
+	removeDirIfEmpty(agentsDir);
+
+	return removed;
 }
 
 /**

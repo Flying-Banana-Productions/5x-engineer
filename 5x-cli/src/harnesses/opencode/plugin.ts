@@ -12,6 +12,7 @@
 import {
 	installAgentFiles,
 	installSkillFiles,
+	removeStaleAgentFiles,
 	uninstallAgentFiles,
 	uninstallSkillFiles,
 } from "../installer.js";
@@ -78,6 +79,16 @@ const opencodePlugin: HarnessPlugin = {
 			agentTemplates,
 			ctx.force,
 		);
+
+		// Remove stale agent files (e.g., when switching from native to invoke mode)
+		const staleRemoved = removeStaleAgentFiles(
+			locations.agentsDir,
+			agentTemplates.map((t) => t.name),
+		);
+		// Include stale removals in the result for reporting
+		if (staleRemoved.length > 0) {
+			agents.removed = staleRemoved;
+		}
 
 		return { skills, agents };
 	},

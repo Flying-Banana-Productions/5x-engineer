@@ -2,6 +2,7 @@ import {
 	installAgentFiles,
 	installRuleFiles,
 	installSkillFiles,
+	removeStaleAgentFiles,
 	uninstallAgentFiles,
 	uninstallRuleFiles,
 	uninstallSkillFiles,
@@ -75,6 +76,16 @@ const cursorPlugin: HarnessPlugin = {
 			agentTemplates,
 			ctx.force,
 		);
+
+		// Remove stale agent files (e.g., when switching from native to invoke mode)
+		const staleRemoved = removeStaleAgentFiles(
+			locations.agentsDir,
+			agentTemplates.map((t) => t.name),
+		);
+		// Include stale removals in the result for reporting
+		if (staleRemoved.length > 0) {
+			agents.removed = staleRemoved;
+		}
 
 		if (ctx.scope === "project" && locations.rulesDir) {
 			const rules = installRuleFiles(
