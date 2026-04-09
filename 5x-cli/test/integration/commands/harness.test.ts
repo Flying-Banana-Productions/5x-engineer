@@ -1341,7 +1341,7 @@ model = "anthropic/claude-opus-4-6"
 	);
 
 	test(
-		"config change from native/native to invoke/native updates skill files on reinstall",
+		"config change from native/native to invoke/native updates skill files on reinstall without --force",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -1378,11 +1378,10 @@ delegationMode = "native"
 					"utf-8",
 				);
 
-				// Reinstall with force to update skill files
+				// Reinstall WITHOUT force - should still update skill files because content differs
 				const second = await runHarnessInstall(tmp, "opencode", [
 					"--scope",
 					"project",
-					"--force",
 				]);
 				expect(second.exitCode).toBe(0);
 

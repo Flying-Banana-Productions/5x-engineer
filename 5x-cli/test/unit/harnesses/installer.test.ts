@@ -92,7 +92,32 @@ describe("installFiles", () => {
 		}
 	});
 
-	test("skips existing files when force is false", () => {
+	test("skips existing files when force is false and content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const targetDir = join(tmp, "target");
+			mkdirSync(targetDir, { recursive: true });
+			writeFileSync(join(targetDir, "existing.md"), "SAME CONTENT", "utf-8");
+
+			const result = installFiles(
+				targetDir,
+				[{ filename: "existing.md", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("existing.md");
+			expect(result.created).toHaveLength(0);
+			expect(result.overwritten).toHaveLength(0);
+			// File should not be overwritten
+			expect(readFileSync(join(targetDir, "existing.md"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing files when force is false but content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const targetDir = join(tmp, "target");
@@ -105,11 +130,11 @@ describe("installFiles", () => {
 				false,
 			);
 
-			expect(result.skipped).toContain("existing.md");
+			expect(result.overwritten).toContain("existing.md");
 			expect(result.created).toHaveLength(0);
-			// File should not be overwritten
+			expect(result.skipped).toHaveLength(0);
 			expect(readFileSync(join(targetDir, "existing.md"), "utf-8")).toBe(
-				"ORIGINAL",
+				"NEW CONTENT",
 			);
 		} finally {
 			cleanupDir(tmp);
@@ -191,7 +216,33 @@ describe("installSkillFiles", () => {
 		}
 	});
 
-	test("skips existing skills without --force", () => {
+	test("skips existing skills without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const skillsDir = join(tmp, "skills");
+			mkdirSync(join(skillsDir, "existing-skill"), { recursive: true });
+			writeFileSync(
+				join(skillsDir, "existing-skill", "SKILL.md"),
+				"SAME CONTENT",
+				"utf-8",
+			);
+
+			const result = installSkillFiles(
+				skillsDir,
+				[{ name: "existing-skill", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("existing-skill/SKILL.md");
+			expect(
+				readFileSync(join(skillsDir, "existing-skill", "SKILL.md"), "utf-8"),
+			).toBe("SAME CONTENT");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing skills without --force when content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const skillsDir = join(tmp, "skills");
@@ -208,10 +259,11 @@ describe("installSkillFiles", () => {
 				false,
 			);
 
-			expect(result.skipped).toContain("existing-skill/SKILL.md");
+			expect(result.overwritten).toContain("existing-skill/SKILL.md");
+			expect(result.skipped).toHaveLength(0);
 			expect(
 				readFileSync(join(skillsDir, "existing-skill", "SKILL.md"), "utf-8"),
-			).toBe("ORIGINAL");
+			).toBe("NEW CONTENT");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -271,7 +323,29 @@ describe("installAgentFiles", () => {
 		}
 	});
 
-	test("skips existing agent files without --force", () => {
+	test("skips existing agent files without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(join(agentsDir, "5x-reviewer.md"), "SAME CONTENT", "utf-8");
+
+			const result = installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-reviewer.md");
+			expect(readFileSync(join(agentsDir, "5x-reviewer.md"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing agent files without --force when content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const agentsDir = join(tmp, "agents");
@@ -284,9 +358,10 @@ describe("installAgentFiles", () => {
 				false,
 			);
 
-			expect(result.skipped).toContain("5x-reviewer.md");
+			expect(result.overwritten).toContain("5x-reviewer.md");
+			expect(result.skipped).toHaveLength(0);
 			expect(readFileSync(join(agentsDir, "5x-reviewer.md"), "utf-8")).toBe(
-				"ORIGINAL",
+				"NEW CONTENT",
 			);
 		} finally {
 			cleanupDir(tmp);
@@ -340,7 +415,33 @@ describe("installRuleFiles", () => {
 		}
 	});
 
-	test("skips existing rule files without --force", () => {
+	test("skips existing rule files without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(
+				join(rulesDir, "5x-orchestrator.mdc"),
+				"SAME CONTENT",
+				"utf-8",
+			);
+
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing rule files without --force when content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const rulesDir = join(tmp, "rules");
@@ -353,9 +454,10 @@ describe("installRuleFiles", () => {
 				false,
 			);
 
-			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(result.overwritten).toContain("5x-orchestrator.mdc");
+			expect(result.skipped).toHaveLength(0);
 			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
-				"ORIGINAL",
+				"NEW CONTENT",
 			);
 		} finally {
 			cleanupDir(tmp);
