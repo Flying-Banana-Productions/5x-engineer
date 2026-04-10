@@ -16,7 +16,7 @@ approved by the reviewer or the human overrides.
 
 ## Prerequisites
 
-- An implementation plan exists at a known path (under the repository root)
+- An implementation plan exists and is associated with the run
 - The plan parses successfully (`5x plan phases` returns phases)
 
 ## Prerequisite Skill
@@ -29,7 +29,7 @@ timeout handling.
 - Only completed review-then-author cycles count toward
   `maxReviewIterations` — retries from timeout/empty output don't count
 - Empty diff after author "completes" = context loss →
-{{#if native}}
+{{#if author_native}}
   start fresh task (omit `task_id`)
 {{else}}
   start fresh session (omit `--session`)
@@ -37,6 +37,9 @@ timeout handling.
 - `not_ready` with no actionable items → escalate, don't loop
 - `SESSION_REQUIRED` error → pass `--new-session` to `5x template render`
 - Read `maxReviewIterations` from `5x config show` for the iteration limit
+- When using `--run`, do not pass `--var plan_path=...` unless you are
+  intentionally overriding run-linked plan resolution. Let the CLI resolve
+  the mapped worktree copy automatically.
 
 ## Tools
 
@@ -46,22 +49,24 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
-{{#if native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-{{else}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{#if any_native}}
+- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+{{/if}}
+{{#if any_invoke}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
-{{#if native}}
+{{#if any_native}}
 - Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes below.
 - **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
-{{else}}
+{{/if}}
+{{#if all_invoke}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
 - `5x prompt input <msg>` — get human guidance
 {{/if}}
 
-{{#if native}}
-### Delegating sub-agent work
+{{#if reviewer_native}}
+### Delegating sub-agent work (native reviewer)
 
 **Canonical delegation example (reviewer:review):**
 
@@ -72,7 +77,6 @@ timeout handling.
 #    Task lifecycle: first review has no $REVIEWER_TASK_ID, subsequent
 #    reviews pass --session $REVIEWER_TASK_ID for the continued template.
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -91,21 +95,22 @@ REVIEWER_TASK_ID=<task_id from Task tool result>
 ```
 
 **Task reuse** is expected when `reviewer.continuePhaseSessions` is
-enabled. The tool enforces this: if a prior reviewer step exists for the
-current phase, `--session <id>` or `--new-session` is required on
-`5x template render`. Pass the reviewer's `task_id` as the `--session`
-value. Use `--new-session` only for recovery (context loss, empty output).
+enabled and the reviewer is native. The tool enforces this: if a prior
+reviewer step exists for the current phase, `--session <id>` or
+`--new-session` is required on `5x template render`. Pass the reviewer's
+`task_id` as the `--session` value. Use `--new-session` only for recovery
+(context loss, empty output).
 
 When `--session` is passed, the command automatically selects the shorter
 `reviewer-plan-continued` template variant if one exists.
-{{else}}
-### Delegating review/author work with invoke
+{{/if}}
+{{#if reviewer_invoke}}
+### Delegating review/author work with invoke (invoke reviewer)
 
 **Canonical delegation example (reviewer:review):**
 
 ```bash
 RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -114,8 +119,9 @@ ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
-Session reuse is best-effort. Pass `--session $SESSION_ID` when
-continuing context. Use `--new-session` only for recovery.
+Session reuse is best-effort when the reviewer uses invoke. Pass
+`--session $SESSION_ID` when continuing context. Use `--new-session` only
+for recovery.
 {{/if}}
 
 Projects using plan-review should enable
@@ -125,30 +131,31 @@ confirmed all reviewer templates have `-continued` variants.
 ## Workflow
 
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
-{{#if native}}
+{{#if reviewer_native}}
 Track $REVIEWER_TASK_ID (initially empty). Task reuse is enforced when
-`reviewer.continuePhaseSessions` is enabled — pass `--session $REVIEWER_TASK_ID`
-to `5x template render` and pass `task_id=$REVIEWER_TASK_ID` to the Task tool
-on subsequent reviews.
-{{else}}
-Track $SESSION_ID (initially empty). Session reuse is enforced when
-`reviewer.continuePhaseSessions` is enabled — pass `--session $SESSION_ID`
-on subsequent invoke calls.
+`reviewer.continuePhaseSessions` is enabled and the reviewer is native —
+pass `--session $REVIEWER_TASK_ID` to `5x template render` and pass
+`task_id=$REVIEWER_TASK_ID` to the Task tool on subsequent reviews.
 {{/if}}
-{{#if native}}
+{{#if reviewer_invoke}}
+Track $SESSION_ID (initially empty). Session reuse is enforced when
+`reviewer.continuePhaseSessions` is enabled and the reviewer uses invoke —
+pass `--session $SESSION_ID` on subsequent invoke calls.
+{{/if}}
+{{#if reviewer_native}}
 Read $REVIEW_PATH from `.data.variables.review_path` in the template render output.
-{{else}}
+{{/if}}
+{{#if reviewer_invoke}}
 Read $REVIEW_PATH from a separate template render call before each reviewer invoke.
 {{/if}}
 
 ### Step 1: Review
 
-{{#if native}}
+{{#if reviewer_native}}
 Delegate to the reviewer via the Task tool:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -174,12 +181,10 @@ Delegate to the reviewer via `5x invoke`:
 ```bash
 # Extract review_path for reporting/audit
 REVIEW_PATH=$(5x template render reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
 RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
-  --var plan_path=$PLAN_PATH \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -212,12 +217,11 @@ Read the verdict from `READINESS` (`.data.result.readiness`):
 
 ### Step 3: Author fix
 
-{{#if native}}
+{{#if author_native}}
 Delegate to the plan author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-plan-review --run $RUN \
-  --var plan_path=$PLAN_PATH)
+RENDERED=$(5x template render author-process-plan-review --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -232,7 +236,6 @@ Delegate to the plan author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-process-plan-review --run $RUN \
-  --var plan_path=$PLAN_PATH \
   --record --record-step author:process-plan-review --phase plan)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
@@ -259,7 +262,7 @@ Loop back to Step 1.
 
 ### Step 4: Escalate
 
-{{#if native}}
+{{#if any_native}}
 Present the situation to the human using your **native UI** (multiple choice + freeform where needed). Match the semantics of:
 
 - **Options:** continue-with-guidance, approve-override, abort
@@ -322,7 +325,7 @@ Report to the human: plan review is complete. Verdict: approved
   items and the author's notes to the human for judgment.
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
-{{#if native}}
+{{#if reviewer_native}}
   with a fresh task (omit `task_id`) and explicit instructions to provide
 {{else}}
   without `--session` and explicit instructions to provide
@@ -333,24 +336,24 @@ Report to the human: plan review is complete. Verdict: approved
   problem. Check whether the review items mentioned restructuring. If
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
-{{#if native}}
+{{#if author_native}}
   Suspect context loss (compaction). Re-invoke with a fresh task (omit
   `task_id`). If it happens twice, escalate to the human.
 {{else}}
   Suspect context loss (compaction). Re-invoke without `--session`.
   If it happens twice, escalate to the human.
 {{/if}}
-{{#if native}}
-- **Subagent returns empty or invalid output**: Retry once with a fresh
+{{#if author_native}}
+- **Subagent returns empty or invalid output (author)**: Retry once with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
 {{else}}
-- **Subagent returns empty or invalid output**: Retry once without `--session`.
+- **Subagent returns empty or invalid output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires `--session`
   or `--new-session` because `continuePhaseSessions` is enabled and prior
   steps exist. Pass `--new-session` to recover, or pass the reviewer's
-{{#if native}}
+{{#if reviewer_native}}
   `task_id` as `--session` to continue normally.
 {{else}}
   `session_id` as `--session` to continue normally.

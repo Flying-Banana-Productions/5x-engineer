@@ -20,6 +20,7 @@ import {
 	installRuleFiles,
 	installSkillFiles,
 	removeDirIfEmpty,
+	removeStaleAgentFiles,
 	uninstallAgentFiles,
 	uninstallRuleFiles,
 	uninstallSkillFiles,
@@ -91,7 +92,32 @@ describe("installFiles", () => {
 		}
 	});
 
-	test("skips existing files when force is false", () => {
+	test("skips existing files when force is false and content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const targetDir = join(tmp, "target");
+			mkdirSync(targetDir, { recursive: true });
+			writeFileSync(join(targetDir, "existing.md"), "SAME CONTENT", "utf-8");
+
+			const result = installFiles(
+				targetDir,
+				[{ filename: "existing.md", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("existing.md");
+			expect(result.created).toHaveLength(0);
+			expect(result.overwritten).toHaveLength(0);
+			// File should not be overwritten
+			expect(readFileSync(join(targetDir, "existing.md"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips existing files when force is false even if content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const targetDir = join(tmp, "target");
@@ -104,9 +130,10 @@ describe("installFiles", () => {
 				false,
 			);
 
+			// Non-skill assets preserve local edits unless --force is set
 			expect(result.skipped).toContain("existing.md");
 			expect(result.created).toHaveLength(0);
-			// File should not be overwritten
+			expect(result.overwritten).toHaveLength(0);
 			expect(readFileSync(join(targetDir, "existing.md"), "utf-8")).toBe(
 				"ORIGINAL",
 			);
@@ -190,7 +217,33 @@ describe("installSkillFiles", () => {
 		}
 	});
 
-	test("skips existing skills without --force", () => {
+	test("skips existing skills without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const skillsDir = join(tmp, "skills");
+			mkdirSync(join(skillsDir, "existing-skill"), { recursive: true });
+			writeFileSync(
+				join(skillsDir, "existing-skill", "SKILL.md"),
+				"SAME CONTENT",
+				"utf-8",
+			);
+
+			const result = installSkillFiles(
+				skillsDir,
+				[{ name: "existing-skill", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("existing-skill/SKILL.md");
+			expect(
+				readFileSync(join(skillsDir, "existing-skill", "SKILL.md"), "utf-8"),
+			).toBe("SAME CONTENT");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites existing skills without --force when content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const skillsDir = join(tmp, "skills");
@@ -207,10 +260,11 @@ describe("installSkillFiles", () => {
 				false,
 			);
 
-			expect(result.skipped).toContain("existing-skill/SKILL.md");
+			expect(result.overwritten).toContain("existing-skill/SKILL.md");
+			expect(result.skipped).toHaveLength(0);
 			expect(
 				readFileSync(join(skillsDir, "existing-skill", "SKILL.md"), "utf-8"),
-			).toBe("ORIGINAL");
+			).toBe("NEW CONTENT");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -270,7 +324,29 @@ describe("installAgentFiles", () => {
 		}
 	});
 
-	test("skips existing agent files without --force", () => {
+	test("skips existing agent files without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(join(agentsDir, "5x-reviewer.md"), "SAME CONTENT", "utf-8");
+
+			const result = installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-reviewer.md");
+			expect(readFileSync(join(agentsDir, "5x-reviewer.md"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips existing agent files without --force even if content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const agentsDir = join(tmp, "agents");
@@ -283,7 +359,9 @@ describe("installAgentFiles", () => {
 				false,
 			);
 
+			// Agent files preserve local edits unless --force is set
 			expect(result.skipped).toContain("5x-reviewer.md");
+			expect(result.overwritten).toHaveLength(0);
 			expect(readFileSync(join(agentsDir, "5x-reviewer.md"), "utf-8")).toBe(
 				"ORIGINAL",
 			);
@@ -339,7 +417,33 @@ describe("installRuleFiles", () => {
 		}
 	});
 
-	test("skips existing rule files without --force", () => {
+	test("skips existing rule files without --force when content matches", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(
+				join(rulesDir, "5x-orchestrator.mdc"),
+				"SAME CONTENT",
+				"utf-8",
+			);
+
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "SAME CONTENT" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
+				"SAME CONTENT",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips existing rule files without --force even if content differs", () => {
 		const tmp = makeTmpDir();
 		try {
 			const rulesDir = join(tmp, "rules");
@@ -352,7 +456,9 @@ describe("installRuleFiles", () => {
 				false,
 			);
 
+			// Rule files preserve local edits unless --force is set
 			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(result.overwritten).toHaveLength(0);
 			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
 				"ORIGINAL",
 			);
@@ -728,6 +834,333 @@ describe("uninstallRuleFiles", () => {
 			uninstallRuleFiles(rulesDir, ["5x-orchestrator"]);
 
 			expect(existsSync(rulesDir)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// removeStaleAgentFiles tests
+// ---------------------------------------------------------------------------
+
+describe("removeStaleAgentFiles", () => {
+	test("removes stale 5x-managed agent files not in keep-set", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			// Install 5x-managed agents
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-plan-author", content: "plan author content" },
+					{ name: "5x-code-author", content: "code author content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Simulate mixed-mode transition: keep only reviewer and orchestrator
+			const keepNames = ["5x-reviewer", "5x-orchestrator"];
+			const managedNames = [
+				"5x-reviewer",
+				"5x-plan-author",
+				"5x-code-author",
+				"5x-orchestrator",
+			];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Should have removed the stale author agents
+			expect(removed).toContain("5x-plan-author.md");
+			expect(removed).toContain("5x-code-author.md");
+			expect(removed).toHaveLength(2);
+
+			// Verify files are actually gone
+			expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(false);
+			expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(false);
+
+			// Kept files should remain
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves user-authored and third-party agent files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			// Install 5x-managed agents
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Add user-authored and third-party agents
+			writeFileSync(
+				join(agentsDir, "my-custom-agent.md"),
+				"custom agent content",
+				"utf-8",
+			);
+			writeFileSync(
+				join(agentsDir, "third-party-helper.md"),
+				"third party content",
+				"utf-8",
+			);
+
+			// Simulate transition to invoke/invoke (only orchestrator kept)
+			const keepNames = ["5x-orchestrator"];
+			const managedNames = ["5x-reviewer", "5x-orchestrator"];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Should have removed only the stale 5x-managed file
+			expect(removed).toContain("5x-reviewer.md");
+			expect(removed).toHaveLength(1);
+
+			// User-authored files should be preserved
+			expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+			// Orchestrator should remain
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+
+			// Reviewer should be removed
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("no-ops when agents directory does not exist", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "nonexistent", "agents");
+			const removed = removeStaleAgentFiles(
+				agentsDir,
+				["5x-reviewer"],
+				["5x-reviewer", "5x-orchestrator"],
+			);
+			expect(removed).toHaveLength(0);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("no-ops when all managed agents are in keep-set", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[
+					{ name: "5x-reviewer", content: "reviewer content" },
+					{ name: "5x-orchestrator", content: "orchestrator content" },
+				],
+				false,
+			);
+
+			// Keep all managed agents
+			const keepNames = ["5x-reviewer", "5x-orchestrator"];
+			const managedNames = ["5x-reviewer", "5x-orchestrator"];
+			const removed = removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			expect(removed).toHaveLength(0);
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+			expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("cleans empty agents directory after removing all stale files", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "reviewer content" }],
+				false,
+			);
+
+			// Remove all managed agents (transition to invoke mode)
+			const keepNames: string[] = [];
+			const managedNames = ["5x-reviewer"];
+			removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Directory should be removed since it was empty
+			expect(existsSync(agentsDir)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves non-.md files in agents directory", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "reviewer content" }],
+				false,
+			);
+
+			// Add non-.md files
+			writeFileSync(join(agentsDir, "config.json"), "{}", "utf-8");
+			writeFileSync(join(agentsDir, "notes.txt"), "notes", "utf-8");
+
+			// Remove all managed agents
+			const keepNames: string[] = [];
+			const managedNames = ["5x-reviewer"];
+			removeStaleAgentFiles(agentsDir, keepNames, managedNames);
+
+			// Non-.md files should be preserved
+			expect(existsSync(join(agentsDir, "config.json"))).toBe(true);
+			expect(existsSync(join(agentsDir, "notes.txt"))).toBe(true);
+
+			// Managed .md file should be removed
+			expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// R1 Regression: overwrite policy per asset type
+// ---------------------------------------------------------------------------
+
+describe("R1: overwrite policy per asset type", () => {
+	test("skills overwrite without --force when content differs (config refresh)", () => {
+		const tmp = makeTmpDir();
+		try {
+			const skillsDir = join(tmp, "skills");
+			mkdirSync(join(skillsDir, "5x-phase-execution"), { recursive: true });
+			writeFileSync(
+				join(skillsDir, "5x-phase-execution", "SKILL.md"),
+				"# Old delegation config",
+				"utf-8",
+			);
+
+			// Skill files should refresh without --force when content differs
+			const result = installSkillFiles(
+				skillsDir,
+				[{ name: "5x-phase-execution", content: "# New delegation config" }],
+				false,
+			);
+
+			expect(result.overwritten).toContain("5x-phase-execution/SKILL.md");
+			expect(
+				readFileSync(
+					join(skillsDir, "5x-phase-execution", "SKILL.md"),
+					"utf-8",
+				),
+			).toBe("# New delegation config");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("agents preserve local edits without --force even if content differs", () => {
+		const tmp = makeTmpDir();
+		try {
+			const agentsDir = join(tmp, "agents");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(
+				join(agentsDir, "5x-reviewer.md"),
+				"# User-customized reviewer agent",
+				"utf-8",
+			);
+
+			// Agent files should NOT be overwritten without --force (preserves local edits)
+			const result = installAgentFiles(
+				agentsDir,
+				[{ name: "5x-reviewer", content: "# Bundled reviewer agent" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-reviewer.md");
+			expect(readFileSync(join(agentsDir, "5x-reviewer.md"), "utf-8")).toBe(
+				"# User-customized reviewer agent",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("rules preserve local edits without --force even if content differs", () => {
+		const tmp = makeTmpDir();
+		try {
+			const rulesDir = join(tmp, "rules");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(
+				join(rulesDir, "5x-orchestrator.mdc"),
+				"# User-customized orchestrator rule",
+				"utf-8",
+			);
+
+			// Rule files should NOT be overwritten without --force (preserves local edits)
+			const result = installRuleFiles(
+				rulesDir,
+				[{ name: "5x-orchestrator", content: "# Bundled orchestrator rule" }],
+				false,
+			);
+
+			expect(result.skipped).toContain("5x-orchestrator.mdc");
+			expect(readFileSync(join(rulesDir, "5x-orchestrator.mdc"), "utf-8")).toBe(
+				"# User-customized orchestrator rule",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("all asset types respect --force to overwrite", () => {
+		const tmp = makeTmpDir();
+		try {
+			const skillsDir = join(tmp, "skills");
+			const agentsDir = join(tmp, "agents");
+			const rulesDir = join(tmp, "rules");
+
+			// Setup existing files
+			mkdirSync(join(skillsDir, "my-skill"), { recursive: true });
+			writeFileSync(join(skillsDir, "my-skill", "SKILL.md"), "old", "utf-8");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(join(agentsDir, "my-agent.md"), "old", "utf-8");
+			mkdirSync(rulesDir, { recursive: true });
+			writeFileSync(join(rulesDir, "my-rule.mdc"), "old", "utf-8");
+
+			// With --force, all should be overwritten
+			const skillResult = installSkillFiles(
+				skillsDir,
+				[{ name: "my-skill", content: "new" }],
+				true,
+			);
+			const agentResult = installAgentFiles(
+				agentsDir,
+				[{ name: "my-agent", content: "new" }],
+				true,
+			);
+			const ruleResult = installRuleFiles(
+				rulesDir,
+				[{ name: "my-rule", content: "new" }],
+				true,
+			);
+
+			expect(skillResult.overwritten).toContain("my-skill/SKILL.md");
+			expect(agentResult.overwritten).toContain("my-agent.md");
+			expect(ruleResult.overwritten).toContain("my-rule.mdc");
+
+			expect(
+				readFileSync(join(skillsDir, "my-skill", "SKILL.md"), "utf-8"),
+			).toBe("new");
+			expect(readFileSync(join(agentsDir, "my-agent.md"), "utf-8")).toBe("new");
+			expect(readFileSync(join(rulesDir, "my-rule.mdc"), "utf-8")).toBe("new");
 		} finally {
 			cleanupDir(tmp);
 		}

@@ -96,7 +96,7 @@ function setupProject(dir: string): void {
 	runMigrations(db);
 	db.close();
 
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(
 		join(dir, "5x.toml"),
 		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n',

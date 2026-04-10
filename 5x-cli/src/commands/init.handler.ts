@@ -177,8 +177,11 @@ function checkInstalledPromptTemplates(projectRoot: string): {
 	return { current, diverged };
 }
 
+/** Lines appended idempotently by {@link ensureGitignore}. */
+const GITIGNORE_ENTRIES = [".5x/", "5x.toml.local"] as const;
+
 /**
- * Append `.5x/` to .gitignore if not already present.
+ * Append `.5x/` and `5x.toml.local` to .gitignore if not already present.
  * Creates .gitignore if it doesn't exist.
  */
 function ensureGitignore(projectRoot: string): {
@@ -186,26 +189,30 @@ function ensureGitignore(projectRoot: string): {
 	appended: boolean;
 } {
 	const gitignorePath = join(projectRoot, ".gitignore");
-	const entry = ".5x/";
 
 	if (!existsSync(gitignorePath)) {
-		writeFileSync(gitignorePath, `${entry}\n`, "utf-8");
+		writeFileSync(gitignorePath, `${GITIGNORE_ENTRIES.join("\n")}\n`, "utf-8");
 		return { created: true, appended: false };
 	}
 
-	const content = readFileSync(gitignorePath, "utf-8");
-	const lines = content.split("\n");
+	let content = readFileSync(gitignorePath, "utf-8");
+	let appended = false;
 
-	// Check if .5x/ is already in .gitignore (exact line match, trimmed)
-	const alreadyPresent = lines.some((line) => line.trim() === entry);
-	if (alreadyPresent) {
-		return { created: false, appended: false };
+	for (const entry of GITIGNORE_ENTRIES) {
+		const lines = content.split("\n");
+		const alreadyPresent = lines.some((line) => line.trim() === entry);
+		if (alreadyPresent) continue;
+
+		const separator = content.endsWith("\n") ? "" : "\n";
+		content = `${content}${separator}${entry}\n`;
+		appended = true;
 	}
 
-	// Append with a newline before if file doesn't end with one
-	const separator = content.endsWith("\n") ? "" : "\n";
-	writeFileSync(gitignorePath, `${content}${separator}${entry}\n`, "utf-8");
-	return { created: false, appended: true };
+	if (appended) {
+		writeFileSync(gitignorePath, content, "utf-8");
+	}
+
+	return { created: false, appended };
 }
 
 // ---------------------------------------------------------------------------
@@ -309,11 +316,11 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	// 3. Update .gitignore
 	const gitignoreResult = ensureGitignore(projectRoot);
 	if (gitignoreResult.created) {
-		console.log("  Created .gitignore with .5x/");
+		console.log("  Created .gitignore with .5x/ and 5x.toml.local");
 	} else if (gitignoreResult.appended) {
-		console.log("  Added .5x/ to .gitignore");
+		console.log("  Updated .gitignore (added missing entries)");
 	} else {
-		console.log("  Skipped .gitignore (.5x/ already present)");
+		console.log("  Skipped .gitignore (all entries already present)");
 	}
 
 	console.log("  External TUI is opt-in: use --tui-listen");

@@ -46,7 +46,7 @@ How you collect the response:
    terminals). Pass `--default` to provide a fallback for non-interactive
    environments.
 
-{{#if native}}
+{{#if any_native}}
 ### Native harness (orchestrator with a chat or question UI)
 
 You are the **orchestrator**, not a headless shell. **Default to (1) or (2)** above
@@ -56,12 +56,16 @@ fail in agent-driven terminals.
 
 - **Cursor:** use **AskQuestion** (or equivalent) for multiple choice; use the chat
   thread for freeform guidance.
-- **Other native harnesses:** use that environment’s chat / native tools the same way.
+- **Other native harnesses:** use that environment's chat / native tools the same way.
 
 Use `5x run record` with the same JSON shapes the skill specifies after the human
 chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat UI.
+{{/if}}
 
 ## Delegating to Subagents
+
+{{#if any_native}}
+### Native delegation (Task tool)
 
 These skills assume an opencode environment with the 5x harness installed.
 Available subagents are listed in the Task tool's `subagent_type` parameter:
@@ -92,11 +96,16 @@ echo "$RESULT" | 5x protocol validate <role> \
 
 This pattern works for all author and reviewer delegation steps.
 `5x protocol validate --record` is the single recording point.
-{{else}}
-## Delegating with 5x invoke
 
-These skills assume a universal harness environment where delegation is
-handled through `5x invoke`.
+When using `--run`, do not pass `--var plan_path=...` unless you are
+intentionally overriding run-linked plan resolution. By default, the CLI
+resolves `plan_path` from the run context and mapped worktree (when present),
+which keeps author and reviewer on the same file.
+{{/if}}
+{{#if any_invoke}}
+### Invoke delegation (5x invoke)
+
+These skills support environments where some roles use `5x invoke` delegation.
 
 Delegate work by invoking the role/template pair directly and letting
 `5x invoke --record` validate and record in one step:
@@ -113,26 +122,30 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 This pattern works for all author and reviewer delegation steps.
 `5x invoke --record` is the single recording point.
+
+When using `--run`, do not pass `--var plan_path=...` unless you are
+intentionally overriding run-linked plan resolution.
 {{/if}}
 
-{{#if native}}
-## Task Reuse
+{{#if any_native}}
+## Task Reuse (Native)
 
-**Task reuse** is optional and best-effort. The Task tool returns a
-`task_id` from each subagent invocation. Pass it back to resume the same
-subagent conversation with full prior context — the subagent picks up
-where it left off instead of starting fresh.
+**Task reuse** is optional and best-effort for native-delegated roles.
+The Task tool returns a `task_id` from each subagent invocation. Pass it
+back to resume the same subagent conversation with full prior context —
+the subagent picks up where it left off instead of starting fresh.
 
 To also get a shorter continued-template variant, pass the `task_id` as
 the `--session` value to `5x template render --session <task_id>`. If
 task reuse is unavailable or awkward, start a fresh task (omit
 `task_id`) — never fail a workflow because task reuse didn't work.
-{{else}}
-## Session Reuse
+{{/if}}
+{{#if any_invoke}}
+## Session Reuse (Invoke)
 
-**Session reuse** is optional and best-effort. `5x invoke` returns a
-`session_id` from each invocation. Pass it back via `--session` to resume
-the same provider session with full prior context.
+**Session reuse** is optional and best-effort for invoke-delegated roles.
+`5x invoke` returns a `session_id` from each invocation. Pass it back via
+`--session` to resume the same provider session with full prior context.
 
 To also get a shorter continued-template variant, pass `--session`
 to `5x invoke` (it forwards the value to template rendering internally).
@@ -143,36 +156,40 @@ work.
 
 ## Gotchas
 
-{{#if native}}
-- **`5x protocol validate --record` is the single recording point.**
-  Never record separately — validate handles it.
-{{else}}
-- **`5x invoke --record` is the single recording point.**
-  Never record separately — invoke handles validation + recording together.
+- **Single recording point:**
+{{#if any_native}}
+  - For native delegation: `5x protocol validate --record` handles recording.
 {{/if}}
-{{#if native}}
-- **Task reuse is best-effort.** Never fail a workflow because
+{{#if any_invoke}}
+  - For invoke delegation: `5x invoke --record` handles validation + recording.
+{{/if}}
+{{#if any_native}}
+- **Task reuse is best-effort** (native roles). Never fail a workflow because
   task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
-{{else}}
-- **Session reuse is best-effort.** Never fail a workflow because
+{{/if}}
+{{#if any_invoke}}
+- **Session reuse is best-effort** (invoke roles). Never fail a workflow because
   session reuse didn't work. Drop the stale `session_id` (omit `--session`)
   and move on.
 {{/if}}
 - **`result: "complete"` without a commit = invariant violation** in any
   author step. Authors commit via `5x commit --run $RUN` (which records
-{{#if native}}
-  the commit in the run journal). Re-invoke with a fresh task (omit
-  `task_id`). If it fails again, escalate to the human.
-{{else}}
-  the commit in the run journal). Re-invoke without `--session`. If it fails again, escalate to the human.
+  the commit in the run journal).
+{{#if author_native}}
+- For native author: Re-invoke with a fresh task (omit `task_id`).
 {{/if}}
+{{#if author_invoke}}
+- For invoke author: Re-invoke without `--session`.
+{{/if}}
+  If it fails again, escalate to the human.
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
-{{#if native}}
-- **Empty or invalid subagent output**: Retry once with a fresh task
+{{#if author_native}}
+- **Empty or invalid subagent output (author)**: Retry once with a fresh task
   (omit `task_id`). If it fails again, escalate to the human.
-{{else}}
-- **Empty or invalid subagent output**: Retry once without `--session`.
+{{/if}}
+{{#if author_invoke}}
+- **Empty or invalid subagent output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
 {{/if}}

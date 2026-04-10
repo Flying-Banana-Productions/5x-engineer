@@ -1,8 +1,8 @@
 /**
  * OpenCode harness skill loader.
  *
- * OpenCode skills are rendered from shared base templates using native
- * delegation mode (`{ native: true }`).
+ * OpenCode skills are rendered from shared base templates using the
+ * configured delegation mode (native or invoke per role).
  */
 
 import {
@@ -10,6 +10,10 @@ import {
 	renderAllSkillTemplates,
 	renderSkillByName,
 } from "../../../skills/loader.js";
+import {
+	createRenderContext,
+	type SkillRenderContext,
+} from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
 export {
@@ -20,10 +24,17 @@ export {
 /**
  * Get the raw content of a bundled skill.
  * Returns the full rendered SKILL.md content including YAML frontmatter.
+ *
+ * @param name - Skill name (e.g., "5x", "5x-plan")
+ * @param ctx - Optional render context. Defaults to all-native for backward compatibility.
  */
-export function getDefaultSkillRaw(name: string): string {
+export function getDefaultSkillRaw(
+	name: string,
+	ctx?: SkillRenderContext,
+): string {
+	const renderContext = ctx ?? createRenderContext(true);
 	try {
-		return renderSkillByName(name, { native: true }).content;
+		return renderSkillByName(name, renderContext).content;
 	} catch (error) {
 		if (
 			error instanceof Error &&
@@ -47,7 +58,10 @@ export function listSkillNames(): string[] {
 
 /**
  * Get metadata for all bundled skills.
+ *
+ * @param ctx - Optional render context. Defaults to all-native for backward compatibility.
  */
-export function listSkills(): SkillMetadata[] {
-	return renderAllSkillTemplates({ native: true });
+export function listSkills(ctx?: SkillRenderContext): SkillMetadata[] {
+	const renderContext = ctx ?? createRenderContext(true);
+	return renderAllSkillTemplates(renderContext);
 }

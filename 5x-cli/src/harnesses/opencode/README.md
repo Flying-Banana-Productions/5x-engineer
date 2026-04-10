@@ -61,7 +61,7 @@ Four markdown templates with YAML frontmatter, bundled as static text imports:
 
 ### Model Injection (`loader.ts`)
 
-At install time, `renderAgentTemplates()` injects a `model:` line into each agent's YAML frontmatter. The CLI resolves strings from `5x.toml` **for this harness** (`opencode`):
+At install time, `renderAgentTemplates()` injects a `model:` line into each agent's YAML frontmatter. The CLI resolves strings from layered `5x.toml` / `5x.toml.local` **for this harness** (`opencode`), using the same cwd-anchored resolution as other commands—run `5x harness install` from the directory whose config should apply (e.g. a monorepo sub-package):
 
 - **Author agents** (`5x-plan-author`, `5x-code-author`) use the resolved author model (see below).
 - **Reviewer agent** (`5x-reviewer`) uses the resolved reviewer model.

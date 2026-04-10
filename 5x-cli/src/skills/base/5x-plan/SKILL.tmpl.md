@@ -31,7 +31,7 @@ timeout handling.
 - Plan path must resolve inside `paths.plans` (from config)
 - After author generates plan, file must exist AND parse via
   `5x plan phases`
-{{#if native}}
+{{#if author_native}}
 - Author must produce a commit via `5x commit` — no commit is an
   invariant violation; re-invoke with a fresh task (omit `task_id`)
 {{else}}
@@ -51,16 +51,18 @@ timeout handling.
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
-{{#if native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-{{else}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{#if any_native}}
+- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+{{/if}}
+{{#if any_invoke}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
-{{#if native}}
+{{#if any_native}}
 - Human gates — use your **native UI** (see `5x` foundation skill: e.g. AskQuestion / chat in Cursor). Record outcomes with `5x run record` as the skill specifies.
 - **`5x prompt` fallback** — `5x prompt choose` / `input` only when no chat UI exists (e.g. headless shell); use `--default` if stdin is not a TTY.
-{{else}}
+{{/if}}
+{{#if all_invoke}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human a question
 - `5x prompt input <msg>` — get freeform guidance from the human
 {{/if}}
@@ -86,7 +88,7 @@ and skip to the appropriate step based on recorded history.
 
 ### Step 2: Generate the plan
 
-{{#if native}}
+{{#if author_native}}
 Delegate to the plan author via the Task tool:
 
 ```bash
@@ -116,7 +118,7 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 Check the result:
 - If `result: "complete"` — continue to Step 3.
-{{#if native}}
+{{#if any_native}}
 - If `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If the human provides guidance, re-invoke with `--var user_notes="$GUIDANCE"`.
 {{else}}
 - If `result: "needs_human"` — present the reason to the human via
@@ -154,7 +156,7 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Plan file missing after author claims complete**: The author likely
   wrote to the wrong path. Re-invoke with explicit emphasis on the
   output path. If it fails again, ask the human.
-{{#if native}}
+{{#if author_native}}
 - **Plan has no parseable phases**: The author didn't follow the template
   structure. Re-invoke with a fresh task (omit `task_id`) and explicit
   instructions to follow the template format.
@@ -164,7 +166,7 @@ Report to the human: plan is ready at $PLAN_PATH.
   the template format.
 {{/if}}
 - **Author claims complete but no commit** (no `5x commit` was run):
-{{#if native}}
+{{#if author_native}}
   Invariant violation — treat as context loss. Re-invoke with a fresh
   task (omit `task_id`). If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh

@@ -52,8 +52,16 @@ function baseOpts(
 	return {
 		templateName: "reviewer-plan",
 		config: {
-			author: { provider: "opencode", continuePhaseSessions: false },
-			reviewer: { provider: "opencode", continuePhaseSessions: false },
+			author: {
+				provider: "opencode",
+				continuePhaseSessions: false,
+				delegationMode: "native",
+			},
+			reviewer: {
+				provider: "opencode",
+				continuePhaseSessions: false,
+				delegationMode: "native",
+			},
 		},
 		...overrides,
 	};
@@ -62,16 +70,32 @@ function baseOpts(
 /** Config with continuePhaseSessions enabled for reviewer. */
 function reviewerEnabledConfig() {
 	return {
-		author: { provider: "opencode", continuePhaseSessions: false },
-		reviewer: { provider: "opencode", continuePhaseSessions: true },
+		author: {
+			provider: "opencode",
+			continuePhaseSessions: false,
+			delegationMode: "native" as const,
+		},
+		reviewer: {
+			provider: "opencode",
+			continuePhaseSessions: true,
+			delegationMode: "native" as const,
+		},
 	};
 }
 
 /** Config with continuePhaseSessions enabled for author. */
 function authorEnabledConfig() {
 	return {
-		author: { provider: "opencode", continuePhaseSessions: true },
-		reviewer: { provider: "opencode", continuePhaseSessions: false },
+		author: {
+			provider: "opencode",
+			continuePhaseSessions: true,
+			delegationMode: "native" as const,
+		},
+		reviewer: {
+			provider: "opencode",
+			continuePhaseSessions: false,
+			delegationMode: "native" as const,
+		},
 	};
 }
 
@@ -286,8 +310,16 @@ describe("validateSessionContinuity", () => {
 					runId,
 					db,
 					config: {
-						author: { provider: "opencode", continuePhaseSessions: true },
-						reviewer: { provider: "opencode", continuePhaseSessions: true },
+						author: {
+							provider: "opencode",
+							continuePhaseSessions: true,
+							delegationMode: "native" as const,
+						},
+						reviewer: {
+							provider: "opencode",
+							continuePhaseSessions: true,
+							delegationMode: "native" as const,
+						},
 					},
 				}),
 			);

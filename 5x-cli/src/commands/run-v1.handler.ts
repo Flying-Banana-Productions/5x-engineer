@@ -703,7 +703,12 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 
 	// Load root config first for plan arg resolution (bare filename → plans dir).
 	// Layered config is loaded below once the plan path is known.
-	const rootResult = await loadConfig(projectRoot);
+	const rootResult = await loadConfig(
+		projectRoot,
+		undefined,
+		undefined,
+		projectRoot,
+	);
 	const planPath = canonicalizePlanPath(
 		resolvePlanArg(params.plan, rootResult.config.paths.plans),
 	);

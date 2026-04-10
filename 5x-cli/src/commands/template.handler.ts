@@ -37,6 +37,7 @@ export interface TemplateRenderParams {
 	session?: string;
 	newSession?: boolean;
 	workdir?: string;
+	allowPlanPathOverride?: boolean;
 }
 
 export interface TemplateRenderOutput {
@@ -137,7 +138,12 @@ export async function templateRender(
 		const result = await resolveLayeredConfig(projectRoot, configContextDir);
 		config = result.config;
 	} else {
-		const result = await loadConfig(projectRoot);
+		const result = await loadConfig(
+			projectRoot,
+			undefined,
+			undefined,
+			projectRoot,
+		);
 		config = result.config;
 	}
 
@@ -176,6 +182,7 @@ export async function templateRender(
 		session: effectiveSession,
 		newSession: params.newSession,
 		explicitVars,
+		allowPlanPathOverride: params.allowPlanPathOverride,
 		resolvedPlanPath,
 		config,
 		projectRoot,

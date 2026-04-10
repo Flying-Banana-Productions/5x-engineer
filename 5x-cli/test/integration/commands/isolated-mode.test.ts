@@ -57,7 +57,7 @@ function initRepo(dir: string): void {
 	git(["init"], dir);
 	git(["config", "user.email", "test@test.com"], dir);
 	git(["config", "user.name", "Test"], dir);
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(join(dir, "README.md"), "# Test\n");
 	git(["add", "."], dir);
 	git(["commit", "-m", "initial"], dir);

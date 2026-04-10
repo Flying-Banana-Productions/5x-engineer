@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig, resolveHarnessModelForRole } from "../config.js";
+import { resolveHarnessModelForRole, resolveLayeredConfig } from "../config.js";
 import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
@@ -16,7 +16,11 @@ import type {
 	HarnessUninstallResult,
 } from "../harnesses/types.js";
 import { outputSuccess } from "../output.js";
-import { DB_FILENAME, resolveCheckoutRoot } from "./control-plane.js";
+import {
+	DB_FILENAME,
+	resolveCheckoutRoot,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -128,10 +132,15 @@ export async function harnessInstall(
 	// 5. Load config for model settings (non-fatal for user scope)
 	let authorModel: string | undefined;
 	let reviewerModel: string | undefined;
+	let authorDelegationMode: "native" | "invoke" | undefined;
+	let reviewerDelegationMode: "native" | "invoke" | undefined;
 	try {
-		const { config } = await loadConfig(projectRoot);
+		const cp = resolveControlPlaneRoot(cwd);
+		const { config } = await resolveLayeredConfig(cp.controlPlaneRoot, cwd);
 		authorModel = resolveHarnessModelForRole(config, "author", name);
 		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
+		authorDelegationMode = config.author.delegationMode;
+		reviewerDelegationMode = config.reviewer.delegationMode;
 	} catch {
 		// Config load failure is non-fatal — agent templates will be
 		// rendered without model fields.
@@ -149,7 +158,12 @@ export async function harnessInstall(
 		scope,
 		projectRoot,
 		force,
-		config: { authorModel, reviewerModel },
+		config: {
+			authorModel,
+			reviewerModel,
+			authorDelegationMode,
+			reviewerDelegationMode,
+		},
 		homeDir: params.homeDir,
 	});
 

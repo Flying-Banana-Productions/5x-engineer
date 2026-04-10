@@ -7,6 +7,7 @@ import {
 	defineConfig,
 	FiveXConfigSchema,
 	loadConfig,
+	resolveDelegationContext,
 	resolveHarnessModelForRole,
 } from "../../src/config.js";
 
@@ -23,7 +24,12 @@ describe("config", () => {
 	test("missing config uses defaults", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { config, configPath } = await loadConfig(tmp);
+			const { config, configPath } = await loadConfig(
+				tmp,
+				undefined,
+				undefined,
+				tmp,
+			);
 			expect(configPath).toBeNull();
 			// Phase 1: adapter field removed — model field is optional string
 			expect(config.author.model).toBeUndefined();
@@ -46,7 +52,7 @@ describe("config", () => {
 				join(tmp, "5x.config.js"),
 				`export default { worktree: { postCreate: "bun run setup:worktree" } };`,
 			);
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			expect(config.worktree.postCreate).toBe("bun run setup:worktree");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -77,7 +83,7 @@ describe("config", () => {
 				join(tmp, "5x.config.js"),
 				`export default { maxReviewIterations: 10 };`,
 			);
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			expect(config.maxReviewIterations).toBe(10);
 			expect(config.maxQualityRetries).toBe(3); // default
 			// paths.* default resolved to absolute against projectRoot
@@ -444,6 +450,79 @@ cursor = "claude-3-5-cursor"
 });
 
 // ---------------------------------------------------------------------------
+// 5x.toml.local (loadConfig)
+// ---------------------------------------------------------------------------
+
+describe("5x.toml.local overlay (loadConfig)", () => {
+	test("merges 5x.toml.local beside primary config file", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "from-main"\n`,
+				"utf-8",
+			);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "from-local"\n`,
+				"utf-8",
+			);
+			const { config, configPath } = await loadConfig(tmp);
+			expect(configPath).toBe(join(tmp, "5x.toml"));
+			expect(config.author.model).toBe("from-local");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("local-only without 5x.toml merges on top of Zod defaults", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "local-only"\n`,
+				"utf-8",
+			);
+			const { config, configPath } = await loadConfig(
+				tmp,
+				undefined,
+				undefined,
+				tmp,
+			);
+			expect(configPath).toBeNull();
+			expect(config.author.model).toBe("local-only");
+			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown key in 5x.toml.local is reported with that file path", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `maxStepsPerRun = 9\n`, "utf-8");
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`bogusTopLevel = true\n`,
+				"utf-8",
+			);
+			await loadConfig(tmp, undefined, warn);
+			expect(
+				warnings.some(
+					(w) => w.includes("bogusTopLevel") && w.includes("5x.toml.local"),
+				),
+			).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // loadConfig() path normalization (Phase 1, 019-orchestrator-improvements)
 // ---------------------------------------------------------------------------
 
@@ -462,7 +541,7 @@ describe("loadConfig path normalization", () => {
 	test("no config file (Zod defaults only) returns absolute paths resolved against projectRoot", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const { config } = await loadConfig(tmp);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			// All Zod default paths resolved against projectRoot
 			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
 			expect(config.paths.reviews).toBe(join(tmp, "docs/development/reviews"));
@@ -524,5 +603,106 @@ describe("loadConfig path normalization", () => {
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// delegationMode config (Phase 1, 019-mixed-mode-delegation)
+// ---------------------------------------------------------------------------
+
+describe("delegationMode config", () => {
+	test("default config has delegationMode: native for both roles", () => {
+		const config = FiveXConfigSchema.parse({});
+		expect(config.author.delegationMode).toBe("native");
+		expect(config.reviewer.delegationMode).toBe("native");
+	});
+
+	test("explicit delegationMode: invoke on author is parsed correctly", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("invoke");
+		expect(config.reviewer.delegationMode).toBe("native"); // default
+	});
+
+	test("explicit delegationMode: invoke on reviewer is parsed correctly", () => {
+		const config = FiveXConfigSchema.parse({
+			reviewer: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("native"); // default
+		expect(config.reviewer.delegationMode).toBe("invoke");
+	});
+
+	test("both roles can have delegationMode: invoke", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		expect(config.author.delegationMode).toBe("invoke");
+		expect(config.reviewer.delegationMode).toBe("invoke");
+	});
+
+	test("delegationMode loads from TOML config", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\ndelegationMode = "invoke"\n\n[reviewer]\ndelegationMode = "native"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.author.delegationMode).toBe("invoke");
+			expect(config.reviewer.delegationMode).toBe("native");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("resolveDelegationContext", () => {
+	test("native/native returns both native flags true", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "native" },
+			reviewer: { delegationMode: "native" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(true);
+	});
+
+	test("invoke/native returns authorNative false, reviewerNative true", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "native" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(false);
+		expect(ctx.reviewerNative).toBe(true);
+	});
+
+	test("native/invoke returns authorNative true, reviewerNative false", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "native" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(false);
+	});
+
+	test("invoke/invoke returns both native flags false", () => {
+		const config = FiveXConfigSchema.parse({
+			author: { delegationMode: "invoke" },
+			reviewer: { delegationMode: "invoke" },
+		});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(false);
+		expect(ctx.reviewerNative).toBe(false);
+	});
+
+	test("default config (no explicit delegationMode) returns both native", () => {
+		const config = FiveXConfigSchema.parse({});
+		const ctx = resolveDelegationContext(config);
+		expect(ctx.authorNative).toBe(true);
+		expect(ctx.reviewerNative).toBe(true);
 	});
 });

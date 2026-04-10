@@ -2,6 +2,7 @@ import {
 	listBaseSkillNames,
 	renderAllSkillTemplates,
 } from "../../skills/loader.js";
+import { createRenderContext } from "../../skills/renderer.js";
 import { installSkillFiles, uninstallSkillFiles } from "../installer.js";
 import { universalLocationResolver } from "../locations.js";
 import type {
@@ -45,7 +46,7 @@ const universalPlugin: HarnessPlugin = {
 			ctx.projectRoot,
 			ctx.homeDir,
 		);
-		const skills = renderAllSkillTemplates({ native: false });
+		const skills = renderAllSkillTemplates(createRenderContext(false));
 		return {
 			skills: installSkillFiles(locations.skillsDir, skills, ctx.force),
 			agents: { created: [], overwritten: [], skipped: [] },

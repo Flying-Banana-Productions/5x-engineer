@@ -91,7 +91,7 @@ function setupProject(dir: string): void {
 	runMigrations(db);
 	db.close();
 
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(
 		join(dir, "5x.toml"),
 		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n',
@@ -128,6 +128,20 @@ function insertRun(dir: string, runId: string, planPath: string): void {
 		`INSERT INTO runs (id, plan_path, status, config_json, created_at, updated_at)
 		 VALUES (?1, ?2, 'active', '{}', datetime('now'), datetime('now'))`,
 		[runId, planPath],
+	);
+	db.close();
+}
+
+function insertPlan(
+	dir: string,
+	planPath: string,
+	worktreePath: string | null,
+): void {
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	db.run(
+		`INSERT OR REPLACE INTO plans (plan_path, worktree_path, branch, created_at, updated_at)
+		 VALUES (?1, ?2, 'test-branch', datetime('now'), datetime('now'))`,
+		[planPath, worktreePath],
 	);
 	db.close();
 }
@@ -177,7 +191,7 @@ function setupProjectWithSessionEnforcement(dir: string): void {
 	runMigrations(db);
 	db.close();
 
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(
 		join(dir, "5x.toml"),
 		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\ncontinuePhaseSessions = true\n',
@@ -611,6 +625,100 @@ describe("5x template render", () => {
 	);
 
 	test(
+		"fails when explicit plan_path mismatches run/worktree plan path",
+		async () => {
+			const dir = makeTmpDir();
+			const wtDir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
+				writeFileSync(
+					join(wtDir, "docs", "development", "test-plan.md"),
+					"# Worktree Plan\n",
+				);
+
+				const runId = "run_template_plan_mismatch";
+				insertRun(dir, runId, planPath);
+				insertPlan(dir, planPath, wtDir);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					"plan_path=/custom/other/plan.md",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=",
+				]);
+
+				expect(result.exitCode).toBe(1);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				const err = json.error as { code: string; message: string };
+				expect(err.code).toBe("INVALID_ARGS");
+				expect(err.message).toContain("plan_path override mismatch");
+				expect(err.message).toContain("--allow-plan-path-override");
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(wtDir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"--allow-plan-path-override permits intentional mismatched plan_path",
+		async () => {
+			const dir = makeTmpDir();
+			const wtDir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
+				writeFileSync(
+					join(wtDir, "docs", "development", "test-plan.md"),
+					"# Worktree Plan\n",
+				);
+
+				const runId = "run_template_plan_override";
+				insertRun(dir, runId, planPath);
+				insertPlan(dir, planPath, wtDir);
+
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--allow-plan-path-override",
+					"--var",
+					"plan_path=/custom/other/plan.md",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as { warnings?: string[] };
+				expect(Array.isArray(data.warnings)).toBe(true);
+				expect(data.warnings?.[0]).toContain("plan_path override mismatch");
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(wtDir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
 		"internal variable resolution includes plan_template_path",
 		async () => {
 			const dir = makeTmpDir();
@@ -841,7 +949,7 @@ describe("5x template render", () => {
 				runMigrations(db);
 				db.close();
 
-				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 				// Custom config with runReviews directory
 				writeFileSync(
 					join(dir, "5x.toml"),

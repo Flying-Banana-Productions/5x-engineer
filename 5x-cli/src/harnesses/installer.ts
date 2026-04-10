@@ -16,6 +16,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	readFileSync,
 	rmdirSync,
 	rmSync,
 	writeFileSync,
@@ -52,6 +53,8 @@ export interface InstallSummary {
 	created: string[];
 	overwritten: string[];
 	skipped: string[];
+	/** Files removed during install (e.g., stale assets from mode transitions). */
+	removed?: string[];
 }
 
 /** Summary of an asset uninstall operation. */
@@ -68,10 +71,14 @@ export interface UninstallSummary {
  * Install a list of files into a target directory.
  *
  * Each file is written to `<targetDir>/<file.filename>`.
- * With `force = false`, existing files are skipped.
- * With `force = true`, existing files are overwritten.
+ * With `force = false`, existing files are skipped (preserving local edits).
+ * With `force = true`, existing files are always overwritten.
  *
  * The target directory is created if it does not exist.
+ *
+ * Note: This is the default behavior for non-skill assets (agents, rules).
+ * For skill files that need content-diff refresh on config changes,
+ * use `installSkillFiles()` which has overwrite-on-diff behavior.
  *
  * @returns Summary of created, overwritten, and skipped file names.
  */
@@ -91,6 +98,7 @@ export function installFiles(
 		const exists = existsSync(filePath);
 
 		if (exists && !force) {
+			// Skip existing files unless force is true (preserves local edits)
 			skipped.push(file.filename);
 			continue;
 		}
@@ -133,8 +141,13 @@ export function installSkillFiles(
 		const exists = existsSync(filePath);
 
 		if (exists && !force) {
-			skipped.push(`${skill.name}/SKILL.md`);
-			continue;
+			// Compare content - skip only if identical
+			const existingContent = readFileSync(filePath, "utf-8");
+			if (existingContent === skill.content) {
+				skipped.push(`${skill.name}/SKILL.md`);
+				continue;
+			}
+			// Content differs - overwrite (config change scenario)
 		}
 
 		mkdirSync(skillDir, { recursive: true });
@@ -275,6 +288,54 @@ export function uninstallAgentFiles(
 	removeDirIfEmpty(agentsDir);
 
 	return { removed, notFound };
+}
+
+/**
+ * Remove stale agent files that exist on disk but are not in the
+ * list of agents to keep. Used during mixed-mode delegation transitions
+ * to clean up agent files for roles that switched to invoke mode.
+ *
+ * Only deletes 5x-managed agent files (those in the managedAgentNames list),
+ * preserving user-authored or third-party agent profiles in shared directories.
+ *
+ * @param agentsDir - The agents directory path
+ * @param keepAgentNames - Array of agent names that should be kept (without .md extension)
+ * @param managedAgentNames - Array of 5x-managed agent names that are safe to delete (from bundled inventory)
+ * @returns Array of removed file names (e.g., "5x-plan-author.md")
+ */
+export function removeStaleAgentFiles(
+	agentsDir: string,
+	keepAgentNames: string[],
+	managedAgentNames: string[],
+): string[] {
+	if (!existsSync(agentsDir)) {
+		return [];
+	}
+
+	const keepSet = new Set(keepAgentNames);
+	const managedSet = new Set(managedAgentNames);
+	const removed: string[] = [];
+
+	const entries = readdirSync(agentsDir);
+	for (const entry of entries) {
+		// Only process .md files
+		if (!entry.endsWith(".md")) continue;
+
+		const agentName = entry.slice(0, -3); // Remove .md extension
+
+		// Only delete if:
+		// 1. The file is a 5x-managed agent (in managedSet)
+		// 2. The agent is NOT in the keep-set (stale)
+		if (managedSet.has(agentName) && !keepSet.has(agentName)) {
+			const filePath = join(agentsDir, entry);
+			rmSync(filePath);
+			removed.push(entry);
+		}
+	}
+
+	removeDirIfEmpty(agentsDir);
+
+	return removed;
 }
 
 /**

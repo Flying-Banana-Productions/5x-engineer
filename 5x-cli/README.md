@@ -296,6 +296,8 @@ OpenCode installs skills **and** native subagent profiles:
 5x harness install opencode --scope user
 ```
 
+Resolved model strings for agent frontmatter use **cwd-anchored** layered config (`5x.toml` / `5x.toml.local`), consistent with `5x invoke`—run the command from a monorepo package directory when that package owns the overrides.
+
 Universal installs skills only (cross-client agentskills.io convention):
 
 ```bash
@@ -542,6 +544,8 @@ postCreate = "bun install"
 ```
 
 **Config layering:** In monorepos, sub-projects can have their own `5x.toml` that overrides the root config. Config resolution is anchored to the plan's location — run-scoped commands use `dirname(plan_path)` to find the nearest `5x.toml`. Objects merge deeply (sub-project inherits unset fields from root), arrays replace entirely, and `db` settings always come from the root config.
+
+**`5x.toml.local` (TOML only):** Optional machine-local overlay merged after the resolved main config (root + nearest). Put it next to the main file: `<control-plane-root>/5x.toml.local` and, when layering applies, `<sub-project>/5x.toml.local`. Merge rules match layering (objects deep, arrays replace). `[db]` in the control-plane root `5x.toml.local` may override `db.path` (e.g. a personal state directory); `[db]` in a sub-project `5x.toml.local` is ignored with a warning, same as `[db]` in a sub-project `5x.toml`. With no `5x.toml` at all, `5x.toml.local` at the project root still layers on top of Zod defaults. `5x init` appends `5x.toml.local` to `.gitignore` alongside `.5x/` so it stays out of version control.
 
 ## Output Contract
 

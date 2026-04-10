@@ -63,6 +63,7 @@ export interface InvokeParams {
 	template: string;
 	run?: string;
 	vars?: string | string[];
+	allowPlanPathOverride?: boolean;
 	model?: string;
 	workdir?: string;
 	session?: string;
@@ -282,6 +283,8 @@ export async function invokeAgent(
 		const result = await loadConfig(
 			projectRoot,
 			cliProviderNames.size > 0 ? cliProviderNames : undefined,
+			undefined,
+			projectRoot,
 		);
 		baseConfig = result.config;
 	}
@@ -329,6 +332,7 @@ export async function invokeAgent(
 		session: effectiveSession,
 		newSession: params.newSession,
 		explicitVars: mergedVars,
+		allowPlanPathOverride: params.allowPlanPathOverride,
 		resolvedPlanPath,
 		config,
 		projectRoot,

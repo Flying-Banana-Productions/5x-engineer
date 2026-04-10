@@ -41,6 +41,9 @@ timeout handling.
 - `run init --worktree` automatically skips the dirty-worktree check
   (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
   if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
+- When using `--run`, do not pass `--var plan_path=...` unless you are
+  intentionally overriding run-linked plan resolution. Let the CLI resolve
+  the mapped worktree plan path automatically.
 
 ## Tools
 
@@ -49,12 +52,12 @@ timeout handling.
 - `5x run record <step> --run <id> --result '<json>'` — record a step
 - `5x run complete --run <id>` — mark run finished
 - `5x run list` — list runs (filter by --plan, --status)
-- `5x run reopen --run <id>` — reopen a completed/aborted run
 - `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
-{{#if native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output
-{{else}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record`
+{{#if any_native}}
+- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+{{/if}}
+{{#if any_invoke}}
+- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
 - `5x plan phases <path>` — get phase list and status
@@ -62,34 +65,36 @@ timeout handling.
 - `5x diff --run <id>` — inspect changes in mapped worktree
 - `5x diff --since <ref>` — inspect changes (without run context)
 - `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
-{{#if native}}
+{{#if any_native}}
 - Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes the workflow specifies.
 - **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
-{{else}}
-- `5x prompt choose <msg> --options <a,b,c>` — ask the human
-- `5x prompt input <msg>` — get human guidance
+{{/if}}
+{{#if any_invoke}}
+- `5x prompt choose <msg> --options <a,b,c>` — ask the human (invoke fallback)
+- `5x prompt input <msg>` — get human guidance (invoke fallback)
 {{/if}}
 
-{{#if native}}
-### Task reuse
+{{#if reviewer_native}}
+### Task reuse (reviewer)
 
-Task reuse is optional and best-effort. Capture the `task_id` from
-the first reviewer invocation as `$REVIEWER_TASK_ID`. Pass it back to
-the Task tool when resuming the reviewer for re-reviews within the same
-phase — this gives the reviewer conversational continuity with its prior
-findings. Pass `--session $REVIEWER_TASK_ID` to `5x template render` to
-auto-select a shorter continued-template variant if one exists. Omit
-`task_id` to start fresh.
+Task reuse is optional and best-effort for the native reviewer. Capture
+the `task_id` from the first reviewer invocation as `$REVIEWER_TASK_ID`.
+Pass it back to the Task tool when resuming the reviewer for re-reviews
+within the same phase — this gives the reviewer conversational continuity
+with its prior findings. Pass `--session $REVIEWER_TASK_ID` to
+`5x template render` to auto-select a shorter continued-template variant
+if one exists. Omit `task_id` to start fresh.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
 subagents of the effective working directory.
-{{else}}
-### Session reuse
+{{/if}}
+{{#if reviewer_invoke}}
+### Session reuse (reviewer)
 
-Session reuse is optional and best-effort. Capture `session_id` from
-`5x invoke` output as `$SESSION_ID` and pass `--session $SESSION_ID`
-on subsequent reviewer invocations for continuity.
+Session reuse is optional and best-effort for the invoke reviewer.
+Capture `session_id` from `5x invoke` output as `$SESSION_ID` and pass
+`--session $SESSION_ID` on subsequent reviewer invocations for continuity.
 
 If session reuse fails, omit `--session` and continue with a fresh
 invocation.
@@ -108,7 +113,7 @@ from the run's worktree mapping.
 - `diff --run` diffs the mapped worktree
 - All state (run records, logs, locks) stays in the root control-plane DB
 
-{{#if native}}
+{{#if any_native}}
 For native subagents, the effective working directory is communicated
 via the `## Context` block in the rendered prompt (produced by
 `5x template render --run`). No additional `cd` or worktree setup is
@@ -155,20 +160,21 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 
 Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
 Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
-{{#if native}}
-Track $REVIEWER_TASK_ID = "" (for optional task reuse within this phase).
-{{else}}
-Track $SESSION_ID = "" (for optional session reuse within this phase).
+{{#if reviewer_native}}
+Track $REVIEWER_TASK_ID = "" (for optional task reuse within this phase — native reviewer).
+{{/if}}
+{{#if reviewer_invoke}}
+Track $SESSION_ID = "" (for optional session reuse within this phase — invoke reviewer).
 {{/if}}
 
 #### Step 1: Author implements
 
-{{#if native}}
+{{#if author_native}}
 Delegate to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER)
+  --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -182,7 +188,7 @@ Delegate to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-next-phase --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE_NUMBER \
+  --var phase_number=$PHASE_NUMBER \
   --record --record-step author:next-phase --phase $PHASE)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
@@ -195,7 +201,7 @@ Check the result:
 - `result: "complete"` with a commit hash (from `5x commit`) — continue to Step 2.
 - `result: "complete"` without a commit — **invariant violation**.
   See Recovery.
-{{#if native}}
+{{#if any_native}}
 - `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If guidance: re-invoke with `--var user_notes="$GUIDANCE"`.
 {{else}}
 - `result: "needs_human"` — present the reason and options:
@@ -224,7 +230,7 @@ Check the result:
 Increment $QUALITY_RETRIES.
 
 If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
-{{#if native}}
+{{#if any_native}}
   Escalate via your **native UI** with options **retry**, **skip**, **abort** (same semantics as  
   `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`).
 {{else}}
@@ -234,12 +240,12 @@ If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
   - skip: record human override, go to Step 3
   - abort: `5x run complete --run $RUN --status aborted`
 
-{{#if native}}
+{{#if author_native}}
 Delegate fix to the code author via the Task tool:
 
 ```bash
 RENDERED=$(5x template render author-fix-quality --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+  --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES")
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -254,7 +260,7 @@ Delegate fix to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-fix-quality --run $RUN \
-  --var plan_path=$PLAN_PATH --var phase_number=$PHASE \
+  --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES" \
   --record --record-step author:fix-quality --phase $PHASE)
 
@@ -268,13 +274,12 @@ Loop back to Step 2.
 
 #### Step 3: Code review
 
-{{#if native}}
+{{#if reviewer_native}}
 Delegate to the reviewer via the Task tool:
 
 ```bash
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
-  --var plan_path=$PLAN_PATH \
   --var phase_number=$PHASE_NUMBER \
   ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
@@ -296,13 +301,13 @@ Delegate to the reviewer via `5x invoke`:
 # Native path reads this from `5x template render`; invoke renders the
 # template internally, so v1 does a separate render here.
 REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
-  --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  --var commit_hash=$COMMIT \
   --var phase_number=$PHASE \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
 RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
-  --var commit_hash=$COMMIT --var plan_path=$PLAN_PATH \
+  --var commit_hash=$COMMIT \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:commit --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
@@ -323,15 +328,17 @@ reviewer before proceeding:
 
     5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
 
-{{#if native}}
+{{#if reviewer_native}}
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
 exists. Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)
 for optional reuse in subsequent reviews.
-{{else}}
+{{/if}}
+{{#if reviewer_invoke}}
 When `--session` is passed to `5x template render`, the command
 automatically selects an abbreviated continued-template variant if one
-exists.
+exists. Capture `$SESSION_ID` from `5x invoke` output for optional
+reuse in subsequent reviews.
 {{/if}}
 
 #### Step 4: Route the verdict
@@ -356,12 +363,11 @@ Increment $REVIEW_ITERATIONS.
 If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
-{{#if native}}
+{{#if author_native}}
 Delegate to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-impl-review --run $RUN \
-  --var plan_path=$PLAN_PATH)
+RENDERED=$(5x template render author-process-impl-review --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -376,7 +382,6 @@ Delegate to the code author via `5x invoke`:
 
 ```bash
 RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-  --var plan_path=$PLAN_PATH \
   --record --record-step author:process-impl-review --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 
@@ -394,7 +399,7 @@ Check the result:
 
 #### Step 5a: Escalate
 
-{{#if native}}
+{{#if any_native}}
 Present the situation using your **native UI** (options: continue-with-guidance, approve-override, abort).  
 **CLI equivalent (fallback):**  
 `5x prompt choose "Phase $PHASE: $REASON" --options continue-with-guidance,approve-override,abort`
@@ -449,7 +454,7 @@ If `PHASE_STATUS` is `true`, record phase completion:
     5x run record "phase:complete" --run $RUN --phase $PHASE --result '{"phase":"$PHASE"}'
 
 If this is NOT the last phase, confirm with the human:
-{{#if native}}
+{{#if any_native}}
 Using your **native UI**, ask whether to **continue** to the next phase, **exit** (leave run active), or **abort**.  
 **CLI equivalent (fallback):**  
 `5x prompt choose "Phase $PHASE complete. Continue to next phase?" --options continue,exit,abort`
@@ -513,7 +518,7 @@ or doesn't address the task. Or author returns `complete` without a
 commit hash (from `5x commit`).
 
 **Response:**
-{{#if native}}
+{{#if author_native}}
 1. Re-invoke with a fresh task (omit `task_id`, do NOT pass `--session`).
 {{else}}
 1. Re-invoke without `--session`.
@@ -560,34 +565,37 @@ still says not_ready on the same issues.
 ### Subagent returns empty or invalid output
 
 **Symptom:** Subagent returns no output or output that fails
-{{#if native}}
-`5x protocol validate`.
-{{else}}
-`5x invoke` structured output validation.
+{{#if any_native}}
+`5x protocol validate` (native) or
+{{/if}}
+{{#if any_invoke}}
+`5x invoke` structured output validation (invoke)
 {{/if}}
 
 **Response:**
-{{#if native}}
-1. Retry once with a fresh task (omit `task_id`).
+{{#if author_native}}
+1. For native author: Retry once with a fresh task (omit `task_id`).
 {{else}}
-1. Retry once without `--session`.
+1. For invoke author: Retry once without `--session`.
 {{/if}}
 2. If it fails again, escalate to the human.
 
 ### Structured output validation failure
 
-{{#if native}}
-**Symptom:** `5x protocol validate` returns an error with code
-{{else}}
-**Symptom:** `5x invoke` returns an error with code
-{{/if}}
+{{#if any_native}}
+**Symptom (native):** `5x protocol validate` returns an error with code
 `INVALID_STRUCTURED_OUTPUT`.
+{{/if}}
+{{#if any_invoke}}
+**Symptom (invoke):** `5x invoke` returns an error with code
+`INVALID_STRUCTURED_OUTPUT`.
+{{/if}}
 
 **Response:**
-{{#if native}}
-1. Retry once with a fresh task (omit `task_id`).
+{{#if author_native}}
+1. For native author: Retry once with a fresh task (omit `task_id`).
 {{else}}
-1. Retry once without `--session`.
+1. For invoke author: Retry once without `--session`.
 {{/if}}
 2. If it fails again, escalate to the human — the model may not support
    the structured output format or the prompt may need adjustment.

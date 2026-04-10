@@ -1,7 +1,9 @@
+import { createRenderContext } from "../../skills/renderer.js";
 import {
 	installAgentFiles,
 	installRuleFiles,
 	installSkillFiles,
+	removeStaleAgentFiles,
 	uninstallAgentFiles,
 	uninstallRuleFiles,
 	uninstallSkillFiles,
@@ -56,21 +58,48 @@ const cursorPlugin: HarnessPlugin = {
 			ctx.homeDir,
 		);
 
+		// Resolve skill render context from delegation config
+		// authorNative = true when delegationMode is NOT "invoke"
+		const authorNative = ctx.config.authorDelegationMode !== "invoke";
+		const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
+		const skillRenderContext = createRenderContext(
+			authorNative && reviewerNative, // legacy native flag (both native)
+			authorNative,
+			reviewerNative,
+		);
+
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			listSkills(),
+			listSkills(skillRenderContext),
 			ctx.force,
 		);
 
+		// Render and install agent profiles
+		// Skip agent templates for roles that use invoke delegation
 		const agentTemplates = renderAgentTemplates({
 			authorModel: ctx.config.authorModel,
 			reviewerModel: ctx.config.reviewerModel,
+			authorInvoke: !authorNative,
+			reviewerInvoke: !reviewerNative,
 		});
 		const agents = installAgentFiles(
 			locations.agentsDir,
 			agentTemplates,
 			ctx.force,
 		);
+
+		// Remove stale agent files (e.g., when switching from native to invoke mode)
+		// Only delete 5x-managed files, preserving user-authored or third-party agents
+		const allManagedAgents = listAgentTemplates().map((t) => t.name);
+		const staleRemoved = removeStaleAgentFiles(
+			locations.agentsDir,
+			agentTemplates.map((t) => t.name),
+			allManagedAgents,
+		);
+		// Include stale removals in the result for reporting
+		if (staleRemoved.length > 0) {
+			agents.removed = staleRemoved;
+		}
 
 		if (ctx.scope === "project" && locations.rulesDir) {
 			const rules = installRuleFiles(

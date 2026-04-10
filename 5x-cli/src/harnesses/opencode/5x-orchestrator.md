@@ -28,10 +28,13 @@ recovery procedures. Follow them closely.
 ## Key principles
 
 1. **Delegate, don't implement.** Render task prompts with
-   `5x template render`, launch the appropriate native sub-agent
-   (5x-plan-author, 5x-code-author, or 5x-reviewer), and validate
-   results with `5x protocol validate --record`. The skills describe
-   each delegation step in detail.
+   `5x template render`, then follow each skill step's delegation
+   pattern exactly. Some steps delegate via native sub-agent
+   (5x-plan-author, 5x-code-author, or 5x-reviewer); invoke-mode
+   steps delegate via `5x invoke`. Validate native sub-agent output
+   with `5x protocol validate --record`. For `5x invoke` steps,
+   expect the JSON envelope on stdout and use it as the canonical
+   result format.
 
 2. **Track state.** Use `5x run state --run <id>`,
    `5x plan list` for an overview, and

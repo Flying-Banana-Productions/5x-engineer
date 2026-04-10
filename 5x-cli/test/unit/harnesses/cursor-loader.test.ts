@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { renderAgentTemplates } from "../../../src/harnesses/cursor/loader.js";
+import {
+	listAgentTemplates,
+	renderAgentTemplates,
+} from "../../../src/harnesses/cursor/loader.js";
 
 function getTemplateContent(
 	templates: Array<{ name: string; content: string }>,
@@ -74,5 +77,62 @@ describe("cursor loader model injection", () => {
 		expect(getTemplateContent(templates, "5x-code-author")).not.toContain(
 			'model: "reviewer-model"',
 		);
+	});
+});
+
+describe("cursor loader — mixed-mode delegation filtering", () => {
+	test("with authorInvoke: true returns only reviewer", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: true,
+			reviewerInvoke: false,
+		});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-reviewer");
+		expect(names).not.toContain("5x-plan-author");
+		expect(names).not.toContain("5x-code-author");
+		expect(templates).toHaveLength(1);
+	});
+
+	test("with reviewerInvoke: true returns only author agents", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: false,
+			reviewerInvoke: true,
+		});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-plan-author");
+		expect(names).toContain("5x-code-author");
+		expect(names).not.toContain("5x-reviewer");
+		expect(templates).toHaveLength(2);
+	});
+
+	test("with both invoke flags returns empty array", () => {
+		const templates = renderAgentTemplates({
+			authorInvoke: true,
+			reviewerInvoke: true,
+		});
+
+		expect(templates).toHaveLength(0);
+	});
+
+	test("default behavior (no invoke flags) returns all templates", () => {
+		const templates = renderAgentTemplates({});
+
+		const names = templates.map((t) => t.name);
+		expect(names).toContain("5x-plan-author");
+		expect(names).toContain("5x-code-author");
+		expect(names).toContain("5x-reviewer");
+		expect(templates).toHaveLength(3);
+	});
+
+	test("listAgentTemplates returns all 3 templates regardless of mode", () => {
+		// listAgentTemplates returns static bundled inventory
+		const allTemplates = listAgentTemplates();
+		expect(allTemplates).toHaveLength(3);
+		const names = allTemplates.map((t) => t.name);
+		expect(names).toContain("5x-plan-author");
+		expect(names).toContain("5x-code-author");
+		expect(names).toContain("5x-reviewer");
 	});
 });

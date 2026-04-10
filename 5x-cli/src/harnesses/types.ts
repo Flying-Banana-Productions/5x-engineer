@@ -45,6 +45,8 @@ export interface HarnessInstallContext {
 	config: {
 		authorModel?: string;
 		reviewerModel?: string;
+		authorDelegationMode?: "native" | "invoke";
+		reviewerDelegationMode?: "native" | "invoke";
 	};
 	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
 	homeDir?: string;

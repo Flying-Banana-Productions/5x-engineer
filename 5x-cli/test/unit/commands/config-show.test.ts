@@ -37,10 +37,12 @@ function makeConfig(overrides: Partial<FiveXConfig> = {}): FiveXConfig {
 		author: {
 			provider: "opencode",
 			continuePhaseSessions: false,
+			delegationMode: "native",
 		},
 		reviewer: {
 			provider: "opencode",
 			continuePhaseSessions: true,
+			delegationMode: "native",
 		},
 		opencode: {},
 		qualityGates: ["bun test"],
@@ -77,10 +79,12 @@ describe("formatConfigText", () => {
 				model: "gpt-4",
 				timeout: 120,
 				continuePhaseSessions: false,
+				delegationMode: "native",
 			},
 			reviewer: {
 				provider: "review-provider",
 				continuePhaseSessions: true,
+				delegationMode: "native",
 			},
 		});
 
@@ -120,12 +124,14 @@ describe("formatConfigText", () => {
 				provider: "custom",
 				model: "custom-model",
 				continuePhaseSessions: false,
+				delegationMode: "native",
 			},
 			reviewer: {
 				provider: "custom",
 				model: "reviewer-model",
 				timeout: 60,
 				continuePhaseSessions: false,
+				delegationMode: "native",
 			},
 			paths: {
 				plans: "/plans",

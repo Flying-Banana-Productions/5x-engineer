@@ -854,6 +854,645 @@ describe("5x harness uninstall — round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Mixed-mode delegation: lifecycle transitions and stale-asset handling
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — mixed-mode delegation lifecycle", () => {
+	test(
+		"install with invoke/native config skips author agents but installs reviewer + orchestrator",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in invoke mode, reviewer in native mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Author agents should NOT be installed (invoke mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+
+				// Reviewer and orchestrator should be installed (native mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with native/invoke config installs author agents but skips reviewer",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in native mode, reviewer in invoke mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+delegationMode = "native"
+
+[reviewer]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Author agents should be installed (native mode)
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(true);
+
+				// Reviewer should NOT be installed (invoke mode), but orchestrator should
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with invoke/invoke config only installs orchestrator",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with both roles in invoke mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "invoke"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Only orchestrator should be installed
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"config change from native/native to invoke/native removes author agents on reinstall",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Verify all agents are present
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(true);
+
+				// Change config to invoke/native
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall with force
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+					"--force",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Author agents should be removed, reviewer and orchestrator remain
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-code-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(true);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"harness list accurately reports installed agents after mixed-mode install",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install with invoke/native (author invoke, reviewer native)
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// List and verify
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(true);
+
+				// Should list only installed files (reviewer + orchestrator, not author)
+				const agentFiles = opencode.scopes.project.files.filter((f: string) =>
+					f.startsWith("agents/"),
+				);
+				expect(agentFiles).toContain("agents/5x-reviewer.md");
+				expect(agentFiles).toContain("agents/5x-orchestrator.md");
+				expect(agentFiles).not.toContain("agents/5x-plan-author.md");
+				expect(agentFiles).not.toContain("agents/5x-code-author.md");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"uninstall removes all managed agents regardless of current config",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// Install with mixed mode
+				await bootstrapProject(tmp);
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// Change config to native/native before uninstall
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "native"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Uninstall should still remove all files
+				const result = await runHarnessUninstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(result.exitCode).toBe(0);
+
+				// All agents should be removed
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-orchestrator.md")),
+				).toBe(false);
+				expect(
+					existsSync(join(tmp, ".opencode", "agents", "5x-reviewer.md")),
+				).toBe(false);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"config change preserves user-authored agent files while removing stale 5x-managed files",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Add user-authored agent files
+				const agentsDir = join(tmp, ".opencode", "agents");
+				writeFileSync(
+					join(agentsDir, "my-custom-agent.md"),
+					"# My Custom Agent\n\nCustom instructions here",
+					"utf-8",
+				);
+				writeFileSync(
+					join(agentsDir, "third-party-helper.md"),
+					"# Third Party Helper\n\nThird party instructions",
+					"utf-8",
+				);
+
+				// Verify all files exist
+				expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+				// Change config to invoke/native (author invoke, reviewer native)
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall with force to trigger stale cleanup
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+					"--force",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Stale 5x-managed author agents should be removed
+				expect(existsSync(join(agentsDir, "5x-plan-author.md"))).toBe(false);
+				expect(existsSync(join(agentsDir, "5x-code-author.md"))).toBe(false);
+
+				// User-authored and third-party agents should be preserved
+				expect(existsSync(join(agentsDir, "my-custom-agent.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "third-party-helper.md"))).toBe(true);
+
+				// Native-mode agents should remain
+				expect(existsSync(join(agentsDir, "5x-reviewer.md"))).toBe(true);
+				expect(existsSync(join(agentsDir, "5x-orchestrator.md"))).toBe(true);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5: Harness Skill Loader Integration — Mixed-mode skill rendering
+// ---------------------------------------------------------------------------
+
+describe("5x harness install — mixed-mode skill rendering", () => {
+	test(
+		"install with author invoke mode renders skills with 5x invoke for author steps",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with author in invoke mode, reviewer in native mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+provider = "codex"
+model = "o3"
+delegationMode = "invoke"
+
+[reviewer]
+provider = "opencode"
+model = "anthropic/claude-opus-4-6"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In mixed mode (author invoke, reviewer native):
+				// - Author steps should reference `5x invoke` (not Task tool)
+				// - Reviewer steps should reference Task tool
+				// Since we can't easily distinguish which sections are author vs reviewer,
+				// we verify that BOTH patterns can be present (skill contains invoke path
+				// for author and native path for reviewer)
+
+				// The skill should contain `5x invoke` (for author steps)
+				expect(skillContent).toContain("5x invoke");
+
+				// The skill should also contain Task tool references (for reviewer steps)
+				expect(skillContent).toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"install with default native/native config renders skills with Task tool only",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Default config (no delegationMode specified = native for both)
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In native/native mode, skills should ONLY reference Task tool
+				expect(skillContent).toContain("Task tool");
+				// Should NOT contain `5x invoke` for delegation (only in invoke paths)
+				expect(skillContent).not.toContain("5x invoke");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"config change from native/native to invoke/native updates skill files on reinstall without --force",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				// First install: native/native (default)
+				await bootstrapProject(tmp);
+				const first = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(first.exitCode).toBe(0);
+
+				// Verify initial state: only Task tool references
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const initialContent = readFileSync(skillPath, "utf-8");
+				expect(initialContent).toContain("Task tool");
+				expect(initialContent).not.toContain("5x invoke");
+
+				// Change config to invoke/native
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				// Reinstall WITHOUT force - should still update skill files because content differs
+				const second = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(second.exitCode).toBe(0);
+
+				// Verify updated state: contains both patterns (mixed mode)
+				const updatedContent = readFileSync(skillPath, "utf-8");
+				expect(updatedContent).toContain("5x invoke");
+				expect(updatedContent).toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"cursor harness renders skills with correct delegation patterns in mixed mode",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Write 5x.toml with mixed mode for cursor
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				const { exitCode } = await runHarnessInstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+
+				// Read the installed 5x-phase-execution skill
+				const skillPath = join(
+					tmp,
+					".cursor",
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const skillContent = readFileSync(skillPath, "utf-8");
+
+				// In mixed mode: should contain both patterns
+				expect(skillContent).toContain("5x invoke");
+				expect(skillContent).toContain("Cursor subagent invocation");
+
+				// Should NOT contain "Task tool" (cursor terminology adapts this)
+				expect(skillContent).not.toContain("Task tool");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"harness list shows correct files after mixed-mode install",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+
+				// Install with mixed mode
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`
+[author]
+delegationMode = "invoke"
+
+[reviewer]
+delegationMode = "native"
+`,
+					"utf-8",
+				);
+
+				await runHarnessInstall(tmp, "opencode", ["--scope", "project"]);
+
+				// List and verify
+				const { stdout, exitCode } = await runCmd(tmp, ["harness", "list"]);
+				expect(exitCode).toBe(0);
+
+				const envelope = JSON.parse(stdout);
+				const opencode = envelope.data.harnesses.find(
+					(h: { name: string }) => h.name === "opencode",
+				);
+				expect(opencode.scopes.project.installed).toBe(true);
+
+				// Should list all skill files (skills are always installed regardless of mode)
+				expect(opencode.scopes.project.files).toContain(
+					"skills/5x-phase-execution/SKILL.md",
+				);
+				expect(opencode.scopes.project.files).toContain(
+					"skills/5x-plan/SKILL.md",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
 // Legacy compatibility: bare `5x init --force` still works
 // ---------------------------------------------------------------------------
 

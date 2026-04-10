@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
 
@@ -21,6 +21,13 @@ const AgentConfigSchema = z.object({
 	 *  same run/step/phase. Default false — enable after confirming all relevant
 	 *  templates have -continued variants. */
 	continuePhaseSessions: z.boolean().default(false),
+	/**
+	 * Delegation mode for this role when running under a native harness.
+	 * - "native" (default): orchestrator uses harness Task tool / subagents
+	 * - "invoke": orchestrator calls `5x invoke` for this role
+	 * Only applies to native harnesses; universal harness always uses invoke.
+	 */
+	delegationMode: z.enum(["native", "invoke"]).default("native"),
 });
 
 const PathsSchema = z.object({
@@ -76,8 +83,32 @@ const FiveXConfigSchema = z
 
 export type FiveXConfig = z.infer<typeof FiveXConfigSchema>;
 
-/** Role key for {@link resolveHarnessModelForRole}. */
+/** Role key for {@link resolveHarnessModelForRole} and {@link resolveDelegationContext}. */
 export type AgentConfigRole = "author" | "reviewer";
+
+/**
+ * Per-role delegation context derived from config.
+ * Used by SkillRenderContext to determine which delegation patterns to render.
+ */
+export interface DelegationContext {
+	/** true when author uses native delegation (Task tool), false when using 5x invoke */
+	authorNative: boolean;
+	/** true when reviewer uses native delegation (Task tool), false when using 5x invoke */
+	reviewerNative: boolean;
+}
+
+/**
+ * Resolve delegation mode flags from config for both roles.
+ * Returns native flags based on each role's delegationMode setting.
+ */
+export function resolveDelegationContext(
+	config: FiveXConfig,
+): DelegationContext {
+	return {
+		authorNative: config.author.delegationMode !== "invoke",
+		reviewerNative: config.reviewer.delegationMode !== "invoke",
+	};
+}
 
 /**
  * Resolve which model string to inject for a harness install.
@@ -181,6 +212,9 @@ export function defineConfig(config: FiveXConfigInput): FiveXConfigInput {
 
 /** Ordered by priority — TOML is preferred over JS. */
 const CONFIG_FILENAMES = ["5x.toml", "5x.config.js", "5x.config.mjs"] as const;
+
+/** TOML-only overlay; merged after main config(s). Never used for primary discovery. */
+const LOCAL_CONFIG_FILENAME = "5x.toml.local";
 
 /**
  * Walk up from `startDir` to find a config file.
@@ -334,6 +368,7 @@ function warnUnknownConfigKeys(
 		"harnessModels",
 		"timeout",
 		"continuePhaseSessions",
+		"delegationMode",
 	]);
 	const allowedOpencode = new Set(["url"]);
 	const allowedWorktree = new Set(["postCreate"]);
@@ -475,90 +510,6 @@ function applyDeprecatedAliases(
 }
 
 /**
- * Load and validate 5x.config.js / .mjs from the project root.
- * Falls back to defaults if no config file is found.
- * Throws with an actionable error if the file exists but fails to load.
- *
- * @param cliProviderNames — provider names from CLI flags (e.g. --author-provider).
- *   These are authoritative: matching top-level config keys are treated as plugin
- *   config and suppressed from unknown-key warnings.
- * @param warn — optional warning output function (default: console.error).
- *   Inject a custom function in tests to avoid monkey-patching the global.
- */
-export async function loadConfig(
-	projectRoot: string,
-	cliProviderNames?: Set<string>,
-	warn?: (...args: unknown[]) => void,
-): Promise<LoadConfigResult> {
-	const configPath = discoverConfigFile(projectRoot);
-
-	if (!configPath) {
-		// No config file — Zod defaults only. Resolve default paths against projectRoot.
-		const config = resolveConfigPaths(FiveXConfigSchema.parse({}), projectRoot);
-		return {
-			config,
-			configPath: null,
-		};
-	}
-
-	let rawConfig: unknown;
-	try {
-		if (configPath.endsWith(".toml")) {
-			const text = readFileSync(configPath, "utf-8");
-			rawConfig = parseToml(text);
-		} else {
-			const module = await import(configPath);
-			rawConfig = module.default ?? module;
-		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		const hint = configPath.endsWith(".toml")
-			? "Config must be a valid TOML file."
-			: "Config must be a JS/MJS module exporting a default config object.";
-		throw new Error(`Failed to load ${configPath}: ${message}. ${hint}`);
-	}
-
-	warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warn);
-
-	// Resolve raw paths against the config file's directory before Zod parsing
-	rawConfig = resolveRawConfigPaths(rawConfig, dirname(configPath));
-
-	const result = FiveXConfigSchema.safeParse(rawConfig);
-	if (!result.success) {
-		const issues = result.error.issues
-			.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-			.join("\n");
-		throw new Error(`Invalid config in ${configPath}:\n${issues}`);
-	}
-
-	// P0.1: Honor maxAutoIterations as alias for maxStepsPerRun when the
-	// user hasn't explicitly set maxStepsPerRun. This prevents existing configs
-	// from silently increasing run length/cost.
-	let config = applyDeprecatedAliases(result.data, rawConfig);
-
-	// Resolve any remaining Zod default paths against projectRoot.
-	// Explicit config values are already absolute (resolved against dirname(configPath) above).
-	// paths.* contract: all values are absolute after config loading.
-	config = resolveConfigPaths(config, projectRoot);
-
-	return {
-		config,
-		configPath,
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Config layering (Phase 1c)
-// ---------------------------------------------------------------------------
-
-export interface LayeredConfigResult {
-	config: FiveXConfig;
-	rootConfigPath: string | null;
-	nearestConfigPath: string | null;
-	isLayered: boolean;
-}
-
-/**
  * Deep merge two plain objects. `override` fields take precedence.
  *
  * Merge semantics:
@@ -593,6 +544,210 @@ function deepMerge(
 }
 
 /**
+ * Load and parse `5x.toml.local` for merging. Returns null if the file is absent.
+ */
+function prepareLocalTomlOverlay(
+	localPath: string,
+	options: {
+		stripDb: boolean;
+		warn: (...args: unknown[]) => void;
+		cliProviderNames?: Set<string>;
+	},
+): Record<string, unknown> | null {
+	if (!existsSync(localPath)) return null;
+
+	let raw: unknown;
+	try {
+		const text = readFileSync(localPath, "utf-8");
+		raw = parseToml(text);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`Failed to load ${localPath}: ${message}. Config must be a valid TOML file.`,
+		);
+	}
+
+	if (!isRecord(raw)) {
+		throw new Error(
+			`Invalid config in ${localPath}: expected a TOML table at the root.`,
+		);
+	}
+
+	warnUnknownConfigKeys(raw, localPath, options.cliProviderNames, options.warn);
+
+	const resolvedPaths = resolveRawConfigPaths(raw, dirname(localPath));
+	const prepared: Record<string, unknown> = isRecord(resolvedPaths)
+		? resolvedPaths
+		: raw;
+
+	if (options.stripDb && "db" in prepared) {
+		options.warn(
+			`Warning: "db" section in ${localPath} is ignored. ` +
+				"DB path is always resolved from the root config.",
+		);
+		const { db: _db, ...rest } = prepared;
+		return rest;
+	}
+
+	return prepared;
+}
+
+/**
+ * Merge `5x.toml.local` overlays after root + nearest main configs.
+ * Order: merged main ← root local ← nearest local (nearest skipped if same path as root local).
+ */
+function mergeLayeredLocalTomlIntoRaw(
+	mergedRaw: unknown,
+	controlPlaneRoot: string,
+	nearestConfigPath: string | null,
+	warn: (...args: unknown[]) => void,
+	cliProviderNames?: Set<string>,
+): unknown {
+	const base = isRecord(mergedRaw) ? mergedRaw : {};
+	let out = base;
+
+	const rootLocalPath = join(resolve(controlPlaneRoot), LOCAL_CONFIG_FILENAME);
+	const rootOverlay = prepareLocalTomlOverlay(rootLocalPath, {
+		stripDb: false,
+		warn,
+		cliProviderNames,
+	});
+	if (rootOverlay) {
+		out = deepMerge(out, rootOverlay);
+	}
+
+	if (nearestConfigPath) {
+		const nearestLocalPath = join(
+			dirname(nearestConfigPath),
+			LOCAL_CONFIG_FILENAME,
+		);
+		if (resolve(nearestLocalPath) !== resolve(rootLocalPath)) {
+			const nearestOverlay = prepareLocalTomlOverlay(nearestLocalPath, {
+				stripDb: true,
+				warn,
+				cliProviderNames,
+			});
+			if (nearestOverlay) {
+				out = deepMerge(out, nearestOverlay);
+			}
+		}
+	}
+
+	return out;
+}
+
+/**
+ * Load and validate 5x.config.js / .mjs from the project root.
+ * Falls back to defaults if no config file is found.
+ * Throws with an actionable error if the file exists but fails to load.
+ *
+ * @param cliProviderNames — provider names from CLI flags (e.g. --author-provider).
+ *   These are authoritative: matching top-level config keys are treated as plugin
+ *   config and suppressed from unknown-key warnings.
+ * @param warn — optional warning output function (default: console.error).
+ *   Inject a custom function in tests to avoid monkey-patching the global.
+ */
+export async function loadConfig(
+	projectRoot: string,
+	cliProviderNames?: Set<string>,
+	warn?: (...args: unknown[]) => void,
+	stopDir?: string,
+): Promise<LoadConfigResult> {
+	const warnFn = warn ?? console.error;
+	const configPath = discoverConfigFile(projectRoot, stopDir);
+	const resolvedRoot = resolve(projectRoot);
+
+	let rawConfig: unknown;
+
+	if (!configPath) {
+		const localPath = join(resolvedRoot, LOCAL_CONFIG_FILENAME);
+		const localOverlay = prepareLocalTomlOverlay(localPath, {
+			stripDb: false,
+			warn: warnFn,
+			cliProviderNames,
+		});
+		if (!localOverlay) {
+			const config = resolveConfigPaths(
+				FiveXConfigSchema.parse({}),
+				projectRoot,
+			);
+			return {
+				config,
+				configPath: null,
+			};
+		}
+		rawConfig = deepMerge({}, localOverlay);
+	} else {
+		try {
+			if (configPath.endsWith(".toml")) {
+				const text = readFileSync(configPath, "utf-8");
+				rawConfig = parseToml(text);
+			} else {
+				const module = await import(configPath);
+				rawConfig = module.default ?? module;
+			}
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const hint = configPath.endsWith(".toml")
+				? "Config must be a valid TOML file."
+				: "Config must be a JS/MJS module exporting a default config object.";
+			throw new Error(`Failed to load ${configPath}: ${message}. ${hint}`);
+		}
+
+		warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warnFn);
+
+		// Resolve raw paths against the config file's directory before Zod parsing
+		rawConfig = resolveRawConfigPaths(rawConfig, dirname(configPath));
+
+		const localPath = join(dirname(configPath), LOCAL_CONFIG_FILENAME);
+		const localOverlay = prepareLocalTomlOverlay(localPath, {
+			stripDb: false,
+			warn: warnFn,
+			cliProviderNames,
+		});
+		if (localOverlay) {
+			rawConfig = deepMerge(isRecord(rawConfig) ? rawConfig : {}, localOverlay);
+		}
+	}
+
+	const sourceLabel = configPath ?? join(resolvedRoot, LOCAL_CONFIG_FILENAME);
+
+	const result = FiveXConfigSchema.safeParse(rawConfig);
+	if (!result.success) {
+		const issues = result.error.issues
+			.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+			.join("\n");
+		throw new Error(`Invalid config in ${sourceLabel}:\n${issues}`);
+	}
+
+	// P0.1: Honor maxAutoIterations as alias for maxStepsPerRun when the
+	// user hasn't explicitly set maxStepsPerRun. This prevents existing configs
+	// from silently increasing run length/cost.
+	let config = applyDeprecatedAliases(result.data, rawConfig);
+
+	// Resolve any remaining Zod default paths against projectRoot.
+	// Explicit config values are already absolute (resolved against dirname(configPath) above).
+	// paths.* contract: all values are absolute after config loading.
+	config = resolveConfigPaths(config, projectRoot);
+
+	return {
+		config,
+		configPath,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Config layering (Phase 1c)
+// ---------------------------------------------------------------------------
+
+export interface LayeredConfigResult {
+	config: FiveXConfig;
+	rootConfigPath: string | null;
+	nearestConfigPath: string | null;
+	isLayered: boolean;
+}
+
+/**
  * Load raw config from a config file path.
  * Returns the raw parsed object, or null if the file doesn't exist.
  */
@@ -612,11 +767,14 @@ async function loadRawConfig(configPath: string): Promise<unknown> {
  * structure, not to cwd. This eliminates ambient context drift while
  * allowing sub-project-specific overrides.
  *
- * Merge semantics: Zod defaults ← root config ← nearest config overrides.
+ * Merge semantics: Zod defaults ← root config ← nearest config overrides
+ * ← `5x.toml.local` at control-plane root ← `5x.toml.local` beside nearest
+ * config (when different path).
  * - Objects: deep field-level merge.
  * - Arrays: replace (nearest array replaces root array entirely).
  * - `db` section: always from root config (or Zod defaults). Nearest
- *   config `db` is ignored with a warning.
+ *   config `db` is ignored with a warning. Nearest `5x.toml.local` `db`
+ *   is also ignored; root `5x.toml.local` may override `db`.
  *
  * @param controlPlaneRoot - Root of the control-plane (where root config lives).
  * @param contextDir - Optional directory for nearest config discovery.
@@ -655,8 +813,18 @@ export async function resolveLayeredConfig(
 		const resolvedRoot = resolve(controlPlaneRoot);
 
 		if (resolvedContext !== resolvedRoot) {
-			// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
-			nearestConfigPath = discoverConfigFile(resolvedContext, controlPlaneRoot);
+			const relToRoot = relative(resolvedRoot, resolvedContext);
+			const contextInsideRoot =
+				relToRoot === "" ||
+				(!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
+
+			if (contextInsideRoot) {
+				// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
+				nearestConfigPath = discoverConfigFile(
+					resolvedContext,
+					controlPlaneRoot,
+				);
+			}
 
 			// Only use nearest if it's a different file from root
 			if (
@@ -730,6 +898,13 @@ export async function resolveLayeredConfig(
 	} else {
 		mergedRaw = {};
 	}
+
+	mergedRaw = mergeLayeredLocalTomlIntoRaw(
+		mergedRaw,
+		controlPlaneRoot,
+		nearestConfigPath,
+		warn,
+	);
 
 	// Parse through Zod to fill defaults
 	const result = FiveXConfigSchema.safeParse(mergedRaw);

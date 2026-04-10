@@ -56,7 +56,12 @@ export async function resolveProjectContext(opts?: {
 		return { projectRoot, config };
 	}
 
-	const { config } = await loadConfig(projectRoot, opts?.providerNames);
+	const { config } = await loadConfig(
+		projectRoot,
+		opts?.providerNames,
+		undefined,
+		projectRoot,
+	);
 	return { projectRoot, config };
 }
 

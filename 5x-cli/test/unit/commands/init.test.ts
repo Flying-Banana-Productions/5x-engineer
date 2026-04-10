@@ -76,11 +76,12 @@ describe("initScaffold", () => {
 				existsSync(join(tmp, ".5x", "templates", "review-template.md")),
 			).toBe(true);
 
-			// .gitignore contains .5x/
+			// .gitignore contains .5x/ and machine-local config
 			const gitignorePath = join(tmp, ".gitignore");
 			expect(existsSync(gitignorePath)).toBe(true);
 			const gitignoreContent = readFileSync(gitignorePath, "utf-8");
 			expect(gitignoreContent).toContain(".5x/");
+			expect(gitignoreContent).toContain("5x.toml.local");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -146,17 +147,17 @@ describe("initScaffold", () => {
 			writeFileSync(gitignorePath, "node_modules/\n.5x/\n", "utf-8");
 
 			await initScaffold({ startDir: tmp });
+			await initScaffold({ startDir: tmp });
 
-			// .gitignore unchanged — only one .5x/ entry
 			const content = readFileSync(gitignorePath, "utf-8");
-			const matches = content.match(/\.5x\//g);
-			expect(matches?.length).toBe(1);
+			expect(content.match(/\.5x\//g)?.length).toBe(1);
+			expect(content.match(/5x\.toml\.local/g)?.length).toBe(1);
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("appends .5x/ to existing .gitignore without duplicate", async () => {
+	test("appends ignore entries to existing .gitignore without duplicate", async () => {
 		const tmp = makeTmpDir();
 		try {
 			const gitignorePath = join(tmp, ".gitignore");
@@ -167,6 +168,7 @@ describe("initScaffold", () => {
 			const content = readFileSync(gitignorePath, "utf-8");
 			expect(content).toContain("node_modules/");
 			expect(content).toContain(".5x/");
+			expect(content).toContain("5x.toml.local");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -182,6 +184,7 @@ describe("initScaffold", () => {
 
 			const content = readFileSync(gitignorePath, "utf-8");
 			expect(content).toContain("dist/\n.5x/\n");
+			expect(content).toContain("5x.toml.local");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -216,7 +219,9 @@ describe("ensureGitignore", () => {
 			const result = ensureGitignore(tmp);
 			expect(result.created).toBe(true);
 			expect(result.appended).toBe(false);
-			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toBe(".5x/\n");
+			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toBe(
+				".5x/\n5x.toml.local\n",
+			);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -232,18 +237,25 @@ describe("ensureGitignore", () => {
 			const result = ensureGitignore(tmp);
 			expect(result.created).toBe(false);
 			expect(result.appended).toBe(true);
+			const gi = readFileSync(join(tmp, ".gitignore"), "utf-8");
+			expect(gi).toContain(".5x/");
+			expect(gi).toContain("5x.toml.local");
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("no-ops if .gitignore already contains .5x/", async () => {
+	test("no-ops if .gitignore already contains all entries", async () => {
 		const { ensureGitignore } = await import(
 			"../../../src/commands/init.handler.js"
 		);
 		const tmp = makeTmpDir();
 		try {
-			writeFileSync(join(tmp, ".gitignore"), "node_modules/\n.5x/\n", "utf-8");
+			writeFileSync(
+				join(tmp, ".gitignore"),
+				"node_modules/\n.5x/\n5x.toml.local\n",
+				"utf-8",
+			);
 			const result = ensureGitignore(tmp);
 			expect(result.created).toBe(false);
 			expect(result.appended).toBe(false);

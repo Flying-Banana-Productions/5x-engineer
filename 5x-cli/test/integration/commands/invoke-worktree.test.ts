@@ -4,7 +4,8 @@
  * Validates:
  * - invoke --run from repo root uses mapped worktree as provider working dir
  * - invoke --run --workdir <x> uses explicit workdir (override)
- * - invoke --run with explicit --var plan_path=... keeps explicit value
+ * - invoke --run with explicit mismatched --var plan_path=... fails by default
+ * - --allow-plan-path-override permits intentional mismatched plan_path overrides
  * - invoke --run with no explicit plan_path uses mapped worktree plan path
  * - Artifact paths (logs, template overrides) anchor to controlPlaneRoot/stateDir
  * - Output envelope includes worktree_path and worktree_plan_path when mapped
@@ -192,8 +193,6 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 					"author",
 					"author-next-phase",
 					"--var",
-					`plan_path=${planPath}`,
-					"--var",
 					"phase_number=1",
 					"--var",
 					"user_notes=test",
@@ -264,7 +263,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 	);
 
 	test(
-		"explicit --var plan_path wins over resolver default",
+		"explicit mismatched --var plan_path fails by default when run has mapped worktree",
 		async () => {
 			const dir = makeTmpDir();
 			const wtDir = makeTmpDir();
@@ -282,7 +281,7 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 				insertPlan(dir, planPath, wtDir);
 				insertRun(dir, runId, planPath);
 
-				// Explicit --var plan_path wins
+				// Explicit mismatched --var plan_path should fail closed by default
 				const explicitPlan = "/custom/explicit/plan.md";
 				const result = await run5x(dir, [
 					"invoke",
@@ -298,11 +297,63 @@ describe("invoke Phase 2: worktree auto-resolve", () => {
 					runId,
 				]);
 
+				expect(result.exitCode).toBe(1);
 				const json = parseJson(result.stdout);
-				// It might succeed or fail (the plan file doesn't exist but sample
-				// provider doesn't care), but the template should have received
-				// the explicit value, not the auto-resolved one
+				expect(json.ok).toBe(false);
+				const err = json.error as { code: string; message: string };
+				expect(err.code).toBe("INVALID_ARGS");
+				expect(err.message).toContain("plan_path override mismatch");
+				expect(err.message).toContain("--allow-plan-path-override");
+				expect(result.stderr).toBe("");
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(wtDir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"--allow-plan-path-override permits intentional mismatched plan_path",
+		async () => {
+			const dir = makeTmpDir();
+			const wtDir = makeTmpDir();
+			try {
+				await setupProject(dir);
+
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				mkdirSync(join(wtDir, "docs", "development"), { recursive: true });
+				writeFileSync(
+					join(wtDir, "docs", "development", "test-plan.md"),
+					"# Worktree Plan\n",
+				);
+
+				const runId = "run_explicit_plan_allowed";
+				insertPlan(dir, planPath, wtDir);
+				insertRun(dir, runId, planPath);
+
+				const explicitPlan = "/custom/explicit/plan.md";
+				const result = await run5x(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					`plan_path=${explicitPlan}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=test",
+					"--allow-plan-path-override",
+					"--run",
+					runId,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(true);
+				const data = json.data as { warnings?: string[] };
+				expect(Array.isArray(data.warnings)).toBe(true);
+				expect(data.warnings?.[0]).toContain("plan_path override mismatch");
 			} finally {
 				cleanupDir(dir);
 				cleanupDir(wtDir);

@@ -67,7 +67,7 @@ function setupMonorepo(dir: string): {
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	const { Database } = require("bun:sqlite");
 	new Database(join(dir, ".5x", "5x.db")).close();
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Root config with root quality gates
 	writeFileSync(
