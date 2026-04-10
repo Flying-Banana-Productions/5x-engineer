@@ -62,4 +62,15 @@ None.
 
 **P2 optional**
 
-- [ ] Add subprocess tests for `--text` and `--key` + `--text`.
+- [x] Add subprocess tests for `--text` and `--key` + `--text`.
+
+---
+
+## Addendum (re-review at `02491098809820b3899bc7d4f4ad3307bacb431c`)
+
+**P2.1 verification:** `test/integration/commands/config-show.test.ts` now includes subprocess integration coverage for text mode at the CLI boundary:
+
+- **`5x config show --text`** — `"--text prints file header and table header with resolved defaults"` asserts stable substrings: `Config files:`, `(none)`, table column headers (`Key`, `Value`, `Default`, `Local`), and a known default row (`author.provider` / `opencode`).
+- **`5x config show --key <k> --text`** — `"--key --text prints value only"` sets `maxStepsPerRun = 400` in `5x.toml` and expects stdout to be exactly `400`.
+
+**Readiness:** P2.1 is satisfied; Phase 3 review items from the prior pass are addressed with no new blockers identified at this commit.
