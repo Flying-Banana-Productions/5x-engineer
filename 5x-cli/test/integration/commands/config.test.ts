@@ -208,6 +208,37 @@ describe("5x config set / unset (integration)", () => {
 	);
 
 	test(
+		"P2.1: JS active config rejects unset with migration hint",
+		async () => {
+			for (const filename of ["5x.config.js", "5x.config.mjs"] as const) {
+				const dir = makeTmpDir();
+				try {
+					initRepo(dir);
+					const body =
+						filename === "5x.config.mjs"
+							? 'export default { author: { provider: "opencode" } }\n'
+							: 'module.exports = { author: { provider: "opencode" } }\n';
+					writeFileSync(join(dir, filename), body);
+					git(["add", "-A"], dir);
+					git(["commit", "-m", "cfg"], dir);
+
+					const r = await run5x(dir, ["config", "unset", "maxStepsPerRun"]);
+					expect(r.exitCode).not.toBe(0);
+					const env = parseJson(r.stdout);
+					expect(env.ok).toBe(false);
+					const err = env.error as { message: string };
+					expect(err.message).toContain("5x upgrade");
+					expect(err.message).toMatch(/5x\.config\.(js|mjs)/);
+					expect(err.message).toContain(filename);
+				} finally {
+					cleanupDir(dir);
+				}
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
 		"unset reverts layered value toward default (remove override)",
 		async () => {
 			const dir = makeTmpDir();
