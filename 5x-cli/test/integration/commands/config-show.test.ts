@@ -1,7 +1,8 @@
 /**
  * Integration tests for `5x config show` — CLI subprocess behavior.
  *
- * Tests spawn the CLI binary and validate JSON envelope output, exit
+ * Tests spawn the CLI binary and validate JSON envelope output, text
+ * table output (--text), single-key text output (--key --text), exit
  * codes, and layered config resolution via --context.
  *
  * Unit tests for handlers and resolution are in test/unit/commands/config.test.ts.
@@ -338,6 +339,55 @@ describe("5x config show (integration)", () => {
 				expect(result.exitCode).not.toBe(0);
 				const envelope = parseJson(result.stdout);
 				expect(envelope.ok).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text prints file header and table header with resolved defaults",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				const result = await run5x(dir, ["config", "show", "--text"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Config files:");
+				expect(result.stdout).toContain("(none)");
+				expect(result.stdout).toContain("Key");
+				expect(result.stdout).toContain("Value");
+				expect(result.stdout).toContain("Default");
+				expect(result.stdout).toContain("Local");
+				expect(result.stdout).toContain("author.provider");
+				expect(result.stdout).toContain("opencode");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--key --text prints value only",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 400\n");
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "c"], dir);
+
+				const result = await run5x(dir, [
+					"config",
+					"show",
+					"--key",
+					"maxStepsPerRun",
+					"--text",
+				]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toBe("400");
 			} finally {
 				cleanupDir(dir);
 			}
