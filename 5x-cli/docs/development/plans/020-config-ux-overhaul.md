@@ -1,6 +1,6 @@
 # Config UX Overhaul
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** April 10, 2026
 **Status:** Draft
 
@@ -428,9 +428,12 @@ contexts only; JS/MJS active contexts fail fast with migration guidance.
 ## Phase 5: `config add` / `config remove` (Array and Record Operations)
 
 **Completion gate:** `5x config add qualityGates "bun test"` appends to
-the array. `5x config remove` removes a value. Record keys are settable
-via dotted notation in `config set` (Phase 4), so this phase only covers
-arrays.
+the array. `5x config remove` removes a value. `add`/`remove` reuse the same
+write-path contract as Phase 4: target resolution via
+`resolveTargetConfigPath()` (`--context` defaulting to cwd, `--local`
+supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
+`5x upgrade` migration hint. Record keys are settable via dotted notation in
+`config set` (Phase 4), so this phase only covers arrays.
 
 - [ ] Add subcommands:
       ```
@@ -439,20 +442,35 @@ arrays.
       ```
 - [ ] Implement `configAdd()`:
       1. Validate key is an array type in the registry.
-      2. Read existing file, parse TOML.
-      3. Get current array value (or empty array if absent).
-      4. Append value if not already present (idempotent).
-      5. Patch and write back.
+      2. Reuse `resolveTargetConfigPath()` from Phase 4 to resolve target file
+         using full `--context`/`--local` behavior.
+      3. Apply the same write-command guard as Phase 4: if active source for
+         the resolved context is `5x.config.js`/`.mjs`, fail fast with
+         migration hint to run `5x upgrade` (no implicit TOML creation).
+      4. Read existing target file content (empty string if file is absent in
+         TOML-writable contexts), parse TOML.
+      5. Get current array value (or empty array if absent).
+      6. Append value if not already present (idempotent).
+      7. Patch and write back.
 - [ ] Implement `configRemove()`:
       1. Validate key is an array type.
-      2. Read, parse, filter out the value, patch, write.
-      3. If array is now empty, optionally remove the key entirely.
+      2. Reuse `resolveTargetConfigPath()` from Phase 4 for target selection
+         (`--context`/`--local` parity with `set`/`unset`).
+      3. Apply the same JS/MJS active-source fail-fast guard and migration
+         hint as all other write commands.
+      4. Read, parse, filter out the value, patch, write.
+      5. If array is now empty, optionally remove the key entirely.
 - [ ] Add unit tests:
       - Add to empty array.
       - Add duplicate is idempotent.
       - Remove existing value.
       - Remove non-existent value is no-op.
       - Add/remove with `--local`.
+      - Add/remove with `--context packages/api` targets sub-project config.
+      - Add/remove in JS/MJS active-source context fail fast with `5x upgrade`
+        hint and do not create TOML files.
+      - Add/remove share target-resolution behavior with `set`/`unset`
+        (same helper/contract expectations).
 
 ## Phase 6: Drop Template Config from `5x init` + Sub-Project Init
 
@@ -574,7 +592,7 @@ installation plumbing), without LLM-behavior assertions.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/config-registry.test.ts` | Registry derivation from Zod schema, `computeLocalKeys`, `flattenConfig` |
-| Unit | `test/unit/commands/config.test.ts` | `show` output shape, `isLocal` accuracy, `--key` filter, `set`/`unset`/`add`/`remove` correctness, type coercion, file creation, comment preservation, context-aware target resolution |
+| Unit | `test/unit/commands/config.test.ts` | `show` output shape, `isLocal` accuracy, `--key` filter, `set`/`unset`/`add`/`remove` correctness, type coercion, file creation, comment preservation, context-aware target resolution, and shared write guards (including JS/MJS fail-fast for add/remove) |
 | Unit | `test/unit/config-layering.test.ts` | Existing tests still pass with extended return type |
 | Integration | `test/integration/commands/config.test.ts` | Full CLI round-trips: `set` then `show` reflects change; `--local` writes correct file; `--context` targets sub-project config; JS/MJS active config rejects writes with migration hint; `unset` reverts to default |
 | Integration | `test/integration/commands/init.test.ts` | Init no longer creates `5x.toml`; `--sub-project-path` creates paths-only config; defaults work without config file |
@@ -601,6 +619,15 @@ installation plumbing), without LLM-behavior assertions.
   `5x config set`.
 
 ## Revision History
+
+### v1.3 (April 10, 2026) — Address addendum mechanical gap (Phase 5 parity)
+
+**R8 (Addendum major):** Updated Phase 5 so `config add`/`config remove`
+explicitly reuse `resolveTargetConfigPath()` and the same write-command
+guards as Phase 4: TOML-only mutation, fail-fast when active source is
+`5x.config.js`/`.mjs` with `5x upgrade` migration hint, and full
+`--context`/`--local` target-resolution behavior. Expanded Phase 5 unit-test
+checklist and test matrix wording to require parity validation.
 
 ### v1.2 (April 10, 2026) — Address staff review blockers/recommendations
 
