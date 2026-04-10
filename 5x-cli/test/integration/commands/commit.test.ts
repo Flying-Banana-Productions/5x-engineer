@@ -65,7 +65,7 @@ function setupProject(dir: string): { planPath: string } {
 	);
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	git(["add", "-A"], dir);
 	git(["commit", "-m", "init"], dir);

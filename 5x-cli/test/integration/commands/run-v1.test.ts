@@ -64,7 +64,7 @@ function setupProject(dir: string): {
 
 	// Create .5x directory and gitignore it (matches real `5x init` behavior)
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Initial commit so worktree is clean
 	Bun.spawnSync(["git", "add", "-A"], {

@@ -75,7 +75,7 @@ async function setupProjectWithRun(
 
 	// Create .5x directory and gitignore it
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Write config with quality gates (using TOML)
 	if (qualityGates.length > 0) {

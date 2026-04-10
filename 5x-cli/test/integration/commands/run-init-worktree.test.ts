@@ -50,7 +50,7 @@ function setupProject(dir: string): { planPath: string } {
 	writeFileSync(planPath, "# Plan\n\n## Phase 1\n\n- [ ] Task\n");
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	Bun.spawnSync(["git", "add", "-A"], {
 		cwd: dir,

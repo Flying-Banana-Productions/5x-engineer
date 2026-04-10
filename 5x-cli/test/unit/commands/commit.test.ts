@@ -79,7 +79,7 @@ function setup(): TestContext {
 	});
 
 	// Write control-plane files and plan
-	writeFileSync(join(tmp, ".gitignore"), ".5x/\n");
+	writeFileSync(join(tmp, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(join(tmp, "5x.toml"), "");
 	writeFileSync(join(tmp, "README.md"), "# test\n");
 	mkdirSync(join(tmp, "docs"), { recursive: true });

@@ -170,6 +170,27 @@ export function checkReviewPathMismatch(
 }
 
 /**
+ * Check whether explicit plan_path overrides the run-resolved plan path.
+ *
+ * When a run is mapped to a worktree, explicit plan_path overrides are
+ * usually accidental and can split author/reviewer context across files.
+ */
+export function checkPlanPathOverrideMismatch(
+	explicitPlanPath: string,
+	runPlanPath: string,
+	projectRoot: string,
+): string | null {
+	const resolvedExplicit = resolve(projectRoot, explicitPlanPath);
+	const resolvedRunPlan = resolve(projectRoot, runPlanPath);
+
+	if (resolvedExplicit !== resolvedRunPlan) {
+		return `plan_path override mismatch: explicit "${explicitPlanPath}" resolves to "${resolvedExplicit}", but run resolves to "${resolvedRunPlan}". Omit --var plan_path to use run/worktree context, or pass --allow-plan-path-override to proceed intentionally.`;
+	}
+
+	return null;
+}
+
+/**
  * Generate a stable review path based on template type and context.
  *
  * Plan reviews: <planReviews>/<full-plan-basename>-review.md
@@ -301,6 +322,7 @@ export interface ResolveAndRenderOptions {
 	session?: string;
 	newSession?: boolean;
 	explicitVars: Record<string, string>;
+	allowPlanPathOverride?: boolean;
 	resolvedPlanPath: string | null;
 	config: Pick<FiveXConfig, "paths">;
 	projectRoot: string;
@@ -353,6 +375,30 @@ export function resolveAndRenderTemplate(
 		}
 	}
 
+	const warnings: string[] = [];
+
+	// Guard against accidental explicit plan_path overrides when the run is
+	// mapped to a worktree. This fails closed by default.
+	if (
+		opts.runId &&
+		opts.worktreeRoot &&
+		typeof opts.explicitVars.plan_path === "string" &&
+		opts.resolvedPlanPath
+	) {
+		const mismatch = checkPlanPathOverrideMismatch(
+			opts.explicitVars.plan_path,
+			opts.resolvedPlanPath,
+			opts.projectRoot,
+		);
+		if (mismatch) {
+			if (opts.allowPlanPathOverride) {
+				warnings.push(`Using explicit plan_path override. ${mismatch}`);
+			} else {
+				outputError("INVALID_ARGS", mismatch);
+			}
+		}
+	}
+
 	// Load template metadata
 	let templateMetadata: ReturnType<typeof loadTemplate>["metadata"];
 	try {
@@ -395,7 +441,6 @@ export function resolveAndRenderTemplate(
 	const rendered = renderTemplate(templateName, variables);
 
 	// Check for review_path mismatch warning
-	const warnings: string[] = [];
 	if (opts.explicitVars.review_path !== undefined) {
 		const warning = checkReviewPathMismatch(
 			opts.explicitVars.review_path,

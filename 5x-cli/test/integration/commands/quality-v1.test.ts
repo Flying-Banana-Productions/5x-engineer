@@ -52,7 +52,7 @@ function setupProject(dir: string, qualityGates: string[] = []): void {
 
 	// Create .5x directory
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Write config with quality gates
 	if (qualityGates.length > 0) {
@@ -294,7 +294,7 @@ describe("5x quality run --run with sub-project config", () => {
 				);
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
-				writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 				// Initial commit
 				Bun.spawnSync(["git", "add", "-A"], {

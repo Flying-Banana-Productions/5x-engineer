@@ -91,6 +91,7 @@ function readDbPathFromConfig(rootDir: string): string | null {
 		// Config file found — stop searching (precedence: first match wins).
 		// Only extract db.path if present; don't fall through to lower-priority configs.
 		if (filename === "5x.toml") {
+			let fromMain: string | null = null;
 			try {
 				const text = readFileSync(configPath, "utf-8");
 				const parsed = parseToml(text) as Record<string, unknown>;
@@ -101,11 +102,32 @@ function readDbPathFromConfig(rootDir: string): string | null {
 					"path" in db &&
 					typeof (db as Record<string, unknown>).path === "string"
 				) {
-					return (db as Record<string, unknown>).path as string;
+					fromMain = (db as Record<string, unknown>).path as string;
 				}
 			} catch {
-				// Config parse error — fall through to return null below
+				// Config parse error — fromMain stays null
 			}
+
+			const localPath = join(rootDir, "5x.toml.local");
+			if (existsSync(localPath)) {
+				try {
+					const text = readFileSync(localPath, "utf-8");
+					const parsed = parseToml(text) as Record<string, unknown>;
+					const db = parsed.db;
+					if (
+						db &&
+						typeof db === "object" &&
+						"path" in db &&
+						typeof (db as Record<string, unknown>).path === "string"
+					) {
+						return (db as Record<string, unknown>).path as string;
+					}
+				} catch {
+					// Local parse error — fall back to main or null below
+				}
+			}
+
+			if (fromMain !== null) return fromMain;
 		} else if (filename === "5x.config.js" || filename === "5x.config.mjs") {
 			// Simple regex extraction for JS/MJS configs during bootstrap.
 			// This handles common patterns: db: { path: "..." } or db.path = "..."

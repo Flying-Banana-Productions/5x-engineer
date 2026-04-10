@@ -96,6 +96,11 @@ echo "$RESULT" | 5x protocol validate <role> \
 
 This pattern works for all author and reviewer delegation steps.
 `5x protocol validate --record` is the single recording point.
+
+When using `--run`, do not pass `--var plan_path=...` unless you are
+intentionally overriding run-linked plan resolution. By default, the CLI
+resolves `plan_path` from the run context and mapped worktree (when present),
+which keeps author and reviewer on the same file.
 {{/if}}
 {{#if any_invoke}}
 ### Invoke delegation (5x invoke)
@@ -117,6 +122,9 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 This pattern works for all author and reviewer delegation steps.
 `5x invoke --record` is the single recording point.
+
+When using `--run`, do not pass `--var plan_path=...` unless you are
+intentionally overriding run-linked plan resolution.
 {{/if}}
 
 {{#if any_native}}

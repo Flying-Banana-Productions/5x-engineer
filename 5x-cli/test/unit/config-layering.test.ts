@@ -466,6 +466,97 @@ describe("resolveLayeredConfig", () => {
 	});
 
 	// -----------------------------------------------------------------------
+	// 5x.toml.local overlays
+	// -----------------------------------------------------------------------
+
+	test("root 5x.toml.local deep-overrides root 5x.toml", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[author]\nmodel = "from-main"\n`);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "from-local"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.config.author.model).toBe("from-local");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("layered: root local then nearest local; nearest local wins on overlap", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[author]\nmodel = "root"\n`);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "root-local"\n`,
+				"utf-8",
+			);
+			const subDir = join(tmp, "pkg");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[author]\nmodel = "nearest-main"\n`);
+			writeFileSync(
+				join(subDir, "5x.toml.local"),
+				`[author]\nmodel = "nearest-local"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp, subDir);
+			expect(result.config.author.model).toBe("nearest-local");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("nearest 5x.toml.local db section ignored with warning", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeToml(tmp, `[db]\npath = "root-state/5x.db"\n`);
+			const subDir = join(tmp, "pkg");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[author]\nmodel = "m"\n`);
+			writeFileSync(
+				join(subDir, "5x.toml.local"),
+				`[db]\npath = "evil/5x.db"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp, subDir, warn);
+			expect(result.config.db.path).toBe("root-state/5x.db");
+			expect(
+				warnings.some(
+					(w) =>
+						w.includes("db") &&
+						w.includes("ignored") &&
+						w.includes("5x.toml.local"),
+				),
+			).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("root 5x.toml.local may override db.path", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[db]\npath = "main/5x.db"\n`);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[db]\npath = "local/5x.db"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.config.db.path).toBe("local/5x.db");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
 	// Worktree config deduplication
 	// -----------------------------------------------------------------------
 

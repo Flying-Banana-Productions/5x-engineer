@@ -450,6 +450,74 @@ cursor = "claude-3-5-cursor"
 });
 
 // ---------------------------------------------------------------------------
+// 5x.toml.local (loadConfig)
+// ---------------------------------------------------------------------------
+
+describe("5x.toml.local overlay (loadConfig)", () => {
+	test("merges 5x.toml.local beside primary config file", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "from-main"\n`,
+				"utf-8",
+			);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "from-local"\n`,
+				"utf-8",
+			);
+			const { config, configPath } = await loadConfig(tmp);
+			expect(configPath).toBe(join(tmp, "5x.toml"));
+			expect(config.author.model).toBe("from-local");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("local-only without 5x.toml merges on top of Zod defaults", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[author]\nmodel = "local-only"\n`,
+				"utf-8",
+			);
+			const { config, configPath } = await loadConfig(tmp);
+			expect(configPath).toBeNull();
+			expect(config.author.model).toBe("local-only");
+			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown key in 5x.toml.local is reported with that file path", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `maxStepsPerRun = 9\n`, "utf-8");
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`bogusTopLevel = true\n`,
+				"utf-8",
+			);
+			await loadConfig(tmp, undefined, warn);
+			expect(
+				warnings.some(
+					(w) => w.includes("bogusTopLevel") && w.includes("5x.toml.local"),
+				),
+			).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // loadConfig() path normalization (Phase 1, 019-orchestrator-improvements)
 // ---------------------------------------------------------------------------
 
