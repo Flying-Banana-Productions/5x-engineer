@@ -62,3 +62,19 @@ Runtime config normalizes `paths.*` to absolute paths in `resolveLayeredConfig()
 - [ ] Resolve the `--sub-project-path=.` contract so examples, algorithm, and tests agree.
 - [ ] Specify how `config show` computes/displays defaults for path-valued keys.
 - [ ] Align remaining stale wording around `--context` defaults and Phase 7 testability.
+
+## Addendum (2026-04-10) — Re-review after v1.2 updates
+
+### What's Addressed
+
+- **Prior P0 resolved.** The plan now makes JS/MJS mutation behavior explicit: if the active config source is `5x.config.js` / `.mjs`, write commands fail fast with a `5x upgrade` migration hint instead of silently creating `5x.toml`.
+- **Prior P1.1 resolved.** Phase 4 now defines exact-key plus record-descendant validation semantics, including the concrete `author.harnessModels.opencode` case and tests.
+- **Prior P1.2 resolved.** Sub-project init now consistently resolves `--sub-project-path` relative to cwd, then bounds the result inside the control-plane root; that matches the `--sub-project-path=.` example and planned tests.
+- **Prior P1.3 resolved.** Phase 3 now explicitly uses effective normalized defaults for `paths.*`, which makes default display/comparison consistent with runtime absolute-path resolution.
+- **Prior P2 items resolved.** The plan now consistently says `--context` defaults to cwd, and Phase 7 was reframed around deterministic installer/loader/content tests instead of LLM-behavior assertions.
+
+### Remaining Concerns
+
+- **Major — Phase 5 does not carry forward the Phase 4 write-path guards/helpers.** The plan now correctly defines JS/MJS fail-fast behavior, context-aware target resolution, and TOML-only mutation semantics in Phase 4 for `set`/`unset`. But Phase 5's `config add` / `config remove` steps only say "read existing file, parse TOML" and patch the array. They do not say to use `resolveTargetConfigPath()`, do not mention the JS/MJS active-source guard, and do not explicitly cover `--context`/`--local` resolution in the implementation steps. That leaves the array commands underspecified relative to the shared write-command contract stated in Goals, Design Decisions, tests, and completion gates. **Action:** `auto_fix`.
+
+**Readiness:** Ready with corrections — the earlier blockers are fixed, and the remaining issue is a mechanical completeness gap in Phase 5's write-command flow.
