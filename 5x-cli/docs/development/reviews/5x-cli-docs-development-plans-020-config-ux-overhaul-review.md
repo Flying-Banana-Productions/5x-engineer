@@ -78,3 +78,17 @@ Runtime config normalizes `paths.*` to absolute paths in `resolveLayeredConfig()
 - **Major — Phase 5 does not carry forward the Phase 4 write-path guards/helpers.** The plan now correctly defines JS/MJS fail-fast behavior, context-aware target resolution, and TOML-only mutation semantics in Phase 4 for `set`/`unset`. But Phase 5's `config add` / `config remove` steps only say "read existing file, parse TOML" and patch the array. They do not say to use `resolveTargetConfigPath()`, do not mention the JS/MJS active-source guard, and do not explicitly cover `--context`/`--local` resolution in the implementation steps. That leaves the array commands underspecified relative to the shared write-command contract stated in Goals, Design Decisions, tests, and completion gates. **Action:** `auto_fix`.
 
 **Readiness:** Ready with corrections — the earlier blockers are fixed, and the remaining issue is a mechanical completeness gap in Phase 5's write-command flow.
+
+## Addendum (2026-04-10) — Re-review after v1.3 updates
+
+### What's Addressed
+
+- **Prior addendum issue resolved.** Phase 5 now explicitly reuses `resolveTargetConfigPath()` and carries forward the same TOML-only mutation contract, `--context`/`--local` target resolution, and JS/MJS fail-fast guard already defined in Phase 4.
+- The Phase 5 completion gate, implementation steps, and unit-test checklist are now internally consistent with the top-level Goals, Design Decisions, and test matrix.
+- The revision history accurately records the Phase 5 parity fix, so the plan's evolution is now traceable for implementation.
+
+### Remaining Concerns
+
+- None. I did not find new Staff-level issues in the revised plan. The previously raised blockers and mechanical gaps are now addressed.
+
+**Readiness:** Ready.
