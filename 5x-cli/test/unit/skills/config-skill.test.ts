@@ -16,6 +16,7 @@ describe("config skill content", () => {
 	test("documents inspect and write CLI commands", () => {
 		const body = renderSkillByName("config", createRenderContext(true)).content;
 		expect(body).toContain("5x config show");
+		expect(body).toContain("enumValues");
 		expect(body).toContain("5x config set");
 		expect(body).toContain("5x config unset");
 		expect(body).toContain("5x config add");

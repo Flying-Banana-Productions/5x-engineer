@@ -145,6 +145,26 @@ describe("buildConfigShowOutput", () => {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
+
+	test("enum-typed keys include enumValues from the registry", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const layered = await resolveLayeredConfig(tmp);
+			const out = buildConfigShowOutput(layered, tmp);
+			const authorDm = out.entries.find(
+				(e) => e.key === "author.delegationMode",
+			);
+			const reviewerDm = out.entries.find(
+				(e) => e.key === "reviewer.delegationMode",
+			);
+			expect(authorDm?.type).toBe("enum");
+			expect(reviewerDm?.type).toBe("enum");
+			expect(authorDm?.enumValues?.sort()).toEqual(["invoke", "native"]);
+			expect(reviewerDm?.enumValues?.sort()).toEqual(["invoke", "native"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("--key filter (unit)", () => {

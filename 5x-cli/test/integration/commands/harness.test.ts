@@ -269,6 +269,33 @@ describe("config skill — harness install", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"cursor project scope installs skills/config/SKILL.md with CLI guidance",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				const { exitCode } = await runHarnessInstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+				const skillPath = join(tmp, ".cursor", "skills", "config", "SKILL.md");
+				expect(existsSync(skillPath)).toBe(true);
+				const text = readFileSync(skillPath, "utf-8");
+				expect(text).toContain("5x config show");
+				expect(text).toContain("5x config set");
+				expect(text).toContain("5x config unset");
+				expect(text).toContain("5x config add");
+				expect(text).toContain("5x config remove");
+				expect(text).toContain("5x.toml.local");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });
 
 // ---------------------------------------------------------------------------

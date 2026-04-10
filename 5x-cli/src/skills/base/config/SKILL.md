@@ -20,7 +20,8 @@ back with `5x config`.
 
 - Run `5x config show` to print the full resolved config as JSON (default).
   Each entry includes the dotted key, description, type, default, current value,
-  and whether the key appears in a `.local` overlay (`isLocal`).
+  and whether the key appears in a `.local` overlay (`isLocal`). For `enum` types,
+  entries also include `enumValues` (all valid options from the schema).
 - Add `--text` for a compact table with the active config file list.
 - Add `--key <dotted.path>` to fetch a single key (JSON object or text value).
 - Use `--context <dir>` so resolution matches work in that directory (monorepos).

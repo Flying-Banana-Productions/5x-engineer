@@ -44,6 +44,8 @@ export interface ConfigShowEntry {
 	default: unknown;
 	value: unknown;
 	isLocal: boolean;
+	/** When `type` is `enum`, all valid options from the Zod schema. */
+	enumValues?: string[];
 }
 
 export interface ConfigShowOutput {
@@ -548,6 +550,9 @@ export function buildConfigShowOutput(
 			default: effectiveDefaults.get(meta.key),
 			value,
 			isLocal: localKeys.has(meta.key),
+			...(meta.type === "enum" && meta.allowedValues !== undefined
+				? { enumValues: [...meta.allowedValues] }
+				: {}),
 		});
 	}
 
