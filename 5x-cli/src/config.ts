@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
 
@@ -813,8 +813,18 @@ export async function resolveLayeredConfig(
 		const resolvedRoot = resolve(controlPlaneRoot);
 
 		if (resolvedContext !== resolvedRoot) {
-			// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
-			nearestConfigPath = discoverConfigFile(resolvedContext, controlPlaneRoot);
+			const relToRoot = relative(resolvedRoot, resolvedContext);
+			const contextInsideRoot =
+				relToRoot === "" ||
+				(!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
+
+			if (contextInsideRoot) {
+				// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
+				nearestConfigPath = discoverConfigFile(
+					resolvedContext,
+					controlPlaneRoot,
+				);
+			}
 
 			// Only use nearest if it's a different file from root
 			if (

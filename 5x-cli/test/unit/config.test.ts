@@ -483,7 +483,12 @@ describe("5x.toml.local overlay (loadConfig)", () => {
 				`[author]\nmodel = "local-only"\n`,
 				"utf-8",
 			);
-			const { config, configPath } = await loadConfig(tmp);
+			const { config, configPath } = await loadConfig(
+				tmp,
+				undefined,
+				undefined,
+				tmp,
+			);
 			expect(configPath).toBeNull();
 			expect(config.author.model).toBe("local-only");
 			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
