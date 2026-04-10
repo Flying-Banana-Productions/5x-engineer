@@ -1,6 +1,6 @@
 # Config UX Overhaul
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** April 10, 2026
 **Status:** Draft
 
@@ -41,7 +41,10 @@ This plan restructures config UX around four outcomes:
 - `5x config set author.provider claude-code` writes to the nearest `5x.toml`
   (or `5x.toml.local` with `--local`), creating the file if needed, preserving
   existing comments and formatting. Uses `--context` to resolve the target
-  config file, defaulting to the control-plane root.
+  config file, defaulting to cwd.
+- If the active config source is `5x.config.js` / `5x.config.mjs`, write
+  commands (`set`/`unset`/`add`/`remove`) fail fast with a migration hint to run
+  `5x upgrade`; they do not silently create TOML and change precedence.
 - `5x init --sub-project-path=<path>` scaffolds a minimal sub-project config
   containing only `[paths]` keys, enabling monorepo setups from the start.
 - An agent can run `5x config show` to understand all options, then
@@ -56,8 +59,9 @@ This plan restructures config UX around four outcomes:
   but require `--force` to set. Deferred.
 - Interactive TUI config wizard. The agent-assisted path (outcome 4) replaces
   the need for one.
-- Deprecating `5x.config.js`/`.mjs` — existing JS configs still load. Only the
-  `5x init` template is removed.
+- Deprecating `5x.config.js`/`.mjs` for reads. Existing JS configs still load.
+  This plan only defines TOML mutation commands, with explicit fail-fast
+  behavior and upgrade guidance when JS/MJS is the active config source.
 - Changing the `[db]` root-only restriction. Sub-project configs still cannot
   override `db`.
 
@@ -113,6 +117,14 @@ Zod type, so coercion is deterministic: `z.number()` → `Number()`,
 Arrays are not set via `config set` — they use `config add`/`config remove`
 with scalar values.
 
+**JS/MJS active config is write-protected.** Read resolution continues to
+support `5x.config.js` / `.mjs`, but write commands are TOML-only. Before any
+mutation, write handlers detect whether the effective config source for the
+selected context is JS/MJS. If so, the command exits with an actionable error,
+for example: "Active config is 5x.config.js. Run `5x upgrade` to migrate to
+5x.toml before using `5x config set`." This avoids silently creating a new
+TOML file and unintentionally changing precedence.
+
 **`config set` writes to the nearest config by context.** All write commands
 (`set`, `unset`, `add`, `remove`) resolve the target config file using the
 same `--context` semantics as `config show`. The resolution logic:
@@ -123,6 +135,8 @@ same `--context` semantics as `config show`. The resolution logic:
 3. If no nearest config exists, fall back to root config path.
 4. If no root config exists, create `5x.toml` at the control-plane root.
 5. With `--local`, target the `.local` overlay of the resolved file.
+6. If the active source for the context is JS/MJS, fail fast with the
+   migration hint (no implicit TOML creation).
 
 This means `5x config set paths.plans custom/plans --context packages/api`
 writes to `packages/api/5x.toml` if it exists, or creates it if a
@@ -136,11 +150,13 @@ reviews, and archives land in the right directory. The init command gains a
 
 1. Verifies the control-plane root has been initialized (`.5x/` dir and DB
    exist). Errors if not — sub-projects depend on the root.
-2. Resolves the path relative to the control-plane root.
-3. Creates a minimal `5x.toml` in that directory containing only `[paths]`
+2. Resolves `--sub-project-path` relative to cwd.
+3. Verifies the resolved path is inside the control-plane root (rejects `..`
+   escapes outside root).
+4. Creates a minimal `5x.toml` in that directory containing only `[paths]`
    keys, with values defaulted to paths relative to the sub-project
    directory (e.g. `plans = "docs/development"`).
-4. Does not create `.5x/`, DB, or templates — those are root-only resources.
+5. Does not create `.5x/`, DB, or templates — those are root-only resources.
 
 This can also be used with `--sub-project-path=.` when already in the
 target sub-directory.
@@ -245,6 +261,8 @@ Existing layering tests still pass unchanged.
 **Completion gate:** `5x config show` outputs a flat array of annotated
 config entries in JSON mode and a compact table with file-layer header in
 text mode. `--key` returns a single entry. All config fields are represented.
+Path-valued keys compare and render defaults using effective normalized
+defaults (absolute paths), not raw schema literals.
 
 - [ ] Define the JSON output shape in `src/commands/config.handler.ts`:
       ```ts
@@ -252,7 +270,7 @@ text mode. `--key` returns a single entry. All config fields are represented.
         key: string;
         description: string;
         type: string;
-        default: unknown;
+        default: unknown; // effective default in resolved-value form
         value: unknown;
         isLocal: boolean;
       }
@@ -266,11 +284,17 @@ text mode. `--key` returns a single entry. All config fields are represented.
       2. Call `getConfigRegistry()` to get the key metadata.
       3. Call `computeLocalKeys(localRaws)` to get the local key set.
       4. Flatten the resolved config to dotted key-value pairs.
-      5. Join registry metadata + resolved values + `isLocal` membership into
+      5. Compute effective defaults in runtime form before joining entries:
+         - For non-path keys, use schema defaults from the registry.
+         - For `paths.*`, normalize schema defaults to absolute paths using
+           the same base and resolver logic used in runtime config resolution.
+      6. Join registry metadata + resolved values + `isLocal` membership into
          `ConfigShowEntry[]`.
-      6. Build `files` from `rootConfigPath`, `nearestConfigPath`, `localPaths`
+      7. Use those effective defaults for value/default comparison and dimming
+         in text output.
+      8. Build `files` from `rootConfigPath`, `nearestConfigPath`, `localPaths`
          (filtering nulls).
-      7. Output via `outputSuccess()`.
+      9. Output via `outputSuccess()`.
 - [ ] Implement `flattenConfig(config: FiveXConfig): Map<string, unknown>`.
       Recursively walks the config object and produces dotted-key → value pairs.
       Records (`harnessModels`) are expanded to individual keys (e.g.
@@ -291,6 +315,8 @@ text mode. `--key` returns a single entry. All config fields are represented.
       - `*` in the Local column indicates the value comes from a `.local` file.
       - `-` for unset optional values.
       - Values matching their default are dimmed (if TTY).
+      - Default for `paths.*` is displayed as normalized absolute path (same
+        representation as resolved value), so default comparison is accurate.
 - [ ] Add `--key <dotted.key>` option to the `config show` command in
       `src/commands/config.ts`. When provided, filter to a single entry.
       In text mode, print just the value. In JSON mode, emit a single
@@ -315,7 +341,8 @@ text mode. `--key` returns a single entry. All config fields are represented.
 **Completion gate:** `5x config set author.provider claude-code` writes to
 the nearest `5x.toml`. `--local` writes to the `.local` overlay. `--context`
 controls which config file is targeted. `unset` removes a key.
-Comment-preserving writes confirmed by test. Creates files on demand.
+Comment-preserving writes confirmed by test. Creates files on demand for TOML
+contexts only; JS/MJS active contexts fail fast with migration guidance.
 
 - [ ] Add subcommands to `src/commands/config.ts`:
       ```
@@ -332,34 +359,47 @@ Comment-preserving writes confirmed by test. Creates files on demand.
          `join(controlPlaneRoot, "5x.toml")`.
       5. With `--local`, return the `.local` sibling of the resolved path.
       6. Return the resolved path (may or may not exist on disk yet).
+- [ ] Implement `detectActiveConfigSource()` (or equivalent) to classify the
+      effective config source for a context as TOML, JS/MJS, or none.
 - [ ] Implement `configSet()` in `src/commands/config.handler.ts`:
-      1. Validate `key` against the config registry. Reject unknown keys
-         (unless `--force`, deferred to non-goal).
-      2. Guard: if key is in the `db` group and the resolved target is not
+      1. Validate `key` against the registry with explicit record-descendant
+         semantics:
+         - Exact registry keys are valid.
+         - Dotted descendants of registry `record` keys are valid write
+           targets (e.g. `author.harnessModels.opencode`).
+         - Unknown keys are rejected (unless `--force`, deferred to non-goal).
+      2. Guard: if active config source is JS/MJS for the context, reject with
+         migration hint: run `5x upgrade` before mutating config.
+      3. Guard: if key is in the `db` group and the resolved target is not
          the root config, reject with message ("db config is root-only").
-      3. Look up the key's Zod type from the registry.
-      4. Coerce `value` string to the correct type:
-         - `"string"` → passthrough
-         - `"number"` → `Number(value)`, reject `NaN`
-         - `"boolean"` → `value === "true"`, reject other strings
-         - `"string[]"` and `"record"` → reject with message directing to
-           `config add` or dotted record syntax
-      5. Call `resolveTargetConfigPath()` to determine target file.
-      6. Read existing file content (empty string if file doesn't exist).
-      7. Build a nested object from the dotted key (e.g. `"author.provider"` →
+      4. Look up the key's Zod type from the registry.
+      5. Coerce `value` string to the correct type:
+          - `"string"` → passthrough
+          - `"number"` → `Number(value)`, reject `NaN`
+          - `"boolean"` → `value === "true"`, reject other strings
+          - `"string[]"` → reject with message directing to `config add`
+          - `"record"` exact key → reject with message directing to dotted
+            record syntax
+          - Descendant of `record` key → coerce to the record value type
+            (string for `harnessModels`), so
+            `author.harnessModels.opencode` is valid.
+      6. Call `resolveTargetConfigPath()` to determine target file.
+      7. Read existing file content (empty string if file doesn't exist).
+      8. Build a nested object from the dotted key (e.g. `"author.provider"` →
          `{ author: { provider: "claude-code" } }`).
-      8. Parse existing TOML, deep-merge the new key, and use `tomlPatch()`
+      9. Parse existing TOML, deep-merge the new key, and use `tomlPatch()`
          to produce the updated TOML string preserving comments.
-      9. Write the file.
-      10. Output the written key, value, and target file path via
+      10. Write the file.
+      11. Output the written key, value, and target file path via
           `outputSuccess()`.
 - [ ] Implement `configUnset()`:
-      1. Validate key against registry.
-      2. Resolve target file via `resolveTargetConfigPath()`.
-      3. Read existing file. If file doesn't exist, no-op with message.
-      4. Parse TOML, remove the key from the nested structure.
-      5. Patch and write back.
-      6. If the file is now empty (no user keys), delete it.
+      1. Validate key with the same exact-or-record-descendant rule.
+      2. Guard JS/MJS active source → fail fast with migration hint.
+      3. Resolve target file via `resolveTargetConfigPath()`.
+      4. Read existing file. If file doesn't exist, no-op with message.
+      5. Parse TOML, remove the key from the nested structure.
+      6. Patch and write back.
+      7. If the file is now empty (no user keys), delete it.
 - [ ] Handle nested TOML table creation: setting `author.harnessModels.opencode`
       in an empty file must create both `[author.harnessModels]` and the key
       under it.
@@ -372,11 +412,18 @@ Comment-preserving writes confirmed by test. Creates files on demand.
       - Set `db.path` from sub-project context → error.
       - Set with wrong type (string where number expected) → error.
       - Set with unknown key → error.
+      - Set descendant under record key (`author.harnessModels.opencode`) →
+        valid and written.
+      - Set exact record key (`author.harnessModels`) → error directing to
+        dotted syntax.
       - Unset removes key, preserves other keys.
       - Unset on missing file → no-op.
       - Unset last key in file → file deleted.
       - Number coercion: `"500"` → `500`.
       - Boolean coercion: `"true"` → `true`, `"yes"` → error.
+      - Any write command when active source is `5x.config.js`/`.mjs` →
+        fail-fast error with `5x upgrade` migration hint and no TOML file
+        creation.
 
 ## Phase 5: `config add` / `config remove` (Array and Record Operations)
 
@@ -430,12 +477,13 @@ arrays.
       1. Resolve the control-plane root. Verify it is initialized (`.5x/`
          dir exists). Error if not: "Root project must be initialized first.
          Run `5x init` from the repository root."
-      2. Resolve the sub-project path relative to the control-plane root.
-         Verify it is inside the root (no `..` escaping). Create the
+      2. Resolve `--sub-project-path` relative to cwd.
+      3. Verify resolved path is inside the control-plane root (no `..`
+         escaping outside root). Create the
          directory if it doesn't exist.
-      3. Check for existing `5x.toml` at the sub-project path. Skip if
+      4. Check for existing `5x.toml` at the sub-project path. Skip if
          present (unless `--force`).
-      4. Write a minimal `5x.toml` containing only `[paths]` keys with
+      5. Write a minimal `5x.toml` containing only `[paths]` keys with
          defaults relative to the sub-project directory:
          ```toml
          [paths]
@@ -443,10 +491,10 @@ arrays.
          reviews = "docs/development/reviews"
          archive = "docs/archive"
          ```
-      5. Do NOT create `.5x/`, DB, templates, or `.gitignore` — those are
+      6. Do NOT create `.5x/`, DB, templates, or `.gitignore` — those are
          root-only resources.
-      6. Print the created file path and a hint about `5x config set
-         --context <path>` for further customization.
+      7. Print the created file path and a hint about `5x config set
+          --context <path>` for further customization.
 - [ ] When `--sub-project-path` is provided, skip all root-init logic
       (`.5x/` dir, DB, templates, `.gitignore`). The two modes are
       mutually exclusive.
@@ -477,9 +525,9 @@ arrays.
 
 ## Phase 7: Config Skill for Agent-Assisted Setup
 
-**Completion gate:** An agent loading the config skill can guide a user
-through interactive configuration using only `5x config show` and
-`5x config set`.
+**Completion gate:** Config skill content is installable via harness install,
+loadable by the skill loader, and covered by deterministic tests (content and
+installation plumbing), without LLM-behavior assertions.
 
 - [ ] Create a config skill at the standard skill location for the project's
       harness (e.g. `.5x/skills/config/SKILL.md` or equivalent for the
@@ -498,8 +546,11 @@ through interactive configuration using only `5x config show` and
       - Example interaction flows.
 - [ ] The skill should be installable via `5x harness install` (add it to
       the harness plugin's skill set) so it's available in any 5x project.
-- [ ] Test: agent can parse `5x config show` output (JSON default), identify
-      a key to change, and produce the correct `5x config set` command.
+- [ ] Add deterministic tests for this phase:
+      - Harness install includes the config skill in expected output paths.
+      - Skill loader resolves and reads config skill content successfully.
+      - Skill content includes required command guidance (`config show`,
+        `set`, `unset`, `add`, `remove`) and layering/local-override notes.
 
 ## Files Touched
 
@@ -512,10 +563,11 @@ through interactive configuration using only `5x config show` and
 | `src/commands/init.ts` | Add `--sub-project-path` option |
 | `src/commands/init.handler.ts` | Remove root config-file generation; add sub-project init logic |
 | `src/templates/5x.default.toml` | No change (kept for upgrade migration) |
-| Skill file (TBD by harness) | New config setup skill |
+| Skill file (TBD by harness) | New config setup skill content |
 | `test/unit/config-registry.test.ts` (new) | Registry and `computeLocalKeys` tests |
 | `test/unit/commands/config.test.ts` (new) | `config show`, `set`, `unset`, `add`, `remove` tests |
 | Existing init/upgrade tests | Updated for no-template-on-init behavior |
+| Skill installer/loader tests | Deterministic coverage for skill installation and content expectations |
 
 ## Tests
 
@@ -524,8 +576,9 @@ through interactive configuration using only `5x config show` and
 | Unit | `test/unit/config-registry.test.ts` | Registry derivation from Zod schema, `computeLocalKeys`, `flattenConfig` |
 | Unit | `test/unit/commands/config.test.ts` | `show` output shape, `isLocal` accuracy, `--key` filter, `set`/`unset`/`add`/`remove` correctness, type coercion, file creation, comment preservation, context-aware target resolution |
 | Unit | `test/unit/config-layering.test.ts` | Existing tests still pass with extended return type |
-| Integration | `test/integration/commands/config.test.ts` | Full CLI round-trips: `set` then `show` reflects change; `--local` writes correct file; `--context` targets sub-project config; `unset` reverts to default |
+| Integration | `test/integration/commands/config.test.ts` | Full CLI round-trips: `set` then `show` reflects change; `--local` writes correct file; `--context` targets sub-project config; JS/MJS active config rejects writes with migration hint; `unset` reverts to default |
 | Integration | `test/integration/commands/init.test.ts` | Init no longer creates `5x.toml`; `--sub-project-path` creates paths-only config; defaults work without config file |
+| Unit | Skill installer/loader tests | Config skill is installed, discoverable, and contains required deterministic guidance |
 
 ## Risks
 
@@ -535,7 +588,7 @@ through interactive configuration using only `5x config show` and
 | `toml-patch` cannot represent all structural patches (e.g. creating nested tables from scratch) | Low | Medium | Integration test covers empty-file → nested key creation; fall back to `stringify` + `patch` if needed |
 | Removing template from init confuses users expecting a config file | Low | Low | `5x init` prints hint about `config show`/`config set`; `5x config show` is self-documenting |
 | `isLocal` false negative when local file sets a key inside a table that also exists in main config | N/A (eliminated) | N/A | `computeLocalKeys` flattens the raw local objects independently of the merge — it checks key existence in the local file, not whether the merge changed the value |
-| Phase 4 (`set`) creates a file the user didn't expect | Low | Low | Command prints the file path it wrote; `unset` can remove it; matches `git config` mental model |
+| Write commands silently create TOML when JS config is active | N/A (eliminated) | High | Explicit fail-fast guard with `5x upgrade` migration hint; no implicit TOML creation in JS/MJS contexts |
 | Sub-project init writes keys that should be root-only | N/A (eliminated) | N/A | Sub-project template is hardcoded to `[paths]` only; `config set` guards `db` keys against non-root targets |
 
 ## Not In Scope
@@ -548,6 +601,31 @@ through interactive configuration using only `5x config show` and
   `5x config set`.
 
 ## Revision History
+
+### v1.2 (April 10, 2026) — Address staff review blockers/recommendations
+
+**R3 (P0 JS write semantics):** Added explicit fail-fast behavior for
+`config set/unset/add/remove` when active config source is
+`5x.config.js`/`.mjs`, including migration hint to run `5x upgrade`.
+Documented design rule, Phase 4 implementation steps, tests, and risk update.
+
+**R4 (P1 record descendants):** Clarified key validation so exact registry keys
+and dotted descendants of `record` keys are valid. Added explicit examples and
+tests (`author.harnessModels.opencode` valid; exact `author.harnessModels`
+rejected with guidance).
+
+**R5 (P1 sub-project path semantics):** Updated `--sub-project-path` behavior to
+resolve relative to cwd, then enforce resolved path remains inside
+control-plane root. Kept support for root and subdirectory usage including
+`--sub-project-path=.`.
+
+**R6 (P1 path default rendering):** Specified that `config show` computes and
+displays effective normalized defaults for `paths.*` (absolute-path form) and
+uses those values for default comparison/dimming.
+
+**R7 (P2 consistency/testability):** Aligned remaining wording so `--context`
+defaults to cwd. Replaced Phase 7 LLM-behavior assertion with deterministic
+skill install/content/loader tests.
 
 ### v1.1 (April 10, 2026) — Address review feedback
 
