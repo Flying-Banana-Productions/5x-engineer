@@ -32,6 +32,7 @@ describe("skill loader", () => {
 		expect(() => getDefaultSkillRaw("5x-plan")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan-review")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-phase-execution")).not.toThrow();
+		expect(() => getDefaultSkillRaw("config")).not.toThrow();
 	});
 
 	test("listSkillNames returns all bundled skills", () => {
@@ -41,12 +42,13 @@ describe("skill loader", () => {
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
-		expect(names.length).toBe(5);
+		expect(names).toContain("config");
+		expect(names.length).toBe(6);
 	});
 
 	test("listSkills returns metadata with description and content", () => {
 		const skills = listSkills();
-		expect(skills.length).toBe(5);
+		expect(skills.length).toBe(6);
 
 		const planSkill = skills.find((s) => s.name === "5x-plan");
 		expect(planSkill).toBeDefined();
@@ -88,6 +90,7 @@ describe("skill loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
+			"config",
 		]) {
 			const raw = getDefaultSkillRaw(name);
 			const fm = parseSkillFrontmatter(raw);

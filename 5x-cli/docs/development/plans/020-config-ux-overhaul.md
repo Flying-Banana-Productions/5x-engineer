@@ -547,10 +547,10 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
 loadable by the skill loader, and covered by deterministic tests (content and
 installation plumbing), without LLM-behavior assertions.
 
-- [ ] Create a config skill at the standard skill location for the project's
+- [x] Create a config skill at the standard skill location for the project's
       harness (e.g. `.5x/skills/config/SKILL.md` or equivalent for the
       active harness).
-- [ ] Skill content should include:
+- [x] Skill content should include:
       - A summary of the 5x config model (layered files, local overrides).
       - Instructions to run `5x config show` to get full config state (JSON
         by default).
@@ -562,9 +562,9 @@ installation plumbing), without LLM-behavior assertions.
         - Setting up path overrides for monorepo sub-projects
         - Using `--local` for personal preferences vs team defaults
       - Example interaction flows.
-- [ ] The skill should be installable via `5x harness install` (add it to
+- [x] The skill should be installable via `5x harness install` (add it to
       the harness plugin's skill set) so it's available in any 5x project.
-- [ ] Add deterministic tests for this phase:
+- [x] Add deterministic tests for this phase:
       - Harness install includes the config skill in expected output paths.
       - Skill loader resolves and reads config skill content successfully.
       - Skill content includes required command guidance (`config show`,
