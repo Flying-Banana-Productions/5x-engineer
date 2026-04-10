@@ -295,3 +295,59 @@ export function isRegistryKeyOrRecordDescendant(
 	}
 	return false;
 }
+
+export type WritableKeyResolution =
+	| { kind: "leaf"; meta: ConfigKeyMeta }
+	| {
+			kind: "recordChild";
+			recordKey: string;
+			/** Value type for dotted keys under a `record` (currently string for harnessModels). */
+			valueType: "string";
+	  };
+
+/**
+ * Resolve a dotted key for `config set` / `config unset`: known leaf, record
+ * child, or rejection (exact `record` key, arrays, unknown keys).
+ */
+export function resolveWritableConfigKey(
+	key: string,
+	registry: ConfigKeyMeta[],
+):
+	| { ok: true; resolution: WritableKeyResolution }
+	| { ok: false; message: string } {
+	if (!isRegistryKeyOrRecordDescendant(key, registry)) {
+		return { ok: false, message: `Unknown config key: ${key}` };
+	}
+
+	const exact = registry.find((m) => m.key === key);
+	if (exact) {
+		if (exact.type === "record") {
+			return {
+				ok: false,
+				message: `Use dotted keys under ${key} (e.g. ${key}.<name>) instead of setting the whole record.`,
+			};
+		}
+		if (exact.type.endsWith("[]")) {
+			return {
+				ok: false,
+				message: `Use \`5x config add ${key} <value>\` to modify this array key.`,
+			};
+		}
+		return { ok: true, resolution: { kind: "leaf", meta: exact } };
+	}
+
+	for (const m of registry) {
+		if (m.type === "record" && key.startsWith(`${m.key}.`)) {
+			return {
+				ok: true,
+				resolution: {
+					kind: "recordChild",
+					recordKey: m.key,
+					valueType: "string",
+				},
+			};
+		}
+	}
+
+	return { ok: false, message: `Unknown config key: ${key}` };
+}

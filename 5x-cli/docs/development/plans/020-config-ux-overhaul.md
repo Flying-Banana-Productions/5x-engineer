@@ -344,12 +344,12 @@ controls which config file is targeted. `unset` removes a key.
 Comment-preserving writes confirmed by test. Creates files on demand for TOML
 contexts only; JS/MJS active contexts fail fast with migration guidance.
 
-- [ ] Add subcommands to `src/commands/config.ts`:
+- [x] Add subcommands to `src/commands/config.ts`:
       ```
       5x config set <key> <value> [--local] [--context <dir>]
       5x config unset <key> [--local] [--context <dir>]
       ```
-- [ ] Implement `resolveTargetConfigPath()` helper in
+- [x] Implement `resolveTargetConfigPath()` helper in
       `src/commands/config.handler.ts`:
       1. Resolve `controlPlaneRoot` from `startDir`.
       2. Resolve context directory (`--context` or cwd).
@@ -359,9 +359,9 @@ contexts only; JS/MJS active contexts fail fast with migration guidance.
          `join(controlPlaneRoot, "5x.toml")`.
       5. With `--local`, return the `.local` sibling of the resolved path.
       6. Return the resolved path (may or may not exist on disk yet).
-- [ ] Implement `detectActiveConfigSource()` (or equivalent) to classify the
+- [x] Implement `detectActiveConfigSource()` (or equivalent) to classify the
       effective config source for a context as TOML, JS/MJS, or none.
-- [ ] Implement `configSet()` in `src/commands/config.handler.ts`:
+- [x] Implement `configSet()` in `src/commands/config.handler.ts`:
       1. Validate `key` against the registry with explicit record-descendant
          semantics:
          - Exact registry keys are valid.
@@ -392,7 +392,7 @@ contexts only; JS/MJS active contexts fail fast with migration guidance.
       10. Write the file.
       11. Output the written key, value, and target file path via
           `outputSuccess()`.
-- [ ] Implement `configUnset()`:
+- [x] Implement `configUnset()`:
       1. Validate key with the same exact-or-record-descendant rule.
       2. Guard JS/MJS active source → fail fast with migration hint.
       3. Resolve target file via `resolveTargetConfigPath()`.
@@ -400,10 +400,10 @@ contexts only; JS/MJS active contexts fail fast with migration guidance.
       5. Parse TOML, remove the key from the nested structure.
       6. Patch and write back.
       7. If the file is now empty (no user keys), delete it.
-- [ ] Handle nested TOML table creation: setting `author.harnessModels.opencode`
+- [x] Handle nested TOML table creation: setting `author.harnessModels.opencode`
       in an empty file must create both `[author.harnessModels]` and the key
       under it.
-- [ ] Add unit tests:
+- [x] Add unit tests:
       - Set a top-level key in empty file → creates valid TOML.
       - Set a nested key → creates correct table structure.
       - Set on existing file preserves comments.

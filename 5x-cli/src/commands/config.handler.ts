@@ -5,16 +5,28 @@
  *
  * Subcommands:
  * - show: Display the resolved config as a JSON envelope
+ * - set / unset: TOML mutation with comment-preserving patches
  */
 
-import { resolve } from "node:path";
-import { type LayeredConfigResult, resolveLayeredConfig } from "../config.js";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+	parse as tomlParse,
+	patch as tomlPatch,
+} from "@decimalturn/toml-patch";
+import {
+	discoverConfigFile,
+	type LayeredConfigResult,
+	resolveLayeredConfig,
+} from "../config.js";
 import {
 	type ConfigKeyMeta,
 	computeLocalKeys,
 	flattenConfig,
 	getConfigRegistry,
 	isRegistryKeyOrRecordDescendant,
+	resolveWritableConfigKey,
+	type WritableKeyResolution,
 } from "../config-registry.js";
 import { getOutputFormat, outputError, outputSuccess } from "../output.js";
 import { resolveAnsi } from "../utils/ansi.js";
@@ -45,6 +57,339 @@ export interface ConfigShowParams {
 	contextDir?: string;
 	/** When set, only this dotted key (must match a shown entry). */
 	key?: string;
+}
+
+export interface ConfigSetParams {
+	key: string;
+	value: string;
+	local?: boolean;
+	startDir?: string;
+	contextDir?: string;
+}
+
+export interface ConfigUnsetParams {
+	key: string;
+	local?: boolean;
+	startDir?: string;
+	contextDir?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Target path resolution & active source (config set / unset)
+// ---------------------------------------------------------------------------
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Walk upward from `startDir` to `stopDir` (inclusive) and return the first
+ * existing `5x.toml` path, or null if none.
+ */
+export function discoverNearestTomlPath(
+	startDir: string,
+	stopDir: string,
+): string | null {
+	let dir = resolve(startDir);
+	const boundary = resolve(stopDir);
+	const root = resolve("/");
+
+	while (true) {
+		const candidate = join(dir, "5x.toml");
+		if (existsSync(candidate)) {
+			return candidate;
+		}
+		if (dir === boundary) {
+			break;
+		}
+		const parent = dirname(dir);
+		if (parent === dir || dir === root) {
+			break;
+		}
+		dir = parent;
+	}
+
+	return null;
+}
+
+function mergeConfigObjects(
+	base: Record<string, unknown>,
+	override: Record<string, unknown>,
+): Record<string, unknown> {
+	const result: Record<string, unknown> = { ...base };
+
+	for (const key of Object.keys(override)) {
+		const baseVal = base[key];
+		const overVal = override[key];
+
+		if (Array.isArray(overVal)) {
+			result[key] = overVal;
+		} else if (isPlainRecord(overVal) && isPlainRecord(baseVal)) {
+			result[key] = mergeConfigObjects(baseVal, overVal);
+		} else {
+			result[key] = overVal;
+		}
+	}
+
+	return result;
+}
+
+export interface ResolveTargetConfigPathResult {
+	controlPlaneRoot: string;
+	targetPath: string;
+}
+
+/**
+ * Resolve the TOML file path that `config set` / `unset` should read/write.
+ */
+export function resolveTargetConfigPath(params: {
+	startDir?: string;
+	contextDir?: string;
+	local?: boolean;
+}): ResolveTargetConfigPathResult {
+	const cp = resolveControlPlaneRoot(params.startDir);
+	const controlPlaneRoot = resolve(cp.controlPlaneRoot);
+	const contextDir = resolve(params.contextDir ?? process.cwd());
+
+	const relToRoot = relative(controlPlaneRoot, contextDir);
+	const contextInsideRoot =
+		relToRoot === "" || (!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
+
+	if (!contextInsideRoot) {
+		outputError(
+			"INVALID_ARGS",
+			`Config context directory must be inside the control plane root: ${controlPlaneRoot}`,
+		);
+	}
+
+	let baseToml: string;
+	if (contextDir === controlPlaneRoot) {
+		baseToml = join(controlPlaneRoot, "5x.toml");
+	} else {
+		const nearest = discoverNearestTomlPath(contextDir, controlPlaneRoot);
+		baseToml = nearest ?? join(controlPlaneRoot, "5x.toml");
+	}
+
+	const targetPath = params.local
+		? join(dirname(baseToml), "5x.toml.local")
+		: baseToml;
+
+	return { controlPlaneRoot, targetPath };
+}
+
+export type ActiveConfigSourceKind = "toml" | "js" | "none";
+
+/**
+ * Classify the primary config file discovered from `contextDir` (same walk as
+ * {@link discoverConfigFile}), bounded by the control-plane root.
+ */
+export function detectActiveConfigSource(
+	controlPlaneRoot: string,
+	contextDir: string,
+): ActiveConfigSourceKind {
+	const root = resolve(controlPlaneRoot);
+	const ctx = resolve(contextDir);
+
+	const relToRoot = relative(root, ctx);
+	const contextInsideRoot =
+		relToRoot === "" || (!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
+
+	if (!contextInsideRoot) {
+		return "none";
+	}
+
+	const discoveryStart = ctx === root ? root : ctx;
+	const primary = discoverConfigFile(discoveryStart, root);
+	if (!primary) {
+		return "none";
+	}
+	if (primary.endsWith(".toml")) {
+		return "toml";
+	}
+	return "js";
+}
+
+function isRootDbConfigTarget(
+	targetPath: string,
+	controlPlaneRoot: string,
+): boolean {
+	const r = resolve(controlPlaneRoot);
+	const p = resolve(targetPath);
+	return (
+		p === resolve(join(r, "5x.toml")) || p === resolve(join(r, "5x.toml.local"))
+	);
+}
+
+function buildNestedFromDotted(
+	dotted: string,
+	value: unknown,
+): Record<string, unknown> {
+	const parts = dotted.split(".");
+	if (parts.length === 0) {
+		return {};
+	}
+
+	let cur: Record<string, unknown> = {};
+	const root = cur;
+
+	for (let i = 0; i < parts.length - 1; i++) {
+		const seg = parts[i];
+		if (seg === undefined) {
+			return root;
+		}
+		const next: Record<string, unknown> = {};
+		cur[seg] = next;
+		cur = next;
+	}
+	const last = parts[parts.length - 1];
+	if (last === undefined) {
+		return root;
+	}
+	cur[last] = value as unknown;
+	return root;
+}
+
+function coerceConfigValue(
+	resolution: WritableKeyResolution,
+	raw: string,
+): unknown {
+	if (resolution.kind === "recordChild") {
+		return raw;
+	}
+
+	const meta = resolution.meta;
+	const t = meta.type;
+
+	if (t === "string") {
+		return raw;
+	}
+
+	if (t === "number") {
+		const n = Number(raw);
+		if (!Number.isFinite(n) || !Number.isInteger(n)) {
+			outputError(
+				"INVALID_ARGS",
+				`Invalid number for ${meta.key}: expected an integer, got "${raw}"`,
+			);
+		}
+		return n;
+	}
+
+	if (t === "boolean") {
+		if (raw === "true") {
+			return true;
+		}
+		if (raw === "false") {
+			return false;
+		}
+		outputError(
+			"INVALID_ARGS",
+			`Invalid boolean for ${meta.key}: use "true" or "false" (got "${raw}")`,
+		);
+	}
+
+	if (t === "enum") {
+		const allowed = meta.allowedValues;
+		if (allowed && !allowed.includes(raw)) {
+			outputError(
+				"INVALID_ARGS",
+				`Invalid value for ${meta.key}: must be one of ${allowed.join(", ")}`,
+			);
+		}
+		return raw;
+	}
+
+	outputError(
+		"INVALID_ARGS",
+		`Cannot set ${meta.key} via config set (type: ${t})`,
+	);
+}
+
+function assertWritableSource(
+	kind: ActiveConfigSourceKind,
+	primaryPath: string | null,
+): void {
+	if (kind !== "js") {
+		return;
+	}
+	const label = primaryPath
+		? (primaryPath.split(/[/\\]/).pop() ?? primaryPath)
+		: "5x.config.js";
+	outputError(
+		"INVALID_ARGS",
+		`Active config is ${label}. Run \`5x upgrade\` to migrate to 5x.toml before using this command.`,
+	);
+}
+
+function getDottedValue(obj: Record<string, unknown>, dotted: string): unknown {
+	const parts = dotted.split(".");
+	let cur: unknown = obj;
+	for (const p of parts) {
+		if (!isPlainRecord(cur) || !(p in cur)) {
+			return undefined;
+		}
+		cur = cur[p] as unknown;
+	}
+	return cur;
+}
+
+function removeDottedKey(
+	obj: Record<string, unknown>,
+	dotted: string,
+): boolean {
+	const parts = dotted.split(".");
+	let cur: unknown = obj;
+	const stack: { parent: Record<string, unknown>; key: string }[] = [];
+
+	for (let i = 0; i < parts.length; i++) {
+		const p = parts[i];
+		if (p === undefined) {
+			return false;
+		}
+		if (!isPlainRecord(cur) || !(p in cur)) {
+			return false;
+		}
+		if (i === parts.length - 1) {
+			delete (cur as Record<string, unknown>)[p];
+			for (let s = stack.length - 1; s >= 0; s--) {
+				const entry = stack[s];
+				if (!entry) {
+					break;
+				}
+				const { parent, key } = entry;
+				const ch = parent[key];
+				if (
+					isPlainRecord(ch) &&
+					Object.keys(ch as Record<string, unknown>).length === 0
+				) {
+					delete parent[key];
+				} else {
+					break;
+				}
+			}
+			return true;
+		}
+		stack.push({ parent: cur as Record<string, unknown>, key: p });
+		cur = (cur as Record<string, unknown>)[p];
+	}
+	return false;
+}
+
+function pruneEmptyTables(obj: Record<string, unknown>): void {
+	for (const k of Object.keys(obj)) {
+		const v = obj[k];
+		if (isPlainRecord(v)) {
+			pruneEmptyTables(v);
+			if (Object.keys(v).length === 0) {
+				delete obj[k];
+			}
+		}
+	}
+}
+
+function isDocumentEmpty(parsed: Record<string, unknown>): boolean {
+	pruneEmptyTables(parsed);
+	return Object.keys(parsed).length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,4 +625,130 @@ export async function configShow(params: ConfigShowParams = {}): Promise<void> {
 	}
 
 	outputSuccess(output, () => formatConfigShowText(output, fileRows));
+}
+
+// ---------------------------------------------------------------------------
+// config set / unset
+// ---------------------------------------------------------------------------
+
+export async function configSet(params: ConfigSetParams): Promise<void> {
+	const registry = getConfigRegistry();
+	const key = params.key.trim();
+	const resolved = resolveWritableConfigKey(key, registry);
+	if (!resolved.ok) {
+		outputError("INVALID_ARGS", resolved.message);
+	}
+
+	const { controlPlaneRoot, targetPath } = resolveTargetConfigPath({
+		startDir: params.startDir,
+		contextDir: params.contextDir,
+		local: params.local,
+	});
+
+	const contextDir = resolve(params.contextDir ?? process.cwd());
+	const activeKind = detectActiveConfigSource(controlPlaneRoot, contextDir);
+	const primaryPath = discoverConfigFile(
+		contextDir === resolve(controlPlaneRoot) ? controlPlaneRoot : contextDir,
+		controlPlaneRoot,
+	);
+	assertWritableSource(activeKind, primaryPath);
+
+	if (key.startsWith("db.") || key === "db") {
+		if (!isRootDbConfigTarget(targetPath, controlPlaneRoot)) {
+			outputError(
+				"INVALID_ARGS",
+				"db config is root-only; set db.* keys in the root 5x.toml (or root 5x.toml.local).",
+			);
+		}
+	}
+
+	const coerced = coerceConfigValue(resolved.resolution, params.value);
+
+	const patchObj = buildNestedFromDotted(key, coerced);
+	const existingText = existsSync(targetPath)
+		? readFileSync(targetPath, "utf-8")
+		: "";
+	const existingParsed = (
+		existingText.trim() === ""
+			? {}
+			: (tomlParse(existingText) as Record<string, unknown>)
+	) as Record<string, unknown>;
+	const merged = mergeConfigObjects(existingParsed, patchObj);
+	const newToml = tomlPatch(existingText === "" ? "\n" : existingText, merged);
+
+	writeFileSync(targetPath, newToml, "utf-8");
+
+	outputSuccess({ key, value: coerced, path: targetPath }, (d) => {
+		console.log(`Set ${d.key} = ${JSON.stringify(d.value)}`);
+		console.log(`Wrote ${d.path}`);
+	});
+}
+
+export async function configUnset(params: ConfigUnsetParams): Promise<void> {
+	const registry = getConfigRegistry();
+	const key = params.key.trim();
+	const resolved = resolveWritableConfigKey(key, registry);
+	if (!resolved.ok) {
+		outputError("INVALID_ARGS", resolved.message);
+	}
+
+	const { controlPlaneRoot, targetPath } = resolveTargetConfigPath({
+		startDir: params.startDir,
+		contextDir: params.contextDir,
+		local: params.local,
+	});
+
+	const contextDir = resolve(params.contextDir ?? process.cwd());
+	const activeKind = detectActiveConfigSource(controlPlaneRoot, contextDir);
+	const primaryPath = discoverConfigFile(
+		contextDir === resolve(controlPlaneRoot) ? controlPlaneRoot : contextDir,
+		controlPlaneRoot,
+	);
+	assertWritableSource(activeKind, primaryPath);
+
+	if (key.startsWith("db.") || key === "db") {
+		if (!isRootDbConfigTarget(targetPath, controlPlaneRoot)) {
+			outputError(
+				"INVALID_ARGS",
+				"db config is root-only; unset db.* keys in the root 5x.toml (or root 5x.toml.local).",
+			);
+		}
+	}
+
+	if (!existsSync(targetPath)) {
+		outputSuccess({ key, path: targetPath, noop: true as const }, (d) => {
+			console.log(`No file at ${d.path} — nothing to unset for ${d.key}`);
+		});
+		return;
+	}
+
+	const existingText = readFileSync(targetPath, "utf-8");
+	const existingParsed = tomlParse(existingText) as Record<string, unknown>;
+
+	if (getDottedValue(existingParsed, key) === undefined) {
+		outputSuccess({ key, path: targetPath, noop: true as const }, (d) => {
+			console.log(`Key ${d.key} not present in ${d.path} — nothing to unset`);
+		});
+		return;
+	}
+
+	const clone = structuredClone(existingParsed) as Record<string, unknown>;
+	removeDottedKey(clone, key);
+	pruneEmptyTables(clone);
+
+	if (isDocumentEmpty(clone)) {
+		unlinkSync(targetPath);
+		outputSuccess({ key, path: targetPath, removed: true as const }, (d) => {
+			console.log(`Removed last key — deleted ${d.path}`);
+		});
+		return;
+	}
+
+	const newToml = tomlPatch(existingText, clone);
+	writeFileSync(targetPath, newToml, "utf-8");
+
+	outputSuccess({ key, path: targetPath }, (d) => {
+		console.log(`Unset ${d.key}`);
+		console.log(`Wrote ${d.path}`);
+	});
 }

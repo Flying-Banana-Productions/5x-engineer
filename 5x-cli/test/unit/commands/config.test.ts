@@ -1,20 +1,34 @@
 /**
- * Unit tests for `5x config show` — registry-backed output and resolution.
+ * Unit tests for `5x config show` / `config set` / `config unset`.
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse as tomlParse } from "@decimalturn/toml-patch";
 import {
 	buildConfigFileRows,
 	buildConfigShowOutput,
+	configSet,
+	configUnset,
+	detectActiveConfigSource,
+	discoverNearestTomlPath,
+	resolveTargetConfigPath,
 } from "../../../src/commands/config.handler.js";
 import { resolveLayeredConfig } from "../../../src/config.js";
 import {
 	flattenConfig,
 	getConfigRegistry,
+	resolveWritableConfigKey,
 } from "../../../src/config-registry.js";
+import { CliError } from "../../../src/output.js";
 
 function makeTmpDir(prefix = "5x-cfg-unit"): string {
 	const dir = join(
@@ -248,6 +262,375 @@ describe("config resolution via resolveLayeredConfig", () => {
 			const acme = configAny.acme as Record<string, unknown>;
 			expect(acme.apiKey).toBe("sk-test");
 			expect(acme.region).toBe("us-east-1");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("resolveTargetConfigPath", () => {
+	test("falls back to root 5x.toml when no nearest TOML", () => {
+		const tmp = makeTmpDir();
+		try {
+			const { controlPlaneRoot, targetPath } = resolveTargetConfigPath({
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(controlPlaneRoot).toBe(resolve(tmp));
+			expect(targetPath).toBe(join(tmp, "5x.toml"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("--local targets 5x.toml.local beside nearest TOML", () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, "maxStepsPerRun = 1");
+			const { targetPath } = resolveTargetConfigPath({
+				startDir: tmp,
+				contextDir: tmp,
+				local: true,
+			});
+			expect(targetPath).toBe(join(tmp, "5x.toml.local"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("sub-project nearest 5x.toml is preferred over root", () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[author]\nprovider = "root"');
+			const sub = join(tmp, "packages", "api");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(
+				join(sub, "5x.toml"),
+				["[author]", 'model = "sub"'].join("\n"),
+				"utf-8",
+			);
+			const { targetPath } = resolveTargetConfigPath({
+				startDir: tmp,
+				contextDir: sub,
+			});
+			expect(targetPath).toBe(join(sub, "5x.toml"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("discoverNearestTomlPath", () => {
+	test("finds nested 5x.toml before root", () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, "x = 1");
+			const sub = join(tmp, "a", "b");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(join(sub, "5x.toml"), "y = 2\n", "utf-8");
+			expect(discoverNearestTomlPath(sub, tmp)).toBe(join(sub, "5x.toml"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("resolveWritableConfigKey", () => {
+	test("rejects exact record key", () => {
+		const r = resolveWritableConfigKey(
+			"author.harnessModels",
+			getConfigRegistry(),
+		);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.message).toContain("dotted");
+		}
+	});
+
+	test("accepts record descendant", () => {
+		const r = resolveWritableConfigKey(
+			"author.harnessModels.opencode",
+			getConfigRegistry(),
+		);
+		expect(r.ok).toBe(true);
+	});
+
+	test("rejects array key", () => {
+		const r = resolveWritableConfigKey("qualityGates", getConfigRegistry());
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.message).toContain("config add");
+		}
+	});
+});
+
+describe("config set (unit)", () => {
+	test("creates valid TOML for top-level key in empty project", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configSet({
+				key: "maxStepsPerRun",
+				value: "500",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const text = readFileSync(join(tmp, "5x.toml"), "utf-8");
+			const parsed = tomlParse(text) as Record<string, unknown>;
+			expect(parsed.maxStepsPerRun).toBe(500);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("creates nested tables for dotted key", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configSet({
+				key: "author.harnessModels.opencode",
+				value: "my-model",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const text = readFileSync(join(tmp, "5x.toml"), "utf-8");
+			const parsed = tomlParse(text) as Record<string, unknown>;
+			const author = parsed.author as Record<string, unknown>;
+			const hm = author.harnessModels as Record<string, unknown>;
+			expect(hm.opencode).toBe("my-model");
+			// Inline table or header form — both are valid
+			expect(text.includes("opencode") && text.includes("my-model")).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("preserves comments on existing file", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const original = [
+				"# keep this comment",
+				"maxReviewIterations = 3",
+				"",
+			].join("\n");
+			writeFileSync(join(tmp, "5x.toml"), original, "utf-8");
+			await configSet({
+				key: "maxStepsPerRun",
+				value: "400",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const text = readFileSync(join(tmp, "5x.toml"), "utf-8");
+			expect(text).toContain("# keep this comment");
+			expect(text).toContain("maxStepsPerRun");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("--local writes 5x.toml.local", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, 'author.provider = "x"');
+			await configSet({
+				key: "author.model",
+				value: "m",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml.local"))).toBe(true);
+			const loc = readFileSync(join(tmp, "5x.toml.local"), "utf-8");
+			expect(loc).toContain("model");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("sub-project context targets sub-project 5x.toml", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[author]\nprovider = "root"');
+			const sub = join(tmp, "packages", "api");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(
+				join(sub, "5x.toml"),
+				["[paths]", 'plans = "p"'].join("\n"),
+				"utf-8",
+			);
+			await configSet({
+				key: "author.provider",
+				value: "sub-prov",
+				startDir: tmp,
+				contextDir: sub,
+			});
+			const text = readFileSync(join(sub, "5x.toml"), "utf-8");
+			expect(text).toContain("sub-prov");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("db.path from sub-project context errors", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[db]\npath = ".5x/5x.db"');
+			const sub = join(tmp, "packages", "api");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(join(sub, "5x.toml"), '[paths]\nplans = "x"\n', "utf-8");
+			await expect(
+				configSet({
+					key: "db.path",
+					value: ".5x/other.db",
+					startDir: tmp,
+					contextDir: sub,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("wrong type for number key errors", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				configSet({
+					key: "maxStepsPerRun",
+					value: "not-a-number",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown key errors", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				configSet({
+					key: "not.a.real.key",
+					value: "x",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("boolean only accepts true/false", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				configSet({
+					key: "skipQualityGates",
+					value: "yes",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("JS active source rejects set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.mjs"),
+				"export default { author: { provider: 'opencode' } }\n",
+				"utf-8",
+			);
+			expect(detectActiveConfigSource(tmp, tmp)).toBe("js");
+			await expect(
+				configSet({
+					key: "maxStepsPerRun",
+					value: "100",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("config unset (unit)", () => {
+	test("removes key and preserves others", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				["maxStepsPerRun = 100", "", "[author]", 'provider = "p"', ""].join(
+					"\n",
+				),
+				"utf-8",
+			);
+			await configUnset({
+				key: "maxStepsPerRun",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.maxStepsPerRun).toBeUndefined();
+			expect((parsed.author as Record<string, unknown>).provider).toBe("p");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("missing file is no-op", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configUnset({
+				key: "maxStepsPerRun",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("last key removes file", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, "maxStepsPerRun = 1\n");
+			await configUnset({
+				key: "maxStepsPerRun",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("JS active source rejects unset", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				"module.exports = { maxStepsPerRun: 50 }\n",
+				"utf-8",
+			);
+			await expect(
+				configUnset({
+					key: "maxStepsPerRun",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
