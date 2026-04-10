@@ -174,3 +174,47 @@ export function getConfigRegistry(): ConfigKeyMeta[] {
 	}
 	return registryCache;
 }
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Recursively collect dotted keys from a nested plain object (arrays and scalars are leaves). */
+function collectDottedKeys(
+	value: unknown,
+	prefix: string,
+	out: Set<string>,
+): void {
+	if (!isPlainObject(value)) {
+		if (prefix) out.add(prefix);
+		return;
+	}
+	const keys = Object.keys(value);
+	if (keys.length === 0) {
+		if (prefix) out.add(prefix);
+		return;
+	}
+	for (const k of keys) {
+		const p = prefix ? `${prefix}.${k}` : k;
+		const v = value[k];
+		if (isPlainObject(v)) {
+			collectDottedKeys(v, p, out);
+		} else {
+			out.add(p);
+		}
+	}
+}
+
+/**
+ * Union of dotted keys present in any local overlay object (pre-merge parse).
+ * Used for `isLocal` membership — no merge semantics.
+ */
+export function computeLocalKeys(
+	localRaws: Record<string, unknown>[],
+): Set<string> {
+	const out = new Set<string>();
+	for (const raw of localRaws) {
+		collectDottedKeys(raw, "", out);
+	}
+	return out;
+}

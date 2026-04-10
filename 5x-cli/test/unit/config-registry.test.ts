@@ -3,6 +3,7 @@ import { z } from "zod";
 import { FiveXConfigSchema } from "../../src/config.js";
 import {
 	buildConfigRegistry,
+	computeLocalKeys,
 	getConfigRegistry,
 } from "../../src/config-registry.js";
 
@@ -106,5 +107,38 @@ describe("config-registry", () => {
 		const a = getConfigRegistry();
 		const b = getConfigRegistry();
 		expect(a).toBe(b);
+	});
+
+	describe("computeLocalKeys", () => {
+		test("empty array yields empty set", () => {
+			expect([...computeLocalKeys([])]).toEqual([]);
+		});
+
+		test("single local with author.provider", () => {
+			const keys = computeLocalKeys([{ author: { provider: "claude-code" } }]);
+			expect(keys.has("author.provider")).toBe(true);
+			expect(keys.size).toBe(1);
+		});
+
+		test("nested record key author.harnessModels.opencode", () => {
+			const keys = computeLocalKeys([
+				{
+					author: {
+						harnessModels: { opencode: "gpt-5" },
+					},
+				},
+			]);
+			expect(keys.has("author.harnessModels.opencode")).toBe(true);
+		});
+
+		test("multiple local raws union overlapping keys", () => {
+			const keys = computeLocalKeys([
+				{ author: { provider: "a" } },
+				{ maxStepsPerRun: 99, author: { model: "m" } },
+			]);
+			expect(keys.has("author.provider")).toBe(true);
+			expect(keys.has("author.model")).toBe(true);
+			expect(keys.has("maxStepsPerRun")).toBe(true);
+		});
 	});
 });

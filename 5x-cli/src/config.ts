@@ -668,7 +668,9 @@ function deepMerge(
 }
 
 /**
- * Load and parse `5x.toml.local` for merging. Returns null if the file is absent.
+ * Load and parse `5x.toml.local` for merging.
+ * `rawForKeys` is the parsed table before path resolution (for local-key metadata).
+ * `prepared` is null if the file is absent.
  */
 function prepareLocalTomlOverlay(
 	localPath: string,
@@ -677,8 +679,13 @@ function prepareLocalTomlOverlay(
 		warn: (...args: unknown[]) => void;
 		cliProviderNames?: Set<string>;
 	},
-): Record<string, unknown> | null {
-	if (!existsSync(localPath)) return null;
+): {
+	prepared: Record<string, unknown> | null;
+	rawForKeys: Record<string, unknown> | null;
+} {
+	if (!existsSync(localPath)) {
+		return { prepared: null, rawForKeys: null };
+	}
 
 	let raw: unknown;
 	try {
@@ -699,6 +706,8 @@ function prepareLocalTomlOverlay(
 
 	warnUnknownConfigKeys(raw, localPath, options.cliProviderNames, options.warn);
 
+	const rawForKeys = raw;
+
 	const resolvedPaths = resolveRawConfigPaths(raw, dirname(localPath));
 	const prepared: Record<string, unknown> = isRecord(resolvedPaths)
 		? resolvedPaths
@@ -710,10 +719,10 @@ function prepareLocalTomlOverlay(
 				"DB path is always resolved from the root config.",
 		);
 		const { db: _db, ...rest } = prepared;
-		return rest;
+		return { prepared: rest, rawForKeys };
 	}
 
-	return prepared;
+	return { prepared, rawForKeys };
 }
 
 /**
@@ -726,7 +735,14 @@ function mergeLayeredLocalTomlIntoRaw(
 	nearestConfigPath: string | null,
 	warn: (...args: unknown[]) => void,
 	cliProviderNames?: Set<string>,
-): unknown {
+): {
+	merged: unknown;
+	localPaths: string[];
+	localRaws: Record<string, unknown>[];
+} {
+	const localPaths: string[] = [];
+	const localRaws: Record<string, unknown>[] = [];
+
 	const base = isRecord(mergedRaw) ? mergedRaw : {};
 	let out = base;
 
@@ -736,8 +752,10 @@ function mergeLayeredLocalTomlIntoRaw(
 		warn,
 		cliProviderNames,
 	});
-	if (rootOverlay) {
-		out = deepMerge(out, rootOverlay);
+	if (rootOverlay.prepared && rootOverlay.rawForKeys) {
+		out = deepMerge(out, rootOverlay.prepared);
+		localPaths.push(rootLocalPath);
+		localRaws.push(rootOverlay.rawForKeys);
 	}
 
 	if (nearestConfigPath) {
@@ -751,13 +769,15 @@ function mergeLayeredLocalTomlIntoRaw(
 				warn,
 				cliProviderNames,
 			});
-			if (nearestOverlay) {
-				out = deepMerge(out, nearestOverlay);
+			if (nearestOverlay.prepared && nearestOverlay.rawForKeys) {
+				out = deepMerge(out, nearestOverlay.prepared);
+				localPaths.push(nearestLocalPath);
+				localRaws.push(nearestOverlay.rawForKeys);
 			}
 		}
 	}
 
-	return out;
+	return { merged: out, localPaths, localRaws };
 }
 
 /**
@@ -790,7 +810,7 @@ export async function loadConfig(
 			warn: warnFn,
 			cliProviderNames,
 		});
-		if (!localOverlay) {
+		if (!localOverlay.prepared) {
 			const config = resolveConfigPaths(
 				FiveXConfigSchema.parse({}),
 				projectRoot,
@@ -800,7 +820,7 @@ export async function loadConfig(
 				configPath: null,
 			};
 		}
-		rawConfig = deepMerge({}, localOverlay);
+		rawConfig = deepMerge({}, localOverlay.prepared);
 	} else {
 		try {
 			if (configPath.endsWith(".toml")) {
@@ -829,8 +849,11 @@ export async function loadConfig(
 			warn: warnFn,
 			cliProviderNames,
 		});
-		if (localOverlay) {
-			rawConfig = deepMerge(isRecord(rawConfig) ? rawConfig : {}, localOverlay);
+		if (localOverlay.prepared) {
+			rawConfig = deepMerge(
+				isRecord(rawConfig) ? rawConfig : {},
+				localOverlay.prepared,
+			);
 		}
 	}
 
@@ -869,6 +892,10 @@ export interface LayeredConfigResult {
 	rootConfigPath: string | null;
 	nearestConfigPath: string | null;
 	isLayered: boolean;
+	/** `5x.toml.local` files that exist and were merged (root local, then nearest local). */
+	localPaths: string[];
+	/** Parsed pre-merge contents of each file in {@link localPaths} (parallel array). */
+	localRaws: Record<string, unknown>[];
 }
 
 /**
@@ -1023,12 +1050,17 @@ export async function resolveLayeredConfig(
 		mergedRaw = {};
 	}
 
-	mergedRaw = mergeLayeredLocalTomlIntoRaw(
+	const {
+		merged: mergedWithLocals,
+		localPaths,
+		localRaws,
+	} = mergeLayeredLocalTomlIntoRaw(
 		mergedRaw,
 		controlPlaneRoot,
 		nearestConfigPath,
 		warn,
 	);
+	mergedRaw = mergedWithLocals;
 
 	// Parse through Zod to fill defaults
 	const result = FiveXConfigSchema.safeParse(mergedRaw);
@@ -1054,6 +1086,8 @@ export async function resolveLayeredConfig(
 		rootConfigPath,
 		nearestConfigPath,
 		isLayered,
+		localPaths,
+		localRaws,
 	};
 }
 

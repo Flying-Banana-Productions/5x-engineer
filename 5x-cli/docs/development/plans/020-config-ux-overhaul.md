@@ -220,7 +220,7 @@ registry against the known schema shape.
 and raw parsed contents. The `isLocal` computation helper works correctly.
 Existing layering tests still pass unchanged.
 
-- [ ] Extend `LayeredConfigResult` in `src/config.ts`:
+- [x] Extend `LayeredConfigResult` in `src/config.ts`:
       ```ts
       export interface LayeredConfigResult {
         config: FiveXConfig;
@@ -231,25 +231,25 @@ Existing layering tests still pass unchanged.
         localRaws: Record<string, unknown>[];  // new — parallel to localPaths
       }
       ```
-- [ ] Modify `mergeLayeredLocalTomlIntoRaw` to also return the local overlay
+- [x] Modify `mergeLayeredLocalTomlIntoRaw` to also return the local overlay
       paths and parsed raw objects it discovered (currently it only returns
       the merged result). Change its return type from `unknown` to:
       ```ts
       { merged: unknown; localPaths: string[]; localRaws: Record<string, unknown>[] }
       ```
       Callers destructure accordingly.
-- [ ] Thread `localPaths` and `localRaws` through to the
+- [x] Thread `localPaths` and `localRaws` through to the
       `LayeredConfigResult` returned by `resolveLayeredConfig`.
-- [ ] Implement `computeLocalKeys(localRaws): Set<string>` in
+- [x] Implement `computeLocalKeys(localRaws): Set<string>` in
       `src/config-registry.ts`:
       - Takes the array of parsed local overlay objects.
       - Recursively flattens each to dotted keys.
       - Returns the union set.
       This is a pure set-membership operation — no merge involved.
-- [ ] Verify all existing tests in `test/unit/config.test.ts` and
+- [x] Verify all existing tests in `test/unit/config.test.ts` and
       `test/unit/config-layering.test.ts` still pass (no behavioral change,
       only return-type expansion).
-- [ ] Add tests for `computeLocalKeys`:
+- [x] Add tests for `computeLocalKeys`:
       - Empty array → empty set.
       - Single local file with `author.provider` → set contains
         `"author.provider"`.
