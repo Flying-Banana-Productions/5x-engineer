@@ -10,7 +10,7 @@
 
 The commit implements Phase 4’s completion gate: Commander wires `set` and `unset` with `--local` and `--context`; `config.handler.ts` adds `resolveTargetConfigPath()`, `discoverNearestTomlPath()`, `detectActiveConfigSource()`, `configSet()` / `configUnset()`, shared helpers for merge/patch/unset, and `config-registry.ts` adds `resolveWritableConfigKey()` for leaf vs record-descendant vs array vs exact-record rejection. Unit tests cover resolution, coercion, db guard, JS/MJS fail-fast (no TOML creation), comment preservation, nested keys, unset behaviors including file deletion; integration tests cover set→show, `--local`, `--context` sub-project targeting, JS rejection on set, and unset restoring defaults via `show`.
 
-**Readiness:** Ready with corrections — core behavior matches the plan; one optional integration gap remains (JS guard on `unset` at CLI boundary).
+**Readiness:** Ready — core behavior matches the plan; P2.1 (JS/MJS `unset` integration) verified in addendum commit `2b628fba0879b05cce260e56ef04ae43870e9b35`.
 
 ## Plan compliance (focused areas)
 
@@ -47,7 +47,7 @@ The commit implements Phase 4’s completion gate: Commander wires `set` and `un
 ### Test coverage
 
 - **Unit:** Broad coverage matching the Phase 4 checklist (nested tables, `--local`, sub-project context, db error, type errors, unknown key, boolean `yes`, JS set/unset, unset preserve/delete/no-op).
-- **Integration:** Strong for happy paths and JS `set` rejection; **gap:** no subprocess test that `5x config unset` fails with the same migration hint when `5x.config.js`/`.mjs` is active (unit tests cover handler-level rejection).
+- **Integration:** Strong for happy paths and JS `set` rejection; **P2.1 addressed** (commit `2b628fba0879b05cce260e56ef04ae43870e9b35`): subprocess test for `5x config unset` with `5x.config.js` / `5x.config.mjs` active — non-zero exit, migration hint, filename in message.
 
 ## Strengths
 
@@ -65,13 +65,9 @@ None.
 
 ## Medium priority (P2)
 
-### P2.1 — Integration test: JS/MJS active source rejects `config unset`
+### P2.1 — Integration test: JS/MJS active source rejects `config unset` ✅
 
-**Risk:** Phase 4 plan and test matrix call out fail-fast behavior for **any** write command when JS/MJS is active. `config unset` is covered in unit tests but not in `test/integration/commands/config.test.ts`, so a regression in commander wiring or handler dispatch for `unset` would not be caught at the subprocess boundary.
-
-**Requirement:** Add one integration test mirroring the existing `5x config set` JS case: `5x config unset maxStepsPerRun` with only `5x.config.mjs` present — expect non-zero exit, error message containing `5x upgrade`, and no new TOML file created.
-
-**Action:** `auto_fix`
+**Resolved** in `2b628fba0879b05cce260e56ef04ae43870e9b35`: integration test `P2.1: JS active config rejects unset with migration hint` covers both `5x.config.js` and `5x.config.mjs` with `config unset maxStepsPerRun`, asserting non-zero exit and migration hint in the JSON error envelope.
 
 ## Readiness checklist
 
@@ -85,8 +81,21 @@ None.
 
 **P2 optional**
 
-- [ ] P2.1 — integration coverage for JS/MJS + `unset`.
+- [x] P2.1 — integration coverage for JS/MJS + `unset` (`2b628fba0879b05cce260e56ef04ae43870e9b35`).
 
 ---
 
-**Phase handoff:** Phase 4 completion gate is met for production behavior; after P2.1 (optional), proceed to Phase 5 (`config add` / `remove`) with confidence that `resolveTargetConfigPath()` and write guards are shared and stable.
+**Phase handoff:** Phase 4 completion gate is met for production behavior; P2.1 is done — proceed to Phase 5 (`config add` / `remove`) with confidence that `resolveTargetConfigPath()` and write guards are shared and stable.
+
+---
+
+## Addendum — reviewer verification (2026-04-10)
+
+**Commit verified:** `2b628fba0879b05cce260e56ef04ae43870e9b35` (`test(config): integration unset fails on JS/MJS active source`)
+
+**Finding:** The commit adds the missing subprocess-level coverage for **JS/MJS active source + `config unset`** in `test/integration/commands/config.test.ts`.
+
+- **Test:** `P2.1: JS active config rejects unset with migration hint` — iterates `5x.config.js` and `5x.config.mjs`, runs `5x config unset maxStepsPerRun`, asserts non-zero exit, JSON envelope `ok: false`, and an error message containing `5x upgrade`, a `5x.config.(js|mjs)` reference, and the active filename.
+- **Local run:** `bun test test/integration/commands/config.test.ts -t "P2.1"` — pass.
+
+This closes the P2.1 integration gap noted above; Phase 4’s CLI-boundary matrix for JS/MJS write rejection now includes `unset` alongside `set`.
