@@ -1,5 +1,5 @@
 ---
-name: config
+name: 5x-config
 description: >-
   Guide for inspecting and editing 5x configuration through the CLI. Use when
   helping users choose providers, per-harness models, quality gates, monorepo path
@@ -8,7 +8,7 @@ metadata:
   author: 5x-engineer
 ---
 
-# Skill: config (5x configuration)
+# Skill: 5x-config (5x configuration)
 
 5x reads configuration from layered TOML (and optional JS) sources. Values merge
 from the repository control-plane root down to the nearest `5x.toml` for your

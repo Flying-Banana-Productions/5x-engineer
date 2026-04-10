@@ -1,5 +1,6 @@
 import type { SkillMetadata } from "../harnesses/installer.js";
 import skill5xTemplate from "./base/5x/SKILL.tmpl.md" with { type: "text" };
+import skill5xConfig from "./base/5x-config/SKILL.md" with { type: "text" };
 import skillPhaseExecutionTemplate from "./base/5x-phase-execution/SKILL.tmpl.md" with {
 	type: "text",
 };
@@ -12,7 +13,6 @@ import skillPlanReviewTemplate from "./base/5x-plan-review/SKILL.tmpl.md" with {
 import skill5xWindowsTemplate from "./base/5x-windows/SKILL.tmpl.md" with {
 	type: "text",
 };
-import skillConfig from "./base/config/SKILL.md" with { type: "text" };
 import { parseSkillFrontmatter } from "./frontmatter.js";
 import type { SkillRenderContext } from "./renderer.js";
 import { renderSkillTemplate } from "./renderer.js";
@@ -23,7 +23,7 @@ const BASE_SKILL_TEMPLATES: Record<string, string> = {
 	"5x-plan": skillPlanTemplate,
 	"5x-plan-review": skillPlanReviewTemplate,
 	"5x-phase-execution": skillPhaseExecutionTemplate,
-	config: skillConfig,
+	"5x-config": skill5xConfig,
 };
 
 /** List base skill template names. */

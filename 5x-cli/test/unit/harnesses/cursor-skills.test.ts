@@ -15,7 +15,7 @@ describe("cursor skills loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
-			"config",
+			"5x-config",
 		]);
 
 		const skills = listSkills();

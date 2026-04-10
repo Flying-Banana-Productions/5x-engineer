@@ -32,7 +32,7 @@ describe("shared skill template loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
-			"config",
+			"5x-config",
 		]);
 
 		for (const name of names) {

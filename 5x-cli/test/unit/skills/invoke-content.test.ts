@@ -49,7 +49,7 @@ describe("invoke-path skill content", () => {
 		for (const skill of renderAllSkillTemplates(
 			createRenderContext(false),
 		).filter(
-			(skill) => skill.name !== "5x-windows" && skill.name !== "config",
+			(skill) => skill.name !== "5x-windows" && skill.name !== "5x-config",
 		)) {
 			expect(skill.content).toContain("--record");
 			expect(skill.content).toContain(".data.result");

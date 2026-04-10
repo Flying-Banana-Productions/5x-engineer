@@ -152,7 +152,7 @@ describe("5x harness list", () => {
 					"skills/5x-plan/SKILL.md",
 				);
 				expect(opencode.scopes.project.files).toContain(
-					"skills/config/SKILL.md",
+					"skills/5x-config/SKILL.md",
 				);
 			} finally {
 				cleanupDir(tmp);
@@ -238,7 +238,7 @@ describe("5x harness list", () => {
 
 describe("config skill — harness install", () => {
 	test(
-		"opencode project scope installs skills/config/SKILL.md with CLI guidance",
+		"opencode project scope installs skills/5x-config/SKILL.md with CLI guidance",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -252,7 +252,7 @@ describe("config skill — harness install", () => {
 					tmp,
 					".opencode",
 					"skills",
-					"config",
+					"5x-config",
 					"SKILL.md",
 				);
 				expect(existsSync(skillPath)).toBe(true);
@@ -271,7 +271,7 @@ describe("config skill — harness install", () => {
 	);
 
 	test(
-		"cursor project scope installs skills/config/SKILL.md with CLI guidance",
+		"cursor project scope installs skills/5x-config/SKILL.md with CLI guidance",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -281,7 +281,13 @@ describe("config skill — harness install", () => {
 					"project",
 				]);
 				expect(exitCode).toBe(0);
-				const skillPath = join(tmp, ".cursor", "skills", "config", "SKILL.md");
+				const skillPath = join(
+					tmp,
+					".cursor",
+					"skills",
+					"5x-config",
+					"SKILL.md",
+				);
 				expect(existsSync(skillPath)).toBe(true);
 				const text = readFileSync(skillPath, "utf-8");
 				expect(text).toContain("5x config show");
