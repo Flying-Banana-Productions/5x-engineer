@@ -172,7 +172,7 @@ Zod schema and returns a flat array of `ConfigKeyMeta` entries with correct
 dotted keys, types, defaults, and descriptions. Unit tests validate the
 registry against the known schema shape.
 
-- [ ] Add `.describe()` to every leaf field in the Zod schema definitions
+- [x] Add `.describe()` to every leaf field in the Zod schema definitions
       (`AgentConfigSchema`, `PathsSchema`, `DbSchema`, `WorktreeSchema`,
       `OpenCodeConfigSchema`, `FiveXConfigSchema` top-level fields). Use
       concise, user-facing language. Example:
@@ -180,7 +180,7 @@ registry against the known schema shape.
       provider: z.string().default("opencode").describe("Agent provider name"),
       model: z.string().optional().describe("Default model identifier"),
       ```
-- [ ] Define `ConfigKeyMeta` type in a new `src/config-registry.ts`:
+- [x] Define `ConfigKeyMeta` type in a new `src/config-registry.ts`:
       ```ts
       interface ConfigKeyMeta {
         key: string;           // dotted path, e.g. "author.harnessModels"
@@ -190,7 +190,7 @@ registry against the known schema shape.
         deprecated?: boolean;  // true for maxAutoIterations, maxReviewIterations
       }
       ```
-- [ ] Implement `buildConfigRegistry(schema: ZodObject): ConfigKeyMeta[]`.
+- [x] Implement `buildConfigRegistry(schema: ZodObject): ConfigKeyMeta[]`.
       Walk the Zod schema tree recursively:
       - For `ZodDefault` wrappers, extract the default value.
       - For `ZodOptional`, mark default as `undefined`.
@@ -202,9 +202,9 @@ registry against the known schema shape.
       - For `ZodEnum`, include the allowed values in the metadata.
       - Skip `.passthrough()` keys (they are plugin-specific and unknown).
       - Extract `.description` from the Zod schema's `_def.description`.
-- [ ] Export a memoized `getConfigRegistry()` that calls
+- [x] Export a memoized `getConfigRegistry()` that calls
       `buildConfigRegistry(FiveXConfigSchema)` once.
-- [ ] Add unit tests in `test/unit/config-registry.test.ts`:
+- [x] Add unit tests in `test/unit/config-registry.test.ts`:
       - Registry contains expected keys (spot-check `author.provider`,
         `paths.templates.plan`, `maxStepsPerRun`, `qualityGates`).
       - Every entry has a non-empty description.

@@ -5,79 +5,203 @@ import { z } from "zod";
 
 const AgentConfigSchema = z.object({
 	/** Provider name — open string to allow third-party plugins (e.g. "opencode", "codex", "@acme/provider-foo"). */
-	provider: z.string().default("opencode"),
-	model: z.string().optional(),
+	provider: z
+		.string()
+		.default("opencode")
+		.describe(
+			"Agent provider id (e.g. opencode, claude-code, or a third-party plugin name).",
+		),
+	model: z
+		.string()
+		.optional()
+		.describe(
+			"Default model id for this role when no per-harness override applies.",
+		),
 	/**
 	 * Optional per-harness model id overrides for `5x harness install`.
 	 * Keys are harness plugin names (e.g. `opencode`, `cursor`). When set for the
 	 * harness being installed, values replace `[author|reviewer].model` in generated
 	 * agent frontmatter for that harness only.
 	 */
-	harnessModels: z.record(z.string(), z.string()).optional(),
+	harnessModels: z
+		.record(z.string(), z.string())
+		.optional()
+		.describe(
+			"Per-harness model overrides: harness name → model id for installs and generated frontmatter.",
+		),
 	/** Optional per-invocation timeout in seconds. Omit to disable timeouts. */
-	timeout: z.number().int().positive().optional(),
+	timeout: z
+		.number()
+		.int()
+		.positive()
+		.optional()
+		.describe("Per-invocation timeout in seconds; omit to disable timeouts."),
 	/** When true, enforce session continuity across steps within the same phase.
 	 *  Requires --session <id> or --new-session when prior steps exist for the
 	 *  same run/step/phase. Default false — enable after confirming all relevant
 	 *  templates have -continued variants. */
-	continuePhaseSessions: z.boolean().default(false),
+	continuePhaseSessions: z
+		.boolean()
+		.default(false)
+		.describe(
+			"Require session continuity across steps in the same phase (use with continued templates).",
+		),
 	/**
 	 * Delegation mode for this role when running under a native harness.
 	 * - "native" (default): orchestrator uses harness Task tool / subagents
 	 * - "invoke": orchestrator calls `5x invoke` for this role
 	 * Only applies to native harnesses; universal harness always uses invoke.
 	 */
-	delegationMode: z.enum(["native", "invoke"]).default("native"),
+	delegationMode: z
+		.enum(["native", "invoke"])
+		.default("native")
+		.describe(
+			"How this role delegates under a native harness: Task/subagents (native) or `5x invoke`.",
+		),
 });
 
 const PathsSchema = z.object({
-	plans: z.string().default("docs/development"),
-	reviews: z.string().default("docs/development/reviews"),
+	plans: z
+		.string()
+		.default("docs/development")
+		.describe(
+			"Directory for implementation plans (relative to config; resolved to absolute at load).",
+		),
+	reviews: z
+		.string()
+		.default("docs/development/reviews")
+		.describe(
+			"Directory for review artifacts (relative to config; resolved at load).",
+		),
 	/** Directory for plan reviews. Defaults to `reviews` at runtime. */
-	planReviews: z.string().optional(),
+	planReviews: z
+		.string()
+		.optional()
+		.describe(
+			"Plan review output directory; defaults to the reviews path when unset.",
+		),
 	/** Directory for implementation (run) reviews. Defaults to `reviews` at runtime. */
-	runReviews: z.string().optional(),
-	archive: z.string().default("docs/archive"),
+	runReviews: z
+		.string()
+		.optional()
+		.describe(
+			"Run review output directory; defaults to the reviews path when unset.",
+		),
+	archive: z
+		.string()
+		.default("docs/archive")
+		.describe(
+			"Archive directory for completed work (relative to config; resolved at load).",
+		),
 	templates: z
 		.object({
-			plan: z.string().default("docs/_implementation_plan_template.md"),
+			plan: z
+				.string()
+				.default("docs/_implementation_plan_template.md")
+				.describe("Path to the plan template file."),
 			review: z
 				.string()
-				.default("docs/development/reviews/_review_template.md"),
+				.default("docs/development/reviews/_review_template.md")
+				.describe("Path to the review template file."),
 		})
-		.default({}),
+		.default({})
+		.describe("Template paths for generated plan and review documents."),
 });
 
 const DbSchema = z.object({
-	path: z.string().default(".5x/5x.db"),
+	path: z
+		.string()
+		.default(".5x/5x.db")
+		.describe(
+			"SQLite database file path (root config only; relative to config dir at load).",
+		),
 });
 
 const WorktreeSchema = z.object({
 	/** Optional shell command to run after creating a new worktree. */
-	postCreate: z.string().min(1).optional(),
+	postCreate: z
+		.string()
+		.min(1)
+		.optional()
+		.describe("Shell command to run after `5x` creates a new git worktree."),
 });
 
 const OpenCodeConfigSchema = z.object({
 	/** URL for external OpenCode server. Omit for managed (local) mode. */
-	url: z.string().url().optional(),
+	url: z
+		.string()
+		.url()
+		.optional()
+		.describe("OpenCode server URL; omit for local/managed OpenCode."),
 });
 
 const FiveXConfigSchema = z
 	.object({
-		author: AgentConfigSchema.default({}),
-		reviewer: AgentConfigSchema.default({}),
-		opencode: OpenCodeConfigSchema.default({}),
-		qualityGates: z.array(z.string()).default([]),
-		skipQualityGates: z.boolean().default(false),
-		worktree: WorktreeSchema.default({}),
-		paths: PathsSchema.default({}),
-		db: DbSchema.default({}),
-		maxStepsPerRun: z.number().int().positive().default(250),
+		author: AgentConfigSchema.default({}).describe(
+			"Author agent: provider, model, harness overrides, timeouts, and delegation.",
+		),
+		reviewer: AgentConfigSchema.default({}).describe(
+			"Reviewer agent: provider, model, harness overrides, timeouts, and delegation.",
+		),
+		opencode: OpenCodeConfigSchema.default({}).describe(
+			"OpenCode integration settings (e.g. remote server URL).",
+		),
+		qualityGates: z
+			.array(z.string())
+			.default([])
+			.describe(
+				"Shell commands run as quality gates (e.g. tests, lint); empty skips gates unless a run requests them.",
+			),
+		skipQualityGates: z
+			.boolean()
+			.default(false)
+			.describe(
+				"When true, do not run quality gates for workflow commands that support this flag.",
+			),
+		worktree: WorktreeSchema.default({}).describe(
+			"Git worktree hooks and related options.",
+		),
+		paths: PathsSchema.default({}).describe(
+			"Plans, reviews, archive, and template paths (resolved relative to each config file).",
+		),
+		db: DbSchema.default({}).describe(
+			"Local SQLite database location (effective only from root config).",
+		),
+		maxStepsPerRun: z
+			.number()
+			.int()
+			.positive()
+			.default(250)
+			.describe("Maximum agent steps per workflow run (safety/cost limit)."),
 		// Preserved for backward compat, deprecated
-		maxReviewIterations: z.number().int().positive().default(5),
-		maxQualityRetries: z.number().int().positive().default(3),
-		maxAutoIterations: z.number().int().positive().default(10),
-		maxAutoRetries: z.number().int().positive().default(3),
+		maxReviewIterations: z
+			.number()
+			.int()
+			.positive()
+			.default(5)
+			.describe("Deprecated: max review iterations (kept for older configs)."),
+		maxQualityRetries: z
+			.number()
+			.int()
+			.positive()
+			.default(3)
+			.describe("Maximum retries when a quality gate fails."),
+		maxAutoIterations: z
+			.number()
+			.int()
+			.positive()
+			.default(10)
+			.describe(
+				"Deprecated: legacy alias for max run length; prefer maxStepsPerRun. Honored when set without maxStepsPerRun.",
+			),
+		maxAutoRetries: z
+			.number()
+			.int()
+			.positive()
+			.default(3)
+			.describe(
+				"Maximum automatic retries for a failed step before surfacing the error.",
+			),
 	})
 	.passthrough(); // Allow plugin-specific config keys (e.g. codex: { ... })
 
