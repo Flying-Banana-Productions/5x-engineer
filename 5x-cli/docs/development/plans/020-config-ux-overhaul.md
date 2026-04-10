@@ -435,12 +435,12 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
 `5x upgrade` migration hint. Record keys are settable via dotted notation in
 `config set` (Phase 4), so this phase only covers arrays.
 
-- [ ] Add subcommands:
+- [x] Add subcommands:
       ```
       5x config add <key> <value> [--local] [--context <dir>]
       5x config remove <key> <value> [--local] [--context <dir>]
       ```
-- [ ] Implement `configAdd()`:
+- [x] Implement `configAdd()`:
       1. Validate key is an array type in the registry.
       2. Reuse `resolveTargetConfigPath()` from Phase 4 to resolve target file
          using full `--context`/`--local` behavior.
@@ -452,7 +452,7 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
       5. Get current array value (or empty array if absent).
       6. Append value if not already present (idempotent).
       7. Patch and write back.
-- [ ] Implement `configRemove()`:
+- [x] Implement `configRemove()`:
       1. Validate key is an array type.
       2. Reuse `resolveTargetConfigPath()` from Phase 4 for target selection
          (`--context`/`--local` parity with `set`/`unset`).
@@ -460,7 +460,7 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
          hint as all other write commands.
       4. Read, parse, filter out the value, patch, write.
       5. If array is now empty, optionally remove the key entirely.
-- [ ] Add unit tests:
+- [x] Add unit tests:
       - Add to empty array.
       - Add duplicate is idempotent.
       - Remove existing value.

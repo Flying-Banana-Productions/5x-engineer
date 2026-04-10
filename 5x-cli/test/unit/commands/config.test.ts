@@ -16,6 +16,8 @@ import { parse as tomlParse } from "@decimalturn/toml-patch";
 import {
 	buildConfigFileRows,
 	buildConfigShowOutput,
+	configAdd,
+	configRemove,
 	configSet,
 	configUnset,
 	detectActiveConfigSource,
@@ -26,6 +28,7 @@ import { resolveLayeredConfig } from "../../../src/config.js";
 import {
 	flattenConfig,
 	getConfigRegistry,
+	resolveWritableArrayConfigKey,
 	resolveWritableConfigKey,
 } from "../../../src/config-registry.js";
 import { CliError } from "../../../src/output.js";
@@ -364,6 +367,41 @@ describe("resolveWritableConfigKey", () => {
 	});
 });
 
+describe("resolveWritableArrayConfigKey", () => {
+	test("accepts qualityGates", () => {
+		const r = resolveWritableArrayConfigKey(
+			"qualityGates",
+			getConfigRegistry(),
+		);
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.meta.type).toBe("string[]");
+		}
+	});
+
+	test("rejects non-array key", () => {
+		const r = resolveWritableArrayConfigKey(
+			"maxStepsPerRun",
+			getConfigRegistry(),
+		);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.message).toContain("not an array key");
+		}
+	});
+
+	test("rejects record descendant", () => {
+		const r = resolveWritableArrayConfigKey(
+			"author.harnessModels.opencode",
+			getConfigRegistry(),
+		);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.message).toContain("array keys");
+		}
+	});
+});
+
 describe("config set (unit)", () => {
 	test("creates valid TOML for top-level key in empty project", async () => {
 		const tmp = makeTmpDir();
@@ -631,6 +669,209 @@ describe("config unset (unit)", () => {
 					contextDir: tmp,
 				}),
 			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("config add / remove (unit)", () => {
+	test("add appends to empty implicit array", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configAdd({
+				key: "qualityGates",
+				value: "bun test",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["bun test"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("add duplicate is idempotent (no duplicate entries)", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, 'qualityGates = ["bun test"]\n');
+			await configAdd({
+				key: "qualityGates",
+				value: "bun test",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["bun test"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("remove drops an existing value", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, 'qualityGates = ["a", "b"]\n');
+			await configRemove({
+				key: "qualityGates",
+				value: "a",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["b"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("remove non-existent value is no-op", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, 'qualityGates = ["a"]\n');
+			await configRemove({
+				key: "qualityGates",
+				value: "missing",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["a"]);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("add/remove with --local uses 5x.toml.local", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, "maxStepsPerRun = 1\n");
+			await configAdd({
+				key: "qualityGates",
+				value: "gate-a",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml.local"))).toBe(true);
+			await configRemove({
+				key: "qualityGates",
+				value: "gate-a",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml.local"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("add/remove with sub-project --context targets same file as set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[author]\nprovider = "root"');
+			const sub = join(tmp, "packages", "api");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(
+				join(sub, "5x.toml"),
+				["[paths]", 'plans = "p"'].join("\n"),
+				"utf-8",
+			);
+			const setPath = resolveTargetConfigPath({
+				startDir: tmp,
+				contextDir: sub,
+			}).targetPath;
+			const addPath = resolveTargetConfigPath({
+				startDir: tmp,
+				contextDir: sub,
+			}).targetPath;
+			expect(addPath).toBe(setPath);
+			expect(addPath).toBe(join(sub, "5x.toml"));
+
+			await configAdd({
+				key: "qualityGates",
+				value: "x",
+				startDir: tmp,
+				contextDir: sub,
+			});
+			await configRemove({
+				key: "qualityGates",
+				value: "x",
+				startDir: tmp,
+				contextDir: sub,
+			});
+			const subToml = readFileSync(join(sub, "5x.toml"), "utf-8");
+			expect(subToml).toContain('plans = "p"');
+			expect(subToml).not.toContain("qualityGates");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("JS active source rejects add", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.mjs"),
+				"export default { author: { provider: 'opencode' } }\n",
+				"utf-8",
+			);
+			await expect(
+				configAdd({
+					key: "qualityGates",
+					value: "x",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("JS active source rejects remove", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				"module.exports = { qualityGates: ['a'] }\n",
+				"utf-8",
+			);
+			await expect(
+				configRemove({
+					key: "qualityGates",
+					value: "a",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("remove last element deletes key; empty file deleted", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, 'qualityGates = ["only"]\n');
+			await configRemove({
+				key: "qualityGates",
+				value: "only",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

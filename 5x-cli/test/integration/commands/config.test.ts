@@ -1,9 +1,15 @@
 /**
- * Integration tests for `5x config set` / `config unset` — CLI round-trips.
+ * Integration tests for `5x config set` / `unset` / `add` / `remove` — CLI round-trips.
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -86,7 +92,7 @@ function entryValue(
 	return data.entries.find((e) => e.key === key)?.value;
 }
 
-describe("5x config set / unset (integration)", () => {
+describe("5x config set / unset / add / remove (integration)", () => {
 	test(
 		"set then show reflects change",
 		async () => {
@@ -261,6 +267,262 @@ describe("5x config set / unset (integration)", () => {
 					entries: Array<{ key: string; value: unknown }>;
 				};
 				expect(entryValue(data, "maxStepsPerRun")).toBe(250);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"add then show lists quality gate",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 100\n");
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const add = await run5x(dir, [
+					"config",
+					"add",
+					"qualityGates",
+					"bun test",
+				]);
+				expect(add.exitCode).toBe(0);
+
+				const show = await run5x(dir, ["config", "show"]);
+				const env = parseJson(show.stdout);
+				expect(env.ok).toBe(true);
+				const data = env.data as {
+					entries: Array<{ key: string; value: unknown }>;
+				};
+				expect(entryValue(data, "qualityGates")).toEqual(["bun test"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"add duplicate then show unchanged (single entry)",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), 'qualityGates = ["bun test"]\n');
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const add = await run5x(dir, [
+					"config",
+					"add",
+					"qualityGates",
+					"bun test",
+				]);
+				expect(add.exitCode).toBe(0);
+
+				const show = await run5x(dir, ["config", "show"]);
+				const env = parseJson(show.stdout);
+				const data = env.data as {
+					entries: Array<{ key: string; value: unknown }>;
+				};
+				expect(entryValue(data, "qualityGates")).toEqual(["bun test"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"remove updates show",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), 'qualityGates = ["a", "b"]\n');
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const rm = await run5x(dir, ["config", "remove", "qualityGates", "a"]);
+				expect(rm.exitCode).toBe(0);
+
+				const show = await run5x(dir, ["config", "show"]);
+				const env = parseJson(show.stdout);
+				const data = env.data as {
+					entries: Array<{ key: string; value: unknown }>;
+				};
+				expect(entryValue(data, "qualityGates")).toEqual(["b"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"remove missing value is no-op",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), 'qualityGates = ["a"]\n');
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const rm = await run5x(dir, [
+					"config",
+					"remove",
+					"qualityGates",
+					"nope",
+				]);
+				expect(rm.exitCode).toBe(0);
+
+				const show = await run5x(dir, ["config", "show"]);
+				const env = parseJson(show.stdout);
+				const data = env.data as {
+					entries: Array<{ key: string; value: unknown }>;
+				};
+				expect(entryValue(data, "qualityGates")).toEqual(["a"]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"add/remove --local on 5x.toml.local",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 1\n");
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const add = await run5x(dir, [
+					"config",
+					"add",
+					"qualityGates",
+					"g1",
+					"--local",
+				]);
+				expect(add.exitCode).toBe(0);
+				expect(readFileSync(join(dir, "5x.toml.local"), "utf-8")).toContain(
+					"g1",
+				);
+
+				const rm = await run5x(dir, [
+					"config",
+					"remove",
+					"qualityGates",
+					"g1",
+					"--local",
+				]);
+				expect(rm.exitCode).toBe(0);
+				expect(existsSync(join(dir, "5x.toml.local"))).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"add/remove --context targets sub-project 5x.toml",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), '[author]\nprovider = "root"\n');
+				const sub = join(dir, "packages", "api");
+				mkdirSync(sub, { recursive: true });
+				writeFileSync(join(sub, "5x.toml"), '[paths]\nplans = "p"\n');
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const add = await run5x(dir, [
+					"config",
+					"add",
+					"qualityGates",
+					"sub-gate",
+					"--context",
+					sub,
+				]);
+				expect(add.exitCode).toBe(0);
+				expect(readFileSync(join(sub, "5x.toml"), "utf-8")).toContain(
+					"sub-gate",
+				);
+
+				const rm = await run5x(dir, [
+					"config",
+					"remove",
+					"qualityGates",
+					"sub-gate",
+					"--context",
+					sub,
+				]);
+				expect(rm.exitCode).toBe(0);
+				const after = readFileSync(join(sub, "5x.toml"), "utf-8");
+				expect(after).toContain('plans = "p"');
+				expect(after).not.toContain("qualityGates");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"JS active config rejects add with migration hint",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.config.mjs"),
+					"export default { qualityGates: [] }\n",
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const r = await run5x(dir, ["config", "add", "qualityGates", "x"]);
+				expect(r.exitCode).not.toBe(0);
+				const env = parseJson(r.stdout);
+				expect(env.ok).toBe(false);
+				const err = env.error as { message: string };
+				expect(err.message).toContain("5x upgrade");
+				expect(existsSync(join(dir, "5x.toml"))).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"JS active config rejects remove with migration hint",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.config.js"),
+					"module.exports = { qualityGates: ['a'] }\n",
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "cfg"], dir);
+
+				const r = await run5x(dir, ["config", "remove", "qualityGates", "a"]);
+				expect(r.exitCode).not.toBe(0);
+				const env = parseJson(r.stdout);
+				expect(env.ok).toBe(false);
+				const err = env.error as { message: string };
+				expect(err.message).toContain("5x upgrade");
 			} finally {
 				cleanupDir(dir);
 			}

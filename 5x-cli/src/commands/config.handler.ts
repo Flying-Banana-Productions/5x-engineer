@@ -5,7 +5,7 @@
  *
  * Subcommands:
  * - show: Display the resolved config as a JSON envelope
- * - set / unset: TOML mutation with comment-preserving patches
+ * - set / unset / add / remove: TOML mutation with comment-preserving patches
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -25,6 +25,7 @@ import {
 	flattenConfig,
 	getConfigRegistry,
 	isRegistryKeyOrRecordDescendant,
+	resolveWritableArrayConfigKey,
 	resolveWritableConfigKey,
 	type WritableKeyResolution,
 } from "../config-registry.js";
@@ -69,6 +70,22 @@ export interface ConfigSetParams {
 
 export interface ConfigUnsetParams {
 	key: string;
+	local?: boolean;
+	startDir?: string;
+	contextDir?: string;
+}
+
+export interface ConfigAddParams {
+	key: string;
+	value: string;
+	local?: boolean;
+	startDir?: string;
+	contextDir?: string;
+}
+
+export interface ConfigRemoveParams {
+	key: string;
+	value: string;
 	local?: boolean;
 	startDir?: string;
 	contextDir?: string;
@@ -303,6 +320,63 @@ function coerceConfigValue(
 		"INVALID_ARGS",
 		`Cannot set ${meta.key} via config set (type: ${t})`,
 	);
+}
+
+/** Direct children allowed under `[paths]` in 5x.toml (see PathsSchema). */
+const VALID_PATHS_TABLE_KEYS = new Set([
+	"plans",
+	"reviews",
+	"planReviews",
+	"runReviews",
+	"archive",
+	"templates",
+]);
+
+/**
+ * `toml-patch` may print new root-level keys immediately after a `[paths]` block
+ * with no `[table]` boundary; TOML then parses them as nested under `paths`.
+ * Move those keys back to the document root so dotted keys like `qualityGates`
+ * match the schema and `removeDottedKey` works.
+ */
+function liftKeysMisnestedUnderPaths(parsed: Record<string, unknown>): void {
+	const paths = parsed.paths;
+	if (!isPlainRecord(paths)) {
+		return;
+	}
+	for (const k of Object.keys(paths)) {
+		if (VALID_PATHS_TABLE_KEYS.has(k)) {
+			continue;
+		}
+		if (!(k in parsed)) {
+			parsed[k] = paths[k];
+			delete paths[k];
+		}
+	}
+}
+
+function readStringArrayAtKey(
+	parsed: Record<string, unknown>,
+	key: string,
+): string[] {
+	const cur = getDottedValue(parsed, key);
+	if (cur === undefined) {
+		return [];
+	}
+	if (!Array.isArray(cur)) {
+		outputError(
+			"INVALID_ARGS",
+			`Existing ${key} is not an array — fix the file or unset the key first.`,
+		);
+	}
+	for (const el of cur) {
+		if (typeof el !== "string") {
+			outputError(
+				"INVALID_ARGS",
+				`Existing ${key} must be a string array (non-string element found).`,
+			);
+		}
+	}
+	return cur as string[];
 }
 
 function assertWritableSource(
@@ -673,6 +747,7 @@ export async function configSet(params: ConfigSetParams): Promise<void> {
 			? {}
 			: (tomlParse(existingText) as Record<string, unknown>)
 	) as Record<string, unknown>;
+	liftKeysMisnestedUnderPaths(existingParsed);
 	const merged = mergeConfigObjects(existingParsed, patchObj);
 	const newToml = tomlPatch(existingText === "" ? "\n" : existingText, merged);
 
@@ -724,6 +799,7 @@ export async function configUnset(params: ConfigUnsetParams): Promise<void> {
 
 	const existingText = readFileSync(targetPath, "utf-8");
 	const existingParsed = tomlParse(existingText) as Record<string, unknown>;
+	liftKeysMisnestedUnderPaths(existingParsed);
 
 	if (getDottedValue(existingParsed, key) === undefined) {
 		outputSuccess({ key, path: targetPath, noop: true as const }, (d) => {
@@ -749,6 +825,203 @@ export async function configUnset(params: ConfigUnsetParams): Promise<void> {
 
 	outputSuccess({ key, path: targetPath }, (d) => {
 		console.log(`Unset ${d.key}`);
+		console.log(`Wrote ${d.path}`);
+	});
+}
+
+// ---------------------------------------------------------------------------
+// config add / remove (array keys)
+// ---------------------------------------------------------------------------
+
+export async function configAdd(params: ConfigAddParams): Promise<void> {
+	const registry = getConfigRegistry();
+	const key = params.key.trim();
+	const resolved = resolveWritableArrayConfigKey(key, registry);
+	if (!resolved.ok) {
+		outputError("INVALID_ARGS", resolved.message);
+	}
+	const meta = resolved.meta;
+	if (meta.type !== "string[]") {
+		outputError(
+			"INVALID_ARGS",
+			`config add is only implemented for string array keys (got ${meta.type}).`,
+		);
+	}
+	const value = params.value;
+
+	const { controlPlaneRoot, targetPath } = resolveTargetConfigPath({
+		startDir: params.startDir,
+		contextDir: params.contextDir,
+		local: params.local,
+	});
+
+	const contextDir = resolve(params.contextDir ?? process.cwd());
+	const activeKind = detectActiveConfigSource(controlPlaneRoot, contextDir);
+	const primaryPath = discoverConfigFile(
+		contextDir === resolve(controlPlaneRoot) ? controlPlaneRoot : contextDir,
+		controlPlaneRoot,
+	);
+	assertWritableSource(activeKind, primaryPath);
+
+	if (key.startsWith("db.") || key === "db") {
+		if (!isRootDbConfigTarget(targetPath, controlPlaneRoot)) {
+			outputError(
+				"INVALID_ARGS",
+				"db config is root-only; edit db.* keys in the root 5x.toml (or root 5x.toml.local).",
+			);
+		}
+	}
+
+	const existingText = existsSync(targetPath)
+		? readFileSync(targetPath, "utf-8")
+		: "";
+	const existingParsed = (
+		existingText.trim() === ""
+			? {}
+			: (tomlParse(existingText) as Record<string, unknown>)
+	) as Record<string, unknown>;
+	liftKeysMisnestedUnderPaths(existingParsed);
+
+	const current = readStringArrayAtKey(existingParsed, key);
+	if (current.includes(value)) {
+		outputSuccess(
+			{ key, value, path: targetPath, noop: true as const },
+			(d) => {
+				console.log(
+					`Value ${JSON.stringify(d.value)} already in ${d.key} — no change`,
+				);
+				console.log(d.path);
+			},
+		);
+		return;
+	}
+
+	const next = [...current, value];
+	const patchObj = buildNestedFromDotted(key, next);
+	const merged = mergeConfigObjects(existingParsed, patchObj);
+	const newToml = tomlPatch(existingText === "" ? "\n" : existingText, merged);
+
+	writeFileSync(targetPath, newToml, "utf-8");
+
+	outputSuccess({ key, value, path: targetPath, array: next }, (d) => {
+		console.log(`Added ${JSON.stringify(d.value)} to ${d.key}`);
+		console.log(`Wrote ${d.path}`);
+	});
+}
+
+export async function configRemove(params: ConfigRemoveParams): Promise<void> {
+	const registry = getConfigRegistry();
+	const key = params.key.trim();
+	const resolved = resolveWritableArrayConfigKey(key, registry);
+	if (!resolved.ok) {
+		outputError("INVALID_ARGS", resolved.message);
+	}
+	const meta = resolved.meta;
+	if (meta.type !== "string[]") {
+		outputError(
+			"INVALID_ARGS",
+			`config remove is only implemented for string array keys (got ${meta.type}).`,
+		);
+	}
+	const value = params.value;
+
+	const { controlPlaneRoot, targetPath } = resolveTargetConfigPath({
+		startDir: params.startDir,
+		contextDir: params.contextDir,
+		local: params.local,
+	});
+
+	const contextDir = resolve(params.contextDir ?? process.cwd());
+	const activeKind = detectActiveConfigSource(controlPlaneRoot, contextDir);
+	const primaryPath = discoverConfigFile(
+		contextDir === resolve(controlPlaneRoot) ? controlPlaneRoot : contextDir,
+		controlPlaneRoot,
+	);
+	assertWritableSource(activeKind, primaryPath);
+
+	if (key.startsWith("db.") || key === "db") {
+		if (!isRootDbConfigTarget(targetPath, controlPlaneRoot)) {
+			outputError(
+				"INVALID_ARGS",
+				"db config is root-only; edit db.* keys in the root 5x.toml (or root 5x.toml.local).",
+			);
+		}
+	}
+
+	if (!existsSync(targetPath)) {
+		outputSuccess(
+			{ key, value, path: targetPath, noop: true as const },
+			(d) => {
+				console.log(`No file at ${d.path} — nothing to remove for ${d.key}`);
+			},
+		);
+		return;
+	}
+
+	const existingText = readFileSync(targetPath, "utf-8");
+	const existingParsed = tomlParse(existingText) as Record<string, unknown>;
+	liftKeysMisnestedUnderPaths(existingParsed);
+
+	if (getDottedValue(existingParsed, key) === undefined) {
+		outputSuccess(
+			{ key, value, path: targetPath, noop: true as const },
+			(d) => {
+				console.log(
+					`Key ${d.key} not present in ${d.path} — nothing to remove`,
+				);
+			},
+		);
+		return;
+	}
+
+	const current = readStringArrayAtKey(existingParsed, key);
+	if (!current.includes(value)) {
+		outputSuccess(
+			{ key, value, path: targetPath, noop: true as const },
+			(d) => {
+				console.log(
+					`Value ${JSON.stringify(d.value)} not in ${d.key} — no change`,
+				);
+				console.log(d.path);
+			},
+		);
+		return;
+	}
+
+	const next = current.filter((x) => x !== value);
+
+	if (next.length === 0) {
+		const clone = structuredClone(existingParsed) as Record<string, unknown>;
+		removeDottedKey(clone, key);
+		pruneEmptyTables(clone);
+
+		if (isDocumentEmpty(clone)) {
+			unlinkSync(targetPath);
+			outputSuccess(
+				{ key, value, path: targetPath, removedFile: true as const },
+				(d) => {
+					console.log(`Removed last gate — deleted ${d.path}`);
+				},
+			);
+			return;
+		}
+
+		const newToml = tomlPatch(existingText, clone);
+		writeFileSync(targetPath, newToml, "utf-8");
+		outputSuccess({ key, value, path: targetPath }, (d) => {
+			console.log(`Removed ${JSON.stringify(d.value)} from ${d.key}`);
+			console.log(`Wrote ${d.path}`);
+		});
+		return;
+	}
+
+	const patchObj = buildNestedFromDotted(key, next);
+	const merged = mergeConfigObjects(existingParsed, patchObj);
+	const newToml = tomlPatch(existingText, merged);
+	writeFileSync(targetPath, newToml, "utf-8");
+
+	outputSuccess({ key, value, path: targetPath, array: next }, (d) => {
+		console.log(`Removed ${JSON.stringify(d.value)} from ${d.key}`);
 		console.log(`Wrote ${d.path}`);
 	});
 }

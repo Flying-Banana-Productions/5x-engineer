@@ -351,3 +351,31 @@ export function resolveWritableConfigKey(
 
 	return { ok: false, message: `Unknown config key: ${key}` };
 }
+
+/**
+ * Resolve a dotted key for `config add` / `config remove`: must be an exact
+ * registry key whose type is an array (e.g. `qualityGates` as `string[]`).
+ */
+export function resolveWritableArrayConfigKey(
+	key: string,
+	registry: ConfigKeyMeta[],
+): { ok: true; meta: ConfigKeyMeta } | { ok: false; message: string } {
+	const trimmed = key.trim();
+	const exact = registry.find((m) => m.key === trimmed);
+	if (!exact) {
+		if (!isRegistryKeyOrRecordDescendant(trimmed, registry)) {
+			return { ok: false, message: `Unknown config key: ${trimmed}` };
+		}
+		return {
+			ok: false,
+			message: `config add/remove applies only to array keys (e.g. qualityGates), not ${trimmed}`,
+		};
+	}
+	if (!exact.type.endsWith("[]")) {
+		return {
+			ok: false,
+			message: `Use \`5x config set ${trimmed} <value>\` — ${trimmed} is not an array key.`,
+		};
+	}
+	return { ok: true, meta: exact };
+}

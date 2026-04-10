@@ -1,13 +1,19 @@
 /**
  * Config management commands — commander adapter.
  *
- * Subcommands: show
+ * Subcommands: show, set, unset, add, remove
  *
  * Business logic lives in config.handler.ts.
  */
 
 import type { Command } from "@commander-js/extra-typings";
-import { configSet, configShow, configUnset } from "./config.handler.js";
+import {
+	configAdd,
+	configRemove,
+	configSet,
+	configShow,
+	configUnset,
+} from "./config.handler.js";
 
 export function registerConfig(parent: Command) {
 	const config = parent
@@ -16,7 +22,7 @@ export function registerConfig(parent: Command) {
 		.description(
 			"Inspect and edit the resolved 5x configuration. Configuration is loaded from\n" +
 				"5x.toml (or 5x.config.js/mjs) with layered resolution for sub-project\n" +
-				"overrides. Use config set/unset to write TOML (not JS/MJS active configs).",
+				"overrides. Use config set/unset/add/remove to write TOML (not JS/MJS active configs).",
 		);
 
 	config
@@ -100,6 +106,67 @@ export function registerConfig(parent: Command) {
 		.action(async (key, opts) => {
 			await configUnset({
 				key,
+				local: opts.local,
+				contextDir: opts.context,
+			});
+		});
+
+	config
+		.command("add")
+		.summary("Append a value to a string-array config key")
+		.description(
+			"Append a string to an array key (e.g. qualityGates). Idempotent if the\n" +
+				"value is already present. Same targeting as config set (--local, --context).\n" +
+				"Fails when the active config source is 5x.config.js/.mjs — run `5x upgrade` first.",
+		)
+		.argument("<key>", "Registry array key (e.g. qualityGates)")
+		.argument("<value>", "String to append")
+		.option("--local", "Write to the .local overlay beside the nearest TOML")
+		.option(
+			"--context <dir>",
+			"Directory used to resolve nearest config (default: cwd)",
+			process.cwd(),
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				'  $ 5x config add qualityGates "bun test"\n' +
+				"  $ 5x config add qualityGates lint --context packages/api\n",
+		)
+		.action(async (key, value, opts) => {
+			await configAdd({
+				key,
+				value,
+				local: opts.local,
+				contextDir: opts.context,
+			});
+		});
+
+	config
+		.command("remove")
+		.summary("Remove a value from a string-array config key")
+		.description(
+			"Remove a string from an array key. Removing the last entry drops the key.\n" +
+				"Same targeting as config set. Fails for JS/MJS active configs — run `5x upgrade` first.",
+		)
+		.argument("<key>", "Registry array key (e.g. qualityGates)")
+		.argument("<value>", "String to remove")
+		.option("--local", "Target the .local overlay beside the nearest TOML")
+		.option(
+			"--context <dir>",
+			"Directory used to resolve nearest config (default: cwd)",
+			process.cwd(),
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				'  $ 5x config remove qualityGates "bun test"\n' +
+				"  $ 5x config remove qualityGates lint --local\n",
+		)
+		.action(async (key, value, opts) => {
+			await configRemove({
+				key,
+				value,
 				local: opts.local,
 				contextDir: opts.context,
 			});
