@@ -87,7 +87,7 @@ async function runHarnessInstall(
 }
 
 /**
- * Bootstrap a minimal 5x project in a temp dir (writes 5x.toml, .5x/, 5x.db).
+ * Bootstrap a minimal 5x project in a temp dir (.5x/, 5x.db; no root 5x.toml).
  */
 async function bootstrapProject(dir: string): Promise<void> {
 	await runInit(dir);
@@ -1507,7 +1507,7 @@ describe("5x init (no subcommands)", () => {
 
 				const { stdout, exitCode } = await runInit(tmp, ["--force"]);
 				expect(exitCode).toBe(0);
-				expect(stdout).toContain("Overwrote 5x.toml");
+				expect(stdout).toContain("Overwrote .5x/templates/");
 			} finally {
 				cleanupDir(tmp);
 			}

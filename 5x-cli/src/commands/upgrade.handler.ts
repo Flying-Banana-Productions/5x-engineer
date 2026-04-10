@@ -141,9 +141,9 @@ async function upgradeConfig(projectRoot: string): Promise<string[]> {
 	const log: string[] = [];
 
 	if (!configPath) {
-		log.push("  No config file found — creating 5x.toml with defaults");
-		const toml = generateTomlConfig();
-		writeFileSync(join(projectRoot, "5x.toml"), toml, "utf-8");
+		log.push(
+			"  No config file found — skipping config upgrade (Zod defaults apply until you create 5x.toml)",
+		);
 		return log;
 	}
 

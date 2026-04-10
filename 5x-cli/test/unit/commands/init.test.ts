@@ -17,7 +17,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
+import { resolveLayeredConfig } from "../../../src/config.js";
 import { getDefaultTemplateRaw } from "../../../src/templates/loader.js";
+import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -34,36 +36,40 @@ function cleanupDir(dir: string): void {
 	} catch {}
 }
 
+/** Minimal git repo so `resolveControlPlaneRoot` anchors to the repo root. */
+function initGitRepo(dir: string): void {
+	const env = cleanGitEnv();
+	const run = (args: string[]) => {
+		const r = Bun.spawnSync(["git", ...args], {
+			cwd: dir,
+			env,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (r.exitCode !== 0) {
+			throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+		}
+	};
+	run(["init"]);
+	run(["config", "user.email", "test@test.com"]);
+	run(["config", "user.name", "Test"]);
+	writeFileSync(join(dir, "README.md"), "# test\n");
+	run(["add", "."]);
+	run(["commit", "-m", "initial"]);
+}
+
 // ---------------------------------------------------------------------------
 // initScaffold — filesystem side-effect tests
 // ---------------------------------------------------------------------------
 
 describe("initScaffold", () => {
-	test("creates config file, .5x/ directory, and .gitignore in empty project", async () => {
+	test("creates .5x/ directory and .gitignore without root 5x.toml", async () => {
 		const tmp = makeTmpDir();
 		try {
 			await initScaffold({ startDir: tmp });
 
-			// Config file exists and is valid TOML
-			const configPath = join(tmp, "5x.toml");
-			expect(existsSync(configPath)).toBe(true);
-			const configContent = readFileSync(configPath, "utf-8");
-			expect(configContent).toContain("[author]");
-			expect(configContent).toContain("[reviewer]");
-			expect(configContent).toContain("# model");
-			expect(configContent).toContain("# timeout");
-			expect(configContent).toContain("qualityGates");
-			expect(configContent).toContain("[worktree]");
-			expect(configContent).toContain("# postCreate");
-			expect(configContent).toContain("[paths]");
-			expect(configContent).toContain(
-				'plan = ".5x/templates/implementation-plan-template.md"',
-			);
-			expect(configContent).toContain(
-				'review = ".5x/templates/review-template.md"',
-			);
-			expect(configContent).toContain("[db]");
-			expect(configContent).toContain("maxReviewIterations");
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
 
 			// .5x/ directory exists
 			expect(existsSync(join(tmp, ".5x"))).toBe(true);
@@ -87,7 +93,7 @@ describe("initScaffold", () => {
 		}
 	});
 
-	test("skips config if 5x.toml already exists (without --force)", async () => {
+	test("does not delete or overwrite existing 5x.toml", async () => {
 		const tmp = makeTmpDir();
 		try {
 			const configPath = join(tmp, "5x.toml");
@@ -99,42 +105,49 @@ describe("initScaffold", () => {
 
 			await initScaffold({ startDir: tmp });
 
-			// Original config unchanged
 			const content = readFileSync(configPath, "utf-8");
 			expect(content).toContain("existing config");
+			expect(content).toContain("maxStepsPerRun = 10");
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("skips config if legacy 5x.config.js exists (without --force)", async () => {
+	test("root init with --force does not create 5x.toml", async () => {
 		const tmp = makeTmpDir();
 		try {
-			writeFileSync(join(tmp, "5x.config.js"), "export default {};", "utf-8");
-
-			await initScaffold({ startDir: tmp });
-
-			// Legacy config file still exists — not overwritten
-			expect(existsSync(join(tmp, "5x.config.js"))).toBe(true);
-			// No 5x.toml created (skipped due to legacy)
+			await initScaffold({ force: true, startDir: tmp });
 			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}
 	});
 
-	test("overwrites config file with --force", async () => {
+	test("leaves legacy 5x.config.js in place and does not add 5x.toml", async () => {
 		const tmp = makeTmpDir();
 		try {
-			const configPath = join(tmp, "5x.toml");
-			writeFileSync(configPath, "# old config\nmaxStepsPerRun = 1\n", "utf-8");
+			writeFileSync(join(tmp, "5x.config.js"), "export default {};", "utf-8");
 
-			await initScaffold({ force: true, startDir: tmp });
+			await initScaffold({ startDir: tmp });
 
-			// Config was overwritten with fresh defaults
-			const content = readFileSync(configPath, "utf-8");
-			expect(content).not.toContain("old config");
-			expect(content).toContain("[author]");
+			expect(existsSync(join(tmp, "5x.config.js"))).toBe(true);
+			expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("resolveLayeredConfig after root init uses defaults with no config files", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await initScaffold({ startDir: tmp });
+
+			const layered = await resolveLayeredConfig(tmp, tmp);
+			expect(layered.rootConfigPath).toBeNull();
+			expect(layered.nearestConfigPath).toBeNull();
+			expect(layered.localPaths).toHaveLength(0);
+			expect(layered.config.author.provider).toBe("opencode");
+			expect(layered.config.maxStepsPerRun).toBe(250);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -199,6 +212,109 @@ describe("initScaffold", () => {
 
 			// .5x/ directory still exists
 			expect(existsSync(join(tmp, ".5x"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// initScaffold — sub-project paths-only config
+// ---------------------------------------------------------------------------
+
+describe("initScaffold — sub-project", () => {
+	test("errors when root is not initialized", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				initScaffold({
+					startDir: tmp,
+					subProjectPath: "packages/api",
+				}),
+			).rejects.toThrow(/Root project must be initialized first/);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("creates packages/api/5x.toml with only [paths] after root init", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await initScaffold({ startDir: tmp });
+
+			await initScaffold({
+				startDir: tmp,
+				subProjectPath: "packages/api",
+			});
+
+			const subToml = join(tmp, "packages", "api", "5x.toml");
+			expect(existsSync(subToml)).toBe(true);
+			const text = readFileSync(subToml, "utf-8");
+			expect(text).toContain("[paths]");
+			expect(text).toContain('plans = "docs/development"');
+			expect(text).not.toContain("[author]");
+			expect(text).not.toContain("[db]");
+			expect(text).not.toContain("[reviewer]");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("creates 5x.toml in cwd when --sub-project-path=. from a subdir", async () => {
+		const tmp = makeTmpDir();
+		try {
+			initGitRepo(tmp);
+			await initScaffold({ startDir: tmp });
+			const subDir = join(tmp, "packages", "api");
+			mkdirSync(subDir, { recursive: true });
+
+			await initScaffold({
+				startDir: subDir,
+				subProjectPath: ".",
+			});
+
+			expect(existsSync(join(subDir, "5x.toml"))).toBe(true);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("skips existing sub-project 5x.toml without --force", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await initScaffold({ startDir: tmp });
+			const subToml = join(tmp, "packages", "api", "5x.toml");
+			mkdirSync(join(tmp, "packages", "api"), { recursive: true });
+			writeFileSync(subToml, "custom = true\n", "utf-8");
+
+			await initScaffold({
+				startDir: tmp,
+				subProjectPath: "packages/api",
+			});
+
+			expect(readFileSync(subToml, "utf-8")).toContain("custom = true");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("overwrites sub-project 5x.toml with --force", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await initScaffold({ startDir: tmp });
+			const subToml = join(tmp, "packages", "api", "5x.toml");
+			mkdirSync(join(tmp, "packages", "api"), { recursive: true });
+			writeFileSync(subToml, "custom = true\n", "utf-8");
+
+			await initScaffold({
+				startDir: tmp,
+				subProjectPath: "packages/api",
+				force: true,
+			});
+
+			const text = readFileSync(subToml, "utf-8");
+			expect(text).toContain("[paths]");
+			expect(text).not.toContain("custom");
 		} finally {
 			cleanupDir(tmp);
 		}

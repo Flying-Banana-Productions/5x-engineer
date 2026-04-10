@@ -5,7 +5,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { closeDb, getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import defaultTomlConfig from "../templates/5x.default.toml" with {
@@ -32,6 +32,11 @@ export interface InitParams {
 	installTemplates?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+	/**
+	 * Relative path from cwd: scaffold only a paths-only `5x.toml` under the
+	 * control-plane root. Mutually exclusive with root init (no `.5x/` / DB).
+	 */
+	subProjectPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,11 +44,83 @@ export interface InitParams {
 // ---------------------------------------------------------------------------
 
 /**
- * Return the default 5x.toml config content.
- * Loaded from the bundled template file at src/templates/5x.default.toml.
+ * Return the full commented TOML template used by `5x upgrade` (JS→TOML and
+ * patch baseline). Not written by `5x init`.
  */
-function generateTomlConfig(): string {
+export function generateTomlConfig(): string {
 	return defaultTomlConfig;
+}
+
+/** Minimal `[paths]`-only scaffold for `5x init --sub-project-path`. */
+const SUB_PROJECT_PATHS_TOML = `[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+archive = "docs/archive"
+`;
+
+function assertPathInsideControlRoot(
+	controlPlaneRoot: string,
+	targetPath: string,
+): void {
+	const root = resolve(controlPlaneRoot);
+	const target = resolve(targetPath);
+	const rel = relative(root, target);
+	if (rel.startsWith("..") || rel === "..") {
+		throw new Error(
+			`Sub-project path must be inside the control-plane root (${root}).`,
+		);
+	}
+}
+
+/**
+ * Create a paths-only `5x.toml` under `--sub-project-path` after verifying the
+ * control plane (state dir + DB) exists.
+ */
+async function runSubProjectInit(params: InitParams): Promise<void> {
+	const force = Boolean(params.force);
+	const cwd = resolve(params.startDir ?? ".");
+	const raw = params.subProjectPath?.trim();
+	if (!raw) {
+		throw new Error(
+			"Sub-project path is required when using --sub-project-path.",
+		);
+	}
+
+	const controlPlane = resolveControlPlaneRoot(cwd);
+	const cpRoot = resolve(controlPlane.controlPlaneRoot);
+	const stateRoot = isAbsolute(controlPlane.stateDir)
+		? controlPlane.stateDir
+		: join(cpRoot, controlPlane.stateDir);
+
+	if (!existsSync(stateRoot) || !existsSync(join(stateRoot, DB_FILENAME))) {
+		throw new Error(
+			"Root project must be initialized first. Run `5x init` from the repository root.",
+		);
+	}
+
+	const absTarget = resolve(cwd, raw);
+	assertPathInsideControlRoot(cpRoot, absTarget);
+
+	mkdirSync(absTarget, { recursive: true });
+
+	const tomlPath = join(absTarget, "5x.toml");
+	const ctxHint = relative(cwd, absTarget) || ".";
+
+	if (existsSync(tomlPath) && !force) {
+		console.log(
+			`  Skipped ${tomlPath} (already exists, use --force to overwrite)`,
+		);
+		console.log(
+			`  Run '5x config set <key> <value> --context ${ctxHint}' for further customization.`,
+		);
+		return;
+	}
+
+	writeFileSync(tomlPath, SUB_PROJECT_PATHS_TOML, "utf-8");
+	console.log(`  Created ${tomlPath}`);
+	console.log(
+		`  Run '5x config set <key> <value> --context ${ctxHint}' for further customization.`,
+	);
 }
 
 /**
@@ -225,7 +302,7 @@ export async function initScaffold(params: InitParams): Promise<void> {
 
 	// Managed-mode guard: block `5x init` from a linked worktree when the
 	// main repo is already 5x-managed. No escape hatch — `--force` only
-	// overwrites config/templates, it does not bypass this guard.
+	// overwrites templates (or sub-project `5x.toml`), it does not bypass this guard.
 	// Compare the git checkout root (not raw cwd) against controlPlaneRoot
 	// so that running `5x init` from a subdirectory of the main checkout
 	// is correctly recognized as "main checkout" and allowed.
@@ -242,32 +319,18 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		}
 	}
 
-	// Scaffold at the checkout root (or cwd if outside git), not the raw cwd.
-	// This ensures `5x init` from a subdirectory still creates `.5x/` and
-	// `5x.toml` at the repository root.
-	const projectRoot = checkoutRoot ?? cwd;
-
-	// 1. Generate config file (TOML format)
-	const configPath = join(projectRoot, "5x.toml");
-	const configExists = existsSync(configPath);
-	// Also check for legacy JS config — skip if either exists (user can `5x upgrade` to convert)
-	const legacyJsExists =
-		existsSync(join(projectRoot, "5x.config.js")) ||
-		existsSync(join(projectRoot, "5x.config.mjs"));
-	if ((configExists || legacyJsExists) && !force) {
-		const which = configExists ? "5x.toml" : "5x.config.js";
-		console.log(
-			`  Skipped config (${which} already exists, use --force to overwrite)`,
-		);
-	} else {
-		const configContent = generateTomlConfig();
-		writeFileSync(configPath, configContent, "utf-8");
-		console.log(
-			configExists && force ? "  Overwrote 5x.toml" : "  Created 5x.toml",
-		);
+	const subPath = params.subProjectPath?.trim();
+	if (subPath) {
+		await runSubProjectInit({ ...params, subProjectPath: subPath });
+		return;
 	}
 
-	// 2. Create .5x/ directory
+	// Scaffold at the checkout root (or cwd if outside git), not the raw cwd.
+	// This ensures `5x init` from a subdirectory still creates `.5x/` at the
+	// repository root (no root `5x.toml` — Zod defaults apply until overridden).
+	const projectRoot = checkoutRoot ?? cwd;
+
+	// 1. Create .5x/ directory
 	const dotFiveXDir = join(projectRoot, ".5x");
 	if (!existsSync(dotFiveXDir)) {
 		mkdirSync(dotFiveXDir, { recursive: true });
@@ -328,6 +391,10 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	console.log(
 		"  Run '5x harness install opencode --scope project' to install skills and subagent profiles",
 	);
+	console.log(
+		"  Run '5x config show' to see all available configuration options.",
+	);
+	console.log("  Run '5x config set <key> <value>' to customize.");
 }
 
 // Export helpers for testing and for the upgrade command
@@ -336,5 +403,4 @@ export {
 	ensureGitignore,
 	ensurePromptTemplates,
 	ensureTemplateFiles,
-	generateTomlConfig,
 };

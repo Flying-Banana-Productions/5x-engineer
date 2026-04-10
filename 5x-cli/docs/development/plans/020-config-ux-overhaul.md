@@ -478,20 +478,20 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
 --sub-project-path=<path>` creates a minimal sub-project config with
 `[paths]` keys only. Defaults apply via Zod. All init-related tests updated.
 
-- [ ] Remove the config-file generation block from `initScaffold()`
+- [x] Remove the config-file generation block from `initScaffold()`
       (`src/commands/init.handler.ts:250-268`). Keep `.5x/` dir creation,
       DB creation, template scaffolding, and `.gitignore` updates.
-- [ ] Remove `5x.toml` from the `.gitignore` auto-entries (it's no longer
+- [x] Remove `5x.toml` from the `.gitignore` auto-entries (it's no longer
       generated, but users may still create one — don't ignore it).
       Keep `5x.toml.local` in `.gitignore`.
-- [ ] Update `initScaffold()` output to print a hint:
+- [x] Update `initScaffold()` output to print a hint:
       ```
       Run '5x config show' to see all available configuration options.
       Run '5x config set <key> <value>' to customize.
       ```
-- [ ] Add `--sub-project-path <relativePath>` option to `5x init` in
+- [x] Add `--sub-project-path <relativePath>` option to `5x init` in
       `src/commands/init.ts`.
-- [ ] Implement sub-project init logic in `initScaffold()`:
+- [x] Implement sub-project init logic in `initScaffold()`:
       1. Resolve the control-plane root. Verify it is initialized (`.5x/`
          dir exists). Error if not: "Root project must be initialized first.
          Run `5x init` from the repository root."
@@ -513,16 +513,16 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
          root-only resources.
       7. Print the created file path and a hint about `5x config set
           --context <path>` for further customization.
-- [ ] When `--sub-project-path` is provided, skip all root-init logic
+- [x] When `--sub-project-path` is provided, skip all root-init logic
       (`.5x/` dir, DB, templates, `.gitignore`). The two modes are
       mutually exclusive.
-- [ ] Update or remove `generateTomlConfig()` export — it's still used by
+- [x] Update or remove `generateTomlConfig()` export — it's still used by
       `upgradeTomlConfig()` in `src/commands/upgrade.handler.ts` as the
       template for TOML patching, so keep it but remove its export from
       `src/index.ts` if it was public.
-- [ ] Keep `src/templates/5x.default.toml` — it's still the TOML template
+- [x] Keep `src/templates/5x.default.toml` — it's still the TOML template
       used by the upgrade command's JS→TOML migration path.
-- [ ] Update tests in `test/unit/commands/init.test.ts` and
+- [x] Update tests in `test/unit/commands/init.test.ts` and
       `test/integration/commands/init.test.ts`:
       - `5x init` does not create `5x.toml`.
       - `5x init --force` does not create `5x.toml`.
@@ -535,7 +535,7 @@ supported), TOML-only mutation, and fail-fast JS/MJS active-source guard with
       - Sub-project init with existing config → skip (unless `--force`).
       - Sub-project config does not contain `[db]`, `[author]`, `[reviewer]`,
         or any non-paths keys.
-- [ ] Update `5x upgrade` path: when no config file exists, `5x upgrade`
+- [x] Update `5x upgrade` path: when no config file exists, `5x upgrade`
       should not create one. Currently it may create `5x.toml` during
       JS→TOML migration — that path stays (it requires a pre-existing JS
       config). But the "add missing keys" path (plan 018 Phase 3) should
