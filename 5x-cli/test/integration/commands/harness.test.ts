@@ -87,7 +87,7 @@ async function runHarnessInstall(
 }
 
 /**
- * Bootstrap a minimal 5x project in a temp dir (writes 5x.toml, .5x/, 5x.db).
+ * Bootstrap a minimal 5x project in a temp dir (.5x/, 5x.db; no root 5x.toml).
  */
 async function bootstrapProject(dir: string): Promise<void> {
 	await runInit(dir);
@@ -150,6 +150,9 @@ describe("5x harness list", () => {
 				expect(opencode.scopes.project.files.length).toBeGreaterThan(0);
 				expect(opencode.scopes.project.files).toContain(
 					"skills/5x-plan/SKILL.md",
+				);
+				expect(opencode.scopes.project.files).toContain(
+					"skills/config/SKILL.md",
 				);
 			} finally {
 				cleanupDir(tmp);
@@ -221,6 +224,72 @@ describe("5x harness list", () => {
 				);
 				expect(opencode.scopes.project.installed).toBe(false);
 				expect(opencode.scopes.project.files).toHaveLength(0);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Config skill (bundled harness assets)
+// ---------------------------------------------------------------------------
+
+describe("config skill — harness install", () => {
+	test(
+		"opencode project scope installs skills/config/SKILL.md with CLI guidance",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				const { exitCode } = await runHarnessInstall(tmp, "opencode", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+				const skillPath = join(
+					tmp,
+					".opencode",
+					"skills",
+					"config",
+					"SKILL.md",
+				);
+				expect(existsSync(skillPath)).toBe(true);
+				const text = readFileSync(skillPath, "utf-8");
+				expect(text).toContain("5x config show");
+				expect(text).toContain("5x config set");
+				expect(text).toContain("5x config unset");
+				expect(text).toContain("5x config add");
+				expect(text).toContain("5x config remove");
+				expect(text).toContain("5x.toml.local");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"cursor project scope installs skills/config/SKILL.md with CLI guidance",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				await bootstrapProject(tmp);
+				const { exitCode } = await runHarnessInstall(tmp, "cursor", [
+					"--scope",
+					"project",
+				]);
+				expect(exitCode).toBe(0);
+				const skillPath = join(tmp, ".cursor", "skills", "config", "SKILL.md");
+				expect(existsSync(skillPath)).toBe(true);
+				const text = readFileSync(skillPath, "utf-8");
+				expect(text).toContain("5x config show");
+				expect(text).toContain("5x config set");
+				expect(text).toContain("5x config unset");
+				expect(text).toContain("5x config add");
+				expect(text).toContain("5x config remove");
+				expect(text).toContain("5x.toml.local");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -1507,7 +1576,7 @@ describe("5x init (no subcommands)", () => {
 
 				const { stdout, exitCode } = await runInit(tmp, ["--force"]);
 				expect(exitCode).toBe(0);
-				expect(stdout).toContain("Overwrote 5x.toml");
+				expect(stdout).toContain("Overwrote .5x/templates/");
 			} finally {
 				cleanupDir(tmp);
 			}

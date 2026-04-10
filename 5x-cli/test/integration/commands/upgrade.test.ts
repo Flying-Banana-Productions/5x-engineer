@@ -48,7 +48,7 @@ async function runUpgrade(
 
 describe("5x upgrade", () => {
 	test(
-		"creates 5x.toml with defaults when no config exists",
+		"does not create 5x.toml when no config exists",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -56,19 +56,12 @@ describe("5x upgrade", () => {
 
 				expect(exitCode).toBe(0);
 				expect(stdout).toContain("Config:");
-				expect(stdout).toContain("creating 5x.toml");
+				expect(stdout).toContain("skipping config upgrade");
 				expect(stdout).toContain("Database:");
 				expect(stdout).toContain("Templates:");
 				expect(stdout).toContain("Upgrade complete.");
 
-				// TOML file was created
-				const tomlPath = join(tmp, "5x.toml");
-				expect(existsSync(tomlPath)).toBe(true);
-				const parsed = tomlParse(readFileSync(tomlPath, "utf-8")) as Record<
-					string,
-					unknown
-				>;
-				expect(parsed.maxStepsPerRun).toBe(250);
+				expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
 			} finally {
 				cleanupDir(tmp);
 			}

@@ -1,0 +1,4 @@
+[paths]
+plans = "docs/development"
+reviews = "docs/development/reviews"
+archive = "docs/archive"

@@ -244,7 +244,7 @@ opencode = "openai/sub-local-reviewer"
 			const agentsDir = join(tmp, ".opencode", "agents");
 
 			const skillNames = listSkillNames();
-			expect(skillNames).toHaveLength(5);
+			expect(skillNames).toHaveLength(6);
 
 			const agentNames = listAgentTemplates().map((a) => a.name);
 			expect(agentNames).toHaveLength(4);

@@ -126,7 +126,7 @@ describe("isolated mode", () => {
 				expect(result.exitCode).toBe(0);
 				// Local state DB should exist in the worktree
 				expect(existsSync(join(wtPath, ".5x"))).toBe(true);
-				expect(existsSync(join(wtPath, "5x.toml"))).toBe(true);
+				expect(existsSync(join(wtPath, "5x.toml"))).toBe(false);
 				// Root repo should NOT have a state DB
 				expect(existsSync(join(tmp, ".5x", "5x.db"))).toBe(false);
 			} finally {
@@ -158,9 +158,8 @@ describe("isolated mode", () => {
 
 				// Init 5x in worktree (isolated mode)
 				await run5x(wtPath, ["init"]);
-				// Commit init artifacts so worktree is clean
-				git(["add", "-A"], wtPath);
-				git(["commit", "-m", "init 5x"], wtPath);
+				// No tracked files from init (.5x/ is gitignored; no root 5x.toml).
+				git(["commit", "--allow-empty", "-m", "init 5x"], wtPath);
 
 				// Create a run in isolated mode
 				const initResult = await run5x(wtPath, [
@@ -208,8 +207,7 @@ describe("isolated mode", () => {
 
 				// Init 5x in worktree, then commit so worktree is clean
 				await run5x(wtPath, ["init"]);
-				git(["add", "-A"], wtPath);
-				git(["commit", "-m", "init 5x"], wtPath);
+				git(["commit", "--allow-empty", "-m", "init 5x"], wtPath);
 
 				// Init a run
 				const result = await run5x(wtPath, [
@@ -391,8 +389,7 @@ describe("isolated mode", () => {
 
 				// Step 1: Init 5x in worktree (isolated mode)
 				await run5x(wtPath, ["init"]);
-				git(["add", "-A"], wtPath);
-				git(["commit", "-m", "init 5x"], wtPath);
+				git(["commit", "--allow-empty", "-m", "init 5x"], wtPath);
 
 				// Create a run in isolated mode
 				const isoInitResult = await run5x(wtPath, [
@@ -425,8 +422,7 @@ describe("isolated mode", () => {
 				git(["add", "-A"], tmp);
 				git(["commit", "-m", "add plan to root"], tmp);
 				await run5x(tmp, ["init"]);
-				git(["add", "-A"], tmp);
-				git(["commit", "-m", "init 5x root"], tmp);
+				git(["commit", "--allow-empty", "-m", "init 5x root"], tmp);
 
 				// Create a run in managed mode from root
 				const managedInitResult = await run5x(tmp, [

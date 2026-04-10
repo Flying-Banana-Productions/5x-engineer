@@ -168,8 +168,8 @@ describe("init managed-mode guard", () => {
 				const result = await runInit(wtPath);
 				// Should succeed - no root state DB means not managed
 				expect(result.exitCode).toBe(0);
-				// Config should be created in the worktree
-				expect(existsSync(join(wtPath, "5x.toml"))).toBe(true);
+				expect(existsSync(join(wtPath, "5x.toml"))).toBe(false);
+				expect(existsSync(join(wtPath, ".5x"))).toBe(true);
 			} finally {
 				rmSync(externalDir, { recursive: true, force: true });
 			}
@@ -186,7 +186,7 @@ describe("init managed-mode guard", () => {
 
 				const result = await runInit(testTmp);
 				expect(result.exitCode).toBe(0);
-				expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+				expect(existsSync(join(testTmp, "5x.toml"))).toBe(false);
 				expect(existsSync(join(testTmp, ".5x"))).toBe(true);
 			} finally {
 				rmSync(testTmp, { recursive: true, force: true });
@@ -206,10 +206,9 @@ describe("init managed-mode guard", () => {
 
 				const result = await runInit(subDir);
 				expect(result.exitCode).toBe(0);
-				// Config and .5x should be at the repo root, not in the subdirectory
-				expect(existsSync(join(testTmp, "5x.toml"))).toBe(true);
+				// .5x should be at the repo root, not in the subdirectory
+				expect(existsSync(join(testTmp, "5x.toml"))).toBe(false);
 				expect(existsSync(join(testTmp, ".5x"))).toBe(true);
-				// Should NOT create config in the subdirectory
 				expect(existsSync(join(subDir, "5x.toml"))).toBe(false);
 			} finally {
 				rmSync(testTmp, { recursive: true, force: true });

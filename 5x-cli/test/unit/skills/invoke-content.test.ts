@@ -48,7 +48,9 @@ describe("invoke-path skill content", () => {
 	test("all invoke-rendered skills include --record and .data.result checks", () => {
 		for (const skill of renderAllSkillTemplates(
 			createRenderContext(false),
-		).filter((skill) => skill.name !== "5x-windows")) {
+		).filter(
+			(skill) => skill.name !== "5x-windows" && skill.name !== "config",
+		)) {
 			expect(skill.content).toContain("--record");
 			expect(skill.content).toContain(".data.result");
 		}
