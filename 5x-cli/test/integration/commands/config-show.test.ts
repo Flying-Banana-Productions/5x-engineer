@@ -4,7 +4,7 @@
  * Tests spawn the CLI binary and validate JSON envelope output, exit
  * codes, and layered config resolution via --context.
  *
- * Pure config-resolution unit tests are in test/unit/commands/config-show.test.ts.
+ * Unit tests for handlers and resolution are in test/unit/commands/config.test.ts.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -14,10 +14,6 @@ import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeTmpDir(prefix = "5x-cfg-int"): string {
 	const dir = join(
@@ -91,6 +87,15 @@ function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+interface ConfigShowData {
+	files: string[];
+	entries: Array<{ key: string; value: unknown; isLocal?: boolean }>;
+}
+
+function entry(data: ConfigShowData, key: string): unknown {
+	return data.entries.find((e) => e.key === key)?.value;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -122,13 +127,12 @@ describe("5x config show (integration)", () => {
 				const envelope = parseJson(result.stdout);
 				expect(envelope.ok).toBe(true);
 
-				const data = envelope.data as Record<string, unknown>;
-				expect(data.maxReviewIterations).toBe(8);
-				expect(data.maxQualityRetries).toBe(4);
-
-				const author = data.author as Record<string, unknown>;
-				expect(author.provider).toBe("test-provider");
-				expect(author.model).toBe("test-model");
+				const data = envelope.data as ConfigShowData;
+				expect(entry(data, "maxReviewIterations")).toBe(8);
+				expect(entry(data, "maxQualityRetries")).toBe(4);
+				expect(entry(data, "author.provider")).toBe("test-provider");
+				expect(entry(data, "author.model")).toBe("test-model");
+				expect(data.files.length).toBeGreaterThanOrEqual(1);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -174,14 +178,10 @@ describe("5x config show (integration)", () => {
 				const envelope = parseJson(result.stdout);
 				expect(envelope.ok).toBe(true);
 
-				const data = envelope.data as Record<string, unknown>;
-				const author = data.author as Record<string, unknown>;
-				// Sub-project overrides model
-				expect(author.model).toBe("sub-model");
-				// Root provider preserved
-				expect(author.provider).toBe("root-provider");
-				// Root value preserved
-				expect(data.maxReviewIterations).toBe(5);
+				const data = envelope.data as ConfigShowData;
+				expect(entry(data, "author.model")).toBe("sub-model");
+				expect(entry(data, "author.provider")).toBe("root-provider");
+				expect(entry(data, "maxReviewIterations")).toBe(5);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -202,13 +202,12 @@ describe("5x config show (integration)", () => {
 				const envelope = parseJson(result.stdout);
 				expect(envelope.ok).toBe(true);
 
-				const data = envelope.data as Record<string, unknown>;
-				expect(data.maxReviewIterations).toBe(5);
-				expect(data.maxQualityRetries).toBe(3);
-				expect(data.maxStepsPerRun).toBe(250);
-
-				const author = data.author as Record<string, unknown>;
-				expect(author.provider).toBe("opencode");
+				const data = envelope.data as ConfigShowData;
+				expect(data.files).toEqual([]);
+				expect(entry(data, "maxReviewIterations")).toBe(5);
+				expect(entry(data, "maxQualityRetries")).toBe(3);
+				expect(entry(data, "maxStepsPerRun")).toBe(250);
+				expect(entry(data, "author.provider")).toBe("opencode");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -217,7 +216,7 @@ describe("5x config show (integration)", () => {
 	);
 
 	test(
-		"preserves passthrough/plugin config keys in envelope",
+		"preserves passthrough/plugin config keys in entries",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -242,16 +241,10 @@ describe("5x config show (integration)", () => {
 				const envelope = parseJson(result.stdout);
 				expect(envelope.ok).toBe(true);
 
-				const data = envelope.data as Record<string, unknown>;
-				// Plugin config should be preserved via passthrough
-				expect(data.acme).toBeDefined();
-				const acme = data.acme as Record<string, unknown>;
-				expect(acme.apiKey).toBe("sk-test-123");
-				expect(acme.region).toBe("us-east-1");
-
-				// Standard config should still be present
-				const author = data.author as Record<string, unknown>;
-				expect(author.provider).toBe("acme");
+				const data = envelope.data as ConfigShowData;
+				expect(entry(data, "acme.apiKey")).toBe("sk-test-123");
+				expect(entry(data, "acme.region")).toBe("us-east-1");
+				expect(entry(data, "author.provider")).toBe("acme");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -278,7 +271,6 @@ describe("5x config show (integration)", () => {
 				git(["add", "-A"], dir);
 				git(["commit", "-m", "add config"], dir);
 
-				// Create a linked worktree
 				const wtDir = join(dir, "..", `wt-${Date.now()}`);
 				git(["worktree", "add", wtDir, "-b", "test-wt"], dir);
 
@@ -289,16 +281,10 @@ describe("5x config show (integration)", () => {
 					const envelope = parseJson(result.stdout);
 					expect(envelope.ok).toBe(true);
 
-					const data = envelope.data as Record<string, unknown>;
-					const db = data.db as Record<string, unknown>;
-					// db.path should resolve relative to the control-plane
-					// root (main repo), not the worktree checkout
-					expect(db.path).toBe(".5x/5x.db");
-
-					const author = data.author as Record<string, unknown>;
-					expect(author.provider).toBe("wt-provider");
+					const data = envelope.data as ConfigShowData;
+					expect(entry(data, "db.path")).toBe(".5x/5x.db");
+					expect(entry(data, "author.provider")).toBe("wt-provider");
 				} finally {
-					// Clean up worktree
 					git(["worktree", "remove", "--force", wtDir], dir);
 				}
 			} finally {
@@ -306,5 +292,56 @@ describe("5x config show (integration)", () => {
 			}
 		},
 		{ timeout: 30000 },
+	);
+
+	test(
+		"--key returns a single entry in JSON mode",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 400\n");
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "c"], dir);
+
+				const result = await run5x(dir, [
+					"config",
+					"show",
+					"--key",
+					"maxStepsPerRun",
+				]);
+				expect(result.exitCode).toBe(0);
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(true);
+				const row = envelope.data as { key: string; value: unknown };
+				expect(row.key).toBe("maxStepsPerRun");
+				expect(row.value).toBe(400);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--key with unknown key errors",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				const result = await run5x(dir, [
+					"config",
+					"show",
+					"--key",
+					"not.a.real.key",
+				]);
+				expect(result.exitCode).not.toBe(0);
+				const envelope = parseJson(result.stdout);
+				expect(envelope.ok).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
 	);
 });

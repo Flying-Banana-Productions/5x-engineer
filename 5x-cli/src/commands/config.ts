@@ -32,16 +32,22 @@ export function registerConfig(parent: Command) {
 			"Config context directory for layered resolution",
 			process.cwd(),
 		)
+		.option(
+			"--key <dotted.key>",
+			"Show a single config entry (value-only in text mode)",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x config show\n" +
 				"  $ 5x config show --context packages/api\n" +
+				"  $ 5x config show --key author.provider\n" +
 				"  $ 5x config show --text",
 		)
 		.action(async (opts) => {
 			await configShow({
 				contextDir: opts.context,
+				key: opts.key,
 			});
 		});
 }

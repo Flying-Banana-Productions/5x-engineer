@@ -218,3 +218,80 @@ export function computeLocalKeys(
 	}
 	return out;
 }
+
+function isPlainConfigObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Flatten a resolved {@link FiveXConfig} to dotted keys → values.
+ * - Nested plain objects are expanded (e.g. `paths.templates.plan`).
+ * - Arrays and scalars are stored at their leaf key (`qualityGates`, etc.).
+ * - Empty objects produce no keys.
+ * - Record fields such as `author.harnessModels` expand to
+ *   `author.harnessModels.<harness>`.
+ * - Passthrough (plugin) top-level keys are expanded the same way.
+ */
+export function flattenConfig(
+	config: Record<string, unknown>,
+): Map<string, unknown> {
+	const out = new Map<string, unknown>();
+
+	function walk(value: unknown, prefix: string): void {
+		if (value === undefined) return;
+
+		if (value === null) {
+			if (prefix) out.set(prefix, null);
+			return;
+		}
+
+		if (Array.isArray(value)) {
+			if (prefix) out.set(prefix, value);
+			return;
+		}
+
+		if (isPlainConfigObject(value)) {
+			const keys = Object.keys(value);
+			if (keys.length === 0) return;
+			for (const k of keys) {
+				const p = prefix ? `${prefix}.${k}` : k;
+				const v = value[k];
+				if (isPlainConfigObject(v)) {
+					walk(v, p);
+				} else {
+					walkScalarOrArray(v, p);
+				}
+			}
+			return;
+		}
+
+		if (prefix) out.set(prefix, value);
+	}
+
+	function walkScalarOrArray(value: unknown, prefix: string): void {
+		if (value === undefined) return;
+		if (Array.isArray(value) || !isPlainConfigObject(value)) {
+			out.set(prefix, value);
+			return;
+		}
+		walk(value, prefix);
+	}
+
+	walk(config, "");
+	return out;
+}
+
+/** Returns true if `key` is an exact registry leaf or a dotted child of a `record` registry key. */
+export function isRegistryKeyOrRecordDescendant(
+	key: string,
+	registry: ConfigKeyMeta[],
+): boolean {
+	for (const m of registry) {
+		if (m.type === "record") {
+			if (key === m.key || key.startsWith(`${m.key}.`)) return true;
+			continue;
+		}
+		if (m.key === key) return true;
+	}
+	return false;
+}

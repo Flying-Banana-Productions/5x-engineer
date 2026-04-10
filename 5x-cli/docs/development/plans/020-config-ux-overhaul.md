@@ -264,7 +264,7 @@ text mode. `--key` returns a single entry. All config fields are represented.
 Path-valued keys compare and render defaults using effective normalized
 defaults (absolute paths), not raw schema literals.
 
-- [ ] Define the JSON output shape in `src/commands/config.handler.ts`:
+- [x] Define the JSON output shape in `src/commands/config.handler.ts`:
       ```ts
       interface ConfigShowEntry {
         key: string;
@@ -279,7 +279,7 @@ defaults (absolute paths), not raw schema literals.
         entries: ConfigShowEntry[];
       }
       ```
-- [ ] Refactor `configShow()` to:
+- [x] Refactor `configShow()` to:
       1. Call `resolveLayeredConfig()` (gets `config`, file paths, `localRaws`).
       2. Call `getConfigRegistry()` to get the key metadata.
       3. Call `computeLocalKeys(localRaws)` to get the local key set.
@@ -295,11 +295,11 @@ defaults (absolute paths), not raw schema literals.
       8. Build `files` from `rootConfigPath`, `nearestConfigPath`, `localPaths`
          (filtering nulls).
       9. Output via `outputSuccess()`.
-- [ ] Implement `flattenConfig(config: FiveXConfig): Map<string, unknown>`.
+- [x] Implement `flattenConfig(config: FiveXConfig): Map<string, unknown>`.
       Recursively walks the config object and produces dotted-key → value pairs.
       Records (`harnessModels`) are expanded to individual keys (e.g.
       `author.harnessModels.opencode = "model-name"`).
-- [ ] Replace `formatConfigText()` with a new text formatter:
+- [x] Replace `formatConfigText()` with a new text formatter:
       ```
       Config files:
         root     /path/to/5x.toml
@@ -317,14 +317,14 @@ defaults (absolute paths), not raw schema literals.
       - Values matching their default are dimmed (if TTY).
       - Default for `paths.*` is displayed as normalized absolute path (same
         representation as resolved value), so default comparison is accurate.
-- [ ] Add `--key <dotted.key>` option to the `config show` command in
+- [x] Add `--key <dotted.key>` option to the `config show` command in
       `src/commands/config.ts`. When provided, filter to a single entry.
       In text mode, print just the value. In JSON mode, emit a single
       `ConfigShowEntry`.
-- [ ] Handle passthrough (plugin) keys: flatten any extra keys from the
+- [x] Handle passthrough (plugin) keys: flatten any extra keys from the
       resolved config that are not in the registry. Emit them with
       `description: "(unrecognized)"`, `type: "unknown"`, no default.
-- [ ] Add unit tests in `test/unit/commands/config.test.ts`:
+- [x] Add unit tests in `test/unit/commands/config.test.ts`:
       - JSON output contains all registry keys.
       - `isLocal` is true for keys present in local overlays.
       - `isLocal` is false for keys only in main config.
@@ -333,7 +333,7 @@ defaults (absolute paths), not raw schema literals.
       - Passthrough keys appear as unrecognized.
       - Default-only config (no files) shows all defaults with empty `files`.
       - `files` list reflects actual discovered config files.
-- [ ] Remove the old hand-coded `formatConfigText()` function (dead code
+- [x] Remove the old hand-coded `formatConfigText()` function (dead code
       after this phase).
 
 ## Phase 4: `config set` / `unset`
