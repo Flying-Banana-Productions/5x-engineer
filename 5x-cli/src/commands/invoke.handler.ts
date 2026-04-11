@@ -386,6 +386,7 @@ export async function invokeAgent(
 		if (params.session && !params.newSession) {
 			session = await provider.resumeSession(params.session, {
 				model: params.model,
+				workingDirectory: workdir,
 			});
 		} else {
 			session = await provider.startSession({

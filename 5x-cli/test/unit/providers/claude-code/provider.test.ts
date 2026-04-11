@@ -73,6 +73,58 @@ describe("ClaudeCodeProvider", () => {
 		expect(calls[0]).not.toContain("--session-id");
 	});
 
+	test("startSession workingDirectory is cwd for run and runStreamed spawns", async () => {
+		const spawnOpts: { cwd?: string }[] = [];
+		Bun.spawn = ((_cmd: string[], opts?: { cwd?: string }) => {
+			spawnOpts.push({ cwd: opts?.cwd });
+			return {
+				stdout: streamFromString(resultLine()),
+				stderr: streamFromString(""),
+				exited: Promise.resolve(0),
+				kill() {},
+			} as ReturnType<typeof Bun.spawn>;
+		}) as typeof Bun.spawn;
+
+		const p = new ClaudeCodeProvider({
+			permissionMode: "dangerously-skip",
+			claudeBinary: "claude",
+		});
+		const s = await p.startSession({
+			model: "sonnet",
+			workingDirectory: "/tmp/wt-claude",
+		});
+		await s.run("a");
+		for await (const _ of s.runStreamed("b")) {
+			// consume
+		}
+		expect(spawnOpts[0]?.cwd).toBe("/tmp/wt-claude");
+		expect(spawnOpts[1]?.cwd).toBe("/tmp/wt-claude");
+	});
+
+	test("resumeSession uses ResumeOptions.workingDirectory for spawn cwd", async () => {
+		const spawnOpts: { cwd?: string }[] = [];
+		Bun.spawn = ((_cmd: string[], opts?: { cwd?: string }) => {
+			spawnOpts.push({ cwd: opts?.cwd });
+			return {
+				stdout: streamFromString(resultLine()),
+				stderr: streamFromString(""),
+				exited: Promise.resolve(0),
+				kill() {},
+			} as ReturnType<typeof Bun.spawn>;
+		}) as typeof Bun.spawn;
+
+		const p = new ClaudeCodeProvider({
+			permissionMode: "dangerously-skip",
+			claudeBinary: "claude",
+		});
+		const s = await p.resumeSession("orphan-session", {
+			model: "sonnet",
+			workingDirectory: "/tmp/resume-cwd",
+		});
+		await s.run("one");
+		expect(spawnOpts[0]?.cwd).toBe("/tmp/resume-cwd");
+	});
+
 	test("close is idempotent and clears sessions", async () => {
 		const p = new ClaudeCodeProvider({
 			permissionMode: "dangerously-skip",

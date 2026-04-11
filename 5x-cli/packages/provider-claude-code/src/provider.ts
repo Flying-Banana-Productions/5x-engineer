@@ -68,11 +68,15 @@ export class ClaudeCodeProvider implements AgentProvider, ClaudeCodeExecutionHos
 		const existing = this.sessions.get(sessionId);
 		if (existing) return existing;
 
+		// New resume handle: cwd comes from ResumeOptions, else `process.cwd()` (CLI must pass
+		// `workingDirectory` when resuming if it differs from the subprocess workspace).
+		const cwd = opts?.workingDirectory ?? process.cwd();
+
 		const sessionOpts: ClaudeCodeSessionOptions = {
 			id: sessionId,
 			firstInvocationMode: "resume",
 			model: parseModelForClaudeCode(opts?.model ?? RESUME_MODEL_DEFAULT),
-			cwd: process.cwd(),
+			cwd,
 			config: this.config,
 			provider: this,
 		};

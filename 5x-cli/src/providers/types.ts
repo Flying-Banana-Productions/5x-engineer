@@ -21,6 +21,12 @@ export interface AgentProvider {
 export interface ResumeOptions {
 	/** Model override for the resumed session. Falls back to provider default. */
 	model?: string;
+	/**
+	 * Workspace directory for tool execution. Providers that spawn a CLI should use this
+	 * so resumed runs match the original session's `startSession` workspace when the
+	 * process cwd differs (e.g. resumed invoke in another directory).
+	 */
+	workingDirectory?: string;
 }
 
 export interface AgentSession {
