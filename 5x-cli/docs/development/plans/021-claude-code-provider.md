@@ -206,7 +206,7 @@ subprocess spawning.
 
 ### 1.1 Package scaffold
 
-- [ ] Create `packages/provider-claude-code/package.json`:
+- [x] Create `packages/provider-claude-code/package.json`:
       ```json
       {
         "name": "@5x-ai/provider-claude-code",
@@ -217,23 +217,23 @@ subprocess spawning.
         "peerDependencies": { "@5x-ai/5x-cli": "file:../.." }
       }
       ```
-- [ ] Add `"@5x-ai/provider-claude-code": "workspace:*"` to root
+- [x] Add `"@5x-ai/provider-claude-code": "workspace:*"` to root
       `package.json` devDependencies.
-- [ ] Create `src/types.ts` with `ClaudeCodeConfig` interface.
+- [x] Create `src/types.ts` with `ClaudeCodeConfig` interface.
 
 ### 1.2 Model parser (`src/model.ts`)
 
-- [ ] Implement `parseModelForClaudeCode(model: string): string`.
+- [x] Implement `parseModelForClaudeCode(model: string): string`.
       Strip `anthropic/` prefix if present; pass through otherwise.
-- [ ] Unit tests: `"anthropic/claude-sonnet-4-6"` → `"claude-sonnet-4-6"`,
+- [x] Unit tests: `"anthropic/claude-sonnet-4-6"` → `"claude-sonnet-4-6"`,
       `"sonnet"` → `"sonnet"`, `"claude-sonnet-4-6"` → passthrough,
       empty string, multiple slashes.
 
 ### 1.3 CLI arg builder (`src/cli-args.ts`)
 
-- [ ] Define `CliArgContext` interface capturing prompt, sessionId, isResume,
+- [x] Define `CliArgContext` interface capturing prompt, sessionId, isResume,
       model, outputFormat, jsonSchema, and config fields.
-- [ ] Implement `buildCliArgs(ctx: CliArgContext): string[]`. Mapping:
+- [x] Implement `buildCliArgs(ctx: CliArgContext): string[]`. Mapping:
       - `-p <prompt>` always
       - `--session-id <id>` when `!isResume`, `--resume <id>` when `isResume`
       - `--model <model>` when model is set
@@ -244,28 +244,28 @@ subprocess spawning.
         `"dangerously-skip"` (default)
       - `--bare`, `--tools`, `--max-budget-usd`, `--system-prompt`,
         `--append-system-prompt` from config when set
-- [ ] Unit tests covering all flag combinations and edge cases (no model,
+- [x] Unit tests covering all flag combinations and edge cases (no model,
       resume vs new, streaming vs json, config options present/absent).
 
 ### 1.4 Prompt guard (`src/prompt-guard.ts`)
 
-- [ ] Define `MAX_PROMPT_BYTES` and `getPromptBytes(prompt: string): number`
+- [x] Define `MAX_PROMPT_BYTES` and `getPromptBytes(prompt: string): number`
       using `TextEncoder`.
-- [ ] Implement guard helper used by both `run()` and `runStreamed()` before
+- [x] Implement guard helper used by both `run()` and `runStreamed()` before
       spawn.
-- [ ] Standardize deterministic over-limit payload/message containing
+- [x] Standardize deterministic over-limit payload/message containing
       `actualBytes` and `maxBytes`.
-- [ ] Unit tests:
+- [x] Unit tests:
       - ASCII boundary: `limit-1`, `limit`, `limit+1`
       - Unicode boundary (multi-byte chars)
       - Message/error shape is stable for assertions
 
 ### 1.5 Event mapper (`src/event-mapper.ts`)
 
-- [ ] Define `ClaudeCodeMapperState` with `pendingTools: Map<string, string>`
+- [x] Define `ClaudeCodeMapperState` with `pendingTools: Map<string, string>`
       and `accumulatedText: string`.
-- [ ] Implement `createMapperState(): ClaudeCodeMapperState`.
-- [ ] Implement `mapNdjsonLine(line: Record<string, unknown>, state): AgentEvent | AgentEvent[] | undefined`.
+- [x] Implement `createMapperState(): ClaudeCodeMapperState`.
+- [x] Implement `mapNdjsonLine(line: Record<string, unknown>, state): AgentEvent | AgentEvent[] | undefined`.
       Event type mapping:
       - `system` (init) → `undefined`
       - `stream_event` / `text_delta` → `{ type: "text", delta }`
@@ -277,10 +277,10 @@ subprocess spawning.
       - `result` (success) → `{ type: "done", result: RunResult }`
       - `result` (error) → `{ type: "error", message }`
       - `rate_limit_event` → `undefined`
-- [ ] Implement `summarizeToolInput(tool: string, input: Record<string, unknown>): string`
+- [x] Implement `summarizeToolInput(tool: string, input: Record<string, unknown>): string`
       for common tools (Read → file path, Write → file path, Edit → file path,
       Bash → command excerpt, Glob → pattern, Grep → pattern).
-- [ ] Unit tests:
+- [x] Unit tests:
       - Each event type maps correctly.
       - Tool correlation: tool_start registers pending, tool_end resolves it.
       - Multiple tool_use blocks in one assistant message → multiple events.
