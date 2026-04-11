@@ -1,4 +1,8 @@
 import {
+	resolveSkillTokens,
+	type SkillTokenMap,
+} from "../../../skills/harness-tokens.js";
+import {
 	listBaseSkillNames,
 	renderAllSkillTemplates,
 } from "../../../skills/loader.js";
@@ -8,13 +12,17 @@ import {
 } from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
+const CURSOR_SKILL_TOKENS: SkillTokenMap = {
+	NATIVE_CONTINUE_PARAM: "resume",
+};
+
 /**
  * Adapt terminology from OpenCode-specific to Cursor-specific.
  * This applies only to native-rendered blocks (Task tool references).
  * Invoke-rendered blocks already use `5x invoke` which is correct for both.
  */
 function adaptCursorTerminology(content: string): string {
-	let adapted = content;
+	let adapted = resolveSkillTokens(content, CURSOR_SKILL_TOKENS);
 
 	adapted = adapted
 		.replaceAll(
@@ -24,11 +32,7 @@ function adaptCursorTerminology(content: string): string {
 		.replaceAll("## Task Reuse", "## Session Reuse")
 		.replace(/task reuse/gi, "session reuse")
 		.replace(/Task\s+tool/g, "Cursor subagent invocation")
-		.replaceAll("subagent_type", "subagent")
-		.replaceAll("$REVIEWER_TASK_ID", "$REVIEWER_AGENT_SESSION_ID")
-		.replaceAll("REVIEWER_TASK_ID", "REVIEWER_AGENT_SESSION_ID")
-		.replaceAll("task_id=", "agent_session_id=")
-		.replace(/task_id/g, "agent session ID");
+		.replaceAll("subagent_type", "subagent");
 
 	return adapted;
 }
