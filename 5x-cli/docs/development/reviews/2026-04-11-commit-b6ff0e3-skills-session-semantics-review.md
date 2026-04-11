@@ -76,3 +76,23 @@ Current prose leans toward “`--session` is for invoke-mode provider sessions a
 **P1 recommended**
 - [ ] Skill prose clearly separates CLI `--session` / `--new-session` behavior from orchestrator subagent continuity; no “invoke-only” ambiguity
 - [ ] Add harness parity tests to prevent future parameter-name drift
+
+---
+
+## Addendum (2026-04-11) — Harness-Specific Native Continuation Tokens
+
+**Reviewed:** `59e5eed53f18`
+
+### What's addressed (✅)
+
+- **P0.1 harness mismatch:** Base skills no longer hardcode Cursor-specific `resume=`. Shared templates now use a semantic placeholder (`[[NATIVE_CONTINUE_PARAM]]`) and each harness resolves it (`task_id` for OpenCode, `resume` for Cursor) via `src/skills/harness-tokens.ts` and harness loaders.
+- **P1.1 `--session` semantics clarity:** Updated base skill prose plus top-level docs (`5x-cli/README.md`, `docs/v1/100-architecture.md`, OpenCode/Cursor orchestrator docs) to treat `5x template render --session/--new-session` as CLI continuity control (continued-template selection + `continuePhaseSessions` enforcement), orthogonal to native subagent continuation ids.
+- **P2 harness parity tests:** Added unit coverage to ensure Cursor and OpenCode rendered skills (1) do not leak unresolved token placeholders and (2) contain the correct harness-specific continuation parameter names.
+
+### Remaining concerns
+
+- None blocking identified in this change. The token mechanism is intentionally strict (unknown `[[...]]` patterns throw); that’s good for catching template authoring mistakes early.
+
+### Updated readiness
+
+- **Production readiness:** Ready — prior P0 mismatch is resolved and guarded by tests; documentation now matches the actual continuity model.
