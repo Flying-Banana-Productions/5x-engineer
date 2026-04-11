@@ -11,7 +11,7 @@ Phase 2 delivers a coherent `AgentProvider` / `AgentSession` implementation: NDJ
 
 The main gap is **test coverage vs. the written plan**: the Phase 2 checklist marks unit tests complete and lists “Timeout kills process and yields error” under the session section, but **only `run()`’s timeout is asserted**. There are **no** mocked-spawn tests that `runStreamed()` kills the subprocess and yields a timeout (or cancellation) error event—so the completion gate is slightly overstated until those tests exist.
 
-**Readiness:** **Needs follow-up** — implementation quality is strong; add streaming timeout/cancel tests (or explicitly narrow the plan checklist) before treating Phase 2 as fully closed.
+**Readiness (original review):** **Needs follow-up** for P1.1/P2.1 — superseded for those items by Addendum commit `a4edbacc46538acf904519aea80302113c91e2cd`.
 
 ## Strengths
 
@@ -66,9 +66,39 @@ None for code correctness in isolation; the blocker is **documentation vs. tests
 
 **P1 recommended**
 
-- [ ] P1.1 — Add `runStreamed` timeout + cancellation unit tests (or adjust plan wording if intentionally deferred).
+- [x] P1.1 — Add `runStreamed` timeout + cancellation unit tests — **done** in `a4edbacc46538acf904519aea80302113c91e2cd` (see Addendum).
 
 **P2**
 
-- [ ] P2.1 — Decide on resume `cwd` story (`human_required`).
+- [x] P2.1 — Resume `cwd` — **done** via `ResumeOptions.workingDirectory` + invoke wiring in `a4edbacc46538acf904519aea80302113c91e2cd` (see Addendum).
 - [ ] P2.2 — Optional NDJSON chunk test.
+
+---
+
+## Addendum — `a4edbacc46538acf904519aea80302113c91e2cd`
+
+**Commit:** `a4edbacc46538acf904519aea80302113c91e2cd`  
+**Scope:** P1.1 `runStreamed` timeout/cancel mocked-spawn tests; P2.1 `ResumeOptions.workingDirectory`, `ClaudeCodeProvider.resumeSession` cwd, `invoke.handler` passes `workdir` on resume.  
+**Reviewer:** 5x reviewer (subagent)  
+**Local verification:** `bun test test/unit/providers/claude-code/` — **63 pass, 0 fail**
+
+### Verification
+
+**P1.1 — `runStreamed` timeout / cancel (mocked `Bun.spawn`)**
+
+- **`session.test.ts`:** `runStreamed inactivity timeout yields error and kills subprocess` — stalls stdout with an open-ended `ReadableStream`, `timeout: 0.1`, asserts `kill` count ≥ 1 and an `error` event containing `Agent timed out after 100ms`.
+- **`session.test.ts`:** `runStreamed cancellation yields error event and kills subprocess` — `AbortSignal.abort()`, asserts `kill` ≥ 1 and `Agent invocation cancelled` in error messages.
+
+These match the prior recommendation (mirroring `run()` patterns with kill + terminal error shape).
+
+**P2.1 — `ResumeOptions.workingDirectory` + invoke wiring**
+
+- **`src/providers/types.ts`:** `ResumeOptions` documents optional `workingDirectory` for workspace-aligned tool execution.
+- **`packages/provider-claude-code/src/provider.ts`:** New resume handle uses `cwd = opts?.workingDirectory ?? process.cwd()` for `ClaudeCodeSessionOptions`.
+- **`src/commands/invoke.handler.ts`:** `provider.resumeSession(..., { model: params.model, workingDirectory: workdir })` so resume uses the same resolved `workdir` as `startSession` (explicit `--workdir`, mapped worktree, or `projectRoot`).
+
+**`provider.test.ts`:** Asserts spawn `cwd` for `startSession` on both `run` and `runStreamed`, and `resumeSession` with `workingDirectory: "/tmp/resume-cwd"` for `run`.
+
+### Outcome
+
+P1.1 and P2.1 from this phase-2 review are **addressed** by the commit. Remaining optional follow-up: **P2.2** (multi-chunk `readNdjsonLines` test). Phase 2 readiness relative to the original P1/P2.1 gaps is **improved**; treat the plan checklist as aligned with the new tests once merged.
