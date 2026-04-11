@@ -297,13 +297,13 @@ cancellation.
 
 ### 2.1 NDJSON line reader (in `src/session.ts`)
 
-- [ ] Implement `readNdjsonLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>>`.
+- [x] Implement `readNdjsonLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>>`.
       Buffers partial lines, splits on newlines, parses JSON. Skips malformed
       lines silently.
 
 ### 2.2 Session (`src/session.ts`)
 
-- [ ] `ClaudeCodeSession` implements `AgentSession`:
+- [x] `ClaudeCodeSession` implements `AgentSession`:
       - `readonly id: string`
       - `private firstInvocationMode: "session-id" | "resume"`
       - `private hasRun: boolean`
@@ -317,12 +317,12 @@ cancellation.
         return. Otherwise spawn with `--output-format stream-json`, iterate
         NDJSON lines via `readNdjsonLines`, map via `mapNdjsonLine`, yield
         `AgentEvent`s. Yield `usage` before `done` (matches contract).
-- [ ] Timeout handling: setTimeout → kill(SIGTERM) → 3s grace → kill(SIGKILL).
+- [x] Timeout handling: setTimeout → kill(SIGTERM) → 3s grace → kill(SIGKILL).
       Reset inactivity timer on each event for streaming.
-- [ ] Cancellation: listen on `opts.signal`, kill subprocess on abort.
-- [ ] Process exit without result line: yield error event with exit code.
-- [ ] Binary not found (ENOENT): throw descriptive error with install hint.
-- [ ] Unit tests (mock `Bun.spawn` to return fake process with piped stdout):
+- [x] Cancellation: listen on `opts.signal`, kill subprocess on abort.
+- [x] Process exit without result line: yield error event with exit code.
+- [x] Binary not found (ENOENT): throw descriptive error with install hint.
+- [x] Unit tests (mock `Bun.spawn` to return fake process with piped stdout):
       - `run()` returns correct `RunResult` from mock JSON.
       - `run()` with `outputSchema` passes `--json-schema` and extracts
         `structured_output`.
@@ -336,7 +336,7 @@ cancellation.
 
 ### 2.3 Provider (`src/provider.ts`)
 
-- [ ] `ClaudeCodeProvider` implements `AgentProvider`:
+- [x] `ClaudeCodeProvider` implements `AgentProvider`:
       - `startSession(opts)`: generate UUID, create session with
         `firstInvocationMode: "session-id"`, parse model via
         `parseModelForClaudeCode`.
@@ -345,14 +345,14 @@ cancellation.
         tracked.
       - `close()`: kill all active subprocesses (SIGTERM → SIGKILL), clear
         session map. Idempotent.
-- [ ] Unit tests: lifecycle, idempotent close, session tracking, and
+- [x] Unit tests: lifecycle, idempotent close, session tracking, and
       `continuePhaseSessions`-safe resume behavior (no first-run fork).
 
 ### 2.4 Plugin entry (`src/index.ts`)
 
-- [ ] Default export: `ProviderPlugin` with `name: "claude-code"` and
+- [x] Default export: `ProviderPlugin` with `name: "claude-code"` and
       `create(config?)` that instantiates `ClaudeCodeProvider`.
-- [ ] Parse `config` to `ClaudeCodeConfig` with defaults:
+- [x] Parse `config` to `ClaudeCodeConfig` with defaults:
       `permissionMode: "dangerously-skip"`, `claudeBinary: "claude"`.
 
 ## Phase 3: Integration
