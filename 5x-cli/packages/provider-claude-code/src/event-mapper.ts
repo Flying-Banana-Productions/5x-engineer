@@ -276,7 +276,11 @@ export function mapNdjsonLine(
 	}
 
 	if (t === "stream_event") {
-		return mapStreamEvent(line);
+		const ev = mapStreamEvent(line);
+		if (ev?.type === "text") {
+			state.accumulatedText += ev.delta;
+		}
+		return ev;
 	}
 
 	if (t === "assistant") {

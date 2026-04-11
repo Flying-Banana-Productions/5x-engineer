@@ -36,7 +36,7 @@ describe("mapNdjsonLine", () => {
 		expect(mapNdjsonLine({ type: "rate_limit_event" }, st)).toBeUndefined();
 	});
 
-	test("stream_event text_delta → text", () => {
+	test("stream_event text_delta → text and accumulatedText", () => {
 		const st = createMapperState();
 		const ev = mapNdjsonLine(
 			{
@@ -49,9 +49,30 @@ describe("mapNdjsonLine", () => {
 			st,
 		);
 		expect(ev).toEqual({ type: "text", delta: "hi" });
+		expect(st.accumulatedText).toBe("hi");
 	});
 
-	test("stream_event thinking_delta → reasoning", () => {
+	test("stream_event text deltas append to accumulatedText", () => {
+		const st = createMapperState();
+		const line = {
+			type: "stream_event",
+			event: {
+				type: "content_block_delta",
+				delta: { type: "text_delta", text: "a" },
+			},
+		};
+		mapNdjsonLine(line, st);
+		mapNdjsonLine(
+			{
+				...line,
+				event: { ...line.event, delta: { type: "text_delta", text: "b" } },
+			},
+			st,
+		);
+		expect(st.accumulatedText).toBe("ab");
+	});
+
+	test("stream_event thinking_delta → reasoning (does not append accumulatedText)", () => {
 		const st = createMapperState();
 		const ev = mapNdjsonLine(
 			{
@@ -63,6 +84,7 @@ describe("mapNdjsonLine", () => {
 			st,
 		);
 		expect(ev).toEqual({ type: "reasoning", delta: "think" });
+		expect(st.accumulatedText).toBe("");
 	});
 
 	test("assistant tool_use → tool_start and pending map", () => {
