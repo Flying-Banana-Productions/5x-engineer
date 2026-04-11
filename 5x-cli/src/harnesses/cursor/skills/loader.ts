@@ -1,4 +1,8 @@
 import {
+	resolveSkillTokens,
+	type SkillTokenMap,
+} from "../../../skills/harness-tokens.js";
+import {
 	listBaseSkillNames,
 	renderAllSkillTemplates,
 } from "../../../skills/loader.js";
@@ -8,13 +12,17 @@ import {
 } from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
+const CURSOR_SKILL_TOKENS: SkillTokenMap = {
+	NATIVE_CONTINUE_PARAM: "resume",
+};
+
 /**
  * Adapt terminology from OpenCode-specific to Cursor-specific.
  * This applies only to native-rendered blocks (Task tool references).
  * Invoke-rendered blocks already use `5x invoke` which is correct for both.
  */
 function adaptCursorTerminology(content: string): string {
-	let adapted = content;
+	let adapted = resolveSkillTokens(content, CURSOR_SKILL_TOKENS);
 
 	adapted = adapted
 		.replaceAll(

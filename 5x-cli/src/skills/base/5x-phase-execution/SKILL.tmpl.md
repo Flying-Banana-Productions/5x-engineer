@@ -80,17 +80,17 @@ timeout handling.
 Task reuse is optional and best-effort for the native reviewer. Capture
 the **agent id** returned by the Task tool after the first reviewer
 delegation in this phase as `$REVIEWER_AGENT_ID`. For re-reviews (after
-author fixes), pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool so
+author fixes), pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool so
 the **same subagent** keeps conversational context. Do **not** pass that
-id to `5x template render --session` — that flag is for **invoke-mode
-delegation** (provider session identity and `*-continued` template selection), not
-for **subagent `resume`** ids from the orchestrator's Task API.
+id to `5x template render --session` — that flag is for **CLI continuity
+control** (`*-continued` template selection and invoke-mode provider session identity), not
+for **subagent continuation ids** from the orchestrator's native delegation API.
 
 If `reviewer.continuePhaseSessions` is enabled and a second
 `5x template render reviewer-commit` in this phase requires a flag, use
 **`--new-session`** when no `reviewer-commit-continued` template exists
-(CLI bookkeeping). That is independent of Task `resume`: you may use
-**`--new-session` on the render** and **`resume` on the Task** together.
+(CLI bookkeeping). That is independent of native subagent continuity: you may use
+**`--new-session` on the render** and **`[[NATIVE_CONTINUE_PARAM]]` on the Task** together.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -168,7 +168,7 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
 Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
 {{#if reviewer_native}}
-Track $REVIEWER_AGENT_ID = "" (Task **resume** id from the prior reviewer delegation in this phase — not a CLI `--session` value).
+Track $REVIEWER_AGENT_ID = "" (native continuation id from the prior reviewer delegation in this phase — not a CLI `--session` value).
 {{/if}}
 {{#if reviewer_invoke}}
 Track $SESSION_ID = "" (for optional session reuse within this phase — invoke reviewer).
@@ -299,7 +299,7 @@ STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        resume=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -342,9 +342,9 @@ reviewer before proceeding:
 
 {{#if reviewer_native}}
 After a successful review, set `$REVIEWER_AGENT_ID` from the Task tool
-result for optional **`resume`** on the next reviewer delegation in this
-phase. Do not conflate with `5x template render --session` (invoke-only
-semantics).
+result for optional **`[[NATIVE_CONTINUE_PARAM]]`** on the next reviewer delegation in this
+phase. Do not conflate with `5x template render --session` (CLI continuity
+for continued-template selection and invoke-mode provider session identity).
 {{/if}}
 {{#if reviewer_invoke}}
 When `--session` is passed to `5x template render`, the command
@@ -531,7 +531,7 @@ commit hash (from `5x commit`).
 
 **Response:**
 {{#if author_native}}
-1. Re-invoke with a fresh subagent (omit `resume`) — do not pass `--session` on `5x template render` for the author path.
+1. Re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`) — do not pass `--session` on `5x template render` for the author path.
 {{else}}
 1. Re-invoke without `--session`.
 {{/if}}
@@ -586,7 +586,7 @@ still says not_ready on the same issues.
 
 **Response:**
 {{#if author_native}}
-1. For native author: Retry once with a fresh subagent (omit `resume`).
+1. For native author: Retry once with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`).
 {{else}}
 1. For invoke author: Retry once without `--session`.
 {{/if}}
@@ -605,7 +605,7 @@ still says not_ready on the same issues.
 
 **Response:**
 {{#if author_native}}
-1. For native author: Retry once with a fresh subagent (omit `resume`).
+1. For native author: Retry once with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`).
 {{else}}
 1. For invoke author: Retry once without `--session`.
 {{/if}}

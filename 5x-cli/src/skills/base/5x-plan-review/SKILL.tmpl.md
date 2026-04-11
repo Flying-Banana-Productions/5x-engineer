@@ -30,7 +30,7 @@ timeout handling.
   `maxReviewIterations` — retries from timeout/empty output don't count
 - Empty diff after author "completes" = context loss →
 {{#if author_native}}
-  start fresh subagent (omit `resume`)
+  start fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`)
 {{else}}
   start fresh session (omit `--session`)
 {{/if}}
@@ -75,15 +75,16 @@ timeout handling.
 #    review_path is auto-generated — do NOT pass --var review_path.
 #    Read the auto-generated path from .data.variables.review_path in the output.
 #    Re-reviews: add --new-session if the CLI requires it; do not pass the
-#    subagent resume id as --session (that is for invoke-mode delegation).
+#    subagent continuation id as --session (that flag controls CLI continuity,
+#    including continued-template selection and invoke-mode session identity).
 RENDERED=$(5x template render reviewer-plan --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-# 2. Launch subagent via Task tool (pass resume to continue the same reviewer)
+# 2. Launch subagent via Task tool (pass the native continuation parameter to continue the same reviewer)
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        resume=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
@@ -96,7 +97,7 @@ REVIEWER_AGENT_ID=<agent id from Task tool result>
 **Task reuse** is expected when `reviewer.continuePhaseSessions` is
 enabled and the reviewer is native. If a prior reviewer step exists for
 the current phase, `5x template render` may require **`--session`** (for
-invoke-mode session identity) or **`--new-session`** — not the **subagent `resume`** id. Pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool for
+invoke-mode session identity) or **`--new-session`** — not the **subagent continuation id**. Pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool for
 subagent continuity. Use `--new-session` on the render only when the
 CLI requires it or for recovery (context loss, empty output).
 
@@ -133,7 +134,7 @@ confirmed all reviewer templates have `-continued` variants.
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
 Track $REVIEWER_AGENT_ID (initially empty). When `reviewer.continuePhaseSessions`
-is enabled, pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool on
+is enabled, pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool on
 subsequent reviews. Use **`--new-session`** on `5x template render` when
 the CLI requires it — do not pass the agent id as `--session`.
 {{/if}}
@@ -161,7 +162,7 @@ STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        resume=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
@@ -324,7 +325,7 @@ Report to the human: plan review is complete. Verdict: approved
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
 {{#if reviewer_native}}
-  with a fresh subagent (omit `resume`) and explicit instructions to provide
+  with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`) and explicit instructions to provide
 {{else}}
   without `--session` and explicit instructions to provide
 {{/if}}
@@ -336,14 +337,14 @@ Report to the human: plan review is complete. Verdict: approved
 - **Author claims complete but plan file is unchanged (empty diff)**:
 {{#if author_native}}
   Suspect context loss (compaction). Re-invoke with a fresh subagent (omit
-  `resume`). If it happens twice, escalate to the human.
+  `[[NATIVE_CONTINUE_PARAM]]`). If it happens twice, escalate to the human.
 {{else}}
   Suspect context loss (compaction). Re-invoke without `--session`.
   If it happens twice, escalate to the human.
 {{/if}}
 {{#if author_native}}
 - **Subagent returns empty or invalid output (author)**: Retry once with a fresh
-  subagent (omit `resume`). If it fails again, escalate to the human.
+  subagent (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.
 {{else}}
 - **Subagent returns empty or invalid output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
@@ -352,7 +353,7 @@ Report to the human: plan review is complete. Verdict: approved
   or `--new-session` because `continuePhaseSessions` is enabled and prior
   steps exist. For recovery, prefer **`--new-session`**. For invoke reviewers,
   pass **`--session`** with the provider's `session_id` — not the
-  orchestrator subagent **`resume`** id (native reviewers use **`resume`** on
+  orchestrator subagent continuation id (native reviewers use **`[[NATIVE_CONTINUE_PARAM]]`** on
   the Task-style delegation instead).
 
 ## Completion

@@ -383,6 +383,9 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 block with the effective working directory. When `--session` is passed and a
 `<template>-continued` variant exists, the shorter continued template is used
 automatically. `--new-session` forces a fresh session (skips continued-template selection).
+This is a CLI continuity control (template selection + `continuePhaseSessions`
+enforcement), and is independent from native subagent continuity ids
+(`task_id` in OpenCode harness, `resume` in Cursor harness).
 
 ```json
 {

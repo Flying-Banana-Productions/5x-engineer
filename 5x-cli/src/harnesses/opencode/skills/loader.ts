@@ -6,6 +6,10 @@
  */
 
 import {
+	resolveSkillTokens,
+	type SkillTokenMap,
+} from "../../../skills/harness-tokens.js";
+import {
 	listBaseSkillNames,
 	renderAllSkillTemplates,
 	renderSkillByName,
@@ -21,6 +25,14 @@ export {
 	type SkillFrontmatter,
 } from "../../../skills/frontmatter.js";
 
+const OPENCODE_SKILL_TOKENS: SkillTokenMap = {
+	NATIVE_CONTINUE_PARAM: "task_id",
+};
+
+function adaptOpencodeSkill(content: string): string {
+	return resolveSkillTokens(content, OPENCODE_SKILL_TOKENS);
+}
+
 /**
  * Get the raw content of a bundled skill.
  * Returns the full rendered SKILL.md content including YAML frontmatter.
@@ -34,7 +46,7 @@ export function getDefaultSkillRaw(
 ): string {
 	const renderContext = ctx ?? createRenderContext(true);
 	try {
-		return renderSkillByName(name, renderContext).content;
+		return adaptOpencodeSkill(renderSkillByName(name, renderContext).content);
 	} catch (error) {
 		if (
 			error instanceof Error &&
@@ -63,5 +75,8 @@ export function listSkillNames(): string[] {
  */
 export function listSkills(ctx?: SkillRenderContext): SkillMetadata[] {
 	const renderContext = ctx ?? createRenderContext(true);
-	return renderAllSkillTemplates(renderContext);
+	return renderAllSkillTemplates(renderContext).map((skill) => ({
+		...skill,
+		content: adaptOpencodeSkill(skill.content),
+	}));
 }

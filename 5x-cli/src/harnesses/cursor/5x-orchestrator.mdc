@@ -64,5 +64,5 @@ For **native** reviewers, pass the Task tool's **`resume`** parameter with
 the **agent id** from the prior delegation to continue the same subagent.
 **Do not** pass that id to `5x template render --session` — that CLI flag
 ties to **`5x invoke`** session continuity and `*-continued` template
-selection. If the CLI requires a second render in the same phase, use
+selection and `continuePhaseSessions` continuity enforcement. If the CLI requires a second render in the same phase, use
 **`--new-session`** when appropriate; that is independent of **`resume`**.

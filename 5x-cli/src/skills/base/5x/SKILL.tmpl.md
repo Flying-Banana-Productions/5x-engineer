@@ -131,16 +131,16 @@ intentionally overriding run-linked plan resolution.
 ## Task Reuse (Native)
 
 **Task reuse** is optional and best-effort for native-delegated roles.
-The Task tool returns an **agent id** from each subagent invocation. Pass
-it back as **`resume`** to continue the same subagent conversation — the
+The native delegation API returns an **agent id** from each subagent invocation.
+Pass it back as **`[[NATIVE_CONTINUE_PARAM]]`** to continue the same subagent conversation — the
 subagent picks up where it left off instead of starting fresh.
 
 **Do not** pass that agent id to `5x template render --session`; that
-flag is for **invoke-mode delegation** (provider session) and `*-continued` template
-selection. If a second `5x template render` in the same phase needs a
+flag is for **CLI continuity control** (`*-continued` template selection and
+invoke-mode provider session identity). If a second `5x template render` in the same phase needs a
 flag, use **`--new-session`** when appropriate (see process skills).
 
-If reuse is unavailable or awkward, start fresh (omit **`resume`**) —
+If reuse is unavailable or awkward, start fresh (omit **`[[NATIVE_CONTINUE_PARAM]]`**) —
 never fail a workflow because reuse didn't work.
 {{/if}}
 {{#if any_invoke}}
@@ -168,7 +168,7 @@ work.
 {{/if}}
 {{#if any_native}}
 - **Task reuse is best-effort** (native roles). Never fail a workflow because
-  task reuse didn't work. Start fresh (omit `resume`) and move on.
+  task reuse didn't work. Start fresh (omit `[[NATIVE_CONTINUE_PARAM]]`) and move on.
 {{/if}}
 {{#if any_invoke}}
 - **Session reuse is best-effort** (invoke roles). Never fail a workflow because
@@ -179,7 +179,7 @@ work.
   author step. Authors commit via `5x commit --run $RUN` (which records
   the commit in the run journal).
 {{#if author_native}}
-- For native author: Re-invoke with a fresh subagent (omit `resume`).
+- For native author: Re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`).
 {{/if}}
 {{#if author_invoke}}
 - For invoke author: Re-invoke without `--session`.
@@ -190,7 +190,7 @@ work.
   have customized these in `5x.toml`.
 {{#if author_native}}
 - **Empty or invalid subagent output (author)**: Retry once with a fresh subagent
-  (omit `resume`). If it fails again, escalate to the human.
+  (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.
 {{/if}}
 {{#if author_invoke}}
 - **Empty or invalid subagent output (author)**: Retry once without `--session`.

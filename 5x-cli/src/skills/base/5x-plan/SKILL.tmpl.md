@@ -33,7 +33,7 @@ timeout handling.
   `5x plan phases`
 {{#if author_native}}
 - Author must produce a commit via `5x commit` — no commit is an
-  invariant violation; re-invoke with a fresh subagent (omit `resume`)
+  invariant violation; re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`)
 {{else}}
 - Author must produce a commit via `5x commit` — no commit is an
   invariant violation; re-invoke without `--session`
@@ -158,7 +158,7 @@ Report to the human: plan is ready at $PLAN_PATH.
   output path. If it fails again, ask the human.
 {{#if author_native}}
 - **Plan has no parseable phases**: The author didn't follow the template
-  structure. Re-invoke with a fresh subagent (omit `resume`) and explicit
+  structure. Re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`) and explicit
   instructions to follow the template format.
 {{else}}
 - **Plan has no parseable phases**: The author didn't follow the template
@@ -168,9 +168,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Author claims complete but no commit** (no `5x commit` was run):
 {{#if author_native}}
   Invariant violation — treat as context loss. Re-invoke with a fresh
-  subagent (omit `resume`). If it fails again, escalate to the human.
+  subagent (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
-  subagent (omit `resume`). If it fails again, escalate to the human.
+  subagent (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.
 {{else}}
   Invariant violation — treat as context loss. Re-invoke without `--session`.
   If it fails again, escalate to the human.

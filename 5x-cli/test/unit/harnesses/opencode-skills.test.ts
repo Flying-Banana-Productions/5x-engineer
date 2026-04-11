@@ -58,6 +58,21 @@ describe("skill loader", () => {
 		expect(planSkill?.content).toContain("## Workflow");
 	});
 
+	test("renders OpenCode-native continuation parameter names", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+
+		expect(combined).toContain("task_id=");
+		expect(combined).not.toContain("resume=");
+	});
+
+	test("does not leak unresolved harness token placeholders", () => {
+		for (const skill of listSkills()) {
+			expect(skill.content).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+		}
+	});
+
 	test("all bundled skills have valid frontmatter", () => {
 		const skills = listSkills();
 		for (const skill of skills) {

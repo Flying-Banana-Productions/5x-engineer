@@ -42,6 +42,12 @@ describe("cursor skills loader", () => {
 		expect(combined).not.toContain("task_id");
 	});
 
+	test("does not leak unresolved harness token placeholders", () => {
+		for (const skill of listSkills()) {
+			expect(skill.content).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+		}
+	});
+
 	test("does not retain opencode wording in cursor-rendered skills", () => {
 		const combined = listSkills()
 			.map((skill) => skill.content)

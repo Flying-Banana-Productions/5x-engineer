@@ -103,9 +103,14 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 
 Key primitives for native subagent orchestration:
 
-- **`5x template render`** — renders a task prompt with run/worktree context, continued-template selection, and variable injection. Returns a `outputSuccess()` envelope with the rendered prompt, declared variables, and (when `--run` is passed) resolved `run_id`, `plan_path`, and `worktree_root`. Appends a `## Context` block with the effective working directory when a worktree is resolved.
+- **`5x template render`** — renders a task prompt with run/worktree context, continued-template selection, and variable injection. Returns a `outputSuccess()` envelope with the rendered prompt, declared variables, and (when `--run` is passed) resolved `run_id`, `plan_path`, and `worktree_root`. Appends a `## Context` block with the effective working directory when a worktree is resolved. `--session/--new-session` here are CLI continuity controls (template selection + continuity validation), not native subagent reuse ids.
 - **`5x protocol validate`** — validates `AuthorStatus` or `ReviewerVerdict` JSON from stdin or `--input`. Auto-detects raw native subagent output vs `outputSuccess()` envelope from `5x invoke`. With `--record`, records the validated result as a run step (one-command validation and recording).
 - **`5x invoke`** — fallback transport: invokes a sub-agent via provider, validates structured output, optionally records. Remains fully supported; skills fall back to it automatically when native agents are not installed.
+
+Session terminology is intentionally split:
+- Native subagent continuity id (harness-specific): OpenCode `task_id`, Cursor `resume`.
+- Provider session continuity id (invoke mode): `session_id`, passed back via `--session`.
+- CLI template continuity control: `5x template render --session/--new-session`.
 
 ### Layer 1 — Sub-Agents (Workers)
 
