@@ -363,42 +363,42 @@ env-gated live capability/contract probe passes when Claude is available.
 
 ### 3.1 Workspace wiring
 
-- [ ] Run `bun install` to link the new workspace package.
-- [ ] Verify `import("@5x-ai/provider-claude-code")` resolves in the factory.
+- [x] Run `bun install` to link the new workspace package.
+- [x] Verify `import("@5x-ai/provider-claude-code")` resolves in the factory.
 
 ### 3.2 Integration tests (`test/integration/providers/claude-code.test.ts`)
 
-- [ ] Create a mock `claude` bash script that outputs canned NDJSON for
+- [x] Create a mock `claude` bash script that outputs canned NDJSON for
       streaming and canned JSON for non-streaming. Script inspects args to
       determine which fixture to output (e.g., checks for `--json-schema`).
-- [ ] Test full streaming lifecycle: create provider → startSession →
+- [x] Test full streaming lifecycle: create provider → startSession →
       runStreamed → collect events → verify text, tool, done events → close.
-- [ ] Test structured output: runStreamed with outputSchema → verify
+- [x] Test structured output: runStreamed with outputSchema → verify
       `structured_output` in done event's `RunResult`.
-- [ ] Test non-streaming: run() → verify RunResult fields.
-- [ ] Test factory resolution: `createProvider("author", configWithClaudeCode)`
+- [x] Test non-streaming: run() → verify RunResult fields.
+- [x] Test factory resolution: `createProvider("author", configWithClaudeCode)`
       resolves and returns a working provider.
-- [ ] Test error case: mock script exits non-zero → error event / thrown error.
+- [x] Test error case: mock script exits non-zero → error event / thrown error.
 
 ### 3.3 Env-gated live capability/contract probe (`test/integration/providers/claude-code-live.test.ts`)
 
-- [ ] Add a live probe test that runs only when explicitly enabled (for
+- [x] Add a live probe test that runs only when explicitly enabled (for
       example `CLAUDE_LIVE_TEST=1`) and when `claude` binary is available.
-- [ ] Validate minimum required CLI capability (documented below):
+- [x] Validate minimum required CLI capability (documented below):
       `--output-format stream-json`, `--include-partial-messages`,
       `--json-schema`, `--resume`, and `--session-id` support.
-- [ ] Validate required response contract subset only (stable fields):
+- [x] Validate required response contract subset only (stable fields):
       - NDJSON stream emits `stream_event` deltas and terminal `result`
       - Result payload includes usage/cost fields used by provider mapping
       - Schema run exposes `structured_output` when `--json-schema` is passed
-- [ ] Keep assertions intentionally narrow to detect upstream contract drift
+- [x] Keep assertions intentionally narrow to detect upstream contract drift
       without overfitting on non-essential fields.
 
 ### 3.4 Existing test verification
 
-- [ ] `bun test test/unit/providers/plugin-loading.test.ts` — existing plugin
+- [x] `bun test test/unit/providers/plugin-loading.test.ts` — existing plugin
       loading tests still pass.
-- [ ] Full test suite passes: `bun test`.
+- [x] Full test suite passes: `bun test`.
 
 ## Verification
 
