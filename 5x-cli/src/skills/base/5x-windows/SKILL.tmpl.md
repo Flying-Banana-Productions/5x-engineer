@@ -18,7 +18,7 @@ Windows-hosted IDE terminal.
 
 - You are on Windows and expect PowerShell semantics.
 - You need Windows-native JSON parsing examples.
-- You are copying 5x workflow snippets into Cursor, PowerShell, or `pwsh`.
+- You are copying 5x workflow snippets into an IDE, PowerShell, or `pwsh`.
 
 ## Shell Differences
 
@@ -59,5 +59,5 @@ Get-Content .\result.json -Raw | 5x run record $step --run $RUN --result -
 
 ## Native Harness Notes
 
-- In Cursor or other native harnesses, keep human gates in chat / native question tools rather than spawning `5x prompt` commands.
+- In IDE-native harnesses, keep human gates in chat / native question tools rather than spawning `5x prompt` commands (no TTY in typical agent terminals).
 - Continue using the normal 5x workflow semantics: render prompt, delegate, then validate and record at the single recording point.

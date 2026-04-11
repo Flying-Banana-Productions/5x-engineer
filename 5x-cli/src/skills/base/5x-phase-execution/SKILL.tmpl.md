@@ -78,12 +78,19 @@ timeout handling.
 ### Task reuse (reviewer)
 
 Task reuse is optional and best-effort for the native reviewer. Capture
-the `task_id` from the first reviewer invocation as `$REVIEWER_TASK_ID`.
-Pass it back to the Task tool when resuming the reviewer for re-reviews
-within the same phase — this gives the reviewer conversational continuity
-with its prior findings. Pass `--session $REVIEWER_TASK_ID` to
-`5x template render` to auto-select a shorter continued-template variant
-if one exists. Omit `task_id` to start fresh.
+the **agent id** returned by the Task tool after the first reviewer
+delegation in this phase as `$REVIEWER_AGENT_ID`. For re-reviews (after
+author fixes), pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool so
+the **same subagent** keeps conversational context. Do **not** pass that
+id to `5x template render --session` — that flag is for **invoke-mode
+delegation** (provider session identity and `*-continued` template selection), not
+for **subagent `resume`** ids from the orchestrator's Task API.
+
+If `reviewer.continuePhaseSessions` is enabled and a second
+`5x template render reviewer-commit` in this phase requires a flag, use
+**`--new-session`** when no `reviewer-commit-continued` template exists
+(CLI bookkeeping). That is independent of Task `resume`: you may use
+**`--new-session` on the render** and **`resume` on the Task** together.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -161,7 +168,7 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
 Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
 {{#if reviewer_native}}
-Track $REVIEWER_TASK_ID = "" (for optional task reuse within this phase — native reviewer).
+Track $REVIEWER_AGENT_ID = "" (Task **resume** id from the prior reviewer delegation in this phase — not a CLI `--session` value).
 {{/if}}
 {{#if reviewer_invoke}}
 Track $SESSION_ID = "" (for optional session reuse within this phase — invoke reviewer).
@@ -201,14 +208,14 @@ Check the result:
 - `result: "complete"` with a commit hash (from `5x commit`) — continue to Step 2.
 - `result: "complete"` without a commit — **invariant violation**.
   See Recovery.
-{{#if any_native}}
-- `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If guidance: re-invoke with `--var user_notes="$GUIDANCE"`.
-{{else}}
-- `result: "needs_human"` — present the reason and options:
-  `5x prompt choose "Author needs help: $REASON" --options provide-guidance,abort`
-  If guidance: collect via `5x prompt input`, re-invoke with
+- `result: "needs_human"` — follow the **Human Interaction Model** in the
+  `5x` foundation skill: offer **provide-guidance** vs **abort** using the
+  orchestrator's chat or question UI when available. **Delegation mode**
+  (`invoke` vs native subagent for the author) does not change this —
+  `5x prompt` subprocesses require a TTY and **fail in typical native harness /
+  agent terminals**; reserve `5x prompt choose` / `input` for **scripted or
+  CI** runs with a real terminal. If guidance: re-invoke with
   `--var user_notes="$GUIDANCE"`.
-{{/if}}
 - `result: "failed"` — present to human, abort or retry.
 
 Capture $COMMIT from the result for the reviewer.
@@ -234,7 +241,11 @@ If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
   Escalate via your **native UI** with options **retry**, **skip**, **abort** (same semantics as  
   `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`).
 {{else}}
-  Escalate: `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`
+  Escalate using the **Human Interaction Model** (`5x` foundation skill):
+  same choices as
+  `5x prompt choose "Quality gates failing after $maxQualityRetries retries" --options retry,skip,abort`
+  — use **`5x prompt` only** when the orchestrator has a TTY (scripted/CI);
+  otherwise use chat / native UI.
 {{/if}}
   - retry: reset $QUALITY_RETRIES, go to Step 2a below
   - skip: record human override, go to Step 3
@@ -278,16 +289,17 @@ Loop back to Step 2.
 Delegate to the reviewer via the Task tool:
 
 ```bash
+# Re-reviews: add --new-session to the render if the CLI requires it (continuePhaseSessions
+# and no *-continued template). Do not pass $REVIEWER_AGENT_ID as --session.
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
-  --var phase_number=$PHASE_NUMBER \
-  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
+  --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        task_id=$REVIEWER_TASK_ID (omit if empty)>
+        resume=$REVIEWER_AGENT_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -329,10 +341,10 @@ reviewer before proceeding:
     5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
 
 {{#if reviewer_native}}
-When `--session` is passed to `5x template render`, the command
-automatically selects an abbreviated continued-template variant if one
-exists. Capture `$REVIEWER_TASK_ID` (the `task_id` from the Task tool)
-for optional reuse in subsequent reviews.
+After a successful review, set `$REVIEWER_AGENT_ID` from the Task tool
+result for optional **`resume`** on the next reviewer delegation in this
+phase. Do not conflate with `5x template render --session` (invoke-only
+semantics).
 {{/if}}
 {{#if reviewer_invoke}}
 When `--session` is passed to `5x template render`, the command
@@ -519,7 +531,7 @@ commit hash (from `5x commit`).
 
 **Response:**
 {{#if author_native}}
-1. Re-invoke with a fresh task (omit `task_id`, do NOT pass `--session`).
+1. Re-invoke with a fresh subagent (omit `resume`) — do not pass `--session` on `5x template render` for the author path.
 {{else}}
 1. Re-invoke without `--session`.
 {{/if}}
@@ -574,7 +586,7 @@ still says not_ready on the same issues.
 
 **Response:**
 {{#if author_native}}
-1. For native author: Retry once with a fresh task (omit `task_id`).
+1. For native author: Retry once with a fresh subagent (omit `resume`).
 {{else}}
 1. For invoke author: Retry once without `--session`.
 {{/if}}
@@ -593,7 +605,7 @@ still says not_ready on the same issues.
 
 **Response:**
 {{#if author_native}}
-1. For native author: Retry once with a fresh task (omit `task_id`).
+1. For native author: Retry once with a fresh subagent (omit `resume`).
 {{else}}
 1. For invoke author: Retry once without `--session`.
 {{/if}}

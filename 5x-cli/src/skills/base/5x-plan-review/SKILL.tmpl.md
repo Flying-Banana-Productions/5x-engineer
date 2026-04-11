@@ -30,7 +30,7 @@ timeout handling.
   `maxReviewIterations` — retries from timeout/empty output don't count
 - Empty diff after author "completes" = context loss →
 {{#if author_native}}
-  start fresh task (omit `task_id`)
+  start fresh subagent (omit `resume`)
 {{else}}
   start fresh session (omit `--session`)
 {{/if}}
@@ -74,35 +74,35 @@ timeout handling.
 # 1. Render the prompt (output follows standard outputSuccess envelope)
 #    review_path is auto-generated — do NOT pass --var review_path.
 #    Read the auto-generated path from .data.variables.review_path in the output.
-#    Task lifecycle: first review has no $REVIEWER_TASK_ID, subsequent
-#    reviews pass --session $REVIEWER_TASK_ID for the continued template.
-RENDERED=$(5x template render reviewer-plan --run $RUN \
-  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
+#    Re-reviews: add --new-session if the CLI requires it; do not pass the
+#    subagent resume id as --session (that is for invoke-mode delegation).
+RENDERED=$(5x template render reviewer-plan --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-# 2. Launch subagent via Task tool (pass task_id to resume prior conversation)
+# 2. Launch subagent via Task tool (pass resume to continue the same reviewer)
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        task_id=$REVIEWER_TASK_ID (omit if empty)>
+        resume=$REVIEWER_AGENT_ID (omit if empty)>
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 
-# 4. Capture task_id for reuse in subsequent reviews
-REVIEWER_TASK_ID=<task_id from Task tool result>
+# 4. Capture agent id for reuse in subsequent reviews
+REVIEWER_AGENT_ID=<agent id from Task tool result>
 ```
 
 **Task reuse** is expected when `reviewer.continuePhaseSessions` is
-enabled and the reviewer is native. The tool enforces this: if a prior
-reviewer step exists for the current phase, `--session <id>` or
-`--new-session` is required on `5x template render`. Pass the reviewer's
-`task_id` as the `--session` value. Use `--new-session` only for recovery
-(context loss, empty output).
+enabled and the reviewer is native. If a prior reviewer step exists for
+the current phase, `5x template render` may require **`--session`** (for
+invoke-mode session identity) or **`--new-session`** — not the **subagent `resume`** id. Pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool for
+subagent continuity. Use `--new-session` on the render only when the
+CLI requires it or for recovery (context loss, empty output).
 
-When `--session` is passed, the command automatically selects the shorter
-`reviewer-plan-continued` template variant if one exists.
+When a **provider** `--session` is passed to `5x template render` (invoke
+path), the command can select the shorter `reviewer-plan-continued`
+template variant if one exists.
 {{/if}}
 {{#if reviewer_invoke}}
 ### Delegating review/author work with invoke (invoke reviewer)
@@ -132,10 +132,10 @@ confirmed all reviewer templates have `-continued` variants.
 
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
-Track $REVIEWER_TASK_ID (initially empty). Task reuse is enforced when
-`reviewer.continuePhaseSessions` is enabled and the reviewer is native —
-pass `--session $REVIEWER_TASK_ID` to `5x template render` and pass
-`task_id=$REVIEWER_TASK_ID` to the Task tool on subsequent reviews.
+Track $REVIEWER_AGENT_ID (initially empty). When `reviewer.continuePhaseSessions`
+is enabled, pass **`resume=$REVIEWER_AGENT_ID`** on the Task tool on
+subsequent reviews. Use **`--new-session`** on `5x template render` when
+the CLI requires it — do not pass the agent id as `--session`.
 {{/if}}
 {{#if reviewer_invoke}}
 Track $SESSION_ID (initially empty). Session reuse is enforced when
@@ -155,26 +155,24 @@ Read $REVIEW_PATH from a separate template render call before each reviewer invo
 Delegate to the reviewer via the Task tool:
 
 ```bash
-RENDERED=$(5x template render reviewer-plan --run $RUN \
-  ${REVIEWER_TASK_ID:+--session $REVIEWER_TASK_ID})
+RENDERED=$(5x template render reviewer-plan --run $RUN)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        task_id=$REVIEWER_TASK_ID (omit if empty)>
+        resume=$REVIEWER_AGENT_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 ```
 
-When `--session` is passed to `5x template render`, the command
-automatically selects the `reviewer-plan-continued` template variant
-(a shorter prompt) when it exists, since full instructions are already
-in the prior task context.
+When a **provider** `--session` is passed to `5x template render` (invoke
+path), the command can select the `reviewer-plan-continued` template variant
+when it exists.
 
-Capture `$REVIEWER_TASK_ID` from the Task tool's returned `task_id` for
-reuse in subsequent reviews.
+Capture `$REVIEWER_AGENT_ID` from the Task tool result for reuse in
+subsequent reviews.
 {{else}}
 Delegate to the reviewer via `5x invoke`:
 
@@ -326,7 +324,7 @@ Report to the human: plan review is complete. Verdict: approved
 - **Reviewer produces empty items with not_ready**: The reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
 {{#if reviewer_native}}
-  with a fresh task (omit `task_id`) and explicit instructions to provide
+  with a fresh subagent (omit `resume`) and explicit instructions to provide
 {{else}}
   without `--session` and explicit instructions to provide
 {{/if}}
@@ -337,27 +335,25 @@ Report to the human: plan review is complete. Verdict: approved
   unclear, flag to the human.
 - **Author claims complete but plan file is unchanged (empty diff)**:
 {{#if author_native}}
-  Suspect context loss (compaction). Re-invoke with a fresh task (omit
-  `task_id`). If it happens twice, escalate to the human.
+  Suspect context loss (compaction). Re-invoke with a fresh subagent (omit
+  `resume`). If it happens twice, escalate to the human.
 {{else}}
   Suspect context loss (compaction). Re-invoke without `--session`.
   If it happens twice, escalate to the human.
 {{/if}}
 {{#if author_native}}
 - **Subagent returns empty or invalid output (author)**: Retry once with a fresh
-  task (omit `task_id`). If it fails again, escalate to the human.
+  subagent (omit `resume`). If it fails again, escalate to the human.
 {{else}}
 - **Subagent returns empty or invalid output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires `--session`
   or `--new-session` because `continuePhaseSessions` is enabled and prior
-  steps exist. Pass `--new-session` to recover, or pass the reviewer's
-{{#if reviewer_native}}
-  `task_id` as `--session` to continue normally.
-{{else}}
-  `session_id` as `--session` to continue normally.
-{{/if}}
+  steps exist. For recovery, prefer **`--new-session`**. For invoke reviewers,
+  pass **`--session`** with the provider's `session_id` — not the
+  orchestrator subagent **`resume`** id (native reviewers use **`resume`** on
+  the Task-style delegation instead).
 
 ## Completion
 

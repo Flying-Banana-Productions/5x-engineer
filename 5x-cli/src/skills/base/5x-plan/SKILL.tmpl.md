@@ -33,7 +33,7 @@ timeout handling.
   `5x plan phases`
 {{#if author_native}}
 - Author must produce a commit via `5x commit` — no commit is an
-  invariant violation; re-invoke with a fresh task (omit `task_id`)
+  invariant violation; re-invoke with a fresh subagent (omit `resume`)
 {{else}}
 - Author must produce a commit via `5x commit` — no commit is an
   invariant violation; re-invoke without `--session`
@@ -59,7 +59,7 @@ timeout handling.
 {{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
 {{#if any_native}}
-- Human gates — use your **native UI** (see `5x` foundation skill: e.g. AskQuestion / chat in Cursor). Record outcomes with `5x run record` as the skill specifies.
+- Human gates — use your **native UI** (see `5x` foundation skill: e.g. AskQuestion / chat in the IDE). Record outcomes with `5x run record` as the skill specifies.
 - **`5x prompt` fallback** — `5x prompt choose` / `input` only when no chat UI exists (e.g. headless shell); use `--default` if stdin is not a TTY.
 {{/if}}
 {{#if all_invoke}}
@@ -158,7 +158,7 @@ Report to the human: plan is ready at $PLAN_PATH.
   output path. If it fails again, ask the human.
 {{#if author_native}}
 - **Plan has no parseable phases**: The author didn't follow the template
-  structure. Re-invoke with a fresh task (omit `task_id`) and explicit
+  structure. Re-invoke with a fresh subagent (omit `resume`) and explicit
   instructions to follow the template format.
 {{else}}
 - **Plan has no parseable phases**: The author didn't follow the template
@@ -168,9 +168,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - **Author claims complete but no commit** (no `5x commit` was run):
 {{#if author_native}}
   Invariant violation — treat as context loss. Re-invoke with a fresh
-  task (omit `task_id`). If it fails again, escalate to the human.
+  subagent (omit `resume`). If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once with a fresh
-  task (omit `task_id`). If it fails again, escalate to the human.
+  subagent (omit `resume`). If it fails again, escalate to the human.
 {{else}}
   Invariant violation — treat as context loss. Re-invoke without `--session`.
   If it fails again, escalate to the human.

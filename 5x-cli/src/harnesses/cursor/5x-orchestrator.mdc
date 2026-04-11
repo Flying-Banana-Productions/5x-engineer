@@ -53,3 +53,16 @@ workflow:
 6. **Recover gracefully.** When subagents fail or produce invalid
    results, follow the skill's recovery section. Retry once with a
    fresh subagent invocation before escalating.
+
+## Native delegation vs `5x invoke`
+
+Per-role **delegationMode** in `5x.toml` selects which skill branches apply:
+**native** roles delegate to Cursor subagents; **invoke** roles use
+`5x invoke` (provider session ids on stdout).
+
+For **native** reviewers, pass the Task tool's **`resume`** parameter with
+the **agent id** from the prior delegation to continue the same subagent.
+**Do not** pass that id to `5x template render --session` — that CLI flag
+ties to **`5x invoke`** session continuity and `*-continued` template
+selection. If the CLI requires a second render in the same phase, use
+**`--new-session`** when appropriate; that is independent of **`resume`**.

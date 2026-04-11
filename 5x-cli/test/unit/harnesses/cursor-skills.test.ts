@@ -22,13 +22,14 @@ describe("cursor skills loader", () => {
 		expect(skills).toHaveLength(6);
 	});
 
-	test("applies cursor-native subagent and session terminology", () => {
+	test("applies cursor-native subagent terminology", () => {
 		const combined = listSkills()
 			.map((skill) => skill.content)
 			.join("\n\n");
 
 		expect(combined).toContain("Cursor subagent invocation");
-		expect(combined).toContain("agent session ID");
+		expect(combined).toContain("resume=");
+		expect(combined).toContain("$REVIEWER_AGENT_ID");
 	});
 
 	test("removes opencode-specific task tool wording", () => {

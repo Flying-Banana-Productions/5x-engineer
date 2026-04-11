@@ -24,11 +24,7 @@ function adaptCursorTerminology(content: string): string {
 		.replaceAll("## Task Reuse", "## Session Reuse")
 		.replace(/task reuse/gi, "session reuse")
 		.replace(/Task\s+tool/g, "Cursor subagent invocation")
-		.replaceAll("subagent_type", "subagent")
-		.replaceAll("$REVIEWER_TASK_ID", "$REVIEWER_AGENT_SESSION_ID")
-		.replaceAll("REVIEWER_TASK_ID", "REVIEWER_AGENT_SESSION_ID")
-		.replaceAll("task_id=", "agent_session_id=")
-		.replace(/task_id/g, "agent session ID");
+		.replaceAll("subagent_type", "subagent");
 
 	return adapted;
 }

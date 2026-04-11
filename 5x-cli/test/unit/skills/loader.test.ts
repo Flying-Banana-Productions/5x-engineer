@@ -357,5 +357,15 @@ describe("shared skill template loader", () => {
 				}
 			}
 		});
+
+		test("phase-execution Step 1 needs_human references Human Interaction Model (not author-only 5x prompt)", () => {
+			const invokeNative = makeMixedContext(false, true);
+			const nativeNative = makeMixedContext(true, true);
+			for (const ctx of [invokeNative, nativeNative]) {
+				const phaseExec = renderSkillByName("5x-phase-execution", ctx).content;
+				expect(phaseExec).toContain("Human Interaction Model");
+				expect(phaseExec).toContain("Delegation mode");
+			}
+		});
 	});
 });
