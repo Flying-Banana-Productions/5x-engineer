@@ -73,3 +73,18 @@ The proposed integration test uses a bash stub for `claude`, which is useful, bu
 **P1 recommended**
 - [ ] Clarify new-session vs resumed-session state so `resumeSession()` uses `--resume` on its first run.
 - [ ] Add an env-gated live Claude contract probe (or equivalent capability check) in addition to mock-script integration tests.
+
+## Addendum (2026-04-10) - Review Round 2
+
+### What's Addressed
+
+- **P0.1 (prompt-length / argv safety):** addressed. The plan now adds a dedicated prompt guard phase, specifies byte-based measurement via `TextEncoder`, defines deterministic over-limit behavior for both `run()` and `runStreamed()`, and explicitly documents argv visibility limits.
+- **P1.1 (resume semantics):** addressed. DD3 now distinguishes `firstInvocationMode` from `hasRun`, and the phase tasks/tests make `startSession()` first-run `--session-id` vs `resumeSession(existingId)` first-run `--resume` explicit.
+- **P1.2 (mock-only verification):** addressed. Phase 3 now adds an env-gated live capability/contract probe plus a compatibility baseline covering the exact Claude CLI features this provider depends on.
+- **P2 (tool result naming drift):** addressed. The event-mapping language is now normalized on `tool_result`.
+
+### Remaining Concerns
+
+- None. The revised plan now covers the previously blocking correctness gaps and is implementation-ready within the current provider/plugin architecture.
+
+**Readiness:** ready
