@@ -5,7 +5,7 @@
  * fixtures that match the provider mapper expectations.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,56 +98,53 @@ function baseConfig(mockBinary: string): FiveXConfig {
 }
 
 describe("claude-code provider integration (mock claude binary)", () => {
-	let tmp: string | undefined;
-
-	afterEach(() => {
-		if (tmp) cleanupDir(tmp);
-		tmp = undefined;
-	});
-
 	test(
 		"factory resolves claude-code plugin and full streaming lifecycle",
 		async () => {
-			tmp = makeTmpDir();
-			const mockBin = writeMockClaude(tmp);
-			const cwd = join(tmp, "proj");
-			mkdirSync(cwd, { recursive: true });
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockClaude(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
 
-			const provider = await createProvider("author", baseConfig(mockBin));
-			const session = await provider.startSession({
-				model: "anthropic/claude-sonnet-4-6",
-				workingDirectory: cwd,
-			});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "anthropic/claude-sonnet-4-6",
+					workingDirectory: cwd,
+				});
 
-			const events: AgentEvent[] = [];
-			for await (const ev of session.runStreamed("hello")) {
-				events.push(ev);
-			}
+				const events: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("hello")) {
+					events.push(ev);
+				}
 
-			await provider.close();
+				await provider.close();
 
-			const types = events.map((e) => e.type);
-			expect(types).toContain("text");
-			expect(types).toContain("tool_start");
-			expect(types).toContain("tool_end");
-			expect(types).toContain("usage");
-			expect(types).toContain("done");
+				const types = events.map((e) => e.type);
+				expect(types).toContain("text");
+				expect(types).toContain("tool_start");
+				expect(types).toContain("tool_end");
+				expect(types).toContain("usage");
+				expect(types).toContain("done");
 
-			const textEv = events.find((e) => e.type === "text");
-			expect(textEv?.type === "text" && textEv.delta).toContain("Hello");
+				const textEv = events.find((e) => e.type === "text");
+				expect(textEv?.type === "text" && textEv.delta).toContain("Hello");
 
-			const toolStart = events.find((e) => e.type === "tool_start");
-			expect(toolStart?.type).toBe("tool_start");
-			if (toolStart?.type === "tool_start") {
-				expect(toolStart.tool).toBe("Read");
-			}
+				const toolStart = events.find((e) => e.type === "tool_start");
+				expect(toolStart?.type).toBe("tool_start");
+				if (toolStart?.type === "tool_start") {
+					expect(toolStart.tool).toBe("Read");
+				}
 
-			const done = events.find((e) => e.type === "done");
-			expect(done?.type).toBe("done");
-			if (done?.type === "done") {
-				expect(done.result.text).toContain("final streamed");
-				expect(done.result.sessionId).toBe(session.id);
-				expect(done.result.tokens).toEqual({ in: 11, out: 22 });
+				const done = events.find((e) => e.type === "done");
+				expect(done?.type).toBe("done");
+				if (done?.type === "done") {
+					expect(done.result.text).toContain("final streamed");
+					expect(done.result.sessionId).toBe(session.id);
+					expect(done.result.tokens).toEqual({ in: 11, out: 22 });
+				}
+			} finally {
+				cleanupDir(tmp);
 			}
 		},
 		{ timeout: 30000 },
@@ -156,29 +153,33 @@ describe("claude-code provider integration (mock claude binary)", () => {
 	test(
 		"runStreamed with outputSchema yields structured_output on done",
 		async () => {
-			tmp = makeTmpDir();
-			const mockBin = writeMockClaude(tmp);
-			const cwd = join(tmp, "proj");
-			mkdirSync(cwd, { recursive: true });
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockClaude(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
 
-			const provider = await createProvider("author", baseConfig(mockBin));
-			const session = await provider.startSession({
-				model: "anthropic/claude-sonnet-4-6",
-				workingDirectory: cwd,
-			});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "anthropic/claude-sonnet-4-6",
+					workingDirectory: cwd,
+				});
 
-			const events: AgentEvent[] = [];
-			for await (const ev of session.runStreamed("x", {
-				outputSchema: { type: "object" },
-			})) {
-				events.push(ev);
-			}
-			await provider.close();
+				const events: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("x", {
+					outputSchema: { type: "object" },
+				})) {
+					events.push(ev);
+				}
+				await provider.close();
 
-			const done = events.find((e) => e.type === "done");
-			expect(done?.type).toBe("done");
-			if (done?.type === "done") {
-				expect(done.result.structured).toEqual({ mockSchema: true });
+				const done = events.find((e) => e.type === "done");
+				expect(done?.type).toBe("done");
+				if (done?.type === "done") {
+					expect(done.result.structured).toEqual({ mockSchema: true });
+				}
+			} finally {
+				cleanupDir(tmp);
 			}
 		},
 		{ timeout: 30000 },
@@ -187,24 +188,28 @@ describe("claude-code provider integration (mock claude binary)", () => {
 	test(
 		"run() returns RunResult from mock JSON",
 		async () => {
-			tmp = makeTmpDir();
-			const mockBin = writeMockClaude(tmp);
-			const cwd = join(tmp, "proj");
-			mkdirSync(cwd, { recursive: true });
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockClaude(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
 
-			const provider = await createProvider("author", baseConfig(mockBin));
-			const session = await provider.startSession({
-				model: "anthropic/claude-sonnet-4-6",
-				workingDirectory: cwd,
-			});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "anthropic/claude-sonnet-4-6",
+					workingDirectory: cwd,
+				});
 
-			const result = await session.run("prompt");
-			await provider.close();
+				const result = await session.run("prompt");
+				await provider.close();
 
-			expect(result.text).toBe("sync body");
-			expect(result.tokens).toEqual({ in: 3, out: 4 });
-			expect(result.durationMs).toBe(99);
-			expect(result.sessionId).toBe(session.id);
+				expect(result.text).toBe("sync body");
+				expect(result.tokens).toEqual({ in: 3, out: 4 });
+				expect(result.durationMs).toBe(99);
+				expect(result.sessionId).toBe(session.id);
+			} finally {
+				cleanupDir(tmp);
+			}
 		},
 		{ timeout: 30000 },
 	);
@@ -212,24 +217,28 @@ describe("claude-code provider integration (mock claude binary)", () => {
 	test(
 		"run() with outputSchema extracts structured",
 		async () => {
-			tmp = makeTmpDir();
-			const mockBin = writeMockClaude(tmp);
-			const cwd = join(tmp, "proj");
-			mkdirSync(cwd, { recursive: true });
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockClaude(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
 
-			const provider = await createProvider("author", baseConfig(mockBin));
-			const session = await provider.startSession({
-				model: "anthropic/claude-sonnet-4-6",
-				workingDirectory: cwd,
-			});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "anthropic/claude-sonnet-4-6",
+					workingDirectory: cwd,
+				});
 
-			const result = await session.run("p", {
-				outputSchema: { type: "object" },
-			});
-			await provider.close();
+				const result = await session.run("p", {
+					outputSchema: { type: "object" },
+				});
+				await provider.close();
 
-			expect(result.structured).toEqual({ sync: 1 });
-			expect(result.costUsd).toBe(0.02);
+				expect(result.structured).toEqual({ sync: 1 });
+				expect(result.costUsd).toBe(0.02);
+			} finally {
+				cleanupDir(tmp);
+			}
 		},
 		{ timeout: 30000 },
 	);
@@ -237,33 +246,37 @@ describe("claude-code provider integration (mock claude binary)", () => {
 	test(
 		"mock exits non-zero: run() throws; runStreamed yields terminal error",
 		async () => {
-			tmp = makeTmpDir();
-			const mockBin = writeMockClaude(tmp);
-			const cwd = join(tmp, "proj");
-			mkdirSync(cwd, { recursive: true });
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockClaude(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
 
-			const provider = await createProvider("author", baseConfig(mockBin));
-			const session = await provider.startSession({
-				model: "anthropic/claude-sonnet-4-6",
-				workingDirectory: cwd,
-			});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "anthropic/claude-sonnet-4-6",
+					workingDirectory: cwd,
+				});
 
-			await expect(session.run("__MOCK_CLAUDE_FAIL__")).rejects.toThrow(
-				/exited with code 9/,
-			);
+				await expect(session.run("__MOCK_CLAUDE_FAIL__")).rejects.toThrow(
+					/exited with code 9/,
+				);
 
-			const streamEvents: AgentEvent[] = [];
-			for await (const ev of session.runStreamed("__MOCK_CLAUDE_FAIL__")) {
-				streamEvents.push(ev);
+				const streamEvents: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("__MOCK_CLAUDE_FAIL__")) {
+					streamEvents.push(ev);
+				}
+				expect(streamEvents.some((e) => e.type === "error")).toBe(true);
+				const err = streamEvents.find((e) => e.type === "error");
+				expect(err?.type).toBe("error");
+				if (err?.type === "error") {
+					expect(err.message).toContain("without a result line");
+				}
+
+				await provider.close();
+			} finally {
+				cleanupDir(tmp);
 			}
-			expect(streamEvents.some((e) => e.type === "error")).toBe(true);
-			const err = streamEvents.find((e) => e.type === "error");
-			expect(err?.type).toBe("error");
-			if (err?.type === "error") {
-				expect(err.message).toContain("without a result line");
-			}
-
-			await provider.close();
 		},
 		{ timeout: 30000 },
 	);
