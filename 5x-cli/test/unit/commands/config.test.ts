@@ -796,6 +796,118 @@ describe("config add / remove (unit)", () => {
 		}
 	});
 
+	// Regression: repeated `config add --local` on a local TOML that ends with
+	// `[table]` headers used to emit duplicate `qualityGates = [...]` lines
+	// (each absorbed into the last table), producing a TOML duplicate-key error.
+	test("add --local appends into a single root array across trailing tables", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[paths]\nplans = "docs/plans"\n');
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				[
+					"[author.harnessModels]",
+					'opencode = "a"',
+					"",
+					"[reviewer.harnessModels]",
+					'opencode = "b"',
+					"",
+				].join("\n"),
+				"utf-8",
+			);
+			await configAdd({
+				key: "qualityGates",
+				value: "g1",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			await configAdd({
+				key: "qualityGates",
+				value: "g2",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml.local"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["g1", "g2"]);
+			expect(
+				(parsed.reviewer as Record<string, unknown> | undefined)?.harnessModels,
+			).toEqual({ opencode: "b" });
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// Regression: `config set --local` on a local TOML ending in `[table]`
+	// headers used to write the scalar inside that trailing table (parsed as
+	// `author.harnessModels.maxStepsPerRun` rather than root).
+	test("set --local places a root scalar at document root across trailing tables", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[paths]\nplans = "docs/plans"\n');
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				'[author.harnessModels]\nopencode = "a"\n',
+				"utf-8",
+			);
+			await configSet({
+				key: "maxStepsPerRun",
+				value: "5",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml.local"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.maxStepsPerRun).toBe(5);
+			expect(
+				(parsed.author as Record<string, unknown> | undefined)?.harnessModels,
+			).toEqual({ opencode: "a" });
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// Regression: a pre-existing local TOML with a misnested `qualityGates`
+	// (absorbed into a trailing table by a previous buggy write) should be
+	// lifted back to root on the next add and the array correctly extended.
+	test("add --local repairs a pre-existing misnested root key", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, '[paths]\nplans = "docs/plans"\n');
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				[
+					"[reviewer.harnessModels]",
+					'opencode = "b"',
+					'qualityGates = [ "existing" ]',
+					"",
+				].join("\n"),
+				"utf-8",
+			);
+			await configAdd({
+				key: "qualityGates",
+				value: "new",
+				local: true,
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml.local"), "utf-8"),
+			) as Record<string, unknown>;
+			expect(parsed.qualityGates).toEqual(["existing", "new"]);
+			expect(
+				(parsed.reviewer as Record<string, unknown> | undefined)?.harnessModels,
+			).toEqual({ opencode: "b" });
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("add/remove with sub-project --context targets same file as set", async () => {
 		const tmp = makeTmpDir();
 		try {

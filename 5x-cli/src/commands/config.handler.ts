@@ -356,6 +356,85 @@ function liftKeysMisnestedUnderPaths(parsed: Record<string, unknown>): void {
 	}
 }
 
+/**
+ * Find the dotted path of a nested occurrence of `key` anywhere below root.
+ * Returns e.g. `"reviewer.harnessModels.qualityGates"` if `qualityGates` was
+ * absorbed into that table by a prior buggy write, else null.
+ */
+function findNestedKeyPath(
+	obj: Record<string, unknown>,
+	key: string,
+): string | null {
+	for (const [k, v] of Object.entries(obj)) {
+		if (!isPlainRecord(v)) continue;
+		if (Object.hasOwn(v, key)) return `${k}.${key}`;
+		const sub = findNestedKeyPath(v, key);
+		if (sub) return `${k}.${sub}`;
+	}
+	return null;
+}
+
+/**
+ * If `key` (non-dotted root-level key) is misnested inside a child table,
+ * move it back to root. Mutates `parsed`. Returns true if a move happened.
+ */
+function liftMisnestedRootKey(
+	parsed: Record<string, unknown>,
+	key: string,
+): boolean {
+	if (key.includes(".")) return false;
+	if (Object.hasOwn(parsed, key)) return false;
+	const nestedPath = findNestedKeyPath(parsed, key);
+	if (!nestedPath) return false;
+	const value = getDottedValue(parsed, nestedPath);
+	removeDottedKey(parsed, nestedPath);
+	pruneEmptyTables(parsed);
+	parsed[key] = value;
+	return true;
+}
+
+/**
+ * `toml-patch` appends new root-level keys at EOF, which places them inside
+ * the last open `[table]` block. Prepare the existing text so the subsequent
+ * `tomlPatch` call writes `key` at document root.
+ *
+ * - If `key` was misnested and lifted back to root in `existingParsed`, first
+ *   drop the misnested line via an intermediate patch, then pre-seed at top.
+ * - Else if `key` is a non-dotted root key absent from the existing doc and
+ *   the document has `[table]` headers, pre-seed `key = <literal>` above the
+ *   first table so `tomlPatch` patches it in place rather than appending.
+ *
+ * `existingParsed` must already reflect any lift performed by
+ * {@link liftMisnestedRootKey} (key at root, misnested entry removed).
+ */
+function prepareTextForRootKeyWrite(
+	text: string,
+	existingParsed: Record<string, unknown>,
+	key: string,
+	wasLifted: boolean,
+	finalValue: unknown,
+): string {
+	if (key.includes(".")) return text;
+
+	let working = text;
+	if (wasLifted) {
+		// Pass parsed MINUS the key we're about to pre-seed, so the misnested
+		// line is removed and the root key isn't emitted by this intermediate
+		// patch (we'll inject it at the top ourselves).
+		const withoutTargetKey = { ...existingParsed };
+		delete withoutTargetKey[key];
+		working = tomlPatch(text, withoutTargetKey);
+	} else if (Object.hasOwn(existingParsed, key)) {
+		return text;
+	}
+
+	if (!/^\[/m.test(working)) return working;
+	const idx = working.search(/^\[/m);
+	const literal = tomlPatch("\n", { [key]: finalValue }).trimEnd();
+	const sep = idx === 0 || working.slice(0, idx).endsWith("\n") ? "" : "\n";
+	return `${working.slice(0, idx)}${sep}${literal}\n\n${working.slice(idx)}`;
+}
+
 function readStringArrayAtKey(
 	parsed: Record<string, unknown>,
 	key: string,
@@ -753,8 +832,16 @@ export async function configSet(params: ConfigSetParams): Promise<void> {
 			: (tomlParse(existingText) as Record<string, unknown>)
 	) as Record<string, unknown>;
 	liftKeysMisnestedUnderPaths(existingParsed);
+	const wasLifted = liftMisnestedRootKey(existingParsed, key);
 	const merged = mergeConfigObjects(existingParsed, patchObj);
-	const newToml = tomlPatch(existingText === "" ? "\n" : existingText, merged);
+	const textForPatch = prepareTextForRootKeyWrite(
+		existingText,
+		existingParsed,
+		key,
+		wasLifted,
+		coerced,
+	);
+	const newToml = tomlPatch(textForPatch === "" ? "\n" : textForPatch, merged);
 
 	writeFileSync(targetPath, newToml, "utf-8");
 
@@ -805,6 +892,7 @@ export async function configUnset(params: ConfigUnsetParams): Promise<void> {
 	const existingText = readFileSync(targetPath, "utf-8");
 	const existingParsed = tomlParse(existingText) as Record<string, unknown>;
 	liftKeysMisnestedUnderPaths(existingParsed);
+	liftMisnestedRootKey(existingParsed, key);
 
 	if (getDottedValue(existingParsed, key) === undefined) {
 		outputSuccess({ key, path: targetPath, noop: true as const }, (d) => {
@@ -886,9 +974,21 @@ export async function configAdd(params: ConfigAddParams): Promise<void> {
 			: (tomlParse(existingText) as Record<string, unknown>)
 	) as Record<string, unknown>;
 	liftKeysMisnestedUnderPaths(existingParsed);
+	const wasLifted = liftMisnestedRootKey(existingParsed, key);
 
 	const current = readStringArrayAtKey(existingParsed, key);
 	if (current.includes(value)) {
+		if (wasLifted) {
+			const repairedText = prepareTextForRootKeyWrite(
+				existingText,
+				existingParsed,
+				key,
+				true,
+				existingParsed[key],
+			);
+			const repaired = tomlPatch(repairedText, existingParsed);
+			writeFileSync(targetPath, repaired, "utf-8");
+		}
 		outputSuccess(
 			{ key, value, path: targetPath, noop: true as const },
 			(d) => {
@@ -904,7 +1004,14 @@ export async function configAdd(params: ConfigAddParams): Promise<void> {
 	const next = [...current, value];
 	const patchObj = buildNestedFromDotted(key, next);
 	const merged = mergeConfigObjects(existingParsed, patchObj);
-	const newToml = tomlPatch(existingText === "" ? "\n" : existingText, merged);
+	const textForPatch = prepareTextForRootKeyWrite(
+		existingText,
+		existingParsed,
+		key,
+		wasLifted,
+		next,
+	);
+	const newToml = tomlPatch(textForPatch === "" ? "\n" : textForPatch, merged);
 
 	writeFileSync(targetPath, newToml, "utf-8");
 
@@ -966,6 +1073,7 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 	const existingText = readFileSync(targetPath, "utf-8");
 	const existingParsed = tomlParse(existingText) as Record<string, unknown>;
 	liftKeysMisnestedUnderPaths(existingParsed);
+	const wasLifted = liftMisnestedRootKey(existingParsed, key);
 
 	if (getDottedValue(existingParsed, key) === undefined) {
 		outputSuccess(
@@ -981,6 +1089,17 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 
 	const current = readStringArrayAtKey(existingParsed, key);
 	if (!current.includes(value)) {
+		if (wasLifted) {
+			const repairedText = prepareTextForRootKeyWrite(
+				existingText,
+				existingParsed,
+				key,
+				true,
+				existingParsed[key],
+			);
+			const repaired = tomlPatch(repairedText, existingParsed);
+			writeFileSync(targetPath, repaired, "utf-8");
+		}
 		outputSuccess(
 			{ key, value, path: targetPath, noop: true as const },
 			(d) => {
@@ -1022,7 +1141,14 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 
 	const patchObj = buildNestedFromDotted(key, next);
 	const merged = mergeConfigObjects(existingParsed, patchObj);
-	const newToml = tomlPatch(existingText, merged);
+	const textForPatch = prepareTextForRootKeyWrite(
+		existingText,
+		existingParsed,
+		key,
+		wasLifted,
+		next,
+	);
+	const newToml = tomlPatch(textForPatch, merged);
 	writeFileSync(targetPath, newToml, "utf-8");
 
 	outputSuccess({ key, value, path: targetPath, array: next }, (d) => {

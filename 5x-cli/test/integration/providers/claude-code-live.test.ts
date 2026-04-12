@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const LIVE = process.env.CLAUDE_LIVE_TEST === "1";
-const CLAUDE = Bun.which("claude");
+const CLAUDE = Bun.which("claude") as string;
 
 function tmpProject(): string {
 	const dir = join(
@@ -27,7 +27,7 @@ describe("claude-code live CLI probe", () => {
 	test.skipIf(!LIVE || !CLAUDE)(
 		"help text advertises required flags",
 		async () => {
-			const proc = Bun.spawn([CLAUDE!, "--help"], {
+			const proc = Bun.spawn([CLAUDE, "--help"], {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
@@ -60,7 +60,7 @@ describe("claude-code live CLI probe", () => {
 			const cwd = tmpProject();
 			const sid = randomUUID();
 			const argv = [
-				CLAUDE!,
+				CLAUDE,
 				"-p",
 				"Reply with exactly the word: ok",
 				"--session-id",
@@ -152,7 +152,7 @@ describe("claude-code live CLI probe", () => {
 				required: ["ok"],
 			});
 			const argv = [
-				CLAUDE!,
+				CLAUDE,
 				"-p",
 				'Return JSON matching the schema: {"ok": true}',
 				"--session-id",
