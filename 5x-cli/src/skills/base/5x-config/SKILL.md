@@ -51,9 +51,9 @@ tweaks go to `5x.toml.local` (often git-ignored).
 2. Set explicitly, for example:
    `5x config set author.provider claude-code`
 3. **Set `delegationMode` to match the provider.** Native delegation (`native`)
-   only works when the provider matches the active harness (e.g. provider
-   `opencode` in the opencode harness). For any external provider — one that
-   differs from the harness — set delegation to `invoke`:
+   only works when the provider is the same system as the active harness. For
+   any external provider — one that differs from the harness — set delegation
+   to `invoke`:
    `5x config set author.delegationMode invoke`
 4. If you use multiple stacks in one repo, confirm each harness’s expectations in
    docs and align `author.provider` / reviewer settings accordingly.
@@ -62,14 +62,12 @@ tweaks go to `5x.toml.local` (often git-ignored).
 
 `delegationMode` controls how the harness orchestrates work for a role:
 
-- **`native`** (default): the harness uses its own Task tool / subagents to
-  orchestrate directly. This only works when the configured provider matches the
-  harness (e.g. provider `opencode` in the opencode harness, or provider
-  `cursor` in the cursor harness).
+- **`native`** (default): the harness orchestrates directly via its own subagent
+  capabilities. This only works when the configured provider is the same system
+  as the active harness (i.e. the provider name matches the harness name).
 - **`invoke`**: the harness delegates via `5x invoke`, which runs the configured
-  provider as an external process. Required whenever the provider is different
-  from the active harness (e.g. using `claude-code` or `codex` as the provider
-  while running inside the opencode harness).
+  provider as an external process. Required whenever the provider differs from
+  the active harness (e.g. a third-party provider plugin).
 
 Rule of thumb: if the provider name matches the harness name, use `native`;
 otherwise use `invoke`.
