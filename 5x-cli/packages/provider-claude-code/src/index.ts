@@ -5,9 +5,14 @@
 import type { AgentProvider, ProviderPlugin } from "@5x-ai/5x-cli";
 
 import { ClaudeCodeProvider } from "./provider.js";
-import type { ClaudeCodeConfig, ClaudeCodePermissionMode } from "./types.js";
+import type {
+	ClaudeCodeConfig,
+	ClaudeCodeEffort,
+	ClaudeCodePermissionMode,
+} from "./types.js";
 
 export { buildCliArgs, type CliArgContext } from "./cli-args.js";
+export { buildSubprocessEnv } from "./env.js";
 export {
 	type ClaudeCodeMapperState,
 	createMapperState,
@@ -32,7 +37,11 @@ export {
 	type PromptGuardResult,
 	type PromptOverLimitPayload,
 } from "./prompt-guard.js";
-export type { ClaudeCodeConfig, ClaudeCodePermissionMode } from "./types.js";
+export type {
+	ClaudeCodeConfig,
+	ClaudeCodeEffort,
+	ClaudeCodePermissionMode,
+} from "./types.js";
 
 /**
  * Parse `[claude-code]` config from 5x.toml-derived plugin config.
@@ -71,6 +80,37 @@ export function parseClaudePluginConfig(
 	if (typeof raw.systemPrompt === "string") out.systemPrompt = raw.systemPrompt;
 	if (typeof raw.appendSystemPrompt === "string") {
 		out.appendSystemPrompt = raw.appendSystemPrompt;
+	}
+
+	if (
+		raw.effort === "low" ||
+		raw.effort === "medium" ||
+		raw.effort === "high" ||
+		raw.effort === "max"
+	) {
+		out.effort = raw.effort satisfies ClaudeCodeEffort;
+	}
+
+	if (Array.isArray(raw.addDir)) {
+		const dirs = raw.addDir.filter(
+			(d): d is string => typeof d === "string" && d !== "",
+		);
+		if (dirs.length > 0) out.addDir = dirs;
+	}
+
+	if (typeof raw.fallbackModel === "string" && raw.fallbackModel !== "") {
+		out.fallbackModel = raw.fallbackModel;
+	}
+
+	if (Array.isArray(raw.disallowedTools)) {
+		const tools = raw.disallowedTools.filter(
+			(t): t is string => typeof t === "string" && t !== "",
+		);
+		if (tools.length > 0) out.disallowedTools = tools;
+	}
+
+	if (typeof raw.apiKey === "string" && raw.apiKey !== "") {
+		out.apiKey = raw.apiKey;
 	}
 
 	return out;

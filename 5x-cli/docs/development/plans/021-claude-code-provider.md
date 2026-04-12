@@ -149,6 +149,27 @@ enforce a byte-length safety limit before calling `Bun.spawn`.
 - Unit tests include boundary coverage (`limit-1`, `limit`, `limit+1`) and
   multi-byte Unicode input to validate byte-based (not char-count) behavior.
 
+### DD8: Scrub Anthropic auth env vars before spawning `claude`
+
+Claude Code's auth precedence places `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_API_KEY` above subscription/OAuth, silently. If either is set in
+the parent environment (common: other projects export `ANTHROPIC_API_KEY` for
+their own SDK usage), the spawned `claude` uses the API key and bills against
+the API account — the user's Claude subscription is bypassed with no warning.
+
+The provider therefore defaults to subscription/OAuth by:
+
+- Stripping `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess
+  environment on every `Bun.spawn` (`packages/provider-claude-code/src/env.ts`).
+- Preserving everything else (`PATH`, `HOME`, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `CLAUDE_CONFIG_DIR`, cloud-provider flags, etc.) so legitimate OAuth and
+  third-party routing still work.
+
+Users who actually want API-key auth opt in explicitly with
+`[claude-code].apiKey = "sk-ant-..."`. The value is forwarded as
+`ANTHROPIC_API_KEY` to the subprocess env (never via argv, to keep it out of
+`ps` output).
+
 ## Configuration
 
 ```toml
@@ -164,6 +185,7 @@ model = "anthropic/claude-sonnet-4-6"
 # systemPrompt = "..."                  # override system prompt
 # appendSystemPrompt = "..."            # append to system prompt
 # claudeBinary = "claude"               # path to claude binary
+# apiKey = "sk-ant-..."                 # bypass subscription, bill to API
 ```
 
 Model format: 5x uses `anthropic/claude-sonnet-4-6`. The provider strips the

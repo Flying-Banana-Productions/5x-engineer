@@ -115,4 +115,55 @@ describe("buildCliArgs", () => {
 		const args = buildCliArgs(base({ tools: [] }));
 		expect(args).not.toContain("--tools");
 	});
+
+	test("includes --effort when set", () => {
+		const args = buildCliArgs(base({ effort: "high" }));
+		const i = args.indexOf("--effort");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe("high");
+	});
+
+	test("omits --effort when undefined", () => {
+		const args = buildCliArgs(base({}));
+		expect(args).not.toContain("--effort");
+	});
+
+	test("includes --add-dir with variadic directories", () => {
+		const args = buildCliArgs(base({ addDir: ["../sibling", "/abs/path"] }));
+		const i = args.indexOf("--add-dir");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe("../sibling");
+		expect(args[i + 2]).toBe("/abs/path");
+	});
+
+	test("empty addDir array omits --add-dir", () => {
+		const args = buildCliArgs(base({ addDir: [] }));
+		expect(args).not.toContain("--add-dir");
+	});
+
+	test("includes --fallback-model when set", () => {
+		const args = buildCliArgs(base({ fallbackModel: "sonnet" }));
+		const i = args.indexOf("--fallback-model");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe("sonnet");
+	});
+
+	test("omits --fallback-model when empty string", () => {
+		const args = buildCliArgs(base({ fallbackModel: "" }));
+		expect(args).not.toContain("--fallback-model");
+	});
+
+	test("includes --disallowed-tools joined with commas", () => {
+		const args = buildCliArgs(
+			base({ disallowedTools: ["Bash(rm:*)", "Edit"] }),
+		);
+		const i = args.indexOf("--disallowed-tools");
+		expect(i).toBeGreaterThan(-1);
+		expect(args[i + 1]).toBe("Bash(rm:*),Edit");
+	});
+
+	test("empty disallowedTools array omits --disallowed-tools", () => {
+		const args = buildCliArgs(base({ disallowedTools: [] }));
+		expect(args).not.toContain("--disallowed-tools");
+	});
 });

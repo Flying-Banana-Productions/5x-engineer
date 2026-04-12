@@ -17,6 +17,10 @@ export interface CliArgContext {
 	maxBudgetUsd?: number;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
+	effort?: ClaudeCodeConfig["effort"];
+	addDir?: string[];
+	fallbackModel?: string;
+	disallowedTools?: string[];
 }
 
 /**
@@ -75,6 +79,22 @@ export function buildCliArgs(ctx: CliArgContext): string[] {
 
 	if (ctx.appendSystemPrompt !== undefined && ctx.appendSystemPrompt !== "") {
 		args.push("--append-system-prompt", ctx.appendSystemPrompt);
+	}
+
+	if (ctx.effort !== undefined) {
+		args.push("--effort", ctx.effort);
+	}
+
+	if (ctx.addDir !== undefined && ctx.addDir.length > 0) {
+		args.push("--add-dir", ...ctx.addDir);
+	}
+
+	if (ctx.fallbackModel !== undefined && ctx.fallbackModel !== "") {
+		args.push("--fallback-model", ctx.fallbackModel);
+	}
+
+	if (ctx.disallowedTools !== undefined && ctx.disallowedTools.length > 0) {
+		args.push("--disallowed-tools", ctx.disallowedTools.join(","));
 	}
 
 	return args;

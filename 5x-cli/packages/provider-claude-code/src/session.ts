@@ -9,6 +9,7 @@ import {
 } from "@5x-ai/5x-cli";
 
 import { buildCliArgs, type CliArgContext } from "./cli-args.js";
+import { buildSubprocessEnv } from "./env.js";
 import {
 	createMapperState,
 	mapNdjsonLine,
@@ -274,6 +275,10 @@ export class ClaudeCodeSession implements AgentSession {
 			maxBudgetUsd: this.config.maxBudgetUsd,
 			systemPrompt: this.config.systemPrompt,
 			appendSystemPrompt: this.config.appendSystemPrompt,
+			effort: this.config.effort,
+			addDir: this.config.addDir,
+			fallbackModel: this.config.fallbackModel,
+			disallowedTools: this.config.disallowedTools,
 		};
 	}
 
@@ -313,6 +318,7 @@ export class ClaudeCodeSession implements AgentSession {
 		try {
 			proc = Bun.spawn(argv, {
 				cwd: this.cwd,
+				env: buildSubprocessEnv(this.config.apiKey),
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
@@ -436,6 +442,7 @@ export class ClaudeCodeSession implements AgentSession {
 		try {
 			proc = Bun.spawn(argv, {
 				cwd: this.cwd,
+				env: buildSubprocessEnv(this.config.apiKey),
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",

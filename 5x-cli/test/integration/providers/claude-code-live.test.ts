@@ -43,6 +43,10 @@ describe("claude-code live CLI probe", () => {
 				"json-schema",
 				"--resume",
 				"--session-id",
+				"--effort",
+				"--add-dir",
+				"--fallback-model",
+				"--disallowed-tools",
 			]) {
 				expect(text).toContain(needle);
 			}
