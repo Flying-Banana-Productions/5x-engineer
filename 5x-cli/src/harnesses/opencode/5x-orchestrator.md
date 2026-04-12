@@ -53,3 +53,17 @@ recovery procedures. Follow them closely.
 5. **Recover gracefully.** When sub-agents fail or produce invalid
    results, follow the skill's recovery section. Retry once with a
    fresh task (omit `task_id`) before escalating.
+
+## Native delegation continuity vs `5x template render --session`
+
+Per-role **delegationMode** in `5x.toml` selects which skill branches apply:
+**native** roles delegate with the OpenCode Task tool; **invoke** roles use
+`5x invoke` (provider `session_id` on stdout).
+
+For **native** reviewers, continue the same subagent by passing the Task
+tool's **`task_id`** with the prior delegation's agent id.
+**Do not** pass that agent id to `5x template render --session`.
+
+`5x template render --session/--new-session` is a CLI continuity control for
+continued-template selection and `continuePhaseSessions` enforcement. It is
+orthogonal to native Task reuse via `task_id`.

@@ -48,15 +48,20 @@ const AgentConfigSchema = z.object({
 		),
 	/**
 	 * Delegation mode for this role when running under a native harness.
-	 * - "native" (default): orchestrator uses harness Task tool / subagents
-	 * - "invoke": orchestrator calls `5x invoke` for this role
-	 * Only applies to native harnesses; universal harness always uses invoke.
+	 * - "native" (default): harness orchestrates directly via Task tool / subagents.
+	 *   Only valid when the provider matches the harness (e.g. provider "opencode"
+	 *   in the opencode harness). Using "native" with a mismatched provider will
+	 *   fail at invoke time.
+	 * - "invoke": harness delegates via `5x invoke`, which runs the configured
+	 *   provider externally. Required for external providers (e.g. claude-code,
+	 *   codex) or any provider that differs from the active harness.
+	 * Universal harness always uses invoke regardless of this setting.
 	 */
 	delegationMode: z
 		.enum(["native", "invoke"])
 		.default("native")
 		.describe(
-			"How this role delegates under a native harness: Task/subagents (native) or `5x invoke`.",
+			"native: harness orchestrates directly (provider must match harness); invoke: delegates via `5x invoke` (required for external providers).",
 		),
 });
 

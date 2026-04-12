@@ -16,6 +16,6 @@
     "noUncheckedIndexedAccess": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*", "test/**/*"],
+  "include": ["src/**/*", "test/**/*", "packages/**/*"],
   "exclude": ["node_modules", "dist"]
 }

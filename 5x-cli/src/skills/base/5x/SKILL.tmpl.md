@@ -54,9 +54,9 @@ and map each gate to the same choices and branching the skill describes. **Do no
 rely on `5x prompt` subprocesses for routine gates — they may lack `/dev/tty` and
 fail in agent-driven terminals.
 
-- **Cursor:** use **AskQuestion** (or equivalent) for multiple choice; use the chat
-  thread for freeform guidance.
-- **Other native harnesses:** use that environment's chat / native tools the same way.
+- **Typical IDE-native harness:** use **AskQuestion** (or equivalent) for
+  multiple choice; use the chat thread for freeform guidance.
+- **Other environments:** use that product's chat / native question tools the same way.
 
 Use `5x run record` with the same JSON shapes the skill specifies after the human
 chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat UI.
@@ -131,14 +131,17 @@ intentionally overriding run-linked plan resolution.
 ## Task Reuse (Native)
 
 **Task reuse** is optional and best-effort for native-delegated roles.
-The Task tool returns a `task_id` from each subagent invocation. Pass it
-back to resume the same subagent conversation with full prior context —
-the subagent picks up where it left off instead of starting fresh.
+The native delegation API returns an **agent id** from each subagent invocation.
+Pass it back as **`[[NATIVE_CONTINUE_PARAM]]`** to continue the same subagent conversation — the
+subagent picks up where it left off instead of starting fresh.
 
-To also get a shorter continued-template variant, pass the `task_id` as
-the `--session` value to `5x template render --session <task_id>`. If
-task reuse is unavailable or awkward, start a fresh task (omit
-`task_id`) — never fail a workflow because task reuse didn't work.
+**Do not** pass that agent id to `5x template render --session`; that
+flag is for **CLI continuity control** (`*-continued` template selection and
+invoke-mode provider session identity). If a second `5x template render` in the same phase needs a
+flag, use **`--new-session`** when appropriate (see process skills).
+
+If reuse is unavailable or awkward, start fresh (omit **`[[NATIVE_CONTINUE_PARAM]]`**) —
+never fail a workflow because reuse didn't work.
 {{/if}}
 {{#if any_invoke}}
 ## Session Reuse (Invoke)
@@ -165,7 +168,7 @@ work.
 {{/if}}
 {{#if any_native}}
 - **Task reuse is best-effort** (native roles). Never fail a workflow because
-  task reuse didn't work. Start a fresh task (omit `task_id`) and move on.
+  task reuse didn't work. Start fresh (omit `[[NATIVE_CONTINUE_PARAM]]`) and move on.
 {{/if}}
 {{#if any_invoke}}
 - **Session reuse is best-effort** (invoke roles). Never fail a workflow because
@@ -176,7 +179,7 @@ work.
   author step. Authors commit via `5x commit --run $RUN` (which records
   the commit in the run journal).
 {{#if author_native}}
-- For native author: Re-invoke with a fresh task (omit `task_id`).
+- For native author: Re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`).
 {{/if}}
 {{#if author_invoke}}
 - For invoke author: Re-invoke without `--session`.
@@ -186,8 +189,8 @@ work.
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
 {{#if author_native}}
-- **Empty or invalid subagent output (author)**: Retry once with a fresh task
-  (omit `task_id`). If it fails again, escalate to the human.
+- **Empty or invalid subagent output (author)**: Retry once with a fresh subagent
+  (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.
 {{/if}}
 {{#if author_invoke}}
 - **Empty or invalid subagent output (author)**: Retry once without `--session`.

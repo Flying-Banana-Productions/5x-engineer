@@ -32,7 +32,7 @@ describe("shared skill template loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
-			"config",
+			"5x-config",
 		]);
 
 		for (const name of names) {
@@ -355,6 +355,16 @@ describe("shared skill template loader", () => {
 					expect(skill.content).not.toContain("{{else}}");
 					expect(skill.content).not.toContain("{{/if}}");
 				}
+			}
+		});
+
+		test("phase-execution Step 1 needs_human references Human Interaction Model (not author-only 5x prompt)", () => {
+			const invokeNative = makeMixedContext(false, true);
+			const nativeNative = makeMixedContext(true, true);
+			for (const ctx of [invokeNative, nativeNative]) {
+				const phaseExec = renderSkillByName("5x-phase-execution", ctx).content;
+				expect(phaseExec).toContain("Human Interaction Model");
+				expect(phaseExec).toContain("Delegation mode");
 			}
 		});
 	});

@@ -32,7 +32,7 @@ describe("skill loader", () => {
 		expect(() => getDefaultSkillRaw("5x-plan")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-plan-review")).not.toThrow();
 		expect(() => getDefaultSkillRaw("5x-phase-execution")).not.toThrow();
-		expect(() => getDefaultSkillRaw("config")).not.toThrow();
+		expect(() => getDefaultSkillRaw("5x-config")).not.toThrow();
 	});
 
 	test("listSkillNames returns all bundled skills", () => {
@@ -42,7 +42,7 @@ describe("skill loader", () => {
 		expect(names).toContain("5x-plan");
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
-		expect(names).toContain("config");
+		expect(names).toContain("5x-config");
 		expect(names.length).toBe(6);
 	});
 
@@ -56,6 +56,21 @@ describe("skill loader", () => {
 		expect(planSkill?.content).toContain("---");
 		expect(planSkill?.content).toContain("name: 5x-plan");
 		expect(planSkill?.content).toContain("## Workflow");
+	});
+
+	test("renders OpenCode-native continuation parameter names", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+
+		expect(combined).toContain("task_id=");
+		expect(combined).not.toContain("resume=");
+	});
+
+	test("does not leak unresolved harness token placeholders", () => {
+		for (const skill of listSkills()) {
+			expect(skill.content).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+		}
 	});
 
 	test("all bundled skills have valid frontmatter", () => {
@@ -90,7 +105,7 @@ describe("skill loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
-			"config",
+			"5x-config",
 		]) {
 			const raw = getDefaultSkillRaw(name);
 			const fm = parseSkillFrontmatter(raw);

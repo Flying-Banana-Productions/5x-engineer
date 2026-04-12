@@ -1,5 +1,5 @@
 ---
-name: config
+name: 5x-config
 description: >-
   Guide for inspecting and editing 5x configuration through the CLI. Use when
   helping users choose providers, per-harness models, quality gates, monorepo path
@@ -8,7 +8,7 @@ metadata:
   author: 5x-engineer
 ---
 
-# Skill: config (5x configuration)
+# Skill: 5x-config (5x configuration)
 
 5x reads configuration from layered TOML (and optional JS) sources. Values merge
 from the repository control-plane root down to the nearest `5x.toml` for your
@@ -50,8 +50,27 @@ tweaks go to `5x.toml.local` (often git-ignored).
    the current value and default.
 2. Set explicitly, for example:
    `5x config set author.provider claude-code`
-3. If you use multiple stacks in one repo, confirm each harness’s expectations in
+3. **Set `delegationMode` to match the provider.** Native delegation (`native`)
+   only works when the provider is the same system as the active harness. For
+   any external provider — one that differs from the harness — set delegation
+   to `invoke`:
+   `5x config set author.delegationMode invoke`
+4. If you use multiple stacks in one repo, confirm each harness’s expectations in
    docs and align `author.provider` / reviewer settings accordingly.
+
+### Delegation mode
+
+`delegationMode` controls how the harness orchestrates work for a role:
+
+- **`native`** (default): the harness orchestrates directly via its own subagent
+  capabilities. This only works when the configured provider is the same system
+  as the active harness (i.e. the provider name matches the harness name).
+- **`invoke`**: the harness delegates via `5x invoke`, which runs the configured
+  provider as an external process. Required whenever the provider differs from
+  the active harness (e.g. a third-party provider plugin).
+
+Rule of thumb: if the provider name matches the harness name, use `native`;
+otherwise use `invoke`.
 
 ### Per-harness model overrides
 
@@ -109,6 +128,17 @@ single global `author.model`.
 ```bash
 5x config set paths.plans docs/plans --context packages/api
 5x config show --context packages/api --text
+```
+
+**Flow D — switch author to an external provider (e.g. claude-code)**
+
+```bash
+5x config set author.provider claude-code --local
+5x config set author.model claude-opus-4-6 --local
+5x config set author.delegationMode invoke --local
+# reviewer stays on the native harness provider — no delegationMode change needed
+5x config show --key author.provider
+5x config show --key author.delegationMode
 ```
 
 Always prefer `5x config show` before editing so you see defaults, types, and

@@ -14,10 +14,18 @@
         "zod": "^3.24.0",
       },
       "devDependencies": {
+        "@5x-ai/provider-claude-code": "workspace:*",
         "@5x-ai/provider-invalid": "workspace:*",
         "@5x-ai/provider-sample": "workspace:*",
         "@types/bun": "latest",
         "typescript": "^5.7.0",
+      },
+    },
+    "packages/provider-claude-code": {
+      "name": "@5x-ai/provider-claude-code",
+      "version": "0.0.1",
+      "peerDependencies": {
+        "@5x-ai/5x-cli": "file:../..",
       },
     },
     "packages/provider-invalid": {
@@ -37,6 +45,8 @@
   },
   "packages": {
     "@5x-ai/5x-cli": ["5x-cli@root:", {}],
+
+    "@5x-ai/provider-claude-code": ["@5x-ai/provider-claude-code@workspace:packages/provider-claude-code"],
 
     "@5x-ai/provider-invalid": ["@5x-ai/provider-invalid@workspace:packages/provider-invalid"],
 
@@ -65,5 +75,9 @@
     "yaml": ["yaml@2.8.2", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A=="],
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@5x-ai/provider-invalid/@5x-ai/5x-cli": ["5x-cli@root:", {}],
+
+    "@5x-ai/provider-sample/@5x-ai/5x-cli": ["5x-cli@root:", {}],
   }
 }

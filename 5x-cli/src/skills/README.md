@@ -13,8 +13,10 @@ src/skills/
     5x-plan/SKILL.tmpl.md
     5x-plan-review/SKILL.tmpl.md
     5x-phase-execution/SKILL.tmpl.md
+    5x-config/SKILL.md   (static markdown; no native/invoke conditional blocks)
   renderer.ts            Conditional template renderer
   loader.ts              Template registry + render helpers
+  harness-tokens.ts      Harness-specific semantic token resolver
   frontmatter.ts         Shared SKILL.md frontmatter parser
 ```
 
@@ -27,6 +29,11 @@ Templates are rendered in one of two modes:
 
 - `native: true` -> native harness delegation (Task/subagents path)
 - `native: false` -> invoke delegation (`5x invoke` path)
+
+Base templates may also include semantic placeholders like
+`[[NATIVE_CONTINUE_PARAM]]`. Harness loaders resolve these to concrete
+parameter names (OpenCode `task_id`, Cursor `resume`) after conditional block
+rendering.
 
 ## Conditional Block Syntax
 
@@ -59,6 +66,7 @@ Use 5x invoke delegation.
 ```
 base SKILL.tmpl.md
   -> renderSkillTemplate(template, ctx)
+  -> resolveSkillTokens(rendered, harnessMap)
   -> parseSkillFrontmatter(rendered)
   -> renderAllSkillTemplates(ctx)
   -> harness plugin installSkillFiles(...)

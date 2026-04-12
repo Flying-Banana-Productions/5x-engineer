@@ -1,20 +1,23 @@
 /**
- * Deterministic content checks for the bundled `config` skill (Phase 7).
+ * Deterministic content checks for the bundled `5x-config` skill (Phase 7).
  */
 import { describe, expect, test } from "bun:test";
 import { renderSkillByName } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
 
-describe("config skill content", () => {
-	test("loader resolves config skill with stable name and body", () => {
-		const skill = renderSkillByName("config", createRenderContext(true));
-		expect(skill.name).toBe("config");
-		expect(skill.content).toContain("name: config");
+describe("5x-config skill content", () => {
+	test("loader resolves 5x-config skill with stable name and body", () => {
+		const skill = renderSkillByName("5x-config", createRenderContext(true));
+		expect(skill.name).toBe("5x-config");
+		expect(skill.content).toContain("name: 5x-config");
 		expect(skill.description.length).toBeGreaterThan(20);
 	});
 
 	test("documents inspect and write CLI commands", () => {
-		const body = renderSkillByName("config", createRenderContext(true)).content;
+		const body = renderSkillByName(
+			"5x-config",
+			createRenderContext(true),
+		).content;
 		expect(body).toContain("5x config show");
 		expect(body).toContain("enumValues");
 		expect(body).toContain("5x config set");
@@ -25,7 +28,7 @@ describe("config skill content", () => {
 
 	test("documents layering and local overrides", () => {
 		const body = renderSkillByName(
-			"config",
+			"5x-config",
 			createRenderContext(false),
 		).content;
 		expect(body).toMatch(/layered|nearest|merge/i);
