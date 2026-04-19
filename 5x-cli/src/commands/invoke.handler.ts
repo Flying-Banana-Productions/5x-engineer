@@ -329,7 +329,10 @@ export async function invokeAgent(
 	// Compute review-delta variables when a prior reviewer step exists and
 	// the caller is continuing via provider session. Invoke-mode doesn't
 	// support --continue-native (that's for the native-subagent path).
+	// Scalar vars (commits) merge into mergedVars; the multi-line diff is
+	// appended to the rendered prompt after rendering.
 	const wantContinued = params.session && !params.newSession;
+	let reviewDiffAppend: string | null = null;
 	if (
 		wantContinued &&
 		runDb &&
@@ -345,9 +348,10 @@ export async function invokeAgent(
 			workdir: resolvedWorktreePath ?? projectRoot,
 			stepName: "reviewer:review",
 		});
-		if (Object.keys(delta).length > 0) {
-			mergedVars = { ...delta, ...mergedVars };
+		if (Object.keys(delta.vars).length > 0) {
+			mergedVars = { ...delta.vars, ...mergedVars };
 		}
+		reviewDiffAppend = delta.diffAppend;
 	}
 
 	// When --new-session is set, pass session: undefined to ensure full
@@ -369,6 +373,12 @@ export async function invokeAgent(
 		worktreeRoot: resolvedWorktreePath ?? undefined,
 	});
 	const { variables } = resolved;
+
+	// Append the review diff block (continued plan reviews only). The diff
+	// can't be a template variable (multi-line), so it's added post-render.
+	const renderedPrompt = reviewDiffAppend
+		? `${resolved.prompt}\n${reviewDiffAppend}`
+		: resolved.prompt;
 
 	// Surface warnings (stderr for human visibility)
 	if (resolved.warnings.length > 0) {
@@ -464,7 +474,7 @@ export async function invokeAgent(
 	try {
 		runResult = await invokeStreamed(
 			session,
-			resolved.prompt,
+			renderedPrompt,
 			runOpts,
 			logPath,
 			quiet,

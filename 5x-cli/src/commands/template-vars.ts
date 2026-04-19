@@ -320,10 +320,27 @@ export function resolveInternalTemplateVariables(
 // Review delta resolution (for continued reviewer templates)
 // ---------------------------------------------------------------------------
 
+/**
+ * Scalar template vars derived from prior-review delta. Safe for
+ * `renderBody()` (single-line strings).
+ */
 export interface ReviewDeltaVars {
 	previous_review_commit?: string;
 	current_commit?: string;
-	plan_diff_summary?: string;
+}
+
+/**
+ * Full delta result: scalar vars + a post-render block containing the
+ * (potentially multi-line) plan diff, which cannot go through template
+ * variable substitution because declared variables must be safe scalars.
+ */
+export interface ReviewDelta {
+	vars: ReviewDeltaVars;
+	/**
+	 * Markdown block to append to the rendered prompt after template
+	 * rendering completes. Null when no delta was computable.
+	 */
+	diffAppend: string | null;
 }
 
 export interface ResolveReviewDeltaOptions {
@@ -337,33 +354,42 @@ export interface ResolveReviewDeltaOptions {
 }
 
 /**
- * Compute the commit/diff variables for a continued plan-review prompt.
+ * Compute the commit/diff context for a continued plan-review prompt.
  *
- * Best-effort: silently returns an empty object if the prior step lacks a
- * recorded head_commit, or if any git call fails (e.g. not a git repo,
- * orphan commit). Callers merge the returned vars into the template's
- * explicit variables before rendering.
+ * Best-effort: returns `{ vars: {}, diffAppend: null }` if the prior
+ * step lacks a recorded head_commit, or if any git call fails (e.g. not
+ * a git repo). Callers merge `vars` into template variables before
+ * rendering and append `diffAppend` to the rendered prompt afterward.
  */
 export async function resolveReviewDelta(
 	opts: ResolveReviewDeltaOptions,
-): Promise<ReviewDeltaVars> {
+): Promise<ReviewDelta> {
 	const { db, runId, phase, planPath, workdir, stepName } = opts;
+	const empty: ReviewDelta = { vars: {}, diffAppend: null };
 
 	const priorStep = getLatestStepForPhase(db, runId, stepName, phase);
 	const previousCommit = priorStep?.head_commit ?? null;
-	if (!previousCommit) return {};
+	if (!previousCommit) return empty;
 
 	let currentCommit: string | undefined;
 	try {
 		currentCommit = await getLatestCommit(workdir);
 	} catch {
-		return {};
+		return empty;
 	}
-	if (!currentCommit || currentCommit === previousCommit) {
+	if (!currentCommit) return empty;
+
+	const vars: ReviewDeltaVars = {
+		previous_review_commit: previousCommit,
+		current_commit: currentCommit,
+	};
+
+	if (currentCommit === previousCommit) {
 		return {
-			previous_review_commit: previousCommit,
-			current_commit: currentCommit,
-			plan_diff_summary: "(no changes to the plan file since the last review)",
+			vars,
+			diffAppend:
+				"\n## Plan Diff Since Last Review\n\n" +
+				"(no changes since the last review — HEAD is unchanged)\n",
 		};
 	}
 
@@ -379,11 +405,13 @@ export async function resolveReviewDelta(
 		diff = "";
 	}
 
+	const body = diff
+		? `\`\`\`diff\n${diff}\n\`\`\``
+		: "(plan file unchanged; changes may live in referenced artifacts)";
+
 	return {
-		previous_review_commit: previousCommit,
-		current_commit: currentCommit,
-		plan_diff_summary:
-			diff || "(plan file unchanged; changes may live in referenced artifacts)",
+		vars,
+		diffAppend: `\n## Plan Diff Since Last Review\n\n${body}\n`,
 	};
 }
 

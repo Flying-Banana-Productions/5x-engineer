@@ -182,10 +182,13 @@ export async function templateRender(
 	// Compute review-delta variables when the caller is continuing a prior
 	// plan-review (either via provider session or native-subagent signal).
 	// Best-effort: missing git/db context just skips the merge.
+	// Scalar vars (commits) merge into template vars; the multi-line diff
+	// is appended post-render (declared variables must be safe scalars).
 	// -----------------------------------------------------------------------
 	const wantContinued =
 		(params.session || params.continueNative) && !params.newSession;
 	let mergedVars = explicitVars;
+	let reviewDiffAppend: string | null = null;
 	if (
 		wantContinued &&
 		runDb &&
@@ -201,9 +204,10 @@ export async function templateRender(
 			workdir: resolvedWorktreeRoot ?? projectRoot,
 			stepName: "reviewer:review",
 		});
-		if (Object.keys(delta).length > 0) {
-			mergedVars = { ...delta, ...explicitVars };
+		if (Object.keys(delta.vars).length > 0) {
+			mergedVars = { ...delta.vars, ...explicitVars };
 		}
+		reviewDiffAppend = delta.diffAppend;
 	}
 
 	// -----------------------------------------------------------------------
@@ -231,8 +235,12 @@ export async function templateRender(
 	let prompt = resolved.prompt;
 
 	// -----------------------------------------------------------------------
-	// Post-render: append ## Context block when --run resolves a worktree
+	// Post-render: append the review diff block (continued plan reviews only),
+	// then the ## Context block when --run resolves a worktree.
 	// -----------------------------------------------------------------------
+	if (reviewDiffAppend) {
+		prompt += `\n${reviewDiffAppend}`;
+	}
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;
 	}

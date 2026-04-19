@@ -1,14 +1,13 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 3
-variables: [plan_path, review_path, run_id, previous_review_commit, current_commit, plan_diff_summary]
+version: 4
+variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:review"
 variable_defaults:
   run_id: ""
   previous_review_commit: ""
   current_commit: ""
-  plan_diff_summary: ""
 ---
 
 The plan at `{{plan_path}}` has been revised since your last review. Re-review it now.
@@ -18,11 +17,7 @@ The plan at `{{plan_path}}` has been revised since your last review. Re-review i
 - Previous review commit: `{{previous_review_commit}}`
 - Current commit: `{{current_commit}}`
 
-Changes to the plan file since the last review:
-
-```
-{{plan_diff_summary}}
-```
+A `## Plan Diff Since Last Review` section is appended to this prompt with the actual diff of the plan file across that commit range. Read it first.
 
 Treat line numbers from your prior findings as potentially stale — re-anchor them against the current plan. For each previously raised issue, decide whether it is **addressed**, **partially addressed**, or **still open**, and say so explicitly in the addendum below.
 
