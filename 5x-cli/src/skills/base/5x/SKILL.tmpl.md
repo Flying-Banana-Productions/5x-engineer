@@ -131,14 +131,19 @@ intentionally overriding run-linked plan resolution.
 ## Task Reuse (Native)
 
 **Task reuse** is optional and best-effort for native-delegated roles.
-The native delegation API returns an **agent id** from each subagent invocation.
-Pass it back as **`[[NATIVE_CONTINUE_PARAM]]`** to continue the same subagent conversation — the
-subagent picks up where it left off instead of starting fresh.
+The native delegation API returns a **native subtask id** (track as
+`$NATIVE_SUBTASK_ID`) from each subagent invocation. Pass it back as
+**`[[NATIVE_CONTINUE_PARAM]]`** to continue the same subagent
+conversation — the subagent picks up where it left off instead of
+starting fresh.
 
-**Do not** pass that agent id to `5x template render --session`; that
-flag is for **CLI continuity control** (`*-continued` template selection and
-invoke-mode provider session identity). If a second `5x template render` in the same phase needs a
-flag, use **`--new-session`** when appropriate (see process skills).
+**Do not** pass the native subtask id to `5x template render --session`
+— `--session` takes a **provider session id** (a distinct concept used
+only on the invoke path), not a harness-level subtask id. When
+continuing a native subagent and a second `5x template render` in the
+same phase needs a flag, use **`--continue-native`** — it selects the
+`*-continued` template variant (with delta context) without expecting a
+provider session. Use **`--new-session`** only for recovery.
 
 If reuse is unavailable or awkward, start fresh (omit **`[[NATIVE_CONTINUE_PARAM]]`**) —
 never fail a workflow because reuse didn't work.

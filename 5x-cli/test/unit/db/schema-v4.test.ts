@@ -42,7 +42,7 @@ describe("migration v4: fresh DB", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(4);
+			expect(getSchemaVersion(db)).toBe(5);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -556,11 +556,11 @@ describe("migration v4: from v3 with existing data", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(4);
+			expect(getSchemaVersion(db)).toBe(5);
 
 			// Second call should be no-op
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(4);
+			expect(getSchemaVersion(db)).toBe(5);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

@@ -49,8 +49,10 @@ import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
 	hasStdinVarFlag,
+	isPlanReviewTemplate,
 	parseVars,
 	resolveAndRenderTemplate,
+	resolveReviewDelta,
 } from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
@@ -309,7 +311,7 @@ export async function invokeAgent(
 
 	// 1. Resolve and render template (shared helper)
 	const explicitVars = await parseVars(params.vars);
-	const mergedVars = pipeContext
+	let mergedVars = pipeContext
 		? { ...pipeContext.templateVars, ...explicitVars } // explicit --var wins
 		: explicitVars;
 
@@ -323,6 +325,30 @@ export async function invokeAgent(
 		config,
 		explicitVars: mergedVars,
 	});
+
+	// Compute review-delta variables when a prior reviewer step exists and
+	// the caller is continuing via provider session. Invoke-mode doesn't
+	// support --continue-native (that's for the native-subagent path).
+	const wantContinued = params.session && !params.newSession;
+	if (
+		wantContinued &&
+		runDb &&
+		params.run &&
+		resolvedPlanPath &&
+		isPlanReviewTemplate(params.template)
+	) {
+		const delta = await resolveReviewDelta({
+			db: runDb,
+			runId: params.run,
+			phase: mergedVars.phase_number ?? params.phase ?? "plan",
+			planPath: resolvedPlanPath,
+			workdir: resolvedWorktreePath ?? projectRoot,
+			stepName: "reviewer:review",
+		});
+		if (Object.keys(delta).length > 0) {
+			mergedVars = { ...delta, ...mergedVars };
+		}
+	}
 
 	// When --new-session is set, pass session: undefined to ensure full
 	// template is selected (not the -continued variant)

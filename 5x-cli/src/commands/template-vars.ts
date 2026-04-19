@@ -7,9 +7,12 @@
  * Framework-independent: no CLI framework imports.
  */
 
+import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
+import { getLatestStepForPhase } from "../db/operations-v1.js";
+import { getFileDiffSummary, getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
 
@@ -314,6 +317,77 @@ export function resolveInternalTemplateVariables(
 }
 
 // ---------------------------------------------------------------------------
+// Review delta resolution (for continued reviewer templates)
+// ---------------------------------------------------------------------------
+
+export interface ReviewDeltaVars {
+	previous_review_commit?: string;
+	current_commit?: string;
+	plan_diff_summary?: string;
+}
+
+export interface ResolveReviewDeltaOptions {
+	db: Database;
+	runId: string;
+	phase: string | null;
+	planPath: string;
+	workdir: string;
+	/** Must match steps.step_name — typically "reviewer:review". */
+	stepName: string;
+}
+
+/**
+ * Compute the commit/diff variables for a continued plan-review prompt.
+ *
+ * Best-effort: silently returns an empty object if the prior step lacks a
+ * recorded head_commit, or if any git call fails (e.g. not a git repo,
+ * orphan commit). Callers merge the returned vars into the template's
+ * explicit variables before rendering.
+ */
+export async function resolveReviewDelta(
+	opts: ResolveReviewDeltaOptions,
+): Promise<ReviewDeltaVars> {
+	const { db, runId, phase, planPath, workdir, stepName } = opts;
+
+	const priorStep = getLatestStepForPhase(db, runId, stepName, phase);
+	const previousCommit = priorStep?.head_commit ?? null;
+	if (!previousCommit) return {};
+
+	let currentCommit: string | undefined;
+	try {
+		currentCommit = await getLatestCommit(workdir);
+	} catch {
+		return {};
+	}
+	if (!currentCommit || currentCommit === previousCommit) {
+		return {
+			previous_review_commit: previousCommit,
+			current_commit: currentCommit,
+			plan_diff_summary: "(no changes to the plan file since the last review)",
+		};
+	}
+
+	let diff = "";
+	try {
+		diff = await getFileDiffSummary(
+			workdir,
+			previousCommit,
+			currentCommit,
+			planPath,
+		);
+	} catch {
+		diff = "";
+	}
+
+	return {
+		previous_review_commit: previousCommit,
+		current_commit: currentCommit,
+		plan_diff_summary:
+			diff || "(plan file unchanged; changes may live in referenced artifacts)",
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Shared template resolution + rendering
 // ---------------------------------------------------------------------------
 
@@ -321,6 +395,12 @@ export interface ResolveAndRenderOptions {
 	templateName: string;
 	session?: string;
 	newSession?: boolean;
+	/**
+	 * True when the caller is continuing a native subagent (Task tool) rather
+	 * than resuming a provider session. Treated as a continued-variant signal
+	 * equivalent to `session`, but without implying a provider session id.
+	 */
+	continueNative?: boolean;
 	explicitVars: Record<string, string>;
 	allowPlanPathOverride?: boolean;
 	resolvedPlanPath: string | null;
@@ -361,11 +441,13 @@ export function resolveAndRenderTemplate(
 		resolvedPlanPath,
 	} = opts;
 
-	// Continued-template selection: when a session is active and a "-continued"
-	// variant exists, use it (saves tokens since context is already loaded).
+	// Continued-template selection: when a session is active OR the caller
+	// signals native-subagent continuation, and a "-continued" variant exists,
+	// use it (saves tokens since context is already loaded).
 	// --new-session always means full template — skip continued-template probe.
 	let templateName = requestedName;
-	if (session && !opts.newSession) {
+	const wantContinued = (session || opts.continueNative) && !opts.newSession;
+	if (wantContinued) {
 		const continuedName = `${templateName}-continued`;
 		try {
 			loadTemplate(continuedName);

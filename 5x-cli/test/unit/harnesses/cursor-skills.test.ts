@@ -29,7 +29,7 @@ describe("cursor skills loader", () => {
 
 		expect(combined).toContain("Cursor subagent invocation");
 		expect(combined).toContain("resume=");
-		expect(combined).toContain("$REVIEWER_AGENT_ID");
+		expect(combined).toContain("$NATIVE_SUBTASK_ID");
 	});
 
 	test("removes opencode-specific task tool wording", () => {

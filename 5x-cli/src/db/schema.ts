@@ -399,6 +399,14 @@ const migrations: Migration[] = [
 			db.exec("DROP TABLE IF EXISTS _mig_phases");
 		},
 	},
+	{
+		version: 5,
+		description:
+			"Add steps.head_commit (git HEAD at record time) for review delta context",
+		up(db) {
+			db.exec(`ALTER TABLE steps ADD COLUMN head_commit TEXT`);
+		},
+	},
 ];
 
 /**

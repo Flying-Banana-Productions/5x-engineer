@@ -126,6 +126,33 @@ export async function getLatestCommit(workdir: string): Promise<string> {
 	return result.stdout;
 }
 
+/**
+ * Produce a bounded diff summary for a single file between two commits.
+ * Returns empty string on any git failure (best-effort for prompt context).
+ * Output is capped to `maxLines` lines; overflow is indicated with a trailing
+ * `... (truncated, N more lines)` marker.
+ */
+export async function getFileDiffSummary(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+	filePath: string,
+	maxLines = 200,
+): Promise<string> {
+	const result = await run(
+		["diff", "--unified=3", `${fromCommit}..${toCommit}`, "--", filePath],
+		workdir,
+	);
+	if (result.exitCode !== 0) return "";
+	const out = result.stdout;
+	if (!out) return "";
+	const lines = out.split("\n");
+	if (lines.length <= maxLines) return out;
+	const kept = lines.slice(0, maxLines).join("\n");
+	const remaining = lines.length - maxLines;
+	return `${kept}\n... (truncated, ${remaining} more lines)`;
+}
+
 /** Check if there are uncommitted changes (staged or unstaged). */
 export async function hasUncommittedChanges(workdir: string): Promise<boolean> {
 	const result = await run(["status", "--porcelain"], workdir);

@@ -78,19 +78,22 @@ timeout handling.
 ### Task reuse (reviewer)
 
 Task reuse is optional and best-effort for the native reviewer. Capture
-the **agent id** returned by the Task tool after the first reviewer
-delegation in this phase as `$REVIEWER_AGENT_ID`. For re-reviews (after
-author fixes), pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool so
+the **native subtask id** returned by the Task tool after the first
+reviewer delegation in this phase as `$NATIVE_SUBTASK_ID`. For
+re-reviews (after author fixes), pass
+**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool so
 the **same subagent** keeps conversational context. Do **not** pass that
-id to `5x template render --session` — that flag is for **CLI continuity
-control** (`*-continued` template selection and invoke-mode provider session identity), not
-for **subagent continuation ids** from the orchestrator's native delegation API.
+id to `5x template render --session` — `--session` takes a **provider
+session id** (a distinct concept used only on the invoke path), not a
+native subtask id. When continuing a native subagent, pass
+**`--continue-native`** to `5x template render` instead.
 
 If `reviewer.continuePhaseSessions` is enabled and a second
-`5x template render reviewer-commit` in this phase requires a flag, use
-**`--new-session`** when no `reviewer-commit-continued` template exists
-(CLI bookkeeping). That is independent of native subagent continuity: you may use
-**`--new-session` on the render** and **`[[NATIVE_CONTINUE_PARAM]]` on the Task** together.
+`5x template render reviewer-commit` in this phase requires a flag, pass
+**`--continue-native`** when a `reviewer-commit-continued` variant
+exists (it will include the diff since the prior review). If no
+continued variant exists, fall back to **`--new-session`** for CLI
+bookkeeping; native subagent continuity on the Task tool is unaffected.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -168,7 +171,7 @@ v0 runs. Filter to phases where `done` is `false`. Process them in order.
 Track $QUALITY_RETRIES = 0 (max from `maxQualityRetries` in `5x config show`).
 Track $REVIEW_ITERATIONS = 0 (max from `maxReviewIterations` in `5x config show`).
 {{#if reviewer_native}}
-Track $REVIEWER_AGENT_ID = "" (native continuation id from the prior reviewer delegation in this phase — not a CLI `--session` value).
+Track $NATIVE_SUBTASK_ID = "" (native continuation id from the prior reviewer delegation in this phase — not a CLI `--session` value).
 {{/if}}
 {{#if reviewer_invoke}}
 Track $SESSION_ID = "" (for optional session reuse within this phase — invoke reviewer).
@@ -289,8 +292,11 @@ Loop back to Step 2.
 Delegate to the reviewer via the Task tool:
 
 ```bash
-# Re-reviews: add --new-session to the render if the CLI requires it (continuePhaseSessions
-# and no *-continued template). Do not pass $REVIEWER_AGENT_ID as --session.
+# Re-reviews: pass --continue-native to the render when continuing the
+# same native subagent (it selects the -continued variant if one exists).
+# Fall back to --new-session only for recovery or when no -continued
+# variant is defined. Never pass $NATIVE_SUBTASK_ID as --session —
+# --session takes a provider session id, not a native subtask id.
 RENDERED=$(5x template render reviewer-commit --run $RUN \
   --var commit_hash=$COMMIT \
   --var phase_number=$PHASE_NUMBER)
@@ -299,7 +305,7 @@ STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase $PHASE \
@@ -341,7 +347,7 @@ reviewer before proceeding:
     5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
 
 {{#if reviewer_native}}
-After a successful review, set `$REVIEWER_AGENT_ID` from the Task tool
+After a successful review, set `$NATIVE_SUBTASK_ID` from the Task tool
 result for optional **`[[NATIVE_CONTINUE_PARAM]]`** on the next reviewer delegation in this
 phase. Do not conflate with `5x template render --session` (CLI continuity
 for continued-template selection and invoke-mode provider session identity).

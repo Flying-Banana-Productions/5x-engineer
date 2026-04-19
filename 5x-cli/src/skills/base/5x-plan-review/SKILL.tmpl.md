@@ -24,6 +24,27 @@ approved by the reviewer or the human overrides.
 Load the `5x` skill for delegation patterns, interaction model, and
 timeout handling.
 
+{{#if any_native}}
+## Two kinds of session (disambiguation)
+
+The word "session" means two different things, and mixing them up is the
+single most common cause of stale re-reviews:
+
+- **Provider session id** — a value persisted in `steps.session_id` that
+  identifies a conversation on the AI provider side (populated when the
+  invoke path is used). Consumed by `5x template render --session <id>`.
+- **Native subtask id** (`$NATIVE_SUBTASK_ID`) — the id returned by the
+  harness when spawning a native subagent. The 5x CLI has no knowledge
+  of this id. It goes on the native continuation parameter
+  (`[[NATIVE_CONTINUE_PARAM]]`) and **must never** be passed as
+  `--session`.
+
+When continuing a native subagent reviewer for a re-review, use
+`5x template render --continue-native` so the CLI selects the
+`-continued` template variant without expecting a provider session id.
+Only use `--new-session` for recovery (context loss, empty output).
+{{/if}}
+
 ## Gotchas
 
 - Only completed review-then-author cycles count toward
@@ -74,36 +95,41 @@ timeout handling.
 # 1. Render the prompt (output follows standard outputSuccess envelope)
 #    review_path is auto-generated — do NOT pass --var review_path.
 #    Read the auto-generated path from .data.variables.review_path in the output.
-#    Re-reviews: add --new-session if the CLI requires it; do not pass the
-#    subagent continuation id as --session (that flag controls CLI continuity,
-#    including continued-template selection and invoke-mode session identity).
-RENDERED=$(5x template render reviewer-plan --run $RUN)
+#    Re-reviews: add --continue-native when reusing a native subagent (it
+#    selects the -continued template variant without a provider session id).
+#    Never pass $NATIVE_SUBTASK_ID as --session — that flag takes a provider
+#    session id (persisted in steps.session_id), not a harness task id.
+RENDERED=$(5x template render reviewer-plan --run $RUN \
+  ${NATIVE_SUBTASK_ID:+--continue-native})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 # 2. Launch subagent via Task tool (pass the native continuation parameter to continue the same reviewer)
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 
 # 4. Capture agent id for reuse in subsequent reviews
-REVIEWER_AGENT_ID=<agent id from Task tool result>
+NATIVE_SUBTASK_ID=<agent id from Task tool result>
 ```
 
 **Task reuse** is expected when `reviewer.continuePhaseSessions` is
 enabled and the reviewer is native. If a prior reviewer step exists for
-the current phase, `5x template render` may require **`--session`** (for
-invoke-mode session identity) or **`--new-session`** — not the **subagent continuation id**. Pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool for
-subagent continuity. Use `--new-session` on the render only when the
-CLI requires it or for recovery (context loss, empty output).
+the current phase, `5x template render` requires a continuation signal.
+For native reviewers pass **`--continue-native`** — this selects the
+`reviewer-plan-continued` template (which includes the diff since the
+prior review) without expecting a provider session id. Pass
+**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool for
+subagent continuity. Use `--new-session` only for recovery
+(context loss, empty output).
 
-When a **provider** `--session` is passed to `5x template render` (invoke
-path), the command can select the shorter `reviewer-plan-continued`
-template variant if one exists.
+The `--session <id>` flag is reserved for the invoke path — it takes a
+provider session id, not the native subtask id. Mixing the two is a
+common source of stale re-reviews.
 {{/if}}
 {{#if reviewer_invoke}}
 ### Delegating review/author work with invoke (invoke reviewer)
@@ -133,10 +159,13 @@ confirmed all reviewer templates have `-continued` variants.
 
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
-Track $REVIEWER_AGENT_ID (initially empty). When `reviewer.continuePhaseSessions`
-is enabled, pass **`[[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID`** on the Task tool on
-subsequent reviews. Use **`--new-session`** on `5x template render` when
-the CLI requires it — do not pass the agent id as `--session`.
+Track $NATIVE_SUBTASK_ID (initially empty). When `reviewer.continuePhaseSessions`
+is enabled, pass **`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool on
+subsequent reviews AND **`--continue-native`** on `5x template render` so
+it emits the `reviewer-plan-continued` variant (with the diff since the
+prior review). Never pass the native subtask id as `--session` — that
+flag takes a provider session id (a distinct concept used only on the
+invoke path).
 {{/if}}
 {{#if reviewer_invoke}}
 Track $SESSION_ID (initially empty). Session reuse is enforced when
@@ -156,23 +185,24 @@ Read $REVIEW_PATH from a separate template render call before each reviewer invo
 Delegate to the reviewer via the Task tool:
 
 ```bash
-RENDERED=$(5x template render reviewer-plan --run $RUN)
+RENDERED=$(5x template render reviewer-plan --run $RUN \
+  ${NATIVE_SUBTASK_ID:+--continue-native})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$REVIEWER_AGENT_ID (omit if empty)>
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
   --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
 ```
 
-When a **provider** `--session` is passed to `5x template render` (invoke
-path), the command can select the `reviewer-plan-continued` template variant
-when it exists.
+`--continue-native` selects the `reviewer-plan-continued` template
+variant, which includes the commit range and plan diff since the prior
+review so the subagent can rebase its findings against the new state.
 
-Capture `$REVIEWER_AGENT_ID` from the Task tool result for reuse in
+Capture `$NATIVE_SUBTASK_ID` from the Task tool result for reuse in
 subsequent reviews.
 {{else}}
 Delegate to the reviewer via `5x invoke`:
@@ -349,12 +379,19 @@ Report to the human: plan review is complete. Verdict: approved
 - **Subagent returns empty or invalid output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
 {{/if}}
-- **SESSION_REQUIRED error**: `5x template render` requires `--session`
-  or `--new-session` because `continuePhaseSessions` is enabled and prior
-  steps exist. For recovery, prefer **`--new-session`**. For invoke reviewers,
-  pass **`--session`** with the provider's `session_id` — not the
-  orchestrator subagent continuation id (native reviewers use **`[[NATIVE_CONTINUE_PARAM]]`** on
-  the Task-style delegation instead).
+- **SESSION_REQUIRED error**: `5x template render` requires a
+  continuation signal because `continuePhaseSessions` is enabled and
+  prior steps exist.
+{{#if reviewer_native}}
+  For native reviewers pass **`--continue-native`** (and keep reusing
+  `[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID` on the native
+  delegation). Never pass a native subtask id as `--session`.
+{{else}}
+  For invoke reviewers pass **`--session`** with the provider's
+  `session_id`.
+{{/if}}
+  Use **`--new-session`** only for recovery (context loss, empty
+  output).
 
 ## Completion
 

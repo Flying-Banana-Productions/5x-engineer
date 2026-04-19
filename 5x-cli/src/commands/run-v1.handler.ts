@@ -48,6 +48,7 @@ import {
 	branchNameFromPlan,
 	checkGitSafety,
 	createWorktree,
+	getLatestCommit,
 	isBranchRelevant,
 	listWorktrees,
 	runWorktreeSetupCommand,
@@ -982,6 +983,7 @@ export async function recordStepInternal(
 	// Phase 3 fix: validate run-scoped context via shared resolver to honor
 	// the fail-closed worktree contract. Recording steps against a run with
 	// a missing worktree is a drift risk — fail with WORKTREE_MISSING.
+	let effectiveWorkdir: string | undefined;
 	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
 	if (controlPlaneRoot) {
 		const ctxResult = resolveRunExecutionContext(db, params.run, {
@@ -993,6 +995,18 @@ export async function recordStepInternal(
 				ctxResult.error.message,
 				ctxResult.error.detail,
 			);
+		}
+		effectiveWorkdir = ctxResult.context.effectiveWorkingDirectory;
+	}
+
+	// Capture git HEAD at record time for review-delta context on subsequent
+	// continued reviews. Best-effort — non-git workdirs or git failures skip.
+	let headCommit: string | undefined;
+	if (effectiveWorkdir) {
+		try {
+			headCommit = await getLatestCommit(effectiveWorkdir);
+		} catch {
+			// Not a git repo or git unavailable — leave head_commit null
 		}
 	}
 
@@ -1033,6 +1047,7 @@ export async function recordStepInternal(
 		cost_usd: params.costUsd,
 		duration_ms: params.durationMs,
 		log_path: params.logPath,
+		head_commit: headCommit,
 	});
 
 	return {

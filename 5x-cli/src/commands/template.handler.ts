@@ -24,7 +24,12 @@ import {
 import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { validateSessionContinuity } from "./session-check.js";
-import { parseVars, resolveAndRenderTemplate } from "./template-vars.js";
+import {
+	isPlanReviewTemplate,
+	parseVars,
+	resolveAndRenderTemplate,
+	resolveReviewDelta,
+} from "./template-vars.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +41,7 @@ export interface TemplateRenderParams {
 	vars?: string | string[];
 	session?: string;
 	newSession?: boolean;
+	continueNative?: boolean;
 	workdir?: string;
 	allowPlanPathOverride?: boolean;
 }
@@ -165,11 +171,40 @@ export async function templateRender(
 		templateName: params.template,
 		session: params.session,
 		newSession: params.newSession,
+		continueNative: params.continueNative,
 		runId: params.run,
 		db: runDb,
 		config,
 		explicitVars,
 	});
+
+	// -----------------------------------------------------------------------
+	// Compute review-delta variables when the caller is continuing a prior
+	// plan-review (either via provider session or native-subagent signal).
+	// Best-effort: missing git/db context just skips the merge.
+	// -----------------------------------------------------------------------
+	const wantContinued =
+		(params.session || params.continueNative) && !params.newSession;
+	let mergedVars = explicitVars;
+	if (
+		wantContinued &&
+		runDb &&
+		params.run &&
+		resolvedPlanPath &&
+		isPlanReviewTemplate(params.template)
+	) {
+		const delta = await resolveReviewDelta({
+			db: runDb,
+			runId: params.run,
+			phase: explicitVars.phase_number ?? "plan",
+			planPath: resolvedPlanPath,
+			workdir: resolvedWorktreeRoot ?? projectRoot,
+			stepName: "reviewer:review",
+		});
+		if (Object.keys(delta).length > 0) {
+			mergedVars = { ...delta, ...explicitVars };
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// Resolve and render template (shared helper)
@@ -181,14 +216,15 @@ export async function templateRender(
 		templateName: params.template,
 		session: effectiveSession,
 		newSession: params.newSession,
-		explicitVars,
+		continueNative: params.continueNative,
+		explicitVars: mergedVars,
 		allowPlanPathOverride: params.allowPlanPathOverride,
 		resolvedPlanPath,
 		config,
 		projectRoot,
 		// Pass run context for review_path auto-generation
 		runId: params.run,
-		phase: explicitVars.phase_number,
+		phase: mergedVars.phase_number,
 		// Re-root review_path into the worktree when a worktree is mapped
 		worktreeRoot: resolvedWorktreeRoot ?? undefined,
 	});

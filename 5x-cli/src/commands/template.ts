@@ -58,6 +58,11 @@ export function registerTemplate(parent: Command) {
 			"Force a new session (skip continued-template selection)",
 		)
 		.option(
+			"--continue-native",
+			"Select the continued-template variant without a provider session id. " +
+				"Use when continuing a native subagent (Task tool) rather than resuming an invoke session.",
+		)
+		.option(
 			"-w, --workdir <path>",
 			"Working directory override (explicit --workdir wins)",
 		)
@@ -66,7 +71,8 @@ export function registerTemplate(parent: Command) {
 			"\nExamples:\n" +
 				"  $ 5x template render author-next-phase -r abc123\n" +
 				"  $ 5x template render reviewer-plan --var plan_path=./plan.md\n" +
-				"  $ 5x template render author-next-phase -r abc123 --session sess_abc",
+				"  $ 5x template render author-next-phase -r abc123 --session sess_abc\n" +
+				"  $ 5x template render reviewer-plan -r abc123 --continue-native",
 		)
 		.action(async (template, opts) => {
 			await templateRender({
@@ -76,6 +82,7 @@ export function registerTemplate(parent: Command) {
 				allowPlanPathOverride: opts.allowPlanPathOverride,
 				session: opts.session,
 				newSession: opts.newSession,
+				continueNative: opts.continueNative,
 				workdir: opts.workdir,
 			});
 		});

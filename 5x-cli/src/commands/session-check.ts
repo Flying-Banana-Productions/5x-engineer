@@ -21,6 +21,7 @@ export interface SessionCheckOptions {
 	templateName: string;
 	session?: string;
 	newSession?: boolean;
+	continueNative?: boolean;
 	runId?: string;
 	db?: Database;
 	config: Pick<FiveXConfig, "author" | "reviewer">;
@@ -100,14 +101,25 @@ function continuedTemplateExists(templateName: string): boolean {
  * Throws via `outputError()` on validation failures.
  */
 export function validateSessionContinuity(opts: SessionCheckOptions): void {
-	const { templateName, session, newSession, runId, db, config, explicitVars } =
-		opts;
+	const {
+		templateName,
+		session,
+		newSession,
+		continueNative,
+		runId,
+		db,
+		config,
+		explicitVars,
+	} = opts;
 
 	// 1. Mutual exclusivity
-	if (session && newSession) {
+	const continuationSignals = [session, newSession, continueNative].filter(
+		Boolean,
+	).length;
+	if (continuationSignals > 1) {
 		outputError(
 			"INVALID_ARGS",
-			"--session and --new-session are mutually exclusive. Use one or the other.",
+			"--session, --new-session, and --continue-native are mutually exclusive. Use at most one.",
 		);
 	}
 
@@ -145,7 +157,7 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 		return;
 	}
 
-	if (session) {
+	if (session || continueNative) {
 		// Verify continued template exists
 		if (!continuedTemplateExists(templateName)) {
 			outputError(
@@ -157,7 +169,7 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 		return;
 	}
 
-	// Neither --session nor --new-session provided
+	// None of --session / --new-session / --continue-native provided
 	if (!continuedTemplateExists(templateName)) {
 		outputError(
 			"TEMPLATE_NOT_FOUND",
@@ -167,6 +179,9 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 
 	outputError(
 		"SESSION_REQUIRED",
-		`Template "${templateName}" has session continuity enabled and prior "${stepName}" steps exist for run "${runId}" phase "${phase}". Pass --session <id> to continue or --new-session to start fresh.`,
+		`Template "${templateName}" has session continuity enabled and prior "${stepName}" steps exist for run "${runId}" phase "${phase}". ` +
+			`Pass one of: --session <id> (provider session id from \`5x invoke\`'s session_id — not a native subtask id), ` +
+			`--continue-native (when continuing a native subagent via Task tool continuity), ` +
+			`or --new-session (start fresh).`,
 	);
 }

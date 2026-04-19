@@ -17,6 +17,7 @@ export interface StepRow {
 	cost_usd: number | null;
 	duration_ms: number | null;
 	log_path: string | null;
+	head_commit: string | null;
 	created_at: string;
 }
 
@@ -33,6 +34,7 @@ export interface RecordStepInput {
 	cost_usd?: number;
 	duration_ms?: number;
 	log_path?: string;
+	head_commit?: string;
 }
 
 export interface RecordStepResult {
@@ -116,8 +118,8 @@ export function recordStep(
 		.query(
 			`INSERT OR IGNORE INTO steps
 			 (run_id, step_name, phase, iteration, result_json,
-			  session_id, model, tokens_in, tokens_out, cost_usd, duration_ms, log_path)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+			  session_id, model, tokens_in, tokens_out, cost_usd, duration_ms, log_path, head_commit)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
 		)
 		.run(
 			input.run_id,
@@ -132,6 +134,7 @@ export function recordStep(
 			input.cost_usd ?? null,
 			input.duration_ms ?? null,
 			input.log_path ?? null,
+			input.head_commit ?? null,
 		);
 
 	if (result.changes > 0) {
@@ -241,6 +244,26 @@ export function getLatestStep(
 			 ORDER BY id DESC LIMIT 1`,
 		)
 		.get(runId, stepName) as StepRow | null;
+}
+
+/**
+ * Get the latest step scoped to (run, step_name, phase). Used by continued
+ * reviewer templates to retrieve the prior review's head_commit for delta
+ * context. `phase` may be null; SQL uses `IS` for null-safe equality.
+ */
+export function getLatestStepForPhase(
+	db: Database,
+	runId: string,
+	stepName: string,
+	phase: string | null,
+): StepRow | null {
+	return db
+		.query(
+			`SELECT * FROM steps
+			 WHERE run_id = ?1 AND step_name = ?2 AND phase IS ?3
+			 ORDER BY id DESC LIMIT 1`,
+		)
+		.get(runId, stepName, phase) as StepRow | null;
 }
 
 // --- Run operations ---

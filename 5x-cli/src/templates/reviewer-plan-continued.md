@@ -1,21 +1,38 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 2
-variables: [plan_path, review_path, run_id]
+version: 3
+variables: [plan_path, review_path, run_id, previous_review_commit, current_commit, plan_diff_summary]
 step_name: "reviewer:review"
 variable_defaults:
   run_id: ""
+  previous_review_commit: ""
+  current_commit: ""
+  plan_diff_summary: ""
 ---
 
 The plan at `{{plan_path}}` has been revised since your last review. Re-review it now.
 
+## Context Since Last Review
+
+- Previous review commit: `{{previous_review_commit}}`
+- Current commit: `{{current_commit}}`
+
+Changes to the plan file since the last review:
+
+```
+{{plan_diff_summary}}
+```
+
+Treat line numbers from your prior findings as potentially stale — re-anchor them against the current plan. For each previously raised issue, decide whether it is **addressed**, **partially addressed**, or **still open**, and say so explicitly in the addendum below.
+
 ## Instructions
 
-1. Read the updated plan at `{{plan_path}}`.
+1. Read the updated plan at `{{plan_path}}` in full.
 2. Read any new changes in referenced implementation files if the plan mentions them.
-3. Check whether previously raised issues have been addressed.
-4. Write your updated assessment as a new **Addendum** section appended to `{{review_path}}`. Do not modify existing review content.
+3. Walk through your prior findings and classify each one against the new state.
+4. Surface any new issues introduced by the revision.
+5. Write your updated assessment as a new **Addendum** section appended to `{{review_path}}`. Do not modify existing review content.
 
 Follow the same review perspective, issue classification (`auto_fix` / `human_required`), and readiness assessment (`ready` / `ready_with_corrections` / `not_ready`) from your initial review prompt.
 
