@@ -17,6 +17,9 @@ import authorProcessPlanReviewRaw from "./author-process-plan-review.md" with {
 	type: "text",
 };
 import reviewerCommitRaw from "./reviewer-commit.md" with { type: "text" };
+import reviewerCommitContinuedRaw from "./reviewer-commit-continued.md" with {
+	type: "text",
+};
 import reviewerPlanRaw from "./reviewer-plan.md" with { type: "text" };
 import reviewerPlanContinuedRaw from "./reviewer-plan-continued.md" with {
 	type: "text",
@@ -61,6 +64,7 @@ const TEMPLATES: Record<string, string> = {
 	"reviewer-plan": reviewerPlanRaw,
 	"reviewer-plan-continued": reviewerPlanContinuedRaw,
 	"reviewer-commit": reviewerCommitRaw,
+	"reviewer-commit-continued": reviewerCommitContinuedRaw,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,6 +130,7 @@ const STEP_NAME_FALLBACKS: Record<string, string> = {
 	"reviewer-plan": "reviewer:review",
 	"reviewer-plan-continued": "reviewer:review",
 	"reviewer-commit": "reviewer:review",
+	"reviewer-commit-continued": "reviewer:review",
 };
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;

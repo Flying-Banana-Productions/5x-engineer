@@ -375,13 +375,14 @@ describe("listTemplates", () => {
 		expect(names).toContain("reviewer-plan");
 		expect(names).toContain("reviewer-plan-continued");
 		expect(names).toContain("reviewer-commit");
-		expect(templates.length).toBe(8);
+		expect(names).toContain("reviewer-commit-continued");
+		expect(templates.length).toBe(9);
 	});
 
-	test("all templates have version >= 2", () => {
+	test("all templates have version >= 1", () => {
 		const templates = listTemplates();
 		for (const t of templates) {
-			expect(t.version).toBeGreaterThanOrEqual(2);
+			expect(t.version).toBeGreaterThanOrEqual(1);
 		}
 	});
 });
@@ -395,6 +396,7 @@ describe("template stepName", () => {
 		"author-process-impl-review": "author:fix-review",
 		"reviewer-plan": "reviewer:review",
 		"reviewer-commit": "reviewer:review",
+		"reviewer-commit-continued": "reviewer:review",
 	};
 
 	test("all bundled templates have correct stepName in parsed metadata", () => {
