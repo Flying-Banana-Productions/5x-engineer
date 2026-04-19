@@ -167,7 +167,7 @@ export async function runQuality(
 		const layeredCwd =
 			result.isLayered && result.nearestConfigPath
 				? dirname(result.nearestConfigPath)
-				: controlPlaneRoot;
+				: (effectiveWorkdir ?? controlPlaneRoot);
 		projectRoot = explicitWorkdir ?? layeredCwd;
 		qualityGates = result.config.qualityGates;
 		skipQualityGates = result.config.skipQualityGates;
