@@ -62,6 +62,24 @@ Classify as `human_required` only when the fix genuinely requires a choice that 
 from what already exists. The "when in doubt" fallback is for true ambiguity — not for fixes that
 feel uncertain but have an objectively correct answer in context.
 
+### Classification Self-Check
+
+Before classifying any item as `human_required`, verify:
+1. **Is there only one reasonable fix?** If a competent engineer would arrive at the same
+   fix without asking anyone, it's `auto_fix` — even if the fix feels non-trivial.
+2. **Is the information in the codebase?** If the answer exists in the code, plan, tests,
+   or git history, the reviewer should not escalate it.
+
+Common mechanical fixes that are `auto_fix`, NOT `human_required`:
+- Missing or unused import
+- Unused variable or parameter
+- Missing null/undefined check where the pattern exists nearby
+- Incorrect type annotation with an obvious correct type
+- Missing error handling for a case already handled in similar code
+- Typo in string literal, comment, or identifier
+- Missing test for an edge case when similar tests exist as a pattern
+- Log message that doesn't match the actual operation
+
 ### Readiness Assessment
 
 Provide an overall readiness assessment:

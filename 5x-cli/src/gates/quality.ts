@@ -4,7 +4,7 @@ import {
 	mkdirSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { shellArgs } from "../utils/platform.js";
 import { endStream } from "../utils/stream.js";
 
@@ -167,6 +167,17 @@ export async function runQualityGates(
 ): Promise<QualityResult> {
 	const results: QualityCommandResult[] = [];
 	let allPassed = true;
+
+	// Preflight: validate workdir is absolute and accessible
+	if (!isAbsolute(workdir)) {
+		throw new Error(
+			`Quality gate workdir must be an absolute path, got: "${workdir}"`,
+		);
+	}
+	if (!existsSync(workdir)) {
+		throw new Error(`Quality gate workdir does not exist: "${workdir}"`);
+	}
+	console.error(`Quality gates executing in: ${workdir}`);
 
 	// Ensure log directory exists with user-only permissions (consistent with orchestrators)
 	if (!existsSync(opts.logDir)) {

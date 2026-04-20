@@ -50,6 +50,7 @@ import { validateSessionContinuity } from "./session-check.js";
 import {
 	hasStdinVarFlag,
 	isPlanReviewTemplate,
+	needsReviewDelta,
 	parseVars,
 	resolveAndRenderTemplate,
 	resolveReviewDelta,
@@ -338,12 +339,14 @@ export async function invokeAgent(
 		runDb &&
 		params.run &&
 		resolvedPlanPath &&
-		isPlanReviewTemplate(params.template)
+		needsReviewDelta(params.template)
 	) {
 		const delta = await resolveReviewDelta({
 			db: runDb,
 			runId: params.run,
-			phase: mergedVars.phase_number ?? params.phase ?? "plan",
+			phase: isPlanReviewTemplate(params.template)
+				? (mergedVars.phase_number ?? params.phase ?? "plan")
+				: (mergedVars.phase_number ?? params.phase ?? "1"),
 			planPath: resolvedPlanPath,
 			workdir: resolvedWorktreePath ?? projectRoot,
 			stepName: "reviewer:review",
@@ -351,7 +354,9 @@ export async function invokeAgent(
 		if (Object.keys(delta.vars).length > 0) {
 			mergedVars = { ...delta.vars, ...mergedVars };
 		}
-		reviewDiffAppend = delta.diffAppend;
+		reviewDiffAppend = isPlanReviewTemplate(params.template)
+			? delta.diffAppend
+			: null;
 	}
 
 	// When --new-session is set, pass session: undefined to ensure full

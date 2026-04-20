@@ -26,6 +26,7 @@ import { resolveRunExecutionContext } from "./run-context.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
 	isPlanReviewTemplate,
+	needsReviewDelta,
 	parseVars,
 	resolveAndRenderTemplate,
 	resolveReviewDelta,
@@ -194,12 +195,14 @@ export async function templateRender(
 		runDb &&
 		params.run &&
 		resolvedPlanPath &&
-		isPlanReviewTemplate(params.template)
+		needsReviewDelta(params.template)
 	) {
 		const delta = await resolveReviewDelta({
 			db: runDb,
 			runId: params.run,
-			phase: explicitVars.phase_number ?? "plan",
+			phase: isPlanReviewTemplate(params.template)
+				? (explicitVars.phase_number ?? "plan")
+				: (explicitVars.phase_number ?? "1"),
 			planPath: resolvedPlanPath,
 			workdir: resolvedWorktreeRoot ?? projectRoot,
 			stepName: "reviewer:review",
@@ -207,7 +210,9 @@ export async function templateRender(
 		if (Object.keys(delta.vars).length > 0) {
 			mergedVars = { ...delta.vars, ...explicitVars };
 		}
-		reviewDiffAppend = delta.diffAppend;
+		reviewDiffAppend = isPlanReviewTemplate(params.template)
+			? delta.diffAppend
+			: null;
 	}
 
 	// -----------------------------------------------------------------------

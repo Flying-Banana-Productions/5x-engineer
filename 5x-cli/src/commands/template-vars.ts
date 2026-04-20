@@ -135,10 +135,20 @@ export async function parseVars(
  * Plan-review templates include: reviewer-plan, reviewer-plan-continued, author-process-plan-review
  */
 export function isPlanReviewTemplate(templateName: string): boolean {
-	// Check for the base name before -continued suffix
 	const baseName = templateName.replace(/-continued$/, "");
 	return (
 		baseName === "reviewer-plan" || baseName === "author-process-plan-review"
+	);
+}
+
+export function isCommitReviewTemplate(templateName: string): boolean {
+	const baseName = templateName.replace(/-continued$/, "");
+	return baseName === "reviewer-commit";
+}
+
+export function needsReviewDelta(templateName: string): boolean {
+	return (
+		isPlanReviewTemplate(templateName) || isCommitReviewTemplate(templateName)
 	);
 }
 

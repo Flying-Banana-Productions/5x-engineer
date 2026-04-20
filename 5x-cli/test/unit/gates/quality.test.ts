@@ -178,6 +178,32 @@ describe("runSingleCommand", () => {
 });
 
 describe("runQualityGates", () => {
+	test("throws on relative workdir", async () => {
+		const tmp = makeTmp();
+		try {
+			await expect(
+				runQualityGates(["echo hi"], "./relative/path", makeOpts(tmp)),
+			).rejects.toThrow("absolute path");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("throws on non-existent workdir", async () => {
+		const tmp = makeTmp();
+		try {
+			await expect(
+				runQualityGates(
+					["echo hi"],
+					"/tmp/nonexistent-5x-test-dir",
+					makeOpts(tmp),
+				),
+			).rejects.toThrow("does not exist");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("all passing commands returns passed=true", async () => {
 		const tmp = makeTmp();
 		try {

@@ -9,7 +9,9 @@ import { describe, expect, test } from "bun:test";
 import {
 	checkPlanPathOverrideMismatch,
 	checkReviewPathMismatch,
+	isCommitReviewTemplate,
 	isPlanReviewTemplate,
+	needsReviewDelta,
 	resolveInternalTemplateVariables,
 } from "../../../src/commands/template-vars.js";
 import type { FiveXConfig } from "../../../src/config.js";
@@ -62,6 +64,54 @@ describe("isPlanReviewTemplate", () => {
 
 	test("returns false for author-process-impl-review", () => {
 		expect(isPlanReviewTemplate("author-process-impl-review")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isCommitReviewTemplate
+// ---------------------------------------------------------------------------
+
+describe("isCommitReviewTemplate", () => {
+	test("returns true for reviewer-commit", () => {
+		expect(isCommitReviewTemplate("reviewer-commit")).toBe(true);
+	});
+
+	test("returns true for reviewer-commit-continued", () => {
+		expect(isCommitReviewTemplate("reviewer-commit-continued")).toBe(true);
+	});
+
+	test("returns false for reviewer-plan", () => {
+		expect(isCommitReviewTemplate("reviewer-plan")).toBe(false);
+	});
+
+	test("returns false for author-next-phase", () => {
+		expect(isCommitReviewTemplate("author-next-phase")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// needsReviewDelta
+// ---------------------------------------------------------------------------
+
+describe("needsReviewDelta", () => {
+	test("returns true for reviewer-plan", () => {
+		expect(needsReviewDelta("reviewer-plan")).toBe(true);
+	});
+
+	test("returns true for reviewer-plan-continued", () => {
+		expect(needsReviewDelta("reviewer-plan-continued")).toBe(true);
+	});
+
+	test("returns true for reviewer-commit", () => {
+		expect(needsReviewDelta("reviewer-commit")).toBe(true);
+	});
+
+	test("returns true for reviewer-commit-continued", () => {
+		expect(needsReviewDelta("reviewer-commit-continued")).toBe(true);
+	});
+
+	test("returns false for author-next-phase", () => {
+		expect(needsReviewDelta("author-next-phase")).toBe(false);
 	});
 });
 

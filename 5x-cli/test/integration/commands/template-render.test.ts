@@ -1490,7 +1490,7 @@ describe("5x template render", () => {
 	);
 
 	test(
-		"TEMPLATE_NOT_FOUND when continuePhaseSessions enabled but no continued variant and --session used",
+		"reviewer-commit with --session selects continued variant when continuePhaseSessions enabled",
 		async () => {
 			const dir = makeTmpDir();
 			try {
@@ -1516,12 +1516,11 @@ describe("5x template render", () => {
 					"sess_123",
 				]);
 
-				expect(result.exitCode).toBe(2); // TEMPLATE_NOT_FOUND
+				expect(result.exitCode).toBe(0);
 				const json = parseJson(result.stdout);
-				expect(json.ok).toBe(false);
-				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("TEMPLATE_NOT_FOUND");
-				expect(error.message as string).toContain("reviewer-commit-continued");
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.selected_template).toBe("reviewer-commit-continued");
 			} finally {
 				cleanupDir(dir);
 			}

@@ -185,11 +185,10 @@ describe("validateSessionContinuity", () => {
 		}
 	});
 
-	test("prior steps exist, no flags, no continued template → TEMPLATE_NOT_FOUND error", () => {
+	test("prior steps exist, no flags, continued template exists → SESSION_REQUIRED for reviewer-commit", () => {
 		const db = makeDb();
 		const runId = "run_004";
 		insertRun(db, runId);
-		// reviewer-commit has no continued variant, step_name is "reviewer:review"
 		insertStep(db, runId, "reviewer:review", "1");
 
 		try {
@@ -205,8 +204,7 @@ describe("validateSessionContinuity", () => {
 			expect(true).toBe(false); // should not reach
 		} catch (err) {
 			expect(err).toBeInstanceOf(CliError);
-			expect((err as CliError).code).toBe("TEMPLATE_NOT_FOUND");
-			expect((err as CliError).message).toContain("reviewer-commit-continued");
+			expect((err as CliError).code).toBe("SESSION_REQUIRED");
 		}
 	});
 
@@ -230,14 +228,13 @@ describe("validateSessionContinuity", () => {
 		).not.toThrow();
 	});
 
-	test("prior steps exist, session provided, no continued template → TEMPLATE_NOT_FOUND error", () => {
+	test("prior steps exist, session provided, continued template exists → no error for reviewer-commit", () => {
 		const db = makeDb();
 		const runId = "run_006";
 		insertRun(db, runId);
 		insertStep(db, runId, "reviewer:review", "1");
 
-		// reviewer-commit has no continued variant
-		try {
+		expect(() =>
 			validateSessionContinuity(
 				baseOpts({
 					templateName: "reviewer-commit",
@@ -247,12 +244,8 @@ describe("validateSessionContinuity", () => {
 					config: reviewerEnabledConfig(),
 					explicitVars: { phase_number: "1" },
 				}),
-			);
-			expect(true).toBe(false);
-		} catch (err) {
-			expect(err).toBeInstanceOf(CliError);
-			expect((err as CliError).code).toBe("TEMPLATE_NOT_FOUND");
-		}
+			),
+		).not.toThrow();
 	});
 
 	test("prior steps exist, newSession → no error (skips continued-template check)", () => {
@@ -397,7 +390,7 @@ describe("validateSessionContinuity", () => {
 			);
 			expect(true).toBe(false);
 		} catch (err) {
-			expect((err as CliError).code).toBe("TEMPLATE_NOT_FOUND");
+			expect((err as CliError).code).toBe("SESSION_REQUIRED");
 			expect((err as CliError).message).toContain('phase "2"');
 		}
 	});

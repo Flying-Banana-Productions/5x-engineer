@@ -121,6 +121,15 @@ export function normalizeReviewerVerdict(input: unknown): object {
 				}
 			}
 
+			if (
+				normalized.priority === "P2" &&
+				normalized.action === "human_required"
+			) {
+				console.warn(
+					`Warning: item "${normalized.id}" is P2 + human_required — consider whether auto_fix is more appropriate.`,
+				);
+			}
+
 			return normalized;
 		});
 	}
