@@ -7,13 +7,29 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+## 1.2.2 (2026-05-18)
+
 ### Features
 
+- **Claude Code provider** — added Claude Code session support, streamed event mapping, resume/cancel behavior, auth-env scrubbing, and provider integration coverage.
+- **Config UX overhaul** — added schema-backed config metadata, richer `config show` output, `config set` / `unset` / `add` / `remove` flows, local overlay metadata, sub-project init behavior, and the bundled `5x-config` setup skill.
+- **Mixed-mode delegation** — added per-role `delegationMode`, native/invoke rendering directives, harness skill-loader integration, and reinstall behavior that refreshes managed skills while preserving user-owned files.
+- **Reviewer continuation** — added continued implementation-review templates with plan-diff context, native continuation support, and clearer session naming.
 - **`5x.toml.local` overlays** — optional TOML file merged after the resolved main config (`loadConfig` and layered resolution). Control-plane root local may override `[db]`; sub-project local `[db]` is ignored with a warning. Bootstrap `db.path` reading honors root `5x.toml.local` over `5x.toml`. `5x init` appends `5x.toml.local` to `.gitignore` idempotently.
 
 ### Fixes
 
 - **`harness install` config** — resolves `author` / `reviewer` harness model strings via `resolveLayeredConfig` anchored to the current working directory (not only the checkout root), so monorepo `5x.toml` / `5x.toml.local` overrides apply when run from a sub-package.
+- **Layered config discovery** — fixed config discovery root-boundary behavior outside the control-plane root and prevented root-level TOML writes from being buried under trailing tables.
+- **Quality gate CWD** — quality runs now use the worktree path when no layered sub-project config is present and preflight the CWD more reliably.
+- **Reviewer context** — continued reviews now append plan diffs after template rendering, preserving large diff context instead of dropping it through template variables.
+- **Run context overrides** — `plan_path` overrides now fail fast when they disagree with the active run context.
+- **Claude Code streaming** — stream-event text deltas now contribute to accumulated provider text.
+
+### Improvements
+
+- **Concurrent test coverage** — hardened Claude Code and config integration temp directories for concurrent execution.
+- **Skill guidance** — clarified native-vs-invoke session semantics and made continuation syntax harness-specific.
 
 ## 1.2.1 (2026-04-04)
 
