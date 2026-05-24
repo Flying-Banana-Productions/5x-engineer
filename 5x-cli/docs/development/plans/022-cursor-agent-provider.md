@@ -118,13 +118,11 @@ process. The baseline argv is:
 agent -p --output-format stream-json --stream-partial-output --trust --workspace <cwd> --resume <session-id> <prompt>
 ```
 
-Add optional flags from config and role model:
+Add optional flags from config:
 
 - `--model <model>` when configured.
-- `--force` default is role-based for safety:
-  - author runs: enabled by default;
-  - reviewer runs: disabled by default;
-  - `[cursor-agent].force = true|false` explicitly overrides both roles.
+- `--force` enabled by default provider-wide.
+- `[cursor-agent].force = false` is the explicit escape hatch to disable force.
 - `--sandbox enabled|disabled` when configured.
 - `--approve-mcps` when configured.
 - `--plugin-dir <path>` for each configured plugin directory.
@@ -245,7 +243,7 @@ model = "sonnet-4-thinking"
 
 [cursor-agent]
 # agentBinary = "agent"          # default; can be "cursor-agent" or absolute path
-# force = true                   # optional global override; unset => author:true, reviewer:false
+# force = true                    # provider-wide default; set false to disable force
 # trust = true                   # default; passes --trust in print mode
 # sandbox = "disabled"          # optional: "enabled" | "disabled"
 # approveMcps = false            # optional: pass --approve-mcps
@@ -318,11 +316,11 @@ subprocesses.
 - [ ] Implement `parseCursorAgentPluginConfig(raw?)` in `src/index.ts`.
 - [ ] Defaults:
   - `agentBinary = "agent"`
-  - `force` is role-aware when unset: author `true`, reviewer `false`
+  - `force = true` provider-wide
   - `trust = true`
 - [ ] Ignore invalid values rather than throwing for optional plugin fields.
 - [ ] Export default `ProviderPlugin` with `name: "cursor-agent"`.
-- [ ] Unit tests for defaults (including role-based `force` behavior), valid
+- [ ] Unit tests for defaults (including `force=true` default and `force=false` override), valid
   fields, invalid fields, and array filtering.
 
 ### 1.3 CLI arg builder
@@ -335,13 +333,13 @@ subprocesses.
   - `--resume <sessionId>`
   - `--workspace <cwd>`
   - `--model <model>` when set
-  - `--force` when enabled (default author on, reviewer off, unless overridden)
+  - `--force` when enabled (default enabled; disabled only when `force=false`)
   - `--trust` when enabled
   - `--sandbox <mode>` when set
   - `--approve-mcps` when enabled
   - `--plugin-dir <path>` for each configured plugin dir
   - final positional prompt
-- [ ] Unit tests cover defaults (including author/reviewer `--force` behavior),
+- [ ] Unit tests cover defaults (including provider-wide `--force` default),
   disabled force/trust, optional flags, multiple plugin dirs, missing model, and
   argv order.
 
@@ -558,3 +556,6 @@ assertions on undocumented fields.
 
 - **v1.0 (2026-05-22):** Initial implementation plan based on existing Claude
   Code provider structure and Cursor headless/output/auth/ACP documentation.
+- **v1.1 (2026-05-24):** Updated `--force` semantics to provider-wide default
+  `true` with explicit `force=false` escape hatch; removed role-aware default
+  language for consistency.
