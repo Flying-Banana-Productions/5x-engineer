@@ -58,3 +58,38 @@ Phase 1 only specifies package name, module type, exports, and a root workspace 
 **P1 recommended**
 - [ ] Add the provider package's `peerDependencies` contract to the Phase 1 scaffold.
 - [ ] Remove or resolve the remaining provider-name ambiguity before implementation.
+
+## Addendum — 2026-05-24
+
+The updated plan fixes the two issues from the initial review:
+
+- Reviewer safety policy is now explicit: default `--force` is author-on / reviewer-off, with `[cursor-agent].force` as an override.
+- Phase 1 now includes the provider package `peerDependencies` contract.
+
+However, the revised plan still is not implementation-ready because the new role-aware default depends on information the current external-plugin contract does not provide.
+
+### P0.2 - Role-aware `--force` default cannot be implemented via the current plugin contract
+
+**Action:** `human_required`
+
+**Risk:** The plan now requires `force` to default differently for author vs reviewer runs when config leaves it unset. But external provider plugins are instantiated through `ProviderPlugin.create(config?)`, and the factory only passes the top-level `[cursor-agent]` object into that call. Neither the plugin config parser nor `SessionOptions` / `ResumeOptions` carry the invocation role. As written, the implementation cannot tell whether an unset `force` value should resolve to author `true` or reviewer `false` without first changing the provider contract or the config passed into plugins.
+
+**Requirement:** Update the plan to explicitly choose one of these approaches before implementation:
+
+1. Extend plugin creation/input shape so external plugins receive the role (or a pre-resolved `force` default) from `createProvider(role, config)`.
+2. Move the role-aware defaulting into core config/factory code and pass only a concrete boolean into the plugin.
+3. Drop role-aware defaulting from the plugin contract and require an explicit `[cursor-agent].force` decision.
+
+**Evidence:**
+- Role-aware default now required by the plan: `docs/development/plans/022-cursor-agent-provider.md:121-127`, `:318-326`, `:331-346`
+- External plugin contract only exposes `create(config?)`: `src/providers/types.ts:97-104`
+- Factory only passes top-level plugin config, not role metadata: `src/providers/factory.ts:116-130`, `:154-172`
+
+## Updated Readiness
+
+**Readiness:** not_ready - previous blockers are fixed, but the plan still depends on a role-aware defaulting mechanism that the current external-provider contract cannot express.
+
+## Updated Checklist
+
+**P0 blockers**
+- [ ] Resolve where role-aware `force` defaulting lives (plugin contract vs core factory/config) so the design is implementable.
