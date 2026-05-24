@@ -93,3 +93,20 @@ However, the revised plan still is not implementation-ready because the new role
 
 **P0 blockers**
 - [ ] Resolve where role-aware `force` defaulting lives (plugin contract vs core factory/config) so the design is implementable.
+
+## Addendum — 2026-05-24 (rereview)
+
+The latest plan revision addresses the remaining implementation blocker.
+
+- The role-aware `force` default has been removed; the design is back to one provider-wide default (`true`) with an explicit `force=false` escape hatch.
+- That behavior now matches the current external plugin contract, which only passes top-level plugin config into `ProviderPlugin.create(config?)`.
+- The earlier package-contract omission also remains fixed via the explicit `peerDependencies` scaffold item.
+
+## Final Readiness
+
+**Readiness:** ready - the plan is now internally consistent with the current provider factory/plugin contract and is specific enough to implement.
+
+## Final Checklist
+
+- [x] Provider package scaffold includes the host `peerDependencies` contract.
+- [x] `--force` default semantics are explicit and implementable with today's plugin API.
