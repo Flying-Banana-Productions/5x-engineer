@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@5x-ai/provider-claude-code": "workspace:*",
+    "@5x-ai/provider-cursor-agent": "workspace:*",
     "@5x-ai/provider-invalid": "workspace:*",
     "@5x-ai/provider-sample": "workspace:*",
     "@types/bun": "latest",

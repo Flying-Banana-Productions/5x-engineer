@@ -294,14 +294,14 @@ subprocesses.
 
 ### 1.1 Package scaffold
 
-- [ ] Create `packages/provider-cursor-agent/package.json` with name
+- [x] Create `packages/provider-cursor-agent/package.json` with name
   `@5x-ai/provider-cursor-agent`, `type: "module"`, export `./src/index.ts`,
   and:
   - `peerDependencies: { "@5x-ai/5x-cli": "file:../.." }`.
-- [ ] Add `"@5x-ai/provider-cursor-agent": "workspace:*"` to root
+- [x] Add `"@5x-ai/provider-cursor-agent": "workspace:*"` to root
   `package.json` devDependencies for local workspace resolution/tests
   (separate from the plugin's peer dependency host contract).
-- [ ] Create `src/types.ts` with `CursorAgentConfig`:
+- [x] Create `src/types.ts` with `CursorAgentConfig`:
   - `agentBinary?: string`
   - `force?: boolean`
   - `trust?: boolean`
@@ -313,20 +313,20 @@ subprocesses.
 
 ### 1.2 Config parser and plugin entry
 
-- [ ] Implement `parseCursorAgentPluginConfig(raw?)` in `src/index.ts`.
-- [ ] Defaults:
+- [x] Implement `parseCursorAgentPluginConfig(raw?)` in `src/index.ts`.
+- [x] Defaults:
   - `agentBinary = "agent"`
   - `force = true` provider-wide
   - `trust = true`
-- [ ] Ignore invalid values rather than throwing for optional plugin fields.
-- [ ] Export default `ProviderPlugin` with `name: "cursor-agent"`.
-- [ ] Unit tests for defaults (including `force=true` default and `force=false` override), valid
+- [x] Ignore invalid values rather than throwing for optional plugin fields.
+- [x] Export default `ProviderPlugin` with `name: "cursor-agent"`.
+- [x] Unit tests for defaults (including `force=true` default and `force=false` override), valid
   fields, invalid fields, and array filtering.
 
 ### 1.3 CLI arg builder
 
-- [ ] Implement `buildCreateChatArgs(): string[]` returning `["create-chat"]`.
-- [ ] Implement `buildRunArgs(ctx): string[]` for run invocations:
+- [x] Implement `buildCreateChatArgs(): string[]` returning `["create-chat"]`.
+- [x] Implement `buildRunArgs(ctx): string[]` for run invocations:
   - `-p`
   - `--output-format stream-json`
   - `--stream-partial-output`
@@ -339,55 +339,55 @@ subprocesses.
   - `--approve-mcps` when enabled
   - `--plugin-dir <path>` for each configured plugin dir
   - final positional prompt
-- [ ] Unit tests cover defaults (including provider-wide `--force` default),
+- [x] Unit tests cover defaults (including provider-wide `--force` default),
   disabled force/trust, optional flags, multiple plugin dirs, missing model, and
   argv order.
 
 ### 1.4 Environment builder
 
-- [ ] Implement `buildSubprocessEnv(config)` that starts from `process.env`.
-- [ ] Inject configured `apiKey` as `CURSOR_API_KEY`.
-- [ ] Inject configured `authToken` as `CURSOR_AUTH_TOKEN`.
-- [ ] Do not pass secrets via CLI args.
-- [ ] Unit tests verify env preservation, secret injection, and no mutation of
+- [x] Implement `buildSubprocessEnv(config)` that starts from `process.env`.
+- [x] Inject configured `apiKey` as `CURSOR_API_KEY`.
+- [x] Inject configured `authToken` as `CURSOR_AUTH_TOKEN`.
+- [x] Do not pass secrets via CLI args.
+- [x] Unit tests verify env preservation, secret injection, and no mutation of
   `process.env`.
 
 ### 1.5 Prompt guard
 
-- [ ] Add `MAX_PROMPT_BYTES`, `getPromptBytes()`, `guardPromptSize()`, and a
+- [x] Add `MAX_PROMPT_BYTES`, `getPromptBytes()`, `guardPromptSize()`, and a
   stable over-limit message helper.
-- [ ] Unit tests for ASCII boundary, Unicode byte counting, and stable error
+- [x] Unit tests for ASCII boundary, Unicode byte counting, and stable error
   payload shape.
 
 ### 1.6 Structured-output helpers
 
-- [ ] Implement `wrapPromptForStructuredOutput(prompt, schema)`.
-- [ ] Include a clear final-response-only JSON instruction and serialized schema.
-- [ ] Implement `extractStructuredOutput(finalAssistantText, terminalResultText)`:
+- [x] Implement `wrapPromptForStructuredOutput(prompt, schema)`.
+- [x] Include a clear final-response-only JSON instruction and serialized schema.
+- [x] Implement `extractStructuredOutput(finalAssistantText, terminalResultText)`:
   - parse exact JSON first;
   - fallback to one fenced `json` code block;
   - fallback to terminal result text;
   - return `{ ok: false }` on parse failure without throwing.
-- [ ] Unit tests for exact JSON, fenced JSON, malformed JSON, fallback order, and
+- [x] Unit tests for exact JSON, fenced JSON, malformed JSON, fallback order, and
   preserving the original prompt text.
 
 ### 1.7 Event mapper
 
-- [ ] Define `CursorAgentMapperState` with:
+- [x] Define `CursorAgentMapperState` with:
   - `toolNamesByCallId: Map<string, string>`
   - `finalAssistantText: string`
   - `accumulatedText: string`
   - `sessionId?: string`
-- [ ] Implement `mapCursorAgentLine(line, state, options)`.
-- [ ] Implement assistant partial filtering per docs:
+- [x] Implement `mapCursorAgentLine(line, state, options)`.
+- [x] Implement assistant partial filtering per docs:
   - use `timestamp_ms` present and no `model_call_id` as text delta;
   - skip `timestamp_ms` plus `model_call_id` duplicate flush;
   - skip final assistant flush when partial mode is enabled;
   - support non-partial assistant messages for fixture completeness.
-- [ ] Implement tool start/end mapping for `readToolCall`, `writeToolCall`, and
+- [x] Implement tool start/end mapping for `readToolCall`, `writeToolCall`, and
   generic `function` calls.
-- [ ] Implement terminal result mapping to `RunResult` with zero token counts.
-- [ ] Unit tests cover documented example events, partial duplicate skipping,
+- [x] Implement terminal result mapping to `RunResult` with zero token counts.
+- [x] Unit tests cover documented example events, partial duplicate skipping,
   final assistant tracking, tool correlation, error tool results, and malformed
   lines.
 

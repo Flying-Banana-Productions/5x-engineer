@@ -15,6 +15,7 @@
       },
       "devDependencies": {
         "@5x-ai/provider-claude-code": "workspace:*",
+        "@5x-ai/provider-cursor-agent": "workspace:*",
         "@5x-ai/provider-invalid": "workspace:*",
         "@5x-ai/provider-sample": "workspace:*",
         "@types/bun": "latest",
@@ -23,6 +24,13 @@
     },
     "packages/provider-claude-code": {
       "name": "@5x-ai/provider-claude-code",
+      "version": "0.0.1",
+      "peerDependencies": {
+        "@5x-ai/5x-cli": "file:../..",
+      },
+    },
+    "packages/provider-cursor-agent": {
+      "name": "@5x-ai/provider-cursor-agent",
       "version": "0.0.1",
       "peerDependencies": {
         "@5x-ai/5x-cli": "file:../..",
@@ -47,6 +55,8 @@
     "@5x-ai/5x-cli": ["5x-cli@root:", {}],
 
     "@5x-ai/provider-claude-code": ["@5x-ai/provider-claude-code@workspace:packages/provider-claude-code"],
+
+    "@5x-ai/provider-cursor-agent": ["@5x-ai/provider-cursor-agent@workspace:packages/provider-cursor-agent"],
 
     "@5x-ai/provider-invalid": ["@5x-ai/provider-invalid@workspace:packages/provider-invalid"],
 
@@ -76,8 +86,6 @@
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
-    "@5x-ai/provider-invalid/@5x-ai/5x-cli": ["5x-cli@root:", {}],
-
-    "@5x-ai/provider-sample/@5x-ai/5x-cli": ["5x-cli@root:", {}],
+    "@5x-ai/provider-cursor-agent/@5x-ai/5x-cli": ["5x-cli@root:", {}],
   }
 }
