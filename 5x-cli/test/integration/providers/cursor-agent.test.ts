@@ -1,8 +1,11 @@
 /**
- * Integration tests: Cursor Agent provider with a mock `agent` executable on PATH.
+ * Integration tests: Cursor Agent provider with a mock `agent` executable.
  *
  * Exercises dynamic import via createProvider, real Bun.spawn, and stream-json
  * NDJSON fixtures aligned with the Cursor Agent event mapper.
+ *
+ * Uses absolute mock binary paths (not PATH mutation) so tests stay safe under
+ * `--concurrent`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -26,6 +29,11 @@ const MOCK_SESSION = "mock-cursor-session-001";
 const MOCK_AUTHOR_STATUS_JSON =
 	'{\\"result\\":\\"complete\\",\\"commit\\":\\"abc123def\\",\\"notes\\":\\"mock author done\\"}';
 
+interface MockAgentOptions {
+	tracePath?: string;
+	createChatFail?: boolean;
+}
+
 function makeTmpDir(): string {
 	const dir = join(
 		tmpdir(),
@@ -48,13 +56,16 @@ function bash(exp: string): string {
 	return `\${${exp}}`;
 }
 
-/** Bash mock: create-chat, stream-json NDJSON runs, optional trace file via MOCK_AGENT_TRACE. */
-const MOCK_AGENT_SH = `#!/usr/bin/env bash
+function buildMockAgentScript(options: MockAgentOptions = {}): string {
+	const tracePath = options.tracePath ?? "";
+	const createChatFail = options.createChatFail ?? false;
+
+	return `#!/usr/bin/env bash
 set -euo pipefail
 
 trace() {
-  if [[ -n "${bash("MOCK_AGENT_TRACE:-")}" ]]; then
-    echo "$*" >> "${bash("MOCK_AGENT_TRACE")}"
+  if [[ -n "${tracePath}" ]]; then
+    echo "$*" >> "${tracePath}"
   fi
 }
 
@@ -63,7 +74,7 @@ trace "CURSOR_API_KEY=${bash("CURSOR_API_KEY:-")}"
 trace "CURSOR_AUTH_TOKEN=${bash("CURSOR_AUTH_TOKEN:-")}"
 
 if [[ "$1" == "create-chat" ]]; then
-  if [[ "${bash("MOCK_CREATE_CHAT_FAIL:-")}" == "1" ]]; then
+  if [[ ${createChatFail ? 1 : 0} -eq 1 ]]; then
     echo "mock create-chat auth failure" >&2
     exit 7
   fi
@@ -109,29 +120,21 @@ else
   echo '{"type":"result","subtype":"success","is_error":false,"result":"sync body","session_id":"'"$session_id"'","duration_ms":99}'
 fi
 `;
+}
 
-function writeMockAgent(dir: string): { binDir: string; agentPath: string } {
+function writeMockAgent(dir: string, options: MockAgentOptions = {}): string {
 	const binDir = join(dir, "bin");
 	mkdirSync(binDir, { recursive: true });
-	const agentPath = join(binDir, "agent");
-	writeFileSync(agentPath, MOCK_AGENT_SH, "utf-8");
+	const agentPath = join(binDir, "mock-cursor-agent");
+	writeFileSync(agentPath, buildMockAgentScript(options), "utf-8");
 	chmodSync(agentPath, 0o755);
-	return { binDir, agentPath };
+	return agentPath;
 }
 
-function withMockPath<T>(binDir: string, fn: () => Promise<T>): Promise<T> {
-	const prevPath = process.env.PATH;
-	process.env.PATH = `${binDir}:${prevPath ?? ""}`;
-	return fn().finally(() => {
-		if (prevPath === undefined) {
-			delete process.env.PATH;
-		} else {
-			process.env.PATH = prevPath;
-		}
-	});
-}
-
-function baseConfig(overrides: Record<string, unknown> = {}): FiveXConfig {
+function baseConfig(
+	agentBinary: string,
+	overrides: Record<string, unknown> = {},
+): FiveXConfig {
 	return {
 		author: {
 			provider: "cursor-agent",
@@ -143,7 +146,7 @@ function baseConfig(overrides: Record<string, unknown> = {}): FiveXConfig {
 		},
 		opencode: {},
 		"cursor-agent": {
-			agentBinary: "agent",
+			agentBinary,
 			...overrides,
 		},
 	} as unknown as FiveXConfig;
@@ -155,53 +158,51 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const mockBin = writeMockAgent(tmp);
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
 
-				await withMockPath(binDir, async () => {
-					const mod = await import("@5x-ai/provider-cursor-agent");
-					expect(mod.default.name).toBe("cursor-agent");
+				const mod = await import("@5x-ai/provider-cursor-agent");
+				expect(mod.default.name).toBe("cursor-agent");
 
-					const provider = await createProvider("author", baseConfig());
-					const session = await provider.startSession({
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-
-					expect(session.id).toBe(MOCK_SESSION);
-
-					const events: AgentEvent[] = [];
-					for await (const ev of session.runStreamed("hello")) {
-						events.push(ev);
-					}
-
-					await provider.close();
-
-					const types = events.map((e) => e.type);
-					expect(types).toContain("text");
-					expect(types).toContain("tool_start");
-					expect(types).toContain("tool_end");
-					expect(types).toContain("usage");
-					expect(types).toContain("done");
-
-					const textEv = events.find((e) => e.type === "text");
-					expect(textEv?.type === "text" && textEv.delta).toContain("Hello");
-
-					const toolStart = events.find((e) => e.type === "tool_start");
-					expect(toolStart?.type).toBe("tool_start");
-					if (toolStart?.type === "tool_start") {
-						expect(toolStart.tool).toBe("read");
-					}
-
-					const done = events.find((e) => e.type === "done");
-					expect(done?.type).toBe("done");
-					if (done?.type === "done") {
-						expect(done.result.text).toContain("final streamed");
-						expect(done.result.sessionId).toBe(session.id);
-						expect(done.result.tokens).toEqual({ in: 0, out: 0 });
-					}
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+
+				expect(session.id).toBe(MOCK_SESSION);
+
+				const events: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("hello")) {
+					events.push(ev);
+				}
+
+				await provider.close();
+
+				const types = events.map((e) => e.type);
+				expect(types).toContain("text");
+				expect(types).toContain("tool_start");
+				expect(types).toContain("tool_end");
+				expect(types).toContain("usage");
+				expect(types).toContain("done");
+
+				const textEv = events.find((e) => e.type === "text");
+				expect(textEv?.type === "text" && textEv.delta).toContain("Hello");
+
+				const toolStart = events.find((e) => e.type === "tool_start");
+				expect(toolStart?.type).toBe("tool_start");
+				if (toolStart?.type === "tool_start") {
+					expect(toolStart.tool).toBe("read");
+				}
+
+				const done = events.find((e) => e.type === "done");
+				expect(done?.type).toBe("done");
+				if (done?.type === "done") {
+					expect(done.result.text).toContain("final streamed");
+					expect(done.result.sessionId).toBe(session.id);
+					expect(done.result.tokens).toEqual({ in: 0, out: 0 });
+				}
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -214,35 +215,33 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const mockBin = writeMockAgent(tmp);
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider("author", baseConfig());
-					const session = await provider.startSession({
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-
-					const events: AgentEvent[] = [];
-					for await (const ev of session.runStreamed("implement phase", {
-						outputSchema: AuthorStatusSchema,
-					})) {
-						events.push(ev);
-					}
-					await provider.close();
-
-					const done = events.find((e) => e.type === "done");
-					expect(done?.type).toBe("done");
-					if (done?.type === "done") {
-						expect(done.result.structured).toEqual({
-							result: "complete",
-							commit: "abc123def",
-							notes: "mock author done",
-						});
-					}
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+
+				const events: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("implement phase", {
+					outputSchema: AuthorStatusSchema,
+				})) {
+					events.push(ev);
+				}
+				await provider.close();
+
+				const done = events.find((e) => e.type === "done");
+				expect(done?.type).toBe("done");
+				if (done?.type === "done") {
+					expect(done.result.structured).toEqual({
+						result: "complete",
+						commit: "abc123def",
+						notes: "mock author done",
+					});
+				}
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -255,32 +254,28 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const tracePath = join(tmp, "trace.log");
+				const mockBin = writeMockAgent(tmp, { tracePath });
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
-				const tracePath = join(tmp, "trace.log");
-				process.env.MOCK_AGENT_TRACE = tracePath;
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider("author", baseConfig());
-					const session = await provider.resumeSession("existing-resume-id", {
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-					expect(session.id).toBe("existing-resume-id");
-
-					for await (const _ev of session.runStreamed("continue")) {
-						/* drain */
-					}
-					await provider.close();
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.resumeSession("existing-resume-id", {
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+				expect(session.id).toBe("existing-resume-id");
+
+				for await (const _ev of session.runStreamed("continue")) {
+					/* drain */
+				}
+				await provider.close();
 
 				const trace = readFileSync(tracePath, "utf-8");
 				expect(trace).toContain("--resume");
 				expect(trace).toContain("existing-resume-id");
 				expect(trace).not.toContain("create-chat");
 			} finally {
-				delete process.env.MOCK_AGENT_TRACE;
 				cleanupDir(tmp);
 			}
 		},
@@ -292,25 +287,22 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const tracePath = join(tmp, "trace.log");
+				const mockBin = writeMockAgent(tmp, { tracePath });
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
-				const tracePath = join(tmp, "trace.log");
 				const secret = "cursor-test-api-key-secret";
-				process.env.MOCK_AGENT_TRACE = tracePath;
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider(
-						"author",
-						baseConfig({ apiKey: secret }),
-					);
-					const session = await provider.startSession({
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-					await session.run("hello");
-					await provider.close();
+				const provider = await createProvider(
+					"author",
+					baseConfig(mockBin, { apiKey: secret }),
+				);
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+				await session.run("hello");
+				await provider.close();
 
 				const trace = readFileSync(tracePath, "utf-8");
 				expect(trace).toContain(`CURSOR_API_KEY=${secret}`);
@@ -321,7 +313,6 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 					expect(line).not.toContain(secret);
 				}
 			} finally {
-				delete process.env.MOCK_AGENT_TRACE;
 				cleanupDir(tmp);
 			}
 		},
@@ -333,29 +324,27 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const mockBin = writeMockAgent(tmp);
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider("author", baseConfig());
-					const session = await provider.startSession({
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-
-					await expect(session.run("__MOCK_CURSOR_FAIL__")).rejects.toThrow(
-						/exited with code 9/,
-					);
-
-					const streamEvents: AgentEvent[] = [];
-					for await (const ev of session.runStreamed("__MOCK_CURSOR_FAIL__")) {
-						streamEvents.push(ev);
-					}
-					expect(streamEvents.some((e) => e.type === "error")).toBe(true);
-
-					await provider.close();
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+
+				await expect(session.run("__MOCK_CURSOR_FAIL__")).rejects.toThrow(
+					/exited with code 9/,
+				);
+
+				const streamEvents: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("__MOCK_CURSOR_FAIL__")) {
+					streamEvents.push(ev);
+				}
+				expect(streamEvents.some((e) => e.type === "error")).toBe(true);
+
+				await provider.close();
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -373,7 +362,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 
 				const provider = await createProvider(
 					"author",
-					baseConfig({ agentBinary: "missing-cursor-agent-xyz" }),
+					baseConfig("missing-cursor-agent-xyz"),
 				);
 				await expect(
 					provider.startSession({
@@ -394,23 +383,19 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const mockBin = writeMockAgent(tmp, { createChatFail: true });
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
-				process.env.MOCK_CREATE_CHAT_FAIL = "1";
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider("author", baseConfig());
-					await expect(
-						provider.startSession({
-							model: "gpt-5",
-							workingDirectory: cwd,
-						}),
-					).rejects.toThrow(/create-chat exited with code 7/);
-					await provider.close();
-				});
+				const provider = await createProvider("author", baseConfig(mockBin));
+				await expect(
+					provider.startSession({
+						model: "gpt-5",
+						workingDirectory: cwd,
+					}),
+				).rejects.toThrow(/create-chat exited with code 7/);
+				await provider.close();
 			} finally {
-				delete process.env.MOCK_CREATE_CHAT_FAIL;
 				cleanupDir(tmp);
 			}
 		},
@@ -422,25 +407,23 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir } = writeMockAgent(tmp);
+				const mockBin = writeMockAgent(tmp);
 				const cwd = join(tmp, "proj");
 				mkdirSync(cwd, { recursive: true });
 
-				await withMockPath(binDir, async () => {
-					const provider = await createProvider("author", baseConfig());
-					const session = await provider.startSession({
-						model: "gpt-5",
-						workingDirectory: cwd,
-					});
-
-					const result = await session.run("prompt");
-					await provider.close();
-
-					expect(result.text).toContain("final streamed");
-					expect(result.tokens).toEqual({ in: 0, out: 0 });
-					expect(result.durationMs).toBe(50);
-					expect(result.sessionId).toBe(session.id);
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
 				});
+
+				const result = await session.run("prompt");
+				await provider.close();
+
+				expect(result.text).toContain("final streamed");
+				expect(result.tokens).toEqual({ in: 0, out: 0 });
+				expect(result.durationMs).toBe(50);
+				expect(result.sessionId).toBe(session.id);
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -453,15 +436,12 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		async () => {
 			const tmp = makeTmpDir();
 			try {
-				const { binDir, agentPath } = writeMockAgent(tmp);
-				const proc = Bun.spawn([agentPath, "create-chat"], {
+				const mockBin = writeMockAgent(tmp);
+				const proc = Bun.spawn([mockBin, "create-chat"], {
 					stdin: "ignore",
 					stdout: "pipe",
 					stderr: "pipe",
-					env: {
-						...cleanGitEnv(),
-						PATH: `${binDir}:${process.env.PATH ?? ""}`,
-					},
+					env: cleanGitEnv(),
 				});
 				const code = await proc.exited;
 				const out = await new Response(proc.stdout).text();
