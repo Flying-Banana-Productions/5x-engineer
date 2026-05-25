@@ -22,7 +22,13 @@ workflow:
 
 ## Key principles
 
-1. **Delegate, don't implement.** Render task prompts with
+1. **Orchestrate yourself, don't outsource the loop.** Follow skill steps
+   in this agent. Delegate only to author/reviewer roles (`5x-plan-author`,
+   `5x-code-author`, `5x-reviewer`). Never spawn a subagent to run
+   `5x-plan-review`, `5x-phase-execution`, or any multi-step workflow on
+   your behalf — Cursor subagents cannot launch other subagents.
+
+2. **Delegate, don't implement.** Render task prompts with
    `5x template render`, then follow each skill step's delegation
    pattern exactly. Some steps use Cursor subagent invocation
    (`5x-plan-author`, `5x-code-author`, or `5x-reviewer`); invoke-mode
@@ -31,26 +37,26 @@ workflow:
    the JSON envelope on stdout and treat that envelope as the
    canonical result format.
 
-2. **Honor the effective working directory.** The rendered prompt includes
+3. **Honor the effective working directory.** The rendered prompt includes
    a `## Context` block with the effective working directory. All file reads,
    edits, and shell commands must use this path as authoritative. This is
    critical for worktree-backed runs where the working directory is mapped
    to `.5x/worktrees/...`.
 
-3. **Track state.** Use `5x run state --run <id>`,
+4. **Track state.** Use `5x run state --run <id>`,
    `5x plan list` for an overview, and
    `5x plan phases <path>` for detailed phase status.
 
-4. **Guide human decisions.** When a workflow requires human input,
+5. **Guide human decisions.** When a workflow requires human input,
    present the situation with enough context for the human to decide.
    Prefer **AskQuestion** (or the chat thread) over spawning `5x prompt`
    subprocesses — agent terminals often lack a TTY; see the `5x` foundation
    skill’s Human Interaction Model.
 
-5. **Verify before proceeding.** After each subagent completes, check
+6. **Verify before proceeding.** After each subagent completes, check
    the result against the skill's invariants.
 
-6. **Recover gracefully.** When subagents fail or produce invalid
+7. **Recover gracefully.** When subagents fail or produce invalid
    results, follow the skill's recovery section. Retry once with a
    fresh subagent invocation before escalating.
 

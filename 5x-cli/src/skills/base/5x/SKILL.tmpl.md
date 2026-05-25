@@ -64,6 +64,17 @@ chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat
 
 ## Delegating to Subagents
 
+**You are the orchestrator.** Execute the skill workflow yourself — render
+prompts, delegate author/reviewer work, validate results, route verdicts,
+and handle human gates. Subagents handle bounded implementation and review
+tasks only; they do not run multi-step workflows on your behalf.
+
+{{#if any_native}}
+**Never delegate orchestration to a subagent.** In native harnesses,
+subagents **cannot** launch other subagents. Spawning a subtask to run
+plan review, phase execution, or any other orchestration loop will fail.
+{{/if}}
+
 {{#if any_native}}
 ### Native delegation (Task tool)
 
@@ -193,6 +204,11 @@ work.
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
+{{#if any_native}}
+- **Never delegate orchestration to a subagent.** Run the skill loop in
+  this agent. Subagents are for author/reviewer roles only — they cannot
+  launch further subagents in native harnesses.
+{{/if}}
 {{#if author_native}}
 - **Empty or invalid subagent output (author)**: Retry once with a fresh subagent
   (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.

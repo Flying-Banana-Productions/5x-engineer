@@ -83,7 +83,7 @@ Only use `--new-session` for recovery (context loss, empty output).
 {{/if}}
 {{#if all_invoke}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human
-- `5x prompt input <msg>` — get human guidance
+- `5x prompt input <msg>` — revise orchestrator-drafted guidance when the human modifies it
 {{/if}}
 
 {{#if reviewer_native}}
@@ -291,15 +291,26 @@ Loop back to Step 1.
 
 ### Step 4: Escalate
 
+For each `human_required` review item (and any ambiguous context in
+$REASON), draft a concrete recommendation for how the author should resolve
+it. Present these recommendations to the human along with the escalation
+reason — do not ask the human to write guidance from scratch.
+
 {{#if any_native}}
 Present the situation to the human using your **native UI** (multiple choice + freeform where needed). Match the semantics of:
 
 - **Options:** continue-with-guidance, approve-override, abort
+- Include your per-item recommendations in the presentation.
 - **CLI equivalent (fallback only):**  
   `5x prompt choose "Review requires human input: $REASON" --options continue-with-guidance,approve-override,abort`
 
 **If "continue-with-guidance":**
-  Collect guidance, then record:  
+  Present your recommendations in a structured summary (item id, issue,
+  recommendation). Ask the human to **approve as-is** or **modify** before
+  sending back to the author. Default posture: your recommendations are the
+  draft guidance. If they modify, merge their edits into the final guidance
+  text.
+  Record:  
   `5x run record "human:gate" --run $RUN --phase plan --result '{"choice":"continue","guidance":"..."}'`  
   Re-invoke the author (Step 3) with `--var user_notes="$GUIDANCE"`.
 
@@ -311,13 +322,19 @@ Present the situation to the human using your **native UI** (multiple choice + f
   `5x run complete --run $RUN --status aborted --reason "Human chose to abort"`
   Stop.
 {{else}}
-Present the situation to the human:
+Present the situation and your per-item recommendations to the human:
 
     5x prompt choose "Review requires human input: $REASON" \
       --options continue-with-guidance,approve-override,abort
 
 **If "continue-with-guidance":**
-  Collect guidance: `5x prompt input "Provide guidance for the author"`
+  Ask the human to approve your recommendations as-is or modify them:
+
+    5x prompt choose "Send these recommendations to the author?" \
+      --options approve-as-is,modify
+
+  If "approve-as-is", use your drafted recommendations as $GUIDANCE.
+  If "modify": `5x prompt input "Revise the guidance for the author" --multiline`
   Record: `5x run record "human:gate" --run $RUN --phase plan --result '{"choice":"continue","guidance":"..."}'`
   Re-invoke the author (Step 3) with `--var user_notes="$GUIDANCE"`.
 
