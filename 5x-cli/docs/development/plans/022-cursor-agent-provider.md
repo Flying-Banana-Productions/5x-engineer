@@ -461,53 +461,53 @@ tests pass with a fake `agent` binary.
 
 ### 3.1 Workspace wiring
 
-- [ ] Run `bun install` after adding the workspace dependency.
-- [ ] Verify `import("@5x-ai/provider-cursor-agent")` resolves under Bun.
-- [ ] Confirm `createProvider("author", configWithCursorAgent)` returns the
+- [x] Run `bun install` after adding the workspace dependency.
+- [x] Verify `import("@5x-ai/provider-cursor-agent")` resolves under Bun.
+- [x] Confirm `createProvider("author", configWithCursorAgent)` returns the
   plugin provider using existing factory behavior.
 
 ### 3.2 Integration tests with mock `agent`
 
-- [ ] Create `test/integration/providers/cursor-agent.test.ts`.
-- [ ] Use a temporary executable mock `agent` script added to `PATH` through
+- [x] Create `test/integration/providers/cursor-agent.test.ts`.
+- [x] Use a temporary executable mock `agent` script added to `PATH` through
   test env.
-- [ ] The mock supports:
+- [x] The mock supports:
   - `create-chat` returning a deterministic ID;
   - `-p --output-format stream-json --stream-partial-output` emitting documented
     Cursor NDJSON fixtures;
   - non-zero exit with stderr;
   - delayed output for timeout tests if needed.
-- [ ] Tests include `stdin: "ignore"` and `env: cleanGitEnv(...)` for spawns per
+- [x] Tests include `stdin: "ignore"` and `env: cleanGitEnv(...)` for spawns per
   repo testing rules.
-- [ ] Test full provider flow: `createProvider` → `startSession` → `runStreamed`
+- [x] Test full provider flow: `createProvider` → `startSession` → `runStreamed`
   → collect events → close.
-- [ ] Test structured `AuthorStatus` extraction from final assistant JSON.
-- [ ] Test `resumeSession(existingId)` passes `--resume existingId` without
+- [x] Test structured `AuthorStatus` extraction from final assistant JSON.
+- [x] Test `resumeSession(existingId)` passes `--resume existingId` without
   calling `create-chat`.
-- [ ] Test configured `CURSOR_API_KEY` is forwarded via env, not argv.
-- [ ] Test binary-not-found and auth/non-zero failure messaging.
+- [x] Test configured `CURSOR_API_KEY` is forwarded via env, not argv.
+- [x] Test binary-not-found and auth/non-zero failure messaging.
 
 ### 3.3 Opt-in live probe
 
-- [ ] Add `test/integration/providers/cursor-agent-live.test.ts` gated by
+- [x] Add `test/integration/providers/cursor-agent-live.test.ts` gated by
   `CURSOR_AGENT_LIVE_TEST=1`.
-- [ ] Skip when `agent` is unavailable.
-- [ ] Probe minimal documented capabilities only:
+- [x] Skip when `agent` is unavailable.
+- [x] Probe minimal documented capabilities only:
   - `agent --help` includes `--output-format`, `stream-json`, `--resume`,
     `--workspace`, and `create-chat`.
   - `agent create-chat` returns a non-empty session ID when authenticated.
   - a read-only `agent -p --mode ask --output-format json --trust --workspace`
     prompt returns a JSON `result` with `session_id`.
   - a read-only `stream-json` prompt emits `system` init and terminal `result`.
-- [ ] Keep the live probe opt-in because it requires Cursor auth and may consume
+- [x] Keep the live probe opt-in because it requires Cursor auth and may consume
   model quota.
 
 ### 3.4 Regression verification
 
-- [ ] `bun test test/unit/providers/cursor-agent/`
-- [ ] `bun test test/integration/providers/cursor-agent.test.ts`
-- [ ] `bun test test/unit/providers/plugin-loading.test.ts`
-- [ ] `bun test`
+- [x] `bun test test/unit/providers/cursor-agent/`
+- [x] `bun test test/integration/providers/cursor-agent.test.ts`
+- [x] `bun test test/unit/providers/plugin-loading.test.ts`
+- [x] `bun test`
 
 ## Verification
 
