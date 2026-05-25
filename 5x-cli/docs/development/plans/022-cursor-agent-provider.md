@@ -398,61 +398,61 @@ provider contract with mocked subprocess coverage.
 
 ### 2.1 NDJSON reader and stream helpers
 
-- [ ] Reuse or duplicate a small provider-local `readNdjsonLines()` helper based
+- [x] Reuse or duplicate a small provider-local `readNdjsonLines()` helper based
   on the Claude Code provider pattern.
-- [ ] Parse one JSON object per line and skip malformed lines.
-- [ ] Add stream draining/full-read helpers for stdout/stderr.
+- [x] Parse one JSON object per line and skip malformed lines.
+- [x] Add stream draining/full-read helpers for stdout/stderr.
 
 ### 2.2 Process lifecycle
 
-- [ ] Add `forceKillSubprocess(proc)` with SIGTERM, short grace period, and
+- [x] Add `forceKillSubprocess(proc)` with SIGTERM, short grace period, and
   SIGKILL escalation.
-- [ ] Track active subprocesses in the provider so `close()` can kill them.
-- [ ] Wire timeout and external cancellation using `AbortSignal` fan-in.
-- [ ] For streaming timeouts, reset the inactivity timer on every parsed event.
+- [x] Track active subprocesses in the provider so `close()` can kill them.
+- [x] Wire timeout and external cancellation using `AbortSignal` fan-in.
+- [x] For streaming timeouts, reset the inactivity timer on every parsed event.
 
 ### 2.3 Session creation
 
-- [ ] `CursorAgentProvider.startSession(opts)` runs `agent create-chat` with the
+- [x] `CursorAgentProvider.startSession(opts)` runs `agent create-chat` with the
   configured binary/env and working directory.
-- [ ] Trim stdout to obtain the Cursor chat/session ID.
-- [ ] Create a `CursorAgentSession` with that ID, model, cwd, config, and host.
-- [ ] `resumeSession(sessionId, opts)` returns an existing tracked session when
+- [x] Trim stdout to obtain the Cursor chat/session ID.
+- [x] Create a `CursorAgentSession` with that ID, model, cwd, config, and host.
+- [x] `resumeSession(sessionId, opts)` returns an existing tracked session when
   present, otherwise creates a new handle using the supplied ID and cwd.
-- [ ] Unit tests cover create-chat success, empty stdout failure, non-zero exit,
+- [x] Unit tests cover create-chat success, empty stdout failure, non-zero exit,
   ENOENT install hint, session reuse, and closed-provider errors.
 
 ### 2.4 Streaming run
 
-- [ ] `runStreamed(prompt, opts?)` guards prompt size before spawn.
-- [ ] If `opts.outputSchema` exists, wrap the prompt before byte checking and
+- [x] `runStreamed(prompt, opts?)` guards prompt size before spawn.
+- [x] If `opts.outputSchema` exists, wrap the prompt before byte checking and
   spawning.
-- [ ] Spawn `agent` with `stream-json` args and parse stdout NDJSON.
-- [ ] Map events through `mapCursorAgentLine()` and yield canonical events.
-- [ ] On terminal result, parse structured output from mapper state and attach it
+- [x] Spawn `agent` with `stream-json` args and parse stdout NDJSON.
+- [x] Map events through `mapCursorAgentLine()` and yield canonical events.
+- [x] On terminal result, parse structured output from mapper state and attach it
   to `RunResult.structured` when successful.
-- [ ] Yield `usage` before `done` for consistency with existing stream rendering.
-- [ ] If the process exits non-zero, emit an `AgentEvent.error` with stderr.
-- [ ] If the stream ends without a terminal `result`, emit an error with exit
+- [x] Yield `usage` before `done` for consistency with existing stream rendering.
+- [x] If the process exits non-zero, emit an `AgentEvent.error` with stderr.
+- [x] If the stream ends without a terminal `result`, emit an error with exit
   code and stderr excerpt.
-- [ ] Unit tests cover successful streaming, structured success, structured parse
+- [x] Unit tests cover successful streaming, structured success, structured parse
   failure, non-zero exit, no terminal result, timeout, cancellation, prompt limit,
   and provider close during an active run.
 
 ### 2.5 Non-streaming run
 
-- [ ] Implement `run(prompt, opts?)` by consuming `runStreamed()` and returning
+- [x] Implement `run(prompt, opts?)` by consuming `runStreamed()` and returning
   the terminal `RunResult`.
-- [ ] If an error event occurs before a done event, throw an `Error` with the
+- [x] If an error event occurs before a done event, throw an `Error` with the
   provider message.
-- [ ] Unit tests cover result return, error propagation, and structured output.
+- [x] Unit tests cover result return, error propagation, and structured output.
 
 ### 2.6 Provider close
 
-- [ ] `close()` is idempotent.
-- [ ] `close()` kills all tracked subprocesses, clears sessions, and marks the
+- [x] `close()` is idempotent.
+- [x] `close()` kills all tracked subprocesses, clears sessions, and marks the
   provider closed.
-- [ ] Unit tests verify idempotency and process cleanup.
+- [x] Unit tests verify idempotency and process cleanup.
 
 ## Phase 3: Integration
 

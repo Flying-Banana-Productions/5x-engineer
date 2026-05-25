@@ -1,5 +1,5 @@
 /**
- * Cursor Agent provider — Phase 2 implements session lifecycle.
+ * Cursor Agent `AgentProvider` — session lifecycle and subprocess tracking.
  */
 
 import type {
@@ -9,23 +9,94 @@ import type {
 	SessionOptions,
 } from "@5x-ai/5x-cli";
 
+import {
+	createCursorChatSessionId,
+	CursorAgentSession,
+	forceKillSubprocess,
+	type CursorAgentExecutionHost,
+	type CursorAgentSessionOptions,
+	type CursorAgentSubprocess,
+} from "./session.js";
 import type { CursorAgentConfig } from "./types.js";
 
-const NOT_IMPLEMENTED =
-	"Cursor Agent provider session lifecycle is not implemented yet";
+export class CursorAgentProvider implements AgentProvider, CursorAgentExecutionHost {
+	private config: CursorAgentConfig;
+	private sessions = new Map<string, CursorAgentSession>();
+	private processes = new Set<CursorAgentSubprocess>();
+	private _closed = false;
 
-export class CursorAgentProvider implements AgentProvider {
-	constructor(private readonly _config: CursorAgentConfig) {}
-
-	startSession(_opts: SessionOptions): Promise<AgentSession> {
-		return Promise.reject(new Error(NOT_IMPLEMENTED));
+	constructor(config: CursorAgentConfig) {
+		this.config = config;
 	}
 
-	resumeSession(_sessionId: string, _opts?: ResumeOptions): Promise<AgentSession> {
-		return Promise.reject(new Error(NOT_IMPLEMENTED));
+	get isClosed(): boolean {
+		return this._closed;
 	}
 
-	close(): Promise<void> {
-		return Promise.resolve();
+	trackProcess(proc: CursorAgentSubprocess): void {
+		this.processes.add(proc);
+	}
+
+	untrackProcess(proc: CursorAgentSubprocess): void {
+		this.processes.delete(proc);
+	}
+
+	private sessionOptions(
+		id: string,
+		model: string | undefined,
+		cwd: string,
+	): CursorAgentSessionOptions {
+		return {
+			id,
+			model: model !== "" ? model : undefined,
+			cwd,
+			config: this.config,
+			provider: this,
+		};
+	}
+
+	async startSession(opts: SessionOptions): Promise<AgentSession> {
+		if (this._closed) throw new Error("Provider is closed");
+
+		const binary = this.config.agentBinary ?? "agent";
+		const sessionId = await createCursorChatSessionId(
+			binary,
+			opts.workingDirectory,
+			this.config,
+			this,
+		);
+
+		const session = new CursorAgentSession(
+			this.sessionOptions(sessionId, opts.model, opts.workingDirectory),
+		);
+		this.sessions.set(sessionId, session);
+		return session;
+	}
+
+	async resumeSession(
+		sessionId: string,
+		opts?: ResumeOptions,
+	): Promise<AgentSession> {
+		if (this._closed) throw new Error("Provider is closed");
+
+		const existing = this.sessions.get(sessionId);
+		if (existing) return existing;
+
+		const cwd = opts?.workingDirectory ?? process.cwd();
+		const session = new CursorAgentSession(
+			this.sessionOptions(sessionId, opts?.model, cwd),
+		);
+		this.sessions.set(sessionId, session);
+		return session;
+	}
+
+	async close(): Promise<void> {
+		if (this._closed) return;
+		this._closed = true;
+		for (const proc of [...this.processes]) {
+			await forceKillSubprocess(proc);
+		}
+		this.processes.clear();
+		this.sessions.clear();
 	}
 }
