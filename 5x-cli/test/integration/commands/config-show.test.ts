@@ -370,6 +370,84 @@ describe("5x config show (integration)", () => {
 	);
 
 	test(
+		"--text truncates long values with ellipsis to preserve table layout",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				const longPrompt = "x".repeat(200);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"[claude-code]",
+						`appendSystemPrompt = ${JSON.stringify(longPrompt)}`,
+					].join("\n"),
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "long prompt"], dir);
+
+				const result = await run5x(dir, ["config", "show", "--text"]);
+				expect(result.exitCode).toBe(0);
+
+				const lines = result.stdout.split("\n");
+				const promptLine = lines.find((l) =>
+					l.includes("claude-code.appendSystemPrompt"),
+				);
+				expect(promptLine).toBeDefined();
+				expect(promptLine).toContain("...");
+				expect(promptLine?.length).toBeLessThan(200);
+
+				const headerIdx = lines.findIndex((l) => l.startsWith("Key"));
+				const separatorIdx = headerIdx + 1;
+				const dataLine = lines[separatorIdx + 1];
+				expect(dataLine).toBeDefined();
+				const maxLineLen = (dataLine?.length ?? 0) + 5;
+				for (const line of lines.slice(separatorIdx + 1)) {
+					if (line.trim() === "") continue;
+					expect(line.length).toBeLessThanOrEqual(maxLineLen);
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--key --text prints full value without truncation",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				initRepo(dir);
+				const longPrompt = "y".repeat(120);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					[
+						"[claude-code]",
+						`appendSystemPrompt = ${JSON.stringify(longPrompt)}`,
+					].join("\n"),
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "long prompt"], dir);
+
+				const result = await run5x(dir, [
+					"config",
+					"show",
+					"--key",
+					"claude-code.appendSystemPrompt",
+					"--text",
+				]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toBe(longPrompt);
+				expect(result.stdout).not.toContain("...");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"--key --text prints value only",
 		async () => {
 			const dir = makeTmpDir();

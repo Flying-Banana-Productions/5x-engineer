@@ -675,6 +675,16 @@ export function buildConfigFileRows(
 // Text formatter
 // ---------------------------------------------------------------------------
 
+/** Max display width for Value / Default columns in `config show --text`. */
+const MAX_CONFIG_SHOW_VALUE_WIDTH = 64;
+const MAX_CONFIG_SHOW_DEFAULT_WIDTH = 48;
+
+function truncateForTableCell(text: string, width: number): string {
+	if (text.length <= width) return text.padEnd(width);
+	if (width <= 3) return text.slice(0, width).padEnd(width);
+	return `${text.slice(0, width - 3)}...`.padEnd(width);
+}
+
 function formatValueCell(value: unknown): string {
 	if (value === undefined || value === null) return "-";
 	if (typeof value === "string" && value === "") return '""';
@@ -715,15 +725,21 @@ function formatConfigShowText(
 		56,
 		Math.max(32, ...rows.map((e) => e.key.length), "Key".length),
 	);
-	const valW = Math.max(
-		24,
-		...rows.map((e) => formatValueCell(e.value).length),
-		"Value".length,
+	const valW = Math.min(
+		MAX_CONFIG_SHOW_VALUE_WIDTH,
+		Math.max(
+			24,
+			...rows.map((e) => formatValueCell(e.value).length),
+			"Value".length,
+		),
 	);
-	const defW = Math.max(
-		16,
-		...rows.map((e) => formatValueCell(e.default).length),
-		"Default".length,
+	const defW = Math.min(
+		MAX_CONFIG_SHOW_DEFAULT_WIDTH,
+		Math.max(
+			16,
+			...rows.map((e) => formatValueCell(e.default).length),
+			"Default".length,
+		),
 	);
 
 	const header = `${"Key".padEnd(keyW)}  ${"Value".padEnd(valW)}  ${"Default".padEnd(defW)}  Local`;
@@ -740,10 +756,8 @@ function formatConfigShowText(
 
 		const keyPart =
 			e.key.length > keyW ? `${e.key.slice(0, keyW - 1)}~` : e.key;
-		const valCell =
-			vStr.length > valW ? `${vStr.slice(0, valW - 1)}~` : vStr.padEnd(valW);
-		const defCell =
-			dStr.length > defW ? `${dStr.slice(0, defW - 1)}~` : dStr.padEnd(defW);
+		const valCell = truncateForTableCell(vStr, valW);
+		const defCell = truncateForTableCell(dStr, defW);
 
 		console.log(
 			`${keyPart.padEnd(keyW)}  ${dimIf(valCell, same, ansi)}  ${dimIf(defCell, same, ansi)}  ${localMark}`,
