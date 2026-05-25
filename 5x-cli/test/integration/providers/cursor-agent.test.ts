@@ -211,6 +211,56 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 	);
 
 	test(
+		"runStreamed with AuthorStatus extracts structured from final assistant flush (no timestamp_ms)",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const mockBin = writeMockAgent(tmp);
+				const cwd = join(tmp, "proj");
+				mkdirSync(cwd, { recursive: true });
+
+				// Override mock: emit JSON in final flush shape (no partial fields)
+				const binDir = join(tmp, "bin");
+				const agentPath = join(binDir, "mock-cursor-agent");
+				const script = buildMockAgentScript();
+				const finalFlushVariant = script.replace(
+					`echo '{"type":"assistant","timestamp_ms":2,"message":{"role":"assistant","content":[{"type":"text","text":"${MOCK_AUTHOR_STATUS_JSON}"}]},"session_id":"'"$session_id"'"}'`,
+					`echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"${MOCK_AUTHOR_STATUS_JSON}"}]},"session_id":"'"$session_id"'"}'`,
+				);
+				writeFileSync(agentPath, finalFlushVariant, "utf-8");
+				chmodSync(agentPath, 0o755);
+
+				const provider = await createProvider("author", baseConfig(mockBin));
+				const session = await provider.startSession({
+					model: "gpt-5",
+					workingDirectory: cwd,
+				});
+
+				const events: AgentEvent[] = [];
+				for await (const ev of session.runStreamed("implement phase", {
+					outputSchema: AuthorStatusSchema,
+				})) {
+					events.push(ev);
+				}
+				await provider.close();
+
+				const done = events.find((e) => e.type === "done");
+				expect(done?.type).toBe("done");
+				if (done?.type === "done") {
+					expect(done.result.structured).toEqual({
+						result: "complete",
+						commit: "abc123def",
+						notes: "mock author done",
+					});
+				}
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
 		"runStreamed with AuthorStatus outputSchema extracts structured from final assistant JSON",
 		async () => {
 			const tmp = makeTmpDir();

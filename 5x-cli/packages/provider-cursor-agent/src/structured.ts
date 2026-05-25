@@ -22,9 +22,51 @@ function extractFromFencedBlock(text: string): unknown | undefined {
 	return tryParseJson(match[1]);
 }
 
+/**
+ * Find the last parseable JSON object in prose (e.g. agent preamble + trailing JSON).
+ */
+function extractLastJsonObject(text: string): unknown | undefined {
+	const trimmed = text.trim();
+	if (trimmed === "") return undefined;
+
+	// Walk backward through `{` positions and try balanced-object parses.
+	let searchFrom = trimmed.length;
+	while (searchFrom > 0) {
+		const open = trimmed.lastIndexOf("{", searchFrom - 1);
+		if (open < 0) break;
+		let depth = 0;
+		for (let i = open; i < trimmed.length; i++) {
+			const ch = trimmed[i];
+			if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					const candidate = trimmed.slice(open, i + 1);
+					const parsed = tryParseJson(candidate);
+					if (
+						parsed !== undefined &&
+						typeof parsed === "object" &&
+						parsed !== null &&
+						!Array.isArray(parsed)
+					) {
+						return parsed;
+					}
+					break;
+				}
+			}
+		}
+		searchFrom = open;
+	}
+	return undefined;
+}
+
 function extractFromText(text: string): unknown | undefined {
 	if (text.trim() === "") return undefined;
-	return tryParseJson(text) ?? extractFromFencedBlock(text);
+	return (
+		tryParseJson(text) ??
+		extractFromFencedBlock(text) ??
+		extractLastJsonObject(text)
+	);
 }
 
 /**

@@ -186,6 +186,13 @@ function mapAssistantLine(
 			return { type: "text", delta };
 		}
 		if (!hasTimestamp && !hasModelCallId) {
+			// Final assistant flush (no partial fields): skip console event in
+			// partial mode but still accumulate text for structured extraction.
+			const finalText = assistantText(line);
+			if (finalText !== "") {
+				state.accumulatedText += finalText;
+				state.finalAssistantText = state.accumulatedText;
+			}
 			return undefined;
 		}
 	}

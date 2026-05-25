@@ -62,4 +62,15 @@ describe("extractStructuredOutput", () => {
 		);
 		expect(result).toEqual({ ok: true, value: { result: "from-terminal" } });
 	});
+
+	test("extracts trailing JSON object from prose assistant text", () => {
+		const result = extractStructuredOutput(
+			'Plan updated successfully.\n\n{"result":"complete","commit":"deadbeef","notes":"done"}',
+			"",
+		);
+		expect(result).toEqual({
+			ok: true,
+			value: { result: "complete", commit: "deadbeef", notes: "done" },
+		});
+	});
 });

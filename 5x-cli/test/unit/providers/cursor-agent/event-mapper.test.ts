@@ -95,7 +95,7 @@ describe("mapCursorAgentLine", () => {
 		expect(st.accumulatedText).toBe("");
 	});
 
-	test("assistant final flush is skipped in partial mode", () => {
+	test("assistant final flush is skipped in partial mode but accumulates text", () => {
 		const st = createMapperState();
 		expect(
 			mapCursorAgentLine(
@@ -111,6 +111,25 @@ describe("mapCursorAgentLine", () => {
 				{ partialMode: true },
 			),
 		).toBeUndefined();
+		expect(st.finalAssistantText).toBe("Done!");
+	});
+
+	test("assistant final flush with JSON accumulates for structured extraction", () => {
+		const st = createMapperState();
+		const payload = '{"result":"complete","commit":"abc123"}';
+		mapCursorAgentLine(
+			{
+				type: "assistant",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: payload }],
+				},
+				session_id: SESSION,
+			},
+			st,
+			{ partialMode: true },
+		);
+		expect(st.finalAssistantText).toBe(payload);
 	});
 
 	test("assistant full message emits text when partial mode disabled", () => {
