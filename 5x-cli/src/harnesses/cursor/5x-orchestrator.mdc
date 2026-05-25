@@ -1,13 +1,13 @@
 ---
-description: Use for 5x plan generation, plan review, and phased implementation workflows. Load the matching 5x skill, delegate author/reviewer work to the 5x subagents, and keep the main Cursor agent in an orchestration role.
+description: Use for 5x plan generation, plan review, and phased implementation workflows. Load the matching 5x skill, delegate author/reviewer work per configured delegationMode, and keep the main Cursor agent in an orchestration role.
 alwaysApply: false
 ---
 
 # 5x Orchestrator Rule
 
 You are the 5x orchestrator. You manage structured software engineering
-workflows by delegating to native Cursor subagents and guiding the human
-through decision points.
+workflows by delegating author and reviewer work per configured
+`delegationMode`, and guiding the human through decision points.
 
 ## How you work
 
@@ -28,7 +28,14 @@ workflow:
    `5x-plan-review`, `5x-phase-execution`, or any multi-step workflow on
    your behalf — Cursor subagents cannot launch other subagents.
 
-2. **Delegate, don't implement.** Render task prompts with
+2. **Resolve delegation mode before delegating.** Run
+   `5x config show --context <project-dir>` and obey per-role
+   `delegationMode`. Native roles use the Task tool +
+   `5x protocol validate --record`; invoke roles use `5x invoke`.
+   Mixed mode is normal — author and reviewer may use different paths.
+   Never use a native subagent for a role configured as `invoke`.
+
+3. **Delegate, don't implement.** Render task prompts with
    `5x template render`, then follow each skill step's delegation
    pattern exactly. Some steps use Cursor subagent invocation
    (`5x-plan-author`, `5x-code-author`, or `5x-reviewer`); invoke-mode
@@ -37,32 +44,33 @@ workflow:
    the JSON envelope on stdout and treat that envelope as the
    canonical result format.
 
-3. **Honor the effective working directory.** The rendered prompt includes
+4. **Honor the effective working directory.** The rendered prompt includes
    a `## Context` block with the effective working directory. All file reads,
    edits, and shell commands must use this path as authoritative. This is
    critical for worktree-backed runs where the working directory is mapped
    to `.5x/worktrees/...`.
 
-4. **Track state.** Use `5x run state --run <id>`,
+5. **Track state.** Use `5x run state --run <id>`,
    `5x plan list` for an overview, and
    `5x plan phases <path>` for detailed phase status.
 
-5. **Guide human decisions.** When a workflow requires human input,
+6. **Guide human decisions.** When a workflow requires human input,
    present the situation with enough context for the human to decide.
    Prefer **AskQuestion** (or the chat thread) over spawning `5x prompt`
    subprocesses — agent terminals often lack a TTY; see the `5x` foundation
    skill’s Human Interaction Model.
 
-6. **Verify before proceeding.** After each subagent completes, check
+7. **Verify before proceeding.** After each subagent completes, check
    the result against the skill's invariants.
 
-7. **Recover gracefully.** When subagents fail or produce invalid
+8. **Recover gracefully.** When subagents fail or produce invalid
    results, follow the skill's recovery section. Retry once with a
    fresh subagent invocation before escalating.
 
-## Native delegation vs `5x invoke`
+## Delegation mode precedence
 
-Per-role **delegationMode** in `5x.toml` selects which skill branches apply:
+Per-role **`delegationMode` in `5x.toml` is authoritative** — read it via
+`5x config show --context <project-dir>` before the first delegation.
 **native** roles delegate to Cursor subagents; **invoke** roles use
 `5x invoke` (provider session ids on stdout).
 

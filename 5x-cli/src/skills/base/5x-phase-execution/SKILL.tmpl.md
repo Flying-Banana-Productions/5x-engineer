@@ -137,6 +137,30 @@ No `.5x/` directory is required in worktree checkouts.
 
 ### Step 0: Initialize
 
+Before the first author or reviewer delegation in this run, read resolved
+config (see the `5x` foundation skill — **Delegation mode precedence**):
+
+```bash
+5x config show --context $PROJECT_DIR
+```
+
+Confirm each role's path before delegating:
+{{#if author_native}}
+- **Author:** native (`5x-code-author` via Task tool)
+{{/if}}
+{{#if author_invoke}}
+- **Author:** invoke (`5x invoke author ...`)
+{{/if}}
+{{#if reviewer_native}}
+- **Reviewer:** native (`5x-reviewer` via Task tool)
+{{/if}}
+{{#if reviewer_invoke}}
+- **Reviewer:** invoke (`5x invoke reviewer ...`)
+{{/if}}
+
+If your chosen delegation path does not match the resolved
+`delegationMode` for that role, stop and correct before proceeding.
+
     5x run init --plan $PLAN_PATH --worktree
 
 The `--worktree` flag ensures an isolated git worktree is resolved or

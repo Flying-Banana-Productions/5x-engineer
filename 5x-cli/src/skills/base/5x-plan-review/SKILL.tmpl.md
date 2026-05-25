@@ -157,6 +157,32 @@ confirmed all reviewer templates have `-continued` variants.
 
 ## Workflow
 
+### Step 0: Resolve delegation mode
+
+Before the first author or reviewer delegation, read resolved config (see
+the `5x` foundation skill — **Delegation mode precedence**):
+
+```bash
+5x config show --context $PROJECT_DIR
+```
+
+Confirm each role's path before delegating:
+{{#if author_native}}
+- **Author:** native (`5x-plan-author` via Task tool)
+{{/if}}
+{{#if author_invoke}}
+- **Author:** invoke (`5x invoke author ...`)
+{{/if}}
+{{#if reviewer_native}}
+- **Reviewer:** native (`5x-reviewer` via Task tool)
+{{/if}}
+{{#if reviewer_invoke}}
+- **Reviewer:** invoke (`5x invoke reviewer ...`)
+{{/if}}
+
+If your chosen delegation path does not match the resolved
+`delegationMode` for that role, stop and correct before proceeding.
+
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
 Track $NATIVE_SUBTASK_ID (initially empty). When `reviewer.continuePhaseSessions`
