@@ -520,6 +520,31 @@ describe("5x.toml.local overlay (loadConfig)", () => {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
+
+	test("plugin section in 5x.toml.local is not unknown when provider is in 5x.toml", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nprovider = "claude-code"\n`,
+				"utf-8",
+			);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[claude-code]\napiKey = "secret"\n`,
+				"utf-8",
+			);
+			await loadConfig(tmp, undefined, warn);
+			const allWarnings = warnings.join("\n");
+			expect(allWarnings).not.toContain("claude-code");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

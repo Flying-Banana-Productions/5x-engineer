@@ -167,6 +167,30 @@ describe("config v1 extensions", () => {
 		}
 	});
 
+	test("plugin section in local file uses provider from main config for warnings", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nprovider = "codex"\n`,
+				"utf-8",
+			);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[codex]\napiKey = "sk-123"\n`,
+				"utf-8",
+			);
+			await loadConfig(tmp, undefined, warn);
+			expect(warnings.join("\n")).not.toContain("codex");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("provider-matching top-level keys do NOT produce warnings", async () => {
 		const tmp = makeTmpDir();
 		const warnings: string[] = [];
