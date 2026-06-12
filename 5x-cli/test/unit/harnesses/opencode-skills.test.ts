@@ -489,7 +489,10 @@ describe("run watch guidance removed from native-first skills", () => {
 	});
 
 	test("no process skill references 5x invoke", () => {
-		expect(getDefaultSkillRaw("5x")).not.toContain("5x invoke");
+		// Foundation skill documents delegation mode precedence (may mention invoke).
+		expect(getDefaultSkillRaw("5x")).not.toContain(
+			"5x invoke <author|reviewer>",
+		);
 		expect(getDefaultSkillRaw("5x-plan")).not.toContain("5x invoke");
 		expect(getDefaultSkillRaw("5x-plan-review")).not.toContain("5x invoke");
 		expect(getDefaultSkillRaw("5x-phase-execution")).not.toContain("5x invoke");
