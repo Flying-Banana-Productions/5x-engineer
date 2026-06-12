@@ -15,6 +15,30 @@ import type { FiveXConfig } from "../config.js";
 import { OpenCodeProvider } from "./opencode.js";
 import type { AgentProvider, ProviderPlugin } from "./types.js";
 
+function getWorkspaceProviderUrl(packageName: string): URL | null {
+	if (!packageName.startsWith("@5x-ai/provider-")) {
+		return null;
+	}
+
+	const dirName = packageName.slice("@5x-ai/".length);
+	return new URL(`../../packages/${dirName}/src/index.ts`, import.meta.url);
+}
+
+async function tryLoadWorkspacePlugin(
+	packageName: string,
+): Promise<Record<string, unknown> | null> {
+	const workspaceUrl = getWorkspaceProviderUrl(packageName);
+	if (!workspaceUrl) {
+		return null;
+	}
+
+	try {
+		return (await import(workspaceUrl.href)) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error types (using simple classes until Phase 3 CliError is available)
 // ---------------------------------------------------------------------------
@@ -86,9 +110,15 @@ export async function loadPlugin(
 			message.includes("Module not found") ||
 			code === "ERR_MODULE_NOT_FOUND"
 		) {
-			throw new ProviderNotFoundError(providerName, packageName);
+			const workspaceMod = await tryLoadWorkspacePlugin(packageName);
+			if (workspaceMod) {
+				mod = workspaceMod;
+			} else {
+				throw new ProviderNotFoundError(providerName, packageName);
+			}
+		} else {
+			throw err;
 		}
-		throw err;
 	}
 
 	const plugin = mod.default as ProviderPlugin | undefined;

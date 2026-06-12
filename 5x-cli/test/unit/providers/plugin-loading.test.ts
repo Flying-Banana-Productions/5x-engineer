@@ -18,6 +18,7 @@ import samplePlugin from "../../../packages/provider-sample/src/index.js";
 import {
 	createProvider,
 	InvalidProviderError,
+	loadPlugin,
 	ProviderNotFoundError,
 } from "../../../src/providers/factory.js";
 import type {
@@ -260,6 +261,13 @@ describe("plugin loading errors", () => {
 // ---------------------------------------------------------------------------
 
 describe("factory dynamic import success path", () => {
+	test("loadPlugin falls back to workspace package for cursor-agent", async () => {
+		const plugin = await loadPlugin("cursor-agent");
+
+		expect(plugin.name).toBe("cursor-agent");
+		expect(typeof plugin.create).toBe("function");
+	});
+
 	test("createProvider resolves provider: 'sample' to @5x-ai/provider-sample via dynamic import", async () => {
 		// This test validates that the factory can dynamically import the sample provider
 		// using the standard plugin resolution path (not file URL bypass)
