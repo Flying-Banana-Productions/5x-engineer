@@ -446,7 +446,7 @@ function printInstallSummary(
 /**
  * Print a human-readable harness list grouped by scope and file type.
  */
-function formatHarnessListText(
+export function formatHarnessListText(
 	data: HarnessListOutput,
 	log: (...args: unknown[]) => void = console.log,
 ): void {
