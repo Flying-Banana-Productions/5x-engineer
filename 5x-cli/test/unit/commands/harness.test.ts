@@ -18,15 +18,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildHarnessListData,
+	formatHarnessListText,
 	harnessInstall,
-	harnessList,
 	harnessUninstall,
 } from "../../../src/commands/harness.handler.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { isValidPlugin } from "../../../src/harnesses/factory.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
-import { setOutputFormat } from "../../../src/output.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -943,17 +942,27 @@ describe("buildHarnessListData", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `harnessList` --text readable output
+// `formatHarnessListText` — readable output
 // ---------------------------------------------------------------------------
 
-describe("harnessList readable output", () => {
+async function captureHarnessListText(
+	startDir: string,
+	homeDir: string,
+): Promise<string> {
+	const logs: string[] = [];
+	const log = (...args: unknown[]) => {
+		logs.push(args.join(" "));
+	};
+	const data = await buildHarnessListData(startDir, homeDir);
+	formatHarnessListText(data, log);
+	return logs.join("\n");
+}
+
+describe("formatHarnessListText", () => {
 	test("lists rules files when present in scope files", async () => {
 		const tmp = makeTmpDir();
 		const fakeHome = join(tmp, "fake-home");
 		mkdirSync(fakeHome, { recursive: true });
-
-		const originalLog = console.log;
-		const logs: string[] = [];
 
 		try {
 			await bootstrapProject(tmp);
@@ -964,17 +973,9 @@ describe("harnessList readable output", () => {
 				homeDir: fakeHome,
 			});
 
-			setOutputFormat("text");
-			console.log = (...args: unknown[]) => {
-				logs.push(args.join(" "));
-			};
-
-			await harnessList({ startDir: tmp, homeDir: fakeHome });
-
-			expect(logs.join("\n")).toContain("rules/5x-orchestrator.mdc");
+			const output = await captureHarnessListText(tmp, fakeHome);
+			expect(output).toContain("rules/5x-orchestrator.mdc");
 		} finally {
-			console.log = originalLog;
-			setOutputFormat("json");
 			cleanupDir(tmp);
 		}
 	});
@@ -984,9 +985,6 @@ describe("harnessList readable output", () => {
 		const fakeHome = join(tmp, "fake-home");
 		mkdirSync(fakeHome, { recursive: true });
 
-		const originalLog = console.log;
-		const logs: string[] = [];
-
 		try {
 			await harnessInstall({
 				name: "cursor",
@@ -995,21 +993,12 @@ describe("harnessList readable output", () => {
 				homeDir: fakeHome,
 			});
 
-			setOutputFormat("text");
-			console.log = (...args: unknown[]) => {
-				logs.push(args.join(" "));
-			};
-
-			await harnessList({ startDir: tmp, homeDir: fakeHome });
-
-			const output = logs.join("\n");
+			const output = await captureHarnessListText(tmp, fakeHome);
 			expect(output).toContain("rules: unsupported");
 			expect(output).toContain(
 				"Note: Cursor user rules are settings-managed and not file-backed. Install with --scope project to add the orchestrator rule.",
 			);
 		} finally {
-			console.log = originalLog;
-			setOutputFormat("json");
 			cleanupDir(tmp);
 		}
 	});

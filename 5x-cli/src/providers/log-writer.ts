@@ -43,6 +43,8 @@ export interface SessionStartEntry {
 	template: string;
 	run: string;
 	phase_number?: string;
+	provider?: string;
+	model?: string;
 }
 
 // ---------------------------------------------------------------------------

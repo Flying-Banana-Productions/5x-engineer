@@ -71,7 +71,7 @@ timeout handling.
 {{/if}}
 {{#if any_invoke}}
 - `5x prompt choose <msg> --options <a,b,c>` — ask the human (invoke fallback)
-- `5x prompt input <msg>` — get human guidance (invoke fallback)
+- `5x prompt input <msg>` — revise orchestrator-drafted guidance when the human modifies it (invoke fallback)
 {{/if}}
 
 {{#if reviewer_native}}
@@ -136,6 +136,30 @@ No `.5x/` directory is required in worktree checkouts.
 ## Workflow
 
 ### Step 0: Initialize
+
+Before the first author or reviewer delegation in this run, read resolved
+config (see the `5x` foundation skill — **Delegation mode precedence**):
+
+```bash
+5x config show --context $PROJECT_DIR
+```
+
+Confirm each role's path before delegating:
+{{#if author_native}}
+- **Author:** native (`5x-code-author` via Task tool)
+{{/if}}
+{{#if author_invoke}}
+- **Author:** invoke (`5x invoke author ...`)
+{{/if}}
+{{#if reviewer_native}}
+- **Reviewer:** native (`5x-reviewer` via Task tool)
+{{/if}}
+{{#if reviewer_invoke}}
+- **Reviewer:** invoke (`5x invoke reviewer ...`)
+{{/if}}
+
+If your chosen delegation path does not match the resolved
+`delegationMode` for that role, stop and correct before proceeding.
 
     5x run init --plan $PLAN_PATH --worktree
 
@@ -417,13 +441,24 @@ Check the result:
 
 #### Step 5a: Escalate
 
+For each `human_required` review item (and any ambiguous context in
+$REASON), draft a concrete recommendation for how the author should resolve
+it. Present these recommendations to the human along with the escalation
+reason — do not ask the human to write guidance from scratch.
+
 {{#if any_native}}
 Present the situation using your **native UI** (options: continue-with-guidance, approve-override, abort).  
+Include your per-item recommendations in the presentation.
 **CLI equivalent (fallback):**  
 `5x prompt choose "Phase $PHASE: $REASON" --options continue-with-guidance,approve-override,abort`
 
 **"continue-with-guidance":**
-  Collect guidance, then record:  
+  Present your recommendations in a structured summary (item id, issue,
+  recommendation). Ask the human to **approve as-is** or **modify** before
+  sending back to the author. Default posture: your recommendations are the
+  draft guidance. If they modify, merge their edits into the final guidance
+  text.
+  Record:  
   `5x run record "human:gate" --run $RUN --phase $PHASE --result '{"choice":"continue","guidance":"..."}'`  
   Re-invoke author (Step 5) with `--var user_notes="$GUIDANCE"`.
 
@@ -435,13 +470,19 @@ Present the situation using your **native UI** (options: continue-with-guidance,
   `5x run complete --run $RUN --status aborted`
   Stop.
 {{else}}
-Present the situation to the human:
+Present the situation and your per-item recommendations to the human:
 
     5x prompt choose "Phase $PHASE: $REASON" \
       --options continue-with-guidance,approve-override,abort
 
 **"continue-with-guidance":**
-  Collect guidance: `5x prompt input "Guidance for the author"`
+  Ask the human to approve your recommendations as-is or modify them:
+
+    5x prompt choose "Send these recommendations to the author?" \
+      --options approve-as-is,modify
+
+  If "approve-as-is", use your drafted recommendations as $GUIDANCE.
+  If "modify": `5x prompt input "Revise the guidance for the author" --multiline`
   Record: `5x run record "human:gate" --run $RUN --phase $PHASE --result '{"choice":"continue","guidance":"..."}'`
   Re-invoke author (Step 5) with `--var user_notes="$GUIDANCE"`.
 

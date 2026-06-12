@@ -451,12 +451,16 @@ export async function invokeAgent(
 	const logPath = prepareLogPath(logDir);
 
 	// 4b. Write session metadata as first NDJSON line (log-only, not an AgentEvent)
+	const providerName =
+		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
 	appendSessionStart(logPath, {
 		type: "session_start",
 		role,
 		template: resolved.selectedTemplateName,
 		run: params.run,
 		phase_number: variables.phase_number,
+		provider: providerName,
+		model,
 	});
 
 	// 5. Build run options
@@ -502,7 +506,64 @@ export async function invokeAgent(
 
 	if (!validation.ok) {
 		await provider.close().catch(() => {});
-		outputError(validation.code, validation.message, validation.detail);
+
+		const rawDetail =
+			validation.detail && typeof validation.detail === "object"
+				? (validation.detail as Record<string, unknown>)
+				: {};
+		const enrichedDetail: Record<string, unknown> = {
+			...rawDetail,
+			session_id: runResult.sessionId,
+			log_path: logPath,
+			template: resolved.selectedTemplateName,
+			provider: providerName,
+			model,
+			// Include provider text when structured output was missing or for diagnosis.
+			...(runResult.text
+				? { provider_text: runResult.text.slice(0, 4000) }
+				: {}),
+			...(rawDetail.raw == null ? { raw: null } : {}),
+		};
+
+		// Record failed invoke attempt when --record so run state shows the
+		// invocation even when structured output is missing/invalid.
+		if (params.record) {
+			const stepName = params.recordStep ?? resolved.stepName;
+			if (stepName) {
+				try {
+					await recordStepInternal({
+						run: params.run,
+						stepName,
+						result: JSON.stringify({
+							result: "failed",
+							reason: validation.message,
+							invoke_error: validation.code,
+							session_id: runResult.sessionId,
+							log_path: logPath,
+							template: resolved.selectedTemplateName,
+							provider: providerName,
+							model,
+						}),
+						phase: params.phase ?? variables.phase_number,
+						iteration: params.iteration,
+						sessionId: runResult.sessionId,
+						model,
+						durationMs: runResult.durationMs,
+						tokensIn: runResult.tokens.in,
+						tokensOut: runResult.tokens.out,
+						costUsd: runResult.costUsd ?? undefined,
+						logPath: logPath ?? undefined,
+					});
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.error(
+						`Warning: failed to record invoke failure step: ${msg}`,
+					);
+				}
+			}
+		}
+
+		outputError(validation.code, validation.message, enrichedDetail);
 	}
 
 	const structured = validation.value;

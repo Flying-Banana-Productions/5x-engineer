@@ -367,5 +367,26 @@ describe("shared skill template loader", () => {
 				expect(phaseExec).toContain("Delegation mode");
 			}
 		});
+
+		test("foundation skill documents delegation mode precedence", () => {
+			const foundation = renderSkillByName(
+				"5x",
+				makeMixedContext(false, true),
+			).content;
+			expect(foundation).toContain("## Delegation mode precedence");
+			expect(foundation).toContain("author.delegationMode = invoke");
+			expect(foundation).toContain("Fail fast");
+		});
+
+		test("mixed invoke/native Step 0 shows per-role delegation paths", () => {
+			const ctx = makeMixedContext(false, true);
+			for (const name of ["5x-plan", "5x-plan-review", "5x-phase-execution"]) {
+				const content = renderSkillByName(name, ctx).content;
+				expect(content).toContain("Delegation mode precedence");
+				expect(content).toContain("Author:** invoke");
+				expect(content).toContain("Reviewer:** native");
+				expect(content).not.toContain("Author:** native");
+			}
+		});
 	});
 });

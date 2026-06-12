@@ -82,12 +82,16 @@ interface CmdResult {
 	exitCode: number;
 }
 
-/** Run 5x CLI and collect output. Kills after timeoutMs to handle long-running watch. */
-async function run5x(
-	cwd: string,
-	args: string[],
-	timeoutMs = 5000,
-): Promise<CmdResult> {
+interface Run5xWatchOptions {
+	/** SIGINT if stopWhen never fires. */
+	maxTimeoutMs?: number;
+	/** Minimum runtime before stopWhen is evaluated. */
+	minRuntimeMs?: number;
+	stopWhen?: (stdout: string, stderr: string) => boolean;
+}
+
+/** Run short-lived 5x CLI commands that exit on their own. */
+async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
 		env: cleanGitEnv(),
@@ -96,15 +100,86 @@ async function run5x(
 		stderr: "pipe",
 	});
 
-	const timer = setTimeout(() => proc.kill("SIGINT"), timeoutMs);
-
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
 
-	clearTimeout(timer);
+	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
+/**
+ * Run `5x run watch` and SIGINT once output preconditions are met.
+ * Fixed timeouts are unreliable under `--concurrent` because Bun startup
+ * contends for CPU; stopWhen keeps sequential runs fast while remaining stable.
+ */
+async function run5xWatch(
+	cwd: string,
+	args: string[],
+	options: Run5xWatchOptions = {},
+): Promise<CmdResult> {
+	const maxTimeoutMs = options.maxTimeoutMs ?? 15000;
+	const minRuntimeMs = options.minRuntimeMs ?? 0;
+	const stopWhen = options.stopWhen ?? (() => true);
+
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	const startedAt = Date.now();
+	let stdout = "";
+	let stderr = "";
+	let killed = false;
+
+	const kill = () => {
+		if (killed) return;
+		killed = true;
+		proc.kill("SIGINT");
+	};
+
+	const maybeStop = () => {
+		if (killed) return;
+		if (Date.now() - startedAt < minRuntimeMs) return;
+		if (stopWhen(stdout, stderr)) kill();
+	};
+
+	const readStream = async (
+		stream: ReadableStream<Uint8Array>,
+		sink: "stdout" | "stderr",
+	) => {
+		const reader = stream.getReader();
+		const decoder = new TextDecoder();
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				const chunk = decoder.decode(value, { stream: true });
+				if (sink === "stdout") stdout += chunk;
+				else stderr += chunk;
+				maybeStop();
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	};
+
+	const maxTimer = setTimeout(kill, maxTimeoutMs);
+	const pollTimer = setInterval(maybeStop, 25);
+
+	const [, , exitCode] = await Promise.all([
+		readStream(proc.stdout, "stdout"),
+		readStream(proc.stderr, "stderr"),
+		proc.exited,
+	]);
+
+	clearTimeout(maxTimer);
+	clearInterval(pollTimer);
+
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
@@ -214,10 +289,14 @@ describe("5x run watch", () => {
 					delta: "hello",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					["run", "watch", "--run", "run_fakeid12345", "--poll-interval", "10"],
-					500,
+					{
+						stopWhen: (out, err) =>
+							err.includes("not found in DB") &&
+							out.split("\n").filter((l) => l.length > 0).length >= 1,
+					},
 				);
 				expect(result.stderr).toContain("not found in DB");
 				expect(result.stderr).toContain("Proceeding");
@@ -260,10 +339,13 @@ describe("5x run watch", () => {
 					delta: "Hello world",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					["run", "watch", "--run", runId, "--poll-interval", "10"],
-					500,
+					{
+						stopWhen: (out) =>
+							out.split("\n").filter((l) => l.length > 0).length >= 2,
+					},
 				);
 
 				const lines = result.stdout.split("\n").filter((l) => l.length > 0);
@@ -309,7 +391,7 @@ describe("5x run watch", () => {
 					delta: "Implementation started\n",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					[
 						"run",
@@ -320,7 +402,11 @@ describe("5x run watch", () => {
 						"--poll-interval",
 						"10",
 					],
-					500,
+					{
+						stopWhen: (out) =>
+							out.includes("[author-phase-1]") &&
+							out.includes("Implementation started"),
+					},
 				);
 
 				// Should contain the label header
@@ -377,7 +463,7 @@ describe("5x run watch", () => {
 					delta: "Reviewer output\n",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					[
 						"run",
@@ -388,7 +474,11 @@ describe("5x run watch", () => {
 						"--poll-interval",
 						"10",
 					],
-					500,
+					{
+						stopWhen: (out) =>
+							out.includes("[author-phase-1]") &&
+							out.includes("[reviewer-phase-1]"),
+					},
 				);
 
 				// Both labels should appear
@@ -419,7 +509,7 @@ describe("5x run watch", () => {
 					delta: "old content",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					[
 						"run",
@@ -430,7 +520,11 @@ describe("5x run watch", () => {
 						"--poll-interval",
 						"10",
 					],
-					500,
+					{
+						// Let watch finish startup under concurrent CPU load before stopping.
+						minRuntimeMs: 750,
+						stopWhen: () => true,
+					},
 				);
 
 				// Should not contain existing content
@@ -460,7 +554,7 @@ describe("5x run watch", () => {
 					delta: "unlabeled\n",
 				});
 
-				const result = await run5x(
+				const result = await run5xWatch(
 					projectRoot,
 					[
 						"run",
@@ -471,7 +565,10 @@ describe("5x run watch", () => {
 						"--poll-interval",
 						"10",
 					],
-					500,
+					{
+						stopWhen: (out) =>
+							out.includes("[agent-001]") && out.includes("unlabeled"),
+					},
 				);
 
 				// Should fall back to filename-based label

@@ -345,6 +345,16 @@ describe("5x-orchestrator template content", () => {
 		expect(content).toContain("5x-code-author");
 		expect(content).toContain("5x-reviewer");
 	});
+
+	test("orchestrator requires resolving delegation mode before delegating", () => {
+		const result = renderAgentTemplate("5x-orchestrator", {});
+		const content = result?.content ?? "";
+		expect(content).toContain("Resolve delegation mode before delegating");
+		expect(content).toContain("5x config show --context");
+		expect(content).toContain(
+			"Never use a native subagent for a role configured as `invoke`",
+		);
+	});
 });
 
 // ---------------------------------------------------------------------------

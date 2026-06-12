@@ -22,9 +22,42 @@ platforms unless you specifically need those examples.
 ## Tools
 
 - `5x config show [--context <dir>]` — read the resolved runtime config
-  (iteration limits, quality retry limits, timeout settings, paths). Use
-  this instead of hardcoding numbers. The `--context` flag resolves
-  nearest-config overrides for monorepo sub-projects.
+  (iteration limits, quality retry limits, timeout settings, paths,
+  per-role `delegationMode`, `provider`, and `model`). Use this instead
+  of hardcoding numbers. The `--context` flag resolves nearest-config
+  overrides for monorepo sub-projects.
+
+## Delegation mode precedence
+
+Before the **first** author or reviewer delegation in a workflow, read
+resolved config:
+
+```bash
+5x config show --context $PROJECT_DIR
+```
+
+Per-role **`delegationMode` is authoritative** — it overrides harness
+defaults and orchestrator habit. **Mixed mode is normal** — e.g.
+`author.delegationMode = invoke` with `reviewer.delegationMode = native`.
+Each workflow step uses **only that role's branch** in the process skill.
+
+{{#if any_invoke}}
+Do not substitute a harness subagent for a role configured as `invoke` —
+that bypasses `author.provider` / `author.model` and runs the harness
+subagent's model instead.
+{{/if}}
+
+**Fail fast:** before delegating, confirm your chosen path matches the
+resolved `delegationMode` for that role. If they differ, stop and correct.
+
+{{#if any_native}}
+**Native roles** (`delegationMode = native`): harness subagent +
+`5x protocol validate --record`.
+{{/if}}
+{{#if any_invoke}}
+**Invoke roles** (`delegationMode = invoke`): `5x invoke --record` (uses
+`provider`, `model`, and timeout from config).
+{{/if}}
 
 ## Human Interaction Model
 
@@ -64,8 +97,22 @@ chooses. Reserve **`5x prompt *`** for scripts, CI, or environments with no chat
 
 ## Delegating to Subagents
 
+**You are the orchestrator.** Execute the skill workflow yourself — render
+prompts, delegate author/reviewer work, validate results, route verdicts,
+and handle human gates. Subagents handle bounded implementation and review
+tasks only; they do not run multi-step workflows on your behalf.
+
+{{#if any_native}}
+**Never delegate orchestration to a subagent.** In native harnesses,
+subagents **cannot** launch other subagents. Spawning a subtask to run
+plan review, phase execution, or any other orchestration loop will fail.
+{{/if}}
+
 {{#if any_native}}
 ### Native delegation (Task tool)
+
+**Use only when `<role>.delegationMode` is `native`.** If the role is
+`invoke`, use `5x invoke` instead — see below.
 
 These skills assume an opencode environment with the 5x harness installed.
 Available subagents are listed in the Task tool's `subagent_type` parameter:
@@ -94,7 +141,7 @@ echo "$RESULT" | 5x protocol validate <role> \
   --run $RUN --record --step $STEP
 ```
 
-This pattern works for all author and reviewer delegation steps.
+This pattern applies to **native** roles only.
 `5x protocol validate --record` is the single recording point.
 
 When using `--run`, do not pass `--var plan_path=...` unless you are
@@ -104,6 +151,10 @@ which keeps author and reviewer on the same file.
 {{/if}}
 {{#if any_invoke}}
 ### Invoke delegation (5x invoke)
+
+**Required when `<role>.delegationMode` is `invoke`.** Do not substitute a
+native subagent — `5x invoke` selects `provider`, `model`, and timeout
+from config.
 
 These skills support environments where some roles use `5x invoke` delegation.
 
@@ -120,7 +171,7 @@ COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 
-This pattern works for all author and reviewer delegation steps.
+This pattern applies to **invoke** roles only.
 `5x invoke --record` is the single recording point.
 
 When using `--run`, do not pass `--var plan_path=...` unless you are
@@ -193,6 +244,18 @@ work.
 - **Read iteration/retry limits from `5x config show`.** Never hardcode
   numbers like "max 5 iterations" or "max 2 retries" — the human may
   have customized these in `5x.toml`.
+- **Per-role `delegationMode` overrides harness habit.** Running in a
+  native harness does not mean every role is native — check config before
+  each author/reviewer step.
+{{#if any_invoke}}
+  Using a harness subagent for an `invoke` role ignores
+  `author.provider` / `author.model`.
+{{/if}}
+{{#if any_native}}
+- **Never delegate orchestration to a subagent.** Run the skill loop in
+  this agent. Subagents are for author/reviewer roles only — they cannot
+  launch further subagents in native harnesses.
+{{/if}}
 {{#if author_native}}
 - **Empty or invalid subagent output (author)**: Retry once with a fresh subagent
   (omit `[[NATIVE_CONTINUE_PARAM]]`). If it fails again, escalate to the human.

@@ -468,29 +468,57 @@ function resolveConfigPaths(config: FiveXConfig, baseDir: string): FiveXConfig {
 	};
 }
 
+/** Top-level keys defined by {@link FiveXConfigSchema} (not plugin passthrough). */
+const KNOWN_ROOT_CONFIG_KEYS = new Set([
+	"author",
+	"reviewer",
+	"opencode",
+	"qualityGates",
+	"skipQualityGates",
+	"worktree",
+	"paths",
+	"db",
+	"maxStepsPerRun",
+	"maxReviewIterations",
+	"maxQualityRetries",
+	"maxAutoIterations",
+	"maxAutoRetries",
+]);
+
+/**
+ * Provider names whose top-level config tables should not trigger unknown-key warnings.
+ * Built from the merged config (all layers) plus CLI overrides so e.g. `[claude-code]`
+ * in `5x.toml.local` is recognized when `author.provider` lives in `5x.toml`.
+ */
+export function collectKnownPluginTopLevelKeys(
+	mergedRaw: unknown,
+	cliProviderNames?: Set<string>,
+): Set<string> {
+	const names = new Set<string>(cliProviderNames);
+	if (!isRecord(mergedRaw)) return names;
+
+	for (const role of ["author", "reviewer"] as const) {
+		const roleConfig = mergedRaw[role];
+		if (
+			isRecord(roleConfig) &&
+			typeof roleConfig.provider === "string" &&
+			roleConfig.provider !== "opencode"
+		) {
+			names.add(roleConfig.provider);
+		}
+	}
+	return names;
+}
+
 function warnUnknownConfigKeys(
 	rawConfig: unknown,
 	configPath: string,
-	cliProviderNames?: Set<string>,
+	knownPluginTopLevelKeys?: Set<string>,
 	warn: (...args: unknown[]) => void = console.error,
 ): void {
 	if (!isRecord(rawConfig)) return;
 
-	const allowedRoot = new Set([
-		"author",
-		"reviewer",
-		"opencode",
-		"qualityGates",
-		"skipQualityGates",
-		"worktree",
-		"paths",
-		"db",
-		"maxStepsPerRun",
-		"maxReviewIterations",
-		"maxQualityRetries",
-		"maxAutoIterations",
-		"maxAutoRetries",
-	]);
+	const allowedRoot = KNOWN_ROOT_CONFIG_KEYS;
 	const allowedAgent = new Set([
 		"provider",
 		"model",
@@ -512,20 +540,11 @@ function warnUnknownConfigKeys(
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
 
-	// Collect provider names referenced in author/reviewer config AND from CLI
-	// overrides. Top-level keys matching these names are plugin config — not unknown.
-	// CLI overrides are authoritative: suppress warnings for their provider keys.
-	const providerNames = new Set<string>(cliProviderNames);
-	for (const role of ["author", "reviewer"]) {
-		const roleConfig = rawConfig[role];
-		if (
-			isRecord(roleConfig) &&
-			typeof roleConfig.provider === "string" &&
-			roleConfig.provider !== "opencode"
-		) {
-			providerNames.add(roleConfig.provider);
-		}
-	}
+	// Effective plugin keys: merged layers + CLI, plus providers declared in this file.
+	const providerNames = collectKnownPluginTopLevelKeys(
+		rawConfig,
+		knownPluginTopLevelKeys,
+	);
 
 	// Deprecated keys that are still parsed but should produce a warning.
 	// These are in the allowed set (not unknown), but we emit deprecation notices.
@@ -673,16 +692,15 @@ function deepMerge(
 }
 
 /**
- * Load and parse `5x.toml.local` for merging.
+ * Load and parse `5x.toml.local` for merging (no unknown-key warnings).
  * `rawForKeys` is the parsed table before path resolution (for local-key metadata).
  * `prepared` is null if the file is absent.
  */
-function prepareLocalTomlOverlay(
+function loadLocalTomlOverlay(
 	localPath: string,
 	options: {
 		stripDb: boolean;
 		warn: (...args: unknown[]) => void;
-		cliProviderNames?: Set<string>;
 	},
 ): {
 	prepared: Record<string, unknown> | null;
@@ -708,8 +726,6 @@ function prepareLocalTomlOverlay(
 			`Invalid config in ${localPath}: expected a TOML table at the root.`,
 		);
 	}
-
-	warnUnknownConfigKeys(raw, localPath, options.cliProviderNames, options.warn);
 
 	const rawForKeys = raw;
 
@@ -747,20 +763,21 @@ function mergeLayeredLocalTomlIntoRaw(
 } {
 	const localPaths: string[] = [];
 	const localRaws: Record<string, unknown>[] = [];
+	const localsToWarn: { path: string; raw: Record<string, unknown> }[] = [];
 
 	const base = isRecord(mergedRaw) ? mergedRaw : {};
 	let out = base;
 
 	const rootLocalPath = join(resolve(controlPlaneRoot), LOCAL_CONFIG_FILENAME);
-	const rootOverlay = prepareLocalTomlOverlay(rootLocalPath, {
+	const rootOverlay = loadLocalTomlOverlay(rootLocalPath, {
 		stripDb: false,
 		warn,
-		cliProviderNames,
 	});
 	if (rootOverlay.prepared && rootOverlay.rawForKeys) {
 		out = deepMerge(out, rootOverlay.prepared);
 		localPaths.push(rootLocalPath);
 		localRaws.push(rootOverlay.rawForKeys);
+		localsToWarn.push({ path: rootLocalPath, raw: rootOverlay.rawForKeys });
 	}
 
 	if (nearestConfigPath) {
@@ -769,17 +786,28 @@ function mergeLayeredLocalTomlIntoRaw(
 			LOCAL_CONFIG_FILENAME,
 		);
 		if (resolve(nearestLocalPath) !== resolve(rootLocalPath)) {
-			const nearestOverlay = prepareLocalTomlOverlay(nearestLocalPath, {
+			const nearestOverlay = loadLocalTomlOverlay(nearestLocalPath, {
 				stripDb: true,
 				warn,
-				cliProviderNames,
 			});
 			if (nearestOverlay.prepared && nearestOverlay.rawForKeys) {
 				out = deepMerge(out, nearestOverlay.prepared);
 				localPaths.push(nearestLocalPath);
 				localRaws.push(nearestOverlay.rawForKeys);
+				localsToWarn.push({
+					path: nearestLocalPath,
+					raw: nearestOverlay.rawForKeys,
+				});
 			}
 		}
+	}
+
+	const knownPluginTopLevelKeys = collectKnownPluginTopLevelKeys(
+		out,
+		cliProviderNames,
+	);
+	for (const { path, raw } of localsToWarn) {
+		warnUnknownConfigKeys(raw, path, knownPluginTopLevelKeys, warn);
 	}
 
 	return { merged: out, localPaths, localRaws };
@@ -810,10 +838,9 @@ export async function loadConfig(
 
 	if (!configPath) {
 		const localPath = join(resolvedRoot, LOCAL_CONFIG_FILENAME);
-		const localOverlay = prepareLocalTomlOverlay(localPath, {
+		const localOverlay = loadLocalTomlOverlay(localPath, {
 			stripDb: false,
 			warn: warnFn,
-			cliProviderNames,
 		});
 		if (!localOverlay.prepared) {
 			const config = resolveConfigPaths(
@@ -825,15 +852,26 @@ export async function loadConfig(
 				configPath: null,
 			};
 		}
+		const knownPluginTopLevelKeys = collectKnownPluginTopLevelKeys(
+			localOverlay.rawForKeys,
+			cliProviderNames,
+		);
+		warnUnknownConfigKeys(
+			localOverlay.rawForKeys,
+			localPath,
+			knownPluginTopLevelKeys,
+			warnFn,
+		);
 		rawConfig = deepMerge({}, localOverlay.prepared);
 	} else {
+		let mainRaw: unknown;
 		try {
 			if (configPath.endsWith(".toml")) {
 				const text = readFileSync(configPath, "utf-8");
-				rawConfig = parseToml(text);
+				mainRaw = parseToml(text);
 			} else {
 				const module = await import(configPath);
-				rawConfig = module.default ?? module;
+				mainRaw = module.default ?? module;
 			}
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -843,17 +881,33 @@ export async function loadConfig(
 			throw new Error(`Failed to load ${configPath}: ${message}. ${hint}`);
 		}
 
-		warnUnknownConfigKeys(rawConfig, configPath, cliProviderNames, warnFn);
-
-		// Resolve raw paths against the config file's directory before Zod parsing
-		rawConfig = resolveRawConfigPaths(rawConfig, dirname(configPath));
-
 		const localPath = join(dirname(configPath), LOCAL_CONFIG_FILENAME);
-		const localOverlay = prepareLocalTomlOverlay(localPath, {
+		const localOverlay = loadLocalTomlOverlay(localPath, {
 			stripDb: false,
 			warn: warnFn,
-			cliProviderNames,
 		});
+
+		const mergedForKeys = deepMerge(
+			isRecord(mainRaw) ? mainRaw : {},
+			localOverlay.rawForKeys ?? {},
+		);
+		const knownPluginTopLevelKeys = collectKnownPluginTopLevelKeys(
+			mergedForKeys,
+			cliProviderNames,
+		);
+
+		warnUnknownConfigKeys(mainRaw, configPath, knownPluginTopLevelKeys, warnFn);
+		if (localOverlay.rawForKeys) {
+			warnUnknownConfigKeys(
+				localOverlay.rawForKeys,
+				localPath,
+				knownPluginTopLevelKeys,
+				warnFn,
+			);
+		}
+
+		// Resolve raw paths against the config file's directory before Zod parsing
+		rawConfig = resolveRawConfigPaths(mainRaw, dirname(configPath));
 		if (localOverlay.prepared) {
 			rawConfig = deepMerge(
 				isRecord(rawConfig) ? rawConfig : {},
