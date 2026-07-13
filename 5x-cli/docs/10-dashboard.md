@@ -1,5 +1,15 @@
 # 5x Dashboard — Live Web Command Center
 
+> **⚠️ DEPRECATED (July 13, 2026).** This design predates the v2 control plane and
+> was written in the v0 context — a single-project, local-only, **read-only** web
+> dashboard with no notion of cloud-synchronized control planes or remote provider
+> invocation. It is superseded by `docs/v2/202-control-plane.md`, which replaces the
+> read-only model with an interactive, decision-queue control plane designed to
+> extend to remote/cloud coordination. Retained for historical reference and for the
+> still-useful UI/telemetry detail (information density, log streaming, WebSocket
+> transport), but the read-only invariant and the architecture here are **not** the
+> v2 direction. Do not treat this doc as authoritative for v2 work.
+
 **Implementation plan**: [development/026-impl-dashboard.plan.md](development/026-impl-dashboard.plan.md)
 
 ---
