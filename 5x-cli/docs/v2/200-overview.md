@@ -56,7 +56,7 @@ v2 adds persistent rows that outlive a single CLI invocation, alongside the v1 `
 
 - **Pending-prompt / decision queue.** When `5x prompt` is invoked, it writes a pending row and polls for an answer. The answer may arrive from the terminal **or** from the control plane (#2) — first writer wins. This converts the existing blocking-CLI prompt contract into a two-way channel **without** inter-process signaling or a daemon-to-agent socket.
 - **Active-run pointer.** A small piece of state (`.5x/current-run`, file or table) set by `5x run init`, recording the run the next command defaults to — git-style implicit context.
-- **Review-budget baseline and decisions.** Plan review captures an immutable initial effort baseline, reviewer forecast updates, and human budget/scope/risk decisions. The editable plan displays these values, but run state preserves the original estimate and audit trail (`206-review-budget-governance.md` §6.3).
+- **Review-budget baseline and decisions.** The plan records stable scored work items; the CLI derives an immutable initial baseline, current forecast, and budget status. Run state preserves those calculations plus human budget/scope/risk decisions and the full audit trail (`206-review-budget-governance.md` §6.4).
 - **Consumed by:** #2 (dashboard selects on and answers via these), #4 (active-run pointer eliminates most `--run`/`--phase` threading), #6 (budget baselines and tradeoff decisions).
 
 ### 3.3 `5x doctor`
@@ -101,7 +101,7 @@ The honest accounting of breaking changes is deliberately small:
 - **Genuinely breaking:** #5 (output normalization — `init` / `upgrade` / `harness install` begin honoring `--json`/`--text`; `protocol emit` envelope behavior normalized). Any script parsing the old text output is affected.
 - **Contract shift (back-compatible in the common case):** #2 changes `5x prompt` from "block on terminal" to "block on queue, answerable from either side." Terminal answering still works; the change matters only to callers that scripted around the old blocking behavior. Carries a schema migration.
 - **Everything else (#1, #3, #4):** purely additive — new files, new commands, new warnings, new defaults. Existing flags and call patterns keep working.
-- **Workflow/protocol extension (#6):** additive structured fields and plan sections during advisory rollout; enforcement changes plan-review routing and the meaning of `human_required` for budget tradeoffs. Existing mid-review runs remain on v1 routing unless explicitly opted in.
+- **Workflow/protocol extension (#6):** additive structured fields and plan sections during advisory rollout; enforcement adds deterministic budget routing while preserving `human_required` as the reviewer's semantic judgment signal. Existing mid-review runs remain on v1 routing unless explicitly opted in.
 
 We bump to 2.0 even though the breaking surface is thin, because:
 

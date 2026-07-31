@@ -68,6 +68,8 @@ Implementation effort and long-term architecture burden are related but not inte
 
 Negative architecture delta never makes gross delivery effort disappear. Both values remain visible in every assessment.
 
+The CLI owns all aggregation and ceiling arithmetic. Agents estimate individual work items and finding deltas; they never emit totals, ceilings, or budget status. The sole aggregate estimate from an agent is the first reviewer's independent baseline estimate used to detect baseline inflation or understatement; it is an input to CLI comparison, not a computed budget result.
+
 ### 3.1 Delivery effort points
 
 The plan author scores each implementation work item with a small relative scale:
@@ -88,30 +90,51 @@ The point total is intentionally coarse. The durable value is the explicit compa
 
 Let:
 
-- `B` = initial author effort forecast, captured before the first review.
+- `B0` = immutable initial effort baseline, computed by summing the initial plan work items.
+- `B` = governing baseline, initialized to `B0` and changeable only by a recorded human decision.
+- `I` = first reviewer's independent estimate of the same initial scope.
+- `W` = current effort, computed by summing the current plan work items.
+- `R` = pending required effort, computed by summing reviewer item deltas not yet reflected in the plan.
 - `S` = standard ceiling.
-- `C` = verified, eligible architecture-debt credit.
+- `N` = sum of the absolute values of individually eligible negative architecture claims.
+- `D` = eligible architecture-debt credit: provisional during plan review, realized after implementation review.
 - `E` = effective ceiling after bounded debt credit.
 - `A` = absolute effort ceiling, which no debt credit can exceed.
+- `P` = gross positive architecture delta across current work items and pending findings; negative items never offset it for threshold purposes.
+
+The CLI computes `projectedEffort = W + R`. Stable work-item and review-item IDs prevent a correction already incorporated into `W` from also remaining in `R`.
 
 Recommended defaults:
 
 ```text
-S = max(B + 2, ceil(B * 1.25))
-C = min(ceil(B * 0.25), verifiedDebtReduction * 1.0)
-E = min(A, S + C)
-A = ceil(B * 1.50)
+M = minimumGrowthPoints
+S = max(B + M, ceil(B * (1 + growthPercent / 100)))
+D = min(ceil(B * maxDebtCreditPercent / 100),
+        floor(N * debtTradeoffRatio))
+A = max(S + M, ceil(B * (1 + absoluteGrowthPercent / 100)))
+E = min(A, S + D)
+positiveArchitectureLimit = max(minimumPositiveArchitecturePoints,
+                                ceil(B * maxPositiveArchitecturePercent / 100))
+baselineDisagreementThreshold = max(minimumBaselineDisagreementPoints,
+                                    ceil(B0 * baselineDisagreementPercent / 100))
 ```
 
-This gives ordinary review corrections a 25% allowance, with a minimum two-point allowance for small plans. Directly coupled simplification may authorize additional effort up to another 25% of baseline. Gross effort above 150% always requires a human decision regardless of claimed debt reduction.
+This gives ordinary review corrections a 25% allowance, with a minimum two-point allowance for small plans. Directly coupled simplification may authorize additional effort up to another 25% of baseline. `A` repeats the minimum-point floor above `S`, so small plans retain usable debt credit: for `B = 4`, `S = 6`, `D <= 1`, `A = 8`, and `E` may reach 7. Gross effort above `A` always requires a human decision regardless of claimed debt reduction.
 
 These are defaults, not universal constants. Projects may configure the percentages and exchange ratio (§7).
 
-### 3.3 Frozen baseline
+### 3.3 Frozen baseline and baseline disputes
 
-The CLI records `B` and the derived ceilings in run state before the first reviewer invocation. Agents may update the current forecast but may not rewrite the baseline. A human-approved budget increase is recorded as a decision layered over the baseline, preserving the original estimate and the audit trail.
+Before the first reviewer invocation, the CLI parses the plan work-item table, computes `B0`, and records it in run state. Agents may revise work items but may not rewrite `B0`. A human-approved baseline change updates governing `B` while preserving `B0` and the decision history.
 
-The first reviewer may declare the estimate unrealistic. If the corrected forecast remains within `S`, correcting the current forecast is ordinary `auto_fix` work. If required scope exceeds `S`, the first review escalates immediately; it does not silently establish a larger baseline.
+The first reviewer provides `I`, confidence, and evidence. The reviewer does not classify the disagreement or calculate percentages or ceilings. The CLI raises `baseline_disputed` when `abs(I - B0) >= baselineDisagreementThreshold` and deterministically labels the direction `understated` when `I > B0` or `inflated` when `I < B0`; otherwise it records `aligned`.
+
+Material disagreement in either direction routes to a human:
+
+- **Understated:** increase `B`, narrow scope, or retain `B` and accept that required findings may immediately exceed `S`.
+- **Inflated:** lower governing `B`, retain the original estimate with justification, or request a new author estimate.
+
+This prevents both accidental underestimation and deliberate baseline inflation from silently creating scope headroom. The reviewer may contest the baseline but may never modify it.
 
 ### 3.4 Surface snapshot
 
@@ -188,11 +211,28 @@ This prevents the reviewer from presenting a broad refactor as the only valid im
 
 ### 4.4 Credit guardrails
 
-- Credit is based on verified architectural reduction, not on reviewer intent.
+- Plan-time credit requires evidence-supported architectural reduction and remains provisional until §4.5 reconciliation; reviewer intent alone earns no credit.
 - Credit may increase `E`; it never reduces the displayed current effort forecast.
 - Credit cannot exceed `maxDebtCreditPercent` or the absolute effort ceiling.
-- Positive architecture delta must be reported and justified; it cannot be hidden by unrelated negative items elsewhere in the plan.
+- Negative architecture items are tracked separately from `P`; they cannot hide gross positive burden elsewhere in the plan.
+- A single positive architecture item of 5 or more points, or cumulative `P` above `positiveArchitectureLimit`, routes to a human even when delivery effort is within budget.
 - Security, correctness, and acceptance requirements remain findings even when they exceed every ceiling. Budget changes routing, not visibility.
+
+### 4.5 Post-implementation credit reconciliation
+
+Plan-time debt credit is provisional. Each credited item gets a stable `creditClaimId`, claimed architecture delta, target phase, and before/after evidence. The CLI provides the claims relevant to the reviewed phase to `src/templates/reviewer-commit.md` and `reviewer-commit-continued.md`.
+
+The implementation reviewer classifies each claim:
+
+| Realization | Meaning |
+|---|---|
+| `realized` | The promised simpler post-state exists; the full planned credit is retained |
+| `partial` | Some simplification landed; reviewer emits the realized per-claim architecture delta and evidence |
+| `not_realized` | The credited consolidation/removal did not land; credit becomes zero |
+
+The reviewer evaluates claims individually and does not aggregate credit or recompute ceilings. The CLI derives realized credit and budget status. If a shortfall would put completed or remaining work above `E`, the run pauses before the next phase or final completion and asks the human to restore the promised simplification, approve the higher burden/budget, reduce remaining scope, or abort. Reconciliation must not automatically create tangential remediation work.
+
+Commit-review prompts also receive the prior human debt decisions so an explicitly waived or reduced claim is evaluated against the approved post-state rather than its superseded original wording.
 
 ---
 
@@ -208,9 +248,9 @@ The first review is the one exhaustive pass over all material dimensions. The re
 - Surface all known material blockers rather than deliberately saving issues for later rounds.
 - Classify each finding by requirement relationship and expected effort/architecture delta.
 - Recommend the lowest-complexity adequate correction.
-- Escalate immediately if required corrections exceed the approved ceiling.
+- Supply complete item deltas so the CLI can route immediately when required corrections exceed the approved ceiling.
 
-The reviewer may reject an unrealistic budget, but may not increase it. Only a human decision changes the approved allowance.
+The reviewer may contest an unrealistic baseline, but may not increase or decrease it. Only a human decision changes the approved allowance.
 
 ### 5.2 Continued reviews
 
@@ -219,12 +259,18 @@ Subsequent reviews are closure reviews, not fresh exhaustive reviews. They prima
 - Mark prior findings `addressed`, `partially_addressed`, or `still_open`.
 - Detect regressions introduced by the revision.
 - Verify updated effort and architecture deltas.
+- Honor the deferred-finding and accepted-risk ledger supplied in the continued-review prompt.
 
 A new blocking finding after round one is allowed only when it is:
 
-- Introduced or made relevant by the revision.
-- A direct failure of a named requirement or acceptance criterion.
-- A material security, data-loss, or correctness risk that cannot responsibly be deferred.
+- Introduced by a specific changed plan hunk and directly causes a named requirement, acceptance, security, data-loss, or correctness failure.
+- A critical late-discovered security, data-loss, or correctness issue that cannot responsibly be deferred, even though it predates the revision. This exception always routes directly to the human; it cannot silently restart the automatic loop.
+
+For the first case, the verdict item must include `introducedBy` with the reviewed commit range, exact plan diff hunk, and a causal explanation. "Made relevant by the revision" without a cited changed contract is not sufficient. The CLI validates that the cited hunk belongs to the plan diff already appended to `reviewer-plan-continued.md`.
+
+For the critical exception, the item must include `lateDiscovery: "critical_safety"` and evidence. A pre-existing ordinary completeness gap missed in round one is nonblocking follow-up, not a new automatic correction cycle.
+
+Deferred findings and accepted risks have stable decision IDs and finding fingerprints. The continued-review prompt includes their title, rationale, decision, and scope. Re-raising one as blocking is prohibited unless the reviewer supplies `newEvidence`, identifies the prior decision ID, and explains why the approved tradeoff no longer applies.
 
 Newly noticed adjacent hardening, polish, speculative risk, or unrelated debt is recorded as nonblocking follow-up. It does not cause another plan revision.
 
@@ -244,7 +290,9 @@ Plan-review readiness becomes operationally distinct:
 | `ready_with_corrections` | Only low-risk mechanical corrections remain; reviewer verification is unnecessary | One final author correction pass, then complete without re-review |
 | `not_ready` | Material correction requires reviewer verification | Author correction, then closure review |
 
-If a `ready_with_corrections` item requires reviewer verification, the verdict is contradictory and must be `not_ready`. Any `human_required` item routes to the human regardless of readiness.
+`ready_with_corrections` is valid only when all items are `auto_fix`, their combined `effortDelta <= 1`, every `architectureDelta = 0`, and projected effort remains within `S`. The CLI validates these conditions and includes that final point in cumulative gross effort. If any condition fails, the verdict is normalized to `not_ready` or routed to the human according to the computed budget result.
+
+If a `ready_with_corrections` item requires reviewer verification, the verdict is contradictory and must be `not_ready`. Any semantic `human_required` item routes to the human regardless of readiness.
 
 The existing iteration limit remains a backstop for unresolved `not_ready` cycles, not the primary cost control.
 
@@ -259,17 +307,12 @@ Generated plans add a required section:
 ```markdown
 ## Delivery Budget
 
-- Baseline effort: 16 points
-- Standard ceiling: 20 points
-- Current forecast: 16 points
-- Architecture delta: 0 points
-- Effective ceiling: 20 points
-- Absolute effort ceiling: 24 points
-- Confidence: Medium
+- Estimate confidence: medium
 
-| Work item | Effort | Architecture delta | Rationale |
-|---|---:|---:|---|
-| ... | 3 | 0 | ... |
+| ID | Work item | Effort | Architecture delta | Debt claim | Rationale |
+|---|---|---:|---:|---|---|
+| W1 | ... | 3 | 0 | - | ... |
+| W2 | Consolidate ... | 4 | -3 | DC0 (`intrinsic`) | ... |
 
 ### Surface Snapshot
 
@@ -278,25 +321,28 @@ Generated plans add a required section:
 - Persistent/external boundaries: 1
 ```
 
-Revision authors update the current forecast and work-item deltas, but not the frozen baseline.
+Work-item IDs are stable across revisions. The CLI sums the table to establish `B0` and later `W`; the author does not write totals, ceilings, or status into the plan. A negative architecture row requires a debt claim, coupling class, minimal-compliant comparison, and target implementation phase. Revision authors add, remove, or rescore rows with rationale, while run state preserves the original parsed table and baseline.
 
 ### 6.2 Reviewer protocol
 
-`ReviewerVerdict` gains a budget assessment and item-level impact. Exact schema naming remains an implementation detail, but the semantic shape is:
+Apart from the independent baseline assessment in the first review, the reviewer emits only per-item estimates and classifications. It never emits aggregate budget values:
 
 ```json
 {
   "readiness": "not_ready",
-  "budget": {
-    "baselineEffort": 16,
-    "currentEffort": 23,
-    "standardCeiling": 20,
-    "effectiveCeiling": 24,
-    "absoluteCeiling": 24,
-    "architectureDelta": -4,
-    "status": "within_debt_allowance",
-    "confidence": "medium"
+  "baselineAssessment": {
+    "independentEffortEstimate": 16,
+    "confidence": "medium",
+    "reason": "Initial work items match the observed implementation surfaces"
   },
+  "creditAssessments": [
+    {
+      "creditClaimId": "DC0",
+      "eligibility": "eligible",
+      "coupling": "intrinsic",
+      "reason": "Consolidates the paths already modified by W2"
+    }
+  ],
   "items": [
     {
       "id": "P1.1",
@@ -306,31 +352,115 @@ Revision authors update the current forecast and work-item deltas, but not the f
       "effortDelta": 4,
       "architectureDelta": -3,
       "coupling": "intrinsic",
+      "estimateConfidence": "medium",
+      "creditClaim": {
+        "creditClaimId": "DC1",
+        "targetPhase": "phase-2",
+        "minimalAlternativeEffortDelta": 2,
+        "minimalAlternativeArchitectureDelta": 0,
+        "before": "five independent proposal construction paths",
+        "after": "one invariant-enforcing proposal constructor"
+      },
       "reason": "..."
     }
   ]
 }
 ```
 
-`human_required` expands beyond solution ambiguity. It also applies when the fix is mechanically known but requires exceeding an approved ceiling, trading scope, or accepting risk. This is a deliberate change from the v1 definition in `src/protocol.ts`.
+The item contracts are:
+
+| Field | Values / rule |
+|---|---|
+| `scopeClass` | `acceptance_required` \| `risk_reduction` \| `polish` |
+| `effortDelta` | Integer `>= 0`; incremental delivery work requested by this finding |
+| `architectureDelta` | Signed integer maintenance impact |
+| `coupling` | `intrinsic` \| `adjacent` \| `unrelated`; required when architecture delta is negative |
+| `estimateConfidence` | `low` \| `medium` \| `high`; calibration/display only, never changes a ceiling |
+
+The initial-only `baselineAssessment` contract is:
+
+| Field | Values / rule |
+|---|---|
+| `independentEffortEstimate` | Integer `>= 0`; an independent estimate of the initial stated scope, not a recomputation of ceilings |
+| `confidence` | `low` \| `medium` \| `high`; display/calibration only |
+| `reason` | Required; cites the work items or surfaces supporting the estimate |
+
+The CLI records derived `baselineDirection` as `aligned`, `understated`, or `inflated`; it is not reviewer output.
+
+`scopeClass` semantics and routing:
+
+| Class | Meaning | Blocking behavior |
+|---|---|---|
+| `acceptance_required` | Direct failure of a stated requirement or acceptance criterion | May block in the initial review; continued reviews require the §5.2 diff/critical evidence |
+| `risk_reduction` | Prevents a concrete, material correctness, security, data-loss, reliability, or operability risk | May block when material; speculative hardening is follow-up |
+| `polish` | Readability, ergonomics, cosmetic consistency, or low-risk quality improvement | Nonblocking, except a qualifying §5.4 final correction |
+
+`action` retains its semantic v1 meaning: `auto_fix` means the correction is mechanically derivable; `human_required` means the solution itself needs judgment. Budget routing is independent and takes precedence, so the CLI may require a human for an aggregate of otherwise `auto_fix` items without asking the reviewer to predict the arithmetic.
+
+Confidence is never an enforcement multiplier. A low-confidence estimate remains subject to the same ceiling; it is retained for human interpretation and later calibration.
+
+Continued-review-only evidence fields are also structural:
+
+| Field | Rule |
+|---|---|
+| `introducedBy` | Required for a new ordinary blocking item: `{ commitRange, diffHunk, explanation }` |
+| `lateDiscovery` | Only `critical_safety`; substitutes for `introducedBy` and forces a human route |
+| `priorDecisionId` + `newEvidence` | Required when re-raising a deferred or accepted-risk finding |
 
 Nonblocking follow-up observations remain in the review document and are excluded from `items`, so they do not accidentally drive another workflow cycle.
 
-### 6.3 Run-state records
+### 6.3 Deterministic derivation and `protocol emit`
+
+`5x protocol emit reviewer` keeps repeated flat `--item '<json>'` flags; the item JSON accepts the fields above. Initial plan review adds:
+
+```text
+--baseline-assessment '{"independentEffortEstimate":16,"confidence":"medium","reason":"..."}'
+```
+
+Every author-proposed debt claim in the current plan also gets an individual plan-time assessment:
+
+```text
+--credit-assessment '{"creditClaimId":"DC0","eligibility":"eligible","coupling":"intrinsic","reason":"Consolidates the paths already modified by W2"}'
+```
+
+`eligibility` is `eligible` or `ineligible`. No provisional credit is counted until the reviewer marks that specific claim eligible. A debt claim introduced directly by a reviewer item is provisionally eligible by construction, subject to the same coupling and evidence validation; a claim introduced or changed by the author in a later revision requires assessment in the next closure review.
+
+Implementation review adds one repeated flag per credited claim:
+
+```text
+--credit-realization '{"creditClaimId":"DC1","realization":"partial","realizedArchitectureDelta":-2,"evidence":"..."}'
+```
+
+No `--budget`, total, ceiling, or status flag exists. `5x protocol validate reviewer --run <id> --phase plan` loads run state, parses the current plan work-item table, de-duplicates incorporated finding IDs, and computes the budget result before recording. Commit-review validation similarly derives realized credit from claim realizations.
+
+The recorded step is decorated by the CLI with deterministic output:
+
+| Derived field | Values |
+|---|---|
+| `budgetBand` | `within_standard` \| `within_debt_allowance` \| `over_effective` \| `over_absolute` |
+| `budgetAlerts[]` | `baseline_disputed` \| `positive_architecture_exceeded` \| `credit_unrealized` |
+| `requiresHuman` | Boolean; true for `over_effective`, `over_absolute`, `baseline_disputed`, `positive_architecture_exceeded`, or any semantic `human_required` item. `credit_unrealized` alone is informational unless its recalculated budget band exceeds a ceiling or the unrealized claim magnitude is at least `singleArchitectureReviewPoints` |
+
+The decorated record includes `B0`, governing `B`, `I`, `W`, `R`, `S`, `N`, provisional/realized `D`, `E`, `A`, `P`, baseline direction, and both configured thresholds. These values are CLI output, never reviewer-authored fields.
+
+### 6.4 Run-state records
 
 The control plane stores:
 
 - Immutable initial budget baseline and surface snapshot.
-- Each reviewer budget assessment.
-- Author forecast updates.
+- Original and current parsed work-item ledgers.
+- Independent first-review baseline assessment and any human-adjusted governing baseline.
+- Reviewer item deltas and CLI-derived budget results.
+- Provisional debt claims and implementation-review realizations.
+- Deferred-finding / accepted-risk decisions with stable IDs and fingerprints.
 - Human budget/scope/risk decisions.
-- Cumulative gross effort and architecture delta.
+- Cumulative gross effort, gross positive architecture burden, and eligible debt reduction.
 
 The baseline is control-plane state, not merely editable plan prose. Local SQLite is its v2 materialization (`200-overview.md` §3a).
 
-### 6.4 Human gate
+### 6.5 Human gate
 
-An over-budget finding presents explicit choices:
+A budget, baseline, architecture-burden, or unrealized-credit gate presents explicit choices appropriate to the alert:
 
 1. Increase the approved budget.
 2. Trade or remove scope.
@@ -338,6 +468,8 @@ An over-budget finding presents explicit choices:
 4. Abort the run.
 
 The existing generic `continue-with-guidance` / `approve-override` choices may remain as CLI compatibility aliases, but the control-plane UI and recorded decision should preserve the specific tradeoff.
+
+Deferral and accepted-risk decisions record a stable decision ID, finding fingerprint, approved scope, rationale, and evidence available at the time. Those records are injected into every later plan and implementation review prompt for the run.
 
 ---
 
@@ -347,18 +479,24 @@ Proposed project-level defaults:
 
 ```toml
 [reviewBudget]
-enabled = true
+mode = "advisory" # off | advisory | enforced
 growthPercent = 25
 minimumGrowthPoints = 2
 debtTradeoffRatio = 1.0
 maxDebtCreditPercent = 25
 absoluteGrowthPercent = 50
+baselineDisagreementPercent = 25
+minimumBaselineDisagreementPoints = 2
+maxPositiveArchitecturePercent = 25
+minimumPositiveArchitecturePoints = 2
+singleArchitectureReviewPoints = 5
 ```
 
-- `enabled = false` retains the v1 iteration-only behavior.
+- `mode = "off"` retains the v1 iteration-only behavior.
+- `mode = "advisory"` is the initial default. The CLI computes and records every result but does not change routing, giving the point rubric a measured calibration period.
+- `mode = "enforced"` applies deterministic budget and architecture gates. Eligible intrinsic debt credit expands `E` automatically within its configured cap; all larger tradeoffs remain human-owned.
 - Personal/local overlays may tighten or relax defaults, following normal layered config rules.
 - Human decisions recorded on a run override configured ceilings for that run only.
-- _TODO:_ decide whether the first release is advisory by default before enforcement becomes the default.
 
 ---
 
@@ -372,7 +510,7 @@ absoluteGrowthPercent = 50
 
 ### 8.2 Staged rollout
 
-1. **Advisory:** add template and prompt fields; record forecasts and deltas without changing routing.
+1. **Advisory (initial default):** add template and prompt fields; deterministically record forecasts and deltas without changing routing.
 2. **Measured:** compare forecast growth, iteration count, human escalations, and approved-plan outcomes across real plans.
 3. **Enforced:** validate immutable baselines, ceiling arithmetic, budget-aware actions, and convergence routing in the protocol/skill layer.
 
@@ -384,12 +522,19 @@ Historical plan replay can calibrate the point rubric and defaults, but line-cou
 
 - A plan review run records an immutable baseline before its first reviewer call.
 - Author revisions cannot reset the baseline or erase prior budget decisions.
+- Except for independent first-review estimate `I`, the reviewer never emits aggregate effort, ceilings, architecture totals, or budget status; the CLI derives them from stored state and item deltas.
+- Small-plan absolute ceilings preserve nonzero room for eligible debt credit above `S`.
+- Material first-review baseline disagreement in either direction routes to a human and cannot silently change governing `B`.
 - Every blocking finding reports delivery and architecture impact.
-- Mechanically derivable work that exceeds the effective ceiling routes `human_required`.
+- Mechanically derivable work that exceeds the effective ceiling routes to a human regardless of the reviewer's `auto_fix` action.
 - Debt credit is available only for `intrinsic` simplification with a minimal-compliant comparison.
+- Every provisional debt credit is reconciled by implementation review before dependent phases or run completion.
 - Gross effort and the absolute ceiling remain visible and enforceable regardless of debt credit.
+- Gross positive architecture burden has its own human threshold and cannot be netted against debt reduction.
 - Continued reviews cannot block on unrelated or merely adjacent debt observations.
-- `ready_with_corrections` performs at most one final author pass and no reviewer re-entry.
+- Continued-review prompts include deferred and accepted-risk decisions; re-raising one requires new evidence.
+- Every new continued-review blocker cites the exact introducing diff hunk, except a critical late safety issue that routes directly to a human.
+- `ready_with_corrections` is limited to at most one effort point, zero architecture delta, one final author pass, and no reviewer re-entry.
 - Human budget increases, scope trades, and accepted risks are durable run decisions.
 - Budget governance never suppresses a material security, data-loss, correctness, or acceptance-criterion finding.
 
@@ -398,7 +543,6 @@ Historical plan replay can calibrate the point rubric and defaults, but line-cou
 ## 10. Open questions
 
 - _TODO:_ calibrate point examples against a larger sample of completed plans and implementation actuals.
-- _TODO:_ decide whether debt credit is advisory or automatically expands `E` in the first enforced release.
-- _TODO:_ finalize `ReviewerVerdict` field names and whether budget fields are required globally or only for plan review.
-- _TODO:_ decide whether nonblocking follow-up observations need a structured protocol field or remain review-artifact prose.
+- _TODO:_ finalize the run-state table/step schema for work-item ledgers, debt claims, and deferred-finding fingerprints.
+- _TODO:_ decide when measured advisory data is sufficient to recommend `mode = "enforced"` for new projects.
 - _TODO:_ define the control-plane visualization for gross effort, approved ceiling, debt credit, and review-round growth.
