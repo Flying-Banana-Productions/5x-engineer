@@ -133,7 +133,9 @@ describe("cursor-agent live CLI probe", () => {
 			}
 			expect(parsed).toBeDefined();
 			expect(typeof parsed?.session_id).toBe("string");
-			expect((parsed?.session_id as string).length).toBeGreaterThan(0);
+			expect(
+				(parsed?.session_id as string | undefined)?.length,
+			).toBeGreaterThan(0);
 			expect(parsed?.result).toBeDefined();
 		},
 		{ timeout: 150000 },

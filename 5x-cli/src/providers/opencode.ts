@@ -627,7 +627,7 @@ class OpenCodeSession implements AgentSession {
 				for (const row of latestFirst) {
 					const rowObj = row as Record<string, unknown>;
 					const info = rowObj.info as Record<string, unknown> | undefined;
-					if (!info || info.role !== "assistant") continue;
+					if (info?.role !== "assistant") continue;
 
 					const time = info.time as Record<string, unknown> | undefined;
 					const completed = typeof time?.completed === "number";
