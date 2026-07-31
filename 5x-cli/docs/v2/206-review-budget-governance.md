@@ -296,6 +296,45 @@ If a `ready_with_corrections` item requires reviewer verification, the verdict i
 
 The existing iteration limit remains a backstop for unresolved `not_ready` cycles, not the primary cost control.
 
+### 5.5 Application to implementation review
+
+Implementation review does not get a second effort baseline or independent budget. It inherits the approved plan work-item ledger and governing budget. The implementation author/reviewer loop is already more naturally bounded than plan review: it operates on a concrete diff, quality gates provide objective feedback, and `src/templates/author-process-impl-review.md` forbids structural plan changes.
+
+Implementation findings are classified by their relationship to approved scope:
+
+| Finding class | Meaning | Route |
+|---|---|---|
+| `implementation_defect` | Bug, regression, missing test/error handling, or failure to implement an approved work item | Fix normally; record effort variance but never suppress correctness to fit budget |
+| `plan_defect` | The approved design itself is incomplete or incorrect | Human gate; amend/re-review the plan when the correction changes its design or budget |
+| `scope_expansion` | New requirement, architecture enhancement, or subsystem not approved by the current phase | Human scope decision; never automatic implementation-review work |
+| `pre_existing` | Unrelated issue that existed before the phase diff | Nonblocking follow-up unless it is a critical safety issue |
+
+For implementation review, `scopeClass` uses this four-value enum instead of the plan-review enum in §6.2. `protocol validate` applies the appropriate enum from the recorded phase context; generic `ReviewerVerdict` consumers may accept the union but must not mix the two classifications in one review.
+
+The implementation reviewer must choose the first applicable class and cite the plan work-item ID or code diff supporting it. A review fix that introduces a new public API, persistence schema, external dependency, subsystem, or structural plan change is presumptively `plan_defect` or `scope_expansion`, not ordinary `auto_fix` work.
+
+Continued implementation reviews use the same convergence protections as §5.2:
+
+- Re-evaluate prior findings against the fix diff.
+- Require an exact introducing code hunk for any new ordinary blocker.
+- Inject and honor deferred / accepted-risk decisions.
+- Route critical late safety discoveries directly to a human.
+- Record unrelated pre-existing observations as follow-up rather than extending the phase.
+
+Implementation `ready_with_corrections` is intentionally lighter than plan budgeting: it permits one final author pass without reviewer re-entry only when there is at most one P2 `implementation_defect`, the fix is mechanical, it changes no API/schema/dependency/architecture boundary, and all quality gates pass afterward. Otherwise the verdict follows the normal fix/re-review route.
+
+Plan-time architecture credit remains reconciled through §4.5. Implementation review may report additional simplification as telemetry, but it cannot mint new debt credit after plan approval; a material refactor first requires a plan/budget decision.
+
+v2 initially records implementation-review telemetry without effort enforcement:
+
+- Review/fix cycles per phase.
+- Review-originated commits and quality-gate reruns.
+- Files, subsystems, APIs, schemas, and dependencies added after the first review.
+- Finding counts by the four classes above.
+- Plan amendments originating from implementation review.
+
+A separate implementation-review budget is reconsidered only if this telemetry shows recurring scope ratcheting. Until then, approved-plan scope plus diff-causal convergence is the governing model.
+
 ---
 
 ## 6. Contracts and persistence
@@ -369,7 +408,7 @@ Apart from the independent baseline assessment in the first review, the reviewer
 }
 ```
 
-The item contracts are:
+For plan review, the item contracts are:
 
 | Field | Values / rule |
 |---|---|
@@ -455,6 +494,7 @@ The control plane stores:
 - Reviewer item deltas and CLI-derived budget results.
 - Provisional debt claims and implementation-review realizations.
 - Deferred-finding / accepted-risk decisions with stable IDs and fingerprints.
+- Implementation-review scope classifications and telemetry from §5.5.
 - Human budget/scope/risk decisions.
 - Cumulative gross effort, gross positive architecture burden, and eligible debt reduction.
 
@@ -534,6 +574,9 @@ Historical plan replay can calibrate the point rubric and defaults, but line-cou
 - Every provisional debt credit is reconciled by implementation review before dependent phases or run completion.
 - Gross effort and the absolute ceiling remain visible and enforceable regardless of debt credit.
 - Gross positive architecture burden has its own human threshold and cannot be netted against debt reduction.
+- Implementation review inherits the approved plan budget and classifies findings as defects, plan defects, scope expansion, or pre-existing work rather than creating a second baseline.
+- New implementation-review blockers are diff-causal; unrelated pre-existing findings remain nonblocking follow-up.
+- Implementation `ready_with_corrections` permits only one mechanical P2 defect, no boundary change, passing quality gates, and no reviewer re-entry.
 - Continued reviews cannot block on unrelated or merely adjacent debt observations.
 - Continued-review prompts include deferred and accepted-risk decisions; re-raising one requires new evidence.
 - Every new continued-review blocker cites the exact introducing diff hunk, except a critical late safety issue that routes directly to a human.
