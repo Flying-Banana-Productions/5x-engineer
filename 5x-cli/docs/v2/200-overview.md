@@ -2,6 +2,7 @@
 
 **Status:** Draft — Not Implemented
 **Date:** July 13, 2026
+**Updated:** July 31, 2026
 **Builds on:** `docs/v1/100-architecture.md` (v1 remains authoritative until v2 ships)
 **Deprecates:** `docs/10-dashboard.md` (v0-era read-only dashboard plan — written without cloud control planes or remote providers in view; replaced by the v2 control plane, see `202-control-plane.md`)
 
@@ -11,17 +12,18 @@
 
 v1 established 5x as a **stateless toolbelt**: idempotent CLI primitives, orchestration pushed up into agent skills, persistence in SQLite, sub-agent work behind a pluggable provider interface. That model is sound and v2 does not revisit it.
 
-What v1 left unfinished is the **operator experience around** that toolbelt. In practice three gaps recur:
+What v1 left unfinished is the **operator experience around** that toolbelt. In practice four gaps recur:
 
 1. **Silent staleness.** Harness assets (skills, agent profiles) are *compiled* at `5x harness install` time — models and delegation mode are baked into the rendered markdown. Changing provider/model config in `5x.toml` leaves the installed assets stale with **no signal** and no one-step refresh. The user must know, manually, to reinstall — and even a manual reinstall without `--force` refreshes skills but silently skips existing agent files (`201-harness-freshness.md` §1.1).
 2. **No interactive control surface.** The only planned UI (`docs/10-dashboard.md`) is read-only by design. Human decision points flow exclusively through `5x prompt`, which blocks on the terminal where the orchestrating agent runs. There is no way to observe a run and *act on it* from anywhere but that terminal.
 3. **Dead-end failure modes.** Several errors have no self-service recovery: `PLAN_LOCKED` exposes no holder info, no inspect command, and no force-release when the holding process is live or hung (the primitives auto-steal *dead*-holder locks, but the CLI surfaces none of this — `203-recovery-and-doctor.md` §1.1); `MAX_STEPS_EXCEEDED` fires with no prior warning; remediation hints are dropped in `--text` mode; stale worktree mappings have no repair path. Per-phase ergonomics also force the agent to thread `--run`/`--phase`/`--session` by hand through 8–10 calls.
+4. **Unbounded review expansion.** Stronger reviewers repeatedly find valid adjacent issues after each plan revision. The v1 workflow prices no scope growth, treats deterministic but expensive work as `auto_fix`, and asks every continued review to surface new issues. Plans can double in size and implementation surface before the iteration limit finally asks a human. There is no delivery budget, convergence rule, or bounded way to trade additional effort for architecture-debt reduction (`206-review-budget-governance.md` §1).
 
 v2 closes these gaps. The throughline: **5x evolves from a fire-and-forget toolbelt into an interactive, self-healing control plane** — without giving up the v1 invariant that *the orchestrating agent decides and the CLI is the source of truth*.
 
 ---
 
-## 2. The Five Areas
+## 2. The Six Areas
 
 | # | Area | Doc | Breaking? |
 |---|---|---|---|
@@ -30,8 +32,9 @@ v2 closes these gaps. The throughline: **5x evolves from a fire-and-forget toolb
 | 3 | Recovery & `5x doctor` — unlock, step warnings, remediation surfacing | `203-recovery-and-doctor.md` | No (additive) |
 | 4 | Run-context ergonomics — active-run pointer + composite verbs | `204-run-context-ergonomics.md` | No (additive; flags preserved) |
 | 5 | Output normalization — retire grandfathered text-only commands | `205-output-normalization.md` | **Yes** |
+| 6 | Review budget governance — bounded scope growth, convergence, and debt credits | `206-review-budget-governance.md` | Workflow/protocol extension |
 
-These are deliberately bundled rather than shipped as five independent PRDs, because they **share infrastructure** (Section 3). Designing them separately would mean redesigning that shared core three times and letting it drift.
+These are deliberately bundled rather than shipped as six independent PRDs, because they **share infrastructure** (Section 3). Designing them separately would mean redesigning that shared core repeatedly and letting it drift.
 
 ---
 
@@ -53,7 +56,8 @@ v2 adds persistent rows that outlive a single CLI invocation, alongside the v1 `
 
 - **Pending-prompt / decision queue.** When `5x prompt` is invoked, it writes a pending row and polls for an answer. The answer may arrive from the terminal **or** from the control plane (#2) — first writer wins. This converts the existing blocking-CLI prompt contract into a two-way channel **without** inter-process signaling or a daemon-to-agent socket.
 - **Active-run pointer.** A small piece of state (`.5x/current-run`, file or table) set by `5x run init`, recording the run the next command defaults to — git-style implicit context.
-- **Consumed by:** #2 (dashboard selects on and answers via these), #4 (active-run pointer eliminates most `--run`/`--phase` threading).
+- **Review-budget baseline and decisions.** Plan review captures an immutable initial effort baseline, reviewer forecast updates, and human budget/scope/risk decisions. The editable plan displays these values, but run state preserves the original estimate and audit trail (`206-review-budget-governance.md` §6.3).
+- **Consumed by:** #2 (dashboard selects on and answers via these), #4 (active-run pointer eliminates most `--run`/`--phase` threading), #6 (budget baselines and tradeoff decisions).
 
 ### 3.3 `5x doctor`
 
@@ -61,7 +65,7 @@ A single diagnostic/repair command that is the front door for "why is this broke
 
 - **Consumed by:** #1 (freshness surfacing), #3 (recovery actions).
 
-**Dependency note:** #2 and #4 both block on 3.2 (run-state surface) → build it first. #1 (3.1) and #3 (3.3) are independent and can land in parallel.
+**Dependency note:** #2, #4, and #6 block on 3.2 (run-state surface) → build it first. #1 (3.1) and #3 (3.3) are independent and can land in parallel.
 
 ---
 
@@ -97,6 +101,7 @@ The honest accounting of breaking changes is deliberately small:
 - **Genuinely breaking:** #5 (output normalization — `init` / `upgrade` / `harness install` begin honoring `--json`/`--text`; `protocol emit` envelope behavior normalized). Any script parsing the old text output is affected.
 - **Contract shift (back-compatible in the common case):** #2 changes `5x prompt` from "block on terminal" to "block on queue, answerable from either side." Terminal answering still works; the change matters only to callers that scripted around the old blocking behavior. Carries a schema migration.
 - **Everything else (#1, #3, #4):** purely additive — new files, new commands, new warnings, new defaults. Existing flags and call patterns keep working.
+- **Workflow/protocol extension (#6):** additive structured fields and plan sections during advisory rollout; enforcement changes plan-review routing and the meaning of `human_required` for budget tradeoffs. Existing mid-review runs remain on v1 routing unless explicitly opted in.
 
 We bump to 2.0 even though the breaking surface is thin, because:
 
@@ -118,12 +123,14 @@ Unlike the v1 "clean break" (`docs/v1/100-architecture.md` §8), v2 is **not** a
 - `5x doctor`, `5x unlock`, step-count warnings, `--text` remediation surfacing (#3)
 - Active-run pointer + composite verbs (#4)
 - Output normalization of grandfathered commands (#5)
+- Review budget governance, convergence rules, and bounded architecture-debt credits (#6)
 
 ### Not in scope
 
 - Multi-repo / multi-user orchestration (unchanged from v1)
 - New provider categories (Category 2/3 from v1 §7.6)
 - New workflow skills beyond the v1 three
+- General-purpose technical-debt discovery or standalone refactoring programs; #6 only credits simplification directly coupled to planned work
 - Replacing the provider process model — agent cancellation (#2) adds a process registry but does **not** introduce a 5x-level daemon owning agent lifecycle
 
 ---
@@ -132,9 +139,10 @@ Unlike the v1 "clean break" (`docs/v1/100-architecture.md` §8), v2 is **not** a
 
 | Doc | Contents |
 |---|---|
-| `200-overview.md` (this) | Thesis, the five areas, shared core, versioning policy, scope |
+| `200-overview.md` (this) | Thesis, the six areas, shared core, versioning policy, scope |
 | `201-harness-freshness.md` | Manifest schema, hashed inputs, asset-adjacent placement, `harness sync`, where checks fire |
 | `202-control-plane.md` | Prompt-queue contract, decision/prompt tables, dashboard write-paths, agent-cancellation registry |
 | `203-recovery-and-doctor.md` | `unlock`, step-count warnings, `--text` remediation, `doctor` checks/repairs |
 | `204-run-context-ergonomics.md` | Active-run pointer, composite verbs, pipe-context de-emphasis |
 | `205-output-normalization.md` | Grandfathered-command normalization + migration notes |
+| `206-review-budget-governance.md` | Delivery budgets, review convergence, debt credits, protocol and human-gate changes |
