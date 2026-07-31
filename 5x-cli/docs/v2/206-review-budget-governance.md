@@ -215,7 +215,7 @@ This prevents the reviewer from presenting a broad refactor as the only valid im
 - Credit may increase `E`; it never reduces the displayed current effort forecast.
 - Credit cannot exceed `maxDebtCreditPercent` or the absolute effort ceiling.
 - Negative architecture items are tracked separately from `P`; they cannot hide gross positive burden elsewhere in the plan.
-- A single positive architecture item of 5 or more points, or cumulative `P` above `positiveArchitectureLimit`, routes to a human even when delivery effort is within budget.
+- A single positive architecture item at or above `singleArchitectureReviewPoints`, or cumulative `P` above `positiveArchitectureLimit`, routes to a human even when delivery effort is within budget.
 - Security, correctness, and acceptance requirements remain findings even when they exceed every ceiling. Budget changes routing, not visibility.
 
 ### 4.5 Post-implementation credit reconciliation
@@ -263,7 +263,7 @@ Subsequent reviews are closure reviews, not fresh exhaustive reviews. They prima
 
 A new blocking finding after round one is allowed only when it is:
 
-- Introduced by a specific changed plan hunk and directly causes a named requirement, acceptance, security, data-loss, or correctness failure.
+- Introduced by a specific changed plan hunk and directly causes a named requirement, acceptance, security, data-loss, correctness, reliability, or operability failure.
 - A critical late-discovered security, data-loss, or correctness issue that cannot responsibly be deferred, even though it predates the revision. This exception always routes directly to the human; it cannot silently restart the automatic loop.
 
 For the first case, the verdict item must include `introducedBy` with the reviewed commit range, exact plan diff hunk, and a causal explanation. "Made relevant by the revision" without a cited changed contract is not sufficient. The CLI validates that the cited hunk belongs to the plan diff already appended to `reviewer-plan-continued.md`.
@@ -290,7 +290,7 @@ Plan-review readiness becomes operationally distinct:
 | `ready_with_corrections` | Only low-risk mechanical corrections remain; reviewer verification is unnecessary | One final author correction pass, then complete without re-review |
 | `not_ready` | Material correction requires reviewer verification | Author correction, then closure review |
 
-`ready_with_corrections` is valid only when all items are `auto_fix`, their combined `effortDelta <= 1`, every `architectureDelta = 0`, and projected effort remains within `S`. The CLI validates these conditions and includes that final point in cumulative gross effort. If any condition fails, the verdict is normalized to `not_ready` or routed to the human according to the computed budget result.
+`ready_with_corrections` is valid only when all items are `auto_fix`, their combined `effortDelta <= 1`, every `architectureDelta = 0`, and projected effort remains within the effective ceiling `E`. The CLI validates these conditions and includes that final point in cumulative gross effort. If any condition fails, the verdict is normalized to `not_ready` or routed to the human according to the computed budget result.
 
 If a `ready_with_corrections` item requires reviewer verification, the verdict is contradictory and must be `not_ready`. Any semantic `human_required` item routes to the human regardless of readiness.
 
@@ -309,10 +309,10 @@ Generated plans add a required section:
 
 - Estimate confidence: medium
 
-| ID | Work item | Effort | Architecture delta | Debt claim | Rationale |
-|---|---|---:|---:|---|---|
-| W1 | ... | 3 | 0 | - | ... |
-| W2 | Consolidate ... | 4 | -3 | DC0 (`intrinsic`) | ... |
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | ... | 3 | 0 | - | - | ... |
+| W2 | Consolidate ... | 4 | -3 | DC0 (`intrinsic`) | - | ... |
 
 ### Surface Snapshot
 
@@ -322,6 +322,8 @@ Generated plans add a required section:
 ```
 
 Work-item IDs are stable across revisions. The CLI sums the table to establish `B0` and later `W`; the author does not write totals, ceilings, or status into the plan. A negative architecture row requires a debt claim, coupling class, minimal-compliant comparison, and target implementation phase. Revision authors add, remove, or rescore rows with rationale, while run state preserves the original parsed table and baseline.
+
+`Addresses` is a comma-separated list of stable review-item IDs incorporated into that row. When revising existing work, the author adds the finding ID to the affected row; when adding work, the new row carries it. The CLI removes a finding from pending `R` once its ID appears in at least one current `Addresses` cell, preventing the same effort from being counted in both `W` and `R`. This accounting linkage does not declare the finding resolved: the closure reviewer still marks it `addressed`, `partially_addressed`, or `still_open`, and unresolved semantics continue the review without double-counting incorporated effort.
 
 ### 6.2 Reviewer protocol
 
@@ -522,6 +524,7 @@ Historical plan replay can calibrate the point rubric and defaults, but line-cou
 
 - A plan review run records an immutable baseline before its first reviewer call.
 - Author revisions cannot reset the baseline or erase prior budget decisions.
+- Revised work items carry the review IDs they address, so incorporated effort moves from pending `R` into current `W` exactly once.
 - Except for independent first-review estimate `I`, the reviewer never emits aggregate effort, ceilings, architecture totals, or budget status; the CLI derives them from stored state and item deltas.
 - Small-plan absolute ceilings preserve nonzero room for eligible debt credit above `S`.
 - Material first-review baseline disagreement in either direction routes to a human and cannot silently change governing `B`.
@@ -534,7 +537,7 @@ Historical plan replay can calibrate the point rubric and defaults, but line-cou
 - Continued reviews cannot block on unrelated or merely adjacent debt observations.
 - Continued-review prompts include deferred and accepted-risk decisions; re-raising one requires new evidence.
 - Every new continued-review blocker cites the exact introducing diff hunk, except a critical late safety issue that routes directly to a human.
-- `ready_with_corrections` is limited to at most one effort point, zero architecture delta, one final author pass, and no reviewer re-entry.
+- `ready_with_corrections` is limited to at most one effort point, zero architecture delta, projected effort within `E`, one final author pass, and no reviewer re-entry.
 - Human budget increases, scope trades, and accepted risks are durable run decisions.
 - Budget governance never suppresses a material security, data-loss, correctness, or acceptance-criterion finding.
 
