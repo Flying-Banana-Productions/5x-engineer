@@ -331,8 +331,10 @@ Implementation-review items inherit core `VerdictItem` fields (`id`, `title`, `a
 | `planWorkItemIds` | Required nonempty array for `implementation_defect` and `plan_defect`; identifies the inherited approved scope |
 | `planImpact` | Required for `plan_defect`: `text_only` \| `design` \| `budget` |
 | `introducedBy` | Required for a new ordinary blocker in a continued review: `{ commitRange, diffHunk, explanation }` |
+| `lateDiscovery` | Only `critical_safety`; substitutes for `introducedBy` and forces a human route |
+| `priorDecisionId` + `newEvidence` | Required when re-raising a deferred or accepted-risk finding |
 
-`planImpact: text_only` is the narrow exemption from a human gate: the implementation remains within approved intent, architecture, acceptance criteria, and budget, but plan wording is factually stale. The author may apply the code fix and a non-structural plan-text correction in the same pass without plan re-review. `design` or `budget` always pauses implementation for a human decision and plan amendment/re-review. Any ambiguity about whether the exemption applies routes to the human.
+`planImpact: text_only` is the narrow exemption from a human gate: the implementation remains within approved intent, architecture, acceptance criteria, and budget, but plan wording is factually stale. The author may apply the code fix and a non-structural plan-text correction in the same pass without plan re-review. The CLI snapshots the raw `Delivery Budget` table before that pass and requires it to be byte-identical afterward, including row IDs, scores, debt claims, and `Addresses`; any change invalidates the exemption and routes as a `design` or `budget` plan defect. `design` or `budget` always pauses implementation for a human decision and plan amendment/re-review. Any ambiguity about whether the exemption applies routes to the human.
 
 Continued implementation reviews use the same convergence protections as §5.2:
 
@@ -461,7 +463,7 @@ The CLI records derived `baselineDirection` as `aligned`, `understated`, or `inf
 
 Confidence is never an enforcement multiplier. A low-confidence estimate remains subject to the same ceiling; it is retained for human interpretation and later calibration.
 
-Continued-review-only evidence fields are also structural:
+The following continued-review evidence fields are structural and shared by plan and implementation review. Their `introducedBy` diff domain is the plan diff for plan review and the fix commit range for implementation review:
 
 | Field | Rule |
 |---|---|
