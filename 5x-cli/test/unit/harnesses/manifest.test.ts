@@ -10,6 +10,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	cursorLocationResolver,
+	opencodeLocationResolver,
+	universalLocationResolver,
+} from "../../../src/harnesses/locations.js";
+import {
+	assertAssetPathsUnderRoot,
 	canonicalJson,
 	computeFingerprint,
 	type HarnessManifest,
@@ -17,6 +23,7 @@ import {
 	MANIFEST_FILENAME,
 	MANIFEST_VERSION,
 	type ManifestInputs,
+	ManifestPathEscapeError,
 	manifestPath,
 	normalizeInputs,
 	readManifest,
@@ -455,5 +462,84 @@ describe("removeManifest", () => {
 		expect(removeManifest(dir)).toBe(true);
 		expect(existsSync(join(dir, MANIFEST_FILENAME))).toBe(false);
 		expect(removeManifest(dir)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// assertAssetPathsUnderRoot (Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("assertAssetPathsUnderRoot", () => {
+	test("accepts all three shipped location resolvers at both scopes", () => {
+		const resolvers = [
+			opencodeLocationResolver,
+			cursorLocationResolver,
+			universalLocationResolver,
+		];
+
+		for (const resolver of resolvers) {
+			for (const scope of ["project", "user"] as const) {
+				const locations = resolver.resolve(scope, "/tmp/project", "/tmp/home");
+				expect(() =>
+					assertAssetPathsUnderRoot(locations.rootDir, locations),
+				).not.toThrow();
+			}
+		}
+	});
+
+	test("accepts an optional rulesDir that is absent", () => {
+		expect(() =>
+			assertAssetPathsUnderRoot("/tmp/root", {
+				skillsDir: "/tmp/root/skills",
+				agentsDir: "/tmp/root/agents",
+			}),
+		).not.toThrow();
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE when skillsDir sits outside rootDir", () => {
+		let thrown: unknown;
+		try {
+			assertAssetPathsUnderRoot("/tmp/root", {
+				skillsDir: "/tmp/elsewhere/skills",
+				agentsDir: "/tmp/root/agents",
+			});
+		} catch (err) {
+			thrown = err;
+		}
+
+		expect(thrown).toBeInstanceOf(ManifestPathEscapeError);
+		expect((thrown as ManifestPathEscapeError).code).toBe(
+			"MANIFEST_PATH_ESCAPE",
+		);
+		expect((thrown as Error).message).toContain("skillsDir");
+		expect((thrown as Error).message).toContain("/tmp/elsewhere/skills");
+	});
+
+	test("throws when rulesDir escapes via a parent traversal", () => {
+		expect(() =>
+			assertAssetPathsUnderRoot("/tmp/root", {
+				skillsDir: "/tmp/root/skills",
+				agentsDir: "/tmp/root/agents",
+				rulesDir: "/tmp/root/../rules",
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+
+	test("names every offending directory in one throw", () => {
+		expect(() =>
+			assertAssetPathsUnderRoot("/tmp/root", {
+				skillsDir: "/elsewhere/skills",
+				agentsDir: "/elsewhere/agents",
+			}),
+		).toThrow(/skillsDir.*agentsDir/s);
+	});
+
+	test("a sibling directory sharing a name prefix is not under the root", () => {
+		expect(() =>
+			assertAssetPathsUnderRoot("/tmp/root", {
+				skillsDir: "/tmp/root-other/skills",
+				agentsDir: "/tmp/root/agents",
+			}),
+		).toThrow(ManifestPathEscapeError);
 	});
 });

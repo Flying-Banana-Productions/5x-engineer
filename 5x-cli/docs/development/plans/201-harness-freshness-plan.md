@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phases 0–1 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write) landed; Phases 2–8 pending
+**Status:** Phases 0–2 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; Phases 3–8 pending
 
 ---
 
@@ -461,8 +461,8 @@ export interface HarnessPlugin {
 
 `isValidPlugin` (`src/harnesses/factory.ts:93-107`) is **not** tightened — both new members are optional, so external plugins written against the current contract stay valid.
 
-- [ ] Add `RenderedAsset`, `renderAssets?`, `fingerprintInputs?`, `version?`
-- [ ] Unit test in `test/unit/harnesses/factory.test.ts`: a plugin without the new members still passes `isValidPlugin`
+- [x] Add `RenderedAsset`, `renderAssets?`, `fingerprintInputs?`, `version?`
+- [x] Unit test in `test/unit/harnesses/factory.test.ts`: a plugin without the new members still passes `isValidPlugin`
 
 #### 2.2 OpenCode plugin — extract render, keep install semantics
 
@@ -526,9 +526,9 @@ async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
 
 Note: the path prefixes (`skills/`, `agents/`, `rules/`) are the *relative* form of `locations.skillsDir` etc. against `rootDir` for all three shipped resolvers (`src/harnesses/locations.ts:79-96, 116-133, 156-173`). Phase 2.5 adds an assertion so a future resolver that breaks that assumption fails loudly.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: `renderAssets()` output is byte-identical to what `install()` writes (read back from a temp dir)
-- [ ] Unit test: `authorDelegationMode: "invoke"` omits author agents from `renderAssets()`
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: `renderAssets()` output is byte-identical to what `install()` writes (read back from a temp dir)
+- [x] Unit test: `authorDelegationMode: "invoke"` omits author agents from `renderAssets()`
 
 #### 2.3 Cursor plugin — same extraction, plus rules
 
@@ -545,9 +545,9 @@ if (ctx.scope === "project" && locations.rulesDir) {
 
 `install()` preserves the existing user-scope `unsupported`/`warnings` return shape verbatim.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: user scope yields no `kind: "rule"` assets; project scope yields exactly two
-- [ ] Unit test: existing `unsupported.rules` + warning text unchanged at user scope
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: user scope yields no `kind: "rule"` assets; project scope yields exactly two
+- [x] Unit test: existing `unsupported.rules` + warning text unchanged at user scope
 
 #### 2.4 Universal plugin
 
@@ -555,8 +555,8 @@ if (ctx.scope === "project" && locations.rulesDir) {
 
 `renderAllSkillTemplates(createRenderContext(false))` → skills only, no agents. Its fingerprint therefore varies only with CLI version — correct and worth a doc comment, since a universal install can only ever go stale on upgrade.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: no agent assets; skill set matches `listBaseSkillNames()`
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: no agent assets; skill set matches `listBaseSkillNames()`
 
 #### 2.5 Guard the `rootDir`-relative path assumption
 
@@ -575,8 +575,8 @@ export function assertAssetPathsUnderRoot(
 ): void;
 ```
 
-- [ ] Implement and call from the manifest-write path (Phase 3)
-- [ ] Unit test: a synthetic resolver with `skillsDir` outside `rootDir` throws
+- [x] Implement and call from the manifest-write path (Phase 3)
+- [x] Unit test: a synthetic resolver with `skillsDir` outside `rootDir` throws
 
 ---
 

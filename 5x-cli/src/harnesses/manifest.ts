@@ -271,6 +271,64 @@ function toPosixPath(value: string): string {
 	return value.replace(/\\/g, "/");
 }
 
+/**
+ * Thrown when a harness's asset directories are not under its `rootDir`, so a
+ * `rootDir`-relative manifest cannot represent them.
+ */
+export class ManifestPathEscapeError extends Error {
+	readonly code = "MANIFEST_PATH_ESCAPE";
+	readonly exitCode = 2;
+
+	constructor(rootDir: string, offending: Array<{ key: string; dir: string }>) {
+		super(
+			`Harness asset directories must live under the install root, but ` +
+				`${offending.map((o) => `${o.key} (${o.dir})`).join(", ")} ` +
+				`${offending.length === 1 ? "is" : "are"} outside "${rootDir}".\n` +
+				`A rootDir-relative manifest cannot describe them — the location ` +
+				`resolver needs to keep asset directories under rootDir.`,
+		);
+		this.name = "ManifestPathEscapeError";
+	}
+}
+
+/**
+ * Assert that a resolver's asset directories all sit under `rootDir`.
+ *
+ * Manifest asset paths are recorded relative to `rootDir`, which holds for all
+ * three shipped resolvers (`locations.ts`). This guard makes a future resolver
+ * that breaks the assumption fail loudly at the manifest write rather than
+ * silently recording `../../` paths that no consumer can resolve.
+ */
+export function assertAssetPathsUnderRoot(
+	rootDir: string,
+	locations: { skillsDir: string; agentsDir: string; rulesDir?: string },
+): void {
+	const candidates: Array<{ key: string; dir: string | undefined }> = [
+		{ key: "skillsDir", dir: locations.skillsDir },
+		{ key: "agentsDir", dir: locations.agentsDir },
+		{ key: "rulesDir", dir: locations.rulesDir },
+	];
+
+	const offending: Array<{ key: string; dir: string }> = [];
+	for (const { key, dir } of candidates) {
+		if (dir === undefined) continue;
+		if (!isUnderRoot(rootDir, dir)) offending.push({ key, dir });
+	}
+
+	if (offending.length > 0) {
+		throw new ManifestPathEscapeError(rootDir, offending);
+	}
+}
+
+/** True when `dir` is `rootDir` itself or a descendant of it. */
+function isUnderRoot(rootDir: string, dir: string): boolean {
+	const relative = toManifestPath(rootDir, dir);
+	if (relative === "") return true;
+	if (relative === ".." || relative.startsWith("../")) return false;
+	// An absolute result means the two paths share no common base at all.
+	return !posix.isAbsolute(relative);
+}
+
 // ---------------------------------------------------------------------------
 // Read / write / remove
 // ---------------------------------------------------------------------------

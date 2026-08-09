@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	isValidPlugin,
 	type LoadedHarnessPlugin,
 	loadHarnessPlugin,
 } from "../../../src/harnesses/factory.js";
@@ -132,5 +133,40 @@ describe("loadHarnessPlugin — external override detection", () => {
 		await expect(loadHarnessPlugin("definitely-not-a-harness")).rejects.toThrow(
 			"not found",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Plugin contract back-compat (201-harness-freshness Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("isValidPlugin — optional renderAssets/fingerprintInputs", () => {
+	test("a plugin without renderAssets or fingerprintInputs is still valid", () => {
+		const plugin = makeFakePlugin();
+
+		// External plugins written against the pre-manifest contract must keep
+		// loading: both new members are optional, so isValidPlugin is unchanged.
+		expect(plugin.renderAssets).toBeUndefined();
+		expect(plugin.fingerprintInputs).toBeUndefined();
+		expect(plugin.version).toBeUndefined();
+		expect(isValidPlugin(plugin)).toBe(true);
+	});
+
+	test("a plugin that does implement the optional members is valid too", () => {
+		const plugin: HarnessPlugin = {
+			...makeFakePlugin(),
+			version: "9.9.9",
+			renderAssets: async () => [],
+			fingerprintInputs: () => ({ theme: "dark" }),
+		};
+
+		expect(isValidPlugin(plugin)).toBe(true);
+	});
+
+	test("all three bundled plugins implement renderAssets", async () => {
+		for (const name of ["opencode", "cursor", "universal"]) {
+			const { plugin } = await loadHarnessPlugin(name);
+			expect(typeof plugin.renderAssets).toBe("function");
+		}
 	});
 });

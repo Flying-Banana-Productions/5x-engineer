@@ -106,6 +106,26 @@ export interface HarnessUninstallResult {
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Rendered assets
+// ---------------------------------------------------------------------------
+
+/**
+ * One rendered asset, produced without writing to disk.
+ *
+ * `install()` consumes exactly these, so the dry render used by the Tier 2
+ * freshness check (201 §2.2) can never drift from what install actually
+ * writes — one render path, not two.
+ */
+export interface RenderedAsset {
+	kind: "skill" | "agent" | "rule";
+	/** Asset name without directory or extension (e.g. "5x-plan", "5x-plan-author"). */
+	name: string;
+	/** Path relative to `locations.rootDir`, POSIX separators. */
+	path: string;
+	content: string;
+}
+
 /**
  * A harness plugin that can install skills and agent profiles for
  * a specific AI coding harness.
@@ -131,4 +151,29 @@ export interface HarnessPlugin {
 	install(ctx: HarnessInstallContext): Promise<HarnessInstallResult>;
 	/** Uninstall skills and agent profiles for this harness. */
 	uninstall(ctx: HarnessUninstallContext): Promise<HarnessUninstallResult>;
+
+	/**
+	 * Render every managed asset for this context **without writing**.
+	 *
+	 * Enables the Tier 2 freshness check (201 §2.2) and is the single render
+	 * path `install()` itself consumes. Optional so external plugins written
+	 * against the earlier contract remain valid; omitting it degrades Tier 2
+	 * to on-disk-vs-recorded hash comparison (hand-edit detection only).
+	 */
+	renderAssets?(ctx: HarnessInstallContext): Promise<RenderedAsset[]>;
+
+	/**
+	 * Extra fingerprint inputs for harnesses that bake something outside the
+	 * common set. Stored under `inputs.plugin` in the manifest so it can never
+	 * collide with the common inputs (D1). No bundled plugin implements this.
+	 */
+	fingerprintInputs?(
+		ctx: HarnessInstallContext,
+	): Record<string, string | number>;
+
+	/**
+	 * Plugin version for the manifest fingerprint. Bundled plugins omit it —
+	 * the CLI version is used, since they ship with the CLI.
+	 */
+	readonly version?: string;
 }

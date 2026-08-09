@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -628,5 +628,117 @@ describe("opencode plugin uninstall()", () => {
 		} finally {
 			cleanupDir(tmp);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// renderAssets() — one render path (201-harness-freshness Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("opencode plugin renderAssets()", () => {
+	const config = {
+		authorModel: "anthropic/claude-opus-4-5",
+		reviewerModel: "anthropic/claude-sonnet-4-5",
+	};
+
+	test("output is byte-identical to what install() writes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const ctx = {
+				scope: "project" as const,
+				projectRoot: tmp,
+				force: false,
+				config,
+			};
+
+			const rendered = await opencodePlugin.renderAssets?.(ctx);
+			expect(rendered).toBeDefined();
+			await opencodePlugin.install(ctx);
+
+			const locations = opencodeLocationResolver.resolve("project", tmp);
+			for (const asset of rendered ?? []) {
+				const onDisk = join(locations.rootDir, asset.path);
+				expect(existsSync(onDisk)).toBe(true);
+				expect(readFileSync(onDisk, "utf-8")).toBe(asset.content);
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("declared paths are rootDir-relative and POSIX-separated", async () => {
+		const rendered =
+			(await opencodePlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config,
+			})) ?? [];
+
+		for (const asset of rendered) {
+			expect(asset.path).not.toContain("\\");
+			expect(asset.path.startsWith("/")).toBe(false);
+			expect(asset.path.startsWith("..")).toBe(false);
+		}
+
+		expect(rendered.map((a) => a.path)).toContain("skills/5x-plan/SKILL.md");
+		expect(rendered.map((a) => a.path)).toContain("agents/5x-reviewer.md");
+	});
+
+	test("covers every managed skill and agent by default", async () => {
+		const rendered =
+			(await opencodePlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config,
+			})) ?? [];
+
+		const skillNames = rendered
+			.filter((a) => a.kind === "skill")
+			.map((a) => a.name);
+		const agentNames = rendered
+			.filter((a) => a.kind === "agent")
+			.map((a) => a.name);
+
+		expect(skillNames.sort()).toEqual([...listSkillNames()].sort());
+		expect(agentNames.sort()).toEqual(
+			listAgentTemplates()
+				.map((t) => t.name)
+				.sort(),
+		);
+		expect(rendered.some((a) => a.kind === "rule")).toBe(false);
+	});
+
+	test("authorDelegationMode: invoke omits author agents", async () => {
+		const rendered =
+			(await opencodePlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config: { ...config, authorDelegationMode: "invoke" },
+			})) ?? [];
+
+		const agentNames = rendered
+			.filter((a) => a.kind === "agent")
+			.map((a) => a.name);
+
+		expect(agentNames).not.toContain("5x-plan-author");
+		expect(agentNames).not.toContain("5x-code-author");
+		expect(agentNames).toContain("5x-reviewer");
+		expect(agentNames).toContain("5x-orchestrator");
+	});
+
+	test("baked model strings appear in the rendered agent content", async () => {
+		const rendered =
+			(await opencodePlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config,
+			})) ?? [];
+
+		const reviewer = rendered.find((a) => a.path === "agents/5x-reviewer.md");
+		expect(reviewer?.content).toContain('model: "anthropic/claude-sonnet-4-5"');
 	});
 });
