@@ -30,7 +30,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join as pathJoin, posix } from "node:path";
-import type { HarnessScope } from "./types.js";
+import type { InstallSummary } from "./installer.js";
+import type { HarnessScope, RenderedAsset } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -76,12 +77,18 @@ export interface ManifestInputs {
 	plugin: Record<string, string | number>;
 }
 
-/** Raw (un-normalized) inputs as the install handler collects them. */
+/**
+ * Raw (un-normalized) inputs as the install handler collects them.
+ *
+ * `null` is accepted alongside `undefined` so an already-normalized
+ * `ManifestInputs` (e.g. one retained from a prior manifest) can be fed back
+ * through `normalizeInputs` unchanged — normalization is idempotent.
+ */
 export interface RawManifestInputs {
-	authorModel?: string;
-	reviewerModel?: string;
-	authorDelegationMode?: "native" | "invoke";
-	reviewerDelegationMode?: "native" | "invoke";
+	authorModel?: string | null;
+	reviewerModel?: string | null;
+	authorDelegationMode?: "native" | "invoke" | null;
+	reviewerDelegationMode?: "native" | "invoke" | null;
 	cliVersion: string;
 	harnessPluginVersion: string;
 	plugin?: Record<string, string | number>;
@@ -204,8 +211,8 @@ export function normalizeInputs(raw: RawManifestInputs): ManifestInputs {
 	};
 }
 
-/** `undefined`, `""` and whitespace-only all mean "not baked" → `null`. */
-function normalizeModel(value: string | undefined): string | null {
+/** `undefined`, `null`, `""` and whitespace-only all mean "not baked" → `null`. */
+function normalizeModel(value: string | null | undefined): string | null {
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim();
 	return trimmed === "" ? null : trimmed;
@@ -213,7 +220,7 @@ function normalizeModel(value: string | undefined): string | null {
 
 /** Only an explicit `"invoke"` means invoke; everything else renders native. */
 function normalizeDelegationMode(
-	value: "native" | "invoke" | undefined,
+	value: "native" | "invoke" | null | undefined,
 ): "native" | "invoke" {
 	return value === "invoke" ? "invoke" : "native";
 }
@@ -384,6 +391,199 @@ export function removeManifest(rootDir: string): boolean {
 		// Concurrent removal or a permissions failure — report "not removed".
 		return false;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Install-time inventory: collect → verify → build
+// ---------------------------------------------------------------------------
+
+/** Asset directories for one harness scope, as `locations.resolve()` returns them. */
+export interface ManifestAssetDirs {
+	skillsDir: string;
+	agentsDir: string;
+	rulesDir?: string;
+}
+
+/**
+ * One `InstallSummary` tagged with the asset kind it describes.
+ *
+ * The summaries report bare names (`5x-plan/SKILL.md`, `5x-plan-author.md`),
+ * so the kind is what resolves them against the right directory.
+ */
+export interface KindedInstallSummary {
+	kind: RenderedAsset["kind"];
+	summary: InstallSummary;
+}
+
+/**
+ * Hash the on-disk bytes of every path this install could have touched.
+ *
+ * The path set is the union of (a) the plugin's rendered asset paths, (b) every
+ * path named by an `InstallSummary` (`created ∪ overwritten ∪ skipped` — a
+ * skipped file is still installed, just not rewritten), and (c) paths a prior
+ * manifest recorded that still exist. Files that fail to read are omitted
+ * rather than recorded with a bogus hash.
+ *
+ * Bytes always come from disk, never from the rendered string: the manifest's
+ * `assets` must describe what is actually installed even when `install()`
+ * preserved an existing file (§3.2).
+ */
+export function collectInstalledAssets(args: {
+	rootDir: string;
+	locations: ManifestAssetDirs;
+	/** `null` when the plugin does not implement `renderAssets()`. */
+	rendered: RenderedAsset[] | null;
+	summaries: KindedInstallSummary[];
+	/** Manifest present before this install, if any. */
+	prior: HarnessManifest | null;
+}): Map<string, string> {
+	const paths = new Set<string>();
+
+	for (const asset of args.rendered ?? []) {
+		paths.add(asset.path);
+	}
+
+	for (const { kind, summary } of args.summaries) {
+		const dir = assetDirForKind(kind, args.locations);
+		if (!dir) continue;
+		for (const entry of [
+			...summary.created,
+			...summary.overwritten,
+			...summary.skipped,
+		]) {
+			paths.add(toManifestPath(args.rootDir, joinManifestPath(dir, entry)));
+		}
+	}
+
+	for (const asset of args.prior?.assets ?? []) {
+		paths.add(asset.path);
+	}
+
+	const onDisk = new Map<string, string>();
+	for (const relPath of [...paths].sort()) {
+		let content: string;
+		try {
+			content = readFileSync(joinManifestPath(args.rootDir, relPath), "utf-8");
+		} catch {
+			// Recorded-but-absent, or unreadable — omit it entirely.
+			continue;
+		}
+		onDisk.set(relPath, hashContent(content));
+	}
+
+	return onDisk;
+}
+
+function assetDirForKind(
+	kind: RenderedAsset["kind"],
+	locations: ManifestAssetDirs,
+): string | undefined {
+	switch (kind) {
+		case "skill":
+			return locations.skillsDir;
+		case "agent":
+			return locations.agentsDir;
+		case "rule":
+			return locations.rulesDir;
+	}
+}
+
+/** Join a POSIX-relative manifest path onto a platform-native base directory. */
+function joinManifestPath(baseDir: string, relPath: string): string {
+	return pathJoin(baseDir, ...relPath.split("/"));
+}
+
+/**
+ * True only when every asset the plugin renders for this context is present on
+ * disk with byte-identical content.
+ *
+ * A single skipped-stale agent file (or any other drift) makes this false, and
+ * a false result forbids adopting the current inputs as the freshness baseline
+ * (§3.2) — that is what stops a plain reinstall after a model change from
+ * stamping a fingerprint over bytes it did not produce.
+ *
+ * Plugins without `renderAssets()` have no render to compare against, so the
+ * fallback is the conservative structural rule: verified iff every summary
+ * skipped nothing. That can under-report freshness for an external plugin that
+ * legitimately skips byte-identical files; under-reporting costs one `sync`,
+ * over-reporting costs a silent stale bake.
+ */
+export function verifyInstalledInventory(args: {
+	/** `null` when the plugin does not implement `renderAssets()`. */
+	rendered: RenderedAsset[] | null;
+	/** Manifest-relative path → sha256 of the on-disk bytes. */
+	onDisk: Map<string, string>;
+	/** Every `InstallSummary` the plugin returned — the fallback evidence. */
+	summaries: InstallSummary[];
+}): boolean {
+	if (args.rendered) {
+		for (const asset of args.rendered) {
+			const actual = args.onDisk.get(asset.path);
+			if (actual === undefined) return false;
+			if (actual !== hashContent(asset.content)) return false;
+		}
+		return true;
+	}
+
+	return args.summaries.every((summary) => summary.skipped.length === 0);
+}
+
+/** Manifest `assets` entries from a collected on-disk hash map, path-sorted. */
+export function assetsFromOnDisk(
+	onDisk: Map<string, string>,
+): ManifestAssetEntry[] {
+	return [...onDisk.entries()]
+		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+		.map(([path, sha256]) => ({ path, sha256 }));
+}
+
+/**
+ * Assemble a manifest, recomputing `hash` from the `inputs` it is handed so the
+ * two can never disagree.
+ *
+ * `baseline` is explicit and has no default: the caller must have decided,
+ * via `verifyInstalledInventory`, whether these inputs are a trustworthy
+ * baseline. `installedFrom`/`installedAt` always describe *this* write, not the
+ * baseline — an unverified manifest is already blocked from reading `fresh`,
+ * so recording the true provenance of the last write cannot mislead.
+ *
+ * Asserts the resolver's asset directories live under `rootDir`, since every
+ * recorded path is `rootDir`-relative.
+ */
+export function buildManifest(args: {
+	harness: string;
+	scope: HarnessScope;
+	rootDir: string;
+	locations: ManifestAssetDirs;
+	projectRoot: string;
+	/** Relative to `projectRoot`, POSIX separators, "" for the root context. */
+	contextDir: string;
+	baseline: ManifestBaseline;
+	configResolved: boolean;
+	inputs: RawManifestInputs;
+	assets: ManifestAssetEntry[];
+	/** ISO-8601 UTC; defaults to now. Injectable for deterministic tests. */
+	installedAt?: string;
+}): HarnessManifest {
+	assertAssetPathsUnderRoot(args.rootDir, args.locations);
+
+	const inputs = normalizeInputs(args.inputs);
+
+	return {
+		manifestVersion: MANIFEST_VERSION,
+		harness: args.harness,
+		scope: args.scope,
+		hash: computeFingerprint(inputs),
+		configResolved: args.configResolved,
+		baseline: args.baseline,
+		installedFrom: {
+			projectRoot: args.projectRoot,
+			contextDir: args.contextDir,
+		},
+		inputs,
+		installedAt: args.installedAt ?? new Date().toISOString(),
+		assets: args.assets,
+	};
 }
 
 // ---------------------------------------------------------------------------

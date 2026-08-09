@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { InstallSummary } from "../../../src/harnesses/installer.js";
 import {
 	cursorLocationResolver,
 	opencodeLocationResolver,
@@ -16,7 +17,10 @@ import {
 } from "../../../src/harnesses/locations.js";
 import {
 	assertAssetPathsUnderRoot,
+	assetsFromOnDisk,
+	buildManifest,
 	canonicalJson,
+	collectInstalledAssets,
 	computeFingerprint,
 	type HarnessManifest,
 	hashContent,
@@ -29,8 +33,10 @@ import {
 	readManifest,
 	removeManifest,
 	toManifestPath,
+	verifyInstalledInventory,
 	writeManifest,
 } from "../../../src/harnesses/manifest.js";
+import type { RenderedAsset } from "../../../src/harnesses/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -539,6 +545,326 @@ describe("assertAssetPathsUnderRoot", () => {
 			assertAssetPathsUnderRoot("/tmp/root", {
 				skillsDir: "/tmp/root-other/skills",
 				agentsDir: "/tmp/root/agents",
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Install-time inventory: collect → verify → build (Phase 3)
+// ---------------------------------------------------------------------------
+
+/** Write `content` at `rootDir/<relPath>`, creating parents. */
+function writeAsset(rootDir: string, relPath: string, content: string): void {
+	const abs = join(rootDir, ...relPath.split("/"));
+	mkdirSync(join(abs, ".."), { recursive: true });
+	writeFileSync(abs, content, "utf-8");
+}
+
+function emptySummary(): InstallSummary {
+	return { created: [], overwritten: [], skipped: [] };
+}
+
+function locationsFor(rootDir: string) {
+	return {
+		skillsDir: join(rootDir, "skills"),
+		agentsDir: join(rootDir, "agents"),
+		rulesDir: join(rootDir, "rules"),
+	};
+}
+
+function renderedAsset(
+	kind: RenderedAsset["kind"],
+	path: string,
+	content: string,
+): RenderedAsset {
+	return { kind, name: path, path, content };
+}
+
+describe("collectInstalledAssets", () => {
+	test("hashes on-disk bytes for rendered paths", () => {
+		const root = makeTmpDir();
+		writeAsset(root, "skills/5x-plan/SKILL.md", "skill body");
+		writeAsset(root, "agents/5x-plan-author.md", "agent body");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [
+				renderedAsset("skill", "skills/5x-plan/SKILL.md", "skill body"),
+				renderedAsset("agent", "agents/5x-plan-author.md", "agent body"),
+			],
+			summaries: [],
+			prior: null,
+		});
+
+		expect(onDisk.get("skills/5x-plan/SKILL.md")).toBe(
+			hashContent("skill body"),
+		);
+		expect(onDisk.get("agents/5x-plan-author.md")).toBe(
+			hashContent("agent body"),
+		);
+	});
+
+	test("records the on-disk bytes, not the rendered bytes", () => {
+		const root = makeTmpDir();
+		writeAsset(root, "agents/5x-plan-author.md", "stale on disk");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [
+				renderedAsset("agent", "agents/5x-plan-author.md", "freshly rendered"),
+			],
+			summaries: [],
+			prior: null,
+		});
+
+		expect(onDisk.get("agents/5x-plan-author.md")).toBe(
+			hashContent("stale on disk"),
+		);
+	});
+
+	test("resolves summary entries against the directory for their kind", () => {
+		const root = makeTmpDir();
+		writeAsset(root, "skills/5x-plan/SKILL.md", "s");
+		writeAsset(root, "agents/5x-reviewer.md", "a");
+		writeAsset(root, "rules/5x-orchestrator.mdc", "r");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: null,
+			summaries: [
+				{
+					kind: "skill",
+					summary: { ...emptySummary(), created: ["5x-plan/SKILL.md"] },
+				},
+				{
+					kind: "agent",
+					summary: { ...emptySummary(), skipped: ["5x-reviewer.md"] },
+				},
+				{
+					kind: "rule",
+					summary: {
+						...emptySummary(),
+						overwritten: ["5x-orchestrator.mdc"],
+					},
+				},
+			],
+			prior: null,
+		});
+
+		expect([...onDisk.keys()].sort()).toEqual([
+			"agents/5x-reviewer.md",
+			"rules/5x-orchestrator.mdc",
+			"skills/5x-plan/SKILL.md",
+		]);
+	});
+
+	test("includes prior-manifest paths that still exist and omits ones that do not", () => {
+		const root = makeTmpDir();
+		writeAsset(root, "agents/5x-legacy.md", "legacy");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [],
+			summaries: [],
+			prior: {
+				...makeManifest(),
+				assets: [
+					{ path: "agents/5x-legacy.md", sha256: "stale-hash" },
+					{ path: "agents/5x-deleted.md", sha256: "gone" },
+				],
+			},
+		});
+
+		expect(onDisk.get("agents/5x-legacy.md")).toBe(hashContent("legacy"));
+		expect(onDisk.has("agents/5x-deleted.md")).toBe(false);
+	});
+
+	test("omits unreadable rendered paths rather than recording a bogus hash", () => {
+		const root = makeTmpDir();
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [renderedAsset("skill", "skills/5x-plan/SKILL.md", "body")],
+			summaries: [],
+			prior: null,
+		});
+
+		expect(onDisk.size).toBe(0);
+	});
+});
+
+describe("verifyInstalledInventory", () => {
+	const rendered = [
+		renderedAsset("skill", "skills/5x-plan/SKILL.md", "skill body"),
+		renderedAsset("agent", "agents/5x-plan-author.md", "agent body"),
+	];
+
+	test("true when every rendered asset matches on disk", () => {
+		const onDisk = new Map([
+			["skills/5x-plan/SKILL.md", hashContent("skill body")],
+			["agents/5x-plan-author.md", hashContent("agent body")],
+		]);
+
+		expect(verifyInstalledInventory({ rendered, onDisk, summaries: [] })).toBe(
+			true,
+		);
+	});
+
+	test("false when one rendered asset's on-disk hash differs", () => {
+		const onDisk = new Map([
+			["skills/5x-plan/SKILL.md", hashContent("skill body")],
+			["agents/5x-plan-author.md", hashContent("previous bake")],
+		]);
+
+		expect(verifyInstalledInventory({ rendered, onDisk, summaries: [] })).toBe(
+			false,
+		);
+	});
+
+	test("false when a rendered path is missing from the on-disk map", () => {
+		const onDisk = new Map([
+			["skills/5x-plan/SKILL.md", hashContent("skill body")],
+		]);
+
+		expect(verifyInstalledInventory({ rendered, onDisk, summaries: [] })).toBe(
+			false,
+		);
+	});
+
+	test("extra on-disk paths do not make a matching render unverified", () => {
+		const onDisk = new Map([
+			["skills/5x-plan/SKILL.md", hashContent("skill body")],
+			["agents/5x-plan-author.md", hashContent("agent body")],
+			["agents/user-authored.md", hashContent("not ours")],
+		]);
+
+		expect(verifyInstalledInventory({ rendered, onDisk, summaries: [] })).toBe(
+			true,
+		);
+	});
+
+	test("without renderAssets(), falls back to every summary skipping nothing", () => {
+		expect(
+			verifyInstalledInventory({
+				rendered: null,
+				onDisk: new Map(),
+				summaries: [
+					{ ...emptySummary(), created: ["a.md"] },
+					{ ...emptySummary(), overwritten: ["b.md"] },
+				],
+			}),
+		).toBe(true);
+
+		expect(
+			verifyInstalledInventory({
+				rendered: null,
+				onDisk: new Map(),
+				summaries: [
+					{ ...emptySummary(), created: ["a.md"] },
+					{ ...emptySummary(), skipped: ["b.md"] },
+				],
+			}),
+		).toBe(false);
+	});
+});
+
+describe("assetsFromOnDisk", () => {
+	test("emits path-sorted entries", () => {
+		const entries = assetsFromOnDisk(
+			new Map([
+				["skills/5x-plan/SKILL.md", "s"],
+				["agents/5x-reviewer.md", "r"],
+				["agents/5x-plan-author.md", "a"],
+			]),
+		);
+
+		expect(entries).toEqual([
+			{ path: "agents/5x-plan-author.md", sha256: "a" },
+			{ path: "agents/5x-reviewer.md", sha256: "r" },
+			{ path: "skills/5x-plan/SKILL.md", sha256: "s" },
+		]);
+	});
+});
+
+describe("buildManifest", () => {
+	const base = {
+		harness: "opencode",
+		scope: "project" as const,
+		rootDir: "/tmp/root",
+		locations: locationsFor("/tmp/root"),
+		projectRoot: "/home/me/dev/foo",
+		contextDir: "packages/api",
+		configResolved: true,
+		assets: [{ path: "skills/5x-plan/SKILL.md", sha256: "abc" }],
+	};
+
+	test("computes hash from the inputs it is handed", () => {
+		const manifest = buildManifest({
+			...base,
+			baseline: "verified",
+			inputs: {
+				authorModel: " anthropic/sonnet ",
+				cliVersion: "1.2.2",
+				harnessPluginVersion: "1.2.2",
+			},
+		});
+
+		expect(manifest.manifestVersion).toBe(MANIFEST_VERSION);
+		expect(manifest.baseline).toBe("verified");
+		// Raw inputs are normalized before hashing, so the two never disagree.
+		expect(manifest.inputs.authorModel).toBe("anthropic/sonnet");
+		expect(manifest.inputs.authorDelegationMode).toBe("native");
+		expect(manifest.hash).toBe(computeFingerprint(manifest.inputs));
+		expect(manifest.installedFrom).toEqual({
+			projectRoot: "/home/me/dev/foo",
+			contextDir: "packages/api",
+		});
+	});
+
+	test("re-normalizing an already-normalized input set is a no-op", () => {
+		const inputs = makeInputs();
+		const manifest = buildManifest({
+			...base,
+			baseline: "unverified",
+			inputs,
+		});
+
+		expect(manifest.inputs).toEqual(inputs);
+		expect(manifest.hash).toBe(computeFingerprint(inputs));
+		expect(manifest.baseline).toBe("unverified");
+	});
+
+	test("round-trips through write → read", () => {
+		const root = makeTmpDir();
+		const manifest = buildManifest({
+			...base,
+			rootDir: root,
+			locations: locationsFor(root),
+			baseline: "verified",
+			inputs: makeInputs(),
+			installedAt: "2026-08-09T12:00:00.000Z",
+		});
+		writeManifest(root, manifest);
+
+		expect(readManifest(root)).toEqual(manifest);
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE when asset dirs escape rootDir", () => {
+		expect(() =>
+			buildManifest({
+				...base,
+				locations: {
+					skillsDir: "/tmp/elsewhere/skills",
+					agentsDir: "/tmp/root/agents",
+				},
+				baseline: "verified",
+				inputs: makeInputs(),
 			}),
 		).toThrow(ManifestPathEscapeError);
 	});

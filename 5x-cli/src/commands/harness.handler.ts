@@ -5,17 +5,37 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { resolveHarnessModelForRole, resolveLayeredConfig } from "../config.js";
 import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../harnesses/factory.js";
+import { removeDirIfEmpty } from "../harnesses/installer.js";
+import type { HarnessLocations } from "../harnesses/locations.js";
+import {
+	assetsFromOnDisk,
+	buildManifest,
+	collectInstalledAssets,
+	hashContent,
+	type KindedInstallSummary,
+	MANIFEST_FILENAME,
+	type ManifestBaseline,
+	readManifest,
+	removeManifest,
+	verifyInstalledInventory,
+	writeManifest,
+} from "../harnesses/manifest.js";
 import type {
+	HarnessInstallContext,
+	HarnessInstallResult,
+	HarnessPlugin,
 	HarnessScope,
 	HarnessUninstallResult,
+	RenderedAsset,
 } from "../harnesses/types.js";
 import { outputSuccess } from "../output.js";
+import { version } from "../version.js";
 import {
 	DB_FILENAME,
 	resolveCheckoutRoot,
@@ -57,6 +77,8 @@ export interface HarnessUninstallOutput {
 	harnessName: string;
 	/** Only the scopes that were actually processed. */
 	scopes: Partial<Record<HarnessScope, HarnessUninstallResult>>;
+	/** Per scope: whether a `.5x-manifest.json` existed and was removed. */
+	manifests: Partial<Record<HarnessScope, boolean>>;
 }
 
 /** Per-scope installed state for harness list output. */
@@ -134,6 +156,14 @@ export async function harnessInstall(
 	let reviewerModel: string | undefined;
 	let authorDelegationMode: "native" | "invoke" | undefined;
 	let reviewerDelegationMode: "native" | "invoke" | undefined;
+	// `configResolved: false` marks an install that baked undefined models
+	// because config resolution threw. Recording those as if intentional would
+	// make the first *successful* load read as a config change (§2.1).
+	let configResolved = false;
+	// The exact directory handed to `resolveLayeredConfig` — config resolves per
+	// context while assets install once per root, so freshness has no defined
+	// operand without it (§2.1).
+	const contextDir = cwd;
 	try {
 		const cp = resolveControlPlaneRoot(cwd);
 		const { config } = await resolveLayeredConfig(cp.controlPlaneRoot, cwd);
@@ -141,8 +171,9 @@ export async function harnessInstall(
 		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
 		authorDelegationMode = config.author.delegationMode;
 		reviewerDelegationMode = config.reviewer.delegationMode;
+		configResolved = true;
 	} catch {
-		// Config load failure is non-fatal — agent templates will be
+		// Config load failure is non-fatal (unchanged) — agent templates will be
 		// rendered without model fields.
 	}
 
@@ -154,7 +185,7 @@ export async function harnessInstall(
 	);
 
 	// 7. Run the plugin install
-	const result = await plugin.install({
+	const installCtx: HarnessInstallContext = {
 		scope,
 		projectRoot,
 		force,
@@ -165,9 +196,24 @@ export async function harnessInstall(
 			reviewerDelegationMode,
 		},
 		homeDir: params.homeDir,
+	};
+	const result = await plugin.install(installCtx);
+
+	// 8. Record what was baked — read prior → verify → write (§3.2).
+	//    Only runs when install succeeded; never on throw.
+	const manifest = await recordInstallManifest({
+		name,
+		scope,
+		plugin,
+		installCtx,
+		locations,
+		result,
+		projectRoot,
+		contextDir,
+		configResolved,
 	});
 
-	// 8. Report results
+	// 9. Report results
 	printInstallSummary(
 		name,
 		scope,
@@ -176,7 +222,138 @@ export async function harnessInstall(
 		result.agents,
 		result.rules,
 		result.warnings,
+		manifest,
 	);
+}
+
+/** Outcome of the post-install manifest write, for install reporting. */
+interface InstallManifestOutcome {
+	baseline: ManifestBaseline;
+	/** Manifest-relative paths install preserved rather than rewriting. */
+	preserved: string[];
+}
+
+/**
+ * Verify the installed inventory, then write `.5x-manifest.json` at the
+ * install root.
+ *
+ * A manifest never claims a baseline it did not verify: `install()` keeps its
+ * skip-on-exist semantics for agent files, so the file set after a non-force
+ * reinstall can be a mixture of freshly rendered skills and previously baked
+ * agents. When the byte compare fails, the current inputs are *not* adopted —
+ * a prior manifest's baseline is retained so warnings can still name the
+ * changed fields — and `baseline: "unverified"` forbids ever reading `fresh`
+ * until `5x harness sync` establishes a real baseline (§3.2).
+ */
+async function recordInstallManifest(args: {
+	name: string;
+	scope: HarnessScope;
+	plugin: HarnessPlugin;
+	installCtx: HarnessInstallContext;
+	locations: HarnessLocations;
+	result: HarnessInstallResult;
+	projectRoot: string;
+	contextDir: string;
+	configResolved: boolean;
+}): Promise<InstallManifestOutcome> {
+	const { locations, result } = args;
+
+	// Install never mutates the prior manifest — it is evidence, read first.
+	const prior = readManifest(locations.rootDir);
+	const rendered = (await args.plugin.renderAssets?.(args.installCtx)) ?? null;
+
+	const summaries: KindedInstallSummary[] = [
+		{ kind: "skill" as const, summary: result.skills },
+		{ kind: "agent" as const, summary: result.agents },
+		...(result.rules ? [{ kind: "rule" as const, summary: result.rules }] : []),
+	];
+
+	const onDisk = collectInstalledAssets({
+		rootDir: locations.rootDir,
+		locations,
+		rendered,
+		summaries,
+		prior,
+	});
+	const verified = verifyInstalledInventory({
+		rendered,
+		onDisk,
+		summaries: summaries.map((s) => s.summary),
+	});
+
+	const currentInputs = {
+		authorModel: args.installCtx.config.authorModel,
+		reviewerModel: args.installCtx.config.reviewerModel,
+		authorDelegationMode: args.installCtx.config.authorDelegationMode,
+		reviewerDelegationMode: args.installCtx.config.reviewerDelegationMode,
+		cliVersion: version,
+		harnessPluginVersion: args.plugin.version ?? version,
+		plugin: args.plugin.fingerprintInputs?.(args.installCtx) ?? {},
+	};
+
+	const manifest = buildManifest({
+		harness: args.name,
+		scope: args.scope,
+		rootDir: locations.rootDir,
+		locations,
+		projectRoot: args.projectRoot,
+		contextDir: toRelativeContextDir(args.projectRoot, args.contextDir),
+		baseline: verified ? "verified" : "unverified",
+		// Verified: adopt this bake as the baseline. Unverified: retain the prior
+		// baseline when there is one, else record the attempted inputs for
+		// diagnostics only — `baseline: "unverified"` forbids `fresh` either way.
+		configResolved: verified
+			? args.configResolved
+			: (prior?.configResolved ?? args.configResolved),
+		inputs: verified ? currentInputs : (prior?.inputs ?? currentInputs),
+		// Always the true on-disk bytes — a normal reinstall must never look
+		// like a hand-edit.
+		assets: assetsFromOnDisk(onDisk),
+	});
+	writeManifest(locations.rootDir, manifest);
+
+	return {
+		baseline: manifest.baseline,
+		preserved: verified ? [] : preservedPaths(rendered, onDisk, summaries),
+	};
+}
+
+/**
+ * The paths that actually cost this install its baseline.
+ *
+ * With a render available that is exactly the set whose on-disk bytes differ
+ * from what was rendered — listing every skipped-but-identical skill would bury
+ * the one stale agent the user needs to see. Without a render there is nothing
+ * to compare against, so the skipped set is the best available evidence.
+ */
+function preservedPaths(
+	rendered: RenderedAsset[] | null,
+	onDisk: Map<string, string>,
+	summaries: KindedInstallSummary[],
+): string[] {
+	if (rendered) {
+		return rendered
+			.filter((asset) => onDisk.get(asset.path) !== hashContent(asset.content))
+			.map((asset) => asset.path);
+	}
+
+	const out: string[] = [];
+	for (const { kind, summary } of summaries) {
+		const prefix =
+			kind === "skill" ? "skills/" : kind === "agent" ? "agents/" : "rules/";
+		for (const entry of summary.skipped) out.push(`${prefix}${entry}`);
+	}
+	return out;
+}
+
+/**
+ * `installedFrom.contextDir` relative to `projectRoot`, POSIX-separated,
+ * `""` for the root context — so a committed project-scope manifest compares
+ * equal across machines and platforms.
+ */
+function toRelativeContextDir(projectRoot: string, contextDir: string): string {
+	const rel = relative(projectRoot, contextDir);
+	return rel === "" ? "" : rel.split(sep).join("/");
 }
 
 /**
@@ -328,15 +505,24 @@ async function harnessUninstallCore(
 
 	// 6. Run uninstall for each scope
 	const scopes: Partial<Record<HarnessScope, HarnessUninstallResult>> = {};
+	const manifests: Partial<Record<HarnessScope, boolean>> = {};
 	for (const s of scopesToProcess) {
+		const locations = plugin.locations.resolve(s, projectRoot, params.homeDir);
+		// Remove the manifest *before* uninstall: the plugin's emptiness sweeps
+		// only cover skills/agents/rules dirs, so a surviving root-level manifest
+		// would keep an otherwise-empty `.opencode/` alive.
+		manifests[s] = removeManifest(locations.rootDir);
 		scopes[s] = await plugin.uninstall({
 			scope: s,
 			projectRoot,
 			homeDir: params.homeDir,
 		});
+		// Now able to succeed — but still empty-only, so a user's own
+		// `opencode.json` at the root keeps the directory.
+		removeDirIfEmpty(locations.rootDir);
 	}
 
-	return { harnessName: name, scopes };
+	return { harnessName: name, scopes, manifests };
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +579,7 @@ function printInstallSummary(
 	agents: { created: string[]; overwritten: string[]; skipped: string[] },
 	rules?: { created: string[]; overwritten: string[]; skipped: string[] },
 	warnings?: string[],
+	manifest?: InstallManifestOutcome,
 ): void {
 	const label = scope === "user" ? "user" : "project";
 
@@ -432,6 +619,19 @@ function printInstallSummary(
 
 	for (const warning of warnings ?? []) {
 		console.log(`  Warning: ${warning}`);
+	}
+
+	if (manifest) {
+		console.log(`  Wrote manifest: ${MANIFEST_FILENAME}`);
+		if (manifest.baseline === "unverified") {
+			// stderr so the signal survives a piped/parsed stdout (§2.4).
+			console.error(
+				"  Warning: existing assets were preserved — freshness baseline not established; run '5x harness sync'",
+			);
+			for (const path of manifest.preserved) {
+				console.error(`    preserved: ${path}`);
+			}
+		}
 	}
 
 	if (harnessName === "cursor" && scope === "user") {

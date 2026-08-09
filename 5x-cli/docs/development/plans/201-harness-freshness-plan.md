@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phases 0–2 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; Phases 3–8 pending
+**Status:** Phases 0–3 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; Phases 4–8 pending
 
 ---
 
@@ -608,8 +608,8 @@ try {
 }
 ```
 
-- [ ] Add `configResolved` tracking without changing the swallow behavior
-- [ ] Capture `contextDir` (the exact directory handed to `resolveLayeredConfig`)
+- [x] Add `configResolved` tracking without changing the swallow behavior
+- [x] Capture `contextDir` (the exact directory handed to `resolveLayeredConfig`)
 
 #### 3.2 Verify the installed inventory, then build and write the manifest
 
@@ -689,19 +689,19 @@ Consequences, stated so the tests can assert them directly:
 
 The false-fresh path the review flagged is closed at the source: after model A → config B → plain `harness install`, the manifest still carries A's fingerprint (or none), so Tier 1 keeps warning on every hot path until `sync` runs.
 
-- [ ] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint` over the `inputs` it is given; takes `baseline` explicitly — no default)
-- [ ] Add `collectInstalledAssets(rendered, summaries, prior, locations)` (read-back hashing of the union path set: `renderAssets` paths + `InstallSummary` paths + still-present prior-manifest paths)
-- [ ] Add `verifyInstalledInventory(...)` with the byte-compare path and the `skipped`-empty fallback
-- [ ] Wire the read-prior → verify → write sequence into `harnessInstall` after `plugin.install` succeeds (never on throw)
-- [ ] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`); when `baseline === "unverified"`, print the reason and the fix on stderr: `existing assets were preserved — freshness baseline not established; run '5x harness sync'`, listing the skipped paths
-- [ ] Integration test: install opencode project scope → manifest exists, `configResolved: true`, `baseline: "verified"`, inputs match `5x.toml`
-- [ ] Integration test: install with an unparseable `5x.toml` → `configResolved: false`, models `null`
-- [ ] Integration test: `installedFrom.contextDir` is `"packages/api"` when installing from a sub-project
-- [ ] Integration test **(review §1 regression, end-to-end)**: install with `author.model = A`; `5x config set author.model B`; plain `5x harness install opencode -s project` (no `--force`) → agent frontmatter still says `A`, manifest has `baseline: "unverified"` and still records `authorModel: A`, and Tier 1 reports `unknown` / `baseline-unverified` (never `fresh`); then `5x harness sync` → frontmatter says `B`, `baseline: "verified"`, Tier 1 reports `fresh`
-- [ ] Integration test: same flow but with `--force` → `baseline: "verified"` in one step, no warning afterwards
-- [ ] Integration test: install twice with no config change → second manifest is still `baseline: "verified"` (byte-identical files are verified, not penalized)
-- [ ] Unit test: `verifyInstalledInventory` returns false when one rendered asset's on-disk hash differs, false when a rendered path is missing from `onDisk`, true when all match
-- [ ] Unit test: the unverified write retains the prior `inputs`/`hash`/`configResolved` and refreshes `assets` to on-disk hashes
+- [x] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint` over the `inputs` it is given; takes `baseline` explicitly — no default)
+- [x] Add `collectInstalledAssets(rendered, summaries, prior, locations)` (read-back hashing of the union path set: `renderAssets` paths + `InstallSummary` paths + still-present prior-manifest paths) — takes one options object, and summaries are kind-tagged (`KindedInstallSummary`) since a summary's bare entries (`5x-plan/SKILL.md`) only resolve against the directory for their kind
+- [x] Add `verifyInstalledInventory(...)` with the byte-compare path and the `skipped`-empty fallback
+- [x] Wire the read-prior → verify → write sequence into `harnessInstall` after `plugin.install` succeeds (never on throw)
+- [x] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`); when `baseline === "unverified"`, print the reason and the fix on stderr: `existing assets were preserved — freshness baseline not established; run '5x harness sync'`, listing the skipped paths — narrowed to the paths whose on-disk bytes actually differ from the render (a model change skips every byte-identical skill too, and listing those buries the one stale agent); the full skipped set remains the fallback for plugins without `renderAssets()`
+- [x] Integration test: install opencode project scope → manifest exists, `configResolved: true`, `baseline: "verified"`, inputs match `5x.toml`
+- [x] Integration test: install with an unparseable `5x.toml` → `configResolved: false`, models `null`
+- [x] Integration test: `installedFrom.contextDir` is `"packages/api"` when installing from a sub-project
+- [x] Integration test **(review §1 regression, end-to-end)**: install with `author.model = A`; `5x config set author.model B`; plain `5x harness install opencode -s project` (no `--force`) → agent frontmatter still says `A`, manifest has `baseline: "unverified"` and still records `authorModel: A` — `test/integration/commands/harness-manifest.test.ts`. The `Tier 1 reports unknown` and `then 5x harness sync → fresh` halves need `compareManifest` (Phase 4) and `harness sync` (Phase 6); the test asserts the `--force` equivalent for now and Phase 6.3 carries the full sequence.
+- [x] Integration test: same flow but with `--force` → `baseline: "verified"` in one step, no warning afterwards
+- [x] Integration test: install twice with no config change → second manifest is still `baseline: "verified"` (byte-identical files are verified, not penalized)
+- [x] Unit test: `verifyInstalledInventory` returns false when one rendered asset's on-disk hash differs, false when a rendered path is missing from `onDisk`, true when all match
+- [x] Unit test: the unverified write retains the prior `inputs`/`hash`/`configResolved` and refreshes `assets` to on-disk hashes
 
 #### 3.3 Remove the manifest on uninstall, before the emptiness sweeps
 
@@ -719,10 +719,10 @@ for (const s of scopesToProcess) {
 }
 ```
 
-- [ ] Remove manifest before `plugin.uninstall`, sweep `rootDir` after
-- [ ] Add `manifests: Partial<Record<HarnessScope, boolean>>` to `HarnessUninstallOutput`
-- [ ] Integration test: `uninstall --all` leaves no `.opencode/` directory when 5x created it
-- [ ] Integration test: `.opencode/` containing a user's own `opencode.json` survives (sweep is empty-only)
+- [x] Remove manifest before `plugin.uninstall`, sweep `rootDir` after
+- [x] Add `manifests: Partial<Record<HarnessScope, boolean>>` to `HarnessUninstallOutput`
+- [x] Integration test: `uninstall --all` leaves no `.opencode/` directory when 5x created it
+- [x] Integration test: `.opencode/` containing a user's own `opencode.json` survives (sweep is empty-only)
 
 ---
 
