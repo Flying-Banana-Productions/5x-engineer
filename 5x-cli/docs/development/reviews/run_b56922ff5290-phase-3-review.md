@@ -22,3 +22,21 @@ items:
     description: Manifest inventory paths are not constrained to the install root.
     location: src/harnesses/manifest.ts:442-471
 -->
+
+---
+
+## Re-review: `730b10b110e5b9b906f0608aa009ba3c47b99cb4`
+
+Rejected. The lexical traversal fix and coverage address `..`, absolute, drive-qualified, backslash, malformed summary, and prior-manifest paths. However the claimed root containment is lexical only: a safe-looking path under a symlinked directory inside `rootDir` is followed by `readFileSync`, so inventory can still hash an external file. Resolve/check real paths (and define handling for missing paths), or reject symlink traversal, before reading. Add a symlink escape regression test.
+
+Validation: `bun test test/unit/harnesses/manifest.test.ts test/unit/commands/harness.test.ts test/integration/commands/harness-manifest.test.ts` (152 pass); `bun run typecheck`; `bun run lint`.
+
+<!-- 5x:verdict
+protocolVersion: 1
+readiness: not_ready
+reviewPath: docs/development/reviews/run_b56922ff5290-phase-3-review.md
+items:
+  - severity: major
+    description: Lexically safe manifest paths can escape rootDir through symlinked asset directories and be read by inventory collection.
+    location: src/harnesses/manifest.ts:553-562
+-->
