@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InstallSummary } from "../../../src/harnesses/installer.js";
@@ -838,6 +844,108 @@ describe("collectInstalledAssets", () => {
 
 		expect([...onDisk.keys()]).toEqual(["agents/5x-legacy.md"]);
 		expect([...onDisk.values()]).not.toContain(hashContent("secret"));
+	});
+
+	test("drops a lexically safe path that escapes through a symlinked asset directory", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		const outside = join(parent, "outside");
+		mkdirSync(join(outside, "5x-plan"), { recursive: true });
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(outside, "5x-plan", "SKILL.md"), "secret", "utf-8");
+		// `.opencode/skills` -> `../outside`: every path under it is lexically
+		// innocent but physically outside the install root.
+		symlinkSync(outside, join(root, "skills"), "dir");
+
+		const rendered = [
+			renderedAsset("skill", "skills/5x-plan/SKILL.md", "secret"),
+		];
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered,
+			summaries: [],
+			prior: null,
+		});
+
+		expect(onDisk.size).toBe(0);
+		expect([...onDisk.values()]).not.toContain(hashContent("secret"));
+		// Fails closed: the missing entry denies the verified baseline.
+		expect(verifyInstalledInventory({ rendered, onDisk, summaries: [] })).toBe(
+			false,
+		);
+	});
+
+	test("drops a symlinked asset file pointing outside rootDir", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(join(root, "agents"), { recursive: true });
+		writeFileSync(join(parent, "secret.md"), "secret", "utf-8");
+		writeAsset(root, "agents/5x-real.md", "real");
+		symlinkSync(join(parent, "secret.md"), join(root, "agents", "5x-link.md"));
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: null,
+			summaries: [
+				{
+					kind: "agent",
+					summary: {
+						...emptySummary(),
+						created: ["5x-real.md", "5x-link.md"],
+					},
+				},
+			],
+			prior: null,
+		});
+
+		expect([...onDisk.keys()]).toEqual(["agents/5x-real.md"]);
+		expect([...onDisk.values()]).not.toContain(hashContent("secret"));
+	});
+
+	test("drops a prior-manifest path that escapes through a symlink", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(join(root, "agents"), { recursive: true });
+		writeFileSync(join(parent, "secret.md"), "secret", "utf-8");
+		symlinkSync(join(parent, "secret.md"), join(root, "agents", "5x-old.md"));
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [],
+			summaries: [],
+			prior: {
+				...makeManifest(),
+				assets: [{ path: "agents/5x-old.md", sha256: "recorded" }],
+			},
+		});
+
+		expect(onDisk.size).toBe(0);
+	});
+
+	test("still hashes assets when rootDir itself is reached through a symlink", () => {
+		const parent = makeTmpDir();
+		const realRoot = join(parent, "real-opencode");
+		mkdirSync(realRoot, { recursive: true });
+		writeAsset(realRoot, "skills/5x-plan/SKILL.md", "skill body");
+		const linkedRoot = join(parent, ".opencode");
+		symlinkSync(realRoot, linkedRoot, "dir");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: linkedRoot,
+			locations: locationsFor(linkedRoot),
+			rendered: [
+				renderedAsset("skill", "skills/5x-plan/SKILL.md", "skill body"),
+			],
+			summaries: [],
+			prior: null,
+		});
+
+		expect(onDisk.get("skills/5x-plan/SKILL.md")).toBe(
+			hashContent("skill body"),
+		);
 	});
 
 	test("omits unreadable rendered paths rather than recording a bogus hash", () => {

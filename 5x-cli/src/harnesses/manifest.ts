@@ -26,6 +26,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -475,11 +476,15 @@ export interface KindedInstallSummary {
  * `assets` must describe what is actually installed even when `install()`
  * preserved an existing file (§3.2).
  *
- * Every path is proven to stay under `rootDir` before it is read. Plugin- and
- * installer-supplied paths that escape throw `MANIFEST_PATH_ESCAPE` — that is a
- * bug in the harness, and reading a traversal path would hash a file outside
- * the install root. Prior-manifest paths are untrusted on-disk data and are
- * dropped silently instead (`readManifest` already rejects such a manifest).
+ * Every path is proven to stay under `rootDir` twice over. Lexically first:
+ * plugin- and installer-supplied paths that traverse or go absolute throw
+ * `MANIFEST_PATH_ESCAPE` (that is a bug in the harness), while prior-manifest
+ * paths are untrusted on-disk data and are dropped silently instead
+ * (`readManifest` already rejects such a manifest). Then physically: each
+ * surviving path is `realpath`-resolved against the resolved root before it is
+ * read, so a lexically innocent path routed through a symlinked directory
+ * inside the root cannot make this hash an external file. Escapes found that
+ * way are dropped, which fails closed through `verifyInstalledInventory`.
  */
 export function collectInstalledAssets(args: {
 	rootDir: string;
@@ -541,19 +546,76 @@ export function collectInstalledAssets(args: {
 		paths.add(asset.path);
 	}
 
+	const realRootDir = realRoot(args.rootDir);
+
 	const onDisk = new Map<string, string>();
 	for (const relPath of [...paths].sort()) {
+		const resolved = resolveInsideRoot(realRootDir, relPath);
+		if (resolved === null) continue;
+
 		let content: string;
 		try {
-			content = readFileSync(joinManifestPath(args.rootDir, relPath), "utf-8");
+			content = readFileSync(resolved, "utf-8");
 		} catch {
-			// Recorded-but-absent, or unreadable — omit it entirely.
+			// Unreadable (permissions, a directory, a race) — omit it entirely.
 			continue;
 		}
 		onDisk.set(relPath, hashContent(content));
 	}
 
 	return onDisk;
+}
+
+/**
+ * `rootDir` with every symlink in it resolved, so containment checks compare
+ * real locations rather than the path the caller happened to spell.
+ *
+ * Install roots legitimately sit under symlinks (`/tmp` on macOS, a symlinked
+ * `~/.config`, a dotfile-manager'd home), and resolving the root is what keeps
+ * those from reading as escapes. Falls back to the literal path when the root
+ * does not exist yet — nothing under it will resolve either, so every candidate
+ * is dropped.
+ */
+function realRoot(rootDir: string): string {
+	try {
+		return realpathSync(rootDir);
+	} catch {
+		return rootDir;
+	}
+}
+
+/**
+ * Resolve a manifest-relative path to a real, symlink-free absolute path that
+ * provably stays under `realRootDir`, or `null` when it does not.
+ *
+ * `isSafeManifestPath` is *lexical* only, and lexical safety is not containment:
+ * an innocent-looking `skills/5x-plan/SKILL.md` can traverse a symlinked
+ * directory inside the install root and land on an arbitrary external file,
+ * which `readFileSync` would follow and hash. Resolving first — and then reading
+ * the resolved path rather than the spelled one — is what makes the manifest's
+ * root-relative contract true of the bytes it records.
+ *
+ * Missing paths return `null` and are simply omitted, the same as any other
+ * unreadable path: a recorded asset that no longer exists has nothing to hash.
+ * An escape is dropped rather than thrown, because a symlink is on-disk state
+ * (a user's dotfile manager, not a harness bug) and failing the whole install
+ * over it would be disproportionate. Dropping fails closed instead: a rendered
+ * asset that disappears from `onDisk` makes `verifyInstalledInventory` false, so
+ * the manifest records `baseline: "unverified"` and asks for a `sync`.
+ */
+function resolveInsideRoot(
+	realRootDir: string,
+	relPath: string,
+): string | null {
+	let resolved: string;
+	try {
+		resolved = realpathSync(joinManifestPath(realRootDir, relPath));
+	} catch {
+		// Missing, unreadable, or a broken/looping symlink.
+		return null;
+	}
+
+	return isUnderRoot(realRootDir, resolved) ? resolved : null;
 }
 
 function assetDirForKind(
