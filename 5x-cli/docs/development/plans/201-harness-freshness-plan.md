@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phase 0 complete — both verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); Phases 1–8 pending
+**Status:** Phases 0–1 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write) landed; Phases 2–8 pending
 
 ---
 
@@ -330,9 +330,9 @@ export interface HarnessManifest {
 }
 ```
 
-- [ ] Add the types above with doc comments mirroring the rationale in `201` §2.1
-- [ ] Re-export `HarnessScope` type usage from `./types.js` (do not redeclare)
-- [ ] `baseline` participates in the shape guard but **not** in `computeFingerprint` — it describes the manifest's trustworthiness, not the bake
+- [x] Add the types above with doc comments mirroring the rationale in `201` §2.1
+- [x] Re-export `HarnessScope` type usage from `./types.js` (do not redeclare)
+- [x] `baseline` participates in the shape guard but **not** in `computeFingerprint` — it describes the manifest's trustworthiness, not the bake
 
 #### 1.2 Canonicalization and hashing
 
@@ -373,12 +373,12 @@ Normalization rules (each gets a unit test):
 | `plugin` absent | `{}` |
 | key order in `plugin` | sorted |
 
-- [ ] Implement `canonicalJson` (recursive sort; arrays keep order; rejects non-JSON values)
-- [ ] Implement `normalizeInputs` per the table
-- [ ] Implement `computeFingerprint` and `hashContent`
-- [ ] Unit test: two configs differing only in key order / whitespace hash equal
-- [ ] Unit test: changing any one of the six scalar inputs changes the hash
-- [ ] Unit test: `plugin: {}` vs `plugin` absent hash equal
+- [x] Implement `canonicalJson` (recursive sort; arrays keep order; rejects non-JSON values)
+- [x] Implement `normalizeInputs` per the table
+- [x] Implement `computeFingerprint` and `hashContent`
+- [x] Unit test: two configs differing only in key order / whitespace hash equal
+- [x] Unit test: changing any one of the six scalar inputs changes the hash
+- [x] Unit test: `plugin: {}` vs `plugin` absent hash equal
 
 #### 1.3 Read / write / remove
 
@@ -408,11 +408,11 @@ Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the
 
 A missing or unrecognized `baseline` is **not** defaulted to `"verified"` — the guard rejects it and `readManifest` returns `null`, so an old or hand-written manifest fails closed to `unknown` rather than asserting a baseline nobody verified.
 
-- [ ] Implement the five functions
-- [ ] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
-- [ ] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
-- [ ] Unit test: `removeManifest` returns `false` when absent, `true` after a write
-- [ ] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
+- [x] Implement the five functions
+- [x] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
+- [x] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
+- [x] Unit test: `removeManifest` returns `false` when absent, `true` after a write
+- [x] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
 
 ---
 
