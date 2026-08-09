@@ -40,3 +40,18 @@ items:
     description: Lexically safe manifest paths can escape rootDir through symlinked asset directories and be read by inventory collection.
     location: src/harnesses/manifest.ts:553-562
 -->
+
+---
+
+## Re-review: `1ba54b26cb435666808dbac97f24b982ae10efad`
+
+Approved. Inventory now combines lexical rejection with realpath containment before reads, dropping symlink escapes and failing baseline verification closed. It retains valid symlinked install roots. Earlier traversal, absolute-path, malformed-summary, and prior-manifest safeguards remain covered; no regression found.
+
+Validation: `bun test test/unit/harnesses/manifest.test.ts test/unit/commands/harness.test.ts test/integration/commands/harness-manifest.test.ts` (156 pass); `bun run typecheck`; `bun run lint`.
+
+<!-- 5x:verdict
+protocolVersion: 1
+readiness: ready
+reviewPath: docs/development/reviews/run_b56922ff5290-phase-3-review.md
+items: []
+-->
