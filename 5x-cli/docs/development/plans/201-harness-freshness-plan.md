@@ -1,8 +1,9 @@
 # Harness Asset Freshness — Manifest, Freshness Check, and `5x harness sync`
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 9, 2026
-**Status:** Draft — pending staff engineer review
+**Last updated:** August 9, 2026
+**Status:** Revised — both blocking review findings resolved (see [Revision History](#revision-history))
 
 ---
 
@@ -10,7 +11,9 @@
 
 `5x harness install` **compiles** harness assets: per-role model strings are injected into agent YAML frontmatter and delegation mode selects which skill sections render. Once written, nothing connects those files back to the config that produced them — there is no staleness detection, no freshness command, no signal at the point of cause, and no one-step refresh. Worse, the folk-remedy ("just reinstall") is *silently partial*: `installSkillFiles` overwrites skills on content diff (`src/harnesses/installer.ts:143-151`) while `installFiles` skips existing agent files unless `--force` (`src/harnesses/installer.ts:100-104`), so changing `author.model` and re-running install refreshes the skill markdown and leaves the baked agent model stale.
 
-This plan implements `docs/v2/201-harness-freshness.md`: a harness-agnostic `.5x-manifest.json` written to each harness install root recording the baked inputs, a fingerprint over those inputs, and a per-file content hash of every installed asset; a two-tier freshness check (free input compare on hot paths, re-render compare on demand); fire points at `run init` / `config set` / `harness list`; a new `5x harness sync` command that re-renders installed scopes through the *same* render path as install; and `5x upgrade` integration that reports staleness across all bundled installs and auto-syncs only where the refresh is provably lossless.
+This plan implements `docs/v2/201-harness-freshness.md`: a harness-agnostic `.5x-manifest.json` written to each harness install root recording the baked inputs, a fingerprint over those inputs, and a per-file content hash of every installed asset; a two-tier freshness check (free input compare on hot paths, re-render compare on demand); fire points at `run init` / `config set` / `harness list`; a new `5x harness sync` command that re-renders installed scopes through the *same* render path as install; and `5x upgrade` integration that reports staleness across all bundled installs and auto-syncs only where the refresh is provably lossless *and* the user opted in.
+
+Because that partial-refresh behavior is preserved (§"`install()` keeps its existing write semantics"), the manifest must never launder it: a manifest claims a **verified baseline** only when every managed asset on disk byte-matches the render of the inputs it records. A non-force install that skipped stale agent files writes an **unverified** manifest instead, which reads as `unknown` — never `fresh` — until `5x harness sync` establishes a real baseline.
 
 ### Scope
 
@@ -21,7 +24,7 @@ This plan implements `docs/v2/201-harness-freshness.md`: a harness-agnostic `.5x
 - Manifest write on `harness install`; manifest removal on `harness uninstall` (before directory-emptiness sweeps).
 - Tier 1 freshness warnings at `5x run init`, `5x config set <baked key>`, and a freshness column in `5x harness list`.
 - `5x harness sync` — idempotent re-render of installed scopes, manifest adoption for pre-existing installs, explicit hand-edit reporting, `--check` for on-demand Tier 2.
-- `5x upgrade` freshness sweep with `--sync` / `--no-sync`, gated on the lossless-refresh predicate.
+- `5x upgrade` freshness sweep with `--sync` / `--no-sync`; automatic refresh requires `harness.autoSync = true` **and** the lossless-refresh predicate.
 - Config keys `harness.freshnessWarnings` and `harness.autoSync`.
 - Exported `runHarnessFreshnessChecks()` seam for `5x doctor` (area #3) to consume when it lands.
 
@@ -42,7 +45,8 @@ This plan implements `docs/v2/201-harness-freshness.md`: a harness-agnostic `.5x
 | **No `assetVersion` input; per-file content hashes instead** | D2. A hand-maintained prose version gets forgotten on the first prose edit that ships without a bump — a silent miss, precisely the failure this work exists to prevent. |
 | **Two-tier check** | Tier 1 (inputs only, no plugin load, no render) is the only tier on hot paths. Tier 2 (re-render + per-file hash compare) catches template drift *and* user hand-edits, and runs only in `sync` / `doctor`. |
 | **Optional `renderAssets()` on the plugin contract; `install()` is a thin writer over it** | Tier 2 needs a *dry* render. Making `install()` consume the same function guarantees sync/doctor can never drift from install ("one render path, not two", §2.5). Plugins that don't implement it degrade Tier 2 to on-disk-vs-recorded hash compare (still catches hand-edits). |
-| **Lossless-refresh predicate gates every automatic refresh** | D6. `installedFrom.contextDir` must be the context resolving config right now **and** every recorded asset hash must still match. One rule serves `autoSync` and `upgrade`, and covers the multi-context monorepo case a scope-based rule missed. |
+| **A manifest records a `baseline` of `"verified"` or `"unverified"`; only a verified baseline can read `fresh`** | Install keeps its skip-on-exist semantics for agents, so a plain reinstall after a model change refreshes skills and leaves agents stale. Stamping the new inputs over that mixture would make Tier 1 report `fresh` on demonstrably stale bytes — the exact failure this work exists to prevent. Verification is a post-install byte compare against the render; anything less writes `unverified`, which compares as `unknown`. |
+| **Lossless-refresh predicate gates every automatic refresh; `harness.autoSync` decides whether to use it** | D6. The predicate is a *safety* gate (`scope === "project"`, matching `installedFrom.contextDir`, `baseline === "verified"`, no hand-edited assets); it is never a *permission* gate. Automatic refresh additionally requires `harness.autoSync = true`, which defaults to false, so the default posture everywhere is report-only. |
 | **User scope is warn-only permanently, as an additional gate beyond the predicate** | D4. `installedFrom.projectRoot` is advisory and *never compared for equality* (§2.1), so the CLI cannot prove the current project is the sole consumer of a shared asset copy. Auto-syncing user scope from project B would silently break project A. Encoded as a `shared-user-scope` blocker, not as a predicate special case. |
 | **Sync refuses to clobber hand-edited files without `--force`** | Settles §5.1's open policy item. §2.5 requires unconditional refresh of *managed* assets (fixing the agent skip-on-exist bug) but the manifest makes "hand-edited" decidable for the first time, so sync reports and preserves rather than inheriting `installSkillFiles`' silent clobber. Adoption (no manifest) still force-installs per §2.5 and lists what it overwrote. |
 | **No throttle; fire at transitions only** | D5. Every throttle design needs per-scope state that itself goes stale. `invoke` is deliberately not a fire point — it runs dozens of times per run and rebaking mid-run changes agent behavior mid-run. Suppression is one config key. |
@@ -74,7 +78,8 @@ This plan implements `docs/v2/201-harness-freshness.md`: a harness-agnostic `.5x
 14. [Tests](#tests)
 15. [Not In Scope](#not-in-scope)
 16. [Estimated Timeline](#estimated-timeline)
-17. [Appendix](#appendix)
+17. [Revision History](#revision-history)
+18. [Appendix](#appendix)
 
 ---
 
@@ -93,10 +98,10 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 
 **New behavior:**
 
-- Every `harness install` writes `<rootDir>/.5x-manifest.json` recording harness, scope, fingerprint, cleartext inputs, `installedFrom` provenance, `configResolved`, and a `sha256` per installed asset.
+- Every `harness install` writes `<rootDir>/.5x-manifest.json` recording harness, scope, fingerprint, cleartext inputs, `installedFrom` provenance, `configResolved`, a `baseline` trust marker, and a `sha256` per installed asset. The current inputs become the recorded baseline only when a post-install byte compare proves every managed asset on disk matches the render; otherwise the manifest is written `baseline: "unverified"` and reads as `unknown`.
 - `5x run init`, `5x config set <baked key>`, and `5x harness list` surface a Tier 1 staleness warning naming the changed fields and the exact fix (`5x harness sync`).
 - `5x harness sync` re-renders every installed scope the manifests describe, refreshing agents *and* skills, reporting hand-edits instead of silently clobbering them, and rewriting the manifest.
-- `5x upgrade` sweeps all bundled harness × scope installs, reports staleness, and auto-syncs only where the lossless-refresh predicate holds.
+- `5x upgrade` sweeps all bundled harness × scope installs and reports staleness. It writes nothing by default: automatic refresh requires `harness.autoSync = true` (opt-in) *and* the lossless-refresh predicate, with `--sync` / `--no-sync` as explicit per-invocation overrides.
 - `harness uninstall` removes the manifest before the emptiness sweeps, so an uninstalled `.opencode/` can actually go away.
 
 **Prerequisites:**
@@ -125,6 +130,10 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 **Tier 2 needs a dry render, so `renderAssets()` joins the plugin contract as optional.** Re-implementing the render inside the manifest module would create exactly the parallel renderer §2.5 forbids. Instead each bundled plugin exposes `renderAssets(ctx)` returning `{kind, name, path, content}[]`, and its `install()` becomes a thin dispatcher that groups those assets by kind and calls the existing installers. Install and Tier 2 then read from one function by construction. External plugins that omit it lose template-drift detection but keep hand-edit detection (on-disk vs recorded hashes), which is the safety-critical half.
 
 **`install()` keeps its existing write semantics; `sync` supplies `force: true`.** Changing `harness install`'s skip-on-exist behavior would be a silent semantic change to a shipped command. Sync is the new surface and is defined as unconditional refresh, so it passes `force: true` and the asymmetry stops being load-bearing.
+
+**A manifest never claims a baseline it did not verify.** Because install keeps skip-on-exist for agents (`installer.ts:100-104`), the file set left on disk after a non-force reinstall can be a *mixture*: skills re-rendered from the current config, agents still baked from whatever produced them. Writing the current inputs plus a read-back of those bytes would produce a manifest that is internally consistent and factually false — Tier 1 would report `fresh` and the hot-path warnings would vanish precisely when the assets went stale. So the manifest write is conditional on a **post-install verification**: every asset the plugin renders for this context must byte-match what is on disk. When it does, the manifest records the current inputs with `baseline: "verified"`. When it does not, the current inputs are *not* adopted as the baseline — a prior manifest's `inputs`/`hash` are retained so the warning can still name the changed fields, or, when there is no prior manifest, the attempted inputs are recorded for diagnostics only — and `baseline: "unverified"` is written, which `compareManifest` maps to `unknown`. Only `sync` (or `install --force`, which verifies by construction) establishes a fresh baseline. The `assets` hashes are always refreshed to the true on-disk bytes, so hand-edit detection stays accurate and a normal reinstall never masquerades as a hand-edit.
+
+**Automatic refresh needs both a safety gate and a permission gate.** The lossless-refresh predicate answers "would refreshing lose anything?"; `harness.autoSync` (default `false`) answers "did the user ask us to?". Both must be true before any command writes assets on its own. `5x upgrade --sync` is the explicit per-invocation permission override; `--no-sync` forces report-only. Nothing else — not a lossless predicate, not a CLI version bump — grants permission on its own.
 
 **Sync aborts on hand-edited files unless `--force`.** With a manifest present, "the user edited this" is decidable for the first time. §2.5 demands unconditional refresh of *managed* assets — that fixes the agent skip bug — but it does not demand silent destruction of user edits, and §5.1 explicitly asks for the skill-overwrite policy to be settled rather than inherited. Sync therefore computes the Tier 2 report first and exits with `HARNESS_ASSETS_MODIFIED` listing the edited paths and naming `--force`. The adoption path (no manifest) still force-installs per §2.5, because without a recorded hash a hand-edit is indistinguishable from config drift — it prints every overwritten path so the action is at least legible.
 
@@ -170,6 +179,7 @@ Freshness state machine per (harness, scope):
   no assets on disk              ──► not-installed  (no warning)
   assets, no/unreadable manifest ──► unknown        (warn: run `5x harness sync` to baseline)
   manifest.configResolved=false  ──► unknown        (same copy)
+  manifest.baseline="unverified" ──► unknown        (warn: partial install, show deltas if known)
   fingerprint(inputs) mismatch   ──► stale          (warn: show changed fields)
   fingerprint match, Tier 1 only ──► fresh          (silent)
   fingerprint match, Tier 2:
@@ -177,12 +187,18 @@ Freshness state machine per (harness, scope):
      on-disk hash  ≠ recorded    ──► stale + modified (hand-edit; blocks auto-sync)
 ```
 
-Lossless-refresh predicate (`losslessRefresh === true`) requires **all** of:
+`unknown` is never `fresh` and is never lossless-refreshable, so no fire point can fall silent and no command can auto-sync on the strength of a manifest that was never verified.
+
+Lossless-refresh predicate (`losslessRefresh === true`) is the **safety** gate. It requires **all** of:
 
 1. `scope === "project"` (D4 — user scope is never auto-refreshed),
 2. `manifest.installedFrom.contextDir` equals the context resolving config right now,
 3. every entry in `assets` still hashes to its recorded value,
-4. `manifest.configResolved === true` and the manifest parsed cleanly.
+4. `manifest.configResolved === true` and the manifest parsed cleanly,
+5. `manifest.baseline === "verified"` — an unverified manifest is `unknown`, and `unknown` never refreshes automatically,
+6. `tier === 2` — Tier 1 cannot see hand-edits, so it always reports `false` (§4.2).
+
+The predicate is necessary but **not sufficient** for an automatic write. Permission is separate: `harness.autoSync = true` (default `false`), or an explicit `5x upgrade --sync` / `5x harness sync` invocation. See "Automatic refresh needs both a safety gate and a permission gate" above and Phase 7.1.
 
 ---
 
@@ -268,6 +284,21 @@ export interface ManifestProvenance {
 	contextDir: string;
 }
 
+/**
+ * Whether the recorded `inputs` are a trustworthy freshness baseline.
+ *
+ * - `"verified"`: at write time every asset the plugin renders for this
+ *   context byte-matched the file on disk, so `inputs`/`hash` describe
+ *   exactly what is installed. Only this value can ever compare `fresh`.
+ * - `"unverified"`: the installed file set is a mixture — e.g. a non-force
+ *   `harness install` skipped existing agent files (`installer.ts:100-104`)
+ *   while skills were re-rendered. `inputs` then describe the last verified
+ *   bake (retained from a prior manifest) or, absent one, the attempted bake
+ *   for diagnostics only. Compares as `unknown` until `sync` re-establishes
+ *   a baseline.
+ */
+export type ManifestBaseline = "verified" | "unverified";
+
 export interface HarnessManifest {
 	manifestVersion: number;
 	harness: string;
@@ -276,16 +307,28 @@ export interface HarnessManifest {
 	hash: string;
 	/** false when config resolution threw at install time (§2.1). */
 	configResolved: boolean;
+	/** Trust level of `inputs`/`hash` as a freshness baseline (§3.2). */
+	baseline: ManifestBaseline;
 	installedFrom: ManifestProvenance;
+	/**
+	 * The baked-input surface `hash` covers. Meaningful as a baseline only
+	 * when `baseline === "verified"`; otherwise diagnostic (drives warning
+	 * copy) and never a basis for `fresh`.
+	 */
 	inputs: ManifestInputs;
-	/** ISO-8601 UTC. */
+	/** ISO-8601 UTC of the last manifest write. */
 	installedAt: string;
+	/**
+	 * Always the true on-disk bytes at write time, regardless of `baseline`,
+	 * so hand-edit detection stays accurate across partial installs.
+	 */
 	assets: ManifestAssetEntry[];
 }
 ```
 
 - [ ] Add the types above with doc comments mirroring the rationale in `201` §2.1
 - [ ] Re-export `HarnessScope` type usage from `./types.js` (do not redeclare)
+- [ ] `baseline` participates in the shape guard but **not** in `computeFingerprint` — it describes the manifest's trustworthiness, not the bake
 
 #### 1.2 Canonicalization and hashing
 
@@ -357,11 +400,13 @@ export function removeManifest(rootDir: string): boolean;
 export function toManifestPath(rootDir: string, absolutePath: string): string;
 ```
 
-Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `inputs` and `installedFrom` are objects, and `assets` is an array of `{path, sha256}` strings.
+Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `baseline` ∈ `{verified,unverified}`, `inputs` and `installedFrom` are objects, and `assets` is an array of `{path, sha256}` strings.
+
+A missing or unrecognized `baseline` is **not** defaulted to `"verified"` — the guard rejects it and `readManifest` returns `null`, so an old or hand-written manifest fails closed to `unknown` rather than asserting a baseline nobody verified.
 
 - [ ] Implement the five functions
-- [ ] Unit test: round-trip write → read returns a deep-equal manifest
-- [ ] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`) returns `null`
+- [ ] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
+- [ ] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
 - [ ] Unit test: `removeManifest` returns `false` when absent, `true` after a write
 - [ ] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
 
@@ -533,7 +578,7 @@ export function assertAssetPathsUnderRoot(
 
 ## Phase 3: Manifest write on install, removal on uninstall
 
-> **Completion gate:** `5x harness install <name> --scope <scope>` writes a valid `.5x-manifest.json` at `locations.rootDir` for all three bundled harnesses at both scopes; `5x harness uninstall <name> --all` removes it and leaves no orphan root directory; existing install/uninstall integration tests pass with only additive assertions.
+> **Completion gate:** `5x harness install <name> --scope <scope>` writes a valid `.5x-manifest.json` at `locations.rootDir` for all three bundled harnesses at both scopes; a **first** install and any `--force` install record `baseline: "verified"`; a non-force reinstall that skips a stale agent file records `baseline: "unverified"` and does **not** adopt the new inputs as the baseline; `5x harness uninstall <name> --all` removes the manifest and leaves no orphan root directory; existing install/uninstall integration tests pass with only additive assertions.
 
 #### 3.1 Track config-resolution success and context
 
@@ -562,45 +607,97 @@ try {
 - [ ] Add `configResolved` tracking without changing the swallow behavior
 - [ ] Capture `contextDir` (the exact directory handed to `resolveLayeredConfig`)
 
-#### 3.2 Build and write the manifest after `plugin.install`
+#### 3.2 Verify the installed inventory, then build and write the manifest
 
 **File:** `src/commands/harness.handler.ts`, after line 168
 
-```typescript
-import { buildManifest, writeManifest } from "../harnesses/manifest.js";
+`install()` keeps its skip-on-exist semantics for agent files, so what is on disk after a non-force reinstall may be a mixture of freshly rendered skills and previously baked agents. The manifest write must therefore *prove* that the inputs it is about to record actually produced the files it is about to hash.
 
-// … after `const result = await plugin.install({...})`
+**Step 1 — collect on-disk truth.** After `plugin.install()` returns, build the asset set and hash the **on-disk bytes** of every path (never the rendered string). The path set is `plugin.renderAssets()`' paths ∪ every path named by the `InstallSummary` arrays (`created ∪ overwritten ∪ skipped`) resolved against `locations` ∪ every path recorded by a prior manifest that still exists on disk. Files that fail to read are omitted, not recorded with a bogus hash.
+
+**Step 2 — verify.** `verifyInstalledInventory` decides whether the current inputs may become the baseline:
+
+```typescript
+/**
+ * True only when every asset the plugin renders for this context is present
+ * on disk with byte-identical content, and no rendered path failed to read.
+ * A single skipped-stale agent file (or any drift) makes this false.
+ */
+export function verifyInstalledInventory(args: {
+	/** null when the plugin does not implement `renderAssets()`. */
+	rendered: RenderedAsset[] | null;
+	onDisk: Map<string, string>;   // manifest-relative path → sha256 of on-disk bytes
+	/** Every `InstallSummary` the plugin returned — the fallback evidence. */
+	summaries: InstallSummary[];
+}): boolean;
+```
+
+- Plugins that implement `renderAssets()` (all three bundled) are verified by byte comparison: `hashContent(asset.content) === onDisk.get(asset.path)` for every rendered asset.
+- Plugins that omit `renderAssets()` have no render to compare against, so the fallback is the conservative structural rule: verified **iff** every `InstallSummary.skipped` array is empty. This can under-report freshness for an external plugin that legitimately skips byte-identical files; under-reporting costs one `sync`, over-reporting costs a silent stale bake. No bundled plugin takes this path.
+
+**Step 3 — write.** One rule, applied identically at every scope and harness:
+
+```typescript
+const prior = readManifest(locations.rootDir);   // null when absent/corrupt; install never touches it
+const rendered = (await plugin.renderAssets?.(installCtx)) ?? null;
+const summaries = [result.skills, result.agents, result.rules].filter(Boolean);
+const onDisk = collectInstalledAssets(rendered, summaries, prior, locations);        // step 1
+const verified = verifyInstalledInventory({ rendered, onDisk, summaries });          // step 2
+const currentInputs = {
+	authorModel, reviewerModel, authorDelegationMode, reviewerDelegationMode,
+	cliVersion: version,
+	harnessPluginVersion: plugin.version ?? version,
+	plugin: plugin.fingerprintInputs?.(installCtx) ?? {},
+};
 
 const manifest = buildManifest({
 	harness: name,
 	scope,
 	projectRoot,
 	contextDir,
-	configResolved,
 	rootDir: locations.rootDir,
 	locations,
-	inputs: {
-		authorModel, reviewerModel, authorDelegationMode, reviewerDelegationMode,
-		cliVersion: version,
-		harnessPluginVersion: plugin.version ?? version,
-		plugin: plugin.fingerprintInputs?.(installCtx) ?? {},
-	},
-	assets: await collectInstalledAssets(plugin, installCtx, locations),
+	// Verified: adopt the current bake as the baseline.
+	// Unverified: retain the prior baseline if there is one (so the warning can
+	// still name the changed fields); otherwise record the attempted inputs for
+	// diagnostics only. Either way `baseline: "unverified"` forbids `fresh`.
+	baseline: verified ? "verified" : "unverified",
+	configResolved: verified ? configResolved : (prior?.configResolved ?? configResolved),
+	inputs: verified ? currentInputs : (prior?.inputs ?? currentInputs),
+	// Always the true on-disk bytes — a normal reinstall must never look like a hand-edit.
+	assets: assetsFromOnDisk(onDisk),
 });
 writeManifest(locations.rootDir, manifest);
 ```
 
-`collectInstalledAssets` prefers `plugin.renderAssets()` (hashing rendered content, which equals on-disk content after a successful install); when the plugin omits it, it falls back to hashing the files named by the `InstallSummary` arrays (`created ∪ overwritten ∪ skipped`) resolved against `locations`. Files that fail to read are omitted, not recorded with a bogus hash.
+`buildManifest` recomputes `hash` from whichever `inputs` it was handed, so `hash` and `inputs` never disagree. `installedFrom` and `installedAt` always describe **this** install (they document the last write, not the baseline); the predicate cannot be fooled by that because `baseline: "unverified"` is already a blocker.
 
-> **Important:** hash the **on-disk bytes** after the write, not the rendered string, when `force` was false — a skipped file's on-disk content may legitimately differ from the render (that is exactly the hand-edit case Tier 2 must detect). Implementation reads back every path in the asset set.
+Consequences, stated so the tests can assert them directly:
 
-- [ ] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint`)
-- [ ] Add `collectInstalledAssets(...)` (read-back hashing; `renderAssets` for the path list, `InstallSummary` fallback)
-- [ ] Wire the write into `harnessInstall` after `plugin.install` succeeds (never on throw)
-- [ ] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`)
-- [ ] Integration test: install opencode project scope → manifest exists, `configResolved: true`, inputs match `5x.toml`
+| Situation | `baseline` | `inputs` recorded | Tier 1 verdict |
+|---|---|---|---|
+| First install (no assets on disk) | `verified` | current | `fresh` |
+| `install --force` | `verified` | current | `fresh` |
+| Reinstall, nothing changed (all bytes already match) | `verified` | current | `fresh` |
+| Reinstall after a model change, agents skipped | `unverified` | prior (model A) | `unknown` — warns, names A → B |
+| Reinstall over a manifest-less install, agents skipped | `unverified` | current (diagnostic) | `unknown` — warns "no verified baseline" |
+| `5x harness sync` (force path) | `verified` | current | `fresh` |
+
+The false-fresh path the review flagged is closed at the source: after model A → config B → plain `harness install`, the manifest still carries A's fingerprint (or none), so Tier 1 keeps warning on every hot path until `sync` runs.
+
+- [ ] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint` over the `inputs` it is given; takes `baseline` explicitly — no default)
+- [ ] Add `collectInstalledAssets(rendered, summaries, prior, locations)` (read-back hashing of the union path set: `renderAssets` paths + `InstallSummary` paths + still-present prior-manifest paths)
+- [ ] Add `verifyInstalledInventory(...)` with the byte-compare path and the `skipped`-empty fallback
+- [ ] Wire the read-prior → verify → write sequence into `harnessInstall` after `plugin.install` succeeds (never on throw)
+- [ ] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`); when `baseline === "unverified"`, print the reason and the fix on stderr: `existing assets were preserved — freshness baseline not established; run '5x harness sync'`, listing the skipped paths
+- [ ] Integration test: install opencode project scope → manifest exists, `configResolved: true`, `baseline: "verified"`, inputs match `5x.toml`
 - [ ] Integration test: install with an unparseable `5x.toml` → `configResolved: false`, models `null`
 - [ ] Integration test: `installedFrom.contextDir` is `"packages/api"` when installing from a sub-project
+- [ ] Integration test **(review §1 regression, end-to-end)**: install with `author.model = A`; `5x config set author.model B`; plain `5x harness install opencode -s project` (no `--force`) → agent frontmatter still says `A`, manifest has `baseline: "unverified"` and still records `authorModel: A`, and Tier 1 reports `unknown` / `baseline-unverified` (never `fresh`); then `5x harness sync` → frontmatter says `B`, `baseline: "verified"`, Tier 1 reports `fresh`
+- [ ] Integration test: same flow but with `--force` → `baseline: "verified"` in one step, no warning afterwards
+- [ ] Integration test: install twice with no config change → second manifest is still `baseline: "verified"` (byte-identical files are verified, not penalized)
+- [ ] Unit test: `verifyInstalledInventory` returns false when one rendered asset's on-disk hash differs, false when a rendered path is missing from `onDisk`, true when all match
+- [ ] Unit test: the unverified write retains the prior `inputs`/`hash`/`configResolved` and refreshes `assets` to on-disk hashes
 
 #### 3.3 Remove the manifest on uninstall, before the emptiness sweeps
 
@@ -640,6 +737,8 @@ export type FreshnessReason =
 	| "no-manifest"
 	| "manifest-unreadable"
 	| "config-unresolved"
+	/** `baseline: "unverified"` — a partial install never established a baseline (§3.2). */
+	| "baseline-unverified"
 	| "inputs-changed"
 	| "assets-drifted"
 	| "assets-modified"
@@ -671,7 +770,8 @@ export type LosslessBlocker =
 	| "context-mismatch"
 	| "assets-modified"
 	| "no-manifest"
-	| "config-unresolved";
+	| "config-unresolved"
+	| "baseline-unverified";
 
 export interface FreshnessReport {
 	harness: string;
@@ -683,9 +783,12 @@ export interface FreshnessReport {
 	inputDeltas: InputDelta[];
 	/** Empty at Tier 1. */
 	assetDeltas: AssetDelta[];
+	/** Safety gate only — never a permission to write (§Phase 7.1). */
 	losslessRefresh: boolean;
 	losslessBlockers: LosslessBlocker[];
 	installedFrom: ManifestProvenance | null;
+	/** `null` when there is no readable manifest. */
+	baseline: ManifestBaseline | null;
 }
 ```
 
@@ -718,20 +821,26 @@ Algorithm:
 1. `!args.installed` → `not-installed`, no blockers evaluated, no warning downstream.
 2. `readManifest(rootDir)` is `null` → `unknown` / `no-manifest` (or `manifest-unreadable` when the file exists but failed validation), `losslessRefresh: false`, blocker `no-manifest`.
 3. `manifest.configResolved === false` → `unknown` / `config-unresolved`, blocker `config-unresolved` (§4 — identical treatment to missing).
-4. Tier 1: `computeFingerprint(normalizeInputs(args.current))` vs `manifest.hash`. Mismatch → `stale` / `inputs-changed`, with `inputDeltas` computed field-by-field over the six scalar inputs plus a `plugin.<key>` entry per differing plugin input.
-5. Tier 2 (only when `rendered` and `readAsset` are supplied):
+4. `manifest.baseline === "unverified"` → `unknown` / `baseline-unverified`, blocker `baseline-unverified`. **Evaluated before the fingerprint compare and terminal for `status`** — an unverified manifest can never be `fresh`, and the fingerprint over its retained inputs would otherwise decide the verdict. `inputDeltas` are still computed (step 5's field-by-field diff) so the warning can name `installed author.model = A` / `current author.model = B`; when the manifest carried no prior baseline the deltas are diagnostic and the copy falls back to the unknown variant. Tier 2 asset deltas are still populated when requested, because `sync` needs them.
+5. Tier 1: `computeFingerprint(normalizeInputs(args.current))` vs `manifest.hash`. Mismatch → `stale` / `inputs-changed`, with `inputDeltas` computed field-by-field over the six scalar inputs plus a `plugin.<key>` entry per differing plugin input.
+6. Tier 2 (only when `rendered` and `readAsset` are supplied):
    - For each recorded asset: on-disk missing → `missing`; on-disk hash ≠ recorded → `modified`.
    - For each rendered asset: hash ≠ recorded → `drifted`; path absent from manifest → `added`.
    - Recorded path absent from `rendered` → `orphaned`.
-   - Any `modified` → `status: "stale"`, `reason: "assets-modified"` (takes precedence in reporting; it is the case that blocks refresh). Otherwise any `drifted`/`added`/`orphaned` → `stale` / `assets-drifted`.
-6. Lossless predicate: `losslessRefresh = status !== "unknown" && scope === "project" && manifest.installedFrom.contextDir === args.currentContextDir && no "modified" assets`. Blockers accumulate `shared-user-scope`, `context-mismatch`, `assets-modified` respectively.
+   - Any `modified` → `status: "stale"`, `reason: "assets-modified"` (takes precedence in reporting; it is the case that blocks refresh) — unless step 4 already set `unknown`, which outranks it.  Otherwise any `drifted`/`added`/`orphaned` → `stale` / `assets-drifted`.
+7. Lossless predicate (safety gate only): `losslessRefresh = tier === 2 && status !== "unknown" && manifest.baseline === "verified" && scope === "project" && manifest.installedFrom.contextDir === args.currentContextDir && no "modified" assets`. Blockers accumulate `baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified` respectively.
 
 > Tier 1 cannot observe `modified` assets, so a Tier-1-only report sets `losslessRefresh` optimistically **only for reporting**; every automatic-refresh caller (`autoSync`, `upgrade`) must run Tier 2 before acting. Encoded by requiring `tier === 2` for `losslessRefresh === true` — Tier 1 always reports `false` with blocker list unchanged. This makes it impossible to auto-sync on incomplete evidence.
 
+> `losslessRefresh === true` means "refreshing would lose nothing" — **not** "go ahead". Callers must independently establish permission (`harness.autoSync = true`, or an explicit `--sync` / `5x harness sync` invocation) before writing anything. See Phase 7.1.
+
 - [ ] Implement `compareManifest` per the algorithm
-- [ ] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / fresh / each single-input change
+- [ ] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
+- [ ] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
+- [ ] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
 - [ ] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
 - [ ] Unit test: Tier 1 never returns `losslessRefresh: true`
+- [ ] Unit test: `baseline: "unverified"` never returns `losslessRefresh: true`, even at Tier 2 with matching context and no hand-edits
 - [ ] Unit test: user scope with a perfect match still returns `losslessRefresh: false` + `shared-user-scope`
 - [ ] Unit test: `contextDir` `"packages/api"` vs `""` yields `context-mismatch`
 
@@ -781,6 +890,16 @@ Unknown-manifest variant:
   fix        5x harness sync
 ```
 
+Unverified-baseline variant — a plain `harness install` preserved existing agent files, so part of the install is still baked from the previous config (§3.2). With a retained prior baseline the deltas are shown; without one the `installed`/`current` lines are omitted:
+
+```
+⚠ opencode (project) assets are partially installed — freshness unknown
+  installed  author.model = anthropic/claude-sonnet-4-6
+  current    author.model = anthropic/claude-opus-4-1
+  note       `harness install` preserved existing agent files; no verified baseline
+  fix        5x harness sync
+```
+
 User-scope variant (final wording set by Phase 0.1):
 
 ```
@@ -794,6 +913,7 @@ User-scope variant (final wording set by Phase 0.1):
 - [ ] Implement `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`
 - [ ] Unit test: report set covers exactly the harness × supported-scope grid, filtered by options
 - [ ] Unit test: `formatFreshnessWarning` renders only changed fields, never unchanged ones
+- [ ] Unit test: the `baseline-unverified` report renders the partial-install variant, with and without retained deltas
 - [ ] Unit test: a `not-installed` or `fresh` report produces no output from callers
 
 #### 4.4 Config keys
@@ -812,7 +932,7 @@ const HarnessConfigSchema = z.object({
 		.boolean()
 		.default(false)
 		.describe(
-			"Automatically re-render stale harness assets when the refresh is provably lossless (matching install context and no local edits).",
+			"Opt in to automatic re-rendering of stale harness assets during `5x upgrade`. Off by default: with it off, upgrade only reports. When on, assets are still only rewritten where the refresh is provably lossless (project scope, verified baseline, matching install context, no local edits).",
 		),
 });
 
@@ -826,6 +946,7 @@ harness: HarnessConfigSchema.default({}).describe(
 
 - [ ] Add `HarnessConfigSchema`; register under `harness`
 - [ ] Unit test in `test/unit/config-registry.test.ts`: both keys appear with descriptions, types, and defaults
+- [ ] Unit test: `harness.autoSync` resolves to `false` when the `harness` table is absent from `5x.toml` entirely (the default posture must survive a config that never mentions it)
 - [ ] Unit test: `5x config set harness.autoSync true` round-trips through `configSet`
 
 ---
@@ -950,7 +1071,7 @@ project:
 
 ## Phase 6: `5x harness sync`
 
-> **Completion gate:** `5x harness sync` is idempotent (second run reports zero changes), refreshes **agent** files after a model change (the §1.1 bug), adopts manifest-less installs, refuses to clobber hand-edits without `--force`, and rewrites the manifest on completion. Verified by an integration test that reproduces §1.1 end-to-end.
+> **Completion gate:** `5x harness sync` is idempotent (second run reports zero changes), refreshes **agent** files after a model change (the §1.1 bug), adopts manifest-less installs, refuses to clobber hand-edits without `--force`, and rewrites the manifest with `baseline: "verified"` on completion — sync is the *only* command guaranteed to establish a baseline. Verified by an integration test that reproduces §1.1 end-to-end.
 
 #### 6.1 Handler
 
@@ -973,7 +1094,7 @@ export interface HarnessSyncScopeResult {
 	harness: string;
 	scope: HarnessScope;
 	root: string;
-	/** "synced" | "adopted" | "skipped-fresh" | "skipped-modified" | "checked" */
+	/** "synced" | "adopted" | "skipped-fresh" | "skipped-modified" | "checked" | "sync-unverified" */
 	action: string;
 	before: FreshnessStatus;
 	changed: string[];       // manifest-relative paths written
@@ -993,14 +1114,15 @@ Flow per (harness, scope) with either a manifest or installed assets:
 
 1. Run Tier 2 via `runHarnessFreshnessChecks({ tier2: true, ... })`.
 2. `not-installed` → skip entirely (sync never *creates* a new install; that is `harness install`).
-3. `fresh` → `skipped-fresh`, no writes. This is what makes sync idempotent.
+3. `fresh` → `skipped-fresh`, no writes. This is what makes sync idempotent. Note that `fresh` already implies `baseline === "verified"` (§4.2 step 4), so an unverified manifest never short-circuits here even when its retained inputs happen to match current config.
 4. Hand-edits present (`assetDeltas` containing `modified`) and no `--force` → `skipped-modified`; list the paths in `preserved`; the command exits with `HARNESS_ASSETS_MODIFIED` (exit code 2, `INVALID_ARGS` class) when *every* target was blocked, otherwise completes and reports.
 5. `--check` → `checked`, report the deltas sync *would* apply, no writes.
-6. Otherwise: `await plugin.install({ ...ctx, force: true })` — the one render path (§2.5) — then rebuild and `writeManifest`. `removeStaleAgentFiles` inside `install()` already keeps the delete blast radius to 5x-managed names.
-7. No manifest (`unknown`/`no-manifest`) → `adopted`: force-install, write manifest, and print every overwritten path (§2.5 adoption; hand-edits are undetectable without a recorded hash, so legibility is the mitigation).
+6. Otherwise: `await plugin.install({ ...ctx, force: true })` — the one render path (§2.5) — then run the **same** Phase 3.2 verify-then-write sequence. Because `force: true` overwrites every managed asset, `verifyInstalledInventory` passes and the manifest is written with `baseline: "verified"`; that is what makes sync the command that establishes a baseline. If verification somehow fails after a forced write (an unwritable path, a plugin that ignores `force`), the manifest is written `unverified` and the scope is reported as `sync-unverified` rather than claimed as fixed — sync never lies about its own result. `removeStaleAgentFiles` inside `install()` already keeps the delete blast radius to 5x-managed names.
+7. No manifest (`unknown`/`no-manifest`) or an unverified manifest with no prior baseline → `adopted`: force-install, write a `verified` manifest, and print every overwritten path (§2.5 adoption; hand-edits are undetectable without a recorded hash, so legibility is the mitigation). An unverified manifest that *does* carry recorded asset hashes is not adoption — hand-edits are still detectable from those hashes, so step 4's protection applies normally.
 
 - [ ] Implement `harnessSyncCore` + `harnessSync` (two-layer pattern matching `harnessList`/`harnessUninstall`)
-- [ ] Reuse the Phase 3 manifest build path — no second manifest assembler
+- [ ] Reuse the Phase 3 manifest build **and verification** path — no second manifest assembler, no second definition of "verified"
+- [ ] Add `"sync-unverified"` to the `action` union; report it as a failure-to-baseline, not a success
 - [ ] Emit a proper `outputSuccess` envelope with a text formatter
 
 #### 6.2 CLI wiring
@@ -1038,7 +1160,8 @@ harness
 
 The bug this command exists to fix deserves a named test:
 
-- [ ] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be
+- [ ] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be, and that the manifest is `baseline: "verified"` with `authorModel: B`
+- [ ] Integration test `no false-fresh via plain reinstall` (review §1) — same setup, but interpose a plain `5x harness install opencode -s project` before syncing: the manifest must be `baseline: "unverified"`, `harness list` must report `unknown` (not `fresh`), `run init` must still warn, and only the subsequent `sync` may flip it to `fresh`
 - [ ] Integration test: `5x harness sync` twice → second run reports `skipped-fresh`, no file mtimes change
 - [ ] Integration test: hand-edit `agents/5x-plan-author.md`; `sync` reports `skipped-modified` and preserves the edit; `sync --force` overwrites it
 - [ ] Integration test: delete `.5x-manifest.json`; `sync` adopts (force-installs + writes manifest) and lists overwritten paths
@@ -1049,7 +1172,7 @@ The bug this command exists to fix deserves a named test:
 
 ## Phase 7: `5x upgrade` freshness sweep
 
-> **Completion gate:** `5x upgrade` reports harness freshness for every bundled harness × scope, states that external harnesses are not swept, auto-syncs only where the lossless predicate holds, and honors `--sync` / `--no-sync`. A CLI-version bump alone (simulated) marks installs stale.
+> **Completion gate:** `5x upgrade` reports harness freshness for every bundled harness × scope, states that external harnesses are not swept, writes **nothing** under the default configuration (`harness.autoSync = false`, no flags), auto-syncs only when `harness.autoSync = true` **and** the lossless predicate holds, and honors `--sync` / `--no-sync`. A CLI-version bump alone (simulated) marks installs stale.
 
 #### 7.1 New upgrade section
 
@@ -1071,10 +1194,35 @@ console.log();
 
 1. Enumerate installs via the same existence logic as `buildHarnessListData()` (`harness.handler.ts:202`) — bundled harnesses only.
 2. Run Tier 2 checks (upgrade is not a hot path; correctness beats speed here).
-3. Decide per scope:
-   - `--no-sync` → report only.
-   - `--sync` → sync every stale scope (still refusing hand-edited files without `--force`; report those).
-   - Neither flag → auto-sync only where `losslessRefresh === true` **or** `harness.autoSync` is enabled and the predicate holds; everything else reports with its blockers.
+3. Decide per scope. Permission and safety are evaluated separately and **both** must hold before anything is written:
+
+   ```typescript
+   // Permission: did the user ask for writes?
+   const permitted =
+       params.sync === false ? false            // --no-sync: never write
+     : params.sync === true  ? true             // --sync: explicit per-invocation override
+     : config.harness.autoSync === true;        // no flag: config decides, default false
+
+   // Safety: would writing lose anything? (Tier 2 predicate, §4.2 step 7)
+   // `--sync` asserts intent for *this* checkout, so it may override that one
+   // blocker; nothing overrides a hand-edit, a shared user-scope copy, or an
+   // unverified/absent baseline.
+   const OVERRIDABLE: LosslessBlocker[] = ["context-mismatch"];
+   const blockers = report.losslessBlockers.filter(
+     (b) => !(params.sync === true && OVERRIDABLE.includes(b)),
+   );
+   const shouldSync =
+     report.status === "stale" && permitted && report.tier === 2 && blockers.length === 0;
+   ```
+
+   With no flag, nothing is overridable, so `shouldSync` reduces exactly to `config.harness.autoSync && report.losslessRefresh`.
+
+   - **Neither flag (the default path):** `harness.autoSync` decides, and it defaults to `false` — so a stock project is **report-only**, no matter how lossless the refresh would be. `losslessRefresh` alone never authorizes a write; it only decides whether an already-authorized write is safe.
+   - `--sync`: explicit override of the config key for this invocation. Safety still applies — hand-edited assets are reported and preserved (upgrade exposes no `--force`; the remediation is `5x harness sync <name> --force`), and `shared-user-scope` still blocks (D4: user scope is never refreshed by an automatic sweep; the remediation is an explicit `5x harness sync <name> -s user`). `--sync` *does* override `context-mismatch`, since the user is asserting intent for this checkout.
+   - `--no-sync`: report only, overriding `harness.autoSync = true`.
+   - Everything not synced is reported with its blockers, plus — when the only thing missing was permission — the line `run '5x harness sync' (or set harness.autoSync = true)`.
+
+   Precedence, stated once: `--no-sync` > `--sync` > `harness.autoSync` > report-only.
 4. Always print the coverage caveat:
 
 ```
@@ -1084,11 +1232,16 @@ console.log();
 ```
 
 - [ ] Implement `upgradeHarnessAssets` in `upgrade.handler.ts` delegating to `harnessSyncCore`
-- [ ] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts`
-- [ ] Print blockers per non-synced scope (`shared-user-scope`, `context-mismatch`, `assets-modified`)
-- [ ] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale and auto-syncs at project scope
-- [ ] Integration test: user-scope install is reported but **never** auto-synced, even with `autoSync = true`
-- [ ] Integration test: `--no-sync` reports and writes nothing; `--sync` syncs a scope the predicate would have blocked for context mismatch
+- [ ] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts` (Commander maps `--no-sync` to `sync: false` and leaves `sync` `undefined` when neither is passed — assert this, since the tri-state is what makes "no flag ≠ `--sync`" work)
+- [ ] Implement the permission/safety split exactly as written above — `losslessRefresh` must never appear on the permission side of the expression
+- [ ] Print blockers per non-synced scope (`baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified`) and the permission line when permission was the only thing missing
+- [ ] Integration test **(review §2 regression)**: stale, lossless, project-scope install under the **default** config (no `harness` table in `5x.toml`, no flags) → upgrade reports it, mtimes and file bytes are unchanged, manifest untouched
+- [ ] Integration test: same fixture with `harness.autoSync = true` → auto-synced; assets and manifest updated, `baseline: "verified"`
+- [ ] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale; auto-syncs at project scope **only** with `autoSync = true` or `--sync`
+- [ ] Integration test: user-scope install is reported but **never** synced by upgrade — with `autoSync = true` and with `--sync`
+- [ ] Integration test: `--no-sync` reports and writes nothing even when `harness.autoSync = true`
+- [ ] Integration test: `--sync` syncs a scope the predicate would have blocked for context mismatch, but still preserves a hand-edited asset and reports it
+- [ ] Integration test: a `baseline: "unverified"` install is reported and never auto-synced under any flag combination short of an explicit `5x harness sync`
 - [ ] Integration test: the bundled-only caveat appears in output
 
 ---
@@ -1099,7 +1252,7 @@ console.log();
 
 #### 8.1 Documentation
 
-- [ ] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync`
+- [ ] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync` (stating that `autoSync` is off by default and that `upgrade` only reports until it is turned on or `--sync` is passed); state that plain `harness install` preserves existing agent files and therefore does not establish a freshness baseline — `sync` is the command that does
 - [ ] `AGENTS.md` — note that the orchestrator should surface `harness_freshness` warnings from `run init` output rather than ignoring them
 - [ ] `CHANGELOG.md` — additive entry: manifest, freshness warnings, `harness sync`, upgrade sweep
 - [ ] `docs/v2/201-harness-freshness.md` — flip status from "Design settled — Not Implemented" to "Implemented", link this plan
@@ -1117,7 +1270,9 @@ Purely additive: pre-existing installs have no manifest, are treated as unknown/
 - [ ] Fresh repo → `5x init` → `5x harness install opencode -s project` → confirm manifest contents by eye
 - [ ] `5x config set author.model <other>` → confirm the point-of-cause warning
 - [ ] `5x run init` → confirm one warning, valid JSON on stdout
-- [ ] `5x harness sync` → confirm agent frontmatter updated, warning gone
+- [ ] Plain `5x harness install opencode -s project` → confirm the manifest reads `baseline: "unverified"`, the agent frontmatter is still the old model, and the warning **persists**
+- [ ] `5x upgrade` with default config → confirm it reports and changes nothing on disk
+- [ ] `5x harness sync` → confirm agent frontmatter updated, `baseline: "verified"`, warning gone
 - [ ] Repeat for Cursor (including the project-scope rules) and Universal
 - [ ] Re-run the Phase 0.2 dotfile smoke tests against the *real* manifest produced by the implementation
 
@@ -1127,18 +1282,18 @@ Purely additive: pre-existing installs have no manifest, are treated as unknown/
 
 | File | Change |
 |------|--------|
-| `src/harnesses/manifest.ts` | **New.** Manifest types, canonical JSON, fingerprint + content hashing, read/write/remove, `buildManifest`, `compareManifest`, `toManifestPath`, `assertAssetPathsUnderRoot`. |
+| `src/harnesses/manifest.ts` | **New.** Manifest types (incl. `ManifestBaseline`), canonical JSON, fingerprint + content hashing, read/write/remove, `buildManifest`, `verifyInstalledInventory`, `compareManifest`, `toManifestPath`, `assertAssetPathsUnderRoot`. |
 | `src/harnesses/freshness.ts` | **New.** Plugin-aware orchestration: `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`. |
 | `src/harnesses/types.ts` | Add `RenderedAsset`; add optional `renderAssets?()`, `fingerprintInputs?()`, `version?` to `HarnessPlugin` (lines 108-134). |
 | `src/harnesses/opencode/plugin.ts` | Extract `renderAssets()`; `install()` becomes a dispatcher over it (lines 56-108). |
 | `src/harnesses/cursor/plugin.ts` | Same extraction, including project-scope rules (lines 54-124). |
 | `src/harnesses/universal/plugin.ts` | Same extraction, skills only (lines 42-53). |
 | `src/harnesses/installer.ts` | No behavior change; add doc comments cross-referencing the settled overwrite policy at `installFiles` (line 85) and `installSkillFiles` (line 127). |
-| `src/commands/harness.handler.ts` | Track `configResolved` + `contextDir` (137-147); write manifest after install (168); remove manifest + sweep `rootDir` on uninstall (329-337); add `freshness` to `HarnessScopeStatus` (63) and populate it (202-267); add `harnessSync`/`harnessSyncCore`; extend `printInstallSummary` and `formatHarnessListText`. |
+| `src/commands/harness.handler.ts` | Track `configResolved` + `contextDir` (137-147); read prior manifest, verify the installed inventory, and write the manifest after install (168); remove manifest + sweep `rootDir` on uninstall (329-337); add `freshness` to `HarnessScopeStatus` (63) and populate it (202-267); add `harnessSync`/`harnessSyncCore`; extend `printInstallSummary` and `formatHarnessListText`. |
 | `src/commands/harness.ts` | Register the `sync` subcommand with `--scope`, `--check`, `--force`. |
 | `src/commands/run-v1.handler.ts` | Tier 1 check in `runV1Init` before both `outputSuccess` calls (838, 873); additive `warnings` / `harness_freshness` fields. |
 | `src/commands/config.handler.ts` | `isBakedConfigKey`; Tier 1 check after `configSet` (860) / `configUnset` / baked-key `configAdd`/`configRemove`. |
-| `src/commands/upgrade.handler.ts` | `upgradeHarnessAssets` section in `runUpgrade` after templates (406); bundled-only caveat. |
+| `src/commands/upgrade.handler.ts` | `upgradeHarnessAssets` section in `runUpgrade` after templates (406); permission (`--sync`/`--no-sync`/`harness.autoSync`) evaluated separately from the safety predicate; bundled-only caveat. |
 | `src/commands/upgrade.ts` | Register `--sync` / `--no-sync`. |
 | `src/commands/invoke.handler.ts` | Comment only — records that `invoke` is deliberately not a fire point (D5). |
 | `src/config.ts` | `HarnessConfigSchema` (`freshnessWarnings`, `autoSync`) registered under `harness` in `FiveXConfigSchema` (143-211), with `.describe()` for the config registry. |
@@ -1150,17 +1305,17 @@ Purely additive: pre-existing installs have no manifest, are treated as unknown/
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/unit/harnesses/manifest.test.ts` | Canonical JSON stability; fingerprint equality under key-order/whitespace differences; every input change moves the hash; `normalizeInputs` table; `hashContent`; read/write round-trip; every corruption mode returns `null`; `toManifestPath` POSIX normalization; `assertAssetPathsUnderRoot` throws for an escaping resolver. |
-| Unit | `test/unit/harnesses/manifest-compare.test.ts` | Full `compareManifest` matrix: not-installed / no-manifest / unreadable / `configResolved: false` / fresh / per-input stale; Tier 2 `modified` / `drifted` / `added` / `orphaned`; Tier 1 never returns `losslessRefresh: true`; user scope always blocked; `context-mismatch` on differing `contextDir`. |
+| Unit | `test/unit/harnesses/manifest.test.ts` | Canonical JSON stability; fingerprint equality under key-order/whitespace differences; every input change moves the hash; `baseline` excluded from the fingerprint; `normalizeInputs` table; `hashContent`; read/write round-trip; every corruption mode returns `null` (including missing/invalid `baseline`); `toManifestPath` POSIX normalization; `assertAssetPathsUnderRoot` throws for an escaping resolver; `verifyInstalledInventory` byte-compare and `skipped`-empty fallback. |
+| Unit | `test/unit/harnesses/manifest-compare.test.ts` | Full `compareManifest` matrix: not-installed / no-manifest / unreadable / `configResolved: false` / `baseline: "unverified"` / fresh / per-input stale; an unverified manifest whose inputs match current config is still `unknown`, never `fresh`, and never lossless; Tier 2 `modified` / `drifted` / `added` / `orphaned`; Tier 1 never returns `losslessRefresh: true`; user scope always blocked; `context-mismatch` on differing `contextDir`. |
 | Unit | `test/unit/harnesses/freshness.test.ts` | Report grid matches harness × supported scopes with option filtering; warning formatter prints only changed fields; unknown/user-scope copy variants; `freshnessWarningsEnabled` honors config. |
 | Unit | `test/unit/harnesses/opencode.test.ts`, `cursor.test.ts`, `universal.test.ts` | `renderAssets()` output is byte-identical to what `install()` writes; invoke mode omits the right agents; Cursor rules only at project scope; universal has no agents. |
 | Unit | `test/unit/harnesses/factory.test.ts` | A plugin lacking `renderAssets`/`fingerprintInputs` still passes `isValidPlugin` (external-plugin back-compat). |
 | Unit | `test/unit/config-registry.test.ts` | `harness.freshnessWarnings` and `harness.autoSync` surface with type, default, and description. |
 | Unit | `test/unit/commands/harness.test.ts` | Manifest written on install with correct `inputs`/`installedFrom`/`configResolved`; removed on uninstall before the sweep; `freshness` absent for uninstalled scopes in list data. |
-| Integration | `test/integration/commands/harness-manifest.test.ts` | Install writes a valid manifest at `rootDir` for all three harnesses × both scopes; unparseable config yields `configResolved: false`; sub-project install records `installedFrom.contextDir`; `uninstall --all` removes the manifest and the now-empty root; a user-owned `opencode.json` prevents the sweep. |
-| Integration | `test/integration/commands/harness-sync.test.ts` | **§1.1 regression:** model change → agent frontmatter stale after plain reinstall, correct after `sync`. Idempotence on second run; hand-edit preserved without `--force` and overwritten with it; adoption of a manifest-less install; `--check` writes nothing; native→invoke removes only orphaned managed agents; `sync --help` flags. |
+| Integration | `test/integration/commands/harness-manifest.test.ts` | Install writes a valid manifest at `rootDir` for all three harnesses × both scopes with `baseline: "verified"`; unparseable config yields `configResolved: false`; sub-project install records `installedFrom.contextDir`; **non-force reinstall after a model change yields `baseline: "unverified"` with the prior inputs retained, and Tier 1 stays `unknown`**; `--force` reinstall yields `verified` in one step; a no-op reinstall stays `verified`; `uninstall --all` removes the manifest and the now-empty root; a user-owned `opencode.json` prevents the sweep. |
+| Integration | `test/integration/commands/harness-sync.test.ts` | **§1.1 regression:** model change → agent frontmatter stale after plain reinstall, correct after `sync`. **Review §1 regression:** plain reinstall between the change and the sync never yields `fresh`; only `sync` establishes `baseline: "verified"`. Idempotence on second run; hand-edit preserved without `--force` and overwritten with it; adoption of a manifest-less install; `--check` writes nothing; native→invoke removes only orphaned managed agents; `sync --help` flags. |
 | Integration | `test/integration/commands/harness-freshness-firepoints.test.ts` | `run init` warns once on stderr with parseable stdout JSON and additive `harness_freshness`; `config set author.model` warns, `config set maxStepsPerRun` does not; `harness list --text` shows the freshness line; `harness.freshnessWarnings = "off"` silences all of them; `invoke` never warns. |
-| Integration | `test/integration/commands/upgrade.test.ts` | New harness section reports stale installs; auto-sync at project scope under the predicate; user scope reported but never synced; `--sync` / `--no-sync` overrides; bundled-only caveat present. |
+| Integration | `test/integration/commands/upgrade.test.ts` | New harness section reports stale installs; **default config (`harness.autoSync` unset, no flags) writes nothing** — bytes, mtimes, and manifest unchanged; auto-sync at project scope only with `autoSync = true` (or `--sync`) *and* the predicate; user scope reported but never synced under any flag; `--no-sync` overrides `autoSync = true`; `--sync` overrides `context-mismatch` but not a hand-edit or an unverified baseline; bundled-only caveat present. |
 | Edge case | across the above | Missing `rootDir` entirely; manifest present with zero `assets`; asset file deleted out from under the manifest (`missing`); `manifestVersion` from the future; simultaneous `modified` + `drifted` on the same file; monorepo install from `packages/api` then check from the repo root; config resolution failing at check time (not just install time). |
 | Manual | Phase 0 + Phase 8.3 | Project-over-user asset precedence in OpenCode and Cursor; manifest dotfile inertness against each harness's *config* discovery; full end-to-end walkthrough per harness. |
 
@@ -1186,15 +1341,42 @@ Purely additive: pre-existing installs have no manifest, are treated as unknown/
 | 0 | Prerequisite verification spikes (asset precedence, dotfile inertness) | 0.5 day |
 | 1 | `manifest.ts` — schema, canonical JSON, hashing, read/write/remove | 1.5 days |
 | 2 | Plugin contract `renderAssets()`; behavior-preserving refactor of three plugins | 1.5 days |
-| 3 | Manifest write on install; removal + root sweep on uninstall | 1.5 days |
+| 3 | Manifest write on install (with post-install verification); removal + root sweep on uninstall | 2 days |
 | 4 | Freshness engine — `compareManifest`, discovery, warning copy, config keys | 2 days |
 | 5 | Fire points — `run init`, `config set`, `harness list` | 1.5 days |
 | 6 | `5x harness sync` — handler, CLI, §1.1 regression coverage | 2.5 days |
 | 7 | `5x upgrade` freshness sweep with gated auto-sync | 1.5 days |
 | 8 | Documentation, migration verification, manual end-to-end pass | 1 day |
-| **Total** | | **13.5 days** |
+| **Total** | | **14 days** |
 
 Phases 1 and 2 are independent and can run in parallel if two people are available (saves ~1.5 days). Phase 0 must complete before Phase 5's user-facing copy is finalized, but does not block Phases 1–4.
+
+---
+
+## Revision History
+
+### 1.1 — August 9, 2026
+
+Addresses both blocking findings in [`docs/development/reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md`](../reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md) (no addendums; both items were `auto_fix`). Install semantics are unchanged — the fix is in what the manifest is allowed to claim, not in what install writes.
+
+**Review §1 — non-force reinstall could create a false-fresh manifest.** v1.0 wrote the current inputs plus a post-install read-back of on-disk bytes, so a plain reinstall after a model change stamped the *new* fingerprint over *old* agent bytes and Tier 1 reported `fresh`.
+
+- Added `baseline: "verified" | "unverified"` to `HarnessManifest` (Phase 1.1) with a shape guard that fails closed on a missing or unrecognized value (Phase 1.3). `baseline` is deliberately excluded from the fingerprint.
+- Phase 3.2 rewritten as read-prior → **verify** → write. New `verifyInstalledInventory()` byte-compares every rendered asset against disk (structural `skipped`-empty fallback for plugins without `renderAssets()`). Verified → adopt current inputs as the baseline; unverified → retain the prior manifest's `inputs`/`hash`/`configResolved` (or record the attempted inputs diagnostically when there is none) and mark `baseline: "unverified"`. `assets` always record true on-disk bytes so a normal reinstall never reads as a hand-edit.
+- Added a consequences table (first install / `--force` / no-op reinstall / partial reinstall / adoption / sync) so each case is directly assertable.
+- `compareManifest` gained `baseline-unverified` as both a `FreshnessReason` and a `LosslessBlocker`, evaluated *before* the fingerprint compare and terminal for `status` (Phase 4.2 step 4); `FreshnessReport` now carries `baseline`. Added the state-machine row and predicate clauses 5–6.
+- Added the unverified-baseline warning copy variant (Phase 4.3) and an install-time stderr note naming the preserved paths and the fix.
+- Phase 6 states that `sync` is the command that establishes a baseline, reuses the same verification path, and reports `sync-unverified` rather than claiming success if a forced write still fails verification.
+- Added the review's requested end-to-end test (model A → config B → non-force reinstall → Tier 1 `unknown`, never `fresh` → `sync` → `fresh`) in Phases 3.2 and 6.3, plus unit coverage that an unverified manifest whose inputs happen to match current config is still `unknown` and still not lossless.
+
+**Review §2 — upgrade auto-sync ignored `harness.autoSync = false`.** v1.0's no-flag branch auto-synced whenever `losslessRefresh === true` **or** `autoSync` was enabled, which made the opt-in key inert.
+
+- Phase 7.1 step 3 now evaluates **permission** and **safety** separately: `permitted = --no-sync ? false : --sync ? true : harness.autoSync` (default `false`), and a write requires `permitted && report.losslessRefresh` (spelled out as a blocker filter so `--sync` can override `context-mismatch` and nothing else). With no flag this reduces to `autoSync && losslessRefresh`; the stock default is report-only.
+- Documented precedence `--no-sync` > `--sync` > `harness.autoSync` > report-only, and that `--sync` never overrides a hand-edit, `shared-user-scope` (D4), or an unverified baseline.
+- Reworded the `harness.autoSync` `.describe()`, the Key Design Decisions row, the scope bullet, and the Phase 7 completion gate to state the opt-in contract once, consistently.
+- Added the review's requested test (a lossless stale project install is unchanged under the default configuration) plus tests for `autoSync = true`, `--no-sync` overriding it, `--sync` overriding only `context-mismatch`, user scope never swept, and the tri-state Commander mapping that keeps "no flag" distinct from `--sync`.
+
+**Consistency edits:** Executive Summary, scope bullets, "New behavior", the freshness state machine, Files Touched, the Tests table, Appendix B (both a verified and an unverified example manifest), Appendix C (two new rows), README/manual-pass checklists, and Phase 3's estimate (1.5 → 2 days; total 13.5 → 14 days).
 
 ---
 
@@ -1229,6 +1411,7 @@ Implements `docs/v2/201-harness-freshness.md` (area #1 of v2), whose §5 resolve
   "scope": "project",
   "hash": "sha256:3f7c1b…",
   "configResolved": true,
+  "baseline": "verified",
   "installedFrom": {
     "projectRoot": "/home/me/dev/myrepo",
     "contextDir": "packages/api"
@@ -1250,11 +1433,35 @@ Implements `docs/v2/201-harness-freshness.md` (area #1 of v2), whose §5 resolve
 }
 ```
 
+The same install after `author.model` changed and a plain (non-force) `5x harness install` — skills re-rendered, agents preserved. `inputs`/`hash` still describe the last *verified* bake, `assets` describe what is actually on disk now, and `baseline` says the pair is not a baseline:
+
+```json
+{
+  "manifestVersion": 1,
+  "harness": "opencode",
+  "scope": "project",
+  "hash": "sha256:3f7c1b…",
+  "configResolved": true,
+  "baseline": "unverified",
+  "installedFrom": { "projectRoot": "/home/me/dev/myrepo", "contextDir": "packages/api" },
+  "inputs": { "authorModel": "anthropic/claude-sonnet-4-6", "…": "…" },
+  "installedAt": "2026-08-09T13:20:00.000Z",
+  "assets": [
+    { "path": "skills/5x-plan/SKILL.md", "sha256": "9e8f…" },
+    { "path": "agents/5x-plan-author.md", "sha256": "c3d4…" }
+  ]
+}
+```
+
+Tier 1 reads this as `unknown` / `baseline-unverified` and warns with the retained `installed author.model` line; `5x harness sync` force-installs, verifies, and rewrites it as `verified` with the new inputs.
+
 ### Appendix C — Exit codes and error surfaces
 
 | Situation | Surface | Code |
 |---|---|---|
 | Sync blocked entirely by hand-edited assets, no `--force` | error envelope | `HARNESS_ASSETS_MODIFIED` (exit 2) |
+| Install left an unverified baseline (existing agents preserved) | stderr note + `baseline: "unverified"` in the manifest | none — install still succeeds (§3.2) |
+| Sync force-installed but verification still failed | `action: "sync-unverified"` in the envelope + stderr note | none — reported, never claimed as fixed |
 | Location resolver whose asset dirs escape `rootDir` | error envelope | `MANIFEST_PATH_ESCAPE` (exit 2) |
 | Stale/unknown assets at any fire point | stderr warning + additive JSON fields | none — warn, never block (§2.4) |
 | Freshness check itself throws | swallowed | none — never degrades the host command |
