@@ -1,9 +1,9 @@
 # Harness Asset Freshness — Manifest, Freshness Check, and `5x harness sync`
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Revised — both blocking review findings resolved (see [Revision History](#revision-history))
+**Status:** Phase 0 complete — both verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); Phases 1–8 pending
 
 ---
 
@@ -115,7 +115,7 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 
 **The manifest lives at `locations.rootDir`, not in `.5x/`.** Its job is to describe what is physically baked on disk, so it must live and die with those assets: travel with them when a project-scope `.opencode/` is committed, survive `.5x/` deletion, and not desync when another project reinstalls user-scope assets. `src/harnesses/locations.ts` already exposes `rootDir` for all three shipped resolvers, so the path resolution is free. Centralizing in `.5x/` was rejected because user-scope assets (`~/.config/opencode/`, `~/.cursor/`) are shared across every repo on the machine — a per-project stamp would describe a file set that another project just rewrote.
 
-**Dotfile inertness is verified, not assumed.** All three shipped harnesses discover *assets* from subdirectories (`skills/`, `agents/`, `rules/`), so a root-level dotfile is inert by construction (D8). The residual risk is *config* discovery — `.opencode/opencode.json` and `.cursor/mcp.json` do live at the root, so a loader globbing `*.json` there could see the manifest. A leading dot makes that very unlikely; Phase 0 carries one manual smoke test per harness rather than a design change.
+**Dotfile inertness is verified, not assumed.** All three shipped harnesses discover *assets* from subdirectories (`skills/`, `agents/`, `rules/`), so a root-level dotfile is inert by construction (D8). The residual risk is *config* discovery — `.opencode/opencode.json` and `.cursor/mcp.json` do live at the root, so a loader globbing `*.json` there could see the manifest. A leading dot makes that very unlikely; Phase 0 carried one smoke test per harness rather than a design change. **Confirmed inert** (Appendix A.3–A.5): both loaders read their config by exact filename rather than globbing, so a manifest carrying adversarial `model` / `agent` / `mcpServers` keys changed nothing in either harness's resolved config.
 
 **`inputs` is stored in cleartext alongside the hash.** The hash answers "is it stale"; only cleartext answers "stale *how*". Warning copy shows the changed fields — `installed author.model = X` / `current author.model = Y` — which is the difference between a warning a user acts on and one they learn to ignore.
 
@@ -137,7 +137,7 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 
 **Sync aborts on hand-edited files unless `--force`.** With a manifest present, "the user edited this" is decidable for the first time. §2.5 demands unconditional refresh of *managed* assets — that fixes the agent skip bug — but it does not demand silent destruction of user edits, and §5.1 explicitly asks for the skill-overwrite policy to be settled rather than inherited. Sync therefore computes the Tier 2 report first and exits with `HARNESS_ASSETS_MODIFIED` listing the edited paths and naming `--force`. The adoption path (no manifest) still force-installs per §2.5, because without a recorded hash a hand-edit is indistinguishable from config drift — it prints every overwritten path so the action is at least legible.
 
-**User scope is a hard blocker on automatic refresh, separate from the predicate.** The predicate (context match + unmodified hashes) is necessary but not sufficient at user scope: one physical asset copy serves N projects and `installedFrom.projectRoot` is explicitly non-comparable. Encoding `shared-user-scope` as its own blocker keeps D4 ("warn-only, permanently") true without contorting D6's single predicate, and the remediation is provenance plus "install project scope for this project" — pending Phase 0's precedence verification.
+**User scope is a hard blocker on automatic refresh, separate from the predicate.** The predicate (context match + unmodified hashes) is necessary but not sufficient at user scope: one physical asset copy serves N projects and `installedFrom.projectRoot` is explicitly non-comparable. Encoding `shared-user-scope` as its own blocker keeps D4 ("warn-only, permanently") true without contorting D6's single predicate, and the remediation is provenance plus "install project scope for this project" — verified in Phase 0.1 (Appendix A.1, A.2: project scope wins the name collision in both harnesses).
 
 **Warnings are stderr-first with additive JSON fields.** `run init` returns a `{ok, data}` envelope on stdout (`src/output.ts:230-251`); printing a warning there would break parsers, and dropping it entirely would hide the signal from humans. Warnings go to stderr as formatted text, plus an additive `warnings: string[]` and `harness_freshness` array in the JSON data. Additive fields are safe under the v2 policy for area #1 ("purely additive", `200-overview.md` §4).
 
@@ -223,18 +223,22 @@ Outcomes:
 - **Precedence holds** → keep the §2.6 remediation copy as designed.
 - **Precedence does not hold** → the user-scope warning degrades to "warn and let the user choose" (no directive remediation), and Appendix A records that `201` §2.7 (shrink the bake surface) becomes materially more urgent.
 
-- [ ] Verify OpenCode project-over-user precedence; record evidence + date in Appendix A
-- [ ] Verify Cursor project-over-user precedence; record evidence + date in Appendix A
-- [ ] Decide and record the user-scope remediation string for Phase 5
+- [x] Verify OpenCode project-over-user precedence; record evidence + date in Appendix A
+- [x] Verify Cursor project-over-user precedence; record evidence + date in Appendix A
+- [x] Decide and record the user-scope remediation string for Phase 5
+
+**Result: precedence holds for both harnesses** (Appendix A). The §2.6 remediation copy stands as designed — Phase 5's user-scope warning keeps its directive `fix 5x harness install <name> --scope project` line.
 
 #### 0.2 Smoke-test manifest dotfile inertness against *config* discovery
 
 Asset discovery is inert by construction (all three harnesses read from subdirectories — `src/harnesses/locations.ts`). The plausible collision is config discovery: `.opencode/opencode.json` and `.cursor/mcp.json` live at the root.
 
-- [ ] OpenCode: place `.opencode/.5x-manifest.json`, launch OpenCode, confirm no config parse error / no unexpected config merge
-- [ ] Cursor: place `.cursor/.5x-manifest.json`, launch Cursor, confirm the same
-- [ ] Universal (`.agents/`): confirm no tooling reads root-level files
-- [ ] Record results + versions tested in Appendix A
+- [x] OpenCode: place `.opencode/.5x-manifest.json`, launch OpenCode, confirm no config parse error / no unexpected config merge
+- [x] Cursor: place `.cursor/.5x-manifest.json`, launch Cursor, confirm the same
+- [x] Universal (`.agents/`): confirm no tooling reads root-level files
+- [x] Record results + versions tested in Appendix A
+
+**Result: the dotfile is inert at every scope tested** (Appendix A). No design change; `MANIFEST_FILENAME = ".5x-manifest.json"` at `locations.rootDir` stands.
 
 ---
 
@@ -900,7 +904,7 @@ Unverified-baseline variant — a plain `harness install` preserved existing age
   fix        5x harness sync
 ```
 
-User-scope variant (final wording set by Phase 0.1):
+User-scope variant — wording settled by Phase 0.1, which verified project-over-user precedence for both OpenCode and Cursor (Appendix A.1, A.2), so the `fix` line stays directive:
 
 ```
 ⚠ opencode (user) assets were baked from /home/me/dev/foo
@@ -1355,6 +1359,15 @@ Phases 1 and 2 are independent and can run in parallel if two people are availab
 
 ## Revision History
 
+### 1.2 — August 9, 2026
+
+Phase 0 executed. Both verification spikes passed against live harnesses (OpenCode 1.17.18, cursor-agent 2026.07.23-e383d2b); findings, method, and evidence recorded in Appendix A.
+
+- **0.1 — precedence holds.** Project-scope assets win the name collision over user-scope assets in both harnesses, for agents and skills alike, with a control run proving the user-scope copy is loaded and simply loses. The §2.6 remediation copy is kept as designed, so Phase 5's user-scope warning retains its directive `fix 5x harness install <name> --scope project` line and the §2.7 escalation contingency is not triggered.
+- **0.2 — the dotfile is inert.** A `.5x-manifest.json` carrying adversarial `model` / `agent` / `mcpServers` keys, placed at every install root at both scopes, produced no parse error, no config merge, and a byte-identical resolved config; assets kept resolving. No design change — the filename and location stand.
+- Recorded one additional finding: Cursor's CLI does not load custom agents from `~/.cursor/agents/` at all, only from project `.cursor/agents/`. This strengthens the directive remediation rather than weakening it, and the pre-existing product question it raises about `harness install cursor --scope user` is noted as out of scope.
+- Removed the "pending Phase 0" and "final wording set by Phase 0.1" placeholders in Design Decisions and Phase 4.3 now that both are settled.
+
 ### 1.1 — August 9, 2026
 
 Addresses both blocking findings in [`docs/development/reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md`](../reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md) (no addendums; both items were `auto_fix`). Install semantics are unchanged — the fix is in what the manifest is allowed to claim, not in what install writes.
@@ -1390,17 +1403,31 @@ Implements `docs/v2/201-harness-freshness.md` (area #1 of v2), whose §5 resolve
 
 ### Appendix A — Phase 0 verification findings
 
-> Filled in during Phase 0. Do not implement Phase 5/6 user-facing copy against assumptions.
+> Completed August 9, 2026. Both spikes passed; Phase 5/6 copy is written against these results, not assumptions.
 
 | Spike | Harness | Version tested | Date | Result | Evidence |
 |---|---|---|---|---|---|
-| Project-over-user asset precedence | opencode | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Project-over-user asset precedence | cursor | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | opencode | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | cursor | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | universal | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| Project-over-user asset precedence | opencode | 1.17.18 | 2026-08-09 | **Holds** — project wins for agents *and* skills | A.1 |
+| Project-over-user asset precedence | cursor | cursor-agent 2026.07.23-e383d2b | 2026-08-09 | **Holds** — project wins for skills; user-scope agents are not loaded by the CLI at all | A.2 |
+| Dotfile inertness (config discovery) | opencode | 1.17.18 | 2026-08-09 | **Inert** — resolved config byte-identical, no parse error, no key merge | A.3 |
+| Dotfile inertness (config discovery) | cursor | cursor-agent 2026.07.23-e383d2b | 2026-08-09 | **Inert** — no parse error, `mcpServers` not merged | A.4 |
+| Dotfile inertness (config discovery) | universal (`.agents/`) | opencode 1.17.18 + cursor-agent 2026.07.23 | 2026-08-09 | **Inert** — both readers load `.agents/skills/` normally, ignore the root dotfile | A.5 |
 
-**If precedence does not hold:** replace the user-scope remediation line with a non-directive form ("this project resolves a different model; installing project scope will not necessarily take precedence — choose one config or the other"), and record in `docs/v2/201-harness-freshness.md` that §2.7 is now materially more urgent.
+Method for every row: a throwaway `HOME` at `/tmp/5x-spike-201` with separate `repo-user`, `repo-project`, `repo-universal`, and `repo-empty` checkouts, `5x` run from this worktree (`bun run src/bin.ts`), and `author.model` set to the distinguishable sentinels `test/precedence-user` and `test/precedence-project`.
+
+**A.1 — OpenCode precedence.** `5x harness install opencode --scope user` from a repo with `author.model = "test/precedence-user"`, then `--scope project` in a repo with `author.model = "test/precedence-project"`. `opencode debug agent 5x-plan-author` run inside the project reports `model: {"providerID":"test","modelID":"precedence-project"}`; the same command in `repo-empty` (user assets only) reports `precedence-user`, proving the user-scope copy is loaded and simply loses the name collision. Skills behave identically: a `MARKER-PROJECT-SKILL` sentinel appended to `.opencode/skills/5x/SKILL.md` appears in `opencode debug skill` while the user-scope `MARKER-USER-SKILL` does not, and every resolved `5x*` skill path is under `repo-project/.opencode/skills/`.
+
+**A.2 — Cursor precedence.** Sentinels injected into the `description` frontmatter of both copies of the `5x` skill and of `5x-plan-author`. `cursor-agent -p --mode ask --trust` inside the project answers `MARKERPROJECTXYZ` and quotes the agent description as `AGENTMARKERPROJECT …`; in `repo-empty` the same skill probe answers `MARKERUSERXYZ`, so user-scope skills load and lose the collision exactly as OpenCode does.
+
+> **Additional finding (agents, user scope):** in `repo-empty` the CLI reports **no** `5x-*` subagents at all — only its five built-ins — despite `~/.cursor/agents/{5x-code-author,5x-plan-author,5x-reviewer}.md` being present. Cursor's CLI loads custom agents from project `.cursor/agents/` only; `~/.cursor/agents/` is not an agent source for it. Precedence therefore holds *a fortiori* for agents, and the directive remediation ("install project scope for this project") is not merely valid but is the only thing that makes 5x agents visible to the Cursor CLI. Two caveats worth carrying: this was verified against the CLI, which is the only surface drivable non-interactively — Cursor Desktop was not tested and may differ; and `5x harness install cursor --scope user` writes agent files the CLI will never read, which is a pre-existing product question outside this plan's scope.
+
+**A.3 — OpenCode dotfile inertness.** `opencode debug config` captured before and after writing `.5x-manifest.json` to both `repo-project/.opencode/` and `~/.config/opencode/`. The manifest carried adversarial top-level keys (`"model": "MANIFEST-SHOULD-NOT-LEAK"`, `"agent": {"manifest-leak-agent": …}`) that would be valid `opencode.json` fields. Both dumps are byte-identical (`diff` clean), stderr is empty, exit status 0, and neither sentinel appears in the resolved config. Assets keep resolving with the manifest in place (`opencode agent list` and `opencode debug agent` unchanged). OpenCode reads project config from `./opencode.json`, `./opencode.jsonc`, or `.opencode/opencode.json` by exact name — it does not glob the directory — which is why the dotfile is invisible.
+
+**A.4 — Cursor dotfile inertness.** Same manifest written to `repo-project/.cursor/` and `~/.cursor/`, this time carrying `"mcpServers": {"manifest-leak-mcp": {"command": "/bin/false"}}`. `cursor-agent mcp list` still reports `No MCP servers configured (expected in .cursor/mcp.json or ~/.cursor/mcp.json)`, the skill probe still answers `MARKERPROJECTXYZ`, and no parse error is emitted. Cursor likewise reads `mcp.json` by exact name.
+
+**A.5 — Universal (`.agents/`).** Worth noting that `.agents/` is *not* an untrafficked directory: OpenCode auto-loads `~/.agents/skills/` as an external skill root and Cursor documents `.agents/skills/` as a project-level skill location, so both readers do traverse it. With `.agents/.5x-manifest.json` in place (carrying both the `model` and `mcpServers` sentinels), `opencode debug config` exits 0 with empty stderr and no sentinel in the resolved config, `opencode debug skill` resolves `repo-universal/.agents/skills/*/SKILL.md` normally, and `cursor-agent` answers the skill probe with `MARKERUNIVERSAL` while `cursor-agent mcp list` still reports no servers. Both tools discover skills by walking `skills/<name>/SKILL.md` subdirectories, so a root-level file is never a candidate.
+
+**If precedence does not hold:** _(contingency not taken — precedence holds; retained for the record.)_ replace the user-scope remediation line with a non-directive form ("this project resolves a different model; installing project scope will not necessarily take precedence — choose one config or the other"), and record in `docs/v2/201-harness-freshness.md` that §2.7 is now materially more urgent.
 
 ### Appendix B — Example manifest
 
