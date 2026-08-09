@@ -24,6 +24,7 @@ import {
 	computeFingerprint,
 	type HarnessManifest,
 	hashContent,
+	isSafeManifestPath,
 	MANIFEST_FILENAME,
 	MANIFEST_VERSION,
 	type ManifestInputs,
@@ -349,6 +350,43 @@ describe("manifestPath / toManifestPath", () => {
 	});
 });
 
+describe("isSafeManifestPath", () => {
+	const safe = [
+		"SKILL.md",
+		"skills/5x-plan/SKILL.md",
+		"agents/5x-plan-author.md",
+		"rules/5x-orchestrator.mdc",
+		"skills/..dotted/SKILL.md",
+	];
+
+	for (const path of safe) {
+		test(`accepts ${JSON.stringify(path)}`, () => {
+			expect(isSafeManifestPath(path)).toBe(true);
+		});
+	}
+
+	const unsafe: Array<[string, string]> = [
+		["the empty path", ""],
+		["a parent segment", ".."],
+		["a leading traversal", "../outside.md"],
+		["an interior traversal", "skills/../../outside.md"],
+		["a trailing traversal", "skills/.."],
+		["a current-dir segment", "./skills/SKILL.md"],
+		["a POSIX absolute path", "/etc/passwd"],
+		["a Windows drive path", "C:/Windows/system.ini"],
+		["a backslash separator", "..\\..\\outside.md"],
+		["a doubled separator", "skills//SKILL.md"],
+		["a trailing separator", "skills/"],
+		["an embedded NUL", "skills/SKILL.md\0.txt"],
+	];
+
+	for (const [label, path] of unsafe) {
+		test(`rejects ${label}`, () => {
+			expect(isSafeManifestPath(path)).toBe(false);
+		});
+	}
+});
+
 // ---------------------------------------------------------------------------
 // Read / write / remove
 // ---------------------------------------------------------------------------
@@ -424,6 +462,15 @@ describe("writeManifest / readManifest", () => {
 			[
 				"an asset with a non-string sha256",
 				(m) => (m.assets = [{ path: "a", sha256: 1 }]),
+			],
+			[
+				"an asset path that traverses out of rootDir",
+				(m) =>
+					(m.assets = [{ path: "../../.ssh/authorized_keys", sha256: "abc" }]),
+			],
+			[
+				"an absolute asset path",
+				(m) => (m.assets = [{ path: "/etc/passwd", sha256: "abc" }]),
 			],
 		];
 
@@ -684,6 +731,115 @@ describe("collectInstalledAssets", () => {
 		expect(onDisk.has("agents/5x-deleted.md")).toBe(false);
 	});
 
+	test("throws MANIFEST_PATH_ESCAPE for a rendered path that traverses out of rootDir", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(parent, "secret.md"), "secret", "utf-8");
+
+		let thrown: unknown;
+		try {
+			collectInstalledAssets({
+				rootDir: root,
+				locations: locationsFor(root),
+				rendered: [renderedAsset("skill", "../secret.md", "secret")],
+				summaries: [],
+				prior: null,
+			});
+		} catch (error) {
+			thrown = error;
+		}
+
+		expect(thrown).toBeInstanceOf(ManifestPathEscapeError);
+		expect((thrown as ManifestPathEscapeError).code).toBe(
+			"MANIFEST_PATH_ESCAPE",
+		);
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE for an absolute rendered path", () => {
+		const root = makeTmpDir();
+
+		expect(() =>
+			collectInstalledAssets({
+				rootDir: root,
+				locations: locationsFor(root),
+				rendered: [renderedAsset("agent", "/etc/passwd", "x")],
+				summaries: [],
+				prior: null,
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE for a summary entry that traverses out of rootDir", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(parent, "secret.md"), "secret", "utf-8");
+
+		expect(() =>
+			collectInstalledAssets({
+				rootDir: root,
+				locations: locationsFor(root),
+				rendered: null,
+				summaries: [
+					{
+						kind: "agent",
+						summary: { ...emptySummary(), created: ["../../secret.md"] },
+					},
+				],
+				prior: null,
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE when a summary's asset dir sits outside rootDir", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(parent, "outside.md"), "outside", "utf-8");
+
+		expect(() =>
+			collectInstalledAssets({
+				rootDir: root,
+				locations: { ...locationsFor(root), agentsDir: parent },
+				rendered: null,
+				summaries: [
+					{
+						kind: "agent",
+						summary: { ...emptySummary(), created: ["outside.md"] },
+					},
+				],
+				prior: null,
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+
+	test("drops prior-manifest paths that escape rootDir instead of hashing them", () => {
+		const parent = makeTmpDir();
+		const root = join(parent, ".opencode");
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(parent, "secret.md"), "secret", "utf-8");
+		writeAsset(root, "agents/5x-legacy.md", "legacy");
+
+		const onDisk = collectInstalledAssets({
+			rootDir: root,
+			locations: locationsFor(root),
+			rendered: [],
+			summaries: [],
+			prior: {
+				...makeManifest(),
+				assets: [
+					{ path: "../secret.md", sha256: "whatever" },
+					{ path: "/etc/passwd", sha256: "whatever" },
+					{ path: "agents/5x-legacy.md", sha256: "stale-hash" },
+				],
+			},
+		});
+
+		expect([...onDisk.keys()]).toEqual(["agents/5x-legacy.md"]);
+		expect([...onDisk.values()]).not.toContain(hashContent("secret"));
+	});
+
 	test("omits unreadable rendered paths rather than recording a bogus hash", () => {
 		const root = makeTmpDir();
 
@@ -863,6 +1019,17 @@ describe("buildManifest", () => {
 					skillsDir: "/tmp/elsewhere/skills",
 					agentsDir: "/tmp/root/agents",
 				},
+				baseline: "verified",
+				inputs: makeInputs(),
+			}),
+		).toThrow(ManifestPathEscapeError);
+	});
+
+	test("throws MANIFEST_PATH_ESCAPE when an asset path escapes rootDir", () => {
+		expect(() =>
+			buildManifest({
+				...base,
+				assets: [{ path: "../../.ssh/authorized_keys", sha256: "abc" }],
 				baseline: "verified",
 				inputs: makeInputs(),
 			}),

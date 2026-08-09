@@ -279,22 +279,69 @@ function toPosixPath(value: string): string {
 }
 
 /**
- * Thrown when a harness's asset directories are not under its `rootDir`, so a
- * `rootDir`-relative manifest cannot represent them.
+ * True when `relPath` is a manifest-representable path: relative to `rootDir`,
+ * POSIX-separated, and provably staying underneath it.
+ *
+ * Every recorded path is resolved against `rootDir` before being read and
+ * hashed, so a path that escapes would make the manifest read and record files
+ * outside the install root. Rejected: the empty path, absolute paths (POSIX or
+ * Windows drive-qualified), any `.`/`..`/empty segment, embedded backslashes
+ * (a separator on Windows, so `..\..\x` would traverse), and NUL bytes.
+ */
+export function isSafeManifestPath(relPath: string): boolean {
+	if (relPath === "") return false;
+	if (relPath.includes("\0")) return false;
+	if (relPath.includes("\\")) return false;
+	if (posix.isAbsolute(relPath)) return false;
+	if (/^[a-zA-Z]:/.test(relPath)) return false;
+
+	return relPath
+		.split("/")
+		.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+/**
+ * Thrown when something the manifest must describe cannot be expressed as a
+ * `rootDir`-relative path — either a harness's asset *directories* sit outside
+ * `rootDir`, or a declared asset *path* escapes it.
  */
 export class ManifestPathEscapeError extends Error {
 	readonly code = "MANIFEST_PATH_ESCAPE";
 	readonly exitCode = 2;
 
-	constructor(rootDir: string, offending: Array<{ key: string; dir: string }>) {
-		super(
+	private constructor(message: string) {
+		super(message);
+		this.name = "ManifestPathEscapeError";
+	}
+
+	/** A location resolver whose asset directories are not under `rootDir`. */
+	static forDirs(
+		rootDir: string,
+		offending: Array<{ key: string; dir: string }>,
+	): ManifestPathEscapeError {
+		return new ManifestPathEscapeError(
 			`Harness asset directories must live under the install root, but ` +
 				`${offending.map((o) => `${o.key} (${o.dir})`).join(", ")} ` +
 				`${offending.length === 1 ? "is" : "are"} outside "${rootDir}".\n` +
 				`A rootDir-relative manifest cannot describe them — the location ` +
 				`resolver needs to keep asset directories under rootDir.`,
 		);
-		this.name = "ManifestPathEscapeError";
+	}
+
+	/** Declared asset paths that do not resolve under `rootDir`. */
+	static forAssetPaths(
+		rootDir: string,
+		source: string,
+		paths: string[],
+	): ManifestPathEscapeError {
+		return new ManifestPathEscapeError(
+			`${source} declared asset ${paths.length === 1 ? "path" : "paths"} ` +
+				`that ${paths.length === 1 ? "does" : "do"} not stay under the ` +
+				`install root "${rootDir}": ${paths.map((p) => `"${p}"`).join(", ")}.\n` +
+				`Manifest asset paths must be relative to rootDir with POSIX ` +
+				`separators and no "..", so the manifest can never read or record ` +
+				`files outside the install root.`,
+		);
 	}
 }
 
@@ -323,7 +370,7 @@ export function assertAssetPathsUnderRoot(
 	}
 
 	if (offending.length > 0) {
-		throw new ManifestPathEscapeError(rootDir, offending);
+		throw ManifestPathEscapeError.forDirs(rootDir, offending);
 	}
 }
 
@@ -427,6 +474,12 @@ export interface KindedInstallSummary {
  * Bytes always come from disk, never from the rendered string: the manifest's
  * `assets` must describe what is actually installed even when `install()`
  * preserved an existing file (§3.2).
+ *
+ * Every path is proven to stay under `rootDir` before it is read. Plugin- and
+ * installer-supplied paths that escape throw `MANIFEST_PATH_ESCAPE` — that is a
+ * bug in the harness, and reading a traversal path would hash a file outside
+ * the install root. Prior-manifest paths are untrusted on-disk data and are
+ * dropped silently instead (`readManifest` already rejects such a manifest).
  */
 export function collectInstalledAssets(args: {
 	rootDir: string;
@@ -439,10 +492,21 @@ export function collectInstalledAssets(args: {
 }): Map<string, string> {
 	const paths = new Set<string>();
 
+	const renderedEscapes = (args.rendered ?? [])
+		.map((asset) => asset.path)
+		.filter((path) => !isSafeManifestPath(path));
+	if (renderedEscapes.length > 0) {
+		throw ManifestPathEscapeError.forAssetPaths(
+			args.rootDir,
+			"renderAssets()",
+			renderedEscapes,
+		);
+	}
 	for (const asset of args.rendered ?? []) {
 		paths.add(asset.path);
 	}
 
+	const summaryEscapes: string[] = [];
 	for (const { kind, summary } of args.summaries) {
 		const dir = assetDirForKind(kind, args.locations);
 		if (!dir) continue;
@@ -451,11 +515,29 @@ export function collectInstalledAssets(args: {
 			...summary.overwritten,
 			...summary.skipped,
 		]) {
-			paths.add(toManifestPath(args.rootDir, joinManifestPath(dir, entry)));
+			// Relativizing against rootDir catches both a traversing entry and an
+			// asset directory that itself sits outside the root.
+			const relPath = toManifestPath(
+				args.rootDir,
+				joinManifestPath(dir, entry),
+			);
+			if (!isSafeManifestPath(entry) || !isSafeManifestPath(relPath)) {
+				summaryEscapes.push(entry);
+				continue;
+			}
+			paths.add(relPath);
 		}
+	}
+	if (summaryEscapes.length > 0) {
+		throw ManifestPathEscapeError.forAssetPaths(
+			args.rootDir,
+			"The install summary",
+			summaryEscapes,
+		);
 	}
 
 	for (const asset of args.prior?.assets ?? []) {
+		if (!isSafeManifestPath(asset.path)) continue;
 		paths.add(asset.path);
 	}
 
@@ -547,8 +629,10 @@ export function assetsFromOnDisk(
  * baseline — an unverified manifest is already blocked from reading `fresh`,
  * so recording the true provenance of the last write cannot mislead.
  *
- * Asserts the resolver's asset directories live under `rootDir`, since every
- * recorded path is `rootDir`-relative.
+ * Asserts the resolver's asset directories *and* every recorded asset path live
+ * under `rootDir`, since every recorded path is `rootDir`-relative. This is the
+ * single write chokepoint, so no manifest can be written naming a file outside
+ * the install root.
  */
 export function buildManifest(args: {
 	harness: string;
@@ -566,6 +650,17 @@ export function buildManifest(args: {
 	installedAt?: string;
 }): HarnessManifest {
 	assertAssetPathsUnderRoot(args.rootDir, args.locations);
+
+	const escapes = args.assets
+		.map((asset) => asset.path)
+		.filter((path) => !isSafeManifestPath(path));
+	if (escapes.length > 0) {
+		throw ManifestPathEscapeError.forAssetPaths(
+			args.rootDir,
+			"The manifest asset set",
+			escapes,
+		);
+	}
 
 	const inputs = normalizeInputs(args.inputs);
 
@@ -597,6 +692,11 @@ export function buildManifest(args: {
  * A missing or unrecognized `baseline` is *not* defaulted to `"verified"` —
  * an old or hand-written manifest fails closed to unknown rather than
  * asserting a baseline nobody verified.
+ *
+ * An asset path that does not stay under `rootDir` rejects the whole manifest
+ * for the same reason: consumers resolve these paths against `rootDir` to read
+ * and re-hash them, so a traversal entry in an untrusted (committed, or
+ * hand-edited) manifest must never reach them.
  */
 function isHarnessManifest(value: unknown): value is HarnessManifest {
 	if (!isPlainObject(value)) return false;
@@ -622,6 +722,7 @@ function isHarnessManifest(value: unknown): value is HarnessManifest {
 		const entry = asset as Record<string, unknown>;
 		if (typeof entry.path !== "string") return false;
 		if (typeof entry.sha256 !== "string") return false;
+		if (!isSafeManifestPath(entry.path)) return false;
 	}
 
 	return true;
