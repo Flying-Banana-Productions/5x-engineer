@@ -1,7 +1,8 @@
 /**
  * Harness command — commander adapter.
  *
- * Dispatch-only parent with `install`, `list`, and `uninstall` subcommands.
+ * Dispatch-only parent with `install`, `list`, `sync`, and `uninstall`
+ * subcommands.
  *
  * Business logic lives in harness.handler.ts.
  */
@@ -11,6 +12,7 @@ import { type Command, Option } from "@commander-js/extra-typings";
 import {
 	harnessInstall,
 	harnessList,
+	harnessSync,
 	harnessUninstall,
 } from "./harness.handler.js";
 
@@ -19,9 +21,9 @@ export function registerHarness(parent: Command) {
 		.command("harness")
 		.summary("Manage harness integrations")
 		.description(
-			"Install, list, and uninstall harness integrations that connect 5x to AI agent\n" +
-				"clients like OpenCode and Claude Code. Harnesses configure agent files, skills,\n" +
-				"and MCP server settings.",
+			"Install, list, sync, and uninstall harness integrations that connect 5x to AI\n" +
+				"agent clients like OpenCode and Claude Code. Harnesses configure agent files,\n" +
+				"skills, and MCP server settings.",
 		);
 
 	harness
@@ -65,6 +67,40 @@ export function registerHarness(parent: Command) {
 		.addHelpText("after", "\nExamples:\n" + "  $ 5x harness list")
 		.action(async () => {
 			await harnessList({ homeDir: homedir() });
+		});
+
+	harness
+		.command("sync")
+		.summary("Re-render installed harness assets to match current config")
+		.description(
+			"Refresh installed skills and agent profiles so they match the current 5x\n" +
+				"config. Targets whatever the on-disk manifests say is installed — no flags\n" +
+				"required. Use --check to report without writing.",
+		)
+		.argument("[name]", "Harness name (default: all installed harnesses)")
+		.addOption(
+			new Option("-s, --scope <scope>", "Sync scope: user or project").choices([
+				"user",
+				"project",
+			] as const),
+		)
+		.option("--check", "Report what would change without writing")
+		.option("-f, --force", "Overwrite locally modified assets")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x harness sync                        # refresh every installed scope\n" +
+				"  $ 5x harness sync opencode -s project\n" +
+				"  $ 5x harness sync --check                # report only",
+		)
+		.action(async (name, opts) => {
+			await harnessSync({
+				name,
+				scope: opts.scope,
+				check: opts.check,
+				force: opts.force,
+				homeDir: homedir(),
+			});
 		});
 
 	harness

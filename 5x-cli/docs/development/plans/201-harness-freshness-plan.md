@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phases 0–5 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place and now wired to all three fire points — `run init` (stderr warning + additive `warnings` / `harness_freshness` envelope fields), `config set`/`unset`/`add`/`remove` for baked keys, and a `freshness` column on `harness list` — with `invoke` deliberately left silent (D5); Phases 6–8 pending
+**Status:** Phases 0–6 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place and now wired to all three fire points — `run init` (stderr warning + additive `warnings` / `harness_freshness` envelope fields), `config set`/`unset`/`add`/`remove` for baked keys, and a `freshness` column on `harness list` — with `invoke` deliberately left silent (D5); `5x harness sync` ships as the one-step re-render — idempotent, hand-edit-preserving without `--force`, adopting for manifest-less installs, and the only command that establishes a `verified` baseline (`harnessSync`/`harnessSyncCore`, reusing the Phase 3 verify-then-write path); Phases 7–8 pending
 
 ---
 
@@ -1135,10 +1135,12 @@ Flow per (harness, scope) with either a manifest or installed assets:
 6. Otherwise: `await plugin.install({ ...ctx, force: true })` — the one render path (§2.5) — then run the **same** Phase 3.2 verify-then-write sequence. Because `force: true` overwrites every managed asset, `verifyInstalledInventory` passes and the manifest is written with `baseline: "verified"`; that is what makes sync the command that establishes a baseline. If verification somehow fails after a forced write (an unwritable path, a plugin that ignores `force`), the manifest is written `unverified` and the scope is reported as `sync-unverified` rather than claimed as fixed — sync never lies about its own result. `removeStaleAgentFiles` inside `install()` already keeps the delete blast radius to 5x-managed names.
 7. No manifest (`unknown`/`no-manifest`) or an unverified manifest with no prior baseline → `adopted`: force-install, write a `verified` manifest, and print every overwritten path (§2.5 adoption; hand-edits are undetectable without a recorded hash, so legibility is the mitigation). An unverified manifest that *does* carry recorded asset hashes is not adoption — hand-edits are still detectable from those hashes, so step 4's protection applies normally.
 
-- [ ] Implement `harnessSyncCore` + `harnessSync` (two-layer pattern matching `harnessList`/`harnessUninstall`)
-- [ ] Reuse the Phase 3 manifest build **and verification** path — no second manifest assembler, no second definition of "verified"
-- [ ] Add `"sync-unverified"` to the `action` union; report it as a failure-to-baseline, not a success
-- [ ] Emit a proper `outputSuccess` envelope with a text formatter
+Implementation note (a case the numbered flow left open): the guard order above is preserved verbatim, so `--check` over a hand-edited scope reports `skipped-modified` — that is what sync *would* do. The `HARNESS_ASSETS_MODIFIED` exit is scoped to write-attempting invocations only: `--check` makes no writes, so it has nothing to refuse, and failing it would break the on-demand Tier 2 surface `doctor` is meant to consume. `harnessSyncCore` never throws on a blocked scope (Phase 7's sweep consumes it); the outer `harnessSync` raises the error when *every* target was blocked.
+
+- [x] Implement `harnessSyncCore` + `harnessSync` (two-layer pattern matching `harnessList`/`harnessUninstall`)
+- [x] Reuse the Phase 3 manifest build **and verification** path — no second manifest assembler, no second definition of "verified"
+- [x] Add `"sync-unverified"` to the `action` union; report it as a failure-to-baseline, not a success
+- [x] Emit a proper `outputSuccess` envelope with a text formatter
 
 #### 6.2 CLI wiring
 
@@ -1168,20 +1170,20 @@ harness
 	});
 ```
 
-- [ ] Register the subcommand with help text and examples
-- [ ] Integration test: `5x harness sync --help` lists the flags
+- [x] Register the subcommand with help text and examples
+- [x] Integration test: `5x harness sync --help` lists the flags
 
 #### 6.3 Regression coverage for §1.1
 
 The bug this command exists to fix deserves a named test:
 
-- [ ] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be, and that the manifest is `baseline: "verified"` with `authorModel: B`
-- [ ] Integration test `no false-fresh via plain reinstall` (review §1) — same setup, but interpose a plain `5x harness install opencode -s project` before syncing: the manifest must be `baseline: "unverified"`, `harness list` must report `unknown` (not `fresh`), `run init` must still warn, and only the subsequent `sync` may flip it to `fresh`
-- [ ] Integration test: `5x harness sync` twice → second run reports `skipped-fresh`, no file mtimes change
-- [ ] Integration test: hand-edit `agents/5x-plan-author.md`; `sync` reports `skipped-modified` and preserves the edit; `sync --force` overwrites it
-- [ ] Integration test: delete `.5x-manifest.json`; `sync` adopts (force-installs + writes manifest) and lists overwritten paths
-- [ ] Integration test: `sync --check` writes nothing (assert mtimes + manifest unchanged)
-- [ ] Integration test: delegation mode `native` → `invoke`, sync removes the now-orphaned author agent files and only those
+- [x] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be, and that the manifest is `baseline: "verified"` with `authorModel: B`
+- [x] Integration test `no false-fresh via plain reinstall` (review §1) — same setup, but interpose a plain `5x harness install opencode -s project` before syncing: the manifest must be `baseline: "unverified"`, `harness list` must report `unknown` (not `fresh`), `run init` must still warn, and only the subsequent `sync` may flip it to `fresh`
+- [x] Integration test: `5x harness sync` twice → second run reports `skipped-fresh`, no file mtimes change
+- [x] Integration test: hand-edit `agents/5x-plan-author.md`; `sync` reports `skipped-modified` and preserves the edit; `sync --force` overwrites it
+- [x] Integration test: delete `.5x-manifest.json`; `sync` adopts (force-installs + writes manifest) and lists overwritten paths
+- [x] Integration test: `sync --check` writes nothing (assert mtimes + manifest unchanged)
+- [x] Integration test: delegation mode `native` → `invoke`, sync removes the now-orphaned author agent files and only those
 
 ---
 
