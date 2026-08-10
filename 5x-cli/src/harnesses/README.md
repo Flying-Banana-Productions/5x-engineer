@@ -10,6 +10,8 @@ src/harnesses/
   factory.ts            Plugin discovery, loading, and bundled registry
   installer.ts          Shared file installation helpers (harness-agnostic)
   locations.ts          Location resolver types and bundled resolvers
+  manifest.ts           Asset manifest schema, hashing, read/write, compare
+  freshness.ts          Discovery + warning formatting for fire points
   opencode/             Bundled OpenCode harness plugin
   cursor/               Bundled Cursor harness plugin
   universal/            Bundled universal harness plugin (skills-only, invoke path)
@@ -37,6 +39,29 @@ Then install with `installSkillFiles(skillsDir, skills, force)`.
 
 This keeps all harnesses in sync with one source of truth for workflow docs.
 
+## Asset Manifest
+
+Every successful `5x harness install` writes `<rootDir>/.5x-manifest.json`
+(see `manifest.ts`). The stamp records:
+
+- baked fingerprint inputs (`authorModel`, `reviewerModel`, delegation modes,
+  CLI / plugin versions, optional `plugin` extras)
+- `baseline: "verified" | "unverified"` — verified only when every managed
+  asset on disk byte-matches the render of those inputs
+- per-file `sha256` hashes of installed assets (relative POSIX paths)
+- `installedFrom` provenance (`projectRoot`, relative `contextDir`)
+
+Consumers outside the installer (`run init`, `config set`, `harness list`,
+`harness sync`, `upgrade`, eventually `doctor`) call `compareManifest` /
+`runHarnessFreshnessChecks`. Project-scope manifests are meant to be
+**committed** with the install root (`.opencode/`, `.cursor/`, `.agents/`);
+the CLI never auto-ignores them.
+
+`5x harness sync` is the one-step re-render that establishes a verified
+baseline. Plain `install` keeps its skip-on-exist semantics for agents, so a
+non-force reinstall after a config change may write `baseline: "unverified"`
+and keep warning until `sync`.
+
 ## Plugin Contract
 
 A harness plugin is an object that satisfies `HarnessPlugin` (defined in `types.ts`):
@@ -46,14 +71,33 @@ interface HarnessPlugin {
   readonly name: string;
   readonly description: string;
   readonly supportedScopes: HarnessScope[];  // "project" | "user"
+  readonly version?: string;                 // optional; CLI version used when omitted
   describe(scope?: HarnessScope): HarnessDescription;
   install(ctx: HarnessInstallContext): Promise<HarnessInstallResult>;
+  uninstall(ctx: HarnessUninstallContext): Promise<HarnessUninstallResult>;
+  /** Optional: dry render used by install and Tier 2 freshness. */
+  renderAssets?(ctx: HarnessInstallContext): Promise<RenderedAsset[]>;
+  /** Optional: extra fingerprint inputs nested under `inputs.plugin`. */
+  fingerprintInputs?(
+    ctx: HarnessInstallContext,
+  ): Record<string, string | number>;
 }
 ```
 
 `describe(scope?)` can return scope-aware metadata. This is used by
 `5x harness list` to report optional capabilities (for example, whether
 rules are supported in that scope).
+
+### Optional members for external plugin authors
+
+| Member | Purpose | If omitted |
+| --- | --- | --- |
+| `renderAssets(ctx)` | Return every managed asset `{kind, name, path, content}` **without writing**. Bundled plugins make `install()` a thin writer over this so sync/doctor can never drift from install. | Tier 2 falls back to on-disk-vs-recorded hash compare (hand-edit detection only; no template-drift detection). |
+| `fingerprintInputs(ctx)` | Extra bake inputs beyond the common set. Stored under `inputs.plugin` so they cannot collide with CLI-owned fields. | Only the common inputs are fingerprinted (sufficient for bundled harnesses). |
+| `version` | Plugin version recorded in the fingerprint. | CLI version is used (correct for plugins that ship with the CLI). |
+
+Duck-type validation still accepts plugins that lack these members — they
+remain valid external plugins.
 
 ### `supportedScopes`
 
@@ -183,6 +227,8 @@ For uninstall flows, matching helpers are available:
 ```
 5x harness install <name> [--scope user|project] [--force]
 5x harness list
+5x harness sync [name] [--scope user|project] [--check] [--force]
+5x harness uninstall <name> [--scope user|project|--all]
 ```
 
 The `install` command orchestration (in `harness.handler.ts`):
@@ -192,4 +238,10 @@ The `install` command orchestration (in `harness.handler.ts`):
 3. For project scope: verifies the 5x control plane exists (`.5x/5x.db`).
 4. Loads model config from `5x.toml` (non-fatal failure for user scope).
 5. Calls `plugin.install(ctx)` — the plugin manages its own skills and agents.
-6. Prints the install summary.
+6. Verifies the installed inventory against `renderAssets()` (when present) and
+   writes `.5x-manifest.json` (`verified` or `unverified`).
+7. Prints the install summary.
+
+`sync` force-refreshes managed assets (refusing hand-edits without `--force`),
+rewrites a verified manifest, and is the migration path for pre-manifest
+installs.

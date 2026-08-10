@@ -12,6 +12,17 @@ source of truth for the corresponding GitHub Release.
 ### Features
 
 - **Cursor Agent provider** — the `cursor-agent` provider is now available as a published plugin, `@5x-ai/provider-cursor-agent` (1.0.0). Install it alongside the CLI and set `provider = "cursor-agent"` on a role; options live in an optional `[cursor-agent]` config table. Includes session create/resume via `agent create-chat`/`--resume`, streamed event mapping, prompt-size guarding, structured-output extraction, and credential forwarding via env (never argv).
+- **Harness asset freshness** — each `harness install` writes a
+  `.5x-manifest.json` at the install root recording baked inputs, a fingerprint,
+  a verified/unverified baseline, and per-file content hashes. Tier 1 freshness
+  warnings fire at `run init`, baked-key `config set`/`unset`/`add`/`remove`,
+  and `harness list`. New `5x harness sync` re-renders installed scopes through
+  the same render path as install (the only command that establishes a verified
+  baseline; plain reinstall preserves existing agents). `5x upgrade` reports
+  harness freshness across bundled installs and auto-syncs only when
+  `harness.autoSync = true` (opt-in, default off) **and** the refresh is
+  lossless, with `--sync` / `--no-sync` per-invocation overrides. Config keys:
+  `harness.freshnessWarnings` (`on`/`off`, default `on`) and `harness.autoSync`.
 
 ### Improvements
 

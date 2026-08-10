@@ -1,9 +1,9 @@
 # Harness Asset Freshness — Manifest, Freshness Check, and `5x harness sync`
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** August 9, 2026
-**Last updated:** August 9, 2026
-**Status:** Phases 0–6 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place and now wired to all three fire points — `run init` (stderr warning + additive `warnings` / `harness_freshness` envelope fields), `config set`/`unset`/`add`/`remove` for baked keys, and a `freshness` column on `harness list` — with `invoke` deliberately left silent (D5); `5x harness sync` ships as the one-step re-render — idempotent, hand-edit-preserving without `--force`, adopting for manifest-less installs, and the only command that establishes a `verified` baseline (`harnessSync`/`harnessSyncCore`, reusing the Phase 3 verify-then-write path); Phases 7–8 pending
+**Last updated:** August 10, 2026
+**Status:** Phases 0–8 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); manifest schema/hashing/compare, `renderAssets()` plugin seam, install/uninstall lifecycle, freshness engine, fire points (`run init` / baked `config set` / `harness list`), `5x harness sync`, and `5x upgrade` freshness sweep all landed; Phase 8 documentation, migration test, and end-to-end validation recorded (see [Appendix D](#appendix-d--phase-8-end-to-end-validation))
 
 ---
 
@@ -1269,29 +1269,29 @@ console.log();
 
 #### 8.1 Documentation
 
-- [ ] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync` (stating that `autoSync` is off by default and that `upgrade` only reports until it is turned on or `--sync` is passed); state that plain `harness install` preserves existing agent files and therefore does not establish a freshness baseline — `sync` is the command that does
-- [ ] `AGENTS.md` — note that the orchestrator should surface `harness_freshness` warnings from `run init` output rather than ignoring them
-- [ ] `CHANGELOG.md` — additive entry: manifest, freshness warnings, `harness sync`, upgrade sweep
-- [ ] `docs/v2/201-harness-freshness.md` — flip status from "Design settled — Not Implemented" to "Implemented", link this plan
-- [ ] `src/harnesses/README.md` — document the manifest contract and the `renderAssets()` / `fingerprintInputs()` optional members for external plugin authors
+- [x] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync` (stating that `autoSync` is off by default and that `upgrade` only reports until it is turned on or `--sync` is passed); state that plain `harness install` preserves existing agent files and therefore does not establish a freshness baseline — `sync` is the command that does
+- [x] `AGENTS.md` — note that the orchestrator should surface `harness_freshness` warnings from `run init` output rather than ignoring them
+- [x] `CHANGELOG.md` — additive entry: manifest, freshness warnings, `harness sync`, upgrade sweep
+- [x] `docs/v2/201-harness-freshness.md` — flip status from "Design settled — Not Implemented" to "Implemented", link this plan
+- [x] `src/harnesses/README.md` — document the manifest contract and the `renderAssets()` / `fingerprintInputs()` optional members for external plugin authors
 
 #### 8.2 Migration behavior (§4)
 
 Purely additive: pre-existing installs have no manifest, are treated as unknown/stale, and are prompted toward a single `5x harness sync`. No schema migration, no install output contract change beyond the added manifest file and the new sync envelope.
 
-- [ ] Integration test: an install created *before* this feature (manifest deleted to simulate) produces exactly one `unknown` warning per fire point and is fixed by one `sync`
-- [ ] Verify `.gitignore` guidance: project-scope manifests are intended to be committed alongside `.opencode/` (document; do not auto-ignore)
+- [x] Integration test: an install created *before* this feature (manifest deleted to simulate) produces exactly one `unknown` warning per fire point and is fixed by one `sync`
+- [x] Verify `.gitignore` guidance: project-scope manifests are intended to be committed alongside `.opencode/` (document; do not auto-ignore)
 
 #### 8.3 Manual end-to-end pass
 
-- [ ] Fresh repo → `5x init` → `5x harness install opencode -s project` → confirm manifest contents by eye
-- [ ] `5x config set author.model <other>` → confirm the point-of-cause warning
-- [ ] `5x run init` → confirm one warning, valid JSON on stdout
-- [ ] Plain `5x harness install opencode -s project` → confirm the manifest reads `baseline: "unverified"`, the agent frontmatter is still the old model, and the warning **persists**
-- [ ] `5x upgrade` with default config → confirm it reports and changes nothing on disk
-- [ ] `5x harness sync` → confirm agent frontmatter updated, `baseline: "verified"`, warning gone
-- [ ] Repeat for Cursor (including the project-scope rules) and Universal
-- [ ] Re-run the Phase 0.2 dotfile smoke tests against the *real* manifest produced by the implementation
+- [x] Fresh repo → `5x init` → `5x harness install opencode -s project` → confirm manifest contents by eye
+- [x] `5x config set author.model <other>` → confirm the point-of-cause warning
+- [x] `5x run init` → confirm one warning, valid JSON on stdout
+- [x] Plain `5x harness install opencode -s project` → confirm the manifest reads `baseline: "unverified"`, the agent frontmatter is still the old model, and the warning **persists**
+- [x] `5x upgrade` with default config → confirm it reports and changes nothing on disk
+- [x] `5x harness sync` → confirm agent frontmatter updated, `baseline: "verified"`, warning gone
+- [x] Repeat for Cursor (including the project-scope rules) and Universal
+- [x] Re-run the Phase 0.2 dotfile smoke tests against the *real* manifest produced by the implementation
 
 ---
 
@@ -1371,6 +1371,10 @@ Phases 1 and 2 are independent and can run in parallel if two people are availab
 ---
 
 ## Revision History
+
+### 1.3 — August 10, 2026
+
+Phase 8 executed. Documentation updated (`README.md`, `AGENTS.md`, `CHANGELOG.md`, `docs/v2/201-harness-freshness.md` → Implemented, `src/harnesses/README.md`); migration integration test for pre-feature (manifest-less) installs; `.gitignore` guidance documented (project-scope manifests are committed, not auto-ignored); manual end-to-end pass recorded in Appendix D, including Phase 0.2 re-run against real manifests.
 
 ### 1.2 — August 9, 2026
 
@@ -1505,3 +1509,20 @@ Tier 1 reads this as `unknown` / `baseline-unverified` and warns with the retain
 | Location resolver whose asset dirs escape `rootDir` | error envelope | `MANIFEST_PATH_ESCAPE` (exit 2) |
 | Stale/unknown assets at any fire point | stderr warning + additive JSON fields | none — warn, never block (§2.4) |
 | Freshness check itself throws | swallowed | none — never degrades the host command |
+
+### Appendix D — Phase 8 end-to-end validation
+
+> Completed August 10, 2026. Manual walkthrough against live OpenCode and Cursor CLIs using this worktree's `bun run src/bin.ts`, with `HOME` pinned under `/tmp/5x-e2e-201-phase8*`.
+
+| Step | Harness | Result |
+|---|---|---|
+| Fresh `5x init` → `harness install … -s project` | opencode / cursor / universal | Manifest written with `baseline: "verified"`; Cursor includes project-scope rules |
+| `config set author.model <other>` | opencode / cursor / universal | Point-of-cause stderr warning naming installed/current models and `5x harness sync` |
+| `run init` | opencode | One stderr warning; stdout JSON parseable with additive `warnings` / `harness_freshness` |
+| Plain `harness install` after model change | opencode / cursor | `baseline: "unverified"`, agent frontmatter still old model, list shows `unknown (baseline-unverified)` |
+| `upgrade` (default, no flags) | opencode | Reports unknown/stale; agent mtime and manifest hash unchanged |
+| `harness sync` | opencode / cursor / universal | Agents updated to new model; `baseline: "verified"`; list shows `fresh` |
+| Phase 0.2 smoke against *real* manifests | opencode / cursor / universal | Adversarial keys injected into implementation-produced `.5x-manifest.json`; OpenCode `debug config` byte-identical, Cursor `mcp list` still empty, Universal inert for both readers |
+
+Evidence directories (ephemeral): `/tmp/5x-e2e-201-phase8`, `/tmp/5x-e2e-201-phase8-cursor`, `/tmp/5x-e2e-201-phase8-universal`, `/tmp/5x-e2e-201-phase8-dotfile`.
+

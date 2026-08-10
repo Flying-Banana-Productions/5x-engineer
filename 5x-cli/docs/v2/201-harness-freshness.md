@@ -1,10 +1,11 @@
 # 5x CLI v2 — Harness Asset Freshness
 
-**Status:** Design settled — Not Implemented
+**Status:** Implemented
 **Date:** July 13, 2026
-**Updated:** August 9, 2026 — open questions resolved (§5)
+**Updated:** August 10, 2026 — implemented via [`docs/development/plans/201-harness-freshness-plan.md`](../development/plans/201-harness-freshness-plan.md)
 **Part of:** v2 (`200-overview.md`, area #1)
 **Shared core used:** Asset manifest (`200-overview.md` §3.1); surfaced by `5x doctor` (§3.3)
+**Implementation plan:** [`docs/development/plans/201-harness-freshness-plan.md`](../development/plans/201-harness-freshness-plan.md)
 
 ---
 
