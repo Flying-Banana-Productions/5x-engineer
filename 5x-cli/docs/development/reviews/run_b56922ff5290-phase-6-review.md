@@ -9,3 +9,5 @@
     }
   ]
 }
+
+{"verdict":"approved","summary":"Re-review: --check now projects rendered write sets and managed-agent removals; adoption and removal coverage passes. Full concurrent suite passes (2440 pass, 8 skipped).","issues":[]}
