@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phases 0–3 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; Phases 4–8 pending
+**Status:** Phases 0–4 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place but not yet wired to any command; Phases 5–8 pending
 
 ---
 
@@ -838,15 +838,22 @@ Algorithm:
 
 > `losslessRefresh === true` means "refreshing would lose nothing" — **not** "go ahead". Callers must independently establish permission (`harness.autoSync = true`, or an explicit `--sync` / `5x harness sync` invocation) before writing anything. See Phase 7.1.
 
-- [ ] Implement `compareManifest` per the algorithm
-- [ ] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
-- [ ] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
-- [ ] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
-- [ ] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
-- [ ] Unit test: Tier 1 never returns `losslessRefresh: true`
-- [ ] Unit test: `baseline: "unverified"` never returns `losslessRefresh: true`, even at Tier 2 with matching context and no hand-edits
-- [ ] Unit test: user scope with a perfect match still returns `losslessRefresh: false` + `shared-user-scope`
-- [ ] Unit test: `contextDir` `"packages/api"` vs `""` yields `context-mismatch`
+Implementation notes (choices the algorithm above left open):
+
+- **Reason precedence is `assets-modified` > `inputs-changed` > `assets-drifted`.** An input change necessarily drifts every asset it bakes into, so reporting `assets-drifted` there would replace the field the user changed with the files that changed as a result. `assets-modified` still outranks both, since the hand-edit is the case that blocks the refresh.
+- **Tier selection is driven by `readAsset`, not by `rendered`.** Supplying `readAsset` alone yields the degraded Tier 2 the design decisions describe for plugins without `renderAssets()`: hand-edit detection without template-drift detection.
+- **A recorded asset that is absent on disk (`missing`) counts toward `assets-drifted`**, not toward `assets-modified` — sync recreates it and nothing is lost, so it must not block an automatic refresh.
+- **`manifest-unreadable` and `config-unresolved` get their own headline variants** in `formatFreshnessWarning`; both ask for the same fix as the no-manifest variant but say why.
+
+- [x] Implement `compareManifest` per the algorithm
+- [x] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
+- [x] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
+- [x] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
+- [x] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
+- [x] Unit test: Tier 1 never returns `losslessRefresh: true`
+- [x] Unit test: `baseline: "unverified"` never returns `losslessRefresh: true`, even at Tier 2 with matching context and no hand-edits
+- [x] Unit test: user scope with a perfect match still returns `losslessRefresh: false` + `shared-user-scope`
+- [x] Unit test: `contextDir` `"packages/api"` vs `""` yields `context-mismatch`
 
 #### 4.3 Installed-scope discovery
 
@@ -914,11 +921,11 @@ User-scope variant — wording settled by Phase 0.1, which verified project-over
   fix        5x harness install opencode --scope project
 ```
 
-- [ ] Implement `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`
-- [ ] Unit test: report set covers exactly the harness × supported-scope grid, filtered by options
-- [ ] Unit test: `formatFreshnessWarning` renders only changed fields, never unchanged ones
-- [ ] Unit test: the `baseline-unverified` report renders the partial-install variant, with and without retained deltas
-- [ ] Unit test: a `not-installed` or `fresh` report produces no output from callers
+- [x] Implement `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`
+- [x] Unit test: report set covers exactly the harness × supported-scope grid, filtered by options
+- [x] Unit test: `formatFreshnessWarning` renders only changed fields, never unchanged ones
+- [x] Unit test: the `baseline-unverified` report renders the partial-install variant, with and without retained deltas
+- [x] Unit test: a `not-installed` or `fresh` report produces no output from callers
 
 #### 4.4 Config keys
 
@@ -948,10 +955,10 @@ harness: HarnessConfigSchema.default({}).describe(
 
 `.describe()` is required — `src/config-registry.ts` derives `5x config show` / `config set` metadata by walking the Zod tree.
 
-- [ ] Add `HarnessConfigSchema`; register under `harness`
-- [ ] Unit test in `test/unit/config-registry.test.ts`: both keys appear with descriptions, types, and defaults
-- [ ] Unit test: `harness.autoSync` resolves to `false` when the `harness` table is absent from `5x.toml` entirely (the default posture must survive a config that never mentions it)
-- [ ] Unit test: `5x config set harness.autoSync true` round-trips through `configSet`
+- [x] Add `HarnessConfigSchema`; register under `harness`
+- [x] Unit test in `test/unit/config-registry.test.ts`: both keys appear with descriptions, types, and defaults
+- [x] Unit test: `harness.autoSync` resolves to `false` when the `harness` table is absent from `5x.toml` entirely (the default posture must survive a config that never mentions it)
+- [x] Unit test: `5x config set harness.autoSync true` round-trips through `configSet`
 
 ---
 

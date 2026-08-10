@@ -90,6 +90,31 @@ describe("config-registry", () => {
 		expect(reviewer?.type).toBe("record");
 	});
 
+	test("harness freshness keys surface with type, default, and description", () => {
+		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
+
+		const warnings = byKey.get("harness.freshnessWarnings");
+		expect(warnings?.type).toBe("enum");
+		expect(warnings?.allowedValues?.sort()).toEqual(["off", "on"]);
+		expect(warnings?.default).toBe("on");
+		expect(warnings?.description).toContain("no longer match current config");
+
+		const autoSync = byKey.get("harness.autoSync");
+		expect(autoSync?.type).toBe("boolean");
+		expect(autoSync?.default).toBe(false);
+		expect(autoSync?.description).toContain("lossless");
+	});
+
+	test("harness.autoSync defaults to false with no harness table in config", () => {
+		// The default posture must survive a `5x.toml` that never mentions the
+		// key — auto-refresh is opt-in, and an absent table is not consent.
+		expect(FiveXConfigSchema.parse({}).harness.autoSync).toBe(false);
+		expect(FiveXConfigSchema.parse({}).harness.freshnessWarnings).toBe("on");
+		expect(
+			FiveXConfigSchema.parse({ author: { model: "m" } }).harness.autoSync,
+		).toBe(false);
+	});
+
 	test("qualityGates has type string[]", () => {
 		const q = getConfigRegistry().find((e) => e.key === "qualityGates");
 		expect(q?.type).toBe("string[]");

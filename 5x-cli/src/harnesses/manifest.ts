@@ -618,6 +618,34 @@ function resolveInsideRoot(
 	return isUnderRoot(realRootDir, resolved) ? resolved : null;
 }
 
+/**
+ * An asset reader for Tier 2: manifest-relative path → file contents, or `null`
+ * when the path is absent, unreadable, or not manifest-representable.
+ *
+ * Recorded paths are untrusted input (a manifest can be committed, or hand
+ * edited), so reads go through the same lexical *and* symlink containment
+ * `collectInstalledAssets` uses — Tier 2 must never be steerable into hashing a
+ * file outside the install root. The root is resolved once per reader.
+ */
+export function makeAssetReader(
+	rootDir: string,
+): (relPath: string) => string | null {
+	const realRootDir = realRoot(rootDir);
+
+	return (relPath) => {
+		if (!isSafeManifestPath(relPath)) return null;
+
+		const resolved = resolveInsideRoot(realRootDir, relPath);
+		if (resolved === null) return null;
+
+		try {
+			return readFileSync(resolved, "utf-8");
+		} catch {
+			return null;
+		}
+	};
+}
+
 function assetDirForKind(
 	kind: RenderedAsset["kind"],
 	locations: ManifestAssetDirs,
@@ -741,6 +769,336 @@ export function buildManifest(args: {
 		installedAt: args.installedAt ?? new Date().toISOString(),
 		assets: args.assets,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Freshness comparison (Tier 1 / Tier 2)
+// ---------------------------------------------------------------------------
+
+export type FreshnessStatus = "fresh" | "stale" | "unknown" | "not-installed";
+
+export type FreshnessReason =
+	| "no-manifest"
+	| "manifest-unreadable"
+	| "config-unresolved"
+	/** `baseline: "unverified"` — a partial install never established a baseline (§3.2). */
+	| "baseline-unverified"
+	| "inputs-changed"
+	| "assets-drifted"
+	| "assets-modified"
+	| null;
+
+export interface InputDelta {
+	/** Dotted config-facing key, e.g. "author.model". */
+	key: string;
+	installed: string | null;
+	current: string | null;
+}
+
+export type AssetDeltaState =
+	/** on-disk ≠ recorded → user hand-edited it (blocks lossless refresh) */
+	| "modified"
+	/** recorded, absent on disk */
+	| "missing"
+	/** re-render ≠ recorded → bundled-template or config drift; sync will rewrite */
+	| "drifted"
+	/** re-render produced a path not in the manifest; sync will create it */
+	| "added"
+	/** recorded path no longer rendered; sync will remove it */
+	| "orphaned";
+
+export interface AssetDelta {
+	path: string;
+	state: AssetDeltaState;
+}
+
+export type LosslessBlocker =
+	| "shared-user-scope"
+	| "context-mismatch"
+	| "assets-modified"
+	| "no-manifest"
+	| "config-unresolved"
+	| "baseline-unverified";
+
+export interface FreshnessReport {
+	harness: string;
+	scope: HarnessScope;
+	rootDir: string;
+	tier: 1 | 2;
+	status: FreshnessStatus;
+	reason: FreshnessReason;
+	inputDeltas: InputDelta[];
+	/** Empty at Tier 1. */
+	assetDeltas: AssetDelta[];
+	/** Safety gate only — never a permission to write (Phase 7.1). */
+	losslessRefresh: boolean;
+	losslessBlockers: LosslessBlocker[];
+	installedFrom: ManifestProvenance | null;
+	/** `null` when there is no readable manifest. */
+	baseline: ManifestBaseline | null;
+}
+
+export interface CompareArgs {
+	harness: string;
+	scope: HarnessScope;
+	rootDir: string;
+	/** True when any managed asset exists on disk (drives "not-installed"). */
+	installed: boolean;
+	/** Inputs resolved from config right now, pre-normalization. */
+	current: RawManifestInputs;
+	/** Context resolving config right now, relative to projectRoot, POSIX. */
+	currentContextDir: string;
+	/** Tier 2 only: freshly rendered assets. Omit for Tier 1. */
+	rendered?: RenderedAsset[];
+	/** Tier 2 only: reads a manifest-relative path; returns null if absent. */
+	readAsset?: (relPath: string) => string | null;
+}
+
+/** Manifest input field → the config-facing key a warning names it by. */
+const INPUT_DELTA_KEYS: Array<{
+	field: keyof Omit<ManifestInputs, "plugin">;
+	key: string;
+}> = [
+	{ field: "authorModel", key: "author.model" },
+	{ field: "reviewerModel", key: "reviewer.model" },
+	{ field: "authorDelegationMode", key: "author.delegationMode" },
+	{ field: "reviewerDelegationMode", key: "reviewer.delegationMode" },
+	{ field: "cliVersion", key: "cliVersion" },
+	{ field: "harnessPluginVersion", key: "harnessPluginVersion" },
+];
+
+/**
+ * Compare what is installed at `rootDir` against the config resolving right now.
+ *
+ * Tier 1 (the default, and the only tier on hot paths) compares fingerprints —
+ * no plugin load, no render, one small file read. Tier 2 additionally compares
+ * per-file hashes, which is what makes template drift and user hand-edits
+ * visible; it is selected by supplying `readAsset` (plus `rendered`, when the
+ * plugin implements `renderAssets()` — without it Tier 2 degrades to on-disk vs
+ * recorded, i.e. hand-edit detection only).
+ *
+ * Failure is always closed: anything that cannot be proven fresh reads
+ * `unknown`, never `fresh`, so no fire point falls silent and no caller can
+ * auto-refresh on the strength of a baseline nobody verified.
+ */
+export function compareManifest(args: CompareArgs): FreshnessReport {
+	const tier: 1 | 2 = args.readAsset ? 2 : 1;
+
+	const base = {
+		harness: args.harness,
+		scope: args.scope,
+		rootDir: args.rootDir,
+		tier,
+	} as const;
+
+	// 1. Nothing installed — nothing to be stale about, and no blocker means
+	//    anything, since there is no refresh to perform.
+	if (!args.installed) {
+		return {
+			...base,
+			status: "not-installed",
+			reason: null,
+			inputDeltas: [],
+			assetDeltas: [],
+			losslessRefresh: false,
+			losslessBlockers: [],
+			installedFrom: null,
+			baseline: null,
+		};
+	}
+
+	// 2. No usable manifest — assets exist but nothing records what produced
+	//    them. A manifest file that is present but rejected is reported
+	//    separately, since "corrupt" and "never stamped" ask for the same fix
+	//    but are worth different diagnostics.
+	const manifest = readManifest(args.rootDir);
+	if (!manifest) {
+		return {
+			...base,
+			status: "unknown",
+			reason: existsSync(manifestPath(args.rootDir))
+				? "manifest-unreadable"
+				: "no-manifest",
+			inputDeltas: [],
+			assetDeltas: [],
+			losslessRefresh: false,
+			losslessBlockers: ["no-manifest"],
+			installedFrom: null,
+			baseline: null,
+		};
+	}
+
+	const current = normalizeInputs(args.current);
+	const inputDeltas = computeInputDeltas(manifest.inputs, current);
+	const assetDeltas =
+		tier === 2 ? computeAssetDeltas(manifest, args) : ([] as AssetDelta[]);
+
+	const blockers: LosslessBlocker[] = [];
+	// 3. Config resolution threw at install time, so the recorded inputs are an
+	//    accident rather than an intention — treated exactly like a missing
+	//    manifest (§2.1).
+	if (!manifest.configResolved) blockers.push("config-unresolved");
+	// 4. A partial install never established a baseline. Evaluated before the
+	//    fingerprint compare and terminal for `status`: the fingerprint over
+	//    retained inputs would otherwise decide the verdict (§3.2).
+	if (manifest.baseline !== "verified") blockers.push("baseline-unverified");
+	// D4 — one physical asset copy serves N projects at user scope, and
+	// `installedFrom.projectRoot` is explicitly non-comparable.
+	if (args.scope === "user") blockers.push("shared-user-scope");
+	if (manifest.installedFrom.contextDir !== args.currentContextDir) {
+		blockers.push("context-mismatch");
+	}
+	const modified = assetDeltas.some((delta) => delta.state === "modified");
+	if (modified) blockers.push("assets-modified");
+
+	const unknownReason: FreshnessReason | null = !manifest.configResolved
+		? "config-unresolved"
+		: manifest.baseline !== "verified"
+			? "baseline-unverified"
+			: null;
+
+	let status: FreshnessStatus;
+	let reason: FreshnessReason;
+	if (unknownReason) {
+		status = "unknown";
+		reason = unknownReason;
+	} else if (modified) {
+		// A hand-edit is the case that blocks refresh, so it outranks the rest
+		// in reporting.
+		status = "stale";
+		reason = "assets-modified";
+	} else if (computeFingerprint(current) !== manifest.hash) {
+		// More specific than the drift it necessarily causes at Tier 2: an input
+		// change names the field the user changed, drift only names files.
+		status = "stale";
+		reason = "inputs-changed";
+	} else if (assetDeltas.length > 0) {
+		status = "stale";
+		reason = "assets-drifted";
+	} else {
+		status = "fresh";
+		reason = null;
+	}
+
+	return {
+		...base,
+		status,
+		reason,
+		inputDeltas,
+		assetDeltas,
+		// Tier 1 cannot observe hand-edits, so it can never assert a lossless
+		// refresh — that is what makes auto-sync on incomplete evidence
+		// impossible (§4.2).
+		losslessRefresh: tier === 2 && blockers.length === 0,
+		losslessBlockers: blockers,
+		installedFrom: manifest.installedFrom,
+		baseline: manifest.baseline,
+	};
+}
+
+/**
+ * Field-by-field diff of the recorded baseline against the inputs resolving now.
+ *
+ * Only changed fields are returned — warning copy shows exactly what moved, and
+ * a warning padded with unchanged lines is one users learn to skip.
+ */
+function computeInputDeltas(
+	installed: ManifestInputs,
+	current: ManifestInputs,
+): InputDelta[] {
+	const deltas: InputDelta[] = [];
+
+	for (const { field, key } of INPUT_DELTA_KEYS) {
+		const before = installed[field] ?? null;
+		const after = current[field] ?? null;
+		if (before !== after) {
+			deltas.push({ key, installed: before, current: after });
+		}
+	}
+
+	const installedPlugin = installed.plugin ?? {};
+	const currentPlugin = current.plugin ?? {};
+	const pluginKeys = [
+		...new Set([
+			...Object.keys(installedPlugin),
+			...Object.keys(currentPlugin),
+		]),
+	].sort();
+	for (const key of pluginKeys) {
+		const before = installedPlugin[key];
+		const after = currentPlugin[key];
+		if (before !== after) {
+			deltas.push({
+				key: `plugin.${key}`,
+				installed: before === undefined ? null : String(before),
+				current: after === undefined ? null : String(after),
+			});
+		}
+	}
+
+	return deltas;
+}
+
+/**
+ * Tier 2 per-file comparison: recorded vs on disk, and recorded vs re-render.
+ *
+ * A path can legitimately appear twice — a file the user edited *and* whose
+ * template moved is both `modified` and `drifted`, and collapsing that would
+ * hide the edit that blocks the refresh.
+ */
+function computeAssetDeltas(
+	manifest: HarnessManifest,
+	args: CompareArgs,
+): AssetDelta[] {
+	const readAsset = args.readAsset;
+	if (!readAsset) return [];
+
+	const deltas: AssetDelta[] = [];
+	const recorded = new Map(
+		manifest.assets.map((asset) => [asset.path, asset.sha256]),
+	);
+
+	for (const asset of manifest.assets) {
+		const content = readAsset(asset.path);
+		if (content === null) {
+			deltas.push({ path: asset.path, state: "missing" });
+			continue;
+		}
+		if (hashContent(content) !== asset.sha256) {
+			deltas.push({ path: asset.path, state: "modified" });
+		}
+	}
+
+	// Without a render there is nothing to compare templates against — hand-edit
+	// detection above is the safety-critical half and still applies.
+	if (!args.rendered) return sortAssetDeltas(deltas);
+
+	const renderedPaths = new Set<string>();
+	for (const asset of args.rendered) {
+		renderedPaths.add(asset.path);
+		const recordedHash = recorded.get(asset.path);
+		if (recordedHash === undefined) {
+			deltas.push({ path: asset.path, state: "added" });
+			continue;
+		}
+		if (hashContent(asset.content) !== recordedHash) {
+			deltas.push({ path: asset.path, state: "drifted" });
+		}
+	}
+
+	for (const asset of manifest.assets) {
+		if (!renderedPaths.has(asset.path)) {
+			deltas.push({ path: asset.path, state: "orphaned" });
+		}
+	}
+
+	return sortAssetDeltas(deltas);
+}
+
+function sortAssetDeltas(deltas: AssetDelta[]): AssetDelta[] {
+	return deltas.sort(
+		(a, b) => a.path.localeCompare(b.path) || a.state.localeCompare(b.state),
+	);
 }
 
 // ---------------------------------------------------------------------------

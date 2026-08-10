@@ -461,6 +461,44 @@ describe("config set (unit)", () => {
 		}
 	});
 
+	test("harness.autoSync round-trips through configSet", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configSet({
+				key: "harness.autoSync",
+				value: "true",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect((parsed.harness as Record<string, unknown>).autoSync).toBe(true);
+
+			const { config } = await resolveLayeredConfig(tmp, tmp);
+			expect(config.harness.autoSync).toBe(true);
+			expect(config.harness.freshnessWarnings).toBe("on");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("harness.freshnessWarnings rejects a value outside the enum", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				configSet({
+					key: "harness.freshnessWarnings",
+					value: "sometimes",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("preserves comments on existing file", async () => {
 		const tmp = makeTmpDir();
 		try {

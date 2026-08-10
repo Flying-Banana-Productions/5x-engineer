@@ -131,6 +131,28 @@ const WorktreeSchema = z.object({
 		.describe("Shell command to run after `5x` creates a new git worktree."),
 });
 
+/**
+ * Harness asset freshness behavior (201-harness-freshness).
+ *
+ * `autoSync` is a *permission* gate and nothing else: even when it is on,
+ * assets are only rewritten where the refresh is provably lossless, which is a
+ * separate safety gate (§Phase 7.1).
+ */
+const HarnessConfigSchema = z.object({
+	freshnessWarnings: z
+		.enum(["on", "off"])
+		.default("on")
+		.describe(
+			"Warn when installed harness assets no longer match current config (`on`), or stay silent (`off`).",
+		),
+	autoSync: z
+		.boolean()
+		.default(false)
+		.describe(
+			"Opt in to automatic re-rendering of stale harness assets during `5x upgrade`. Off by default: with it off, upgrade only reports. When on, assets are still only rewritten where the refresh is provably lossless (project scope, verified baseline, matching install context, no local edits).",
+		),
+});
+
 const OpenCodeConfigSchema = z.object({
 	/** URL for external OpenCode server. Omit for managed (local) mode. */
 	url: z
@@ -165,6 +187,9 @@ const FiveXConfigSchema = z
 			),
 		worktree: WorktreeSchema.default({}).describe(
 			"Git worktree hooks and related options.",
+		),
+		harness: HarnessConfigSchema.default({}).describe(
+			"Harness asset freshness warnings and automatic re-sync behavior.",
 		),
 		paths: PathsSchema.default({}).describe(
 			"Plans, reviews, archive, and template paths (resolved relative to each config file).",
