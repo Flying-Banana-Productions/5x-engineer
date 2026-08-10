@@ -7,6 +7,21 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+## 1.2.3 (2026-08-10)
+
+### Fixes
+
+- **Plugin config keys** — provider config tables (e.g. `[claude-code]` in `5x.toml.local`) are now recognized across all config layers, so a provider set in one layer no longer triggers unknown-key warnings for its table in another.
+- **`config show --text`** — long values are truncated in the text table instead of breaking the layout.
+- **Workspace plugin loading** — the provider factory falls back to workspace `packages/provider-*` sources when a plugin package is linked from a repo checkout, instead of failing with a not-found error.
+- **Invoke failure diagnostics** — when structured output is missing or invalid, the error detail now includes `session_id`, `log_path`, template, provider, model, and a provider-text excerpt; with `--record`, the failed invoke attempt is recorded as a failed step so run state reflects the invocation.
+- **Provider structured output** — structured output emitted in the final assistant flush is now recovered instead of being reported as missing.
+
+### Improvements
+
+- **Session logs** — the `session_start` NDJSON line now records the provider and model used.
+- **Skill guidance** — improved escalation guidance and orchestrator boundaries, and enforced per-role `delegationMode` precedence in orchestration templates.
+
 ## 1.2.2 (2026-05-18)
 
 ### Features
