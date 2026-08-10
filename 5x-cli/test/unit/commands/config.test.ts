@@ -22,6 +22,7 @@ import {
 	configUnset,
 	detectActiveConfigSource,
 	discoverNearestTomlPath,
+	isBakedConfigKey,
 	resolveTargetConfigPath,
 } from "../../../src/commands/config.handler.js";
 import { resolveLayeredConfig } from "../../../src/config.js";
@@ -1045,5 +1046,43 @@ describe("config add / remove (unit)", () => {
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Baked-key classification (Phase 5, 201-harness-freshness)
+// ---------------------------------------------------------------------------
+
+describe("isBakedConfigKey", () => {
+	test("accepts the four baked scalars", () => {
+		for (const key of [
+			"author.model",
+			"reviewer.model",
+			"author.delegationMode",
+			"reviewer.delegationMode",
+		]) {
+			expect(isBakedConfigKey(key)).toBe(true);
+		}
+	});
+
+	test("accepts per-harness model overrides for both roles", () => {
+		expect(isBakedConfigKey("author.harnessModels.opencode")).toBe(true);
+		expect(isBakedConfigKey("reviewer.harnessModels.cursor")).toBe(true);
+	});
+
+	test("rejects keys that are not baked into installed assets", () => {
+		for (const key of [
+			"maxStepsPerRun",
+			"author.provider",
+			"author.harnessModels",
+			"harness.autoSync",
+			"paths.plans",
+		]) {
+			expect(isBakedConfigKey(key)).toBe(false);
+		}
+	});
+
+	test("rejects a deeper path under harnessModels", () => {
+		expect(isBakedConfigKey("author.harnessModels.opencode.extra")).toBe(false);
 	});
 });

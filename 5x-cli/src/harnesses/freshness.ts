@@ -187,6 +187,34 @@ export async function freshnessWarningsEnabled(
 	return config?.harness?.freshnessWarnings !== "off";
 }
 
+/**
+ * Fire-point helper (Phase 5): run the check, print one warning block per
+ * stale/unknown report to stderr, and return the reports that warned.
+ *
+ * Never throws and never rejects. Every fire point is a diagnostic bolted onto
+ * a command that must still succeed on its own terms — a broken freshness check
+ * blocking `run init` or a config write would be strictly worse than the status
+ * quo — so failure degrades to silence.
+ *
+ * Warnings go to stderr so `--json` stdout envelopes stay parseable; callers
+ * that also want the additive JSON fields use the returned reports.
+ */
+export async function emitFreshnessWarnings(
+	options?: FreshnessCheckOptions,
+): Promise<FreshnessReport[]> {
+	try {
+		if (!(await freshnessWarningsEnabled(options?.startDir))) return [];
+
+		const warned = (await runHarnessFreshnessChecks(options)).filter(
+			(report) => report.status === "stale" || report.status === "unknown",
+		);
+		for (const report of warned) console.error(formatFreshnessWarning(report));
+		return warned;
+	} catch {
+		return [];
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Warning copy (§2.4)
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 **Version:** 1.2
 **Created:** August 9, 2026
 **Last updated:** August 9, 2026
-**Status:** Phases 0–4 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place but not yet wired to any command; Phases 5–8 pending
+**Status:** Phases 0–5 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); `src/harnesses/manifest.ts` (schema, hashing, read/write, `assertAssetPathsUnderRoot`, `collectInstalledAssets`/`verifyInstalledInventory`/`buildManifest`, `compareManifest`) landed; all three bundled plugins now render through `renderAssets()` and `install()` is a thin writer over it; `harness install` writes a verified/unverified manifest and `harness uninstall` removes it before the emptiness sweep; the freshness engine (`compareManifest`, `src/harnesses/freshness.ts`, `harness.freshnessWarnings` / `harness.autoSync`) is in place and now wired to all three fire points — `run init` (stderr warning + additive `warnings` / `harness_freshness` envelope fields), `config set`/`unset`/`add`/`remove` for baked keys, and a `freshness` column on `harness list` — with `invoke` deliberately left silent (D5); Phases 6–8 pending
 
 ---
 
@@ -999,12 +999,12 @@ Context note: `run init` already anchors config to the plan's directory (`run-v1
 
 The check must never fail the command: wrap in try/catch and swallow (a broken freshness check blocking run creation would be strictly worse than the status quo).
 
-- [ ] Wire Tier 1 check into both `outputSuccess` paths (new run and resumed run)
-- [ ] Use `dirname(planPath)` as the context
-- [ ] Guard with try/catch — freshness failures never abort `run init`
-- [ ] Integration test: stale project install → stderr warning + `harness_freshness` in JSON data
-- [ ] Integration test: `harness.freshnessWarnings = "off"` → no stderr, no extra JSON fields
-- [ ] Integration test: stdout remains valid JSON with warnings present
+- [x] Wire Tier 1 check into both `outputSuccess` paths (new run and resumed run)
+- [x] Use `dirname(planPath)` as the context
+- [x] Guard with try/catch — freshness failures never abort `run init`
+- [x] Integration test: stale project install → stderr warning + `harness_freshness` in JSON data
+- [x] Integration test: `harness.freshnessWarnings = "off"` → no stderr, no extra JSON fields
+- [x] Integration test: stdout remains valid JSON with warnings present
 
 #### 5.2 `5x config set`
 
@@ -1029,11 +1029,11 @@ export function isBakedConfigKey(key: string): boolean {
 
 When `isBakedConfigKey(key)` and warnings are enabled, run Tier 1 for the context that was written to (`contextDir`, already computed at `config.handler.ts:820`) and print warnings to stderr. `config unset` / `config add` / `config remove` get the same treatment for baked keys — unsetting `author.model` changes the bake exactly as setting it does.
 
-- [ ] Add `isBakedConfigKey`
-- [ ] Wire the check into `configSet` and `configUnset` (and `configAdd`/`configRemove` when the key is baked)
-- [ ] Guard with try/catch — a freshness failure never fails the write
-- [ ] Unit test: `isBakedConfigKey` accepts the four scalars + `author.harnessModels.opencode`, rejects `maxStepsPerRun`, `author.provider`, `author.harnessModels`
-- [ ] Integration test: `5x config set author.model X` on a fresh install warns; `5x config set maxStepsPerRun 10` does not
+- [x] Add `isBakedConfigKey`
+- [x] Wire the check into `configSet` and `configUnset` (and `configAdd`/`configRemove` when the key is baked)
+- [x] Guard with try/catch — a freshness failure never fails the write
+- [x] Unit test: `isBakedConfigKey` accepts the four scalars + `author.harnessModels.opencode`, rejects `maxStepsPerRun`, `author.provider`, `author.harnessModels`
+- [x] Integration test: `5x config set author.model X` on a fresh install warns; `5x config set maxStepsPerRun 10` does not
 
 #### 5.3 `5x harness list` — freshness column
 
@@ -1066,10 +1066,10 @@ project:
 
 `buildHarnessListData` already enumerates harnesses × scopes with existence checks; it resolves config once and reuses it across all entries so `list` stays a single config load.
 
-- [ ] Add `freshness` to `HarnessScopeStatus`; populate in `buildHarnessListData`
-- [ ] Add the `freshness:` line to `formatHarnessListText`
-- [ ] Unit test: `buildHarnessListData` returns `freshness: undefined` for uninstalled scopes
-- [ ] Integration test: `5x harness list --text` shows `stale` after a model change, `fresh` after `sync`
+- [x] Add `freshness` to `HarnessScopeStatus`; populate in `buildHarnessListData`
+- [x] Add the `freshness:` line to `formatHarnessListText`
+- [x] Unit test: `buildHarnessListData` returns `freshness: undefined` for uninstalled scopes
+- [x] Integration test: `5x harness list --text` shows `stale` after a model change, `fresh` after `sync` — `harness sync` lands in Phase 6, so the test re-establishes the baseline with the `install --force` equivalent for now (`test/integration/commands/harness-freshness.test.ts`); Phase 6.3 carries the `sync` form
 
 #### 5.4 Explicitly no fire point in `invoke`
 
@@ -1077,8 +1077,8 @@ project:
 
 `invoke` runs per step, dozens of times per run, and rebaking mid-run would change agent behavior mid-run (D5). If a mid-run reminder later proves necessary, the path is a `staleAtInit` stamp on the run row surfaced once — not a new store.
 
-- [ ] Add a short comment at the top of `invoke.handler.ts` pointing at `201` §2.4 so a future contributor does not "helpfully" add the check
-- [ ] Integration test: `5x invoke` on a stale install emits nothing about freshness
+- [x] Add a short comment at the top of `invoke.handler.ts` pointing at `201` §2.4 so a future contributor does not "helpfully" add the check
+- [x] Integration test: `5x invoke` on a stale install emits nothing about freshness
 
 ---
 

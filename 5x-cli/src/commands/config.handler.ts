@@ -29,6 +29,7 @@ import {
 	resolveWritableConfigKey,
 	type WritableKeyResolution,
 } from "../config-registry.js";
+import { emitFreshnessWarnings } from "../harnesses/freshness.js";
 import { getOutputFormat, outputError, outputSuccess } from "../output.js";
 import { resolveAnsi } from "../utils/ansi.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
@@ -800,6 +801,49 @@ export async function configShow(params: ConfigShowParams = {}): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Harness freshness fire point (201-harness-freshness §2.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Config keys `harness install` bakes into installed assets.
+ *
+ * Per-role models land in agent frontmatter and delegation modes select which
+ * skill sections render, so changing any of them makes every installed harness
+ * asset stale — which is exactly the moment to say so.
+ */
+const BAKED_CONFIG_KEYS = [
+	"author.model",
+	"reviewer.model",
+	"author.delegationMode",
+	"reviewer.delegationMode",
+] as const;
+
+/** True for a baked scalar key or any `<role>.harnessModels.<harness>` key. */
+export function isBakedConfigKey(key: string): boolean {
+	if ((BAKED_CONFIG_KEYS as readonly string[]).includes(key)) return true;
+	return /^(author|reviewer)\.harnessModels\.[^.]+$/.test(key);
+}
+
+/**
+ * Warn about now-stale harness assets at the point of cause.
+ *
+ * Only fires for keys that are actually baked — a `maxStepsPerRun` edit changes
+ * nothing on disk, and a warning there is one the user learns to ignore. Unset
+ * and array mutations get the same treatment as set: removing `author.model`
+ * changes the bake exactly as setting it does.
+ *
+ * `emitFreshnessWarnings` never throws, so a freshness failure can never fail a
+ * config write that already succeeded.
+ */
+async function warnIfBakedKeyChanged(
+	key: string,
+	contextDir: string,
+): Promise<void> {
+	if (!isBakedConfigKey(key)) return;
+	await emitFreshnessWarnings({ startDir: contextDir });
+}
+
+// ---------------------------------------------------------------------------
 // config set / unset
 // ---------------------------------------------------------------------------
 
@@ -858,6 +902,8 @@ export async function configSet(params: ConfigSetParams): Promise<void> {
 	const newToml = tomlPatch(textForPatch === "" ? "\n" : textForPatch, merged);
 
 	writeFileSync(targetPath, newToml, "utf-8");
+
+	await warnIfBakedKeyChanged(key, contextDir);
 
 	outputSuccess({ key, value: coerced, path: targetPath }, (d) => {
 		console.log(`Set ${d.key} = ${JSON.stringify(d.value)}`);
@@ -921,6 +967,7 @@ export async function configUnset(params: ConfigUnsetParams): Promise<void> {
 
 	if (isDocumentEmpty(clone)) {
 		unlinkSync(targetPath);
+		await warnIfBakedKeyChanged(key, contextDir);
 		outputSuccess({ key, path: targetPath, removed: true as const }, (d) => {
 			console.log(`Removed last key — deleted ${d.path}`);
 		});
@@ -929,6 +976,8 @@ export async function configUnset(params: ConfigUnsetParams): Promise<void> {
 
 	const newToml = tomlPatch(existingText, clone);
 	writeFileSync(targetPath, newToml, "utf-8");
+
+	await warnIfBakedKeyChanged(key, contextDir);
 
 	outputSuccess({ key, path: targetPath }, (d) => {
 		console.log(`Unset ${d.key}`);
@@ -1028,6 +1077,8 @@ export async function configAdd(params: ConfigAddParams): Promise<void> {
 	const newToml = tomlPatch(textForPatch === "" ? "\n" : textForPatch, merged);
 
 	writeFileSync(targetPath, newToml, "utf-8");
+
+	await warnIfBakedKeyChanged(key, contextDir);
 
 	outputSuccess({ key, value, path: targetPath, array: next }, (d) => {
 		console.log(`Added ${JSON.stringify(d.value)} to ${d.key}`);
@@ -1135,6 +1186,7 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 
 		if (isDocumentEmpty(clone)) {
 			unlinkSync(targetPath);
+			await warnIfBakedKeyChanged(key, contextDir);
 			outputSuccess(
 				{ key, value, path: targetPath, removedFile: true as const },
 				(d) => {
@@ -1146,6 +1198,7 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 
 		const newToml = tomlPatch(existingText, clone);
 		writeFileSync(targetPath, newToml, "utf-8");
+		await warnIfBakedKeyChanged(key, contextDir);
 		outputSuccess({ key, value, path: targetPath }, (d) => {
 			console.log(`Removed ${JSON.stringify(d.value)} from ${d.key}`);
 			console.log(`Wrote ${d.path}`);
@@ -1164,6 +1217,8 @@ export async function configRemove(params: ConfigRemoveParams): Promise<void> {
 	);
 	const newToml = tomlPatch(textForPatch, merged);
 	writeFileSync(targetPath, newToml, "utf-8");
+
+	await warnIfBakedKeyChanged(key, contextDir);
 
 	outputSuccess({ key, value, path: targetPath, array: next }, (d) => {
 		console.log(`Removed ${JSON.stringify(d.value)} from ${d.key}`);

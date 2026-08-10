@@ -8,6 +8,13 @@
  * auto-resolve the effective working directory and plan path from the
  * run's worktree mapping. Artifact paths (logs, template overrides) are
  * anchored to `controlPlaneRoot/stateDir` rather than `projectRoot/.5x`.
+ *
+ * Deliberately NOT a harness-freshness fire point (201-harness-freshness §2.4,
+ * D5): `invoke` runs dozens of times per run, so a check here would repeat the
+ * same warning per step, and acting on it mid-run would change agent behavior
+ * mid-run. The fire points are `run init`, `config set`, and `harness list`. If
+ * a mid-run reminder ever proves necessary, the path is a `staleAtInit` stamp on
+ * the run row surfaced once — not a check in this file.
  */
 
 import { dirname, join, resolve } from "node:path";

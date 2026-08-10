@@ -1014,6 +1014,122 @@ describe("formatHarnessListText", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Freshness column (Phase 5, 201-harness-freshness)
+// ---------------------------------------------------------------------------
+
+describe("buildHarnessListData freshness", () => {
+	test("omits freshness for uninstalled scopes", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+
+			const output = await buildHarnessListData(tmp, fakeHome);
+			for (const harness of output.harnesses) {
+				for (const status of Object.values(harness.scopes)) {
+					expect(status.installed).toBe(false);
+					expect(status.freshness).toBeUndefined();
+				}
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports fresh right after install and stale after a model change", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-A"\n',
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			const installed = await buildHarnessListData(tmp, fakeHome);
+			const fresh = installed.harnesses.find((h) => h.name === "opencode")
+				?.scopes.project;
+			expect(fresh?.installed).toBe(true);
+			expect(fresh?.freshness?.status).toBe("fresh");
+			expect(fresh?.freshness?.reason).toBeNull();
+			// A scope that was never installed still carries no freshness field.
+			expect(
+				installed.harnesses.find((h) => h.name === "opencode")?.scopes.user
+					?.freshness,
+			).toBeUndefined();
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-B"\n',
+				"utf-8",
+			);
+
+			const stale = (await buildHarnessListData(tmp, fakeHome)).harnesses.find(
+				(h) => h.name === "opencode",
+			)?.scopes.project;
+			expect(stale?.freshness?.status).toBe("stale");
+			expect(stale?.freshness?.reason).toBe("inputs-changed");
+			expect(stale?.freshness?.inputDeltas).toEqual([
+				{
+					key: "author.model",
+					installed: "anthropic/author-A",
+					current: "anthropic/author-B",
+				},
+			]);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("text output carries a freshness line only for installed scopes", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			expect(await captureHarnessListText(tmp, fakeHome)).not.toContain(
+				"freshness:",
+			);
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-A"\n',
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+			expect(await captureHarnessListText(tmp, fakeHome)).toContain(
+				"freshness: fresh",
+			);
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-B"\n',
+				"utf-8",
+			);
+			expect(await captureHarnessListText(tmp, fakeHome)).toContain(
+				"freshness: stale (inputs-changed)",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Manifest write on install / removal on uninstall (Phase 3, 201-harness-freshness)
 // ---------------------------------------------------------------------------
 

@@ -11,13 +11,17 @@ import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../harnesses/factory.js";
+import { runHarnessFreshnessChecks } from "../harnesses/freshness.js";
 import { removeDirIfEmpty } from "../harnesses/installer.js";
 import type { HarnessLocations } from "../harnesses/locations.js";
 import {
 	assetsFromOnDisk,
 	buildManifest,
 	collectInstalledAssets,
+	type FreshnessReason,
+	type FreshnessStatus,
 	hashContent,
+	type InputDelta,
 	type KindedInstallSummary,
 	MANIFEST_FILENAME,
 	type ManifestBaseline,
@@ -81,6 +85,13 @@ export interface HarnessUninstallOutput {
 	manifests: Partial<Record<HarnessScope, boolean>>;
 }
 
+/** Tier 1 freshness summary for one installed scope (201-harness-freshness §2.4). */
+export interface HarnessScopeFreshness {
+	status: FreshnessStatus;
+	reason: FreshnessReason;
+	inputDeltas: InputDelta[];
+}
+
 /** Per-scope installed state for harness list output. */
 export interface HarnessScopeStatus {
 	installed: boolean;
@@ -92,6 +103,8 @@ export interface HarnessScopeStatus {
 	capabilities?: {
 		rules?: boolean;
 	};
+	/** Tier 1 freshness (§2.4). Absent when the scope is not installed. */
+	freshness?: HarnessScopeFreshness;
 }
 
 /** A single harness entry in list output. */
@@ -385,6 +398,7 @@ export async function buildHarnessListData(
 
 	const names = listBundledHarnesses();
 	const harnesses: HarnessListEntry[] = [];
+	const freshness = await collectScopeFreshness(cwd, homeDir);
 
 	for (const name of names) {
 		const { plugin, source } = await loadHarnessPlugin(name);
@@ -434,6 +448,11 @@ export async function buildHarnessListData(
 				files,
 				unsupported: unsupportedRules ? { rules: true } : undefined,
 				capabilities,
+				// A scope with no managed files on disk has nothing to be stale, and
+				// the freshness engine reports it `not-installed` — omit the field
+				// entirely rather than surface a status that means "n/a".
+				freshness:
+					files.length > 0 ? freshness.get(`${name}:${scope}`) : undefined,
 			};
 		}
 
@@ -441,6 +460,36 @@ export async function buildHarnessListData(
 	}
 
 	return { harnesses };
+}
+
+/**
+ * Tier 1 freshness for the whole harness × scope grid, keyed `harness:scope`.
+ *
+ * One `runHarnessFreshnessChecks` call resolves config once for every entry, so
+ * `list` stays a single config load. A failure degrades `list` to its
+ * pre-freshness output instead of failing it — listing what is installed must
+ * keep working when the freshness engine cannot answer.
+ */
+async function collectScopeFreshness(
+	startDir: string,
+	homeDir?: string,
+): Promise<Map<string, HarnessScopeFreshness>> {
+	const byScope = new Map<string, HarnessScopeFreshness>();
+	try {
+		for (const report of await runHarnessFreshnessChecks({
+			startDir,
+			homeDir,
+		})) {
+			byScope.set(`${report.harness}:${report.scope}`, {
+				status: report.status,
+				reason: report.reason,
+				inputDeltas: report.inputDeltas,
+			});
+		}
+	} catch {
+		// Reported as absent freshness, not as a failed list.
+	}
+	return byScope;
 }
 
 /**
@@ -661,6 +710,12 @@ export function formatHarnessListText(
 
 			log(`${scope}:`);
 			log(`  installed: ${status.installed}`);
+			if (status.freshness) {
+				const { status: freshnessStatus, reason } = status.freshness;
+				log(
+					`  freshness: ${reason ? `${freshnessStatus} (${reason})` : freshnessStatus}`,
+				);
+			}
 			log(`  root: ${status.root}`);
 
 			const skills = status.files.filter((file) => file.startsWith("skills/"));
