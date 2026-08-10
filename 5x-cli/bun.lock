@@ -31,9 +31,9 @@
     },
     "packages/provider-cursor-agent": {
       "name": "@5x-ai/provider-cursor-agent",
-      "version": "0.0.1",
+      "version": "1.0.0",
       "peerDependencies": {
-        "@5x-ai/5x-cli": "file:../..",
+        "@5x-ai/5x-cli": "^1.3.0",
       },
     },
     "packages/provider-invalid": {
@@ -85,7 +85,5 @@
     "yaml": ["yaml@2.8.2", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A=="],
 
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
-
-    "@5x-ai/provider-cursor-agent/@5x-ai/5x-cli": ["5x-cli@root:", {}],
   }
 }

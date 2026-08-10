@@ -7,6 +7,16 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+## 1.3.0 (2026-08-10)
+
+### Features
+
+- **Cursor Agent provider** — the `cursor-agent` provider is now available as a published plugin, `@5x-ai/provider-cursor-agent` (1.0.0). Install it alongside the CLI and set `provider = "cursor-agent"` on a role; options live in an optional `[cursor-agent]` config table. Includes session create/resume via `agent create-chat`/`--resume`, streamed event mapping, prompt-size guarding, structured-output extraction, and credential forwarding via env (never argv).
+
+### Improvements
+
+- **Provider docs** — documented the provider plugin convention (short name → `@5x-ai/provider-<name>`) and the cursor-agent configuration surface in the README.
+
 ## 1.2.3 (2026-08-10)
 
 ### Fixes

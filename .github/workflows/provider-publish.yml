@@ -1,0 +1,83 @@
+name: Stage provider plugin release
+
+on:
+  push:
+    tags:
+      - "provider-*-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing provider release tag to stage (for example, provider-cursor-agent-v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: 5x-provider-npm-publish
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Stage npm package
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Resolve package from release tag
+        id: pkg
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^provider-[a-z0-9-]+-v[0-9A-Za-z.-]+$'; then
+            echo "release_tag must match provider-<name>-v<version>" >&2
+            exit 1
+          fi
+          version="${RELEASE_TAG##*-v}"
+          package_dir="${RELEASE_TAG%-v"$version"}"
+          test -f "5x-cli/packages/$package_dir/package.json"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=5x-cli/packages/$package_dir" >> "$GITHUB_OUTPUT"
+      - name: Verify release tag and version
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        env:
+          EXPECTED_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git describe --exact-match --tags HEAD)" = "$RELEASE_TAG"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$package_version" = "$EXPECTED_VERSION"
+          is_private="$(node -p "require('./package.json').private === true")"
+          if [ "$is_private" = "true" ]; then
+            echo "refusing to stage a private package" >&2
+            exit 1
+          fi
+      - name: Install dependencies
+        working-directory: 5x-cli
+        run: bun install --frozen-lockfile
+      - name: Lint
+        working-directory: 5x-cli
+        run: bun run lint
+      - name: Typecheck
+        working-directory: 5x-cli
+        run: bun run typecheck
+      - name: Test
+        working-directory: 5x-cli
+        run: bun run test
+      - name: Check npm package contents
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm pack --dry-run
+      - name: Stage npm package
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm stage publish --access public

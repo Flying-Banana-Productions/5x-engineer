@@ -1,12 +1,38 @@
 {
   "name": "@5x-ai/provider-cursor-agent",
-  "version": "0.0.1",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Cursor Agent CLI provider plugin for @5x-ai/5x-cli",
+  "license": "MIT",
+  "author": "Flying Banana Productions",
+  "homepage": "https://github.com/Flying-Banana-Productions/5x-engineer/tree/main/5x-cli/packages/provider-cursor-agent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Flying-Banana-Productions/5x-engineer.git",
+    "directory": "5x-cli/packages/provider-cursor-agent"
+  },
+  "bugs": {
+    "url": "https://github.com/Flying-Banana-Productions/5x-engineer/issues"
+  },
+  "keywords": [
+    "5x",
+    "cursor",
+    "cursor-agent",
+    "provider",
+    "plugin",
+    "ai"
+  ],
   "type": "module",
+  "files": [
+    "src"
+  ],
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
   "peerDependencies": {
-    "@5x-ai/5x-cli": "file:../.."
+    "@5x-ai/5x-cli": "^1.3.0"
   }
 }

@@ -519,7 +519,7 @@ qualityGates = [
 ]
 
 [author]
-provider = "opencode"                  # "opencode" (default) or plugin name
+provider = "opencode"                  # "opencode" (default) or a plugin name, e.g. "cursor-agent"
 model = "anthropic/claude-sonnet-4-6"
 timeout = 300                          # Inactivity timeout in seconds
 # continuePhaseSessions = true         # Require --session for continued reviews (opt-in)
@@ -545,6 +545,8 @@ path = ".5x"    # Directory path (DB file is always 5x.db within this directory)
 [worktree]
 postCreate = "bun install"
 ```
+
+**Provider plugins:** Any provider other than `opencode` is loaded as a plugin package. Short names resolve by convention — `provider = "cursor-agent"` loads `@5x-ai/provider-cursor-agent`; full package names starting with `@` are used as-is. Install the plugin next to the CLI (`npm install @5x-ai/provider-cursor-agent`) and put provider-specific options in a top-level table named after the provider (e.g. `[cursor-agent]`). Currently published: [`@5x-ai/provider-cursor-agent`](packages/provider-cursor-agent) (Cursor Agent CLI).
 
 **Config layering:** In monorepos, sub-projects can have their own `5x.toml` that overrides the root config. Config resolution is anchored to the plan's location — run-scoped commands use `dirname(plan_path)` to find the nearest `5x.toml`. Objects merge deeply (sub-project inherits unset fields from root), arrays replace entirely, and `db` settings always come from the root config.
 
