@@ -9,3 +9,8 @@
     }
   ]
 }
+{
+  "verdict": "approved",
+  "summary": "Nested manifest validation now fails closed; targeted manifest, comparison, and freshness tests plus TypeScript checks pass.",
+  "issues": []
+}
