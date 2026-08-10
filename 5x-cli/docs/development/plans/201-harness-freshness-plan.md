@@ -1069,6 +1069,8 @@ project:
 - [x] Add `freshness` to `HarnessScopeStatus`; populate in `buildHarnessListData`
 - [x] Add the `freshness:` line to `formatHarnessListText`
 - [x] Unit test: `buildHarnessListData` returns `freshness: undefined` for uninstalled scopes
+- [x] Honor `harness.freshnessWarnings = "off"` — skip the check and omit `freshness` from text and JSON, like every other fire point
+- [x] Integration test: with warnings off, a stale install lists `installed: true` and no `freshness` field
 - [x] Integration test: `5x harness list --text` shows `stale` after a model change, `fresh` after `sync` — `harness sync` lands in Phase 6, so the test re-establishes the baseline with the `install --force` equivalent for now (`test/integration/commands/harness-freshness.test.ts`); Phase 6.3 carries the `sync` form
 
 #### 5.4 Explicitly no fire point in `invoke`

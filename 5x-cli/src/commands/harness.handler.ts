@@ -11,7 +11,10 @@ import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../harnesses/factory.js";
-import { runHarnessFreshnessChecks } from "../harnesses/freshness.js";
+import {
+	freshnessWarningsEnabled,
+	runHarnessFreshnessChecks,
+} from "../harnesses/freshness.js";
 import { removeDirIfEmpty } from "../harnesses/installer.js";
 import type { HarnessLocations } from "../harnesses/locations.js";
 import {
@@ -469,6 +472,11 @@ export async function buildHarnessListData(
  * `list` stays a single config load. A failure degrades `list` to its
  * pre-freshness output instead of failing it — listing what is installed must
  * keep working when the freshness engine cannot answer.
+ *
+ * `harness.freshnessWarnings = "off"` silences every Phase 5 fire point, and
+ * `list` is one of them: the map stays empty so no scope carries a `freshness`
+ * field in either text or JSON output. The check runs before the engine, so
+ * suppression also skips the work.
  */
 async function collectScopeFreshness(
 	startDir: string,
@@ -476,6 +484,8 @@ async function collectScopeFreshness(
 ): Promise<Map<string, HarnessScopeFreshness>> {
 	const byScope = new Map<string, HarnessScopeFreshness>();
 	try {
+		if (!(await freshnessWarningsEnabled(startDir))) return byScope;
+
 		for (const report of await runHarnessFreshnessChecks({
 			startDir,
 			homeDir,

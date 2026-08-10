@@ -418,6 +418,50 @@ describe("harness list freshness column", () => {
 		},
 		{ timeout: 90000 },
 	);
+
+	test(
+		'harness.freshnessWarnings = "off" drops the column from text and JSON',
+		async () => {
+			const project = await setupProject();
+			try {
+				await makeStale(project);
+				expect(
+					(
+						await run5x(project, [
+							"config",
+							"set",
+							"harness.freshnessWarnings",
+							"off",
+						])
+					).exitCode,
+				).toBe(0);
+
+				const text = await run5x(project, ["harness", "list", "--text"]);
+				expect(text.exitCode).toBe(0);
+				// Still installed, still stale on disk — only the signal is suppressed.
+				expect(text.stdout).toContain("installed: true");
+				expect(text.stdout).not.toContain("freshness:");
+
+				const json = await run5x(project, ["harness", "list"]);
+				expect(json.exitCode).toBe(0);
+				const data = parseEnvelope(json.stdout).data as {
+					harnesses: {
+						name: string;
+						scopes: Record<
+							string,
+							{ installed: boolean; freshness?: { status: string } }
+						>;
+					}[];
+				};
+				const opencode = data.harnesses.find((h) => h.name === "opencode");
+				expect(opencode?.scopes.project?.installed).toBe(true);
+				expect(opencode?.scopes.project?.freshness).toBeUndefined();
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
 });
 
 // ---------------------------------------------------------------------------
