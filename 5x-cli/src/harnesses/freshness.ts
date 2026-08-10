@@ -324,8 +324,13 @@ function toRelativeContextDir(projectRoot: string, contextDir: string): string {
 	return rel === "" ? "" : rel.split(sep).join("/");
 }
 
-/** A plugin that throws while rendering degrades Tier 2, it does not fail it. */
-async function safeRenderAssets(
+/**
+ * A plugin that throws while rendering degrades Tier 2, it does not fail it.
+ *
+ * Shared with `harness sync --check`, which projects the write set from the same
+ * render and needs the same tolerance.
+ */
+export async function safeRenderAssets(
 	plugin: HarnessPlugin,
 	ctx: HarnessInstallContext,
 ): Promise<RenderedAsset[] | undefined> {

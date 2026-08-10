@@ -449,6 +449,114 @@ describe("sync --check", () => {
 	);
 });
 
+describe("sync --check over a manifest-less install", () => {
+	test(
+		"reports the assets adoption would overwrite instead of an empty change set",
+		async () => {
+			const project = await setupProject();
+			try {
+				expect((await setModel(project, "test/model-A")).exitCode).toBe(0);
+				expect((await installOpencode(project)).exitCode).toBe(0);
+				rmSync(opencodePath(project, MANIFEST_FILENAME));
+
+				const before = snapshotMtimes(project);
+				const check = await run5x(project, ["harness", "sync", "--check"]);
+				expect(check.exitCode).toBe(0);
+
+				const result = opencodeProject(parseSync(check.stdout));
+				expect(result.action).toBe("checked");
+				expect(result.before).toBe("unknown");
+				// There are no recorded hashes to diff against, but a real sync would
+				// still force-overwrite every managed asset and adopt a baseline —
+				// `--check` must say so rather than report nothing.
+				expect(result.changed).toContain("agents/5x-plan-author.md");
+				expect(result.changed).toContain("skills/5x/SKILL.md");
+				expect(result.notes.join(" ")).toContain("adopt");
+
+				// Still a report, not a write.
+				expect(snapshotMtimes(project)).toEqual(before);
+				expect(existsSync(opencodePath(project, MANIFEST_FILENAME))).toBe(
+					false,
+				);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
+
+	test(
+		"the checked change set matches what the following real sync reports",
+		async () => {
+			const project = await setupProject();
+			try {
+				expect((await setModel(project, "test/model-A")).exitCode).toBe(0);
+				expect((await installOpencode(project)).exitCode).toBe(0);
+				rmSync(opencodePath(project, MANIFEST_FILENAME));
+
+				const check = await run5x(project, ["harness", "sync", "--check"]);
+				expect(check.exitCode).toBe(0);
+				const checked = opencodeProject(parseSync(check.stdout));
+
+				const sync = await run5x(project, ["harness", "sync"]);
+				expect(sync.exitCode).toBe(0);
+				const applied = opencodeProject(parseSync(sync.stdout));
+
+				expect(applied.action).toBe("adopted");
+				expect([...checked.changed].sort()).toEqual(
+					[...applied.changed].sort(),
+				);
+				expect([...checked.removed].sort()).toEqual(
+					[...applied.removed].sort(),
+				);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+});
+
+describe("sync --check reports pending removals", () => {
+	test(
+		"a native → invoke change lists the agents sync would sweep",
+		async () => {
+			const project = await setupProject();
+			try {
+				expect((await setModel(project, "test/model-A")).exitCode).toBe(0);
+				expect((await installOpencode(project)).exitCode).toBe(0);
+				expect(
+					(
+						await run5x(project, [
+							"config",
+							"set",
+							"author.delegationMode",
+							"invoke",
+						])
+					).exitCode,
+				).toBe(0);
+
+				const check = await run5x(project, ["harness", "sync", "--check"]);
+				expect(check.exitCode).toBe(0);
+				const result = opencodeProject(parseSync(check.stdout));
+				expect(result.removed).toContain("agents/5x-plan-author.md");
+				expect(result.removed).toContain("agents/5x-code-author.md");
+				// The reviewer agent is still rendered, so it is rewritten, not swept.
+				expect(result.removed).not.toContain("agents/5x-reviewer.md");
+				expect(result.changed).toContain("agents/5x-reviewer.md");
+
+				// The file is still there — `--check` only reports.
+				expect(
+					existsSync(opencodePath(project, "agents", "5x-plan-author.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
+});
+
 // ---------------------------------------------------------------------------
 // Delegation-mode transition
 // ---------------------------------------------------------------------------

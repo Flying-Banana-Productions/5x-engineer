@@ -13,12 +13,13 @@ import {
 } from "../harnesses/factory.js";
 import {
 	freshnessWarningsEnabled,
+	listInstalledAssetPaths,
 	runHarnessFreshnessChecks,
+	safeRenderAssets,
 } from "../harnesses/freshness.js";
 import { removeDirIfEmpty } from "../harnesses/installer.js";
 import type { HarnessLocations } from "../harnesses/locations.js";
 import {
-	type AssetDeltaState,
 	assetsFromOnDisk,
 	buildManifest,
 	collectInstalledAssets,
@@ -611,14 +612,6 @@ export interface HarnessSyncOutput {
 	sweptBundledOnly: true;
 }
 
-/** Asset delta states a sync would rewrite. `modified` only with `--force`. */
-const REWRITTEN_DELTA_STATES: ReadonlySet<AssetDeltaState> = new Set([
-	"drifted",
-	"added",
-	"missing",
-	"modified",
-]);
-
 /**
  * Re-render every installed harness scope so the assets on disk match the
  * config resolving right now.
@@ -770,20 +763,24 @@ async function syncOneScope(
 	const adopting = isAdoption(locations.rootDir);
 
 	if (ctx.params.check) {
+		const projected = await projectSyncWrites(plugin, report, locations, ctx);
+		const notes: string[] = [];
+		if (adopting) {
+			notes.push(
+				"no verified baseline on disk — sync would overwrite every managed asset and adopt one",
+			);
+		}
+		if (!projected.rendered) {
+			notes.push(
+				"this harness cannot preview a re-render — reporting the managed assets on disk",
+			);
+		}
 		return {
 			...base,
 			action: "checked",
-			changed: report.assetDeltas
-				.filter((delta) => REWRITTEN_DELTA_STATES.has(delta.state))
-				.map((delta) => delta.path),
-			removed: report.assetDeltas
-				.filter((delta) => delta.state === "orphaned")
-				.map((delta) => delta.path),
-			notes: adopting
-				? [
-						"no verified baseline on disk — sync would overwrite every managed asset and adopt one",
-					]
-				: [],
+			changed: projected.changed,
+			removed: projected.removed,
+			notes,
 		};
 	}
 
@@ -844,6 +841,67 @@ async function syncOneScope(
 		]),
 		removed: summaryPaths(summaries, (summary) => summary.removed),
 		notes,
+	};
+}
+
+/** What a write-attempting sync would touch, as `--check` reports it. */
+interface ProjectedSyncWrites {
+	changed: string[];
+	removed: string[];
+	/** False when the plugin could not re-render — the paths are on-disk only. */
+	rendered: boolean;
+}
+
+/**
+ * Project the paths a real sync would write and remove for this scope.
+ *
+ * `--check` must report what sync *would do*, and sync installs with
+ * `force: true` — so it rewrites every rendered asset, not merely the ones that
+ * differ. Deriving the answer from `assetDeltas` under-reports in exactly the
+ * cases that matter most: a scope with no manifest, no recorded hashes, or an
+ * unverified baseline produces no deltas at all, so `--check` would promise
+ * "nothing changes" right before sync force-overwrites the tree and adopts a
+ * baseline (§6.1 steps 5 and 7). Projecting from the same render install
+ * dispatches over keeps `--check` and the write path reporting one set of paths.
+ *
+ * Removals are narrower than "on disk but not rendered": `install()` only sweeps
+ * stale *managed agent* files (`removeStaleAgentFiles`), so an unrendered skill
+ * or rule survives a sync and must not be reported as removed.
+ */
+async function projectSyncWrites(
+	plugin: HarnessPlugin,
+	report: FreshnessReport,
+	locations: HarnessLocations,
+	ctx: {
+		cwd: string;
+		projectRoot: string;
+		params: HarnessSyncParams;
+	},
+): Promise<ProjectedSyncWrites> {
+	const onDisk = listInstalledAssetPaths(plugin, report.scope, locations);
+
+	const baked = await resolveBakedConfig(ctx.cwd, report.harness);
+	const rendered = await safeRenderAssets(plugin, {
+		scope: report.scope,
+		projectRoot: ctx.projectRoot,
+		force: true,
+		config: baked.config,
+		homeDir: ctx.params.homeDir,
+	});
+
+	// Without a render the managed files already on disk are the best available
+	// evidence — every one of them is rewritten by the forced install.
+	if (!rendered) {
+		return { changed: [...onDisk].sort(), removed: [], rendered: false };
+	}
+
+	const renderedPaths = new Set(rendered.map((asset) => asset.path));
+	return {
+		changed: [...renderedPaths].sort(),
+		removed: onDisk
+			.filter((path) => path.startsWith("agents/") && !renderedPaths.has(path))
+			.sort(),
+		rendered: true,
 	};
 }
 
