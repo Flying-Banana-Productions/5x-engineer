@@ -177,6 +177,87 @@ describe("compareManifest — Tier 1 status matrix", () => {
 		}
 	});
 
+	// The hazard: `normalizeInputs` supplies defaults for every absent field, so
+	// an incomplete recorded `inputs` still fingerprint-matches the current
+	// config and would read `fresh` while describing a bake nobody performed. A
+	// hand-edited or partially-committed manifest must fail closed instead.
+	const incompleteInputs: Array<
+		[string, (inputs: Record<string, unknown>) => void]
+	> = [
+		["plugin", (i) => delete i.plugin],
+		["authorModel", (i) => delete i.authorModel],
+		["reviewerModel", (i) => delete i.reviewerModel],
+		["authorDelegationMode", (i) => delete i.authorDelegationMode],
+		["reviewerDelegationMode", (i) => delete i.reviewerDelegationMode],
+		["cliVersion", (i) => delete i.cliVersion],
+		["harnessPluginVersion", (i) => delete i.harnessPluginVersion],
+	];
+
+	for (const [field, mutate] of incompleteInputs) {
+		test(`a manifest missing inputs.${field} reads unreadable, never fresh`, () => {
+			const dir = makeTmpDir();
+			try {
+				const raw = JSON.parse(JSON.stringify(makeManifest())) as Record<
+					string,
+					unknown
+				>;
+				mutate(raw.inputs as Record<string, unknown>);
+				// The recorded `hash` is untouched and still matches the normalized
+				// current inputs — precisely why the shape guard, not the
+				// fingerprint, has to catch this.
+				expect(raw.hash).toBe(computeFingerprint(normalizeInputs(BASE_INPUTS)));
+				writeFileSync(
+					join(dir, MANIFEST_FILENAME),
+					JSON.stringify(raw),
+					"utf-8",
+				);
+
+				const report = compareTier1({ rootDir: dir });
+				expect(report.status).toBe("unknown");
+				expect(report.reason).toBe("manifest-unreadable");
+				expect(report.losslessRefresh).toBe(false);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test("a manifest missing installedFrom.contextDir reads unreadable, never fresh", () => {
+		const dir = makeTmpDir();
+		try {
+			const raw = JSON.parse(JSON.stringify(makeManifest())) as Record<
+				string,
+				unknown
+			>;
+			delete (raw.installedFrom as Record<string, unknown>).contextDir;
+			writeFileSync(join(dir, MANIFEST_FILENAME), JSON.stringify(raw), "utf-8");
+
+			const report = compareTier1({ rootDir: dir });
+			expect(report.status).toBe("unknown");
+			expect(report.reason).toBe("manifest-unreadable");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a plugin-contributed input set of strings and numbers stays valid", () => {
+		const dir = makeTmpDir();
+		try {
+			const inputs = normalizeInputs({
+				...BASE_INPUTS,
+				plugin: { theme: "dark", depth: 3 },
+			});
+			const report = compareTier1({
+				rootDir: dir,
+				manifest: { inputs },
+				current: { plugin: { theme: "dark", depth: 3 } },
+			});
+			expect(report.status).toBe("fresh");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("configResolved: false reports unknown / config-unresolved", () => {
 		const dir = makeTmpDir();
 		try {

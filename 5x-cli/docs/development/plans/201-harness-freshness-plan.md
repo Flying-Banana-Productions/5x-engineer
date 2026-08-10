@@ -404,13 +404,14 @@ export function removeManifest(rootDir: string): boolean;
 export function toManifestPath(rootDir: string, absolutePath: string): string;
 ```
 
-Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `baseline` ∈ `{verified,unverified}`, `inputs` and `installedFrom` are objects, and `assets` is an array of `{path, sha256}` strings.
+Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `baseline` ∈ `{verified,unverified}`, and `assets` is an array of `{path, sha256}` strings. `inputs` and `installedFrom` are validated **field-by-field**, not merely as objects: every `ManifestInputs` field must be present with its exact type (models `string | null`, delegation modes ∈ `{native,invoke,null}`, versions strings, `plugin` an object whose values are strings or finite numbers) and both provenance fields must be strings. An absent field is corrupt, not defaulted — `normalizeInputs` fills defaults on the *compare* side, so a manifest that simply drops e.g. `inputs.plugin` would still fingerprint-match current config and read `fresh` while describing a bake nobody performed.
 
 A missing or unrecognized `baseline` is **not** defaulted to `"verified"` — the guard rejects it and `readManifest` returns `null`, so an old or hand-written manifest fails closed to `unknown` rather than asserting a baseline nobody verified.
 
 - [x] Implement the five functions
 - [x] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
 - [x] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
+- [x] Unit test: each nested corruption mode — any missing/mistyped `inputs` field, a non-object or bad-valued `inputs.plugin`, any missing/mistyped `installedFrom` field — returns `null`
 - [x] Unit test: `removeManifest` returns `false` when absent, `true` after a write
 - [x] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
 
@@ -848,6 +849,7 @@ Implementation notes (choices the algorithm above left open):
 - [x] Implement `compareManifest` per the algorithm
 - [x] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
 - [x] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
+- [x] Unit test: a manifest with an incomplete `inputs` (any field deleted) whose recorded `hash` still matches current config returns `unknown` / `manifest-unreadable`, never `fresh`
 - [x] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
 - [x] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
 - [x] Unit test: Tier 1 never returns `losslessRefresh: true`

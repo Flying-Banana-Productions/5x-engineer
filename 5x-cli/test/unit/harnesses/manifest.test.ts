@@ -478,6 +478,88 @@ describe("writeManifest / readManifest", () => {
 				"an absolute asset path",
 				(m) => (m.assets = [{ path: "/etc/passwd", sha256: "abc" }]),
 			],
+			// Nested `inputs` corruption. Each of these would otherwise be filled in
+			// by `normalizeInputs` on the compare side and read `fresh` while
+			// describing a bake nobody performed.
+			[
+				"inputs missing plugin",
+				(m) => delete (m.inputs as Record<string, unknown>).plugin,
+			],
+			[
+				"inputs with a non-object plugin",
+				(m) => ((m.inputs as Record<string, unknown>).plugin = "none"),
+			],
+			[
+				"inputs with an array plugin",
+				(m) => ((m.inputs as Record<string, unknown>).plugin = []),
+			],
+			[
+				"a plugin input whose value is neither string nor number",
+				(m) => ((m.inputs as Record<string, unknown>).plugin = { flag: true }),
+			],
+			[
+				"a plugin input whose value is a non-finite number",
+				(m) =>
+					((m.inputs as Record<string, unknown>).plugin = { n: Number.NaN }),
+			],
+			[
+				"inputs missing authorModel",
+				(m) => delete (m.inputs as Record<string, unknown>).authorModel,
+			],
+			[
+				"inputs missing reviewerModel",
+				(m) => delete (m.inputs as Record<string, unknown>).reviewerModel,
+			],
+			[
+				"inputs with a non-string authorModel",
+				(m) => ((m.inputs as Record<string, unknown>).authorModel = 7),
+			],
+			[
+				"inputs missing authorDelegationMode",
+				(m) =>
+					delete (m.inputs as Record<string, unknown>).authorDelegationMode,
+			],
+			[
+				"inputs missing reviewerDelegationMode",
+				(m) =>
+					delete (m.inputs as Record<string, unknown>).reviewerDelegationMode,
+			],
+			[
+				"inputs with an unknown authorDelegationMode",
+				(m) =>
+					((m.inputs as Record<string, unknown>).authorDelegationMode =
+						"delegate"),
+			],
+			[
+				"inputs missing cliVersion",
+				(m) => delete (m.inputs as Record<string, unknown>).cliVersion,
+			],
+			[
+				"inputs missing harnessPluginVersion",
+				(m) =>
+					delete (m.inputs as Record<string, unknown>).harnessPluginVersion,
+			],
+			[
+				"inputs with a non-string cliVersion",
+				(m) => ((m.inputs as Record<string, unknown>).cliVersion = 1.2),
+			],
+			["a non-object inputs", (m) => (m.inputs = "none")],
+			["an array inputs", (m) => (m.inputs = [])],
+			// Nested `installedFrom` corruption.
+			[
+				"installedFrom missing projectRoot",
+				(m) => delete (m.installedFrom as Record<string, unknown>).projectRoot,
+			],
+			[
+				"installedFrom missing contextDir",
+				(m) => delete (m.installedFrom as Record<string, unknown>).contextDir,
+			],
+			[
+				"installedFrom with a non-string contextDir",
+				(m) => ((m.installedFrom as Record<string, unknown>).contextDir = null),
+			],
+			["a non-object installedFrom", (m) => (m.installedFrom = "here")],
+			["an array installedFrom", (m) => (m.installedFrom = [])],
 		];
 
 	for (const [label, mutate] of shapeMutations) {

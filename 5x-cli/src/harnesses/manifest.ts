@@ -1117,6 +1117,14 @@ function sortAssetDeltas(deltas: AssetDelta[]): AssetDelta[] {
  * for the same reason: consumers resolve these paths against `rootDir` to read
  * and re-hash them, so a traversal entry in an untrusted (committed, or
  * hand-edited) manifest must never reach them.
+ *
+ * `inputs` and `installedFrom` are validated field-by-field rather than as bare
+ * objects. A partial `inputs` is the sharpest false-fresh hazard in the whole
+ * module: `normalizeInputs` fills absent fields with their defaults (`plugin`
+ * to `{}`, delegation modes to `"native"`), so a hand-edited manifest that
+ * simply *drops* `inputs.plugin` would still fingerprint-match the current
+ * config and read `fresh` while describing a bake nobody performed. Incomplete
+ * stamps must fail closed to `manifest-unreadable`/`unknown`.
  */
 function isHarnessManifest(value: unknown): value is HarnessManifest {
 	if (!isPlainObject(value)) return false;
@@ -1133,8 +1141,8 @@ function isHarnessManifest(value: unknown): value is HarnessManifest {
 	if (typeof m.configResolved !== "boolean") return false;
 	if (m.baseline !== "verified" && m.baseline !== "unverified") return false;
 	if (typeof m.installedAt !== "string") return false;
-	if (!isPlainObject(m.inputs)) return false;
-	if (!isPlainObject(m.installedFrom)) return false;
+	if (!isManifestInputs(m.inputs)) return false;
+	if (!isManifestProvenance(m.installedFrom)) return false;
 
 	if (!Array.isArray(m.assets)) return false;
 	for (const asset of m.assets) {
@@ -1146,6 +1154,50 @@ function isHarnessManifest(value: unknown): value is HarnessManifest {
 	}
 
 	return true;
+}
+
+/**
+ * Every field of {@link ManifestInputs} must be present with its exact type —
+ * absent is not "default", it is corrupt. See the note on `isHarnessManifest`.
+ */
+function isManifestInputs(value: unknown): value is ManifestInputs {
+	if (!isPlainObject(value)) return false;
+
+	if (!isNullableString(value.authorModel)) return false;
+	if (!isNullableString(value.reviewerModel)) return false;
+	if (!isNullableDelegationMode(value.authorDelegationMode)) return false;
+	if (!isNullableDelegationMode(value.reviewerDelegationMode)) return false;
+	if (typeof value.cliVersion !== "string") return false;
+	if (typeof value.harnessPluginVersion !== "string") return false;
+
+	// `plugin` is the external-harness escape hatch (D1), so its keys are open
+	// but its value types are not — anything else cannot round-trip through
+	// `canonicalJson` and would poison the fingerprint.
+	if (!isPlainObject(value.plugin)) return false;
+	for (const entry of Object.values(value.plugin)) {
+		if (typeof entry === "string") continue;
+		if (typeof entry === "number" && Number.isFinite(entry)) continue;
+		return false;
+	}
+
+	return true;
+}
+
+function isManifestProvenance(value: unknown): value is ManifestProvenance {
+	if (!isPlainObject(value)) return false;
+	if (typeof value.projectRoot !== "string") return false;
+	if (typeof value.contextDir !== "string") return false;
+	return true;
+}
+
+function isNullableString(value: unknown): value is string | null {
+	return value === null || typeof value === "string";
+}
+
+function isNullableDelegationMode(
+	value: unknown,
+): value is "native" | "invoke" | null {
+	return value === null || value === "native" || value === "invoke";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
