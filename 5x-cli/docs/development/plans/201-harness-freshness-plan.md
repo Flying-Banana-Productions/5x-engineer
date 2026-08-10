@@ -1248,18 +1248,18 @@ console.log();
         `5x harness sync <name>` for those.
 ```
 
-- [ ] Implement `upgradeHarnessAssets` in `upgrade.handler.ts` delegating to `harnessSyncCore`
-- [ ] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts` (Commander maps `--no-sync` to `sync: false` and leaves `sync` `undefined` when neither is passed — assert this, since the tri-state is what makes "no flag ≠ `--sync`" work)
-- [ ] Implement the permission/safety split exactly as written above — `losslessRefresh` must never appear on the permission side of the expression
-- [ ] Print blockers per non-synced scope (`baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified`) and the permission line when permission was the only thing missing
-- [ ] Integration test **(review §2 regression)**: stale, lossless, project-scope install under the **default** config (no `harness` table in `5x.toml`, no flags) → upgrade reports it, mtimes and file bytes are unchanged, manifest untouched
-- [ ] Integration test: same fixture with `harness.autoSync = true` → auto-synced; assets and manifest updated, `baseline: "verified"`
-- [ ] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale; auto-syncs at project scope **only** with `autoSync = true` or `--sync`
-- [ ] Integration test: user-scope install is reported but **never** synced by upgrade — with `autoSync = true` and with `--sync`
-- [ ] Integration test: `--no-sync` reports and writes nothing even when `harness.autoSync = true`
-- [ ] Integration test: `--sync` syncs a scope the predicate would have blocked for context mismatch, but still preserves a hand-edited asset and reports it
-- [ ] Integration test: a `baseline: "unverified"` install is reported and never auto-synced under any flag combination short of an explicit `5x harness sync`
-- [ ] Integration test: the bundled-only caveat appears in output
+- [x] Implement `upgradeHarnessAssets` in `upgrade.handler.ts` delegating to `harnessSyncCore`
+- [x] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts` (Commander maps `--no-sync` to `sync: false` and leaves `sync` `undefined` when neither is passed — assert this, since the tri-state is what makes "no flag ≠ `--sync`" work)
+- [x] Implement the permission/safety split exactly as written above — `losslessRefresh` must never appear on the permission side of the expression
+- [x] Print blockers per non-synced scope (`baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified`) and the permission line when permission was the only thing missing
+- [x] Integration test **(review §2 regression)**: stale, lossless, project-scope install under the **default** config (no `harness` table in `5x.toml`, no flags) → upgrade reports it, mtimes and file bytes are unchanged, manifest untouched
+- [x] Integration test: same fixture with `harness.autoSync = true` → auto-synced; assets and manifest updated, `baseline: "verified"`
+- [x] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale; auto-syncs at project scope **only** with `autoSync = true` or `--sync`
+- [x] Integration test: user-scope install is reported but **never** synced by upgrade — with `autoSync = true` and with `--sync`
+- [x] Integration test: `--no-sync` reports and writes nothing even when `harness.autoSync = true`
+- [x] Integration test: `--sync` syncs a scope the predicate would have blocked for context mismatch, but still preserves a hand-edited asset and reports it
+- [x] Integration test: a `baseline: "unverified"` install is reported and never auto-synced under any flag combination short of an explicit `5x harness sync`
+- [x] Integration test: the bundled-only caveat appears in output
 
 ---
 

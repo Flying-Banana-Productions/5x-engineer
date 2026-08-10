@@ -18,9 +18,13 @@ import {
 	parse as tomlParse,
 	patch as tomlPatch,
 } from "@decimalturn/toml-patch";
-import { discoverConfigFile } from "../config.js";
+import { discoverConfigFile, resolveLayeredConfig } from "../config.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { getSchemaVersion, runMigrations } from "../db/schema.js";
+import { runHarnessFreshnessChecks } from "../harnesses/freshness.js";
+import type { LosslessBlocker } from "../harnesses/manifest.js";
+import { resolveControlPlaneRoot } from "./control-plane.js";
+import { harnessSyncCore } from "./harness.handler.js";
 import {
 	checkInstalledPromptTemplates,
 	ensureTemplateFiles,
@@ -33,8 +37,15 @@ import {
 
 export interface UpgradeParams {
 	force?: boolean;
+	/**
+	 * Tri-state harness auto-sync override for this invocation.
+	 * `undefined` = honor `harness.autoSync`; `true`/`false` = `--sync` / `--no-sync`.
+	 */
+	sync?: boolean;
 	/** Working directory override — defaults to `resolve(".")`. */
 	startDir?: string;
+	/** Home directory override for user-scope harness checks. */
+	homeDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +359,126 @@ function refreshTemplates(projectRoot: string, force: boolean): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Harness asset freshness sweep (Phase 7)
+// ---------------------------------------------------------------------------
+
+/** `--sync` may override this one safety blocker; nothing else is overridable. */
+const OVERRIDABLE_LOSSLESS_BLOCKERS: LosslessBlocker[] = ["context-mismatch"];
+
+const BUNDLED_ONLY_CAVEAT = [
+	"  Note: only bundled harnesses (opencode, cursor, universal) are checked.",
+	"        Externally-published harness packages are not swept — run",
+	"        `5x harness sync <name>` for those.",
+];
+
+/**
+ * Permission gate for upgrade writes — independent of the lossless safety
+ * predicate. Precedence: `--no-sync` > `--sync` > `harness.autoSync` > off.
+ */
+function upgradeSyncPermitted(
+	syncFlag: boolean | undefined,
+	autoSync: boolean,
+): boolean {
+	if (syncFlag === false) return false;
+	if (syncFlag === true) return true;
+	return autoSync;
+}
+
+async function resolveHarnessAutoSync(projectRoot: string): Promise<boolean> {
+	try {
+		const cp = resolveControlPlaneRoot(projectRoot);
+		const { config } = await resolveLayeredConfig(
+			cp.controlPlaneRoot,
+			projectRoot,
+		);
+		return config.harness.autoSync === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Report harness freshness for every installed bundled scope, and rewrite
+ * assets only when both the permission gate and the lossless safety gate hold.
+ *
+ * Returns log lines (no trailing blank); the caller prints the section header.
+ */
+export async function upgradeHarnessAssets(
+	projectRoot: string,
+	params: { sync?: boolean; homeDir?: string },
+): Promise<string[]> {
+	const log: string[] = [];
+	const autoSync = await resolveHarnessAutoSync(projectRoot);
+	const permitted = upgradeSyncPermitted(params.sync, autoSync);
+
+	// Tier 2: upgrade is not a hot path; correctness beats speed (plan §7.1).
+	const reports = await runHarnessFreshnessChecks({
+		startDir: projectRoot,
+		homeDir: params.homeDir,
+		tier2: true,
+	});
+
+	const installed = reports.filter((r) => r.status !== "not-installed");
+	if (installed.length === 0) {
+		log.push("  No installed harness assets");
+	}
+
+	for (const report of installed) {
+		const who = `${report.harness} (${report.scope})`;
+		const blockers = report.losslessBlockers.filter(
+			(b) =>
+				!(params.sync === true && OVERRIDABLE_LOSSLESS_BLOCKERS.includes(b)),
+		);
+		// Permission and safety are evaluated separately — `losslessRefresh`
+		// never appears on the permission side of this expression (§7.1).
+		const shouldSync =
+			report.status === "stale" &&
+			permitted &&
+			report.tier === 2 &&
+			blockers.length === 0;
+
+		if (shouldSync) {
+			const syncResult = await harnessSyncCore({
+				name: report.harness,
+				scope: report.scope,
+				startDir: projectRoot,
+				homeDir: params.homeDir,
+			});
+			const scopeResult = syncResult.results.find(
+				(r) => r.harness === report.harness && r.scope === report.scope,
+			);
+			const action = scopeResult?.action ?? "synced";
+			log.push(`  ${who}: ${report.status} → ${action}`);
+			if (scopeResult && scopeResult.changed.length > 0) {
+				for (const path of scopeResult.changed) {
+					log.push(`    changed: ${path}`);
+				}
+			}
+			continue;
+		}
+
+		const reasonSuffix = report.reason ? ` (${report.reason})` : "";
+		log.push(`  ${who}: ${report.status}${reasonSuffix}`);
+
+		if (report.status === "fresh") continue;
+
+		if (blockers.length > 0) {
+			log.push(`    blockers: ${blockers.join(", ")}`);
+		}
+
+		// Permission was the only thing missing — point at the remediation.
+		const safetyOk =
+			report.status === "stale" && report.tier === 2 && blockers.length === 0;
+		if (!permitted && safetyOk) {
+			log.push("    run '5x harness sync' (or set harness.autoSync = true)");
+		}
+	}
+
+	log.push(...BUNDLED_ONLY_CAVEAT);
+	return log;
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -403,6 +534,15 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 	console.log("Templates:");
 	const templateLog = refreshTemplates(projectRoot, force);
 	for (const line of templateLog) console.log(line);
+	console.log();
+
+	// 4. Harness assets — report always; write only with permission + safety
+	console.log("Harness assets:");
+	const harnessLog = await upgradeHarnessAssets(projectRoot, {
+		sync: params.sync,
+		homeDir: params.homeDir,
+	});
+	for (const line of harnessLog) console.log(line);
 	console.log();
 
 	console.log("Upgrade complete.");
