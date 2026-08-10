@@ -7,9 +7,9 @@
  * each into a {@link FreshnessReport}.
  *
  * `runHarnessFreshnessChecks()` is the public seam every consumer shares —
- * `run init`, `config set`, `harness list`, `harness sync`, `upgrade`, and
- * eventually `5x doctor` (area #3) — so the freshness verdict has exactly one
- * definition.
+ * `run init`, `config set`, `config show`, `harness list`, `harness sync`,
+ * `upgrade`, and eventually `5x doctor` (area #3) — so the freshness verdict
+ * has exactly one definition.
  */
 
 import { existsSync } from "node:fs";

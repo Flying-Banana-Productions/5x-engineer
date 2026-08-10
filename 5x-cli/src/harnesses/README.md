@@ -51,8 +51,8 @@ Every successful `5x harness install` writes `<rootDir>/.5x-manifest.json`
 - per-file `sha256` hashes of installed assets (relative POSIX paths)
 - `installedFrom` provenance (`projectRoot`, relative `contextDir`)
 
-Consumers outside the installer (`run init`, `config set`, `harness list`,
-`harness sync`, `upgrade`, eventually `doctor`) call `compareManifest` /
+Consumers outside the installer (`run init`, `config set`, `config show`,
+`harness list`, `harness sync`, `upgrade`, eventually `doctor`) call `compareManifest` /
 `runHarnessFreshnessChecks`. Project-scope manifests are meant to be
 **committed** with the install root (`.opencode/`, `.cursor/`, `.agents/`);
 the CLI never auto-ignores them.

@@ -791,13 +791,22 @@ export async function configShow(params: ConfigShowParams = {}): Promise<void> {
 			outputSuccess(entry, () => {
 				console.log(formatValueCell(entry.value));
 			});
-			return;
+		} else {
+			outputSuccess(entry);
 		}
-		outputSuccess(entry);
+		// A single-key show warns only when that key is baked, mirroring
+		// `config set`: staleness is irrelevant to a `maxStepsPerRun` lookup.
+		if (isBakedConfigKey(params.key)) {
+			await emitFreshnessWarnings({ startDir: contextDir });
+		}
 		return;
 	}
 
 	outputSuccess(output, () => formatConfigShowText(output, fileRows));
+
+	// Read-path fire point: `config show` is where a user looks after editing
+	// 5x.toml by hand, which bypasses the `config set` fire point entirely.
+	await emitFreshnessWarnings({ startDir: contextDir });
 }
 
 // ---------------------------------------------------------------------------

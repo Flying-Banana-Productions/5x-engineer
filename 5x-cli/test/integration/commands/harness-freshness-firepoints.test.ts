@@ -3,6 +3,8 @@
  *
  * Phase 5 (201-harness-freshness): `run init`, `config set`, and `harness list`
  * each surface a Tier 1 staleness signal; `invoke` deliberately does not (D5).
+ * `config show` joined post-plan as a read-path fire point — it is where a user
+ * looks after editing 5x.toml by hand, which bypasses `config set` entirely.
  *
  * Warnings are stderr-only, so every test also asserts the stdout envelope
  * stays parseable — the whole point of the stderr-first decision.
@@ -355,6 +357,92 @@ describe("config set freshness fire point", () => {
 			}
 		},
 		{ timeout: 60000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// `config show` — read-path fire point (catches direct 5x.toml edits)
+// ---------------------------------------------------------------------------
+
+describe("config show freshness fire point", () => {
+	test(
+		"a full show warns on a stale install; stdout envelope stays parseable",
+		async () => {
+			const project = await setupProject();
+			try {
+				// Edit 5x.toml directly — the path that bypasses `config set`.
+				expect((await setModel(project, "test/model-A")).exitCode).toBe(0);
+				expect((await installOpencode(project)).exitCode).toBe(0);
+				const toml = join(project.dir, "5x.toml");
+				const text = await Bun.file(toml).text();
+				writeFileSync(toml, text.replace("test/model-A", "test/model-B"));
+
+				const result = await run5x(project, ["config", "show"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stderr).toContain("opencode (project) assets are stale");
+				expect(result.stderr).toContain(
+					"installed  author.model = test/model-A",
+				);
+				expect(result.stderr).toContain(
+					"current    author.model = test/model-B",
+				);
+				expect(result.stderr).toContain("fix        5x harness sync");
+				expect(parseEnvelope(result.stdout).ok).toBe(true);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
+
+	test(
+		"a baked-key show warns; a non-baked-key show stays silent",
+		async () => {
+			const project = await setupProject();
+			try {
+				await makeStale(project);
+
+				const baked = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"author.model",
+				]);
+				expect(baked.exitCode).toBe(0);
+				expect(baked.stderr).toContain("opencode (project) assets are stale");
+				expect(parseEnvelope(baked.stdout).ok).toBe(true);
+
+				const unbaked = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"maxStepsPerRun",
+				]);
+				expect(unbaked.exitCode).toBe(0);
+				expect(unbaked.stderr).not.toContain("assets are stale");
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
+
+	test(
+		"a fresh install shows nothing",
+		async () => {
+			const project = await setupProject();
+			try {
+				expect((await setModel(project, "test/model-A")).exitCode).toBe(0);
+				expect((await installOpencode(project)).exitCode).toBe(0);
+
+				const result = await run5x(project, ["config", "show"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stderr).not.toContain("assets are");
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
 	);
 });
 

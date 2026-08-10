@@ -16,7 +16,8 @@ source of truth for the corresponding GitHub Release.
   `.5x-manifest.json` at the install root recording baked inputs, a fingerprint,
   a verified/unverified baseline, and per-file content hashes. Tier 1 freshness
   warnings fire at `run init`, baked-key `config set`/`unset`/`add`/`remove`,
-  and `harness list`. New `5x harness sync` re-renders installed scopes through
+  `config show` (full show, or a baked-key show — catches direct 5x.toml
+  edits), and `harness list`. New `5x harness sync` re-renders installed scopes through
   the same render path as install (the only command that establishes a verified
   baseline; plain reinstall preserves existing agents). `5x upgrade` reports
   harness freshness across bundled installs and auto-syncs only when
