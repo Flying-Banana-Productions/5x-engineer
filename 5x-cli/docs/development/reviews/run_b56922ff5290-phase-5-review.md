@@ -9,3 +9,8 @@
     }
   ]
 }
+{
+  "verdict": "approved",
+  "summary": "Harness list now honors freshnessWarnings=off; targeted firepoint/list tests and typecheck pass.",
+  "issues": []
+}
