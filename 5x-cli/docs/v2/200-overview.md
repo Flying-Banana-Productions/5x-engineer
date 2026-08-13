@@ -25,14 +25,14 @@ v2 closes these gaps. The throughline: **5x evolves from a fire-and-forget toolb
 
 ## 2. The Six Areas
 
-| # | Area | Doc | Breaking? |
-|---|---|---|---|
-| 1 | Harness asset freshness — manifest fingerprint + `5x harness sync` | `201-harness-freshness.md` | No (additive) |
-| 2 | Interactive control plane — decision-queue dashboard | `202-control-plane.md` | `5x prompt` contract change; schema migration |
-| 3 | Recovery & `5x doctor` — unlock, step warnings, remediation surfacing | `203-recovery-and-doctor.md` | No (additive) |
-| 4 | Run-context ergonomics — active-run pointer + composite verbs | `204-run-context-ergonomics.md` | No (additive; flags preserved) |
-| 5 | Output normalization — retire grandfathered text-only commands | `205-output-normalization.md` | **Yes** |
-| 6 | Review budget governance — bounded scope growth, convergence, and debt credits | `206-review-budget-governance.md` | Workflow/protocol extension |
+| #   | Area                                                                           | Doc                               | Breaking?                                     |
+| --- | ------------------------------------------------------------------------------ | --------------------------------- | --------------------------------------------- |
+| 1   | Harness asset freshness — manifest fingerprint + `5x harness sync`             | `201-harness-freshness.md`        | No (additive)                                 |
+| 2   | Interactive control plane — decision-queue dashboard                           | `202-control-plane.md`            | `5x prompt` contract change; schema migration |
+| 3   | Recovery & `5x doctor` — unlock, step warnings, remediation surfacing          | `203-recovery-and-doctor.md`      | No (additive)                                 |
+| 4   | Run-context ergonomics — active-run pointer + composite verbs                  | `204-run-context-ergonomics.md`   | No (additive; flags preserved)                |
+| 5   | Output normalization — retire grandfathered text-only commands                 | `205-output-normalization.md`     | **Yes**                                       |
+| 6   | Review budget governance — bounded scope growth, convergence, and debt credits | `206-review-budget-governance.md` | Workflow/protocol extension                   |
 
 These are deliberately bundled rather than shipped as six independent PRDs, because they **share infrastructure** (Section 3). Designing them separately would mean redesigning that shared core repeatedly and letting it drift.
 
