@@ -331,6 +331,29 @@ implementation.
 > writes to the correct path. If you install manually, ensure you use
 > `~/.config/opencode/`, not `~/.opencode/`.
 
+### Keeping assets fresh
+
+Harness install **bakes** config into the files it writes (agent model
+frontmatter, delegation-mode skill sections). After you change those inputs,
+run:
+
+```bash
+5x harness sync                        # refresh every installed scope
+5x harness sync opencode -s project    # one harness × scope
+5x harness sync --check                # report only (Tier 2)
+```
+
+`sync` is the command that establishes a verified freshness baseline. Plain
+`5x harness install` preserves existing agent files (skills may refresh) and
+therefore does **not** claim a new baseline — after a model change you will
+still see a freshness warning until you `sync` (or `install --force`).
+
+Project-scope manifests (`.opencode/.5x-manifest.json`, `.cursor/.5x-manifest.json`,
+`.agents/.5x-manifest.json`) travel with the install root. Commit them alongside
+`.opencode/` / `.cursor/` / `.agents/` when you version those directories — do not
+add the manifest to `.gitignore`. User-scope manifests live under the home
+directory with the shared assets and are not committed.
+
 ### Customizing
 
 Skills are plain markdown. Edit the installed copies directly:
@@ -339,8 +362,8 @@ Skills are plain markdown. Edit the installed copies directly:
 - Cursor: `.cursor/skills/` or `~/.cursor/skills/`
 - Universal: `.agents/skills/` or `~/.agents/skills/`
 
-Re-run `5x harness install <harness> --scope <scope> --force` to reset them
-to bundled defaults.
+Use `5x harness sync --force` (or `5x harness install <harness> --scope <scope>
+--force`) to overwrite local edits and re-baseline from bundled templates.
 
 ## Commands
 
@@ -478,13 +501,23 @@ When stdin is not a TTY: returns `--default` if provided, otherwise exits with c
 ```bash
 5x init [--force] [--install-templates]              # Scaffold config, templates, DB
 5x harness install <name> [--scope user|project] [--force]  # Install harness skills + agents
+5x harness list                                      # List harnesses + freshness
+5x harness sync [name] [--scope user|project] [--check] [--force]
+                                                     # Re-render installed assets to match config
+5x harness uninstall <name> [--scope user|project|--all]
+5x upgrade [--sync|--no-sync]                        # Migrate DB/templates; report harness freshness
 ```
 
 `--install-templates` scaffolds editable prompt templates to `.5x/templates/prompts/` for customization. Without this flag, the CLI uses bundled templates directly (recommended for most users).
 
-`5x init opencode project` installs skills under `.opencode/skills/` and agent profiles under
+`5x harness install opencode --scope project` installs skills under `.opencode/skills/` and agent profiles under
 `.opencode/agents/` (requires `5x init` to have been run first).
-`5x init opencode user` installs under `~/.config/opencode/skills/` and `~/.config/opencode/agents/`.
+`5x harness install opencode --scope user` installs under `~/.config/opencode/skills/` and `~/.config/opencode/agents/`.
+
+`5x upgrade` always reports harness freshness for bundled installs. It writes
+nothing to harness roots by default — automatic refresh requires
+`harness.autoSync = true` (opt-in) **and** a lossless refresh, or an explicit
+`--sync` on that invocation. `--no-sync` forces report-only.
 
 ### Worktrees
 
@@ -544,6 +577,16 @@ path = ".5x"    # Directory path (DB file is always 5x.db within this directory)
 
 [worktree]
 postCreate = "bun install"
+
+[harness]
+# Warn when installed assets no longer match current config (default "on")
+freshnessWarnings = "on"    # "on" | "off"
+# Opt in to automatic harness refresh during `5x upgrade` (default false).
+# Off by default: upgrade only reports. When on, assets are still only
+# rewritten where the refresh is provably lossless (project scope, verified
+# baseline, matching install context, no local edits). Override per
+# invocation with `5x upgrade --sync` / `--no-sync`.
+autoSync = false
 ```
 
 **Provider plugins:** Any provider other than `opencode` is loaded as a plugin package. Short names resolve by convention — `provider = "cursor-agent"` loads `@5x-ai/provider-cursor-agent`; full package names starting with `@` are used as-is. Install the plugin next to the CLI (`npm install @5x-ai/provider-cursor-agent`) and put provider-specific options in a top-level table named after the provider (e.g. `[cursor-agent]`). Currently published: [`@5x-ai/provider-cursor-agent`](packages/provider-cursor-agent) (Cursor Agent CLI).

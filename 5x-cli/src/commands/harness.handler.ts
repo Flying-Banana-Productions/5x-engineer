@@ -5,17 +5,47 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { resolveHarnessModelForRole, resolveLayeredConfig } from "../config.js";
 import {
 	listBundledHarnesses,
 	loadHarnessPlugin,
 } from "../harnesses/factory.js";
+import {
+	freshnessWarningsEnabled,
+	listInstalledAssetPaths,
+	runHarnessFreshnessChecks,
+	safeRenderAssets,
+} from "../harnesses/freshness.js";
+import { removeDirIfEmpty } from "../harnesses/installer.js";
+import type { HarnessLocations } from "../harnesses/locations.js";
+import {
+	assetsFromOnDisk,
+	buildManifest,
+	collectInstalledAssets,
+	type FreshnessReason,
+	type FreshnessReport,
+	type FreshnessStatus,
+	hashContent,
+	type InputDelta,
+	type KindedInstallSummary,
+	MANIFEST_FILENAME,
+	type ManifestBaseline,
+	readManifest,
+	removeManifest,
+	verifyInstalledInventory,
+	writeManifest,
+} from "../harnesses/manifest.js";
 import type {
+	HarnessInstallContext,
+	HarnessInstallResult,
+	HarnessPlugin,
 	HarnessScope,
 	HarnessUninstallResult,
+	RenderedAsset,
 } from "../harnesses/types.js";
-import { outputSuccess } from "../output.js";
+import { outputError, outputSuccess } from "../output.js";
+import { version } from "../version.js";
 import {
 	DB_FILENAME,
 	resolveCheckoutRoot,
@@ -57,6 +87,15 @@ export interface HarnessUninstallOutput {
 	harnessName: string;
 	/** Only the scopes that were actually processed. */
 	scopes: Partial<Record<HarnessScope, HarnessUninstallResult>>;
+	/** Per scope: whether a `.5x-manifest.json` existed and was removed. */
+	manifests: Partial<Record<HarnessScope, boolean>>;
+}
+
+/** Tier 1 freshness summary for one installed scope (201-harness-freshness §2.4). */
+export interface HarnessScopeFreshness {
+	status: FreshnessStatus;
+	reason: FreshnessReason;
+	inputDeltas: InputDelta[];
 }
 
 /** Per-scope installed state for harness list output. */
@@ -70,6 +109,8 @@ export interface HarnessScopeStatus {
 	capabilities?: {
 		rules?: boolean;
 	};
+	/** Tier 1 freshness (§2.4). Absent when the scope is not installed. */
+	freshness?: HarnessScopeFreshness;
 }
 
 /** A single harness entry in list output. */
@@ -130,21 +171,11 @@ export async function harnessInstall(
 	}
 
 	// 5. Load config for model settings (non-fatal for user scope)
-	let authorModel: string | undefined;
-	let reviewerModel: string | undefined;
-	let authorDelegationMode: "native" | "invoke" | undefined;
-	let reviewerDelegationMode: "native" | "invoke" | undefined;
-	try {
-		const cp = resolveControlPlaneRoot(cwd);
-		const { config } = await resolveLayeredConfig(cp.controlPlaneRoot, cwd);
-		authorModel = resolveHarnessModelForRole(config, "author", name);
-		reviewerModel = resolveHarnessModelForRole(config, "reviewer", name);
-		authorDelegationMode = config.author.delegationMode;
-		reviewerDelegationMode = config.reviewer.delegationMode;
-	} catch {
-		// Config load failure is non-fatal — agent templates will be
-		// rendered without model fields.
-	}
+	//    The exact directory handed to `resolveLayeredConfig` is the context —
+	//    config resolves per context while assets install once per root, so
+	//    freshness has no defined operand without it (§2.1).
+	const contextDir = cwd;
+	const baked = await resolveBakedConfig(cwd, name);
 
 	// 6. Resolve install locations (for reporting)
 	const locations = plugin.locations.resolve(
@@ -154,20 +185,30 @@ export async function harnessInstall(
 	);
 
 	// 7. Run the plugin install
-	const result = await plugin.install({
+	const installCtx: HarnessInstallContext = {
 		scope,
 		projectRoot,
 		force,
-		config: {
-			authorModel,
-			reviewerModel,
-			authorDelegationMode,
-			reviewerDelegationMode,
-		},
+		config: baked.config,
 		homeDir: params.homeDir,
+	};
+	const result = await plugin.install(installCtx);
+
+	// 8. Record what was baked — read prior → verify → write (§3.2).
+	//    Only runs when install succeeded; never on throw.
+	const manifest = await recordInstallManifest({
+		name,
+		scope,
+		plugin,
+		installCtx,
+		locations,
+		result,
+		projectRoot,
+		contextDir,
+		configResolved: baked.configResolved,
 	});
 
-	// 8. Report results
+	// 9. Report results
 	printInstallSummary(
 		name,
 		scope,
@@ -176,7 +217,213 @@ export async function harnessInstall(
 		result.agents,
 		result.rules,
 		result.warnings,
+		manifest,
 	);
+}
+
+/** The baked config surface for one harness, plus whether it resolved at all. */
+interface BakedConfig {
+	config: HarnessInstallContext["config"];
+	/**
+	 * `false` marks an install that baked undefined models because config
+	 * resolution threw. Recording those as if intentional would make the first
+	 * *successful* load read as a config change (§2.1).
+	 */
+	configResolved: boolean;
+}
+
+/**
+ * Resolve the per-role models and delegation modes that get baked into this
+ * harness's assets.
+ *
+ * A config that fails to resolve is non-fatal (unchanged behavior): agent
+ * templates simply render without model fields, and `configResolved: false`
+ * keeps the resulting manifest from ever reading `fresh`.
+ *
+ * Shared by `install` and `sync` so both bake from exactly the same surface.
+ */
+async function resolveBakedConfig(
+	cwd: string,
+	harnessName: string,
+): Promise<BakedConfig> {
+	try {
+		const cp = resolveControlPlaneRoot(cwd);
+		const { config } = await resolveLayeredConfig(cp.controlPlaneRoot, cwd);
+		return {
+			config: {
+				authorModel: resolveHarnessModelForRole(config, "author", harnessName),
+				reviewerModel: resolveHarnessModelForRole(
+					config,
+					"reviewer",
+					harnessName,
+				),
+				authorDelegationMode: config.author.delegationMode,
+				reviewerDelegationMode: config.reviewer.delegationMode,
+			},
+			configResolved: true,
+		};
+	} catch {
+		return { config: {}, configResolved: false };
+	}
+}
+
+/** Tag each `InstallSummary` a plugin returned with the asset kind it describes. */
+function kindedSummaries(result: HarnessInstallResult): KindedInstallSummary[] {
+	return [
+		{ kind: "skill" as const, summary: result.skills },
+		{ kind: "agent" as const, summary: result.agents },
+		...(result.rules ? [{ kind: "rule" as const, summary: result.rules }] : []),
+	];
+}
+
+/** The `rootDir`-relative directory prefix each asset kind installs under. */
+function manifestPrefixForKind(kind: RenderedAsset["kind"]): string {
+	switch (kind) {
+		case "skill":
+			return "skills/";
+		case "agent":
+			return "agents/";
+		case "rule":
+			return "rules/";
+	}
+}
+
+/**
+ * Manifest-relative paths for one field of every summary — the summaries report
+ * bare names (`5x-plan/SKILL.md`, `5x-plan-author.md`), so the kind is what
+ * resolves them to a path a manifest (and a user) can read.
+ */
+function summaryPaths(
+	summaries: KindedInstallSummary[],
+	pick: (summary: KindedInstallSummary["summary"]) => string[] | undefined,
+): string[] {
+	const out: string[] = [];
+	for (const { kind, summary } of summaries) {
+		for (const entry of pick(summary) ?? []) {
+			out.push(`${manifestPrefixForKind(kind)}${entry}`);
+		}
+	}
+	return out.sort();
+}
+
+/** Outcome of the post-install manifest write, for install reporting. */
+interface InstallManifestOutcome {
+	baseline: ManifestBaseline;
+	/** Manifest-relative paths install preserved rather than rewriting. */
+	preserved: string[];
+}
+
+/**
+ * Verify the installed inventory, then write `.5x-manifest.json` at the
+ * install root.
+ *
+ * A manifest never claims a baseline it did not verify: `install()` keeps its
+ * skip-on-exist semantics for agent files, so the file set after a non-force
+ * reinstall can be a mixture of freshly rendered skills and previously baked
+ * agents. When the byte compare fails, the current inputs are *not* adopted —
+ * a prior manifest's baseline is retained so warnings can still name the
+ * changed fields — and `baseline: "unverified"` forbids ever reading `fresh`
+ * until `5x harness sync` establishes a real baseline (§3.2).
+ */
+async function recordInstallManifest(args: {
+	name: string;
+	scope: HarnessScope;
+	plugin: HarnessPlugin;
+	installCtx: HarnessInstallContext;
+	locations: HarnessLocations;
+	result: HarnessInstallResult;
+	projectRoot: string;
+	contextDir: string;
+	configResolved: boolean;
+}): Promise<InstallManifestOutcome> {
+	const { locations, result } = args;
+
+	// Install never mutates the prior manifest — it is evidence, read first.
+	const prior = readManifest(locations.rootDir);
+	const rendered = (await args.plugin.renderAssets?.(args.installCtx)) ?? null;
+
+	const summaries = kindedSummaries(result);
+
+	const onDisk = collectInstalledAssets({
+		rootDir: locations.rootDir,
+		locations,
+		rendered,
+		summaries,
+		prior,
+	});
+	const verified = verifyInstalledInventory({
+		rendered,
+		onDisk,
+		summaries: summaries.map((s) => s.summary),
+	});
+
+	const currentInputs = {
+		authorModel: args.installCtx.config.authorModel,
+		reviewerModel: args.installCtx.config.reviewerModel,
+		authorDelegationMode: args.installCtx.config.authorDelegationMode,
+		reviewerDelegationMode: args.installCtx.config.reviewerDelegationMode,
+		cliVersion: version,
+		harnessPluginVersion: args.plugin.version ?? version,
+		plugin: args.plugin.fingerprintInputs?.(args.installCtx) ?? {},
+	};
+
+	const manifest = buildManifest({
+		harness: args.name,
+		scope: args.scope,
+		rootDir: locations.rootDir,
+		locations,
+		projectRoot: args.projectRoot,
+		contextDir: toRelativeContextDir(args.projectRoot, args.contextDir),
+		baseline: verified ? "verified" : "unverified",
+		// Verified: adopt this bake as the baseline. Unverified: retain the prior
+		// baseline when there is one, else record the attempted inputs for
+		// diagnostics only — `baseline: "unverified"` forbids `fresh` either way.
+		configResolved: verified
+			? args.configResolved
+			: (prior?.configResolved ?? args.configResolved),
+		inputs: verified ? currentInputs : (prior?.inputs ?? currentInputs),
+		// Always the true on-disk bytes — a normal reinstall must never look
+		// like a hand-edit.
+		assets: assetsFromOnDisk(onDisk),
+	});
+	writeManifest(locations.rootDir, manifest);
+
+	return {
+		baseline: manifest.baseline,
+		preserved: verified ? [] : preservedPaths(rendered, onDisk, summaries),
+	};
+}
+
+/**
+ * The paths that actually cost this install its baseline.
+ *
+ * With a render available that is exactly the set whose on-disk bytes differ
+ * from what was rendered — listing every skipped-but-identical skill would bury
+ * the one stale agent the user needs to see. Without a render there is nothing
+ * to compare against, so the skipped set is the best available evidence.
+ */
+function preservedPaths(
+	rendered: RenderedAsset[] | null,
+	onDisk: Map<string, string>,
+	summaries: KindedInstallSummary[],
+): string[] {
+	if (rendered) {
+		return rendered
+			.filter((asset) => onDisk.get(asset.path) !== hashContent(asset.content))
+			.map((asset) => asset.path);
+	}
+
+	return summaryPaths(summaries, (summary) => summary.skipped);
+}
+
+/**
+ * `installedFrom.contextDir` relative to `projectRoot`, POSIX-separated,
+ * `""` for the root context — so a committed project-scope manifest compares
+ * equal across machines and platforms.
+ */
+function toRelativeContextDir(projectRoot: string, contextDir: string): string {
+	const rel = relative(projectRoot, contextDir);
+	return rel === "" ? "" : rel.split(sep).join("/");
 }
 
 /**
@@ -208,6 +455,7 @@ export async function buildHarnessListData(
 
 	const names = listBundledHarnesses();
 	const harnesses: HarnessListEntry[] = [];
+	const freshness = await collectScopeFreshness(cwd, homeDir);
 
 	for (const name of names) {
 		const { plugin, source } = await loadHarnessPlugin(name);
@@ -257,6 +505,11 @@ export async function buildHarnessListData(
 				files,
 				unsupported: unsupportedRules ? { rules: true } : undefined,
 				capabilities,
+				// A scope with no managed files on disk has nothing to be stale, and
+				// the freshness engine reports it `not-installed` — omit the field
+				// entirely rather than surface a status that means "n/a".
+				freshness:
+					files.length > 0 ? freshness.get(`${name}:${scope}`) : undefined,
 			};
 		}
 
@@ -264,6 +517,446 @@ export async function buildHarnessListData(
 	}
 
 	return { harnesses };
+}
+
+/**
+ * Tier 1 freshness for the whole harness × scope grid, keyed `harness:scope`.
+ *
+ * One `runHarnessFreshnessChecks` call resolves config once for every entry, so
+ * `list` stays a single config load. A failure degrades `list` to its
+ * pre-freshness output instead of failing it — listing what is installed must
+ * keep working when the freshness engine cannot answer.
+ *
+ * `harness.freshnessWarnings = "off"` silences every Phase 5 fire point, and
+ * `list` is one of them: the map stays empty so no scope carries a `freshness`
+ * field in either text or JSON output. The check runs before the engine, so
+ * suppression also skips the work.
+ */
+async function collectScopeFreshness(
+	startDir: string,
+	homeDir?: string,
+): Promise<Map<string, HarnessScopeFreshness>> {
+	const byScope = new Map<string, HarnessScopeFreshness>();
+	try {
+		if (!(await freshnessWarningsEnabled(startDir))) return byScope;
+
+		for (const report of await runHarnessFreshnessChecks({
+			startDir,
+			homeDir,
+		})) {
+			byScope.set(`${report.harness}:${report.scope}`, {
+				status: report.status,
+				reason: report.reason,
+				inputDeltas: report.inputDeltas,
+			});
+		}
+	} catch {
+		// Reported as absent freshness, not as a failed list.
+	}
+	return byScope;
+}
+
+// ---------------------------------------------------------------------------
+// Sync (Phase 6)
+// ---------------------------------------------------------------------------
+
+export interface HarnessSyncParams {
+	/** Restrict to one harness; default = every harness with installed assets. */
+	name?: string;
+	/** Restrict to one scope; default = every supported scope. */
+	scope?: string;
+	/** Report only; make no writes. Runs Tier 2. */
+	check?: boolean;
+	/** Overwrite hand-edited assets. */
+	force?: boolean;
+	/** Working directory override — defaults to `resolve(".")`. */
+	startDir?: string;
+	/** Home directory override for user scope — defaults to `homedir()` from `node:os`. */
+	homeDir?: string;
+}
+
+/**
+ * What sync did to one (harness, scope) pair.
+ *
+ * `sync-unverified` is a failure to baseline, not a success: the assets were
+ * rewritten but the post-write byte compare still did not pass, so the manifest
+ * records `unverified` and the scope keeps warning.
+ */
+export type HarnessSyncAction =
+	| "synced"
+	| "adopted"
+	| "skipped-fresh"
+	| "skipped-modified"
+	| "checked"
+	| "sync-unverified";
+
+export interface HarnessSyncScopeResult {
+	harness: string;
+	scope: HarnessScope;
+	root: string;
+	action: HarnessSyncAction;
+	/** Freshness status before sync ran. */
+	before: FreshnessStatus;
+	/** Manifest-relative paths written (or, under `--check`, that would be). */
+	changed: string[];
+	/** Stale managed assets removed. */
+	removed: string[];
+	/** Hand-edited paths left alone (no `--force`). */
+	preserved: string[];
+	notes: string[];
+}
+
+export interface HarnessSyncOutput {
+	results: HarnessSyncScopeResult[];
+	/** Stated explicitly: externally-published harnesses are not swept (§5.1). */
+	sweptBundledOnly: true;
+}
+
+/**
+ * Re-render every installed harness scope so the assets on disk match the
+ * config resolving right now.
+ *
+ * Two-layer design: `harnessSyncCore()` builds the typed result and never
+ * throws on a blocked scope (`5x upgrade` consumes it), while this outer
+ * function turns a wholly-blocked sync into `HARNESS_ASSETS_MODIFIED` and
+ * prints the envelope.
+ */
+export async function harnessSync(
+	params: HarnessSyncParams,
+): Promise<HarnessSyncOutput> {
+	const output = await harnessSyncCore(params);
+
+	// A sync where every target was blocked by a hand-edit refreshed nothing:
+	// the user asked for a refresh and got none, so it fails rather than
+	// reporting success. A partial block completes and reports (§6.1 step 4).
+	// `--check` is exempt — it makes no writes, so there is nothing to refuse.
+	const blocked = output.results.filter(
+		(result) => result.action === "skipped-modified",
+	);
+	if (
+		!params.check &&
+		blocked.length > 0 &&
+		blocked.length === output.results.length
+	) {
+		outputError(
+			"HARNESS_ASSETS_MODIFIED",
+			"Harness assets have local modifications and were preserved. " +
+				"Re-run with --force to overwrite them.",
+			{ results: output.results },
+		);
+	}
+
+	outputSuccess(output, (data) => formatHarnessSyncText(data));
+	return output;
+}
+
+/**
+ * Core data layer for harness sync — returns the typed result without printing
+ * and without throwing on individual blocked scopes.
+ *
+ * Sync never *creates* an install: a scope with no managed assets on disk is
+ * skipped entirely, because installing is `5x harness install`'s job.
+ */
+export async function harnessSyncCore(
+	params: HarnessSyncParams,
+): Promise<HarnessSyncOutput> {
+	const cwd = resolve(params.startDir ?? ".");
+	const projectRoot = resolveCheckoutRoot(cwd) ?? cwd;
+	const scope = await resolveSyncScope(params);
+
+	// One Tier 2 sweep resolves config once for the whole grid; correctness beats
+	// speed here, and sync is not a hot path.
+	const reports = await runHarnessFreshnessChecks({
+		startDir: cwd,
+		homeDir: params.homeDir,
+		harness: params.name,
+		scope,
+		tier2: true,
+	});
+
+	const results: HarnessSyncScopeResult[] = [];
+	for (const report of reports) {
+		if (report.status === "not-installed") continue;
+		results.push(await syncOneScope(report, { cwd, projectRoot, params }));
+	}
+
+	return { results, sweptBundledOnly: true };
+}
+
+/** Validate `--scope` against the plugin when one harness was named. */
+async function resolveSyncScope(
+	params: HarnessSyncParams,
+): Promise<HarnessScope | undefined> {
+	if (!params.scope) return undefined;
+	if (params.scope !== "project" && params.scope !== "user") {
+		throw new Error(
+			`Invalid scope "${params.scope}". Supported: project, user.`,
+		);
+	}
+	if (params.name) {
+		const { plugin } = await loadHarnessPlugin(params.name);
+		if (!plugin.supportedScopes.includes(params.scope)) {
+			throw new Error(
+				`Invalid scope "${params.scope}" for harness "${params.name}". ` +
+					`Supported: ${plugin.supportedScopes.join(", ")}.`,
+			);
+		}
+	}
+	return params.scope;
+}
+
+/**
+ * Decide and apply sync for one already-installed scope.
+ *
+ * The order of the guards is the policy (§6.1): fresh short-circuits (which is
+ * what makes sync idempotent), a hand-edit blocks before anything is written,
+ * `--check` reports the deltas a real run would apply, and only then does the
+ * forced re-render run.
+ */
+async function syncOneScope(
+	report: FreshnessReport,
+	ctx: {
+		cwd: string;
+		projectRoot: string;
+		params: HarnessSyncParams;
+	},
+): Promise<HarnessSyncScopeResult> {
+	const { plugin } = await loadHarnessPlugin(report.harness);
+	const locations = plugin.locations.resolve(
+		report.scope,
+		ctx.projectRoot,
+		ctx.params.homeDir,
+	);
+
+	const base = {
+		harness: report.harness,
+		scope: report.scope,
+		root: locations.rootDir,
+		before: report.status,
+		changed: [] as string[],
+		removed: [] as string[],
+		preserved: [] as string[],
+		notes: [] as string[],
+	};
+
+	const modified = report.assetDeltas
+		.filter((delta) => delta.state === "modified")
+		.map((delta) => delta.path);
+
+	// `fresh` already implies a verified baseline (§4.2 step 4), so an unverified
+	// manifest whose retained inputs happen to match cannot short-circuit here.
+	if (report.status === "fresh") return { ...base, action: "skipped-fresh" };
+
+	// A recorded hash is what makes "the user edited this" decidable, so sync
+	// reports and preserves rather than inheriting the installer's silent
+	// clobber. Adoption (no recorded hashes) has nothing to compare and falls
+	// through to the force path below.
+	if (modified.length > 0 && !ctx.params.force) {
+		return {
+			...base,
+			action: "skipped-modified",
+			preserved: modified,
+			notes: ["locally modified — re-run with --force to overwrite"],
+		};
+	}
+
+	const adopting = isAdoption(locations.rootDir);
+
+	if (ctx.params.check) {
+		const projected = await projectSyncWrites(plugin, report, locations, ctx);
+		const notes: string[] = [];
+		if (adopting) {
+			notes.push(
+				"no verified baseline on disk — sync would overwrite every managed asset and adopt one",
+			);
+		}
+		if (!projected.rendered) {
+			notes.push(
+				"this harness cannot preview a re-render — reporting the managed assets on disk",
+			);
+		}
+		return {
+			...base,
+			action: "checked",
+			changed: projected.changed,
+			removed: projected.removed,
+			notes,
+		};
+	}
+
+	// `force: true` is what makes sync the command that establishes a baseline:
+	// every managed asset is rewritten, so the Phase 3 verification passes and
+	// the manifest can honestly record `verified` (§2.5, §3.2).
+	const baked = await resolveBakedConfig(ctx.cwd, report.harness);
+	const installCtx: HarnessInstallContext = {
+		scope: report.scope,
+		projectRoot: ctx.projectRoot,
+		force: true,
+		config: baked.config,
+		homeDir: ctx.params.homeDir,
+	};
+	const result = await plugin.install(installCtx);
+
+	// The same verify-then-write sequence install uses — one manifest assembler,
+	// one definition of "verified".
+	const manifest = await recordInstallManifest({
+		name: report.harness,
+		scope: report.scope,
+		plugin,
+		installCtx,
+		locations,
+		result,
+		projectRoot: ctx.projectRoot,
+		contextDir: ctx.cwd,
+		configResolved: baked.configResolved,
+	});
+
+	const summaries = kindedSummaries(result);
+	const notes: string[] = [];
+	if (adopting) {
+		notes.push(
+			"no verified baseline on disk — every managed asset was overwritten and a baseline adopted",
+		);
+	}
+	if (modified.length > 0) {
+		notes.push("--force overwrote locally modified assets");
+	}
+	if (manifest.baseline !== "verified") {
+		notes.push(
+			"assets were rewritten but could not be verified — no baseline established",
+		);
+	}
+
+	return {
+		...base,
+		action:
+			manifest.baseline !== "verified"
+				? "sync-unverified"
+				: adopting
+					? "adopted"
+					: "synced",
+		changed: summaryPaths(summaries, (summary) => [
+			...summary.created,
+			...summary.overwritten,
+		]),
+		removed: summaryPaths(summaries, (summary) => summary.removed),
+		notes,
+	};
+}
+
+/** What a write-attempting sync would touch, as `--check` reports it. */
+interface ProjectedSyncWrites {
+	changed: string[];
+	removed: string[];
+	/** False when the plugin could not re-render — the paths are on-disk only. */
+	rendered: boolean;
+}
+
+/**
+ * Project the paths a real sync would write and remove for this scope.
+ *
+ * `--check` must report what sync *would do*, and sync installs with
+ * `force: true` — so it rewrites every rendered asset, not merely the ones that
+ * differ. Deriving the answer from `assetDeltas` under-reports in exactly the
+ * cases that matter most: a scope with no manifest, no recorded hashes, or an
+ * unverified baseline produces no deltas at all, so `--check` would promise
+ * "nothing changes" right before sync force-overwrites the tree and adopts a
+ * baseline (§6.1 steps 5 and 7). Projecting from the same render install
+ * dispatches over keeps `--check` and the write path reporting one set of paths.
+ *
+ * Removals are narrower than "on disk but not rendered": `install()` only sweeps
+ * stale *managed agent* files (`removeStaleAgentFiles`), so an unrendered skill
+ * or rule survives a sync and must not be reported as removed.
+ */
+async function projectSyncWrites(
+	plugin: HarnessPlugin,
+	report: FreshnessReport,
+	locations: HarnessLocations,
+	ctx: {
+		cwd: string;
+		projectRoot: string;
+		params: HarnessSyncParams;
+	},
+): Promise<ProjectedSyncWrites> {
+	const onDisk = listInstalledAssetPaths(plugin, report.scope, locations);
+
+	const baked = await resolveBakedConfig(ctx.cwd, report.harness);
+	const rendered = await safeRenderAssets(plugin, {
+		scope: report.scope,
+		projectRoot: ctx.projectRoot,
+		force: true,
+		config: baked.config,
+		homeDir: ctx.params.homeDir,
+	});
+
+	// Without a render the managed files already on disk are the best available
+	// evidence — every one of them is rewritten by the forced install.
+	if (!rendered) {
+		return { changed: [...onDisk].sort(), removed: [], rendered: false };
+	}
+
+	const renderedPaths = new Set(rendered.map((asset) => asset.path));
+	return {
+		changed: [...renderedPaths].sort(),
+		removed: onDisk
+			.filter((path) => path.startsWith("agents/") && !renderedPaths.has(path))
+			.sort(),
+		rendered: true,
+	};
+}
+
+/**
+ * True when there is no recorded baseline to protect — no readable manifest, or
+ * one that records no asset hashes at all.
+ *
+ * Adoption is the case where a hand-edit is indistinguishable from config drift,
+ * so the mitigation is legibility: force-install and list every path overwritten
+ * (§2.5). An unverified manifest that *does* carry hashes is not adoption —
+ * hand-edits stay detectable, so the preserve-without-`--force` rule applies.
+ */
+function isAdoption(rootDir: string): boolean {
+	const prior = readManifest(rootDir);
+	return prior === null || prior.assets.length === 0;
+}
+
+/** Print a human-readable sync summary. */
+export function formatHarnessSyncText(
+	data: HarnessSyncOutput,
+	log: (...args: unknown[]) => void = console.log,
+): void {
+	if (data.results.length === 0) {
+		log("No installed harness assets to sync.");
+	}
+
+	for (const [i, result] of data.results.entries()) {
+		log(`harness: ${result.harness}`);
+		log(`scope: ${result.scope}`);
+		log(`  action: ${result.action}`);
+		log(`  before: ${result.before}`);
+		log(`  root: ${result.root}`);
+		logPathList(log, "changed", result.changed);
+		logPathList(log, "removed", result.removed);
+		logPathList(log, "preserved", result.preserved);
+		for (const note of result.notes) log(`  note: ${note}`);
+		if (i < data.results.length - 1) log("");
+	}
+
+	log("");
+	log("Note: only bundled harnesses are swept. Externally-published harness");
+	log("      packages are not — run `5x harness sync <name>` for those.");
+}
+
+function logPathList(
+	log: (...args: unknown[]) => void,
+	label: string,
+	paths: string[],
+): void {
+	log(`  ${label}:`);
+	if (paths.length === 0) {
+		log("    (none)");
+		return;
+	}
+	for (const path of paths) log(`    ${path}`);
 }
 
 /**
@@ -328,15 +1021,24 @@ async function harnessUninstallCore(
 
 	// 6. Run uninstall for each scope
 	const scopes: Partial<Record<HarnessScope, HarnessUninstallResult>> = {};
+	const manifests: Partial<Record<HarnessScope, boolean>> = {};
 	for (const s of scopesToProcess) {
+		const locations = plugin.locations.resolve(s, projectRoot, params.homeDir);
+		// Remove the manifest *before* uninstall: the plugin's emptiness sweeps
+		// only cover skills/agents/rules dirs, so a surviving root-level manifest
+		// would keep an otherwise-empty `.opencode/` alive.
+		manifests[s] = removeManifest(locations.rootDir);
 		scopes[s] = await plugin.uninstall({
 			scope: s,
 			projectRoot,
 			homeDir: params.homeDir,
 		});
+		// Now able to succeed — but still empty-only, so a user's own
+		// `opencode.json` at the root keeps the directory.
+		removeDirIfEmpty(locations.rootDir);
 	}
 
-	return { harnessName: name, scopes };
+	return { harnessName: name, scopes, manifests };
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +1095,7 @@ function printInstallSummary(
 	agents: { created: string[]; overwritten: string[]; skipped: string[] },
 	rules?: { created: string[]; overwritten: string[]; skipped: string[] },
 	warnings?: string[],
+	manifest?: InstallManifestOutcome,
 ): void {
 	const label = scope === "user" ? "user" : "project";
 
@@ -434,6 +1137,19 @@ function printInstallSummary(
 		console.log(`  Warning: ${warning}`);
 	}
 
+	if (manifest) {
+		console.log(`  Wrote manifest: ${MANIFEST_FILENAME}`);
+		if (manifest.baseline === "unverified") {
+			// stderr so the signal survives a piped/parsed stdout (§2.4).
+			console.error(
+				"  Warning: existing assets were preserved — freshness baseline not established; run '5x harness sync'",
+			);
+			for (const path of manifest.preserved) {
+				console.error(`    preserved: ${path}`);
+			}
+		}
+	}
+
 	if (harnessName === "cursor" && scope === "user") {
 		console.log(
 			"  Note: Cursor user rules are settings-managed. Install with --scope project to add the orchestrator rule.",
@@ -461,6 +1177,12 @@ export function formatHarnessListText(
 
 			log(`${scope}:`);
 			log(`  installed: ${status.installed}`);
+			if (status.freshness) {
+				const { status: freshnessStatus, reason } = status.freshness;
+				log(
+					`  freshness: ${reason ? `${freshnessStatus} (${reason})` : freshnessStatus}`,
+				);
+			}
 			log(`  root: ${status.root}`);
 
 			const skills = status.files.filter((file) => file.startsWith("skills/"));

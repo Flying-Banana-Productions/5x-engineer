@@ -1,5 +1,6 @@
 import { createRenderContext } from "../../skills/renderer.js";
 import {
+	assetsOfKind,
 	installAgentFiles,
 	installRuleFiles,
 	installSkillFiles,
@@ -17,11 +18,83 @@ import type {
 	HarnessScope,
 	HarnessUninstallContext,
 	HarnessUninstallResult,
+	RenderedAsset,
 } from "../types.js";
 import ruleTemplate from "./5x-orchestrator.mdc" with { type: "text" };
 import permissionsTemplate from "./5x-permissions.mdc" with { type: "text" };
 import { listAgentTemplates, renderAgentTemplates } from "./loader.js";
 import { listSkillNames, listSkills } from "./skills/loader.js";
+
+/**
+ * Render every managed Cursor asset for this context without writing.
+ *
+ * Module-level so `install()` can dispatch over the exact same call the Tier 2
+ * freshness check makes — one render path, not two (201 §2.5).
+ *
+ * Rules render from static templates with no config inputs and exist only at
+ * project scope: Cursor user rules are settings-managed, not file-backed.
+ */
+async function renderCursorAssets(
+	ctx: HarnessInstallContext,
+): Promise<RenderedAsset[]> {
+	// Resolve skill render context from delegation config
+	// authorNative = true when delegationMode is NOT "invoke"
+	const authorNative = ctx.config.authorDelegationMode !== "invoke";
+	const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
+	const skillRenderContext = createRenderContext(
+		authorNative && reviewerNative, // legacy native flag (both native)
+		authorNative,
+		reviewerNative,
+	);
+
+	const assets: RenderedAsset[] = [];
+
+	for (const skill of listSkills(skillRenderContext)) {
+		assets.push({
+			kind: "skill",
+			name: skill.name,
+			path: `skills/${skill.name}/SKILL.md`,
+			content: skill.content,
+		});
+	}
+
+	// Skip agent templates for roles that use invoke delegation
+	for (const agent of renderAgentTemplates({
+		authorModel: ctx.config.authorModel,
+		reviewerModel: ctx.config.reviewerModel,
+		authorInvoke: !authorNative,
+		reviewerInvoke: !reviewerNative,
+	})) {
+		assets.push({
+			kind: "agent",
+			name: agent.name,
+			path: `agents/${agent.name}.md`,
+			content: agent.content,
+		});
+	}
+
+	const locations = cursorLocationResolver.resolve(
+		ctx.scope,
+		ctx.projectRoot,
+		ctx.homeDir,
+	);
+	if (ctx.scope === "project" && locations.rulesDir) {
+		assets.push({
+			kind: "rule",
+			name: "5x-orchestrator",
+			path: "rules/5x-orchestrator.mdc",
+			content: ruleTemplate,
+		});
+		assets.push({
+			kind: "rule",
+			name: "5x-permissions",
+			path: "rules/5x-permissions.mdc",
+			content: permissionsTemplate,
+		});
+	}
+
+	return assets;
+}
 
 const cursorPlugin: HarnessPlugin = {
 	name: "cursor",
@@ -51,6 +124,8 @@ const cursorPlugin: HarnessPlugin = {
 		};
 	},
 
+	renderAssets: renderCursorAssets,
+
 	async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
 		const locations = cursorLocationResolver.resolve(
 			ctx.scope,
@@ -58,30 +133,15 @@ const cursorPlugin: HarnessPlugin = {
 			ctx.homeDir,
 		);
 
-		// Resolve skill render context from delegation config
-		// authorNative = true when delegationMode is NOT "invoke"
-		const authorNative = ctx.config.authorDelegationMode !== "invoke";
-		const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
-		const skillRenderContext = createRenderContext(
-			authorNative && reviewerNative, // legacy native flag (both native)
-			authorNative,
-			reviewerNative,
-		);
+		// Install is a thin writer over the one render path.
+		const rendered = await renderCursorAssets(ctx);
+		const agentTemplates = assetsOfKind(rendered, "agent");
 
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			listSkills(skillRenderContext),
+			assetsOfKind(rendered, "skill"),
 			ctx.force,
 		);
-
-		// Render and install agent profiles
-		// Skip agent templates for roles that use invoke delegation
-		const agentTemplates = renderAgentTemplates({
-			authorModel: ctx.config.authorModel,
-			reviewerModel: ctx.config.reviewerModel,
-			authorInvoke: !authorNative,
-			reviewerInvoke: !reviewerNative,
-		});
 		const agents = installAgentFiles(
 			locations.agentsDir,
 			agentTemplates,
@@ -104,10 +164,7 @@ const cursorPlugin: HarnessPlugin = {
 		if (ctx.scope === "project" && locations.rulesDir) {
 			const rules = installRuleFiles(
 				locations.rulesDir,
-				[
-					{ name: "5x-orchestrator", content: ruleTemplate },
-					{ name: "5x-permissions", content: permissionsTemplate },
-				],
+				assetsOfKind(rendered, "rule"),
 				ctx.force,
 			);
 			return { skills, agents, rules };

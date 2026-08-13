@@ -11,7 +11,8 @@
  * Exit codes:
  *   0 — Success
  *   1 — General error / unhandled
- *   2 — TEMPLATE_NOT_FOUND, PLAN_NOT_FOUND, PROVIDER_NOT_FOUND, INVALID_PROVIDER
+ *   2 — TEMPLATE_NOT_FOUND, PLAN_NOT_FOUND, PROVIDER_NOT_FOUND, INVALID_PROVIDER,
+ *       HARNESS_ASSETS_MODIFIED
  *   3 — NON_INTERACTIVE, EOF (interactive prompt required / stdin closed)
  *   4 — PLAN_LOCKED
  *   5 — DIRTY_WORKTREE
@@ -51,6 +52,7 @@ const EXIT_CODE_MAP: Record<string, number> = {
 	PLAN_NOT_FOUND: 2,
 	PROVIDER_NOT_FOUND: 2,
 	INVALID_PROVIDER: 2,
+	HARNESS_ASSETS_MODIFIED: 2,
 	NON_INTERACTIVE: 3,
 	EOF: 3,
 	INTERRUPTED: 130,

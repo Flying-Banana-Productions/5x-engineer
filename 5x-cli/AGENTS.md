@@ -1,5 +1,15 @@
 # 5x-cli Agent Guide
 
+## Harness freshness warnings
+
+When `5x run init` returns additive `warnings` / `harness_freshness` fields (or
+prints a stderr freshness warning), the orchestrator **must surface them** to
+the operator — do not ignore or suppress them. They mean installed harness
+assets no longer match the current config; the fix is `5x harness sync` (plain
+`harness install` preserves existing agent files and does not establish a
+verified baseline). Honor `harness.freshnessWarnings = "off"` when the operator
+has explicitly silenced the signal.
+
 ## Test Tiers
 
 **Unit tests** (`test/unit/`) — call functions directly, assert on return values and filesystem side effects (files written, config created, DB records). No subprocesses, no network, no console output capture. Must run deterministically under `--concurrent`.

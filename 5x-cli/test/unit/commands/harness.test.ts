@@ -24,8 +24,17 @@ import {
 } from "../../../src/commands/harness.handler.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { isValidPlugin } from "../../../src/harnesses/factory.js";
+import {
+	computeFingerprint,
+	hashContent,
+	MANIFEST_FILENAME,
+	MANIFEST_VERSION,
+	type ManifestInputs,
+	readManifest,
+} from "../../../src/harnesses/manifest.js";
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
+import { version } from "../../../src/version.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -998,6 +1007,581 @@ describe("formatHarnessListText", () => {
 			expect(output).toContain(
 				"Note: Cursor user rules are settings-managed and not file-backed. Install with --scope project to add the orchestrator rule.",
 			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Freshness column (Phase 5, 201-harness-freshness)
+// ---------------------------------------------------------------------------
+
+describe("buildHarnessListData freshness", () => {
+	test("omits freshness for uninstalled scopes", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+
+			const output = await buildHarnessListData(tmp, fakeHome);
+			for (const harness of output.harnesses) {
+				for (const status of Object.values(harness.scopes)) {
+					expect(status.installed).toBe(false);
+					expect(status.freshness).toBeUndefined();
+				}
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports fresh right after install and stale after a model change", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-A"\n',
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			const installed = await buildHarnessListData(tmp, fakeHome);
+			const fresh = installed.harnesses.find((h) => h.name === "opencode")
+				?.scopes.project;
+			expect(fresh?.installed).toBe(true);
+			expect(fresh?.freshness?.status).toBe("fresh");
+			expect(fresh?.freshness?.reason).toBeNull();
+			// A scope that was never installed still carries no freshness field.
+			expect(
+				installed.harnesses.find((h) => h.name === "opencode")?.scopes.user
+					?.freshness,
+			).toBeUndefined();
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-B"\n',
+				"utf-8",
+			);
+
+			const stale = (await buildHarnessListData(tmp, fakeHome)).harnesses.find(
+				(h) => h.name === "opencode",
+			)?.scopes.project;
+			expect(stale?.freshness?.status).toBe("stale");
+			expect(stale?.freshness?.reason).toBe("inputs-changed");
+			expect(stale?.freshness?.inputDeltas).toEqual([
+				{
+					key: "author.model",
+					installed: "anthropic/author-A",
+					current: "anthropic/author-B",
+				},
+			]);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("text output carries a freshness line only for installed scopes", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			expect(await captureHarnessListText(tmp, fakeHome)).not.toContain(
+				"freshness:",
+			);
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-A"\n',
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+			expect(await captureHarnessListText(tmp, fakeHome)).toContain(
+				"freshness: fresh",
+			);
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[author]\nmodel = "anthropic/author-B"\n',
+				"utf-8",
+			);
+			expect(await captureHarnessListText(tmp, fakeHome)).toContain(
+				"freshness: stale (inputs-changed)",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Manifest write on install / removal on uninstall (Phase 3, 201-harness-freshness)
+// ---------------------------------------------------------------------------
+
+describe("harnessInstall manifest", () => {
+	test("writes a verified manifest at the install root with the baked inputs", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]
+model = "anthropic/author-A"
+[reviewer]
+model = "anthropic/reviewer-A"
+`,
+				"utf-8",
+			);
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const root = join(tmp, ".opencode");
+			expect(existsSync(join(root, MANIFEST_FILENAME))).toBe(true);
+
+			const manifest = readManifest(root);
+			expect(manifest).not.toBeNull();
+			expect(manifest?.manifestVersion).toBe(MANIFEST_VERSION);
+			expect(manifest?.harness).toBe("opencode");
+			expect(manifest?.scope).toBe("project");
+			expect(manifest?.configResolved).toBe(true);
+			expect(manifest?.baseline).toBe("verified");
+			expect(manifest?.inputs.authorModel).toBe("anthropic/author-A");
+			expect(manifest?.inputs.reviewerModel).toBe("anthropic/reviewer-A");
+			expect(manifest?.inputs.authorDelegationMode).toBe("native");
+			expect(manifest?.inputs.cliVersion).toBe(version);
+			expect(manifest?.inputs.harnessPluginVersion).toBe(version);
+			expect(manifest?.inputs.plugin).toEqual({});
+			expect(manifest?.installedFrom.projectRoot).toBe(tmp);
+			expect(manifest?.installedFrom.contextDir).toBe("");
+			expect(manifest?.hash).toBe(
+				computeFingerprint(manifest?.inputs as ManifestInputs),
+			);
+			expect(new Date(manifest?.installedAt ?? "").toString()).not.toBe(
+				"Invalid Date",
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("records every installed asset with its on-disk hash", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const root = join(tmp, ".opencode");
+			const manifest = readManifest(root);
+			const paths = (manifest?.assets ?? []).map((a) => a.path);
+
+			for (const name of listSkillNames()) {
+				expect(paths).toContain(`skills/${name}/SKILL.md`);
+			}
+			for (const { name } of listAgentTemplates()) {
+				expect(paths).toContain(`agents/${name}.md`);
+			}
+
+			for (const asset of manifest?.assets ?? []) {
+				const content = readFileSync(
+					join(root, ...asset.path.split("/")),
+					"utf-8",
+				);
+				expect(asset.sha256).toBe(hashContent(content));
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("writes a verified manifest for every bundled harness at both scopes", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+
+			const roots: Record<string, Record<string, string>> = {
+				opencode: {
+					project: join(tmp, ".opencode"),
+					user: join(fakeHome, ".config", "opencode"),
+				},
+				cursor: {
+					project: join(tmp, ".cursor"),
+					user: join(fakeHome, ".cursor"),
+				},
+				universal: {
+					project: join(tmp, ".agents"),
+					user: join(fakeHome, ".agents"),
+				},
+			};
+
+			for (const name of ["opencode", "cursor", "universal"]) {
+				for (const scope of ["project", "user"] as const) {
+					await harnessInstall({
+						name,
+						scope,
+						startDir: tmp,
+						homeDir: fakeHome,
+					});
+
+					const manifest = readManifest(roots[name]?.[scope] as string);
+					expect(manifest?.harness).toBe(name);
+					expect(manifest?.scope).toBe(scope);
+					expect(manifest?.baseline).toBe("verified");
+					expect(manifest?.assets.length).toBeGreaterThan(0);
+				}
+			}
+
+			// Cursor project scope bakes rules; user scope does not.
+			expect(
+				readManifest(join(tmp, ".cursor"))?.assets.map((a) => a.path),
+			).toContain("rules/5x-orchestrator.mdc");
+			expect(
+				readManifest(join(fakeHome, ".cursor"))?.assets.map((a) => a.path),
+			).not.toContain("rules/5x-orchestrator.mdc");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("unparseable 5x.toml yields configResolved: false with null models", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				"this is not = valid = toml [\n",
+				"utf-8",
+			);
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const manifest = readManifest(join(tmp, ".opencode"));
+			expect(manifest?.configResolved).toBe(false);
+			expect(manifest?.inputs.authorModel).toBeNull();
+			expect(manifest?.inputs.reviewerModel).toBeNull();
+			// A failed load still bakes native-mode assets, and they still verify.
+			expect(manifest?.baseline).toBe("verified");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("records installedFrom.contextDir when installing from a sub-project", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			initGitRepo(tmp);
+			const sub = join(tmp, "packages", "api");
+			mkdirSync(sub, { recursive: true });
+			writeFileSync(
+				join(sub, "5x.toml"),
+				`[paths]\nplans = "docs/api"\n`,
+				"utf-8",
+			);
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: sub,
+			});
+
+			// Assets install once per root; config resolved from the sub-context.
+			const manifest = readManifest(join(tmp, ".opencode"));
+			expect(manifest?.installedFrom.projectRoot).toBe(tmp);
+			expect(manifest?.installedFrom.contextDir).toBe("packages/api");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("a no-op reinstall stays verified", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			const first = readManifest(join(tmp, ".opencode"));
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			const second = readManifest(join(tmp, ".opencode"));
+
+			// Byte-identical files are verified, not penalized for being skipped.
+			expect(second?.baseline).toBe("verified");
+			expect(second?.hash).toBe(first?.hash);
+			expect(second?.assets).toEqual(first?.assets ?? []);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("non-force reinstall after a model change retains the prior baseline", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "anthropic/author-A"\n`,
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			const before = readManifest(join(tmp, ".opencode"));
+			expect(before?.baseline).toBe("verified");
+
+			// Change the baked input, then reinstall *without* --force.
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "anthropic/author-B"\n`,
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const agent = readFileSync(
+				join(tmp, ".opencode", "agents", "5x-plan-author.md"),
+				"utf-8",
+			);
+			// installFiles skips existing agent files without --force.
+			expect(agent).toContain("anthropic/author-A");
+			expect(agent).not.toContain("anthropic/author-B");
+
+			const after = readManifest(join(tmp, ".opencode"));
+			// The new inputs are NOT adopted: the prior baseline is retained so the
+			// warning can still name the changed field, and `unverified` forbids fresh.
+			expect(after?.baseline).toBe("unverified");
+			expect(after?.inputs.authorModel).toBe("anthropic/author-A");
+			expect(after?.hash).toBe(before?.hash);
+			expect(after?.configResolved).toBe(before?.configResolved);
+			// installedFrom / installedAt describe this write, not the baseline.
+			expect(after?.installedFrom).toEqual(
+				before?.installedFrom ?? { projectRoot: "", contextDir: "" },
+			);
+
+			// `assets` always track the true on-disk bytes: skills were re-rendered.
+			const root = join(tmp, ".opencode");
+			for (const asset of after?.assets ?? []) {
+				const content = readFileSync(
+					join(root, ...asset.path.split("/")),
+					"utf-8",
+				);
+				expect(asset.sha256).toBe(hashContent(content));
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("--force reinstall after a model change is verified in one step", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "anthropic/author-A"\n`,
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[author]\nmodel = "anthropic/author-B"\n`,
+				"utf-8",
+			);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+				force: true,
+			});
+
+			expect(
+				readFileSync(
+					join(tmp, ".opencode", "agents", "5x-plan-author.md"),
+					"utf-8",
+				),
+			).toContain("anthropic/author-B");
+
+			const manifest = readManifest(join(tmp, ".opencode"));
+			expect(manifest?.baseline).toBe("verified");
+			expect(manifest?.inputs.authorModel).toBe("anthropic/author-B");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("a hand-edited asset is recorded at its on-disk hash, not the render", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const edited = join(tmp, ".opencode", "agents", "5x-plan-author.md");
+			writeFileSync(edited, "hand edited\n", "utf-8");
+
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			const manifest = readManifest(join(tmp, ".opencode"));
+			expect(manifest?.baseline).toBe("unverified");
+			expect(
+				manifest?.assets.find((a) => a.path === "agents/5x-plan-author.md")
+					?.sha256,
+			).toBe(hashContent("hand edited\n"));
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+describe("harnessUninstall manifest", () => {
+	test("removes the manifest and the now-empty install root", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			expect(existsSync(join(tmp, ".opencode", MANIFEST_FILENAME))).toBe(true);
+
+			const output = await harnessUninstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			expect(output.manifests.project).toBe(true);
+			// The manifest used to survive the sweep and keep `.opencode/` alive.
+			expect(existsSync(join(tmp, ".opencode"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("reports false when no manifest was present", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const output = await harnessUninstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			expect(output.manifests.project).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("preserves an install root that holds a user's own config", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			const userConfig = join(tmp, ".opencode", "opencode.json");
+			writeFileSync(userConfig, '{"model":"mine"}\n', "utf-8");
+
+			await harnessUninstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+
+			// The sweep is empty-only, so the user's file keeps the directory.
+			expect(existsSync(join(tmp, ".opencode"))).toBe(true);
+			expect(existsSync(userConfig)).toBe(true);
+			expect(existsSync(join(tmp, ".opencode", MANIFEST_FILENAME))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("--all removes the manifest at every processed scope", async () => {
+		const tmp = makeTmpDir();
+		const fakeHome = join(tmp, "fake-home");
+		mkdirSync(fakeHome, { recursive: true });
+		try {
+			await bootstrapProject(tmp);
+			await harnessInstall({
+				name: "opencode",
+				scope: "project",
+				startDir: tmp,
+			});
+			await harnessInstall({
+				name: "opencode",
+				scope: "user",
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			const output = await harnessUninstall({
+				name: "opencode",
+				all: true,
+				startDir: tmp,
+				homeDir: fakeHome,
+			});
+
+			expect(output.manifests.project).toBe(true);
+			expect(output.manifests.user).toBe(true);
+			expect(existsSync(join(tmp, ".opencode"))).toBe(false);
+			expect(existsSync(join(fakeHome, ".config", "opencode"))).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}

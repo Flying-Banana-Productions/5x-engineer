@@ -127,3 +127,92 @@ describe("universal plugin", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// renderAssets() — one render path (201-harness-freshness Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("universal plugin renderAssets()", () => {
+	test("output is byte-identical to what install() writes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const ctx = {
+				scope: "project" as const,
+				projectRoot: tmp,
+				force: false,
+				config: {},
+			};
+
+			const rendered = await universalPlugin.renderAssets?.(ctx);
+			expect(rendered).toBeDefined();
+			await universalPlugin.install(ctx);
+
+			const locations = universalLocationResolver.resolve("project", tmp);
+			for (const asset of rendered ?? []) {
+				const onDisk = join(locations.rootDir, asset.path);
+				expect(existsSync(onDisk)).toBe(true);
+				expect(readFileSync(onDisk, "utf-8")).toBe(asset.content);
+			}
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("renders skills only — no agents, no rules", async () => {
+		const rendered =
+			(await universalPlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config: {},
+			})) ?? [];
+
+		expect(rendered.every((a) => a.kind === "skill")).toBe(true);
+		expect(rendered.map((a) => a.name).sort()).toEqual(
+			[...listBaseSkillNames()].sort(),
+		);
+	});
+
+	test("output does not vary with baked models or delegation mode", async () => {
+		const base = {
+			scope: "project" as const,
+			projectRoot: "/tmp/project",
+			force: false,
+		};
+
+		const plain =
+			(await universalPlugin.renderAssets?.({
+				...base,
+				config: {},
+			})) ?? [];
+		const configured =
+			(await universalPlugin.renderAssets?.({
+				...base,
+				config: {
+					authorModel: "anthropic/claude-opus-4-5",
+					reviewerModel: "anthropic/claude-sonnet-4-5",
+					authorDelegationMode: "invoke",
+					reviewerDelegationMode: "invoke",
+				},
+			})) ?? [];
+
+		// Universal delegates via `5x invoke` and bakes nothing per-role, so a
+		// universal install can only ever go stale on a CLI upgrade.
+		expect(configured).toEqual(plain);
+	});
+
+	test("declared paths are rootDir-relative and POSIX-separated", async () => {
+		const rendered =
+			(await universalPlugin.renderAssets?.({
+				scope: "project",
+				projectRoot: "/tmp/project",
+				force: false,
+				config: {},
+			})) ?? [];
+
+		for (const asset of rendered) {
+			expect(asset.path).toBe(`skills/${asset.name}/SKILL.md`);
+			expect(asset.path).not.toContain("\\");
+		}
+	});
+});

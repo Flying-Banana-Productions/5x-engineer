@@ -53,6 +53,8 @@ import {
 	listWorktrees,
 	runWorktreeSetupCommand,
 } from "../git.js";
+import { emitFreshnessWarnings } from "../harnesses/freshness.js";
+import type { FreshnessReport } from "../harnesses/manifest.js";
 import {
 	acquireLock,
 	isLocked,
@@ -258,6 +260,30 @@ function deriveWorktreeContextFields(
 	}
 
 	return fields;
+}
+
+/**
+ * Additive JSON fields for stale harness installs (201-harness-freshness §2.4).
+ *
+ * Returns `{}` when nothing is stale, so the common-case envelope is byte-identical
+ * to the pre-freshness one. `warnings` and `harness_freshness` are purely additive:
+ * no existing field changes type or disappears.
+ */
+function harnessFreshnessFields(
+	stale: FreshnessReport[],
+): Record<string, unknown> {
+	if (stale.length === 0) return {};
+	return {
+		warnings: stale.map(
+			(r) => `${r.harness} (${r.scope}) assets are ${r.status}`,
+		),
+		harness_freshness: stale.map((r) => ({
+			harness: r.harness,
+			scope: r.scope,
+			status: r.status,
+			reason: r.reason,
+		})),
+	};
 }
 
 /**
@@ -828,6 +854,19 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}
 		}
 
+		// 2b. Harness freshness fire point (201-harness-freshness §2.4). Tier 1
+		// only, once per `run init`, before any work is delegated. Anchored to the
+		// plan's directory because that is the context config was resolved from
+		// above — using cwd would compare against the wrong context in a monorepo
+		// and report a spurious `context-mismatch`.
+		//
+		// `emitFreshnessWarnings` swallows its own failures: a broken freshness
+		// check must never block run creation.
+		const staleHarnesses = await emitFreshnessWarnings({
+			startDir: dirname(planPath),
+		});
+		const freshnessFields = harnessFreshnessFields(staleHarnesses);
+
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
@@ -842,6 +881,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				...(worktreeResult ? { worktree: worktreeResult } : {}),
 				// Phase 4: top-level worktree context for downstream pipe consumers
 				...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
+				...freshnessFields,
 			});
 			return;
 		}
@@ -871,6 +911,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			...(worktreeResult ? { worktree: worktreeResult } : {}),
 			// Phase 4: top-level worktree context for downstream pipe consumers
 			...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
+			...freshnessFields,
 		});
 	} catch (err) {
 		if (!lockCleanupRegistered) {

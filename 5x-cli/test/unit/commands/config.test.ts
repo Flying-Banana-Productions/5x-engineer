@@ -22,6 +22,7 @@ import {
 	configUnset,
 	detectActiveConfigSource,
 	discoverNearestTomlPath,
+	isBakedConfigKey,
 	resolveTargetConfigPath,
 } from "../../../src/commands/config.handler.js";
 import { resolveLayeredConfig } from "../../../src/config.js";
@@ -456,6 +457,44 @@ describe("config set (unit)", () => {
 			expect(hm.opencode).toBe("my-model");
 			// Inline table or header form — both are valid
 			expect(text.includes("opencode") && text.includes("my-model")).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("harness.autoSync round-trips through configSet", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await configSet({
+				key: "harness.autoSync",
+				value: "true",
+				startDir: tmp,
+				contextDir: tmp,
+			});
+			const parsed = tomlParse(
+				readFileSync(join(tmp, "5x.toml"), "utf-8"),
+			) as Record<string, unknown>;
+			expect((parsed.harness as Record<string, unknown>).autoSync).toBe(true);
+
+			const { config } = await resolveLayeredConfig(tmp, tmp);
+			expect(config.harness.autoSync).toBe(true);
+			expect(config.harness.freshnessWarnings).toBe("on");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("harness.freshnessWarnings rejects a value outside the enum", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await expect(
+				configSet({
+					key: "harness.freshnessWarnings",
+					value: "sometimes",
+					startDir: tmp,
+					contextDir: tmp,
+				}),
+			).rejects.toThrow(CliError);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -1007,5 +1046,43 @@ describe("config add / remove (unit)", () => {
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Baked-key classification (Phase 5, 201-harness-freshness)
+// ---------------------------------------------------------------------------
+
+describe("isBakedConfigKey", () => {
+	test("accepts the four baked scalars", () => {
+		for (const key of [
+			"author.model",
+			"reviewer.model",
+			"author.delegationMode",
+			"reviewer.delegationMode",
+		]) {
+			expect(isBakedConfigKey(key)).toBe(true);
+		}
+	});
+
+	test("accepts per-harness model overrides for both roles", () => {
+		expect(isBakedConfigKey("author.harnessModels.opencode")).toBe(true);
+		expect(isBakedConfigKey("reviewer.harnessModels.cursor")).toBe(true);
+	});
+
+	test("rejects keys that are not baked into installed assets", () => {
+		for (const key of [
+			"maxStepsPerRun",
+			"author.provider",
+			"author.harnessModels",
+			"harness.autoSync",
+			"paths.plans",
+		]) {
+			expect(isBakedConfigKey(key)).toBe(false);
+		}
+	});
+
+	test("rejects a deeper path under harnessModels", () => {
+		expect(isBakedConfigKey("author.harnessModels.opencode.extra")).toBe(false);
 	});
 });

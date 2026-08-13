@@ -7,6 +7,23 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+## 2.0
+
+### Features
+
+- **Harness asset freshness** — each `harness install` writes a
+  `.5x-manifest.json` at the install root recording baked inputs, a fingerprint,
+  a verified/unverified baseline, and per-file content hashes. Tier 1 freshness
+  warnings fire at `run init`, baked-key `config set`/`unset`/`add`/`remove`,
+  `config show` (full show, or a baked-key show — catches direct 5x.toml
+  edits), and `harness list`. New `5x harness sync` re-renders installed scopes through
+  the same render path as install (the only command that establishes a verified
+  baseline; plain reinstall preserves existing agents). `5x upgrade` reports
+  harness freshness across bundled installs and auto-syncs only when
+  `harness.autoSync = true` (opt-in, default off) **and** the refresh is
+  lossless, with `--sync` / `--no-sync` per-invocation overrides. Config keys:
+  `harness.freshnessWarnings` (`on`/`off`, default `on`) and `harness.autoSync`.
+
 ## 1.3.0 (2026-08-10)
 
 ### Features

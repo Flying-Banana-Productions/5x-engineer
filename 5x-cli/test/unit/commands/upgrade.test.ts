@@ -1,14 +1,15 @@
 /**
- * Unit tests for upgrade handler — template upgrade behavior.
+ * Unit tests for upgrade handler — template upgrade behavior and CLI flags.
  *
  * Tests that the upgrade handler correctly reports diverged prompt templates
- * without auto-writing them.
+ * without auto-writing them, and that `--sync` / `--no-sync` are tri-state.
  */
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "@commander-js/extra-typings";
 import { runUpgrade } from "../../../src/commands/upgrade.handler.js";
 import { getDefaultTemplateRaw } from "../../../src/templates/loader.js";
 
@@ -93,5 +94,43 @@ describe("runUpgrade — prompt template handling", () => {
 		} finally {
 			cleanupDir(tmp);
 		}
+	});
+});
+
+describe("upgrade --sync / --no-sync tri-state", () => {
+	/**
+	 * Same `--sync` / `--no-sync` pair `registerUpgrade` registers. Commander
+	 * maps `--no-sync` → `sync: false` and leaves `sync` undefined when neither
+	 * flag is passed — that tri-state is what makes "no flag ≠ `--sync`" work.
+	 */
+	async function parseUpgradeOpts(args: string[]): Promise<{ sync?: boolean }> {
+		let captured: { sync?: boolean } = {};
+		const program = new Command();
+		program.exitOverride();
+		program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+		program
+			.command("upgrade")
+			.option("--sync")
+			.option("--no-sync")
+			.action((opts) => {
+				captured = { sync: opts.sync };
+			});
+		await program.parseAsync(["upgrade", ...args], { from: "user" });
+		return captured;
+	}
+
+	test("neither flag leaves sync undefined (config-driven)", async () => {
+		const opts = await parseUpgradeOpts([]);
+		expect(opts.sync).toBeUndefined();
+	});
+
+	test("--sync sets sync: true", async () => {
+		const opts = await parseUpgradeOpts(["--sync"]);
+		expect(opts.sync).toBe(true);
+	});
+
+	test("--no-sync sets sync: false", async () => {
+		const opts = await parseUpgradeOpts(["--no-sync"]);
+		expect(opts.sync).toBe(false);
 	});
 });

@@ -11,6 +11,7 @@
 
 import { createRenderContext } from "../../skills/renderer.js";
 import {
+	assetsOfKind,
 	installAgentFiles,
 	installSkillFiles,
 	removeStaleAgentFiles,
@@ -26,9 +27,58 @@ import type {
 	HarnessScope,
 	HarnessUninstallContext,
 	HarnessUninstallResult,
+	RenderedAsset,
 } from "../types.js";
 import { listAgentTemplates, renderAgentTemplates } from "./loader.js";
 import { listSkillNames, listSkills } from "./skills/loader.js";
+
+/**
+ * Render every managed OpenCode asset for this context without writing.
+ *
+ * Module-level so `install()` can dispatch over the exact same call the Tier 2
+ * freshness check makes — one render path, not two (201 §2.5).
+ */
+async function renderOpencodeAssets(
+	ctx: HarnessInstallContext,
+): Promise<RenderedAsset[]> {
+	// Resolve skill render context from delegation config
+	// authorNative = true when delegationMode is NOT "invoke"
+	const authorNative = ctx.config.authorDelegationMode !== "invoke";
+	const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
+	const skillRenderContext = createRenderContext(
+		authorNative && reviewerNative, // legacy native flag (both native)
+		authorNative,
+		reviewerNative,
+	);
+
+	const assets: RenderedAsset[] = [];
+
+	for (const skill of listSkills(skillRenderContext)) {
+		assets.push({
+			kind: "skill",
+			name: skill.name,
+			path: `skills/${skill.name}/SKILL.md`,
+			content: skill.content,
+		});
+	}
+
+	// Skip agent templates for roles that use invoke delegation
+	for (const agent of renderAgentTemplates({
+		authorModel: ctx.config.authorModel,
+		reviewerModel: ctx.config.reviewerModel,
+		authorInvoke: !authorNative,
+		reviewerInvoke: !reviewerNative,
+	})) {
+		assets.push({
+			kind: "agent",
+			name: agent.name,
+			path: `agents/${agent.name}.md`,
+			content: agent.content,
+		});
+	}
+
+	return assets;
+}
 
 const opencodePlugin: HarnessPlugin = {
 	name: "opencode",
@@ -53,6 +103,8 @@ const opencodePlugin: HarnessPlugin = {
 		return { skillNames, agentNames };
 	},
 
+	renderAssets: renderOpencodeAssets,
+
 	async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
 		const locations = opencodeLocationResolver.resolve(
 			ctx.scope,
@@ -60,31 +112,15 @@ const opencodePlugin: HarnessPlugin = {
 			ctx.homeDir,
 		);
 
-		// Resolve skill render context from delegation config
-		// authorNative = true when delegationMode is NOT "invoke"
-		const authorNative = ctx.config.authorDelegationMode !== "invoke";
-		const reviewerNative = ctx.config.reviewerDelegationMode !== "invoke";
-		const skillRenderContext = createRenderContext(
-			authorNative && reviewerNative, // legacy native flag (both native)
-			authorNative,
-			reviewerNative,
-		);
+		// Install is a thin writer over the one render path.
+		const rendered = await renderOpencodeAssets(ctx);
+		const agentTemplates = assetsOfKind(rendered, "agent");
 
-		// Install skills with the correct render context
 		const skills = installSkillFiles(
 			locations.skillsDir,
-			listSkills(skillRenderContext),
+			assetsOfKind(rendered, "skill"),
 			ctx.force,
 		);
-
-		// Render and install agent profiles
-		// Skip agent templates for roles that use invoke delegation
-		const agentTemplates = renderAgentTemplates({
-			authorModel: ctx.config.authorModel,
-			reviewerModel: ctx.config.reviewerModel,
-			authorInvoke: !authorNative,
-			reviewerInvoke: !reviewerNative,
-		});
 		const agents = installAgentFiles(
 			locations.agentsDir,
 			agentTemplates,

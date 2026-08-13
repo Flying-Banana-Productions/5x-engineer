@@ -1,9 +1,9 @@
 # Harness Asset Freshness — Manifest, Freshness Check, and `5x harness sync`
 
-**Version:** 1.1
+**Version:** 1.3
 **Created:** August 9, 2026
-**Last updated:** August 9, 2026
-**Status:** Revised — both blocking review findings resolved (see [Revision History](#revision-history))
+**Last updated:** August 10, 2026
+**Status:** Phases 0–8 complete — verification spikes passed (see [Appendix A](#appendix-a--phase-0-verification-findings)); manifest schema/hashing/compare, `renderAssets()` plugin seam, install/uninstall lifecycle, freshness engine, fire points (`run init` / baked `config set` / `harness list`), `5x harness sync`, and `5x upgrade` freshness sweep all landed; Phase 8 documentation, migration test, and end-to-end validation recorded (see [Appendix D](#appendix-d--phase-8-end-to-end-validation))
 
 ---
 
@@ -115,7 +115,7 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 
 **The manifest lives at `locations.rootDir`, not in `.5x/`.** Its job is to describe what is physically baked on disk, so it must live and die with those assets: travel with them when a project-scope `.opencode/` is committed, survive `.5x/` deletion, and not desync when another project reinstalls user-scope assets. `src/harnesses/locations.ts` already exposes `rootDir` for all three shipped resolvers, so the path resolution is free. Centralizing in `.5x/` was rejected because user-scope assets (`~/.config/opencode/`, `~/.cursor/`) are shared across every repo on the machine — a per-project stamp would describe a file set that another project just rewrote.
 
-**Dotfile inertness is verified, not assumed.** All three shipped harnesses discover *assets* from subdirectories (`skills/`, `agents/`, `rules/`), so a root-level dotfile is inert by construction (D8). The residual risk is *config* discovery — `.opencode/opencode.json` and `.cursor/mcp.json` do live at the root, so a loader globbing `*.json` there could see the manifest. A leading dot makes that very unlikely; Phase 0 carries one manual smoke test per harness rather than a design change.
+**Dotfile inertness is verified, not assumed.** All three shipped harnesses discover *assets* from subdirectories (`skills/`, `agents/`, `rules/`), so a root-level dotfile is inert by construction (D8). The residual risk is *config* discovery — `.opencode/opencode.json` and `.cursor/mcp.json` do live at the root, so a loader globbing `*.json` there could see the manifest. A leading dot makes that very unlikely; Phase 0 carried one smoke test per harness rather than a design change. **Confirmed inert** (Appendix A.3–A.5): both loaders read their config by exact filename rather than globbing, so a manifest carrying adversarial `model` / `agent` / `mcpServers` keys changed nothing in either harness's resolved config.
 
 **`inputs` is stored in cleartext alongside the hash.** The hash answers "is it stale"; only cleartext answers "stale *how*". Warning copy shows the changed fields — `installed author.model = X` / `current author.model = Y` — which is the difference between a warning a user acts on and one they learn to ignore.
 
@@ -137,7 +137,7 @@ Harness assets are compiled at install time from `ctx.config` — `authorModel`,
 
 **Sync aborts on hand-edited files unless `--force`.** With a manifest present, "the user edited this" is decidable for the first time. §2.5 demands unconditional refresh of *managed* assets — that fixes the agent skip bug — but it does not demand silent destruction of user edits, and §5.1 explicitly asks for the skill-overwrite policy to be settled rather than inherited. Sync therefore computes the Tier 2 report first and exits with `HARNESS_ASSETS_MODIFIED` listing the edited paths and naming `--force`. The adoption path (no manifest) still force-installs per §2.5, because without a recorded hash a hand-edit is indistinguishable from config drift — it prints every overwritten path so the action is at least legible.
 
-**User scope is a hard blocker on automatic refresh, separate from the predicate.** The predicate (context match + unmodified hashes) is necessary but not sufficient at user scope: one physical asset copy serves N projects and `installedFrom.projectRoot` is explicitly non-comparable. Encoding `shared-user-scope` as its own blocker keeps D4 ("warn-only, permanently") true without contorting D6's single predicate, and the remediation is provenance plus "install project scope for this project" — pending Phase 0's precedence verification.
+**User scope is a hard blocker on automatic refresh, separate from the predicate.** The predicate (context match + unmodified hashes) is necessary but not sufficient at user scope: one physical asset copy serves N projects and `installedFrom.projectRoot` is explicitly non-comparable. Encoding `shared-user-scope` as its own blocker keeps D4 ("warn-only, permanently") true without contorting D6's single predicate, and the remediation is provenance plus "install project scope for this project" — verified in Phase 0.1 (Appendix A.1, A.2: project scope wins the name collision in both harnesses).
 
 **Warnings are stderr-first with additive JSON fields.** `run init` returns a `{ok, data}` envelope on stdout (`src/output.ts:230-251`); printing a warning there would break parsers, and dropping it entirely would hide the signal from humans. Warnings go to stderr as formatted text, plus an additive `warnings: string[]` and `harness_freshness` array in the JSON data. Additive fields are safe under the v2 policy for area #1 ("purely additive", `200-overview.md` §4).
 
@@ -223,18 +223,22 @@ Outcomes:
 - **Precedence holds** → keep the §2.6 remediation copy as designed.
 - **Precedence does not hold** → the user-scope warning degrades to "warn and let the user choose" (no directive remediation), and Appendix A records that `201` §2.7 (shrink the bake surface) becomes materially more urgent.
 
-- [ ] Verify OpenCode project-over-user precedence; record evidence + date in Appendix A
-- [ ] Verify Cursor project-over-user precedence; record evidence + date in Appendix A
-- [ ] Decide and record the user-scope remediation string for Phase 5
+- [x] Verify OpenCode project-over-user precedence; record evidence + date in Appendix A
+- [x] Verify Cursor project-over-user precedence; record evidence + date in Appendix A
+- [x] Decide and record the user-scope remediation string for Phase 5
+
+**Result: precedence holds for both harnesses** (Appendix A). The §2.6 remediation copy stands as designed — Phase 5's user-scope warning keeps its directive `fix 5x harness install <name> --scope project` line.
 
 #### 0.2 Smoke-test manifest dotfile inertness against *config* discovery
 
 Asset discovery is inert by construction (all three harnesses read from subdirectories — `src/harnesses/locations.ts`). The plausible collision is config discovery: `.opencode/opencode.json` and `.cursor/mcp.json` live at the root.
 
-- [ ] OpenCode: place `.opencode/.5x-manifest.json`, launch OpenCode, confirm no config parse error / no unexpected config merge
-- [ ] Cursor: place `.cursor/.5x-manifest.json`, launch Cursor, confirm the same
-- [ ] Universal (`.agents/`): confirm no tooling reads root-level files
-- [ ] Record results + versions tested in Appendix A
+- [x] OpenCode: place `.opencode/.5x-manifest.json`, launch OpenCode, confirm no config parse error / no unexpected config merge
+- [x] Cursor: place `.cursor/.5x-manifest.json`, launch Cursor, confirm the same
+- [x] Universal (`.agents/`): confirm no tooling reads root-level files
+- [x] Record results + versions tested in Appendix A
+
+**Result: the dotfile is inert at every scope tested** (Appendix A). No design change; `MANIFEST_FILENAME = ".5x-manifest.json"` at `locations.rootDir` stands.
 
 ---
 
@@ -326,9 +330,9 @@ export interface HarnessManifest {
 }
 ```
 
-- [ ] Add the types above with doc comments mirroring the rationale in `201` §2.1
-- [ ] Re-export `HarnessScope` type usage from `./types.js` (do not redeclare)
-- [ ] `baseline` participates in the shape guard but **not** in `computeFingerprint` — it describes the manifest's trustworthiness, not the bake
+- [x] Add the types above with doc comments mirroring the rationale in `201` §2.1
+- [x] Re-export `HarnessScope` type usage from `./types.js` (do not redeclare)
+- [x] `baseline` participates in the shape guard but **not** in `computeFingerprint` — it describes the manifest's trustworthiness, not the bake
 
 #### 1.2 Canonicalization and hashing
 
@@ -369,12 +373,12 @@ Normalization rules (each gets a unit test):
 | `plugin` absent | `{}` |
 | key order in `plugin` | sorted |
 
-- [ ] Implement `canonicalJson` (recursive sort; arrays keep order; rejects non-JSON values)
-- [ ] Implement `normalizeInputs` per the table
-- [ ] Implement `computeFingerprint` and `hashContent`
-- [ ] Unit test: two configs differing only in key order / whitespace hash equal
-- [ ] Unit test: changing any one of the six scalar inputs changes the hash
-- [ ] Unit test: `plugin: {}` vs `plugin` absent hash equal
+- [x] Implement `canonicalJson` (recursive sort; arrays keep order; rejects non-JSON values)
+- [x] Implement `normalizeInputs` per the table
+- [x] Implement `computeFingerprint` and `hashContent`
+- [x] Unit test: two configs differing only in key order / whitespace hash equal
+- [x] Unit test: changing any one of the six scalar inputs changes the hash
+- [x] Unit test: `plugin: {}` vs `plugin` absent hash equal
 
 #### 1.3 Read / write / remove
 
@@ -400,15 +404,16 @@ export function removeManifest(rootDir: string): boolean;
 export function toManifestPath(rootDir: string, absolutePath: string): string;
 ```
 
-Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `baseline` ∈ `{verified,unverified}`, `inputs` and `installedFrom` are objects, and `assets` is an array of `{path, sha256}` strings.
+Validation in `readManifest` is a hand-written shape guard (not Zod) to keep the module dependency-free and cheap on Tier 1 hot paths; it checks `manifestVersion` is a number ≤ `MANIFEST_VERSION`, `harness`/`hash`/`installedAt` are strings, `scope` ∈ `{project,user}`, `configResolved` is boolean, `baseline` ∈ `{verified,unverified}`, and `assets` is an array of `{path, sha256}` strings. `inputs` and `installedFrom` are validated **field-by-field**, not merely as objects: every `ManifestInputs` field must be present with its exact type (models `string | null`, delegation modes ∈ `{native,invoke,null}`, versions strings, `plugin` an object whose values are strings or finite numbers) and both provenance fields must be strings. An absent field is corrupt, not defaulted — `normalizeInputs` fills defaults on the *compare* side, so a manifest that simply drops e.g. `inputs.plugin` would still fingerprint-match current config and read `fresh` while describing a bake nobody performed.
 
 A missing or unrecognized `baseline` is **not** defaulted to `"verified"` — the guard rejects it and `readManifest` returns `null`, so an old or hand-written manifest fails closed to `unknown` rather than asserting a baseline nobody verified.
 
-- [ ] Implement the five functions
-- [ ] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
-- [ ] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
-- [ ] Unit test: `removeManifest` returns `false` when absent, `true` after a write
-- [ ] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
+- [x] Implement the five functions
+- [x] Unit test: round-trip write → read returns a deep-equal manifest, `baseline` included
+- [x] Unit test: each corruption mode (missing, `"{"`, `[]`, `manifestVersion: 99`, missing `assets`, missing `baseline`, `baseline: "yes"`) returns `null`
+- [x] Unit test: each nested corruption mode — any missing/mistyped `inputs` field, a non-object or bad-valued `inputs.plugin`, any missing/mistyped `installedFrom` field — returns `null`
+- [x] Unit test: `removeManifest` returns `false` when absent, `true` after a write
+- [x] Unit test: `toManifestPath` emits `skills/5x-plan/SKILL.md` on both separators
 
 ---
 
@@ -457,8 +462,8 @@ export interface HarnessPlugin {
 
 `isValidPlugin` (`src/harnesses/factory.ts:93-107`) is **not** tightened — both new members are optional, so external plugins written against the current contract stay valid.
 
-- [ ] Add `RenderedAsset`, `renderAssets?`, `fingerprintInputs?`, `version?`
-- [ ] Unit test in `test/unit/harnesses/factory.test.ts`: a plugin without the new members still passes `isValidPlugin`
+- [x] Add `RenderedAsset`, `renderAssets?`, `fingerprintInputs?`, `version?`
+- [x] Unit test in `test/unit/harnesses/factory.test.ts`: a plugin without the new members still passes `isValidPlugin`
 
 #### 2.2 OpenCode plugin — extract render, keep install semantics
 
@@ -522,9 +527,9 @@ async install(ctx: HarnessInstallContext): Promise<HarnessInstallResult> {
 
 Note: the path prefixes (`skills/`, `agents/`, `rules/`) are the *relative* form of `locations.skillsDir` etc. against `rootDir` for all three shipped resolvers (`src/harnesses/locations.ts:79-96, 116-133, 156-173`). Phase 2.5 adds an assertion so a future resolver that breaks that assumption fails loudly.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: `renderAssets()` output is byte-identical to what `install()` writes (read back from a temp dir)
-- [ ] Unit test: `authorDelegationMode: "invoke"` omits author agents from `renderAssets()`
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: `renderAssets()` output is byte-identical to what `install()` writes (read back from a temp dir)
+- [x] Unit test: `authorDelegationMode: "invoke"` omits author agents from `renderAssets()`
 
 #### 2.3 Cursor plugin — same extraction, plus rules
 
@@ -541,9 +546,9 @@ if (ctx.scope === "project" && locations.rulesDir) {
 
 `install()` preserves the existing user-scope `unsupported`/`warnings` return shape verbatim.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: user scope yields no `kind: "rule"` assets; project scope yields exactly two
-- [ ] Unit test: existing `unsupported.rules` + warning text unchanged at user scope
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: user scope yields no `kind: "rule"` assets; project scope yields exactly two
+- [x] Unit test: existing `unsupported.rules` + warning text unchanged at user scope
 
 #### 2.4 Universal plugin
 
@@ -551,8 +556,8 @@ if (ctx.scope === "project" && locations.rulesDir) {
 
 `renderAllSkillTemplates(createRenderContext(false))` → skills only, no agents. Its fingerprint therefore varies only with CLI version — correct and worth a doc comment, since a universal install can only ever go stale on upgrade.
 
-- [ ] Extract `renderAssets()`; rewrite `install()` as a dispatcher
-- [ ] Unit test: no agent assets; skill set matches `listBaseSkillNames()`
+- [x] Extract `renderAssets()`; rewrite `install()` as a dispatcher
+- [x] Unit test: no agent assets; skill set matches `listBaseSkillNames()`
 
 #### 2.5 Guard the `rootDir`-relative path assumption
 
@@ -571,8 +576,8 @@ export function assertAssetPathsUnderRoot(
 ): void;
 ```
 
-- [ ] Implement and call from the manifest-write path (Phase 3)
-- [ ] Unit test: a synthetic resolver with `skillsDir` outside `rootDir` throws
+- [x] Implement and call from the manifest-write path (Phase 3)
+- [x] Unit test: a synthetic resolver with `skillsDir` outside `rootDir` throws
 
 ---
 
@@ -604,8 +609,8 @@ try {
 }
 ```
 
-- [ ] Add `configResolved` tracking without changing the swallow behavior
-- [ ] Capture `contextDir` (the exact directory handed to `resolveLayeredConfig`)
+- [x] Add `configResolved` tracking without changing the swallow behavior
+- [x] Capture `contextDir` (the exact directory handed to `resolveLayeredConfig`)
 
 #### 3.2 Verify the installed inventory, then build and write the manifest
 
@@ -685,19 +690,19 @@ Consequences, stated so the tests can assert them directly:
 
 The false-fresh path the review flagged is closed at the source: after model A → config B → plain `harness install`, the manifest still carries A's fingerprint (or none), so Tier 1 keeps warning on every hot path until `sync` runs.
 
-- [ ] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint` over the `inputs` it is given; takes `baseline` explicitly — no default)
-- [ ] Add `collectInstalledAssets(rendered, summaries, prior, locations)` (read-back hashing of the union path set: `renderAssets` paths + `InstallSummary` paths + still-present prior-manifest paths)
-- [ ] Add `verifyInstalledInventory(...)` with the byte-compare path and the `skipped`-empty fallback
-- [ ] Wire the read-prior → verify → write sequence into `harnessInstall` after `plugin.install` succeeds (never on throw)
-- [ ] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`); when `baseline === "unverified"`, print the reason and the fix on stderr: `existing assets were preserved — freshness baseline not established; run '5x harness sync'`, listing the skipped paths
-- [ ] Integration test: install opencode project scope → manifest exists, `configResolved: true`, `baseline: "verified"`, inputs match `5x.toml`
-- [ ] Integration test: install with an unparseable `5x.toml` → `configResolved: false`, models `null`
-- [ ] Integration test: `installedFrom.contextDir` is `"packages/api"` when installing from a sub-project
-- [ ] Integration test **(review §1 regression, end-to-end)**: install with `author.model = A`; `5x config set author.model B`; plain `5x harness install opencode -s project` (no `--force`) → agent frontmatter still says `A`, manifest has `baseline: "unverified"` and still records `authorModel: A`, and Tier 1 reports `unknown` / `baseline-unverified` (never `fresh`); then `5x harness sync` → frontmatter says `B`, `baseline: "verified"`, Tier 1 reports `fresh`
-- [ ] Integration test: same flow but with `--force` → `baseline: "verified"` in one step, no warning afterwards
-- [ ] Integration test: install twice with no config change → second manifest is still `baseline: "verified"` (byte-identical files are verified, not penalized)
-- [ ] Unit test: `verifyInstalledInventory` returns false when one rendered asset's on-disk hash differs, false when a rendered path is missing from `onDisk`, true when all match
-- [ ] Unit test: the unverified write retains the prior `inputs`/`hash`/`configResolved` and refreshes `assets` to on-disk hashes
+- [x] Add `buildManifest(...)` to `src/harnesses/manifest.ts` (assembles + computes `hash` via `computeFingerprint` over the `inputs` it is given; takes `baseline` explicitly — no default)
+- [x] Add `collectInstalledAssets(rendered, summaries, prior, locations)` (read-back hashing of the union path set: `renderAssets` paths + `InstallSummary` paths + still-present prior-manifest paths) — takes one options object, and summaries are kind-tagged (`KindedInstallSummary`) since a summary's bare entries (`5x-plan/SKILL.md`) only resolve against the directory for their kind
+- [x] Add `verifyInstalledInventory(...)` with the byte-compare path and the `skipped`-empty fallback
+- [x] Wire the read-prior → verify → write sequence into `harnessInstall` after `plugin.install` succeeds (never on throw)
+- [x] Print `  Wrote manifest: .5x-manifest.json` in `printInstallSummary` (`harness.handler.ts:388-444`); when `baseline === "unverified"`, print the reason and the fix on stderr: `existing assets were preserved — freshness baseline not established; run '5x harness sync'`, listing the skipped paths — narrowed to the paths whose on-disk bytes actually differ from the render (a model change skips every byte-identical skill too, and listing those buries the one stale agent); the full skipped set remains the fallback for plugins without `renderAssets()`
+- [x] Integration test: install opencode project scope → manifest exists, `configResolved: true`, `baseline: "verified"`, inputs match `5x.toml`
+- [x] Integration test: install with an unparseable `5x.toml` → `configResolved: false`, models `null`
+- [x] Integration test: `installedFrom.contextDir` is `"packages/api"` when installing from a sub-project
+- [x] Integration test **(review §1 regression, end-to-end)**: install with `author.model = A`; `5x config set author.model B`; plain `5x harness install opencode -s project` (no `--force`) → agent frontmatter still says `A`, manifest has `baseline: "unverified"` and still records `authorModel: A` — `test/integration/commands/harness-manifest.test.ts`. The `Tier 1 reports unknown` and `then 5x harness sync → fresh` halves need `compareManifest` (Phase 4) and `harness sync` (Phase 6); the test asserts the `--force` equivalent for now and Phase 6.3 carries the full sequence.
+- [x] Integration test: same flow but with `--force` → `baseline: "verified"` in one step, no warning afterwards
+- [x] Integration test: install twice with no config change → second manifest is still `baseline: "verified"` (byte-identical files are verified, not penalized)
+- [x] Unit test: `verifyInstalledInventory` returns false when one rendered asset's on-disk hash differs, false when a rendered path is missing from `onDisk`, true when all match
+- [x] Unit test: the unverified write retains the prior `inputs`/`hash`/`configResolved` and refreshes `assets` to on-disk hashes
 
 #### 3.3 Remove the manifest on uninstall, before the emptiness sweeps
 
@@ -715,10 +720,10 @@ for (const s of scopesToProcess) {
 }
 ```
 
-- [ ] Remove manifest before `plugin.uninstall`, sweep `rootDir` after
-- [ ] Add `manifests: Partial<Record<HarnessScope, boolean>>` to `HarnessUninstallOutput`
-- [ ] Integration test: `uninstall --all` leaves no `.opencode/` directory when 5x created it
-- [ ] Integration test: `.opencode/` containing a user's own `opencode.json` survives (sweep is empty-only)
+- [x] Remove manifest before `plugin.uninstall`, sweep `rootDir` after
+- [x] Add `manifests: Partial<Record<HarnessScope, boolean>>` to `HarnessUninstallOutput`
+- [x] Integration test: `uninstall --all` leaves no `.opencode/` directory when 5x created it
+- [x] Integration test: `.opencode/` containing a user's own `opencode.json` survives (sweep is empty-only)
 
 ---
 
@@ -834,15 +839,23 @@ Algorithm:
 
 > `losslessRefresh === true` means "refreshing would lose nothing" — **not** "go ahead". Callers must independently establish permission (`harness.autoSync = true`, or an explicit `--sync` / `5x harness sync` invocation) before writing anything. See Phase 7.1.
 
-- [ ] Implement `compareManifest` per the algorithm
-- [ ] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
-- [ ] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
-- [ ] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
-- [ ] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
-- [ ] Unit test: Tier 1 never returns `losslessRefresh: true`
-- [ ] Unit test: `baseline: "unverified"` never returns `losslessRefresh: true`, even at Tier 2 with matching context and no hand-edits
-- [ ] Unit test: user scope with a perfect match still returns `losslessRefresh: false` + `shared-user-scope`
-- [ ] Unit test: `contextDir` `"packages/api"` vs `""` yields `context-mismatch`
+Implementation notes (choices the algorithm above left open):
+
+- **Reason precedence is `assets-modified` > `inputs-changed` > `assets-drifted`.** An input change necessarily drifts every asset it bakes into, so reporting `assets-drifted` there would replace the field the user changed with the files that changed as a result. `assets-modified` still outranks both, since the hand-edit is the case that blocks the refresh.
+- **Tier selection is driven by `readAsset`, not by `rendered`.** Supplying `readAsset` alone yields the degraded Tier 2 the design decisions describe for plugins without `renderAssets()`: hand-edit detection without template-drift detection.
+- **A recorded asset that is absent on disk (`missing`) counts toward `assets-drifted`**, not toward `assets-modified` — sync recreates it and nothing is lost, so it must not block an automatic refresh.
+- **`manifest-unreadable` and `config-unresolved` get their own headline variants** in `formatFreshnessWarning`; both ask for the same fix as the no-manifest variant but say why.
+
+- [x] Implement `compareManifest` per the algorithm
+- [x] Unit test matrix: not-installed / no-manifest / unreadable / config-unresolved / baseline-unverified / fresh / each single-input change
+- [x] Unit test: `baseline: "unverified"` whose recorded inputs *match* current config still returns `unknown`, never `fresh` (the false-fresh regression at unit level)
+- [x] Unit test: a manifest with an incomplete `inputs` (any field deleted) whose recorded `hash` still matches current config returns `unknown` / `manifest-unreadable`, never `fresh`
+- [x] Unit test: `baseline: "unverified"` with retained prior inputs still populates `inputDeltas` naming the changed key
+- [x] Unit test: Tier 2 detects `modified`, `drifted`, `added`, `orphaned` independently and in combination
+- [x] Unit test: Tier 1 never returns `losslessRefresh: true`
+- [x] Unit test: `baseline: "unverified"` never returns `losslessRefresh: true`, even at Tier 2 with matching context and no hand-edits
+- [x] Unit test: user scope with a perfect match still returns `losslessRefresh: false` + `shared-user-scope`
+- [x] Unit test: `contextDir` `"packages/api"` vs `""` yields `context-mismatch`
 
 #### 4.3 Installed-scope discovery
 
@@ -900,7 +913,7 @@ Unverified-baseline variant — a plain `harness install` preserved existing age
   fix        5x harness sync
 ```
 
-User-scope variant (final wording set by Phase 0.1):
+User-scope variant — wording settled by Phase 0.1, which verified project-over-user precedence for both OpenCode and Cursor (Appendix A.1, A.2), so the `fix` line stays directive:
 
 ```
 ⚠ opencode (user) assets were baked from /home/me/dev/foo
@@ -910,11 +923,11 @@ User-scope variant (final wording set by Phase 0.1):
   fix        5x harness install opencode --scope project
 ```
 
-- [ ] Implement `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`
-- [ ] Unit test: report set covers exactly the harness × supported-scope grid, filtered by options
-- [ ] Unit test: `formatFreshnessWarning` renders only changed fields, never unchanged ones
-- [ ] Unit test: the `baseline-unverified` report renders the partial-install variant, with and without retained deltas
-- [ ] Unit test: a `not-installed` or `fresh` report produces no output from callers
+- [x] Implement `runHarnessFreshnessChecks`, `formatFreshnessWarning`, `freshnessWarningsEnabled`
+- [x] Unit test: report set covers exactly the harness × supported-scope grid, filtered by options
+- [x] Unit test: `formatFreshnessWarning` renders only changed fields, never unchanged ones
+- [x] Unit test: the `baseline-unverified` report renders the partial-install variant, with and without retained deltas
+- [x] Unit test: a `not-installed` or `fresh` report produces no output from callers
 
 #### 4.4 Config keys
 
@@ -944,10 +957,10 @@ harness: HarnessConfigSchema.default({}).describe(
 
 `.describe()` is required — `src/config-registry.ts` derives `5x config show` / `config set` metadata by walking the Zod tree.
 
-- [ ] Add `HarnessConfigSchema`; register under `harness`
-- [ ] Unit test in `test/unit/config-registry.test.ts`: both keys appear with descriptions, types, and defaults
-- [ ] Unit test: `harness.autoSync` resolves to `false` when the `harness` table is absent from `5x.toml` entirely (the default posture must survive a config that never mentions it)
-- [ ] Unit test: `5x config set harness.autoSync true` round-trips through `configSet`
+- [x] Add `HarnessConfigSchema`; register under `harness`
+- [x] Unit test in `test/unit/config-registry.test.ts`: both keys appear with descriptions, types, and defaults
+- [x] Unit test: `harness.autoSync` resolves to `false` when the `harness` table is absent from `5x.toml` entirely (the default posture must survive a config that never mentions it)
+- [x] Unit test: `5x config set harness.autoSync true` round-trips through `configSet`
 
 ---
 
@@ -986,12 +999,12 @@ Context note: `run init` already anchors config to the plan's directory (`run-v1
 
 The check must never fail the command: wrap in try/catch and swallow (a broken freshness check blocking run creation would be strictly worse than the status quo).
 
-- [ ] Wire Tier 1 check into both `outputSuccess` paths (new run and resumed run)
-- [ ] Use `dirname(planPath)` as the context
-- [ ] Guard with try/catch — freshness failures never abort `run init`
-- [ ] Integration test: stale project install → stderr warning + `harness_freshness` in JSON data
-- [ ] Integration test: `harness.freshnessWarnings = "off"` → no stderr, no extra JSON fields
-- [ ] Integration test: stdout remains valid JSON with warnings present
+- [x] Wire Tier 1 check into both `outputSuccess` paths (new run and resumed run)
+- [x] Use `dirname(planPath)` as the context
+- [x] Guard with try/catch — freshness failures never abort `run init`
+- [x] Integration test: stale project install → stderr warning + `harness_freshness` in JSON data
+- [x] Integration test: `harness.freshnessWarnings = "off"` → no stderr, no extra JSON fields
+- [x] Integration test: stdout remains valid JSON with warnings present
 
 #### 5.2 `5x config set`
 
@@ -1016,11 +1029,11 @@ export function isBakedConfigKey(key: string): boolean {
 
 When `isBakedConfigKey(key)` and warnings are enabled, run Tier 1 for the context that was written to (`contextDir`, already computed at `config.handler.ts:820`) and print warnings to stderr. `config unset` / `config add` / `config remove` get the same treatment for baked keys — unsetting `author.model` changes the bake exactly as setting it does.
 
-- [ ] Add `isBakedConfigKey`
-- [ ] Wire the check into `configSet` and `configUnset` (and `configAdd`/`configRemove` when the key is baked)
-- [ ] Guard with try/catch — a freshness failure never fails the write
-- [ ] Unit test: `isBakedConfigKey` accepts the four scalars + `author.harnessModels.opencode`, rejects `maxStepsPerRun`, `author.provider`, `author.harnessModels`
-- [ ] Integration test: `5x config set author.model X` on a fresh install warns; `5x config set maxStepsPerRun 10` does not
+- [x] Add `isBakedConfigKey`
+- [x] Wire the check into `configSet` and `configUnset` (and `configAdd`/`configRemove` when the key is baked)
+- [x] Guard with try/catch — a freshness failure never fails the write
+- [x] Unit test: `isBakedConfigKey` accepts the four scalars + `author.harnessModels.opencode`, rejects `maxStepsPerRun`, `author.provider`, `author.harnessModels`
+- [x] Integration test: `5x config set author.model X` on a fresh install warns; `5x config set maxStepsPerRun 10` does not
 
 #### 5.3 `5x harness list` — freshness column
 
@@ -1053,10 +1066,12 @@ project:
 
 `buildHarnessListData` already enumerates harnesses × scopes with existence checks; it resolves config once and reuses it across all entries so `list` stays a single config load.
 
-- [ ] Add `freshness` to `HarnessScopeStatus`; populate in `buildHarnessListData`
-- [ ] Add the `freshness:` line to `formatHarnessListText`
-- [ ] Unit test: `buildHarnessListData` returns `freshness: undefined` for uninstalled scopes
-- [ ] Integration test: `5x harness list --text` shows `stale` after a model change, `fresh` after `sync`
+- [x] Add `freshness` to `HarnessScopeStatus`; populate in `buildHarnessListData`
+- [x] Add the `freshness:` line to `formatHarnessListText`
+- [x] Unit test: `buildHarnessListData` returns `freshness: undefined` for uninstalled scopes
+- [x] Honor `harness.freshnessWarnings = "off"` — skip the check and omit `freshness` from text and JSON, like every other fire point
+- [x] Integration test: with warnings off, a stale install lists `installed: true` and no `freshness` field
+- [x] Integration test: `5x harness list --text` shows `stale` after a model change, `fresh` after `sync` — `harness sync` lands in Phase 6, so the test re-establishes the baseline with the `install --force` equivalent for now (`test/integration/commands/harness-freshness.test.ts`); Phase 6.3 carries the `sync` form
 
 #### 5.4 Explicitly no fire point in `invoke`
 
@@ -1064,8 +1079,8 @@ project:
 
 `invoke` runs per step, dozens of times per run, and rebaking mid-run would change agent behavior mid-run (D5). If a mid-run reminder later proves necessary, the path is a `staleAtInit` stamp on the run row surfaced once — not a new store.
 
-- [ ] Add a short comment at the top of `invoke.handler.ts` pointing at `201` §2.4 so a future contributor does not "helpfully" add the check
-- [ ] Integration test: `5x invoke` on a stale install emits nothing about freshness
+- [x] Add a short comment at the top of `invoke.handler.ts` pointing at `201` §2.4 so a future contributor does not "helpfully" add the check
+- [x] Integration test: `5x invoke` on a stale install emits nothing about freshness
 
 ---
 
@@ -1120,10 +1135,12 @@ Flow per (harness, scope) with either a manifest or installed assets:
 6. Otherwise: `await plugin.install({ ...ctx, force: true })` — the one render path (§2.5) — then run the **same** Phase 3.2 verify-then-write sequence. Because `force: true` overwrites every managed asset, `verifyInstalledInventory` passes and the manifest is written with `baseline: "verified"`; that is what makes sync the command that establishes a baseline. If verification somehow fails after a forced write (an unwritable path, a plugin that ignores `force`), the manifest is written `unverified` and the scope is reported as `sync-unverified` rather than claimed as fixed — sync never lies about its own result. `removeStaleAgentFiles` inside `install()` already keeps the delete blast radius to 5x-managed names.
 7. No manifest (`unknown`/`no-manifest`) or an unverified manifest with no prior baseline → `adopted`: force-install, write a `verified` manifest, and print every overwritten path (§2.5 adoption; hand-edits are undetectable without a recorded hash, so legibility is the mitigation). An unverified manifest that *does* carry recorded asset hashes is not adoption — hand-edits are still detectable from those hashes, so step 4's protection applies normally.
 
-- [ ] Implement `harnessSyncCore` + `harnessSync` (two-layer pattern matching `harnessList`/`harnessUninstall`)
-- [ ] Reuse the Phase 3 manifest build **and verification** path — no second manifest assembler, no second definition of "verified"
-- [ ] Add `"sync-unverified"` to the `action` union; report it as a failure-to-baseline, not a success
-- [ ] Emit a proper `outputSuccess` envelope with a text formatter
+Implementation note (a case the numbered flow left open): the guard order above is preserved verbatim, so `--check` over a hand-edited scope reports `skipped-modified` — that is what sync *would* do. The `HARNESS_ASSETS_MODIFIED` exit is scoped to write-attempting invocations only: `--check` makes no writes, so it has nothing to refuse, and failing it would break the on-demand Tier 2 surface `doctor` is meant to consume. `harnessSyncCore` never throws on a blocked scope (Phase 7's sweep consumes it); the outer `harnessSync` raises the error when *every* target was blocked.
+
+- [x] Implement `harnessSyncCore` + `harnessSync` (two-layer pattern matching `harnessList`/`harnessUninstall`)
+- [x] Reuse the Phase 3 manifest build **and verification** path — no second manifest assembler, no second definition of "verified"
+- [x] Add `"sync-unverified"` to the `action` union; report it as a failure-to-baseline, not a success
+- [x] Emit a proper `outputSuccess` envelope with a text formatter
 
 #### 6.2 CLI wiring
 
@@ -1153,20 +1170,20 @@ harness
 	});
 ```
 
-- [ ] Register the subcommand with help text and examples
-- [ ] Integration test: `5x harness sync --help` lists the flags
+- [x] Register the subcommand with help text and examples
+- [x] Integration test: `5x harness sync --help` lists the flags
 
 #### 6.3 Regression coverage for §1.1
 
 The bug this command exists to fix deserves a named test:
 
-- [ ] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be, and that the manifest is `baseline: "verified"` with `authorModel: B`
-- [ ] Integration test `no false-fresh via plain reinstall` (review §1) — same setup, but interpose a plain `5x harness install opencode -s project` before syncing: the manifest must be `baseline: "unverified"`, `harness list` must report `unknown` (not `fresh`), `run init` must still warn, and only the subsequent `sync` may flip it to `fresh`
-- [ ] Integration test: `5x harness sync` twice → second run reports `skipped-fresh`, no file mtimes change
-- [ ] Integration test: hand-edit `agents/5x-plan-author.md`; `sync` reports `skipped-modified` and preserves the edit; `sync --force` overwrites it
-- [ ] Integration test: delete `.5x-manifest.json`; `sync` adopts (force-installs + writes manifest) and lists overwritten paths
-- [ ] Integration test: `sync --check` writes nothing (assert mtimes + manifest unchanged)
-- [ ] Integration test: delegation mode `native` → `invoke`, sync removes the now-orphaned author agent files and only those
+- [x] Integration test `sync refreshes baked agent models` — install opencode project scope with `author.model = A`; `5x config set author.model B`; assert the agent frontmatter still says `A`; run `5x harness sync`; assert it now says `B` **and** the skill markdown is unchanged where it should be, and that the manifest is `baseline: "verified"` with `authorModel: B`
+- [x] Integration test `no false-fresh via plain reinstall` (review §1) — same setup, but interpose a plain `5x harness install opencode -s project` before syncing: the manifest must be `baseline: "unverified"`, `harness list` must report `unknown` (not `fresh`), `run init` must still warn, and only the subsequent `sync` may flip it to `fresh`
+- [x] Integration test: `5x harness sync` twice → second run reports `skipped-fresh`, no file mtimes change
+- [x] Integration test: hand-edit `agents/5x-plan-author.md`; `sync` reports `skipped-modified` and preserves the edit; `sync --force` overwrites it
+- [x] Integration test: delete `.5x-manifest.json`; `sync` adopts (force-installs + writes manifest) and lists overwritten paths
+- [x] Integration test: `sync --check` writes nothing (assert mtimes + manifest unchanged)
+- [x] Integration test: delegation mode `native` → `invoke`, sync removes the now-orphaned author agent files and only those
 
 ---
 
@@ -1231,18 +1248,18 @@ console.log();
         `5x harness sync <name>` for those.
 ```
 
-- [ ] Implement `upgradeHarnessAssets` in `upgrade.handler.ts` delegating to `harnessSyncCore`
-- [ ] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts` (Commander maps `--no-sync` to `sync: false` and leaves `sync` `undefined` when neither is passed — assert this, since the tri-state is what makes "no flag ≠ `--sync`" work)
-- [ ] Implement the permission/safety split exactly as written above — `losslessRefresh` must never appear on the permission side of the expression
-- [ ] Print blockers per non-synced scope (`baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified`) and the permission line when permission was the only thing missing
-- [ ] Integration test **(review §2 regression)**: stale, lossless, project-scope install under the **default** config (no `harness` table in `5x.toml`, no flags) → upgrade reports it, mtimes and file bytes are unchanged, manifest untouched
-- [ ] Integration test: same fixture with `harness.autoSync = true` → auto-synced; assets and manifest updated, `baseline: "verified"`
-- [ ] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale; auto-syncs at project scope **only** with `autoSync = true` or `--sync`
-- [ ] Integration test: user-scope install is reported but **never** synced by upgrade — with `autoSync = true` and with `--sync`
-- [ ] Integration test: `--no-sync` reports and writes nothing even when `harness.autoSync = true`
-- [ ] Integration test: `--sync` syncs a scope the predicate would have blocked for context mismatch, but still preserves a hand-edited asset and reports it
-- [ ] Integration test: a `baseline: "unverified"` install is reported and never auto-synced under any flag combination short of an explicit `5x harness sync`
-- [ ] Integration test: the bundled-only caveat appears in output
+- [x] Implement `upgradeHarnessAssets` in `upgrade.handler.ts` delegating to `harnessSyncCore`
+- [x] Add `sync?: boolean` to `UpgradeParams`; register `--sync` / `--no-sync` in `src/commands/upgrade.ts` (Commander maps `--no-sync` to `sync: false` and leaves `sync` `undefined` when neither is passed — assert this, since the tri-state is what makes "no flag ≠ `--sync`" work)
+- [x] Implement the permission/safety split exactly as written above — `losslessRefresh` must never appear on the permission side of the expression
+- [x] Print blockers per non-synced scope (`baseline-unverified`, `shared-user-scope`, `context-mismatch`, `assets-modified`) and the permission line when permission was the only thing missing
+- [x] Integration test **(review §2 regression)**: stale, lossless, project-scope install under the **default** config (no `harness` table in `5x.toml`, no flags) → upgrade reports it, mtimes and file bytes are unchanged, manifest untouched
+- [x] Integration test: same fixture with `harness.autoSync = true` → auto-synced; assets and manifest updated, `baseline: "verified"`
+- [x] Integration test: post-upgrade, a manifest with an older `cliVersion` reports stale; auto-syncs at project scope **only** with `autoSync = true` or `--sync`
+- [x] Integration test: user-scope install is reported but **never** synced by upgrade — with `autoSync = true` and with `--sync`
+- [x] Integration test: `--no-sync` reports and writes nothing even when `harness.autoSync = true`
+- [x] Integration test: `--sync` syncs a scope the predicate would have blocked for context mismatch, but still preserves a hand-edited asset and reports it
+- [x] Integration test: a `baseline: "unverified"` install is reported and never auto-synced under any flag combination short of an explicit `5x harness sync`
+- [x] Integration test: the bundled-only caveat appears in output
 
 ---
 
@@ -1252,29 +1269,29 @@ console.log();
 
 #### 8.1 Documentation
 
-- [ ] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync` (stating that `autoSync` is off by default and that `upgrade` only reports until it is turned on or `--sync` is passed); state that plain `harness install` preserves existing agent files and therefore does not establish a freshness baseline — `sync` is the command that does
-- [ ] `AGENTS.md` — note that the orchestrator should surface `harness_freshness` warnings from `run init` output rather than ignoring them
-- [ ] `CHANGELOG.md` — additive entry: manifest, freshness warnings, `harness sync`, upgrade sweep
-- [ ] `docs/v2/201-harness-freshness.md` — flip status from "Design settled — Not Implemented" to "Implemented", link this plan
-- [ ] `src/harnesses/README.md` — document the manifest contract and the `renderAssets()` / `fingerprintInputs()` optional members for external plugin authors
+- [x] `README.md` — add `5x harness sync` to the command list; document `harness.freshnessWarnings` / `harness.autoSync` (stating that `autoSync` is off by default and that `upgrade` only reports until it is turned on or `--sync` is passed); state that plain `harness install` preserves existing agent files and therefore does not establish a freshness baseline — `sync` is the command that does
+- [x] `AGENTS.md` — note that the orchestrator should surface `harness_freshness` warnings from `run init` output rather than ignoring them
+- [x] `CHANGELOG.md` — additive entry: manifest, freshness warnings, `harness sync`, upgrade sweep
+- [x] `docs/v2/201-harness-freshness.md` — flip status from "Design settled — Not Implemented" to "Implemented", link this plan
+- [x] `src/harnesses/README.md` — document the manifest contract and the `renderAssets()` / `fingerprintInputs()` optional members for external plugin authors
 
 #### 8.2 Migration behavior (§4)
 
 Purely additive: pre-existing installs have no manifest, are treated as unknown/stale, and are prompted toward a single `5x harness sync`. No schema migration, no install output contract change beyond the added manifest file and the new sync envelope.
 
-- [ ] Integration test: an install created *before* this feature (manifest deleted to simulate) produces exactly one `unknown` warning per fire point and is fixed by one `sync`
-- [ ] Verify `.gitignore` guidance: project-scope manifests are intended to be committed alongside `.opencode/` (document; do not auto-ignore)
+- [x] Integration test: an install created *before* this feature (manifest deleted to simulate) produces exactly one `unknown` warning per fire point and is fixed by one `sync`
+- [x] Verify `.gitignore` guidance: project-scope manifests are intended to be committed alongside `.opencode/` (document; do not auto-ignore)
 
 #### 8.3 Manual end-to-end pass
 
-- [ ] Fresh repo → `5x init` → `5x harness install opencode -s project` → confirm manifest contents by eye
-- [ ] `5x config set author.model <other>` → confirm the point-of-cause warning
-- [ ] `5x run init` → confirm one warning, valid JSON on stdout
-- [ ] Plain `5x harness install opencode -s project` → confirm the manifest reads `baseline: "unverified"`, the agent frontmatter is still the old model, and the warning **persists**
-- [ ] `5x upgrade` with default config → confirm it reports and changes nothing on disk
-- [ ] `5x harness sync` → confirm agent frontmatter updated, `baseline: "verified"`, warning gone
-- [ ] Repeat for Cursor (including the project-scope rules) and Universal
-- [ ] Re-run the Phase 0.2 dotfile smoke tests against the *real* manifest produced by the implementation
+- [x] Fresh repo → `5x init` → `5x harness install opencode -s project` → confirm manifest contents by eye
+- [x] `5x config set author.model <other>` → confirm the point-of-cause warning
+- [x] `5x run init` → confirm one warning, valid JSON on stdout
+- [x] Plain `5x harness install opencode -s project` → confirm the manifest reads `baseline: "unverified"`, the agent frontmatter is still the old model, and the warning **persists**
+- [x] `5x upgrade` with default config → confirm it reports and changes nothing on disk
+- [x] `5x harness sync` → confirm agent frontmatter updated, `baseline: "verified"`, warning gone
+- [x] Repeat for Cursor (including the project-scope rules) and Universal
+- [x] Re-run the Phase 0.2 dotfile smoke tests against the *real* manifest produced by the implementation
 
 ---
 
@@ -1355,6 +1372,19 @@ Phases 1 and 2 are independent and can run in parallel if two people are availab
 
 ## Revision History
 
+### 1.3 — August 10, 2026
+
+Phase 8 executed. Documentation updated (`README.md`, `AGENTS.md`, `CHANGELOG.md`, `docs/v2/201-harness-freshness.md` → Implemented, `src/harnesses/README.md`); migration integration test for pre-feature (manifest-less) installs; `.gitignore` guidance documented (project-scope manifests are committed, not auto-ignored); manual end-to-end pass recorded in Appendix D, including Phase 0.2 re-run against real manifests.
+
+### 1.2 — August 9, 2026
+
+Phase 0 executed. Both verification spikes passed against live harnesses (OpenCode 1.17.18, cursor-agent 2026.07.23-e383d2b); findings, method, and evidence recorded in Appendix A.
+
+- **0.1 — precedence holds.** Project-scope assets win the name collision over user-scope assets in both harnesses, for agents and skills alike, with a control run proving the user-scope copy is loaded and simply loses. The §2.6 remediation copy is kept as designed, so Phase 5's user-scope warning retains its directive `fix 5x harness install <name> --scope project` line and the §2.7 escalation contingency is not triggered.
+- **0.2 — the dotfile is inert.** A `.5x-manifest.json` carrying adversarial `model` / `agent` / `mcpServers` keys, placed at every install root at both scopes, produced no parse error, no config merge, and a byte-identical resolved config; assets kept resolving. No design change — the filename and location stand.
+- Recorded one additional finding: Cursor's CLI does not load custom agents from `~/.cursor/agents/` at all, only from project `.cursor/agents/`. This strengthens the directive remediation rather than weakening it, and the pre-existing product question it raises about `harness install cursor --scope user` is noted as out of scope.
+- Removed the "pending Phase 0" and "final wording set by Phase 0.1" placeholders in Design Decisions and Phase 4.3 now that both are settled.
+
 ### 1.1 — August 9, 2026
 
 Addresses both blocking findings in [`docs/development/reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md`](../reviews/.5x-worktrees-201-harness-freshness-plan-85bccc-5x-cli-docs-development-plans-201-harness-freshness-plan-review.md) (no addendums; both items were `auto_fix`). Install semantics are unchanged — the fix is in what the manifest is allowed to claim, not in what install writes.
@@ -1390,17 +1420,31 @@ Implements `docs/v2/201-harness-freshness.md` (area #1 of v2), whose §5 resolve
 
 ### Appendix A — Phase 0 verification findings
 
-> Filled in during Phase 0. Do not implement Phase 5/6 user-facing copy against assumptions.
+> Completed August 9, 2026. Both spikes passed; Phase 5/6 copy is written against these results, not assumptions.
 
 | Spike | Harness | Version tested | Date | Result | Evidence |
 |---|---|---|---|---|---|
-| Project-over-user asset precedence | opencode | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Project-over-user asset precedence | cursor | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | opencode | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | cursor | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| Dotfile inertness (config discovery) | universal | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| Project-over-user asset precedence | opencode | 1.17.18 | 2026-08-09 | **Holds** — project wins for agents *and* skills | A.1 |
+| Project-over-user asset precedence | cursor | cursor-agent 2026.07.23-e383d2b | 2026-08-09 | **Holds** — project wins for skills; user-scope agents are not loaded by the CLI at all | A.2 |
+| Dotfile inertness (config discovery) | opencode | 1.17.18 | 2026-08-09 | **Inert** — resolved config byte-identical, no parse error, no key merge | A.3 |
+| Dotfile inertness (config discovery) | cursor | cursor-agent 2026.07.23-e383d2b | 2026-08-09 | **Inert** — no parse error, `mcpServers` not merged | A.4 |
+| Dotfile inertness (config discovery) | universal (`.agents/`) | opencode 1.17.18 + cursor-agent 2026.07.23 | 2026-08-09 | **Inert** — both readers load `.agents/skills/` normally, ignore the root dotfile | A.5 |
 
-**If precedence does not hold:** replace the user-scope remediation line with a non-directive form ("this project resolves a different model; installing project scope will not necessarily take precedence — choose one config or the other"), and record in `docs/v2/201-harness-freshness.md` that §2.7 is now materially more urgent.
+Method for every row: a throwaway `HOME` at `/tmp/5x-spike-201` with separate `repo-user`, `repo-project`, `repo-universal`, and `repo-empty` checkouts, `5x` run from this worktree (`bun run src/bin.ts`), and `author.model` set to the distinguishable sentinels `test/precedence-user` and `test/precedence-project`.
+
+**A.1 — OpenCode precedence.** `5x harness install opencode --scope user` from a repo with `author.model = "test/precedence-user"`, then `--scope project` in a repo with `author.model = "test/precedence-project"`. `opencode debug agent 5x-plan-author` run inside the project reports `model: {"providerID":"test","modelID":"precedence-project"}`; the same command in `repo-empty` (user assets only) reports `precedence-user`, proving the user-scope copy is loaded and simply loses the name collision. Skills behave identically: a `MARKER-PROJECT-SKILL` sentinel appended to `.opencode/skills/5x/SKILL.md` appears in `opencode debug skill` while the user-scope `MARKER-USER-SKILL` does not, and every resolved `5x*` skill path is under `repo-project/.opencode/skills/`.
+
+**A.2 — Cursor precedence.** Sentinels injected into the `description` frontmatter of both copies of the `5x` skill and of `5x-plan-author`. `cursor-agent -p --mode ask --trust` inside the project answers `MARKERPROJECTXYZ` and quotes the agent description as `AGENTMARKERPROJECT …`; in `repo-empty` the same skill probe answers `MARKERUSERXYZ`, so user-scope skills load and lose the collision exactly as OpenCode does.
+
+> **Additional finding (agents, user scope):** in `repo-empty` the CLI reports **no** `5x-*` subagents at all — only its five built-ins — despite `~/.cursor/agents/{5x-code-author,5x-plan-author,5x-reviewer}.md` being present. Cursor's CLI loads custom agents from project `.cursor/agents/` only; `~/.cursor/agents/` is not an agent source for it. Precedence therefore holds *a fortiori* for agents, and the directive remediation ("install project scope for this project") is not merely valid but is the only thing that makes 5x agents visible to the Cursor CLI. Two caveats worth carrying: this was verified against the CLI, which is the only surface drivable non-interactively — Cursor Desktop was not tested and may differ; and `5x harness install cursor --scope user` writes agent files the CLI will never read, which is a pre-existing product question outside this plan's scope.
+
+**A.3 — OpenCode dotfile inertness.** `opencode debug config` captured before and after writing `.5x-manifest.json` to both `repo-project/.opencode/` and `~/.config/opencode/`. The manifest carried adversarial top-level keys (`"model": "MANIFEST-SHOULD-NOT-LEAK"`, `"agent": {"manifest-leak-agent": …}`) that would be valid `opencode.json` fields. Both dumps are byte-identical (`diff` clean), stderr is empty, exit status 0, and neither sentinel appears in the resolved config. Assets keep resolving with the manifest in place (`opencode agent list` and `opencode debug agent` unchanged). OpenCode reads project config from `./opencode.json`, `./opencode.jsonc`, or `.opencode/opencode.json` by exact name — it does not glob the directory — which is why the dotfile is invisible.
+
+**A.4 — Cursor dotfile inertness.** Same manifest written to `repo-project/.cursor/` and `~/.cursor/`, this time carrying `"mcpServers": {"manifest-leak-mcp": {"command": "/bin/false"}}`. `cursor-agent mcp list` still reports `No MCP servers configured (expected in .cursor/mcp.json or ~/.cursor/mcp.json)`, the skill probe still answers `MARKERPROJECTXYZ`, and no parse error is emitted. Cursor likewise reads `mcp.json` by exact name.
+
+**A.5 — Universal (`.agents/`).** Worth noting that `.agents/` is *not* an untrafficked directory: OpenCode auto-loads `~/.agents/skills/` as an external skill root and Cursor documents `.agents/skills/` as a project-level skill location, so both readers do traverse it. With `.agents/.5x-manifest.json` in place (carrying both the `model` and `mcpServers` sentinels), `opencode debug config` exits 0 with empty stderr and no sentinel in the resolved config, `opencode debug skill` resolves `repo-universal/.agents/skills/*/SKILL.md` normally, and `cursor-agent` answers the skill probe with `MARKERUNIVERSAL` while `cursor-agent mcp list` still reports no servers. Both tools discover skills by walking `skills/<name>/SKILL.md` subdirectories, so a root-level file is never a candidate.
+
+**If precedence does not hold:** _(contingency not taken — precedence holds; retained for the record.)_ replace the user-scope remediation line with a non-directive form ("this project resolves a different model; installing project scope will not necessarily take precedence — choose one config or the other"), and record in `docs/v2/201-harness-freshness.md` that §2.7 is now materially more urgent.
 
 ### Appendix B — Example manifest
 
@@ -1465,3 +1509,20 @@ Tier 1 reads this as `unknown` / `baseline-unverified` and warns with the retain
 | Location resolver whose asset dirs escape `rootDir` | error envelope | `MANIFEST_PATH_ESCAPE` (exit 2) |
 | Stale/unknown assets at any fire point | stderr warning + additive JSON fields | none — warn, never block (§2.4) |
 | Freshness check itself throws | swallowed | none — never degrades the host command |
+
+### Appendix D — Phase 8 end-to-end validation
+
+> Completed August 10, 2026. Manual walkthrough against live OpenCode and Cursor CLIs using this worktree's `bun run src/bin.ts`, with `HOME` pinned under `/tmp/5x-e2e-201-phase8*`.
+
+| Step | Harness | Result |
+|---|---|---|
+| Fresh `5x init` → `harness install … -s project` | opencode / cursor / universal | Manifest written with `baseline: "verified"`; Cursor includes project-scope rules |
+| `config set author.model <other>` | opencode / cursor / universal | Point-of-cause stderr warning naming installed/current models and `5x harness sync` |
+| `run init` | opencode | One stderr warning; stdout JSON parseable with additive `warnings` / `harness_freshness` |
+| Plain `harness install` after model change | opencode / cursor | `baseline: "unverified"`, agent frontmatter still old model, list shows `unknown (baseline-unverified)` |
+| `upgrade` (default, no flags) | opencode | Reports unknown/stale; agent mtime and manifest hash unchanged |
+| `harness sync` | opencode / cursor / universal | Agents updated to new model; `baseline: "verified"`; list shows `fresh` |
+| Phase 0.2 smoke against *real* manifests | opencode / cursor / universal | Adversarial keys injected into implementation-produced `.5x-manifest.json`; OpenCode `debug config` byte-identical, Cursor `mcp list` still empty, Universal inert for both readers |
+
+Evidence directories (ephemeral): `/tmp/5x-e2e-201-phase8`, `/tmp/5x-e2e-201-phase8-cursor`, `/tmp/5x-e2e-201-phase8-universal`, `/tmp/5x-e2e-201-phase8-dotfile`.
+

@@ -22,6 +22,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { RenderedAsset } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +62,26 @@ export interface InstallSummary {
 export interface UninstallSummary {
 	removed: string[];
 	notFound: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Rendered-asset adapters
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrow a plugin's `renderAssets()` output to the `{name, content}` pairs the
+ * `install*Files` helpers accept.
+ *
+ * Plugins render once and dispatch through this, so what install writes is by
+ * construction what the Tier 2 freshness check re-renders (201 §2.5).
+ */
+export function assetsOfKind(
+	assets: RenderedAsset[],
+	kind: RenderedAsset["kind"],
+): Array<{ name: string; content: string }> {
+	return assets
+		.filter((asset) => asset.kind === kind)
+		.map((asset) => ({ name: asset.name, content: asset.content }));
 }
 
 // ---------------------------------------------------------------------------

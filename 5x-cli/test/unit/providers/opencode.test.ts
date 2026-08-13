@@ -975,6 +975,7 @@ describe("createProvider", () => {
 				qualityGates: [],
 				skipQualityGates: false,
 				worktree: {},
+				harness: { freshnessWarnings: "on" as const, autoSync: false },
 				paths: {
 					plans: "docs/development",
 					reviews: "docs/development/reviews",
@@ -1018,6 +1019,7 @@ describe("createProvider", () => {
 			qualityGates: [],
 			skipQualityGates: false,
 			worktree: {},
+			harness: { freshnessWarnings: "on" as const, autoSync: false },
 			paths: {
 				plans: "docs/development",
 				reviews: "docs/development/reviews",
