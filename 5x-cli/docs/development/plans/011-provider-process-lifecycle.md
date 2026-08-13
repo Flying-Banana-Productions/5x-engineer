@@ -2,8 +2,14 @@
 
 **Version:** 5.0
 **Created:** March 8, 2026
-**Status:** Draft
+**Status:** Superseded by `docs/v2/plan-inputs/05-invocation-registry.plan-input.md`
 **Priority:** High — causes OOM during extended automated runs
+
+> Superseded August 13, 2026. The provider-neutral invocation registry and
+> cancellation-handle contract will be designed as part of the v2 foundation.
+> OpenCode-specific PID discovery, SDK patching, signal escalation, and orphan
+> reaping must be reassessed in a new follow-up plan after that contract lands;
+> this document is retained only as historical failure analysis.
 
 ## Problem
 
