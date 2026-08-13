@@ -1,7 +1,8 @@
 # Recovery & `5x doctor` — Lock Surface, Step Budget, Remediation, Doctor Registry
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 13, 2026
+**Last updated:** August 13, 2026
 **Status:** Draft — pending staff engineer review
 
 ---
@@ -40,7 +41,7 @@ This plan implements `docs/v2/203-recovery-and-doctor.md`: a lock inspect/unlock
 | **Warn-only doctor exits 0; any `fail` exits nonzero** | Usable in CI/preflight without treating warnings as breakage. |
 | **`doctor` and `lock list` both ship** | Doctor is the full sweep; `lock list` answers the targeted question. |
 | **`--fix` only when exactly one correct answer** | Stale/corrupt lock → remove; dead worktree mapping → clear; everything else is report + remediation command. |
-| **Doctor always runs harness-freshness; `freshnessWarnings=off` stays hot-path only** | Explicit diagnostics must not be silenced by the incidental-warning switch; `--fix` still honors project-scope + lossless gates. |
+| **Doctor always runs harness-freshness; `freshnessWarnings=off` stays hot-path only** | Explicit diagnostics must not be silenced by the incidental-warning switch; project-scope stale is `fail`, user-scope stale is `warn`; `--fix` still honors project-scope + sync's hand-edit gates. |
 
 ### References
 
@@ -118,7 +119,7 @@ Lock, step-budget, and repair primitives are stronger than the CLI surface. Oper
 
 **Doctor exit code: 0 unless any finding has status `fail`.** `warn` findings (live locks that need human judgment, lingering runs, user-scope freshness that cannot auto-sync, orphan worktree dirs) do not fail CI. `--fix` that successfully clears all fixable fails can still leave warns → exit 0.
 
-**Harness-freshness in doctor always runs Tier 2** via `runHarnessFreshnessChecks({ tier2: true })`. Status mapping: `fresh` / `not-installed` → `ok`; `stale` / `unknown` → `fail` with remediation `5x harness sync` (or project-scope install guidance for user-scope). Honor `harness.freshnessWarnings = "off"` only for incidental hot-path warnings — doctor is explicit and still reports. `--fix` calls `harnessSyncCore` for scopes where refresh is safe: `scope === "project"` and no hand-edit blocker (reuse existing sync policy; do not invent a second writer).
+**Harness-freshness in doctor always runs Tier 2** via `runHarnessFreshnessChecks({ tier2: true })` (`src/harnesses/freshness.ts:67-139`). Status mapping: `fresh` / `not-installed` → `ok`; project-scope `stale` / `unknown` → `fail` with remediation `5x harness sync`; **user-scope** `stale` / `unknown` → `warn` (D4: never auto-refreshed; remediation names project-scope install). Honor `harness.freshnessWarnings = "off"` only for incidental hot-path warnings — doctor is explicit and still reports. `--fix` calls `harnessSyncCore` (`src/commands/harness.handler.ts:660-684`) for project-scope findings that sync can refresh without a hand-edit `--force` override; never invent a second writer.
 
 **Lingering-run age threshold is a named constant `LINGERING_RUN_AGE_MS = 24 * 60 * 60 * 1000`.** Heuristic: active run whose `updated_at` is older than 24h. Report-only — never auto-complete/abort. False positives are acceptable because the remediation is a suggested command, not a mutation. Session/PID presence is best-effort: if the plan lock is live for that plan, do not flag the run as lingering (someone is still working).
 
@@ -361,7 +362,7 @@ export function stepBudgetWarning(budget: StepBudget): string | undefined {
 
 ### 3.2 `run state` — always surface budget
 
-**File:** `src/commands/run-v1.handler.ts:924-989` (`runV1State`), `formatStateText` (~540–649)
+**File:** `src/commands/run-v1.handler.ts:924-989` (`runV1State`), `formatStateText` (`:540-649`)
 
 After `computeRunSummary` / `getMaxStepsPerRun`:
 
@@ -382,7 +383,7 @@ outputSuccess(
 );
 ```
 
-Update `formatStateText` to print a `Steps used: N / max (remaining R)` line in the header or summary.
+Extend `formatStateText`'s parameter type with the three budget fields and print a `Steps: N / max (R remaining)` line after the Status/Created header (before the steps table). Today the summary line only shows `total_steps` (`:639`) with no ceiling.
 
 - [ ] Additive fields on state envelope
 - [ ] Text formatter update
@@ -553,14 +554,15 @@ db                 ok    schema v5, integrity ok
 
 - Call `runHarnessFreshnessChecks({ startDir, homeDir, tier2: true })`.
 - Map each installed report:
-  - `fresh` → ok finding (or omit ok noise — **include one ok summary per check id** to keep output stable; detailed per-scope fails/warns as separate findings).
-  - `stale` / `unknown` → `fail`, remediation `5x harness sync` (user-scope: remediation explains warn-only / install project scope per 201 D4).
-- `--fix`: for each project-scope finding that `harnessSyncCore` can refresh without `--force` hand-edit override, call `harnessSyncCore({ name, scope: "project", startDir, homeDir })`. Skip user-scope auto-fix. Skip when sync would throw `HARNESS_ASSETS_MODIFIED` — report remediation with `--force` instead.
+  - `fresh` → ok finding (or omit ok noise — **include one ok summary per check id** when every scope is fresh/not-installed, so empty-failing output stays distinguishable).
+  - project-scope `stale` / `unknown` → `fail`, remediation `5x harness sync`.
+  - user-scope `stale` / `unknown` → `warn`, remediation `5x harness install <harness> --scope project` (201 D4; never auto-fix).
+- `--fix`: for each project-scope finding that `harnessSyncCore` can refresh without a hand-edit `--force` override, call `harnessSyncCore({ name, scope: "project", startDir, homeDir })` (`src/commands/harness.handler.ts:660`). Skip user-scope. When sync reports `skipped-modified` / would raise `HARNESS_ASSETS_MODIFIED`, keep the finding as `fail` with remediation naming `5x harness sync --force`.
 - Do **not** consult `freshnessWarningsEnabled` to suppress findings.
 
 - [ ] Implement check + register
 - [ ] Unit tests with temp install / stale manifest (reuse 201 test helpers patterns from `test/unit/harnesses/freshness.test.ts`)
-- [ ] `--fix` syncs project stale; leaves user-scope as warn/fail without write
+- [ ] `--fix` syncs project stale; leaves user-scope as warn without write
 
 ### 5.2 `locks` check
 
@@ -600,9 +602,10 @@ db                 ok    schema v5, integrity ok
 export const LINGERING_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 ```
 
-- `listRuns` (or SQL) for `status = 'active'`.
-- Flag when `Date.now() - Date.parse(updated_at) >= LINGERING_RUN_AGE_MS` **and** the plan's lock is not live.
-- Finding: `warn`, remediation `5x run complete --run <id> --status aborted` (and/or `run reopen` guidance as appropriate — complete/abort is the primary suggestion for crashed sessions).
+- Use `listRuns(db, { status: "active" })` (`src/db/operations-v1.ts:360`).
+- Flag when `Date.now() - Date.parse(updated_at) >= LINGERING_RUN_AGE_MS` **and** `inspectLock` / `isLocked` for that plan is not live.
+- Inject `now?: number` (or clock) on the check context / check factory for deterministic unit tests — do not call unmockable `Date.now()` without a seam.
+- Finding: `warn`, remediation `5x run complete --run <id> --status aborted` (primary suggestion for crashed sessions; mention `run reopen` only if documenting the judgment fork in the message).
 - `--fix`: no-op (judgment call).
 
 - [ ] Implement + unit tests with injected "now" or fixture timestamps
