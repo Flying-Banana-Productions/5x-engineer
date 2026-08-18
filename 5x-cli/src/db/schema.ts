@@ -410,6 +410,14 @@ const migrations: Migration[] = [
 ];
 
 /**
+ * Highest schema version this CLI knows how to migrate to.
+ * Doctor inspects against this without calling `runMigrations`.
+ */
+export function getMaxKnownSchemaVersion(): number {
+	return migrations[migrations.length - 1]?.version ?? 0;
+}
+
+/**
  * Get the current schema version from the database.
  * Returns 0 if the schema_version table doesn't exist yet.
  */
@@ -431,7 +439,7 @@ export function getSchemaVersion(db: Database): number {
  */
 export function runMigrations(db: Database): void {
 	const currentVersion = getSchemaVersion(db);
-	const maxKnownVersion = migrations[migrations.length - 1]?.version ?? 0;
+	const maxKnownVersion = getMaxKnownSchemaVersion();
 
 	if (currentVersion > maxKnownVersion) {
 		throw new Error(

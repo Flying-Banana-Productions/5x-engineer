@@ -25,11 +25,13 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("registers freshness, locks, and worktrees in that order", () => {
+	test("registers freshness, locks, worktrees, runs, and db in that order", () => {
 		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
 			"harness-freshness",
 			"locks",
 			"worktrees",
+			"runs",
+			"db",
 		]);
 	});
 });

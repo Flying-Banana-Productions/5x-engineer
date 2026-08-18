@@ -941,11 +941,11 @@ export const LINGERING_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 - `--fix`: no-op (`fix` omitted).
 - No lingering runs (and DB readable) → single `ok` finding `code: "RUNS_OK"`.
 
-- [ ] Implement + unit tests with injected `ctx.now`
-- [ ] Active run with live lock → not flagged
-- [ ] Fresh active run (updated_at within 24h) → not flagged
-- [ ] Oldest of 51 active runs still flagged (cap regression)
-- [ ] Missing DB does not create a file
+- [x] Implement + unit tests with injected `ctx.now`
+- [x] Active run with live lock → not flagged
+- [x] Fresh active run (updated_at within 24h) → not flagged
+- [x] Oldest of 51 active runs still flagged (cap regression)
+- [x] Missing DB does not create a file
 
 ### 6.2 `db` check (report-only, non-mutating)
 
@@ -975,9 +975,9 @@ export function getMaxKnownSchemaVersion(): number {
 
 This preserves the “never migrates” guarantee and lets doctor report an old schema instead of silently upgrading it during inspection.
 
-- [ ] Export `getMaxKnownSchemaVersion()`
-- [ ] Implement check + unit tests: missing file → `DB_MISSING` and no file created; outdated schema reported without migration; corrupt/unreadable → finding; healthy → ok; schema ahead → `DB_SCHEMA_AHEAD`
-- [ ] Assert `resolveDbContext` / `getDb` are not imported from the detect path (review grep gate)
+- [x] Export `getMaxKnownSchemaVersion()`
+- [x] Implement check + unit tests: missing file → `DB_MISSING` and no file created; outdated schema reported without migration; corrupt/unreadable → finding; healthy → ok; schema ahead → `DB_SCHEMA_AHEAD`
+- [x] Assert `resolveDbContext` / `getDb` are not imported from the detect path (review grep gate)
 
 ### 6.3 Wire registry + integration suite
 
@@ -993,41 +993,41 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 ];
 ```
 
-- [ ] Registry order as above
-- [ ] Integration: `test/integration/commands/doctor.test.ts` — exit codes, JSON shape, `--fix` lock cleanup (including corrupt-by-path), text formatter, check-failure isolation. Spawn `src/bin.ts` via `Bun.spawnSync` with `env: cleanGitEnv()`, `stdin: "ignore"`, and per-test `timeout: 15000` (`5x-cli/AGENTS.md`).
-- [ ] Integration: `test/integration/commands/lock-cli.test.ts` — list/unlock/force via CLI spawn + `cleanGitEnv()`
-- [ ] Integration: step-budget + text remediation smoke tests (`test/integration/commands/run-step-budget.test.ts` or extend `test/integration/commands/run-v1.test.ts`)
-- [ ] Integration/unit: doctor `--fix` does not sync context-mismatched project harness; does not create DB when absent
+- [x] Registry order as above
+- [x] Integration: `test/integration/commands/doctor.test.ts` — exit codes, JSON shape, `--fix` lock cleanup (including corrupt-by-path), text formatter, check-failure isolation. Spawn `src/bin.ts` via `Bun.spawnSync` with `env: cleanGitEnv()`, `stdin: "ignore"`, and per-test `timeout: 15000` (`5x-cli/AGENTS.md`).
+- [x] Integration: `test/integration/commands/lock-cli.test.ts` — list/unlock/force via CLI spawn + `cleanGitEnv()`
+- [x] Integration: step-budget + text remediation smoke tests (`test/integration/commands/run-step-budget.test.ts` or extend `test/integration/commands/run-v1.test.ts`)
+- [x] Integration/unit: doctor `--fix` does not sync context-mismatched project harness; does not create DB when absent
 
 ### 6.4 Documentation
 
-- [ ] Update `docs/v2/203-recovery-and-doctor.md` status from `Draft — Not Implemented` to Implemented (or Partial) with pointer to this plan; note prompts check deferred to `03-prompt-queue-foundation`
-- [ ] Mention in `docs/v2/203-recovery-and-doctor.md` status when Phase 6 lands (not required mid-phase)
-- [ ] Amend 203 §2.1: replace “via existing `isLocked` / `readLockFile`” with the implemented `listLocks` scan. `isLocked` returns `{ locked: false }` for corrupt files (`src/lock.ts:277-280`) and `readLockFile` is private, so listing cannot reuse those APIs.
-- [ ] Record resolved 203 TODOs in the status/design doc so it stops carrying decided questions:
+- [x] Update `docs/v2/203-recovery-and-doctor.md` status from `Draft — Not Implemented` to Implemented (or Partial) with pointer to this plan; note prompts check deferred to `03-prompt-queue-foundation`
+- [x] Mention in `docs/v2/203-recovery-and-doctor.md` status when Phase 6 lands (not required mid-phase)
+- [x] Amend 203 §2.1: replace “via existing `isLocked` / `readLockFile`” with the implemented `listLocks` scan. `isLocked` returns `{ locked: false }` for corrupt files (`src/lock.ts:277-280`) and `readLockFile` is private, so listing cannot reuse those APIs.
+- [x] Record resolved 203 TODOs in the status/design doc so it stops carrying decided questions:
   - warn-only doctor results → exit 0 (no distinct warn code)
   - `doctor` and `lock list` both ship
   - lingering-run age = 24h (`LINGERING_RUN_AGE_MS`)
   - PID-reuse: `--force` + visible holder (no start-time check)
   - step-warning threshold fixed at 80% (`STEP_WARNING_RATIO`)
   - plugin-contributed checks deferred
-- [ ] Update `docs/v2/200-overview.md` area #3 row if it tracks implementation status (currently the table is design-only — only add a status note if a status column already exists; do not invent one)
-- [ ] Update plan-input metadata `Generated plan` → `docs/development/plans/203-recovery-and-doctor-plan.md`
-- [ ] Command help text in adapters is the primary CLI reference; `--help` examples cover `lock list` / `unlock` / `doctor`
-- [ ] `5x-cli/AGENTS.md`: add a short note under a recovery heading that `5x doctor` is the recovery front door (keep to a few sentences; do not create a large new doc)
+- [x] Update `docs/v2/200-overview.md` area #3 row if it tracks implementation status (currently the table is design-only — only add a status note if a status column already exists; do not invent one)
+- [x] Update plan-input metadata `Generated plan` → `docs/development/plans/203-recovery-and-doctor-plan.md`
+- [x] Command help text in adapters is the primary CLI reference; `--help` examples cover `lock list` / `unlock` / `doctor`
+- [x] `5x-cli/AGENTS.md`: add a short note under a recovery heading that `5x doctor` is the recovery front door (keep to a few sentences; do not create a large new doc)
 
 ### 6.5 End-to-end validation checklist
 
-- [ ] Live lock → `PLAN_LOCKED` JSON has holder + remediation; text shows `→ …unlock…--force`
-- [ ] `unlock` without `--force` refuses; with `--force` prints previous holder
-- [ ] Corrupt non-canonical lock → `lock list` shows it; `doctor --fix` removes via `lockPath`; plan-keyed unlock not required
-- [ ] `run record` at 80% warns; at max fails with remediation; `run state` always shows budget
-- [ ] `doctor` detects all five classes; `--fix` only mutates stale locks + path-addressed corrupt locks + dead mappings + lossless project harness sync
-- [ ] Context-mismatched project harness is reported and not auto-synced
-- [ ] Absent DB → `DB_MISSING`; doctor does not create/migrate the file
-- [ ] Throwing check → `CHECK_FAILED`; other checks still run; `fixed` only after successful re-detect by `findingKey` (two stale locks both appear in `fixed`); `fixable` + empty identity → `CHECK_FAILED`, no `fix` call
-- [ ] `harness.freshnessWarnings=off` does not hide doctor freshness findings
-- [ ] `bun test` unit + integration green
+- [x] Live lock → `PLAN_LOCKED` JSON has holder + remediation; text shows `→ …unlock…--force`
+- [x] `unlock` without `--force` refuses; with `--force` prints previous holder
+- [x] Corrupt non-canonical lock → `lock list` shows it; `doctor --fix` removes via `lockPath`; plan-keyed unlock not required
+- [x] `run record` at 80% warns; at max fails with remediation; `run state` always shows budget
+- [x] `doctor` detects all five classes; `--fix` only mutates stale locks + path-addressed corrupt locks + dead mappings + lossless project harness sync
+- [x] Context-mismatched project harness is reported and not auto-synced
+- [x] Absent DB → `DB_MISSING`; doctor does not create/migrate the file
+- [x] Throwing check → `CHECK_FAILED`; other checks still run; `fixed` only after successful re-detect by `findingKey` (two stale locks both appear in `fixed`); `fixable` + empty identity → `CHECK_FAILED`, no `fix` call
+- [x] `harness.freshnessWarnings=off` does not hide doctor freshness findings
+- [x] `bun test` unit + integration green
 
 ---
 

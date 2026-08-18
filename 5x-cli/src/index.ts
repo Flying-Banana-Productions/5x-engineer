@@ -49,7 +49,11 @@ export {
 	recordStep,
 	reopenRun,
 } from "./db/operations-v1.js";
-export { getSchemaVersion, runMigrations } from "./db/schema.js";
+export {
+	getMaxKnownSchemaVersion,
+	getSchemaVersion,
+	runMigrations,
+} from "./db/schema.js";
 // Gates
 export type { QualityCommandResult, QualityResult } from "./gates/quality.js";
 export { runQualityGates } from "./gates/quality.js";
