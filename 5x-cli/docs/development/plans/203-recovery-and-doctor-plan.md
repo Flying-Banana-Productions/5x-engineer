@@ -1,6 +1,6 @@
 # Recovery & `5x doctor` — Lock Surface, Step Budget, Remediation, Doctor Registry
 
-**Version:** 1.4
+**Version:** 1.5
 **Created:** August 18, 2026
 **Last updated:** August 18, 2026
 **Status:** Ready for implementation
@@ -45,7 +45,7 @@ This plan implements `docs/v2/203-recovery-and-doctor.md`: a lock inspect/unlock
 | **Doctor harness `--fix` requires 201 lossless-refresh** | Auto-sync only when `FreshnessReport.losslessRefresh === true`. Context-mismatched / hand-edited project installs stay report-only. |
 | **DB doctor opens read-only / no-create / no-migrate** | Never call `resolveDbContext()` or `getDb()` for inspection — those migrate and create. |
 | **Corrupt locks removed by confined `lockPath`, not plan path** | `findExistingLock` skips unparsable non-canonical files. Doctor uses a lock-dir-confined helper on `LockEntry.lockPath`. |
-| **Per-check failures become findings; fix then re-detect** | A thrown check must not abort the sweep. `--fix` records `fixed` only after a post-repair re-detect clears that finding by `findingKey` (code + identifying detail), not `code` alone. `findingKey` throws when a `fixable: true` finding has an empty identity (unknown code or missing identifying detail) so a future check cannot silently reintroduce code-only matching. `DoctorCheck.fix` must re-validate its target so iterating the original `detected` array stays safe. |
+| **Per-check failures become findings; fix then re-detect** | A thrown check must not abort the sweep. `--fix` records `fixed` only after a post-repair re-detect clears that finding by `findingKey` (code + identifying detail), not `code` alone. `findingKey` throws when a `fixable: true` finding has an empty identity (unknown code or missing identifying detail — including a two-field harness identity with *either* field empty) so a future check cannot silently reintroduce code-only matching. `DoctorCheck.fix` must re-validate its target so iterating the original `detected` array stays safe. |
 
 ### References
 
@@ -150,7 +150,7 @@ Honor `harness.freshnessWarnings = "off"` only for incidental hot-path warnings 
 
 **Doctor check failures are findings, not process crashes.** The handler wraps each `check.run` in try/catch. Any thrown error becomes a single `fail` finding with stable code `CHECK_FAILED` (detail includes `check` id + message) so a corrupt DB, inaccessible worktree root, or freshness plugin load failure cannot abort the remaining sweep.
 
-**`--fix` has an explicit detect → repair → re-detect contract.** `DoctorCheck.run` is detect-only and must not mutate. Optional `DoctorCheck.fix?(finding, ctx)` performs one deterministic repair and returns whether it attempted a write. **Invariant:** every `fix` re-validates its target before mutating (`removeCorruptLock` re-reads; `releaseLock` handles `not_locked`; harness sync is scoped to one harness+scope; worktree upsert is keyed by `planPath`) — the handler iterates the original `detected` array even after `current = again`, so a later candidate may already be gone. Handler algorithm (Phase 4.2): detect all checks → for each `fixable` finding when `--fix`, call `fix` → on claimed success, re-run that check's detect → if the matching finding is gone (`findingKey(f)` equal and no longer `fail`), append to `report.fixed`; if still present, keep the fail and do **not** claim `fixed`. Matching on `code` alone under-reports `fixed` when two findings share a code (two stale locks). **Hardening:** `findingKey` throws if `fixable === true` and the identity component is empty (unknown code, or known code with missing identifying detail) so a future check that forgets the switch cannot silently collapse every instance to `${check}:${code}:`. Compute `report.ok` / exit code only from the final findings list.
+**`--fix` has an explicit detect → repair → re-detect contract.** `DoctorCheck.run` is detect-only and must not mutate. Optional `DoctorCheck.fix?(finding, ctx)` performs one deterministic repair and returns whether it attempted a write. **Invariant:** every `fix` re-validates its target before mutating (`removeCorruptLock` re-reads; `releaseLock` handles `not_locked`; harness sync is scoped to one harness+scope; worktree upsert is keyed by `planPath`) — the handler iterates the original `detected` array even after `current = again`, so a later candidate may already be gone. Handler algorithm (Phase 4.2): detect all checks → for each `fixable` finding when `--fix`, call `fix` → on claimed success, re-run that check's detect → if the matching finding is gone (`findingKey(f)` equal and no longer `fail`), append to `report.fixed`; if still present, keep the fail and do **not** claim `fixed`. Matching on `code` alone under-reports `fixed` when two findings share a code (two stale locks). **Hardening:** `findingKey` throws if `fixable === true` and the identity component is empty (unknown code, or known code with missing identifying detail) so a future check that forgets the switch cannot silently collapse every instance to `${check}:${code}:`. Two-field identities (`HARNESS_STALE` / `HARNESS_UNKNOWN`) return `""` if *either* sub-field is empty — a colon-joined `":"` or `"opencode:"` is not an identity and must not slip past the guard. Compute `report.ok` / exit code only from the final findings list.
 
 **Worktree `--fix` clears dead mappings only — and must not call `worktreeDetach`.** `worktreeDetach` (`src/commands/worktree.handler.ts:442-470`) calls `resolveDbContext()`, which migrates and can create the DB. Doctor detect opens `openDbReadOnly`. Doctor `--fix` opens a **writable** connection to the *existing* file only (`new Database(absolutePath)` after `existsSync` — not `getDb()`, which mkdir/creates) and calls `upsertPlan(db, { planPath, worktreePath: "", branch: "" })` (`src/db/operations.ts:52-89`). Never delete directories. Never run `git worktree remove`. Orphan directories on disk with no DB row are `warn` and never deleted. If the schema is too old to query/update, leave the finding and remediate `5x upgrade`.
 
@@ -573,7 +573,7 @@ throw new RecordError(
 
 ## Phase 4: Doctor registry, formatting, and CLI skeleton
 
-**Completion gate:** `5x doctor` runs an empty-or-noop registry, emits the standard envelope, custom text format, exit 0; `--fix` flag accepted; unit tests cover aggregation/exit-code rules, per-check exception isolation, `findingKey` identity matching (not `code` alone), empty-identity throw for `fixable: true`, and the detect→fix→re-detect/`fixed` contract with a stub check.
+**Completion gate:** `5x doctor` runs an empty-or-noop registry, emits the standard envelope, custom text format, exit 0; `--fix` flag accepted; unit tests cover aggregation/exit-code rules, per-check exception isolation, `findingKey` identity matching (not `code` alone), empty-identity throw for `fixable: true` (including two-field harness identity with either field missing), and the detect→fix→re-detect/`fixed` contract with a stub check.
 
 ### 4.1 Types + registry
 
@@ -633,7 +633,8 @@ export interface DoctorCheck {
    * is keyed by `planPath`). Future checks must preserve that: never assume
    * the candidate is still in the same state as detect. Future `fixable`
    * codes must also add a `findingKey` switch case with identifying detail —
-   * `findingKey` throws on `fixable` + empty identity.
+   * `findingKey` throws on `fixable` + empty identity (multi-field identities
+   * must return `""` if any required sub-field is empty, not a partial join).
    */
   fix?(finding: DoctorFinding, ctx: DoctorCheckContext): Promise<DoctorFixResult>;
 }
@@ -692,17 +693,20 @@ export function checkFailedFinding(checkId: string, err: unknown): DoctorFinding
  * Identifying detail (required on the finding when that code is emitted):
  *   LOCK_CORRUPT              → detail.lockPath
  *   LOCK_STALE / LOCK_LIVE    → detail.planPath
- *   HARNESS_STALE / UNKNOWN   → detail.harness + detail.scope
+ *   HARNESS_STALE / UNKNOWN   → detail.harness AND detail.scope
+ *                               (both required; either missing → "")
  *   WORKTREE_MAPPING_MISSING  → detail.planPath
  *
  * Invariant: a `fixable: true` finding MUST produce a non-empty identity
  * component. The switch `default` returns `""` (also the fallback when a
- * known code's identifying field is missing). If the finding is `fixable`,
- * throw rather than returning `${check}:${code}:` — that collapse would
- * silently reintroduce code-only matching for any future check that
- * forgets to add itself here. Non-fixable findings (ok summaries,
- * CHECK_FAILED, LOCK_LIVE with no plan path, etc.) may use the empty
- * identity form.
+ * known code's identifying field is missing). Two-field identities return
+ * `""` unless *every* sub-field is non-empty — do not colon-join partials
+ * (`":"` / `"opencode:"` would otherwise pass `ident === ""` and silently
+ * collapse). If the finding is `fixable`, throw rather than returning
+ * `${check}:${code}:` — that collapse would silently reintroduce code-only
+ * matching for any future check that forgets to add itself here.
+ * Non-fixable findings (ok summaries, CHECK_FAILED, LOCK_LIVE with no
+ * plan path, etc.) may use the empty identity form.
  */
 export function findingKey(f: DoctorFinding): string {
   const d =
@@ -717,8 +721,11 @@ export function findingKey(f: DoctorFinding): string {
       case "LOCK_LIVE":
         return String(d.planPath ?? "");
       case "HARNESS_STALE":
-      case "HARNESS_UNKNOWN":
-        return `${String(d.harness ?? "")}:${String(d.scope ?? "")}`;
+      case "HARNESS_UNKNOWN": {
+        const harness = String(d.harness ?? "");
+        const scope = String(d.scope ?? "");
+        return harness && scope ? `${harness}:${scope}` : "";
+      }
       case "WORKTREE_MAPPING_MISSING":
         return String(d.planPath ?? "");
       default:
@@ -738,7 +745,7 @@ export function findingKey(f: DoctorFinding): string {
 - [ ] Unit tests: warn-only → exit 0; any fail → exit 1; empty → ok
 - [ ] Unit tests: throwing check → `CHECK_FAILED` finding; sibling checks still run
 - [ ] Unit tests: `findingKey` distinguishes two `LOCK_STALE` findings by `detail.planPath` (same code, different identity)
-- [ ] Unit tests: `findingKey` throws when `fixable: true` and identity is empty (unknown code, or known code with missing identifying detail); non-fixable unknown codes still return `${check}:${code}:`
+- [ ] Unit tests: `findingKey` throws when `fixable: true` and identity is empty (unknown code, or known code with missing identifying detail — including `HARNESS_STALE`/`HARNESS_UNKNOWN` with either `harness` or `scope` missing, or `detail` not an object); non-fixable unknown codes still return `${check}:${code}:`
 
 ### 4.2 Handler + commander adapter
 
@@ -1035,7 +1042,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | `src/commands/doctor.ts` | **New** — `doctor [--fix]` adapter |
 | `src/commands/doctor.handler.ts` | **New** — detect→fix→re-detect loop keyed by `findingKey`, empty-identity → `CHECK_FAILED` before `fix`, `CHECK_FAILED` isolation, exit code |
 | `src/doctor/types.ts` | **New** — check/finding/report/`fix?` types |
-| `src/doctor/registry.ts` | **New** — builtin check list + summarize/exit/`checkFailedFinding`/`findingKey` helpers (`findingKey` throws on `fixable` + empty identity) |
+| `src/doctor/registry.ts` | **New** — builtin check list + summarize/exit/`checkFailedFinding`/`findingKey` helpers (`findingKey` throws on `fixable` + empty identity, including two-field harness identity with either field missing) |
 | `src/doctor/checks/harness-freshness.ts` | **New** — Tier-2 freshness + lossless-gated sync fix |
 | `src/doctor/checks/locks.ts` | **New** — stale/corrupt/live findings; corrupt fix via `removeCorruptLock` |
 | `src/doctor/checks/worktrees.ts` | **New** — dead mappings + orphan warns (read-only detect) |
@@ -1052,7 +1059,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | `test/unit/output.test.ts` | Remediation helper coverage |
 | `test/unit/lock-list.test.ts` | **New** — inventory / classify / `removeCorruptLock` |
 | `test/unit/commands/lock.test.ts` | **New** — handler-level unlock/list |
-| `test/unit/doctor/*.test.ts` | **New** — registry, `findingKey` (incl. empty-identity throw), fix contract (incl. two stale locks → `fixed.length === 2`), each check (incl. lossless + DB_MISSING + listRuns cap) |
+| `test/unit/doctor/*.test.ts` | **New** — registry, `findingKey` (incl. empty-identity throw; harness missing either field), fix contract (incl. two stale locks → `fixed.length === 2`), each check (incl. lossless + DB_MISSING + listRuns cap) |
 | `test/unit/commands/run-step-budget.test.ts` | **New** — threshold + state fields |
 | `test/integration/commands/lock-cli.test.ts` | **New** — CLI spawn coverage |
 | `test/integration/commands/doctor.test.ts` | **New** — CLI doctor coverage |
@@ -1072,7 +1079,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | Unit | `output.ts` | remediation extracted; absent/non-string/array ignored |
 | Unit | step-budget helpers | 79% silent, 80% warns, remaining math, `max <= 0` |
 | Unit | `run-v1.handler` PLAN_LOCKED detail | holder + remediation shape at helper level |
-| Unit | doctor summary / handler | warn-only exit 0; fail exit 1; `CHECK_FAILED` isolation; `findingKey` identity; empty-identity throw for `fixable: true`; fix→re-detect `fixed` rules; two same-code findings → `fixed.length === 2` |
+| Unit | doctor summary / handler | warn-only exit 0; fail exit 1; `CHECK_FAILED` isolation; `findingKey` identity; empty-identity throw for `fixable: true` (incl. harness missing either field); fix→re-detect `fixed` rules; two same-code findings → `fixed.length === 2` |
 | Unit | doctor checks | each check's detect + fix matrix with temp dirs/DB; two stale locks → `fixed.length === 2` |
 | Unit | doctor freshness | `losslessRefresh` gate; context-mismatch not fixable; no sync write; `freshnessWarnings=off` still reports |
 | Unit | doctor db | `DB_MISSING` / unreadable / behind / ahead schema; no create/migrate |
@@ -1115,6 +1122,16 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 ---
 
 ## Revision History
+
+### 1.5 — August 18, 2026
+
+Addresses **P2.5** in the **Addendum (2026-08-18) — v1.4 re-review** of [`docs/development/reviews/.5x-worktrees-203-recovery-and-doctor-plan-f3f71b-5x-cli-docs-development-plans-203-recovery-and-doctor-plan-review.md`](../reviews/.5x-worktrees-203-recovery-and-doctor-plan-f3f71b-5x-cli-docs-development-plans-203-recovery-and-doctor-plan-review.md). Prior P1.1 / P2.1–P2.4 were already resolved in 1.3–1.4.
+
+**P2.5 — two-field harness identity defeats the empty-identity throw.** Concatenating `harness` and `scope` with `:` produced `":"` when both were missing (and `"opencode:"` when only `scope` was missing) — non-empty strings that slipped past `ident === ""`, so a `fixable` `HARNESS_STALE`/`HARNESS_UNKNOWN` finding with no identifying detail silently collapsed instead of throwing.
+
+- `findingKey`'s `HARNESS_STALE` / `HARNESS_UNKNOWN` case now returns `""` unless both `detail.harness` and `detail.scope` are non-empty; only then does it join them as `harness:scope`. Distinct complete pairs still produce distinct keys.
+- The existing `fixable && ident === ""` throw then fires uniformly with every other code. No handler or call-site change.
+- Tests: `findingKey` throws for a `fixable` harness finding with either/both fields missing, or with non-object `detail`.
 
 ### 1.4 — August 18, 2026
 
