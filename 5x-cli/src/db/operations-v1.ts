@@ -95,6 +95,34 @@ export function nextIteration(
 }
 
 /**
+ * Look up the row `recordStep` would collide with via INSERT OR IGNORE.
+ * Returns null when the insert would create a new unique step: omitted
+ * `iteration` (auto-increment), omitted/`null` `phase` (SQLite UNIQUE does
+ * not collapse NULL), or no matching row.
+ */
+export function findExistingStep(
+	db: Database,
+	input: Pick<RecordStepInput, "run_id" | "step_name" | "phase" | "iteration">,
+): Pick<StepRow, "id" | "step_name" | "phase" | "iteration"> | null {
+	if (input.iteration === undefined) return null;
+	// UNIQUE(run_id, step_name, phase, iteration) treats NULL phase as distinct,
+	// so a NULL-phase insert is never an INSERT OR IGNORE no-op.
+	if (input.phase == null) return null;
+	const row = db
+		.query(
+			`SELECT id, step_name, phase, iteration FROM steps
+			 WHERE run_id = ?1 AND step_name = ?2 AND phase = ?3 AND iteration = ?4`,
+		)
+		.get(input.run_id, input.step_name, input.phase, input.iteration) as {
+		id: number;
+		step_name: string;
+		phase: string | null;
+		iteration: number;
+	} | null;
+	return row ?? null;
+}
+
+/**
  * INSERT OR IGNORE a step. First write wins (immutable steps).
  * Returns the recorded step info; `recorded=false` if a duplicate existed.
  *

@@ -33,6 +33,7 @@ import {
 	completeRun,
 	computeRunSummary,
 	createRunV1,
+	findExistingStep,
 	getActiveRunV1,
 	getRunV1,
 	getSteps,
@@ -1129,16 +1130,27 @@ export async function recordStepInternal(
 
 	const summary = computeRunSummary(db, params.run);
 	if (summary.total_steps >= maxSteps) {
-		throw new RecordError(
-			"MAX_STEPS_EXCEEDED",
-			`Run has reached the maximum of ${maxSteps} steps`,
-			{
-				current_steps: summary.total_steps,
-				max_steps: maxSteps,
-				remediation:
-					"Raise maxStepsPerRun via `5x config set maxStepsPerRun <n>`, or split the work into a new run.",
-			},
-		);
+		const existing = findExistingStep(db, {
+			run_id: params.run,
+			step_name: params.stepName,
+			phase: params.phase,
+			iteration: params.iteration,
+		});
+		// Duplicate re-records are a no-op and must not fail at the ceiling.
+		// A new unique step (including omitted iteration, which auto-increments)
+		// is still rejected.
+		if (!existing) {
+			throw new RecordError(
+				"MAX_STEPS_EXCEEDED",
+				`Run has reached the maximum of ${maxSteps} steps`,
+				{
+					current_steps: summary.total_steps,
+					max_steps: maxSteps,
+					remediation:
+						"Raise maxStepsPerRun via `5x config set maxStepsPerRun <n>`, or split the work into a new run.",
+				},
+			);
+		}
 	}
 
 	// Validate JSON

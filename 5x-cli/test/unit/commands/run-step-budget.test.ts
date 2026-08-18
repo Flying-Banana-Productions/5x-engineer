@@ -200,6 +200,48 @@ describe("recordStepInternal step budget", () => {
 		).toBeDefined();
 	});
 
+	test("idempotent re-record at maxStepsPerRun is a no-op, not MAX_STEPS_EXCEEDED", async () => {
+		const ctx = dbContext(3);
+		const db = ctx.db;
+		for (let i = 0; i < 3; i++) {
+			db.exec(
+				`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)
+				 VALUES ('run1', 'step-${i}', '1', 1, '{}')`,
+			);
+		}
+
+		const replay = await recordStepInternal(
+			{
+				run: "run1",
+				stepName: "step-2",
+				phase: "1",
+				iteration: 1,
+				result: "{}",
+			},
+			ctx,
+		);
+		expect(replay.recorded).toBe(false);
+		expect(replay.total_steps).toBe(3);
+		expect(replay.max_steps).toBe(3);
+
+		let caught: RecordError | undefined;
+		try {
+			await recordStepInternal(
+				{
+					run: "run1",
+					stepName: "step-new",
+					iteration: 1,
+					result: "{}",
+				},
+				ctx,
+			);
+		} catch (err) {
+			if (err instanceof RecordError) caught = err;
+			else throw err;
+		}
+		expect(caught?.code).toBe("MAX_STEPS_EXCEEDED");
+	});
+
 	test("MAX_STEPS_EXCEEDED detail includes remediation", async () => {
 		const ctx = dbContext(3);
 		const db = ctx.db;
