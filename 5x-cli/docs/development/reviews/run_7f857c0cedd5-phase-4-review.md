@@ -20,3 +20,17 @@ Not ready — one P1 auto-fix is required.
 - `bun run lint` — passed.
 - `bun test test/unit/doctor/` — 32 passed, 0 failed.
 - `git diff --check fb23b4069b9059d7c2ad787341ef8109fb284645^ fb23b4069b9059d7c2ad787341ef8109fb284645` — passed.
+
+## Addendum — Re-review after `5be8698db5098228fd2e9ae1f84465c27a5ffc89`
+
+The repair invocation is now isolated in a `try/catch`. A thrown `DoctorCheck.fix` appends `CHECK_FAILED`, preserves the original unfixed findings, exits that check's repair loop, and continues to sibling checks before emitting the normal successful diagnostic envelope with exit code 1. The new focused test verifies all of those outcomes, including two retained stale-lock findings and sibling execution.
+
+**Readiness:** Ready.
+
+**Items:** `[]`
+
+### Verification
+
+- `bun run lint` — passed.
+- `bun test test/unit/doctor/` — 33 passed, 0 failed.
+- `git diff --check 5be8698db5098228fd2e9ae1f84465c27a5ffc89^ 5be8698db5098228fd2e9ae1f84465c27a5ffc89` — passed.
