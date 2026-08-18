@@ -1,8 +1,9 @@
 # Recovery & `5x doctor` — Lock Surface, Step Budget, Remediation, Doctor Registry
 
-**Version:** 1.0
+**Version:** 1.3
 **Created:** August 18, 2026
-**Status:** Draft — pending staff engineer review
+**Last updated:** August 18, 2026
+**Status:** Ready for implementation
 
 ---
 
@@ -44,7 +45,7 @@ This plan implements `docs/v2/203-recovery-and-doctor.md`: a lock inspect/unlock
 | **Doctor harness `--fix` requires 201 lossless-refresh** | Auto-sync only when `FreshnessReport.losslessRefresh === true`. Context-mismatched / hand-edited project installs stay report-only. |
 | **DB doctor opens read-only / no-create / no-migrate** | Never call `resolveDbContext()` or `getDb()` for inspection — those migrate and create. |
 | **Corrupt locks removed by confined `lockPath`, not plan path** | `findExistingLock` skips unparsable non-canonical files. Doctor uses a lock-dir-confined helper on `LockEntry.lockPath`. |
-| **Per-check failures become findings; fix then re-detect** | A thrown check must not abort the sweep. `--fix` records `fixed` only after a post-repair re-detect clears the finding. |
+| **Per-check failures become findings; fix then re-detect** | A thrown check must not abort the sweep. `--fix` records `fixed` only after a post-repair re-detect clears that finding by `findingKey` (code + identifying detail), not `code` alone. `DoctorCheck.fix` must re-validate its target so iterating the original `detected` array stays safe. |
 
 ### References
 
@@ -72,7 +73,8 @@ This plan implements `docs/v2/203-recovery-and-doctor.md`: a lock inspect/unlock
 11. [Tests](#tests)
 12. [Not In Scope](#not-in-scope)
 13. [Estimated Timeline](#estimated-timeline)
-14. [Provenance](#provenance)
+14. [Revision History](#revision-history)
+15. [Provenance](#provenance)
 
 ---
 
@@ -148,7 +150,7 @@ Honor `harness.freshnessWarnings = "off"` only for incidental hot-path warnings 
 
 **Doctor check failures are findings, not process crashes.** The handler wraps each `check.run` in try/catch. Any thrown error becomes a single `fail` finding with stable code `CHECK_FAILED` (detail includes `check` id + message) so a corrupt DB, inaccessible worktree root, or freshness plugin load failure cannot abort the remaining sweep.
 
-**`--fix` has an explicit detect → repair → re-detect contract.** `DoctorCheck.run` is detect-only and must not mutate. Optional `DoctorCheck.fix?(finding, ctx)` performs one deterministic repair and returns whether it attempted a write. Handler algorithm (Phase 4.2): detect all checks → for each `fixable` finding when `--fix`, call `fix` → on claimed success, re-run that check's detect → if the matching finding is gone (same `code`, no longer `fail`), append to `report.fixed`; if still present, keep the fail and do **not** claim `fixed`. Compute `report.ok` / exit code only from the final findings list.
+**`--fix` has an explicit detect → repair → re-detect contract.** `DoctorCheck.run` is detect-only and must not mutate. Optional `DoctorCheck.fix?(finding, ctx)` performs one deterministic repair and returns whether it attempted a write. **Invariant:** every `fix` re-validates its target before mutating (`removeCorruptLock` re-reads; `releaseLock` handles `not_locked`; harness sync is scoped to one harness+scope; worktree upsert is keyed by `planPath`) — the handler iterates the original `detected` array even after `current = again`, so a later candidate may already be gone. Handler algorithm (Phase 4.2): detect all checks → for each `fixable` finding when `--fix`, call `fix` → on claimed success, re-run that check's detect → if the matching finding is gone (`findingKey(f)` equal and no longer `fail`), append to `report.fixed`; if still present, keep the fail and do **not** claim `fixed`. Matching on `code` alone under-reports `fixed` when two findings share a code (two stale locks). Compute `report.ok` / exit code only from the final findings list.
 
 **Worktree `--fix` clears dead mappings only — and must not call `worktreeDetach`.** `worktreeDetach` (`src/commands/worktree.handler.ts:442-470`) calls `resolveDbContext()`, which migrates and can create the DB. Doctor detect opens `openDbReadOnly`. Doctor `--fix` opens a **writable** connection to the *existing* file only (`new Database(absolutePath)` after `existsSync` — not `getDb()`, which mkdir/creates) and calls `upsertPlan(db, { planPath, worktreePath: "", branch: "" })` (`src/db/operations.ts:52-89`). Never delete directories. Never run `git worktree remove`. Orphan directories on disk with no DB row are `warn` and never deleted. If the schema is too old to query/update, leave the finding and remediate `5x upgrade`.
 
@@ -202,8 +204,8 @@ Doctor finding / fix state:
        │
        ├─ --fix + fixable + check.fix? ──► attempt repair
        │         └─ re-detect that check
-       │              ├─ finding cleared ──► append report.fixed; keep post-detect findings
-       │              └─ still present  ──► keep fail; do not claim fixed
+       │              ├─ findingKey cleared ──► append report.fixed; keep post-detect findings
+       │              └─ same identity still fail ──► keep fail; do not claim fixed
        └─ aggregate: report.ok / exit 0 iff no fail remains in final findings
 ```
 
@@ -569,7 +571,7 @@ throw new RecordError(
 
 ## Phase 4: Doctor registry, formatting, and CLI skeleton
 
-**Completion gate:** `5x doctor` runs an empty-or-noop registry, emits the standard envelope, custom text format, exit 0; `--fix` flag accepted; unit tests cover aggregation/exit-code rules, per-check exception isolation, and the detect→fix→re-detect/`fixed` contract with a stub check.
+**Completion gate:** `5x doctor` runs an empty-or-noop registry, emits the standard envelope, custom text format, exit 0; `--fix` flag accepted; unit tests cover aggregation/exit-code rules, per-check exception isolation, `findingKey` identity matching (not `code` alone), and the detect→fix→re-detect/`fixed` contract with a stub check.
 
 ### 4.1 Types + registry
 
@@ -596,8 +598,8 @@ export interface DoctorCheckContext {
   stateDir?: string;
   homeDir?: string;
   /**
-   * Absolute control-plane DB path when the path has been resolved.
-   * Null only if path math itself cannot run (should be rare).
+   * Absolute control-plane DB path. Always a resolved path string —
+   * `resolveDoctorContext` fails the whole command if path math cannot run.
    * The file at this path may or may not exist — checks must existsSync.
    * Never an open mutating connection.
    */
@@ -620,6 +622,14 @@ export interface DoctorCheck {
   /**
    * Optional deterministic repair for one fixable finding.
    * Called only when `--fix` and `finding.fixable` and `finding.check === id`.
+   *
+   * Invariant: `fix` MUST re-validate its target before mutating. The handler
+   * iterates the original `detected` array even after `current = again`, so a
+   * later candidate may already have been removed (or become live). Specified
+   * helpers already do this (`removeCorruptLock` re-reads; `releaseLock`
+   * handles `not_locked`; harness sync is one harness+scope; worktree upsert
+   * is keyed by `planPath`). Future checks must preserve that: never assume
+   * the candidate is still in the same state as detect.
    */
   fix?(finding: DoctorFinding, ctx: DoctorCheckContext): Promise<DoctorFixResult>;
 }
@@ -671,11 +681,45 @@ export function checkFailedFinding(checkId: string, err: unknown): DoctorFinding
     detail: { error: message },
   };
 }
+
+/**
+ * Identity of one finding for `--fix` re-detect matching.
+ * NEVER match on `code` alone: two stale locks share `LOCK_STALE`.
+ * Identifying detail (required on the finding when that code is emitted):
+ *   LOCK_CORRUPT              → detail.lockPath
+ *   LOCK_STALE / LOCK_LIVE    → detail.planPath
+ *   HARNESS_STALE / UNKNOWN   → detail.harness + detail.scope
+ *   WORKTREE_MAPPING_MISSING  → detail.planPath
+ */
+export function findingKey(f: DoctorFinding): string {
+  const d =
+    f.detail && typeof f.detail === "object" && !Array.isArray(f.detail)
+      ? (f.detail as Record<string, unknown>)
+      : {};
+  const ident = (() => {
+    switch (f.code) {
+      case "LOCK_CORRUPT":
+        return String(d.lockPath ?? "");
+      case "LOCK_STALE":
+      case "LOCK_LIVE":
+        return String(d.planPath ?? "");
+      case "HARNESS_STALE":
+      case "HARNESS_UNKNOWN":
+        return `${String(d.harness ?? "")}:${String(d.scope ?? "")}`;
+      case "WORKTREE_MAPPING_MISSING":
+        return String(d.planPath ?? "");
+      default:
+        return "";
+    }
+  })();
+  return `${f.check}:${f.code}:${ident}`;
+}
 ```
 
-- [ ] Create `src/doctor/types.ts`, `registry.ts`, and summary helpers
+- [ ] Create `src/doctor/types.ts`, `registry.ts`, and summary helpers including `findingKey`
 - [ ] Unit tests: warn-only → exit 0; any fail → exit 1; empty → ok
 - [ ] Unit tests: throwing check → `CHECK_FAILED` finding; sibling checks still run
+- [ ] Unit tests: `findingKey` distinguishes two `LOCK_STALE` findings by `detail.planPath` (same code, different identity)
 
 ### 4.2 Handler + commander adapter
 
@@ -691,8 +735,9 @@ export function checkFailedFinding(checkId: string, err: unknown): DoctorFinding
   - `none` mode: `resolveProjectContext({ startDir })` then `join(normalizeDbPath(config.db.path), DB_FILENAME)` (`src/commands/context.ts:134-135`) — this loads config, **does not** open SQLite
 - `dbPath = resolve(projectRoot, dbRelPath)`
 - **Must not** call `getDb`, `openDbReadOnly`, or `runMigrations` here
+- If control-plane / DB path math cannot run (`resolveControlPlaneRoot` throws, config unreadable in a way that blocks `dbRelPath`, etc.), **fail the whole command** with a `CliError`. Do not return a context with a missing or null `dbPath`. Checks never see an unresolved path; they only `existsSync` the resolved absolute path. The file at `dbPath` may still be absent (`DB_MISSING`).
 
-Handler algorithm (normative — this is how `fixed` and `report.ok` are produced):
+Handler algorithm (normative — this is how `fixed` and `report.ok` are produced). Import `findingKey`, `checkFailedFinding`, `summarizeDoctor`, `doctorExitCode`, and `builtinDoctorChecks` from `src/doctor/registry.ts`:
 
 ```typescript
 export async function doctorRun(params: {
@@ -732,7 +777,7 @@ export async function doctorRun(params: {
         break;
       }
       const stillThere = again.some(
-        (f) => f.code === candidate.code && f.status === "fail",
+        (f) => f.status === "fail" && findingKey(f) === findingKey(candidate),
       );
       if (!stillThere) {
         fixed.push({
@@ -752,7 +797,7 @@ export async function doctorRun(params: {
 }
 ```
 
-Matching for “finding cleared” keys on `code` + `status === "fail"` for that check; ok/warn replacements after repair are fine. Do not throw when the envelope is a successful diagnostic report.
+Matching for “finding cleared” uses `findingKey(f)` (check + code + identifying detail) plus `status === "fail"`. Matching on `code` alone under-reports `fixed` when two findings share a code (two stale locks both `LOCK_STALE`). ok/warn replacements after repair are fine. The candidate loop iterates the original `detected` array even after `current = again`; that is safe **only** because every `DoctorCheck.fix` re-validates its target before mutating. Do not throw when the envelope is a successful diagnostic report.
 
 Text formatter (human-first, custom formatter passed to `outputSuccess`):
 
@@ -769,7 +814,8 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
 - [ ] Adapter with `--fix` and help examples (`5x doctor`, `5x doctor --fix`, `5x doctor --text`)
 - [ ] Register `registerDoctor(program)` in `src/bin.ts`
 - [ ] Custom text formatter + JSON envelope tests
-- [ ] Unit tests: stub check with fixable finding — `--fix` populates `fixed` only after re-detect clears it; failed re-detect does not claim `fixed`
+- [ ] Unit tests: stub check with fixable finding — `--fix` populates `fixed` only after re-detect clears it by `findingKey`; failed re-detect does not claim `fixed`
+- [ ] Unit tests: stub check emitting two same-code findings with distinct identity keys — `--fix` records both in `fixed` (`fixed.length === 2`)
 
 ---
 
@@ -788,7 +834,7 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
   - project-scope `stale` / `unknown` → `fail`, `code` like `HARNESS_STALE` / `HARNESS_UNKNOWN`, remediation `5x harness sync` (or `5x harness sync --force` when `losslessBlockers` includes `assets-modified`).
   - user-scope `stale` / `unknown` → `warn`, `fixable: false`, remediation `5x harness install <harness> --scope project` (201 D4).
 - If every installed-or-not report is `fresh` or `not-installed`, emit a single `ok` finding `code: "HARNESS_FRESH"`.
-- Put `losslessRefresh`, `losslessBlockers`, `harness`, `scope`, and `installedFrom` on `finding.detail` so `--fix` and tests can assert the predicate without re-querying.
+- Put `losslessRefresh`, `losslessBlockers`, `harness`, `scope`, and `installedFrom` on `finding.detail` so `--fix` and tests can assert the predicate without re-querying. `harness` + `scope` are required — they are the `findingKey` identity for `HARNESS_STALE` / `HARNESS_UNKNOWN`.
 - `fixable: true` **only** when `report.scope === "project"` **and** `report.losslessRefresh === true` **and** status is `stale` or `unknown`. Any blocker (`context-mismatch`, `assets-modified`, `baseline-unverified`, `no-manifest`, `config-unresolved`, `shared-user-scope`) ⇒ `fixable: false`.
 - `fix`: call `harnessSyncCore({ name: finding.detail.harness, scope: "project", startDir: ctx.startDir, homeDir: ctx.homeDir })` **only** for findings marked fixable. Do **not** pass `force: true`. If the matching result `action` is not `synced` / `adopted`, return `{ attempted: false, … }` (or `{ attempted: true }` and rely on re-detect to withhold `fixed`). Skip user-scope always.
 - Do **not** consult `freshnessWarningsEnabled`.
@@ -805,18 +851,19 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
 **File:** `src/doctor/checks/locks.ts`
 
 - `listLocks(ctx.projectRoot, { stateDir: ctx.stateDir })`.
-- `stale` → `fail`, `code: "LOCK_STALE"`, `fixable: true`, remediation `5x unlock <plan>` (plan path from `info.planPath`).
-- `corrupt` → `fail`, `code: "LOCK_CORRUPT"`, `fixable: true`, remediation `5x doctor --fix`, `detail.lockPath = entry.lockPath` (required — no plan path).
-- `live` → `warn`, `code: "LOCK_LIVE"`, `fixable: false`, remediation `5x unlock <plan> --force`.
+- `stale` → `fail`, `code: "LOCK_STALE"`, `fixable: true`, remediation `5x unlock <plan>` (plan path from `info.planPath`), `detail.planPath = info.planPath` (required — `findingKey` identity).
+- `corrupt` → `fail`, `code: "LOCK_CORRUPT"`, `fixable: true`, remediation `5x doctor --fix`, `detail.lockPath = entry.lockPath` (required — no plan path; `findingKey` identity).
+- `live` → `warn`, `code: "LOCK_LIVE"`, `fixable: false`, remediation `5x unlock <plan> --force`, `detail.planPath = info.planPath` (required — identity even though not fixable).
 - No locks → single `ok` finding `code: "LOCKS_OK"`.
 - `fix`:
-  - `LOCK_STALE` → `releaseLock(projectRoot, planPath, { stateDir })` (never `forceReleaseLock`).
-  - `LOCK_CORRUPT` → `removeCorruptLock(projectRoot, detail.lockPath, { stateDir })`.
+  - `LOCK_STALE` → `releaseLock(projectRoot, finding.detail.planPath, { stateDir })` (never `forceReleaseLock`).
+  - `LOCK_CORRUPT` → `removeCorruptLock(projectRoot, finding.detail.lockPath, { stateDir })`.
   - never remove live locks.
 
 - [ ] Implement + tests for each liveness class
 - [ ] Filesystem-focused unit tests ensuring live lock files survive `--fix`
 - [ ] Unit test: non-canonical corrupt file removed via `removeCorruptLock` on `lockPath`; plan-keyed `unlock` is not required for that case
+- [ ] Unit test: two stale locks, `--fix` → both removed, `report.fixed.length === 2` (identity matching, not `code` alone)
 
 ### 5.3 `worktrees` check
 
@@ -824,7 +871,7 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
 
 - Detect path: if `!existsSync(ctx.dbPath)` → return `[]` (the `db` check owns `DB_MISSING`). If present, open with `openDbReadOnly(ctx.projectRoot, ctx.dbRelPath)` (`src/db/connection.ts:64-67`); close in `finally`. Open/query failures → `fail` `code: "DB_UNREADABLE"`, `fixable: false` — do not throw.
 - Query plans with non-empty `worktree_path` (same SQL as `worktreeList`, `src/commands/worktree.handler.ts:484-492`).
-- Missing/unreadable dir (`!existsSync` or not accessible) → `fail`, `code: "WORKTREE_MAPPING_MISSING"`, `fixable: true`, remediation `5x worktree detach -p <plan>`.
+- Missing/unreadable dir (`!existsSync` or not accessible) → `fail`, `code: "WORKTREE_MAPPING_MISSING"`, `fixable: true`, remediation `5x worktree detach -p <plan>`, `detail.planPath = planPath` (required — `findingKey` identity).
 - `fix`: after `existsSync(ctx.dbPath)`, open **writable** `new Database(ctx.dbPath)` (not `getDb` — that mkdir/creates; not `resolveDbContext` — that migrates). Call `upsertPlan(db, { planPath, worktreePath: "", branch: "" })`. Close in `finally`. If the write throws (old schema, locked, etc.), return `{ attempted: false }` and leave the finding; remediation already names `5x worktree detach` / `5x upgrade`.
 - Orphan git worktrees: `listWorktrees(ctx.projectRoot)` (`src/git.ts:358`) plus directories under `<projectRoot>/.5x/worktrees/` that have no matching `plans.worktree_path` row → `warn`, `code: "WORKTREE_ORPHAN"`, `fixable: false`. Never delete.
 
@@ -915,7 +962,15 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 
 ### 6.4 Documentation
 
-- [ ] Update `docs/v2/203-recovery-and-doctor.md` status from `Draft — Not Implemented` to Implemented (or Partial) with pointer to this plan; note prompts check deferred
+- [ ] Update `docs/v2/203-recovery-and-doctor.md` status from `Draft — Not Implemented` to Implemented (or Partial) with pointer to this plan; note prompts check deferred to `03-prompt-queue-foundation`
+- [ ] Amend 203 §2.1: replace “via existing `isLocked` / `readLockFile`” with the implemented `listLocks` scan. `isLocked` returns `{ locked: false }` for corrupt files (`src/lock.ts:277-280`) and `readLockFile` is private, so listing cannot reuse those APIs.
+- [ ] Record resolved 203 TODOs in the status/design doc so it stops carrying decided questions:
+  - warn-only doctor results → exit 0 (no distinct warn code)
+  - `doctor` and `lock list` both ship
+  - lingering-run age = 24h (`LINGERING_RUN_AGE_MS`)
+  - PID-reuse: `--force` + visible holder (no start-time check)
+  - step-warning threshold fixed at 80% (`STEP_WARNING_RATIO`)
+  - plugin-contributed checks deferred
 - [ ] Update `docs/v2/200-overview.md` area #3 row if it tracks implementation status (currently the table is design-only — only add a status note if a status column already exists; do not invent one)
 - [ ] Update plan-input metadata `Generated plan` → `docs/development/plans/203-recovery-and-doctor-plan.md`
 - [ ] Command help text in adapters is the primary CLI reference; `--help` examples cover `lock list` / `unlock` / `doctor`
@@ -930,7 +985,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 - [ ] `doctor` detects all five classes; `--fix` only mutates stale locks + path-addressed corrupt locks + dead mappings + lossless project harness sync
 - [ ] Context-mismatched project harness is reported and not auto-synced
 - [ ] Absent DB → `DB_MISSING`; doctor does not create/migrate the file
-- [ ] Throwing check → `CHECK_FAILED`; other checks still run; `fixed` only after successful re-detect
+- [ ] Throwing check → `CHECK_FAILED`; other checks still run; `fixed` only after successful re-detect by `findingKey` (two stale locks both appear in `fixed`)
 - [ ] `harness.freshnessWarnings=off` does not hide doctor freshness findings
 - [ ] `bun test` unit + integration green
 
@@ -945,9 +1000,9 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | `src/commands/lock.ts` | **New** — `lock list` + top-level `unlock` adapter |
 | `src/commands/lock.handler.ts` | **New** — list/unlock handlers |
 | `src/commands/doctor.ts` | **New** — `doctor [--fix]` adapter |
-| `src/commands/doctor.handler.ts` | **New** — detect→fix→re-detect loop, `CHECK_FAILED` isolation, exit code |
+| `src/commands/doctor.handler.ts` | **New** — detect→fix→re-detect loop keyed by `findingKey`, `CHECK_FAILED` isolation, exit code |
 | `src/doctor/types.ts` | **New** — check/finding/report/`fix?` types |
-| `src/doctor/registry.ts` | **New** — builtin check list + summarize/exit/`checkFailedFinding` helpers |
+| `src/doctor/registry.ts` | **New** — builtin check list + summarize/exit/`checkFailedFinding`/`findingKey` helpers |
 | `src/doctor/checks/harness-freshness.ts` | **New** — Tier-2 freshness + lossless-gated sync fix |
 | `src/doctor/checks/locks.ts` | **New** — stale/corrupt/live findings; corrupt fix via `removeCorruptLock` |
 | `src/doctor/checks/worktrees.ts` | **New** — dead mappings + orphan warns (read-only detect) |
@@ -958,13 +1013,13 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | `src/commands/run-v1.handler.ts` | PLAN_LOCKED detail; step budget helpers; MAX_STEPS remediation; state fields; record warning |
 | `src/db/schema.ts` | Export `getMaxKnownSchemaVersion()` |
 | `docs/v1/100-architecture.md` | §4a additive remediation line |
-| `docs/v2/203-recovery-and-doctor.md` | Status + deferred prompts note |
+| `docs/v2/203-recovery-and-doctor.md` | Status + deferred prompts; §2.1 `listLocks` (not `isLocked`/`readLockFile`); record resolved TODOs |
 | `docs/v2/plan-inputs/01-recovery-and-doctor.plan-input.md` | Generated plan pointer |
 | `5x-cli/AGENTS.md` | Short recovery note pointing at `5x doctor` |
 | `test/unit/output.test.ts` | Remediation helper coverage |
 | `test/unit/lock-list.test.ts` | **New** — inventory / classify / `removeCorruptLock` |
 | `test/unit/commands/lock.test.ts` | **New** — handler-level unlock/list |
-| `test/unit/doctor/*.test.ts` | **New** — registry, fix contract, each check (incl. lossless + DB_MISSING + listRuns cap) |
+| `test/unit/doctor/*.test.ts` | **New** — registry, `findingKey`, fix contract (incl. two stale locks → `fixed.length === 2`), each check (incl. lossless + DB_MISSING + listRuns cap) |
 | `test/unit/commands/run-step-budget.test.ts` | **New** — threshold + state fields |
 | `test/integration/commands/lock-cli.test.ts` | **New** — CLI spawn coverage |
 | `test/integration/commands/doctor.test.ts` | **New** — CLI doctor coverage |
@@ -984,8 +1039,8 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | Unit | `output.ts` | remediation extracted; absent/non-string/array ignored |
 | Unit | step-budget helpers | 79% silent, 80% warns, remaining math, `max <= 0` |
 | Unit | `run-v1.handler` PLAN_LOCKED detail | holder + remediation shape at helper level |
-| Unit | doctor summary / handler | warn-only exit 0; fail exit 1; `CHECK_FAILED` isolation; fix→re-detect `fixed` rules |
-| Unit | doctor checks | each check's detect + fix matrix with temp dirs/DB |
+| Unit | doctor summary / handler | warn-only exit 0; fail exit 1; `CHECK_FAILED` isolation; `findingKey` identity; fix→re-detect `fixed` rules; two same-code findings → `fixed.length === 2` |
+| Unit | doctor checks | each check's detect + fix matrix with temp dirs/DB; two stale locks → `fixed.length === 2` |
 | Unit | doctor freshness | `losslessRefresh` gate; context-mismatch not fixable; no sync write; `freshnessWarnings=off` still reports |
 | Unit | doctor db | `DB_MISSING` / unreadable / behind / ahead schema; no create/migrate |
 | Unit | doctor runs | live lock suppresses warn; 51st oldest active still flagged |
@@ -1023,6 +1078,31 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 | 5 | Doctor checks: freshness, locks, worktrees (+ `--fix`) | 1.5–2 days |
 | 6 | Doctor checks: runs, db; docs; integration E2E | 1–2 days |
 | **Total** | | **6–9 days** |
+
+---
+
+## Revision History
+
+### 1.3 — August 18, 2026
+
+Addresses P1.1 and P2.1–P2.3 in [`docs/development/reviews/.5x-worktrees-203-recovery-and-doctor-plan-f3f71b-5x-cli-docs-development-plans-203-recovery-and-doctor-plan-review.md`](../reviews/.5x-worktrees-203-recovery-and-doctor-plan-f3f71b-5x-cli-docs-development-plans-203-recovery-and-doctor-plan-review.md) (no addendums; all items `auto_fix`). Header version had regressed to 1.0 after the 1.2 reviewed revision; this bump is 1.3.
+
+**P1.1 — `--fix` re-detect matching keyed on `code` alone under-reports `fixed`.** Matching two stale locks by `LOCK_STALE` withheld the first repair and left `fixed.length === 1` after both succeeded.
+
+- Added `findingKey(f)` in `src/doctor/registry.ts` (check + code + identifying detail: `lockPath` for `LOCK_CORRUPT`, `planPath` for `LOCK_STALE`/`LOCK_LIVE`/`WORKTREE_MAPPING_MISSING`, `harness`+`scope` for freshness). Handler “cleared” matching uses `findingKey`, not `code` alone.
+- Required those identifying fields on the corresponding findings (Phases 5.1–5.3).
+- Stated the `DoctorCheck.fix` re-validation invariant: the candidate loop iterates the original `detected` array after `current = again`; specified helpers already re-read / handle `not_locked`.
+- Added tests: stub two same-code findings → `fixed.length === 2`; two stale locks, `--fix` → both removed, `report.fixed.length === 2`.
+
+**P2.1 — Version header.** Bumped 1.0 → 1.3; status → Ready for implementation.
+
+**P2.2 — `DoctorCheckContext.dbPath` type/comment.** Deleted the “Null only if path math cannot run” sentence. `dbPath` stays `string`; `resolveDoctorContext` fails the whole command if path math cannot run. Checks only `existsSync` the resolved path.
+
+**P2.3 — Phase 6.4 vs 203 §2.1.** Doc updates now amend the `isLocked`/`readLockFile` sketch to the `listLocks` scan and record resolved TODOs (warn → exit 0, doctor + `lock list` both ship, 24h lingering-run age, `--force` + visible holder, fixed 80% threshold, plugin checks deferred).
+
+### 1.2 — August 18, 2026
+
+Prior reviewed revision (`48f77e3`): read-only DB inspection, 201 lossless-refresh gate on harness `--fix`, path-confined `removeCorruptLock`, `CHECK_FAILED` isolation, and the detect → fix → re-detect contract.
 
 ---
 
