@@ -28,9 +28,20 @@ export function realpathExisting(rawPath: string): string {
 	const abs = resolve(rawPath);
 	try {
 		if (existsSync(abs)) return realpathSync(abs);
-		const parent = dirname(abs);
-		if (parent !== abs && existsSync(parent)) {
-			return join(realpathSync(parent), basename(abs));
+
+		const missing: string[] = [];
+		let current = abs;
+		while (true) {
+			const parent = dirname(current);
+			if (parent === current) {
+				// Reached the filesystem root without an existing prefix.
+				return abs;
+			}
+			missing.unshift(basename(current));
+			if (existsSync(parent)) {
+				return join(realpathSync(parent), ...missing);
+			}
+			current = parent;
 		}
 	} catch {
 		// Fall through to the unresolved absolute path.
