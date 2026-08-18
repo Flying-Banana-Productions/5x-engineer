@@ -4,7 +4,7 @@
  * Reuses the stamp/install helpers from the 201 freshness tests.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -15,22 +15,22 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { doctorRun } from "../../../src/commands/doctor.handler.js";
 import { harnessFreshnessCheck } from "../../../src/doctor/checks/harness-freshness.js";
 import type {
+	DoctorCheck,
 	DoctorCheckContext,
 	DoctorFinding,
-	DoctorReport,
+	DoctorFixResult,
 } from "../../../src/doctor/types.js";
 import { opencodeLocationResolver } from "../../../src/harnesses/locations.js";
 import {
 	assetsFromOnDisk,
 	buildManifest,
 	collectInstalledAssets,
+	readManifest,
 	writeManifest,
 } from "../../../src/harnesses/manifest.js";
 import opencodePlugin from "../../../src/harnesses/opencode/plugin.js";
-import { setOutputFormat } from "../../../src/output.js";
 import { version } from "../../../src/version.js";
 
 function makeTmpDir(kind: string): string {
@@ -148,25 +148,6 @@ function snapshotOpencode(projectRoot: string): string {
 	return snapshotTree(join(projectRoot, ".opencode"));
 }
 
-async function captureJson(fn: () => Promise<void>): Promise<{
-	ok: boolean;
-	data?: DoctorReport;
-}> {
-	const calls: string[] = [];
-	const orig = console.log;
-	console.log = (...args: unknown[]) => {
-		calls.push(String(args[0]));
-	};
-	try {
-		await fn();
-	} finally {
-		console.log = orig;
-	}
-	const raw = calls[0];
-	if (raw === undefined) throw new Error("expected JSON output");
-	return JSON.parse(raw) as { ok: boolean; data?: DoctorReport };
-}
-
 function opencodeFinding(findings: DoctorFinding[]): DoctorFinding | undefined {
 	return findings.find(
 		(f) =>
@@ -175,12 +156,15 @@ function opencodeFinding(findings: DoctorFinding[]): DoctorFinding | undefined {
 	);
 }
 
-const prevExitCode = process.exitCode;
-
-afterEach(() => {
-	setOutputFormat("json");
-	process.exitCode = prevExitCode ?? 0;
-});
+async function applyFix(
+	check: DoctorCheck,
+	finding: DoctorFinding | undefined,
+	ctx: DoctorCheckContext,
+): Promise<DoctorFixResult> {
+	if (!check.fix) throw new Error("expected check.fix");
+	if (!finding) throw new Error("expected finding");
+	return check.fix(finding, ctx);
+}
 
 describe("harness-freshness detect", () => {
 	test("nothing installed → single HARNESS_FRESH ok finding", async () => {
@@ -358,22 +342,18 @@ describe("harness-freshness --fix", () => {
 			expect(before).toContain(AUTHOR_A);
 			expect(before).not.toContain(AUTHOR_B);
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: project,
-					homeDir: home,
-					checks: [harnessFreshnessCheck],
-				}),
-			);
-			expect(envelope.data?.fixed.some((f) => f.code === "HARNESS_STALE")).toBe(
-				true,
-			);
-			expect(
-				envelope.data?.checks.some(
-					(f) => f.code === "HARNESS_STALE" && f.status === "fail",
-				),
-			).toBe(false);
+			const ctx = doctorCtx(project, home);
+			const findings = await harnessFreshnessCheck.run(ctx);
+			const stale = opencodeFinding(findings);
+			expect(stale?.fixable).toBe(true);
+			expect(asRecord(stale?.detail).losslessRefresh).toBe(true);
+
+			const result = await applyFix(harnessFreshnessCheck, stale, ctx);
+			expect(result.attempted).toBe(true);
+
+			const afterFindings = await harnessFreshnessCheck.run(ctx);
+			expect(opencodeFinding(afterFindings)?.status).not.toBe("fail");
+			expect(afterFindings[0]?.code).toBe("HARNESS_FRESH");
 			const after = authorAgent(project);
 			expect(after).toContain(AUTHOR_B);
 			expect(after).not.toContain(AUTHOR_A);
@@ -396,14 +376,12 @@ describe("harness-freshness --fix", () => {
 			);
 			const before = snapshotOpencode(project);
 
-			await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: project,
-					homeDir: home,
-					checks: [harnessFreshnessCheck],
-				}),
-			);
+			const ctx = doctorCtx(project, home);
+			const findings = await harnessFreshnessCheck.run(ctx);
+			const stale = opencodeFinding(findings);
+			expect(stale?.fixable).toBe(false);
+			const result = await applyFix(harnessFreshnessCheck, stale, ctx);
+			expect(result.attempted).toBe(false);
 
 			expect(snapshotOpencode(project)).toBe(before);
 			expect(
@@ -429,17 +407,12 @@ describe("harness-freshness --fix", () => {
 			writeConfig(project, AUTHOR_B);
 			const before = snapshotOpencode(project);
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: project,
-					homeDir: home,
-					checks: [harnessFreshnessCheck],
-				}),
-			);
-			const stale = opencodeFinding(envelope.data?.checks ?? []);
+			const ctx = doctorCtx(project, home);
+			const findings = await harnessFreshnessCheck.run(ctx);
+			const stale = opencodeFinding(findings);
 			expect(stale?.fixable).toBe(false);
-			expect(envelope.data?.fixed).toEqual([]);
+			const result = await applyFix(harnessFreshnessCheck, stale, ctx);
+			expect(result.attempted).toBe(false);
 			expect(snapshotOpencode(project)).toBe(before);
 		} finally {
 			rmSync(project, { recursive: true, force: true });
@@ -458,21 +431,58 @@ describe("harness-freshness --fix", () => {
 			const agentPath = join(locations.agentsDir, "5x-plan-author.md");
 			const before = readFileSync(agentPath, "utf-8");
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: project,
-					homeDir: home,
-					checks: [harnessFreshnessCheck],
-				}),
+			const ctx = doctorCtx(project, home);
+			const findings = await harnessFreshnessCheck.run(ctx);
+			const stale = findings.find(
+				(f) =>
+					asRecord(f.detail).harness === "opencode" &&
+					asRecord(f.detail).scope === "user",
 			);
-			expect(
-				envelope.data?.checks.some(
-					(f) => asRecord(f.detail).scope === "user" && f.fixable === false,
-				),
-			).toBe(true);
-			expect(envelope.data?.fixed).toEqual([]);
+			expect(stale?.fixable).toBe(false);
+			const result = await applyFix(harnessFreshnessCheck, stale, ctx);
+			expect(result.attempted).toBe(false);
 			expect(readFileSync(agentPath, "utf-8")).toBe(before);
+		} finally {
+			rmSync(project, { recursive: true, force: true });
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test("re-validates losslessRefresh immediately before sync", async () => {
+		const project = makeTmpDir("revalidate");
+		const home = makeTmpDir("home");
+		try {
+			writeConfig(project, AUTHOR_A);
+			await stampOpencode(project, home, AUTHOR_A);
+			writeConfig(project, AUTHOR_B);
+
+			const ctx = doctorCtx(project, home);
+			const findings = await harnessFreshnessCheck.run(ctx);
+			const stale = opencodeFinding(findings);
+			expect(stale?.fixable).toBe(true);
+			expect(asRecord(stale?.detail).losslessRefresh).toBe(true);
+			const before = authorAgent(project);
+			expect(before).toContain(AUTHOR_A);
+
+			const locations = opencodeLocationResolver.resolve(
+				"project",
+				project,
+				home,
+			);
+			const manifest = readManifest(locations.rootDir);
+			if (!manifest) throw new Error("expected stamped manifest");
+			writeManifest(locations.rootDir, {
+				...manifest,
+				installedFrom: {
+					...manifest.installedFrom,
+					contextDir: "packages/api",
+				},
+			});
+
+			const result = await applyFix(harnessFreshnessCheck, stale, ctx);
+			expect(result.attempted).toBe(false);
+			expect(authorAgent(project)).toBe(before);
+			expect(authorAgent(project)).not.toContain(AUTHOR_B);
 		} finally {
 			rmSync(project, { recursive: true, force: true });
 			rmSync(home, { recursive: true, force: true });

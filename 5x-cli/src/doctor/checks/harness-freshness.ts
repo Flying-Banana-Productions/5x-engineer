@@ -1,8 +1,11 @@
 /**
  * Doctor check: harness asset freshness (Tier 2).
  *
- * Detect-only `run`. `--fix` calls `harnessSyncCore` without `force` and only
- * for project-scope findings that already satisfy `losslessRefresh`.
+ * Detect-only `run`. `--fix` re-runs the named project harness/scope through
+ * Tier-2 freshness immediately before writing, then calls `harnessSyncCore`
+ * without `force` only when the current report is still stale/unknown and
+ * `losslessRefresh === true`. A stale finding's stored predicate is not a
+ * write permit — `harnessSyncCore` will rewrite a context-mismatched install.
  */
 
 import { harnessSyncCore } from "../../commands/harness.handler.js";
@@ -114,6 +117,14 @@ async function run(ctx: DoctorCheckContext): Promise<DoctorFinding[]> {
 	return findings;
 }
 
+function stillLosslessProjectStale(
+	report: FreshnessReport | undefined,
+): boolean {
+	if (report?.scope !== "project") return false;
+	if (report.status !== "stale" && report.status !== "unknown") return false;
+	return report.losslessRefresh === true;
+}
+
 async function fix(
 	finding: DoctorFinding,
 	ctx: DoctorCheckContext,
@@ -125,10 +136,27 @@ async function fix(
 	const detail = findingDetail(finding);
 	const harness = String(detail.harness ?? "");
 	const scope = String(detail.scope ?? "");
-	if (!harness || scope !== "project" || detail.losslessRefresh !== true) {
+	if (!harness || scope !== "project") {
 		return {
 			attempted: false,
 			message: "harness fix requires project scope and losslessRefresh",
+		};
+	}
+
+	const reports = await runHarnessFreshnessChecks({
+		startDir: ctx.startDir,
+		homeDir: ctx.homeDir,
+		harness,
+		scope: "project",
+		tier2: true,
+	});
+	const current = reports.find(
+		(report) => report.harness === harness && report.scope === "project",
+	);
+	if (!stillLosslessProjectStale(current)) {
+		return {
+			attempted: false,
+			message: "harness is no longer a lossless stale/unknown project install",
 		};
 	}
 

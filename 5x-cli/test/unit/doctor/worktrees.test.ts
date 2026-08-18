@@ -13,16 +13,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { doctorRun } from "../../../src/commands/doctor.handler.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { getPlan, upsertPlan } from "../../../src/db/operations.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { worktreesCheck } from "../../../src/doctor/checks/worktrees.js";
 import type {
+	DoctorCheck,
 	DoctorCheckContext,
-	DoctorReport,
+	DoctorFinding,
+	DoctorFixResult,
 } from "../../../src/doctor/types.js";
-import { setOutputFormat } from "../../../src/output.js";
 import { canonicalizePlanPath } from "../../../src/paths.js";
 
 function makeTmp(): string {
@@ -53,30 +53,17 @@ function createMigratedDb(projectRoot: string): string {
 	return dbPath;
 }
 
-async function captureJson(fn: () => Promise<void>): Promise<{
-	ok: boolean;
-	data?: DoctorReport;
-}> {
-	const calls: string[] = [];
-	const orig = console.log;
-	console.log = (...args: unknown[]) => {
-		calls.push(String(args[0]));
-	};
-	try {
-		await fn();
-	} finally {
-		console.log = orig;
-	}
-	const raw = calls[0];
-	if (raw === undefined) throw new Error("expected JSON output");
-	return JSON.parse(raw) as { ok: boolean; data?: DoctorReport };
+async function applyFix(
+	check: DoctorCheck,
+	finding: DoctorFinding | undefined,
+	ctx: DoctorCheckContext,
+): Promise<DoctorFixResult> {
+	if (!check.fix) throw new Error("expected check.fix");
+	if (!finding) throw new Error("expected finding");
+	return check.fix(finding, ctx);
 }
 
-const prevExitCode = process.exitCode;
-
 afterEach(() => {
-	setOutputFormat("json");
-	process.exitCode = prevExitCode ?? 0;
 	closeDb();
 	_resetForTest();
 });
@@ -200,13 +187,16 @@ describe("worktrees --fix", () => {
 			});
 			db.close();
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: tmp,
-					checks: [worktreesCheck],
-				}),
+			const ctx = doctorCtx(tmp);
+			const findings = await worktreesCheck.run(ctx);
+			const missing = findings.find(
+				(f) => f.code === "WORKTREE_MAPPING_MISSING",
 			);
+			expect(missing).toBeDefined();
+			expect(findings.some((f) => f.code === "WORKTREE_ORPHAN")).toBe(true);
+
+			const result = await applyFix(worktreesCheck, missing, ctx);
+			expect(result.attempted).toBe(true);
 
 			const after = new Database(dbPath, { readonly: true });
 			try {
@@ -221,17 +211,61 @@ describe("worktrees --fix", () => {
 			expect(readFileSync(join(orphanDir, "keep-me.txt"), "utf-8")).toBe(
 				"untouched",
 			);
+
+			const again = await worktreesCheck.run(ctx);
 			expect(
-				envelope.data?.fixed.some((f) => f.code === "WORKTREE_MAPPING_MISSING"),
-			).toBe(true);
-			expect(
-				envelope.data?.checks.some((f) => f.code === "WORKTREE_ORPHAN"),
-			).toBe(true);
-			expect(
-				envelope.data?.checks.some(
+				again.some(
 					(f) => f.code === "WORKTREE_MAPPING_MISSING" && f.status === "fail",
 				),
 			).toBe(false);
+			expect(again.some((f) => f.code === "WORKTREE_ORPHAN")).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("does not clear a mapping that changed between detection and repair", async () => {
+		const tmp = makeTmp();
+		try {
+			const dbPath = createMigratedDb(tmp);
+			const deadPlan = join(tmp, "docs", "dead.md");
+			const missingPath = join(tmp, "missing-wt");
+			const db = new Database(dbPath);
+			upsertPlan(db, {
+				planPath: deadPlan,
+				worktreePath: missingPath,
+				branch: "5x/dead",
+			});
+			db.close();
+
+			const ctx = doctorCtx(tmp);
+			const findings = await worktreesCheck.run(ctx);
+			const missing = findings.find(
+				(f) => f.code === "WORKTREE_MAPPING_MISSING",
+			);
+			expect(missing?.fixable).toBe(true);
+
+			const living = join(tmp, "repaired-wt");
+			mkdirSync(living, { recursive: true });
+			const repaired = new Database(dbPath);
+			upsertPlan(repaired, {
+				planPath: deadPlan,
+				worktreePath: living,
+				branch: "5x/repaired",
+			});
+			repaired.close();
+
+			const result = await applyFix(worktreesCheck, missing, ctx);
+			expect(result.attempted).toBe(false);
+
+			const after = new Database(dbPath, { readonly: true });
+			try {
+				const plan = getPlan(after, canonicalizePlanPath(deadPlan));
+				expect(plan?.worktree_path).toBe(living);
+				expect(plan?.branch).toBe("5x/repaired");
+			} finally {
+				after.close();
+			}
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

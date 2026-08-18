@@ -2,16 +2,16 @@
  * Doctor check: dead worktree mappings and orphan directories.
  *
  * Detect opens the existing DB read-only and never creates or migrates it.
- * `--fix` clears dead mappings with a writable open of the existing file and
- * `upsertPlan` — it never detaches via the worktree command and never removes
- * git worktrees or directories.
+ * `--fix` re-reads the current plan row and clears the mapping only when that
+ * plan is still pointed at the detected missing path. It never detaches via
+ * the worktree command and never removes git worktrees or directories.
  */
 
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { openDbReadOnly } from "../../db/connection.js";
-import { upsertPlan } from "../../db/operations.js";
+import { getPlan, upsertPlan } from "../../db/operations.js";
 import { listWorktrees } from "../../git.js";
 import { realpathExisting } from "../../paths.js";
 import type {
@@ -176,9 +176,14 @@ async function fix(
 		return { attempted: false, message: "not a dead worktree mapping" };
 	}
 
-	const planPath = String(asRecord(finding.detail).planPath ?? "");
+	const detail = asRecord(finding.detail);
+	const planPath = String(detail.planPath ?? "");
+	const detectedWorktreePath = String(detail.worktreePath ?? "");
 	if (!planPath) {
 		return { attempted: false, message: "missing planPath" };
+	}
+	if (!detectedWorktreePath) {
+		return { attempted: false, message: "missing worktreePath" };
 	}
 	if (!existsSync(ctx.dbPath)) {
 		return { attempted: false, message: "database missing" };
@@ -186,6 +191,25 @@ async function fix(
 
 	const db = new Database(ctx.dbPath);
 	try {
+		const row = getPlan(db, planPath);
+		if (!row?.worktree_path) {
+			return {
+				attempted: false,
+				message: "worktree mapping already cleared or missing",
+			};
+		}
+		if (row.worktree_path !== detectedWorktreePath) {
+			return {
+				attempted: false,
+				message: "worktree mapping changed since detection",
+			};
+		}
+		if (!mappingMissing(row.worktree_path)) {
+			return {
+				attempted: false,
+				message: "worktree path now exists",
+			};
+		}
 		upsertPlan(db, { planPath, worktreePath: "", branch: "" });
 		return {
 			attempted: true,

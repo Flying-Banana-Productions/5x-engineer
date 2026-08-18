@@ -2,18 +2,18 @@
  * Unit tests for the locks doctor check.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { doctorRun } from "../../../src/commands/doctor.handler.js";
 import { locksCheck } from "../../../src/doctor/checks/locks.js";
 import type {
+	DoctorCheck,
 	DoctorCheckContext,
-	DoctorReport,
+	DoctorFinding,
+	DoctorFixResult,
 } from "../../../src/doctor/types.js";
-import { setOutputFormat } from "../../../src/output.js";
 import { canonicalizePlanPath } from "../../../src/paths.js";
 
 function makeTmp(): string {
@@ -63,31 +63,15 @@ function writeLockFile(
 const DEAD_PID = 99999999;
 const STARTED = "2026-01-01T00:00:00.000Z";
 
-async function captureJson(fn: () => Promise<void>): Promise<{
-	ok: boolean;
-	data?: DoctorReport;
-}> {
-	const calls: string[] = [];
-	const orig = console.log;
-	console.log = (...args: unknown[]) => {
-		calls.push(String(args[0]));
-	};
-	try {
-		await fn();
-	} finally {
-		console.log = orig;
-	}
-	const raw = calls[0];
-	if (raw === undefined) throw new Error("expected JSON output");
-	return JSON.parse(raw) as { ok: boolean; data?: DoctorReport };
+async function applyFix(
+	check: DoctorCheck,
+	finding: DoctorFinding | undefined,
+	ctx: DoctorCheckContext,
+): Promise<DoctorFixResult> {
+	if (!check.fix) throw new Error("expected check.fix");
+	if (!finding) throw new Error("expected finding");
+	return check.fix(finding, ctx);
 }
-
-const prevExitCode = process.exitCode;
-
-afterEach(() => {
-	setOutputFormat("json");
-	process.exitCode = prevExitCode ?? 0;
-});
 
 describe("locks detect", () => {
 	test("no locks → LOCKS_OK", async () => {
@@ -178,20 +162,14 @@ describe("locks --fix", () => {
 				planPath: canonicalizePlanPath(livePlan),
 			});
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: tmp,
-					checks: [locksCheck],
-				}),
-			);
+			const ctx = doctorCtx(tmp);
+			const findings = await locksCheck.run(ctx);
+			const live = findings.find((f) => f.code === "LOCK_LIVE");
+			expect(live?.fixable).toBe(false);
+			const result = await applyFix(locksCheck, live, ctx);
+			expect(result.attempted).toBe(false);
 			expect(existsSync(livePath)).toBe(true);
-			expect(envelope.data?.fixed).toEqual([]);
-			expect(
-				envelope.data?.checks.some(
-					(f) => f.code === "LOCK_LIVE" && f.status === "warn",
-				),
-			).toBe(true);
+			expect(live?.status).toBe("warn");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -203,26 +181,21 @@ describe("locks --fix", () => {
 			const corruptPath = writeLockFile(tmp, "ignored", "garbage", "aaaa.lock");
 			expect(existsSync(corruptPath)).toBe(true);
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: tmp,
-					checks: [locksCheck],
-				}),
-			);
+			const ctx = doctorCtx(tmp);
+			const findings = await locksCheck.run(ctx);
+			const corrupt = findings.find((f) => f.code === "LOCK_CORRUPT");
+			expect(corrupt).toBeDefined();
+			const result = await applyFix(locksCheck, corrupt, ctx);
+			expect(result.attempted).toBe(true);
 			expect(existsSync(corruptPath)).toBe(false);
-			expect(envelope.data?.fixed.some((f) => f.code === "LOCK_CORRUPT")).toBe(
-				true,
-			);
-			expect(envelope.data?.checks.some((f) => f.code === "LOCK_CORRUPT")).toBe(
-				false,
-			);
+			const again = await locksCheck.run(ctx);
+			expect(again.some((f) => f.code === "LOCK_CORRUPT")).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
-	test("two stale locks, --fix → both removed, report.fixed.length === 2", async () => {
+	test("two stale locks are both removed", async () => {
 		const tmp = makeTmp();
 		try {
 			const planA = join(tmp, "docs", "a.md");
@@ -238,23 +211,21 @@ describe("locks --fix", () => {
 				planPath: canonicalizePlanPath(planB),
 			});
 
-			const envelope = await captureJson(() =>
-				doctorRun({
-					fix: true,
-					startDir: tmp,
-					checks: [locksCheck],
-				}),
-			);
+			const ctx = doctorCtx(tmp);
+			const findings = await locksCheck.run(ctx);
+			const stales = findings.filter((f) => f.code === "LOCK_STALE");
+			expect(stales).toHaveLength(2);
+			const attempted: boolean[] = [];
+			for (const stale of stales) {
+				const result = await applyFix(locksCheck, stale, ctx);
+				attempted.push(result.attempted);
+			}
+			expect(attempted).toEqual([true, true]);
 			expect(existsSync(pathA)).toBe(false);
 			expect(existsSync(pathB)).toBe(false);
-			expect(envelope.data?.fixed).toHaveLength(2);
-			expect(envelope.data?.fixed.every((f) => f.code === "LOCK_STALE")).toBe(
-				true,
-			);
+			const again = await locksCheck.run(ctx);
 			expect(
-				envelope.data?.checks.some(
-					(f) => f.code === "LOCK_STALE" && f.status === "fail",
-				),
+				again.some((f) => f.code === "LOCK_STALE" && f.status === "fail"),
 			).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
