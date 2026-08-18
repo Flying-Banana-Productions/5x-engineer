@@ -453,7 +453,6 @@ Use `formatTextError` in the `CliError` text branch (`src/bin.ts:117-120`). Leav
 Amend the text-mode error sentence to: single `Error: <message>` plus optional `  → <remediation>` when present. Mark as additive / non-breaking. Full normalization remains 205's job.
 
 - [x] Update §4a wording
-- [ ] Mention in `docs/v2/203-recovery-and-doctor.md` status when Phase 6 lands (not required mid-phase)
 
 ---
 
@@ -1003,6 +1002,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 ### 6.4 Documentation
 
 - [ ] Update `docs/v2/203-recovery-and-doctor.md` status from `Draft — Not Implemented` to Implemented (or Partial) with pointer to this plan; note prompts check deferred to `03-prompt-queue-foundation`
+- [ ] Mention in `docs/v2/203-recovery-and-doctor.md` status when Phase 6 lands (not required mid-phase)
 - [ ] Amend 203 §2.1: replace “via existing `isLocked` / `readLockFile`” with the implemented `listLocks` scan. `isLocked` returns `{ locked: false }` for corrupt files (`src/lock.ts:277-280`) and `readLockFile` is private, so listing cannot reuse those APIs.
 - [ ] Record resolved 203 TODOs in the status/design doc so it stops carrying decided questions:
   - warn-only doctor results → exit 0 (no distinct warn code)
