@@ -293,10 +293,10 @@ Implementation notes for `removeCorruptLock`:
 - Re-read with `readLockFile`; if it now parses as valid `LockInfo` → `{ removed: false, reason: "not_corrupt" }` (do not delete live/stale-by-path this way — those go through `releaseLock` / `forceReleaseLock`).
 - Else `unlinkSync` that exact path; map unlink errors to `unlink_failed`.
 
-- [ ] Add `LockLiveness`, `LockEntry`, `listLocks`, `inspectLock`, `removeCorruptLock`
-- [ ] Re-export new symbols from `src/index.ts` (lines 77–89)
-- [ ] Unit tests in `test/unit/lock-list.test.ts` for live / stale / corrupt / empty dir / no mutation
-- [ ] Unit tests for `removeCorruptLock`: rejects path outside lock dir; refuses parsable lock; removes confirmed corrupt; missing → `not_found`
+- [x] Add `LockLiveness`, `LockEntry`, `listLocks`, `inspectLock`, `removeCorruptLock`
+- [x] Re-export new symbols from `src/index.ts` (lines 77–89)
+- [x] Unit tests in `test/unit/lock-list.test.ts` for live / stale / corrupt / empty dir / no mutation
+- [x] Unit tests for `removeCorruptLock`: rejects path outside lock dir; refuses parsable lock; removes confirmed corrupt; missing → `not_found`
 
 ### 1.2 Lock command adapter + handler
 
@@ -388,9 +388,9 @@ Force-success envelope:
 
 Both handlers accept `startDir?` for unit tests (same convention as `initScaffold` / `worktreeList`).
 
-- [ ] Implement adapter + handler with `startDir?` for unit tests
-- [ ] Register via `registerLock(program)` in `src/bin.ts` after `registerWorktree` (~line 96)
-- [ ] Unit tests: safe unlock stale/canonical-corrupt; refuse live; force overrides and returns `previous_holder`; list classification; corrupt list row exposes `lock_path`
+- [x] Implement adapter + handler with `startDir?` for unit tests
+- [x] Register via `registerLock(program)` in `src/bin.ts` after `registerWorktree` (~line 96)
+- [x] Unit tests: safe unlock stale/canonical-corrupt; refuse live; force overrides and returns `previous_holder`; list classification; corrupt list row exposes `lock_path`
 
 ### 1.3 Enrich `PLAN_LOCKED` at all throw sites
 
@@ -412,8 +412,8 @@ function planLockedDetail(planPath: string, lock: LockInfo): Record<string, unkn
 
 Use the canonical plan path string the operator can pass back to `unlock` (`planPath` at init, `run.plan_path` at complete/reopen). Init currently has `lockResult.existingLock`; complete/reopen have `lockStatus.info`. Guard the helper call — those fields are defined whenever `acquired === false` / live-locked.
 
-- [ ] Replace detail objects at init / complete / reopen
-- [ ] Unit or integration assertion that JSON error envelope includes `holder` + `remediation`
+- [x] Replace detail objects at init / complete / reopen
+- [x] Unit or integration assertion that JSON error envelope includes `holder` + `remediation`
 
 ---
 

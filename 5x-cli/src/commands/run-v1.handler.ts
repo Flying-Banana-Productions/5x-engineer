@@ -59,6 +59,7 @@ import {
 	acquireLock,
 	isLocked,
 	type LockDirOpts,
+	type LockInfo,
 	registerLockCleanup,
 	releaseLock,
 } from "../lock.js";
@@ -713,6 +714,23 @@ function formatListText(data: {
 	}
 }
 
+/**
+ * Additive PLAN_LOCKED detail: keep pid / started_at, add nested holder,
+ * stale: false, and a remediation naming `5x unlock <plan> --force`.
+ */
+export function planLockedDetail(
+	planPath: string,
+	lock: LockInfo,
+): Record<string, unknown> {
+	return {
+		pid: lock.pid,
+		started_at: lock.startedAt,
+		holder: { pid: lock.pid, startedAt: lock.startedAt },
+		stale: false,
+		remediation: `If this process is hung, run \`5x unlock ${planPath} --force\`.`,
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -808,13 +826,14 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	// Phase 3c: pass stateDir to anchor locks under controlPlaneRoot/stateDir
 	const lockResult = acquireLock(projectRoot, planPath, lockOpts);
 	if (!lockResult.acquired) {
+		const existing = lockResult.existingLock;
+		if (!existing) {
+			outputError("PLAN_LOCKED", "Plan is locked");
+		}
 		outputError(
 			"PLAN_LOCKED",
-			`Plan is locked by PID ${lockResult.existingLock?.pid}`,
-			{
-				pid: lockResult.existingLock?.pid,
-				started_at: lockResult.existingLock?.startedAt,
-			},
+			`Plan is locked by PID ${existing.pid}`,
+			planLockedDetail(planPath, existing),
 		);
 	}
 
@@ -1219,10 +1238,17 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 			!lockStatus.stale &&
 			lockStatus.info?.pid !== process.pid
 		) {
+			const info = lockStatus.info;
+			if (!info) {
+				outputError(
+					"PLAN_LOCKED",
+					"Plan is locked by another process; cannot complete run owned by another process",
+				);
+			}
 			outputError(
 				"PLAN_LOCKED",
-				`Plan is locked by PID ${lockStatus.info?.pid}; cannot complete run owned by another process`,
-				{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				`Plan is locked by PID ${info.pid}; cannot complete run owned by another process`,
+				planLockedDetail(run.plan_path, info),
 			);
 		}
 	}
@@ -1291,10 +1317,17 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 			!lockStatus.stale &&
 			lockStatus.info?.pid !== process.pid
 		) {
+			const info = lockStatus.info;
+			if (!info) {
+				outputError(
+					"PLAN_LOCKED",
+					"Plan is locked by another process; cannot reopen run",
+				);
+			}
 			outputError(
 				"PLAN_LOCKED",
-				`Plan is locked by PID ${lockStatus.info?.pid}; cannot reopen run`,
-				{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				`Plan is locked by PID ${info.pid}; cannot reopen run`,
+				planLockedDetail(run.plan_path, info),
 			);
 		}
 	}

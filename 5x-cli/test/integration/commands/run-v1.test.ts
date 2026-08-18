@@ -111,6 +111,19 @@ function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+function expectPlanLockedDetail(error: Record<string, unknown>): void {
+	const detail = error.detail as Record<string, unknown>;
+	expect(detail).toBeDefined();
+	expect(typeof detail.pid).toBe("number");
+	expect(typeof detail.started_at).toBe("string");
+	const holder = detail.holder as Record<string, unknown>;
+	expect(holder.pid).toBe(detail.pid);
+	expect(holder.startedAt).toBe(detail.started_at);
+	expect(detail.stale).toBe(false);
+	expect(String(detail.remediation)).toContain("5x unlock");
+	expect(String(detail.remediation)).toContain("--force");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -292,9 +305,9 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED exit code
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
-				);
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -1137,9 +1150,9 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
-				);
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -1202,9 +1215,9 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
-				);
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
 			} finally {
 				cleanupDir(dir);
 			}

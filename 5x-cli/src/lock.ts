@@ -4,10 +4,11 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { canonicalizePlanPath } from "./paths.js";
 
 export interface LockInfo {
@@ -284,6 +285,133 @@ export function isLocked(
 	}
 
 	return { locked: true, info, stale: false };
+}
+
+export type LockLiveness = "live" | "stale" | "corrupt";
+
+export interface LockEntry {
+	/** Absolute path to the `.lock` file. */
+	lockPath: string;
+	/** Present when the file parsed; omitted/null when corrupt. */
+	info: LockInfo | null;
+	liveness: LockLiveness;
+}
+
+function classifyLock(lockFilePath: string, info: LockInfo | null): LockEntry {
+	const absolute = resolve(lockFilePath);
+	if (!info) {
+		return { lockPath: absolute, info: null, liveness: "corrupt" };
+	}
+	return {
+		lockPath: absolute,
+		info,
+		liveness: isPidAlive(info.pid) ? "live" : "stale",
+	};
+}
+
+/**
+ * List every lock file under the project's lock directory. Never mutates.
+ * Missing or empty lock directories return `[]` — the directory is not created.
+ */
+export function listLocks(
+	projectRoot: string,
+	opts?: LockDirOpts,
+): LockEntry[] {
+	const dir = lockDir(projectRoot, opts);
+	if (!existsSync(dir)) return [];
+
+	const entries: LockEntry[] = [];
+	for (const name of readdirSync(dir)) {
+		if (!name.endsWith(".lock")) continue;
+		const p = join(dir, name);
+		entries.push(classifyLock(p, readLockFile(p)));
+	}
+	entries.sort((a, b) => a.lockPath.localeCompare(b.lockPath));
+	return entries;
+}
+
+/**
+ * Plan-keyed lock inspector. Returns `null` when no file is associated with
+ * the plan. Canonical-path corrupt files are visible here; non-canonical
+ * unparsable leftovers are not (use `listLocks`).
+ */
+export function inspectLock(
+	projectRoot: string,
+	planPath: string,
+	opts?: LockDirOpts,
+): LockEntry | null {
+	const canonicalPlanPath = canonicalizePlanPath(planPath);
+	const existing = findExistingLock(projectRoot, canonicalPlanPath, opts);
+	if (!existing) return null;
+	return classifyLock(existing.path, existing.info);
+}
+
+export type RemoveCorruptLockResult =
+	| { removed: true }
+	| {
+			removed: false;
+			reason: "not_found" | "not_in_lock_dir" | "not_corrupt" | "unlink_failed";
+	  };
+
+/**
+ * True when `candidate` is a direct child of `dir` after resolve/realpath.
+ * Rejects `..` escapes and nested subdirectories.
+ *
+ * When `candidate` does not exist, its parent is realpath'd so macOS
+ * `/var` → `/private/var` does not false-reject a missing lock-dir child.
+ */
+function isDirectChildOfLockDir(candidate: string, dir: string): boolean {
+	let resolvedDir = resolve(dir);
+	let resolvedCandidate = resolve(candidate);
+	try {
+		if (existsSync(resolvedDir)) {
+			resolvedDir = realpathSync(resolvedDir);
+		}
+		if (existsSync(resolvedCandidate)) {
+			resolvedCandidate = realpathSync(resolvedCandidate);
+		} else {
+			const parent = dirname(resolvedCandidate);
+			if (existsSync(parent)) {
+				resolvedCandidate = join(
+					realpathSync(parent),
+					basename(resolvedCandidate),
+				);
+			}
+		}
+	} catch {
+		return false;
+	}
+	return dirname(resolvedCandidate) === resolvedDir;
+}
+
+/**
+ * Remove one corrupt lock file by exact path.
+ * Confined to lockDir(projectRoot, opts); re-validates corrupt before unlink.
+ * Never resolves by plan_path — corrupt entries may have none.
+ */
+export function removeCorruptLock(
+	projectRoot: string,
+	lockPath: string,
+	opts?: LockDirOpts,
+): RemoveCorruptLockResult {
+	const dir = lockDir(projectRoot, opts);
+	const absolute = resolve(lockPath);
+	if (!isDirectChildOfLockDir(absolute, dir)) {
+		return { removed: false, reason: "not_in_lock_dir" };
+	}
+	if (!existsSync(absolute)) {
+		return { removed: false, reason: "not_found" };
+	}
+	const info = readLockFile(absolute);
+	if (info) {
+		return { removed: false, reason: "not_corrupt" };
+	}
+	try {
+		unlinkSync(absolute);
+		return { removed: true };
+	} catch {
+		return { removed: false, reason: "unlink_failed" };
+	}
 }
 
 /**

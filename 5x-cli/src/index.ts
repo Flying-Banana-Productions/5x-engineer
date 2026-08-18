@@ -76,16 +76,22 @@ export {
 // Lock
 export type {
 	LockDirOpts,
+	LockEntry,
 	LockInfo,
+	LockLiveness,
 	LockResult,
 	ReleaseLockResult,
+	RemoveCorruptLockResult,
 } from "./lock.js";
 export {
 	acquireLock,
 	forceReleaseLock,
+	inspectLock,
 	isLocked,
+	listLocks,
 	registerLockCleanup,
 	releaseLock,
+	removeCorruptLock,
 } from "./lock.js";
 // Output helpers (v1 JSON envelope)
 export type { ErrorEnvelope, JsonEnvelope, SuccessEnvelope } from "./output.js";

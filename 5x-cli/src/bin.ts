@@ -6,6 +6,7 @@ import { registerDiff } from "./commands/diff.js";
 import { registerHarness } from "./commands/harness.js";
 import { registerInit } from "./commands/init.js";
 import { registerInvoke } from "./commands/invoke.js";
+import { registerLock } from "./commands/lock.js";
 import { registerPlan } from "./commands/plan-v1.js";
 import { registerPrompt } from "./commands/prompt.js";
 import { registerProtocol } from "./commands/protocol.js";
@@ -94,6 +95,7 @@ registerTemplate(program);
 registerProtocol(program);
 registerUpgrade(program);
 registerWorktree(program);
+registerLock(program);
 
 // Configure output routing
 program.configureOutput({
