@@ -138,7 +138,13 @@ export async function doctorRun(params: DoctorRunParams = {}): Promise<void> {
 				findings.push(checkFailedFinding(check.id, err));
 				break; // no write attempted; keep `current` (unfixed findings still reported)
 			}
-			const result = await check.fix(candidate, ctx);
+			let result: Awaited<ReturnType<NonNullable<DoctorCheck["fix"]>>>;
+			try {
+				result = await check.fix(candidate, ctx);
+			} catch (err) {
+				findings.push(checkFailedFinding(check.id, err));
+				break; // keep `current` (unfixed findings still reported); sibling checks still run
+			}
 			if (!result.attempted) continue;
 			let again: DoctorFinding[];
 			try {

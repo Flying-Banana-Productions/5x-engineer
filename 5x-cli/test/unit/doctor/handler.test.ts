@@ -492,6 +492,61 @@ describe("doctorRun detect → fix → re-detect", () => {
 		}
 	});
 
+	test("throwing fix → CHECK_FAILED; retained detection; sibling checks still run", async () => {
+		const tmp = makeTmpDir();
+		try {
+			let siblingRan = false;
+			let fixCalls = 0;
+			const checks: DoctorCheck[] = [
+				{
+					id: "locks",
+					run: async () => [
+						staleFinding("docs/foo.md"),
+						staleFinding("docs/bar.md"),
+					],
+					fix: async () => {
+						fixCalls += 1;
+						throw new Error("unlink EPERM");
+					},
+				},
+				{
+					id: "db",
+					run: async () => {
+						siblingRan = true;
+						return [
+							{
+								check: "db",
+								status: "ok",
+								code: "DB_OK",
+								message: "schema v5, integrity ok",
+								fixable: false,
+							},
+						];
+					},
+				},
+			];
+			process.exitCode = 0;
+			const envelope = await captureJson(() =>
+				doctorRun({ startDir: tmp, checks, fix: true }),
+			);
+			expect(fixCalls).toBe(1);
+			expect(siblingRan).toBe(true);
+			expect(envelope.ok).toBe(true);
+			expect(envelope.data?.ok).toBe(false);
+			expect(envelope.data?.fixed).toEqual([]);
+			const codes = envelope.data?.checks.map((f) => f.code) ?? [];
+			expect(codes).toContain("CHECK_FAILED");
+			expect(codes.filter((c) => c === "LOCK_STALE")).toHaveLength(2);
+			expect(codes).toContain("DB_OK");
+			expect(
+				envelope.data?.checks.find((f) => f.code === "CHECK_FAILED")?.message,
+			).toContain("unlink EPERM");
+			expect(process.exitCode).toBe(1);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
 	test("without --fix, fix is not called", async () => {
 		const tmp = makeTmpDir();
 		try {
