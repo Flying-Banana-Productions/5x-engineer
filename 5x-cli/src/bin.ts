@@ -3,6 +3,7 @@ import { CommanderError } from "@commander-js/extra-typings";
 import { registerCommit } from "./commands/commit.js";
 import { registerConfig } from "./commands/config.js";
 import { registerDiff } from "./commands/diff.js";
+import { registerDoctor } from "./commands/doctor.js";
 import { registerHarness } from "./commands/harness.js";
 import { registerInit } from "./commands/init.js";
 import { registerInvoke } from "./commands/invoke.js";
@@ -97,6 +98,7 @@ registerProtocol(program);
 registerUpgrade(program);
 registerWorktree(program);
 registerLock(program);
+registerDoctor(program);
 
 // Configure output routing
 program.configureOutput({

@@ -740,11 +740,11 @@ export function findingKey(f: DoctorFinding): string {
 }
 ```
 
-- [ ] Create `src/doctor/types.ts`, `registry.ts`, and summary helpers including `findingKey`
-- [ ] Unit tests: warn-only → exit 0; any fail → exit 1; empty → ok
-- [ ] Unit tests: throwing check → `CHECK_FAILED` finding; sibling checks still run
-- [ ] Unit tests: `findingKey` distinguishes two `LOCK_STALE` findings by `detail.planPath` (same code, different identity)
-- [ ] Unit tests: `findingKey` throws when `fixable: true` and identity is empty (unknown code, or known code with missing identifying detail — including `HARNESS_STALE`/`HARNESS_UNKNOWN` with either `harness` or `scope` missing, or `detail` not an object); non-fixable unknown codes still return `${check}:${code}:`
+- [x] Create `src/doctor/types.ts`, `registry.ts`, and summary helpers including `findingKey`
+- [x] Unit tests: warn-only → exit 0; any fail → exit 1; empty → ok
+- [x] Unit tests: throwing check → `CHECK_FAILED` finding; sibling checks still run
+- [x] Unit tests: `findingKey` distinguishes two `LOCK_STALE` findings by `detail.planPath` (same code, different identity)
+- [x] Unit tests: `findingKey` throws when `fixable: true` and identity is empty (unknown code, or known code with missing identifying detail — including `HARNESS_STALE`/`HARNESS_UNKNOWN` with either `harness` or `scope` missing, or `detail` not an object); non-fixable unknown codes still return `${check}:${code}:`
 
 ### 4.2 Handler + commander adapter
 
@@ -849,12 +849,12 @@ db                 ok    schema v5, integrity ok
 
 When `report.fixed.length > 0`, print a short `Fixed:` section after the findings (JSON already carries `fixed`). Column-align check id / status.
 
-- [ ] Adapter with `--fix` and help examples (`5x doctor`, `5x doctor --fix`, `5x doctor --text`)
-- [ ] Register `registerDoctor(program)` in `src/bin.ts`
-- [ ] Custom text formatter + JSON envelope tests
-- [ ] Unit tests: stub check with fixable finding — `--fix` populates `fixed` only after re-detect clears it by `findingKey`; failed re-detect does not claim `fixed`
-- [ ] Unit tests: stub check emitting two same-code findings with distinct identity keys — `--fix` records both in `fixed` (`fixed.length === 2`)
-- [ ] Unit tests: stub check emitting a `fixable: true` finding with an unknown code — `--fix` does not call `fix`, records `CHECK_FAILED`, does not claim `fixed`, sibling checks still run
+- [x] Adapter with `--fix` and help examples (`5x doctor`, `5x doctor --fix`, `5x doctor --text`)
+- [x] Register `registerDoctor(program)` in `src/bin.ts`
+- [x] Custom text formatter + JSON envelope tests
+- [x] Unit tests: stub check with fixable finding — `--fix` populates `fixed` only after re-detect clears it by `findingKey`; failed re-detect does not claim `fixed`
+- [x] Unit tests: stub check emitting two same-code findings with distinct identity keys — `--fix` records both in `fixed` (`fixed.length === 2`)
+- [x] Unit tests: stub check emitting a `fixable: true` finding with an unknown code — `--fix` does not call `fix`, records `CHECK_FAILED`, does not claim `fixed`, sibling checks still run
 
 ---
 
