@@ -58,3 +58,24 @@ Phase 1 delivers the planned exported lock inventory/inspection/removal primitiv
 | P2.1 longest-existing-prefix gap | `auto_fix` |
 
 **Human-required issues:** None.
+
+---
+
+## Addendum (2026-08-18) — P2.1 verification
+
+**Reviewed:** `d775bd5ed3c5b56e2f1b7e0bdabc30b9bd08ab9e`, `2ccabfcca8337cd8afd75134741a924f0b5f21fe`
+
+### What's addressed (✅)
+
+- **P2.1 longest-existing-prefix gap:** `realpathExisting()` now walks from a missing target to its first existing ancestor, preserves the missing suffix, and realpaths that ancestor. The new tests cover both nested components below a symlinked prefix and the macOS `/var` alias case; `isPathUnder()` consequently receives canonical forms for these paths.
+- **Formatter follow-on:** The second commit is formatter-only and does not alter behavior.
+
+### Regression review
+
+- The walk terminates at the filesystem root, leaves unresolved paths unchanged when no existing prefix can be found, and remains enclosed in the prior error fallback. No lock, containment, or canonicalization regression was identified in the follow-on diff.
+- Author-reported quality verification is clean: lint and 2481 tests passed, with 8 skipped and 0 failed.
+
+### Updated readiness
+
+- **Phase 1 completion:** ✅ — the previous P2.1 auto-fix is addressed and no review issues remain.
+- **Ready for next phase:** ✅
