@@ -1,13 +1,21 @@
 /**
  * Built-in doctor check registry and aggregation helpers.
  *
- * Phase 5/6 populate `builtinDoctorChecks`. Plugin contribution is deferred.
+ * Phase 5 registers freshness / locks / worktrees. Phase 6 adds runs + db.
+ * Plugin contribution is deferred.
  */
 
+import { harnessFreshnessCheck } from "./checks/harness-freshness.js";
+import { locksCheck } from "./checks/locks.js";
+import { worktreesCheck } from "./checks/worktrees.js";
 import type { DoctorCheck, DoctorFinding, DoctorReport } from "./types.js";
 
-/** Built-in checks — plugin contribution deferred. Phase 5/6 populate this. */
-export const builtinDoctorChecks: DoctorCheck[] = [];
+/** Built-in checks — plugin contribution deferred. Phase 6 adds runs + db. */
+export const builtinDoctorChecks: DoctorCheck[] = [
+	harnessFreshnessCheck,
+	locksCheck,
+	worktreesCheck,
+];
 
 export function summarizeDoctor(
 	findings: DoctorFinding[],

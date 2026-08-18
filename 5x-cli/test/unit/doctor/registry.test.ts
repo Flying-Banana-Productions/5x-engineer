@@ -25,8 +25,12 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("is empty until later phases register checks", () => {
-		expect(builtinDoctorChecks).toEqual([]);
+	test("registers freshness, locks, and worktrees in that order", () => {
+		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
+			"harness-freshness",
+			"locks",
+			"worktrees",
+		]);
 	});
 });
 

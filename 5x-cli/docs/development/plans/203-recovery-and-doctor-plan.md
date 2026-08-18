@@ -879,11 +879,11 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
 - Do **not** consult `freshnessWarningsEnabled`.
 - Align with `docs/v2/201-harness-freshness.md` §2.6 / D6 — `harnessSyncCore` alone is insufficient as a gate.
 
-- [ ] Implement check + register (`run` + `fix`)
-- [ ] Unit tests with temp install / stale manifest (reuse helpers from `test/unit/harnesses/freshness.test.ts`)
-- [ ] `--fix` syncs only when `losslessRefresh`; leaves user-scope, context-mismatch, and hand-edited assets as report-only without write
-- [ ] Unit test: project install baked from a different `contextDir` → fail finding, `fixable: false`, no `harnessSyncCore` write
-- [ ] Unit test: `freshnessWarnings=off` still produces findings
+- [x] Implement check + register (`run` + `fix`)
+- [x] Unit tests with temp install / stale manifest (reuse helpers from `test/unit/harnesses/freshness.test.ts`)
+- [x] `--fix` syncs only when `losslessRefresh`; leaves user-scope, context-mismatch, and hand-edited assets as report-only without write
+- [x] Unit test: project install baked from a different `contextDir` → fail finding, `fixable: false`, no `harnessSyncCore` write
+- [x] Unit test: `freshnessWarnings=off` still produces findings
 
 ### 5.2 `locks` check
 
@@ -899,10 +899,10 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
   - `LOCK_CORRUPT` → `removeCorruptLock(projectRoot, finding.detail.lockPath, { stateDir })`.
   - never remove live locks.
 
-- [ ] Implement + tests for each liveness class
-- [ ] Filesystem-focused unit tests ensuring live lock files survive `--fix`
-- [ ] Unit test: non-canonical corrupt file removed via `removeCorruptLock` on `lockPath`; plan-keyed `unlock` is not required for that case
-- [ ] Unit test: two stale locks, `--fix` → both removed, `report.fixed.length === 2` (identity matching, not `code` alone)
+- [x] Implement + tests for each liveness class
+- [x] Filesystem-focused unit tests ensuring live lock files survive `--fix`
+- [x] Unit test: non-canonical corrupt file removed via `removeCorruptLock` on `lockPath`; plan-keyed `unlock` is not required for that case
+- [x] Unit test: two stale locks, `--fix` → both removed, `report.fixed.length === 2` (identity matching, not `code` alone)
 
 ### 5.3 `worktrees` check
 
@@ -914,10 +914,10 @@ When `report.fixed.length > 0`, print a short `Fixed:` section after the finding
 - `fix`: after `existsSync(ctx.dbPath)`, open **writable** `new Database(ctx.dbPath)` (not `getDb` — that mkdir/creates; not `resolveDbContext` — that migrates). Call `upsertPlan(db, { planPath, worktreePath: "", branch: "" })`. Close in `finally`. If the write throws (old schema, locked, etc.), return `{ attempted: false }` and leave the finding; remediation already names `5x worktree detach` / `5x upgrade`.
 - Orphan git worktrees: `listWorktrees(ctx.projectRoot)` (`src/git.ts:358`) plus directories under `<projectRoot>/.5x/worktrees/` that have no matching `plans.worktree_path` row → `warn`, `code: "WORKTREE_ORPHAN"`, `fixable: false`. Never delete.
 
-- [ ] Implement + tests (dead mapping cleared; orphan dir preserved)
-- [ ] Ensure detach-equivalent does not call `git worktree remove` and does not call `worktreeDetach`
-- [ ] Detect path does not create/migrate the DB
-- [ ] Missing DB returns `[]` (no `DB_MISSING` from this check)
+- [x] Implement + tests (dead mapping cleared; orphan dir preserved)
+- [x] Ensure detach-equivalent does not call `git worktree remove` and does not call `worktreeDetach`
+- [x] Detect path does not create/migrate the DB
+- [x] Missing DB returns `[]` (no `DB_MISSING` from this check)
 
 ---
 
