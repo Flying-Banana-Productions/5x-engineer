@@ -26,3 +26,18 @@ Not ready — three P1 auto-fixes are required.
 - `bun test test/unit/doctor/` — 54 passed, 0 failed.
 - `bun test test/unit/doctor/ --concurrent` — 50 passed, 4 failed (global console capture race).
 - `git diff --check 7c5a15a455af71d0ea33e046e4ba5911ff400c5a^ 7c5a15a455af71d0ea33e046e4ba5911ff400c5a` — passed.
+
+## Addendum — Re-review after `21f04671b345846c0a0c426856dc9a93142ef08b`
+
+The harness repair now performs a fresh, named project-scope Tier-2 check before sync and writes only when the current state remains lossless and stale/unknown. The worktree repair now reads the current row, requires the detected path to still match, and refuses recovered paths before clearing anything. The Phase 5 tests no longer mutate global console state and the focused doctor suite passes under `--concurrent`.
+
+**Readiness:** Ready.
+
+**Items:** `[]`
+
+### Verification
+
+- `bun test test/unit/doctor/ --concurrent` — 56 passed, 0 failed.
+- `bun run lint` — passed.
+- `bun run typecheck` — passed.
+- `git diff --check 21f04671b345846c0a0c426856dc9a93142ef08b^ 21f04671b345846c0a0c426856dc9a93142ef08b` — passed.
