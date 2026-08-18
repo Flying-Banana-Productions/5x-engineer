@@ -66,6 +66,8 @@ import {
 import {
 	CliError,
 	exitCodeForError,
+	formatGenericText,
+	getOutputFormat,
 	outputError,
 	outputSuccess,
 } from "../output.js";
@@ -176,6 +178,8 @@ export interface RecordStepResult {
 	phase: string | null;
 	iteration: number | null;
 	recorded: boolean;
+	/** Post-insert step count (idempotent re-records report the true total). */
+	total_steps: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +225,25 @@ function getMaxStepsPerRun(config: Record<string, unknown>): number {
 		return config.maxAutoIterations;
 	}
 	return 250; // default
+}
+
+/** Fixed v2 warning band — not configurable (203 plan-input assumption). */
+export const STEP_WARNING_RATIO = 0.8;
+
+export interface StepBudget {
+	used: number;
+	max: number;
+	remaining: number;
+}
+
+export function computeStepBudget(used: number, max: number): StepBudget {
+	return { used, max, remaining: Math.max(0, max - used) };
+}
+
+export function stepBudgetWarning(budget: StepBudget): string | undefined {
+	if (budget.max <= 0) return undefined;
+	if (budget.used / budget.max < STEP_WARNING_RATIO) return undefined;
+	return `Approaching maxStepsPerRun (${budget.used}/${budget.max}); raise maxStepsPerRun or split the work.`;
 }
 
 type WorktreeAction = "reused" | "attached" | "created";
@@ -539,7 +562,7 @@ function formatCost(usd: number): string {
  * Renders a run info header, padded step table, and summary line.
  * Omits columns where all values are null.
  */
-function formatStateText(data: {
+export function formatStateText(data: {
 	run: {
 		id: string;
 		plan_path: string;
@@ -566,6 +589,9 @@ function formatStateText(data: {
 		total_cost_usd: number;
 		total_duration_ms: number;
 	};
+	steps_used: number;
+	max_steps: number;
+	steps_remaining: number;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -574,6 +600,9 @@ function formatStateText(data: {
 	console.log(`Plan:    ${run.plan_path}`);
 	console.log(`Status:  ${run.status}`);
 	console.log(`Created: ${run.created_at}`);
+	console.log(
+		`Steps:   ${data.steps_used} / ${data.max_steps} (${data.steps_remaining} remaining)`,
+	);
 
 	if (steps.length === 0) {
 		console.log();
@@ -651,6 +680,20 @@ function formatStateText(data: {
 
 	console.log();
 	console.log(`Summary: ${parts.join(" | ")}`);
+}
+
+/**
+ * Text formatter for `run record`. Omits `step_budget` / `warnings` so they
+ * stay off stdout (warnings go to stderr in text mode; JSON keeps them).
+ */
+function formatRecordText(
+	data: RecordStepResult & {
+		step_budget?: StepBudget;
+		warnings?: string[];
+	},
+): void {
+	const { step_budget: _budget, warnings: _warnings, ...rest } = data;
+	formatGenericText(rest);
 }
 
 /**
@@ -987,6 +1030,10 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 
 	const steps = getSteps(db, run.id, stepOpts);
 	const summary = computeRunSummary(db, run.id);
+	const maxSteps = getMaxStepsPerRun(
+		config as unknown as Record<string, unknown>,
+	);
+	const budget = computeStepBudget(summary.total_steps, maxSteps);
 
 	// Phase 3b: report worktree path when run has a mapped worktree
 	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
@@ -1004,6 +1051,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			},
 			steps: steps.map(formatStep),
 			summary,
+			steps_used: budget.used,
+			max_steps: budget.max,
+			steps_remaining: budget.remaining,
 		},
 		formatStateText,
 	);
@@ -1026,7 +1076,7 @@ export async function recordStepInternal(
 		config: FiveXConfig;
 		controlPlane?: ControlPlaneResult;
 	},
-): Promise<RecordStepResult> {
+): Promise<RecordStepResult & { max_steps: number }> {
 	const { config, db, controlPlane } = dbContext ?? (await resolveDbContext());
 
 	// Verify run exists and is active
@@ -1082,7 +1132,12 @@ export async function recordStepInternal(
 		throw new RecordError(
 			"MAX_STEPS_EXCEEDED",
 			`Run has reached the maximum of ${maxSteps} steps`,
-			{ current_steps: summary.total_steps, max_steps: maxSteps },
+			{
+				current_steps: summary.total_steps,
+				max_steps: maxSteps,
+				remediation:
+					"Raise maxStepsPerRun via `5x config set maxStepsPerRun <n>`, or split the work into a new run.",
+			},
 		);
 	}
 
@@ -1111,12 +1166,15 @@ export async function recordStepInternal(
 		head_commit: headCommit,
 	});
 
+	const after = computeRunSummary(db, params.run);
 	return {
 		step_id: dbResult.step_id,
 		step_name: dbResult.step_name,
 		phase: dbResult.phase,
 		iteration: dbResult.iteration,
 		recorded: dbResult.recorded,
+		total_steps: after.total_steps,
+		max_steps: maxSteps,
 	};
 }
 
@@ -1186,7 +1244,19 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 			stepName: params.stepName,
 			result: params.result,
 		});
-		outputSuccess(result);
+		const { max_steps: maxSteps, ...payload } = result;
+		const budget = computeStepBudget(payload.total_steps, maxSteps);
+		const warning = stepBudgetWarning(budget);
+		if (warning && getOutputFormat() === "text") {
+			console.error(warning);
+		}
+		outputSuccess(
+			{
+				...payload,
+				...(warning ? { step_budget: budget, warnings: [warning] } : {}),
+			},
+			formatRecordText,
+		);
 	} catch (err) {
 		if (err instanceof RecordError) {
 			outputError(

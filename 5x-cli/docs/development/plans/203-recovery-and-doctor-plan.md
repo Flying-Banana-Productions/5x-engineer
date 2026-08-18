@@ -514,9 +514,9 @@ outputSuccess(
 
 Extend `formatStateText`'s parameter type with the three budget fields and print a `Steps: N / max (R remaining)` line after the Status/Created header (before the steps table). Today the summary line only shows `total_steps` (`:639`) with no ceiling.
 
-- [ ] Additive fields on state envelope
-- [ ] Text formatter update
-- [ ] Unit test: state includes fields even at 0 steps
+- [x] Additive fields on state envelope
+- [x] Text formatter update
+- [x] Unit test: state includes fields even at 0 steps
 
 ### 3.3 `run record` — warning band
 
@@ -542,9 +542,9 @@ outputSuccess({
 
 `recordStepInternal` is also used by `5x commit` (see comment at lines 996–999). Adding `total_steps` to the return value is additive and safe; do not emit CLI warnings from `recordStepInternal` itself.
 
-- [ ] Warning only at ≥80%; success exit 0 unchanged
-- [ ] Idempotent re-record does not false-trigger incorrectly
-- [ ] Unit tests for threshold boundaries (199/250 silent; 200/250 warns; `max <= 0` silent)
+- [x] Warning only at ≥80%; success exit 0 unchanged
+- [x] Idempotent re-record does not false-trigger incorrectly
+- [x] Unit tests for threshold boundaries (199/250 silent; 200/250 warns; `max <= 0` silent)
 
 ### 3.4 `MAX_STEPS_EXCEEDED` remediation
 
@@ -565,8 +565,8 @@ throw new RecordError(
 
 `runV1Record` already forwards `err.detail` to `outputError` (lines 1171–1177), so Phase 2 will print the `→` line in text mode automatically.
 
-- [ ] Detail includes remediation
-- [ ] Integration: text mode shows `→ Raise maxStepsPerRun…`
+- [x] Detail includes remediation
+- [x] Integration: text mode shows `→ Raise maxStepsPerRun…`
 
 ---
 

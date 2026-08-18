@@ -189,6 +189,9 @@ describe("5x run lifecycle", () => {
 				expect(steps).toHaveLength(1);
 				const summary = data.summary as Record<string, unknown>;
 				expect(summary.total_steps).toBe(1);
+				expect(data.steps_used).toBe(1);
+				expect(data.max_steps).toBe(250);
+				expect(data.steps_remaining).toBe(249);
 
 				// Complete
 				const completeResult = await run5x(projectRoot, [
@@ -651,9 +654,65 @@ describe("5x run lifecycle", () => {
 				expect(overflow.exitCode).toBe(6); // MAX_STEPS_EXCEEDED
 				const overflowData = parseJson(overflow.stdout);
 				expect(overflowData.ok).toBe(false);
-				expect((overflowData.error as Record<string, unknown>).code).toBe(
-					"MAX_STEPS_EXCEEDED",
+				const overflowError = overflowData.error as Record<string, unknown>;
+				expect(overflowError.code).toBe("MAX_STEPS_EXCEEDED");
+				const overflowDetail = overflowError.detail as Record<string, unknown>;
+				expect(String(overflowDetail.remediation)).toContain(
+					"Raise maxStepsPerRun",
 				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"max steps exceeded — --text prints remediation line",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 3\n");
+
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--allow-dirty",
+				]);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+
+				const { getDb } = await import("../../../src/db/connection.js");
+				const { _resetForTest, closeDb } = await import(
+					"../../../src/db/connection.js"
+				);
+				const db = getDb(projectRoot);
+				for (let i = 0; i < 3; i++) {
+					db.exec(
+						`INSERT INTO steps (run_id, step_name, iteration, result_json)
+						 VALUES ('${runId}', 'step-${i}', 1, '{}')`,
+					);
+				}
+				closeDb();
+				_resetForTest();
+
+				const overflow = await run5x(projectRoot, [
+					"--text",
+					"run",
+					"record",
+					"step-overflow",
+					"--run",
+					runId,
+					"--result",
+					"{}",
+				]);
+				expect(overflow.exitCode).toBe(6);
+				expect(overflow.stderr).toContain("Error:");
+				expect(overflow.stderr).toContain("  → Raise maxStepsPerRun");
 			} finally {
 				cleanupDir(dir);
 			}
