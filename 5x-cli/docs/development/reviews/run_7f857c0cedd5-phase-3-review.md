@@ -21,3 +21,14 @@ The state budget fields, 80% warning calculation, JSON/text output separation, a
 
 - `bun test test/unit/commands/run-step-budget.test.ts test/integration/commands/run-v1.test.ts` — 45 passed, 0 failed.
 - Author-reported quality gate: lint plus 2503 tests, 8 skipped, 0 failed.
+
+## Addendum — Re-review after `ab54a611d94eba506d37d8713eb1d2f1e472093e`
+
+**Verdict:** Approved
+
+The ceiling guard now uses `findExistingStep` to recognize exactly the explicit, non-null `(run_id, step_name, phase, iteration)` key that `recordStep` can make an `INSERT OR IGNORE` no-op. A matching duplicate is allowed through and returns `recorded: false`; an omitted iteration, null/omitted phase, or absent matching key remains a unique insert and is rejected at the ceiling. The new boundary test fills a three-step budget, confirms the duplicate no-op response and unchanged count, and confirms a new record receives `MAX_STEPS_EXCEEDED`.
+
+### Verification
+
+- `bun test test/unit/commands/run-step-budget.test.ts test/integration/commands/run-v1.test.ts` — 46 passed, 0 failed.
+- Author-reported quality gate: lint plus 2504 tests, 8 skipped, 0 failed.
