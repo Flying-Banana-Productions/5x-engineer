@@ -18,6 +18,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
+import { realpathExisting } from "../paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -196,7 +197,7 @@ function stateDbExists(stateDir: string): boolean {
  */
 export function resolveCheckoutRoot(startDir: string): string | null {
 	const toplevel = gitSync(["rev-parse", "--show-toplevel"], startDir);
-	return toplevel ? resolve(toplevel) : null;
+	return toplevel ? realpathExisting(toplevel) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ export function resolveCheckoutRoot(startDir: string): string | null {
  * 6. If neither → mode 'none'.
  */
 export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
-	const cwd = resolve(startDir ?? ".");
+	const cwd = realpathExisting(startDir ?? ".");
 
 	// Step 1: get git-dir and git-common-dir
 	const gitDir = gitSync(["rev-parse", "--git-dir"], cwd);
@@ -245,7 +246,10 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 		: resolve(cwd, gitCommonDir);
 
 	let absoluteCommonDir: string;
-	if (resolve(absoluteCommonDirViaCwd) === resolve(absoluteGitDir)) {
+	if (
+		realpathExisting(absoluteCommonDirViaCwd) ===
+		realpathExisting(absoluteGitDir)
+	) {
 		// Main checkout: common-dir and git-dir resolve to the same path
 		absoluteCommonDir = absoluteGitDir;
 	} else {
@@ -254,7 +258,7 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 	}
 
 	// Step 3: main repo root = parent of common-dir (.git)
-	const mainRepoRoot = dirname(absoluteCommonDir);
+	const mainRepoRoot = realpathExisting(dirname(absoluteCommonDir));
 
 	// Step 4: check for root state DB (managed mode)
 	const rootRawDbPath = readDbPathFromConfig(mainRepoRoot);

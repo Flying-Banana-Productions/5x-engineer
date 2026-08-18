@@ -1,5 +1,55 @@
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
+
+/** Git env vars that override repo discovery (hooks / inherited worktrees). */
+const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+
+function sanitizedGitEnv(): Record<string, string | undefined> {
+	const env = { ...process.env };
+	for (const key of GIT_ENV_VARS) {
+		delete env[key];
+	}
+	return env;
+}
+
+/**
+ * Resolve `rawPath` to an absolute path, realpath'ing the longest existing
+ * prefix. Missing files still inherit the parent's realpath so macOS
+ * `/var` vs `/private/var` (and `/tmp` vs `/private/tmp`) compare equal.
+ */
+export function realpathExisting(rawPath: string): string {
+	const abs = resolve(rawPath);
+	try {
+		if (existsSync(abs)) return realpathSync(abs);
+		const parent = dirname(abs);
+		if (parent !== abs && existsSync(parent)) {
+			return join(realpathSync(parent), basename(abs));
+		}
+	} catch {
+		// Fall through to the unresolved absolute path.
+	}
+	return abs;
+}
+
+/**
+ * True when `childPath` is `parentPath` or a descendant after resolve/realpath.
+ * Mixed symlink prefixes (`/var` vs `/private/var`) do not false-reject.
+ */
+export function isPathUnder(childPath: string, parentPath: string): boolean {
+	// Relative stored paths (legacy DB rows) are not under any root.
+	if (!isAbsolute(childPath)) return false;
+	const child = realpathExisting(childPath);
+	const parent = realpathExisting(parentPath);
+	const rel = relative(parent, child);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 // ---------------------------------------------------------------------------
 // Worktree re-root detection (cached per process)
@@ -27,8 +77,10 @@ function detectWorktreeReroot(): {
 
 	try {
 		const cwd = process.cwd();
+		const env = sanitizedGitEnv();
 		const gitDir = Bun.spawnSync(["git", "rev-parse", "--git-dir"], {
 			cwd,
+			env,
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -40,7 +92,7 @@ function detectWorktreeReroot(): {
 
 		const gitCommonDir = Bun.spawnSync(
 			["git", "rev-parse", "--git-common-dir"],
-			{ cwd, stderr: "ignore" },
+			{ cwd, env, stderr: "ignore" },
 		)
 			.stdout.toString()
 			.trim();
@@ -59,6 +111,7 @@ function detectWorktreeReroot(): {
 
 		const toplevel = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
 			cwd,
+			env,
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -69,8 +122,8 @@ function detectWorktreeReroot(): {
 		}
 
 		worktreeReroot = {
-			checkoutRoot: resolve(toplevel),
-			mainRoot: resolve(mainRoot),
+			checkoutRoot: realpathExisting(toplevel),
+			mainRoot: realpathExisting(mainRoot),
 		};
 		return worktreeReroot;
 	} catch {
@@ -124,24 +177,16 @@ export function resolvePlanArg(raw: string, plansDir: string): string {
 }
 
 export function canonicalizePlanPath(rawPath: string): string {
-	const abs = resolve(rawPath);
-	let real: string;
-	try {
-		real = realpathSync(abs);
-	} catch {
-		real = abs;
-	}
+	const real = realpathExisting(rawPath);
 
 	// If we're in a worktree and the path falls inside the worktree checkout,
 	// re-root it to the main repo — but only if the file exists there.
 	const reroot = detectWorktreeReroot();
-	if (reroot) {
+	if (reroot && isPathUnder(real, reroot.checkoutRoot)) {
 		const rel = relative(reroot.checkoutRoot, real);
-		if (!rel.startsWith("..") && !isAbsolute(rel)) {
-			const mainPath = join(reroot.mainRoot, rel);
-			if (existsSync(mainPath)) {
-				return mainPath;
-			}
+		const mainPath = join(reroot.mainRoot, rel);
+		if (existsSync(mainPath)) {
+			return realpathExisting(mainPath);
 		}
 	}
 

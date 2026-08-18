@@ -72,7 +72,9 @@ import {
 import { parsePlan } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
+	isPathUnder,
 	planSlugFromPath,
+	realpathExisting,
 	resolvePlanArg,
 } from "../paths.js";
 import {
@@ -251,9 +253,13 @@ function deriveWorktreeContextFields(
 		worktree_path: worktreeResult.worktree_path,
 	};
 
-	// Derive worktree-relative plan path and include only if the file exists
-	const relPlanPath = relative(controlPlaneRoot, planPath);
-	if (!relPlanPath.startsWith("..") && !isAbsolute(relPlanPath)) {
+	// Derive worktree-relative plan path and include only if the file exists.
+	// Compare realpath'd prefixes so macOS /var vs /private/var is the same tree.
+	if (isPathUnder(planPath, controlPlaneRoot)) {
+		const relPlanPath = relative(
+			realpathExisting(controlPlaneRoot),
+			realpathExisting(planPath),
+		);
 		const worktreePlanPath = join(worktreeResult.worktree_path, relPlanPath);
 		if (existsSync(worktreePlanPath)) {
 			fields.worktree_plan_path = worktreePlanPath;
@@ -299,11 +305,6 @@ function deriveDefaultWorktreeDir(
 	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
-}
-
-function isPathUnder(childPath: string, parentPath: string): boolean {
-	const relPath = relative(parentPath, childPath);
-	return !relPath.startsWith("..") && !isAbsolute(relPath);
 }
 
 /**
@@ -760,9 +761,9 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 
 	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
 	// (or projectRoot in none mode). This ensures stored plan_path values
-	// are re-rootable into mapped worktrees.
-	const relPath = relative(projectRoot, planPath);
-	if (relPath.startsWith("..") || isAbsolute(relPath)) {
+	// are re-rootable into mapped worktrees. Compare via realpath so macOS
+	// `/var` vs `/private/var` does not false-reject in-repo plans.
+	if (!isPathUnder(planPath, projectRoot)) {
 		outputError(
 			"PLAN_OUTSIDE_CONTROL_PLANE",
 			`Plan path \`${planPath}\` is outside the repository root \`${projectRoot}\`. Move the plan under the repository root.`,

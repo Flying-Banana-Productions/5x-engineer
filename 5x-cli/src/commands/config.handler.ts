@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
 	parse as tomlParse,
 	patch as tomlPatch,
@@ -31,6 +31,7 @@ import {
 } from "../config-registry.js";
 import { emitFreshnessWarnings } from "../harnesses/freshness.js";
 import { getOutputFormat, outputError, outputSuccess } from "../output.js";
+import { isPathUnder, realpathExisting } from "../paths.js";
 import { resolveAnsi } from "../utils/ansi.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
@@ -168,14 +169,10 @@ export function resolveTargetConfigPath(params: {
 	local?: boolean;
 }): ResolveTargetConfigPathResult {
 	const cp = resolveControlPlaneRoot(params.startDir);
-	const controlPlaneRoot = resolve(cp.controlPlaneRoot);
-	const contextDir = resolve(params.contextDir ?? process.cwd());
+	const controlPlaneRoot = realpathExisting(cp.controlPlaneRoot);
+	const contextDir = realpathExisting(params.contextDir ?? process.cwd());
 
-	const relToRoot = relative(controlPlaneRoot, contextDir);
-	const contextInsideRoot =
-		relToRoot === "" || (!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
-
-	if (!contextInsideRoot) {
+	if (!isPathUnder(contextDir, controlPlaneRoot)) {
 		outputError(
 			"INVALID_ARGS",
 			`Config context directory must be inside the control plane root: ${controlPlaneRoot}`,
@@ -207,14 +204,10 @@ export function detectActiveConfigSource(
 	controlPlaneRoot: string,
 	contextDir: string,
 ): ActiveConfigSourceKind {
-	const root = resolve(controlPlaneRoot);
-	const ctx = resolve(contextDir);
+	const root = realpathExisting(controlPlaneRoot);
+	const ctx = realpathExisting(contextDir);
 
-	const relToRoot = relative(root, ctx);
-	const contextInsideRoot =
-		relToRoot === "" || (!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
-
-	if (!contextInsideRoot) {
+	if (!isPathUnder(ctx, root)) {
 		return "none";
 	}
 

@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { closeDb, getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
+import { isPathUnder } from "../paths.js";
 import defaultTomlConfig from "../templates/5x.default.toml" with {
 	type: "text",
 };
@@ -64,8 +65,7 @@ function assertPathInsideControlRoot(
 ): void {
 	const root = resolve(controlPlaneRoot);
 	const target = resolve(targetPath);
-	const rel = relative(root, target);
-	if (rel.startsWith("..") || rel === "..") {
+	if (!isPathUnder(target, root)) {
 		throw new Error(
 			`Sub-project path must be inside the control-plane root (${root}).`,
 		);

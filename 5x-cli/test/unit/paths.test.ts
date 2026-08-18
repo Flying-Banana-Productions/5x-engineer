@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -10,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	canonicalizePlanPath,
+	isPathUnder,
 	planSlugFromPath,
+	realpathExisting,
 	resolvePlanArg,
 } from "../../src/paths.js";
 
@@ -39,7 +42,20 @@ describe("canonicalizePlanPath", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-missing-"));
 		try {
 			const p = resolve(join(tmp, "missing.md"));
-			expect(canonicalizePlanPath(p)).toBe(p);
+			expect(canonicalizePlanPath(p)).toBe(
+				join(realpathSync(tmp), "missing.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("resolves missing files through the parent's realpath", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-missing-parent-"));
+		try {
+			expect(canonicalizePlanPath(join(tmp, "missing.md"))).toBe(
+				realpathExisting(join(tmp, "missing.md")),
+			);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -105,6 +121,37 @@ describe("resolvePlanArg", () => {
 			writeFileSync(direct, "# Direct\n");
 			writeFileSync(join(plansDir, "x.md"), "# Plans\n");
 			expect(resolvePlanArg(direct, plansDir)).toBe(direct);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+});
+
+describe("isPathUnder", () => {
+	test("treats symlink prefixes as the same tree", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-under-"));
+		try {
+			mkdirSync(join(tmp, "docs"), { recursive: true });
+			const child = join(tmp, "docs", "plan.md");
+			writeFileSync(child, "# Plan\n");
+			const realRoot = realpathSync(tmp);
+			expect(isPathUnder(child, tmp)).toBe(true);
+			expect(isPathUnder(child, realRoot)).toBe(true);
+			expect(isPathUnder(realpathSync(child), tmp)).toBe(true);
+			expect(isPathUnder(join(tmp, "docs"), tmp)).toBe(true);
+			expect(isPathUnder(tmp, tmp)).toBe(true);
+
+			if (realRoot.startsWith("/private/var/")) {
+				const aliasRoot = realRoot.replace(/^\/private\/var\//, "/var/");
+				expect(isPathUnder(join(realRoot, "docs", "plan.md"), aliasRoot)).toBe(
+					true,
+				);
+				expect(isPathUnder(join(aliasRoot, "docs", "plan.md"), realRoot)).toBe(
+					true,
+				);
+			}
+			expect(isPathUnder("/tmp/outside.md", tmp)).toBe(false);
+			expect(isPathUnder("relative/plan.md", tmp)).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

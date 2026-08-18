@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
+import { isPathUnder, realpathExisting } from "./paths.js";
 
 const AgentConfigSchema = z.object({
 	/** Provider name — open string to allow third-party plugins (e.g. "opencode", "codex", "@acme/provider-foo"). */
@@ -1044,16 +1045,11 @@ export async function resolveLayeredConfig(
 	let nearestRaw: unknown = null;
 
 	if (contextDir) {
-		const resolvedContext = resolve(contextDir);
-		const resolvedRoot = resolve(controlPlaneRoot);
+		const resolvedContext = realpathExisting(contextDir);
+		const resolvedRoot = realpathExisting(controlPlaneRoot);
 
 		if (resolvedContext !== resolvedRoot) {
-			const relToRoot = relative(resolvedRoot, resolvedContext);
-			const contextInsideRoot =
-				relToRoot === "" ||
-				(!relToRoot.startsWith("..") && !isAbsolute(relToRoot));
-
-			if (contextInsideRoot) {
+			if (isPathUnder(resolvedContext, resolvedRoot)) {
 				// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
 				nearestConfigPath = discoverConfigFile(
 					resolvedContext,
