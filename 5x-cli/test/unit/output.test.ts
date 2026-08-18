@@ -6,9 +6,11 @@ import {
 	CliError,
 	exitCodeForError,
 	formatGenericText,
+	formatTextError,
 	getOutputFormat,
 	outputError,
 	outputSuccess,
+	remediationFromDetail,
 	setOutputFormat,
 	setPrettyPrint,
 } from "../../src/output.js";
@@ -44,6 +46,96 @@ describe("CliError", () => {
 	test("unknown code defaults to exit code 1", () => {
 		const err = new CliError("SOME_UNKNOWN_CODE", "something went wrong");
 		expect(err.exitCode).toBe(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// remediationFromDetail / formatTextError
+// ---------------------------------------------------------------------------
+
+describe("remediationFromDetail", () => {
+	test("returns a non-empty string remediation", () => {
+		expect(
+			remediationFromDetail({
+				remediation: "run `5x unlock plan.md --force`",
+			}),
+		).toBe("run `5x unlock plan.md --force`");
+	});
+
+	test("returns undefined when detail is missing", () => {
+		expect(remediationFromDetail(undefined)).toBeUndefined();
+		expect(remediationFromDetail(null)).toBeUndefined();
+	});
+
+	test("returns undefined for non-objects and arrays", () => {
+		expect(remediationFromDetail("run something")).toBeUndefined();
+		expect(remediationFromDetail(42)).toBeUndefined();
+		expect(remediationFromDetail([{ remediation: "nope" }])).toBeUndefined();
+	});
+
+	test("returns undefined when remediation is not a non-empty string", () => {
+		expect(remediationFromDetail({ remediation: "" })).toBeUndefined();
+		expect(remediationFromDetail({ remediation: "   " })).toBeUndefined();
+		expect(remediationFromDetail({ remediation: 123 })).toBeUndefined();
+		expect(remediationFromDetail({ remediation: null })).toBeUndefined();
+		expect(remediationFromDetail({ message: "no field" })).toBeUndefined();
+	});
+
+	test("does not unwrap nested detail.detail.remediation", () => {
+		expect(
+			remediationFromDetail({
+				detail: { remediation: "nested — out of scope" },
+			}),
+		).toBeUndefined();
+	});
+});
+
+describe("formatTextError", () => {
+	function captureError(fn: () => void): string[] {
+		const lines: string[] = [];
+		const origError = console.error;
+		console.error = (...args: unknown[]) => {
+			lines.push(args.length === 0 ? "" : String(args[0]));
+		};
+		try {
+			fn();
+		} finally {
+			console.error = origError;
+		}
+		return lines;
+	}
+
+	test("prints Error: message only when no remediation", () => {
+		const lines = captureError(() =>
+			formatTextError({ message: "Plan is locked" }),
+		);
+		expect(lines).toEqual(["Error: Plan is locked"]);
+	});
+
+	test("prints Error: message plus → remediation when present", () => {
+		const lines = captureError(() =>
+			formatTextError({
+				message: "Plan is locked",
+				detail: {
+					remediation:
+						"If this process is hung, run `5x unlock plan.md --force`.",
+				},
+			}),
+		);
+		expect(lines).toEqual([
+			"Error: Plan is locked",
+			"  → If this process is hung, run `5x unlock plan.md --force`.",
+		]);
+	});
+
+	test("omits the remediation line when detail.remediation is not a string", () => {
+		const lines = captureError(() =>
+			formatTextError({
+				message: "boom",
+				detail: { remediation: { cmd: "5x unlock" } },
+			}),
+		);
+		expect(lines).toEqual(["Error: boom"]);
 	});
 });
 

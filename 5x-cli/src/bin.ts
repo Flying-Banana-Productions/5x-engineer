@@ -17,6 +17,7 @@ import { registerUpgrade } from "./commands/upgrade.js";
 import { registerWorktree } from "./commands/worktree.js";
 import {
 	CliError,
+	formatTextError,
 	getOutputFormat,
 	jsonStringify,
 	setOutputFormat,
@@ -118,7 +119,7 @@ try {
 } catch (err: unknown) {
 	if (err instanceof CliError) {
 		if (getOutputFormat() === "text") {
-			console.error(`Error: ${err.message}`);
+			formatTextError(err);
 			process.exit(err.exitCode);
 		}
 		const envelope = {

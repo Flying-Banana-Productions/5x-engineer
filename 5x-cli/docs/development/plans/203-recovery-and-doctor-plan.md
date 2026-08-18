@@ -442,9 +442,9 @@ export function formatTextError(err: { message: string; detail?: unknown }): voi
 
 Use `formatTextError` in the `CliError` text branch (`src/bin.ts:117-120`). Leave Commander / INTERNAL_ERROR branches on the single-line form — they have no `detail`. Nested `detail: { detail: { remediation } }` (the `outputError` wrapping used by some run-context call sites at `run-v1.handler.ts:954-956`) is **out of scope** for this helper; only a top-level string `remediation` on `CliError.detail` is printed. `PLAN_LOCKED` and `MAX_STEPS_EXCEEDED` pass remediation at the top level of `detail`, which is the contract this slice owns.
 
-- [ ] Add helpers + unit tests in `test/unit/output.test.ts`
-- [ ] Wire `bin.ts` CliError text path
-- [ ] Integration: `5x run init` against a live lock with `--text` shows remediation line; `--json` stdout has no second envelope and stderr has no required remediation line
+- [x] Add helpers + unit tests in `test/unit/output.test.ts`
+- [x] Wire `bin.ts` CliError text path
+- [x] Integration: `5x run init` against a live lock with `--text` shows remediation line; `--json` stdout has no second envelope and stderr has no required remediation line
 
 ### 2.2 Doc note (contract)
 
@@ -452,7 +452,7 @@ Use `formatTextError` in the `CliError` text branch (`src/bin.ts:117-120`). Leav
 
 Amend the text-mode error sentence to: single `Error: <message>` plus optional `  → <remediation>` when present. Mark as additive / non-breaking. Full normalization remains 205's job.
 
-- [ ] Update §4a wording
+- [x] Update §4a wording
 - [ ] Mention in `docs/v2/203-recovery-and-doctor.md` status when Phase 6 lands (not required mid-phase)
 
 ---

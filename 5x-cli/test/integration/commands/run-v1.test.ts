@@ -308,6 +308,61 @@ describe("5x run lifecycle", () => {
 				const error = data.error as Record<string, unknown>;
 				expect(error.code).toBe("PLAN_LOCKED");
 				expectPlanLockedDetail(error);
+				// JSON stdout is a single envelope; remediation is not required on stderr.
+				expect(() => JSON.parse(result.stdout)).not.toThrow();
+				expect(result.stderr).not.toContain("  → ");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan lock enforcement — --text prints Error plus remediation line",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+
+				const lockDir = join(projectRoot, ".5x", "locks");
+				mkdirSync(lockDir, { recursive: true });
+
+				const { canonicalizePlanPath } = await import("../../../src/paths.js");
+				const { createHash } = await import("node:crypto");
+				const canonical = canonicalizePlanPath(planPath);
+				const hash = createHash("sha256")
+					.update(canonical)
+					.digest("hex")
+					.slice(0, 16);
+				const lockPath = join(lockDir, `${hash}.lock`);
+
+				writeFileSync(
+					lockPath,
+					JSON.stringify({
+						pid: 1,
+						startedAt: new Date().toISOString(),
+						planPath: canonical,
+					}),
+				);
+
+				const result = await run5x(projectRoot, [
+					"--text",
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(4);
+				expect(result.stdout).toBe("");
+				const errorLines = result.stderr
+					.split("\n")
+					.filter((l) => l.startsWith("Error:"));
+				expect(errorLines).toHaveLength(1);
+				expect(errorLines[0]).toContain("locked");
+				expect(result.stderr).toContain("  → ");
+				expect(result.stderr).toContain("5x unlock");
+				expect(result.stderr).toContain("--force");
 			} finally {
 				cleanupDir(dir);
 			}

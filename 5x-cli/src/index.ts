@@ -97,9 +97,11 @@ export {
 export type { ErrorEnvelope, JsonEnvelope, SuccessEnvelope } from "./output.js";
 export {
 	CliError,
+	formatTextError,
 	jsonStringify,
 	outputError,
 	outputSuccess,
+	remediationFromDetail,
 	setPrettyPrint,
 } from "./output.js";
 // Parsers
