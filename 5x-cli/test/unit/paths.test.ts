@@ -168,9 +168,9 @@ describe("realpathExisting", () => {
 					join(realRoot, "new", "subproject"),
 				);
 				expect(isPathUnder(aliasNested, realRoot)).toBe(true);
-				expect(isPathUnder(join(realRoot, "new", "subproject"), aliasRoot)).toBe(
-					true,
-				);
+				expect(
+					isPathUnder(join(realRoot, "new", "subproject"), aliasRoot),
+				).toBe(true);
 			}
 		} finally {
 			rmSync(tmp, { recursive: true });
