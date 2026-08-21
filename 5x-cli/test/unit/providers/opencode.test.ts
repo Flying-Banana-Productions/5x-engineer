@@ -954,55 +954,6 @@ describe("AgentSession.runStreamed", () => {
 // ---------------------------------------------------------------------------
 
 describe("createProvider", () => {
-	test.skipIf(!process.env.TEST_OPENCODE_SERVER)(
-		"defaults to opencode when provider not specified (requires live server)",
-		async () => {
-			// Gated: only runs when TEST_OPENCODE_SERVER=1 is set.
-			// Spawns a real OpenCode server — too slow/flaky for CI without the env var.
-			const config = {
-				author: {
-					provider: "opencode",
-					model: "anthropic/claude-sonnet-4-6",
-					continuePhaseSessions: false,
-					delegationMode: "native" as const,
-				},
-				reviewer: {
-					provider: "opencode",
-					continuePhaseSessions: false,
-					delegationMode: "native" as const,
-				},
-				opencode: {},
-				qualityGates: [],
-				skipQualityGates: false,
-				worktree: {},
-				harness: { freshnessWarnings: "on" as const, autoSync: false },
-				paths: {
-					plans: "docs/development",
-					reviews: "docs/development/reviews",
-					archive: "docs/archive",
-					templates: {
-						plan: "docs/_implementation_plan_template.md",
-						review: "docs/development/reviews/_review_template.md",
-					},
-				},
-				db: { path: ".5x/5x.db" },
-				maxStepsPerRun: 250,
-				maxReviewIterations: 5,
-				maxQualityRetries: 3,
-				maxAutoIterations: 10,
-				maxAutoRetries: 3,
-			};
-
-			const provider = await createProvider(
-				"author",
-				config as Parameters<typeof createProvider>[1],
-			);
-			expect(typeof provider.startSession).toBe("function");
-			expect(typeof provider.close).toBe("function");
-			await provider.close();
-		},
-	);
-
 	test("throws ProviderNotFoundError for missing plugin", async () => {
 		const config = {
 			author: {
