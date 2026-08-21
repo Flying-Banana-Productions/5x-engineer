@@ -17,7 +17,7 @@ import {
 	renameSync,
 	statSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { type PlanRow, upsertPlan } from "../db/operations.js";
@@ -33,7 +33,9 @@ import { outputError, outputSuccess } from "../output.js";
 import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
+	isPathUnder,
 	planSlugFromPath,
+	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
 import { resolveDbContext } from "./context.js";
@@ -213,12 +215,6 @@ function posixRelativeDir(fromDir: string, toPath: string): string {
 	return relative(fromDir, toPath).replace(/\\/g, "/");
 }
 
-/** True when `childPath` is `parentPath` or a path inside it (same semantics as run-v1). */
-function isPathUnder(childPath: string, parentPath: string): boolean {
-	const relPath = relative(parentPath, childPath);
-	return !relPath.startsWith("..") && !isAbsolute(relPath);
-}
-
 /**
  * Subtrees under `paths.plans` that hold review / audit markdown, not implementation plans.
  * `plan list` recurses into other subdirectories but skips these roots entirely.
@@ -265,10 +261,8 @@ function effectivePlanReadPath(
 	worktreePath: string | null | undefined,
 ): string {
 	if (!worktreePath) return canonicalPlanPath;
-	const relPlanPath = relative(projectRoot, canonicalPlanPath);
-	if (relPlanPath.startsWith("..") || isAbsolute(relPlanPath)) {
-		return canonicalPlanPath;
-	}
+	const relPlanPath = relativePathUnder(canonicalPlanPath, projectRoot);
+	if (relPlanPath === null) return canonicalPlanPath;
 	const candidate = join(worktreePath, relPlanPath);
 	return existsSync(candidate) ? candidate : canonicalPlanPath;
 }
@@ -584,7 +578,8 @@ function resolveWorktreePlanPath(planPath: string): string | null {
 		if (!worktreePath) return null;
 
 		// Re-root the plan path into the worktree
-		const relPlanPath = relative(cp.controlPlaneRoot, planPath);
+		const relPlanPath = relativePathUnder(planPath, cp.controlPlaneRoot);
+		if (relPlanPath === null) return null;
 		const worktreePlanPath = join(worktreePath, relPlanPath);
 
 		if (!existsSync(worktreePlanPath)) return null;

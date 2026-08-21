@@ -1,5 +1,69 @@
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
+
+const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+
+function sanitizedGitEnv(): Record<string, string | undefined> {
+	const env = { ...process.env };
+	for (const key of GIT_ENV_VARS) delete env[key];
+	return env;
+}
+
+/**
+ * Resolve a path through its longest existing ancestor. This gives missing
+ * paths the same physical prefix as existing paths reached through aliases or
+ * symlinks, such as macOS `/var` and `/private/var`.
+ */
+export function realpathExisting(rawPath: string): string {
+	const abs = resolve(rawPath);
+	try {
+		if (existsSync(abs)) return realpathSync(abs);
+
+		const missing: string[] = [];
+		let current = abs;
+		while (true) {
+			const parent = dirname(current);
+			if (parent === current) return abs;
+			missing.unshift(basename(current));
+			if (existsSync(parent)) {
+				return join(realpathSync(parent), ...missing);
+			}
+			current = parent;
+		}
+	} catch {
+		return abs;
+	}
+}
+
+/** Return a physical relative path when `childPath` is inside `parentPath`. */
+export function relativePathUnder(
+	childPath: string,
+	parentPath: string,
+): string | null {
+	if (!isAbsolute(childPath)) return null;
+	const rel = relative(
+		realpathExisting(parentPath),
+		realpathExisting(childPath),
+	);
+	if (rel === "") return rel;
+	if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) {
+		return null;
+	}
+	return rel;
+}
+
+/** True when `childPath` is `parentPath` or a descendant by physical identity. */
+export function isPathUnder(childPath: string, parentPath: string): boolean {
+	return relativePathUnder(childPath, parentPath) !== null;
+}
 
 // ---------------------------------------------------------------------------
 // Worktree re-root detection (cached per process)
@@ -27,8 +91,11 @@ function detectWorktreeReroot(): {
 
 	try {
 		const cwd = process.cwd();
+		const env = sanitizedGitEnv();
 		const gitDir = Bun.spawnSync(["git", "rev-parse", "--git-dir"], {
 			cwd,
+			env,
+			stdin: "ignore",
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -40,7 +107,7 @@ function detectWorktreeReroot(): {
 
 		const gitCommonDir = Bun.spawnSync(
 			["git", "rev-parse", "--git-common-dir"],
-			{ cwd, stderr: "ignore" },
+			{ cwd, env, stdin: "ignore", stderr: "ignore" },
 		)
 			.stdout.toString()
 			.trim();
@@ -59,6 +126,8 @@ function detectWorktreeReroot(): {
 
 		const toplevel = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
 			cwd,
+			env,
+			stdin: "ignore",
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -69,8 +138,8 @@ function detectWorktreeReroot(): {
 		}
 
 		worktreeReroot = {
-			checkoutRoot: resolve(toplevel),
-			mainRoot: resolve(mainRoot),
+			checkoutRoot: realpathExisting(toplevel),
+			mainRoot: realpathExisting(mainRoot),
 		};
 		return worktreeReroot;
 	} catch {
@@ -124,24 +193,16 @@ export function resolvePlanArg(raw: string, plansDir: string): string {
 }
 
 export function canonicalizePlanPath(rawPath: string): string {
-	const abs = resolve(rawPath);
-	let real: string;
-	try {
-		real = realpathSync(abs);
-	} catch {
-		real = abs;
-	}
+	const real = realpathExisting(rawPath);
 
 	// If we're in a worktree and the path falls inside the worktree checkout,
 	// re-root it to the main repo — but only if the file exists there.
 	const reroot = detectWorktreeReroot();
 	if (reroot) {
-		const rel = relative(reroot.checkoutRoot, real);
-		if (!rel.startsWith("..") && !isAbsolute(rel)) {
+		const rel = relativePathUnder(real, reroot.checkoutRoot);
+		if (rel !== null) {
 			const mainPath = join(reroot.mainRoot, rel);
-			if (existsSync(mainPath)) {
-				return mainPath;
-			}
+			if (existsSync(mainPath)) return realpathExisting(mainPath);
 		}
 	}
 

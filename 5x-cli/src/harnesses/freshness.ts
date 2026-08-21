@@ -13,12 +13,13 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import {
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
 } from "../commands/control-plane.js";
 import { resolveHarnessModelForRole, resolveLayeredConfig } from "../config.js";
+import { relativePathUnder } from "../paths.js";
 import { version } from "../version.js";
 import { listBundledHarnesses, loadHarnessPlugin } from "./factory.js";
 import type { HarnessLocations } from "./locations.js";
@@ -320,7 +321,10 @@ async function resolveConfigOrNull(cwd: string) {
  * comparable across machines and platforms.
  */
 function toRelativeContextDir(projectRoot: string, contextDir: string): string {
-	const rel = relative(projectRoot, contextDir);
+	const rel = relativePathUnder(contextDir, projectRoot);
+	if (rel === null) {
+		throw new Error("Harness context directory is outside the project root.");
+	}
 	return rel === "" ? "" : rel.split(sep).join("/");
 }
 

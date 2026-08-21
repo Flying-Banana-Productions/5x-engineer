@@ -17,7 +17,8 @@
 
 import type { Database } from "bun:sqlite";
 import { accessSync, constants, existsSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { join } from "node:path";
+import { isPathUnder, relativePathUnder } from "../paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,8 +170,16 @@ export function resolveRunExecutionContext(
 			};
 		}
 
-		// Derive worktree-relative plan path
-		const relPlanPath = relative(controlPlaneRoot, planPath);
+		const relPlanPath = relativePathUnder(planPath, controlPlaneRoot);
+		if (relPlanPath === null) {
+			return {
+				ok: false,
+				error: {
+					code: "PLAN_PATH_INVALID",
+					message: "Run plan path is outside the control-plane root.",
+				},
+			};
+		}
 		const worktreePlanPath = join(mappedWorktreePath, relPlanPath);
 		const planPathInWorktreeExists = existsSync(worktreePlanPath);
 
@@ -204,17 +213,6 @@ export function resolveRunExecutionContext(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Check if `childPath` is a descendant of `parentPath`.
- * Both paths should be absolute.
- */
-function isPathUnder(childPath: string, parentPath: string): boolean {
-	// Handle relative paths stored in DB (legacy data)
-	if (!isAbsolute(childPath)) return false;
-	const rel = relative(parentPath, childPath);
-	return !rel.startsWith("..") && !isAbsolute(rel);
-}
 
 /** Check if a directory is accessible (exists and readable). */
 function isAccessible(dirPath: string): boolean {

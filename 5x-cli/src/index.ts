@@ -102,7 +102,12 @@ export { parsePlan } from "./parsers/plan.js";
 export type { ReviewSummary } from "./parsers/review.js";
 export { parseReviewSummary } from "./parsers/review.js";
 // Paths
-export { canonicalizePlanPath } from "./paths.js";
+export {
+	canonicalizePlanPath,
+	isPathUnder,
+	realpathExisting,
+	relativePathUnder,
+} from "./paths.js";
 // Project root
 export { findGitRoot, resolveProjectRoot } from "./project-root.js";
 // Protocol

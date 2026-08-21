@@ -24,8 +24,22 @@
  *   and consider marking the test file as serial if flakes appear.
  */
 
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+
 console.log = () => {};
 console.warn = () => {};
+
+// Keep temp paths in one physical namespace. macOS exposes the same directory
+// as both `/var` and `/private/var`, while Windows may consult TEMP or TMP.
+try {
+	const canonicalTmp = realpathSync(tmpdir());
+	process.env.TMPDIR = canonicalTmp;
+	process.env.TEMP = canonicalTmp;
+	process.env.TMP = canonicalTmp;
+} catch {
+	// Retain the platform defaults if the temp root cannot be resolved.
+}
 
 // ---------------------------------------------------------------------------
 // Sanitize git environment variables

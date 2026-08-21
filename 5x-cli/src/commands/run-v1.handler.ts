@@ -14,14 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import {
-	basename,
-	dirname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-} from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type FiveXConfig,
 	loadConfig,
@@ -71,7 +64,10 @@ import {
 import { parsePlan } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
+	isPathUnder,
 	planSlugFromPath,
+	realpathExisting,
+	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
 import {
@@ -250,9 +246,9 @@ function deriveWorktreeContextFields(
 		worktree_path: worktreeResult.worktree_path,
 	};
 
-	// Derive worktree-relative plan path and include only if the file exists
-	const relPlanPath = relative(controlPlaneRoot, planPath);
-	if (!relPlanPath.startsWith("..") && !isAbsolute(relPlanPath)) {
+	// Derive worktree-relative plan path and include only if the file exists.
+	const relPlanPath = relativePathUnder(planPath, controlPlaneRoot);
+	if (relPlanPath !== null) {
 		const worktreePlanPath = join(worktreeResult.worktree_path, relPlanPath);
 		if (existsSync(worktreePlanPath)) {
 			fields.worktree_plan_path = worktreePlanPath;
@@ -300,11 +296,6 @@ function deriveDefaultWorktreeDir(
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
 }
 
-function isPathUnder(childPath: string, parentPath: string): boolean {
-	const relPath = relative(parentPath, childPath);
-	return !relPath.startsWith("..") && !isAbsolute(relPath);
-}
-
 /**
  * Resolve a configured path against projectRoot.
  * Note: paths.* values are always absolute after config loading,
@@ -331,8 +322,10 @@ async function ensureRunWorktree(
 	const gitWorktrees = await listWorktrees(projectRoot);
 
 	if (explicitPath) {
-		const absPath = resolve(explicitPath);
-		const match = gitWorktrees.find((w) => w.path === absPath);
+		const absPath = realpathExisting(explicitPath);
+		const match = gitWorktrees.find(
+			(w) => realpathExisting(w.path) === absPath,
+		);
 		if (!match) {
 			if (!existsSync(absPath)) {
 				outputError(
@@ -365,7 +358,10 @@ async function ensureRunWorktree(
 
 	const existing = getPlan(db, planPath);
 	if (existing?.worktree_path) {
-		const match = gitWorktrees.find((w) => w.path === existing.worktree_path);
+		const existingPath = realpathExisting(existing.worktree_path);
+		const match = gitWorktrees.find(
+			(w) => realpathExisting(w.path) === existingPath,
+		);
 		if (match) {
 			return {
 				action: "reused",
@@ -376,8 +372,10 @@ async function ensureRunWorktree(
 	}
 
 	const expectedBranch = branchNameFromPlan(planPath);
-	const cwd = resolve(".");
-	const cwdWorktree = gitWorktrees.find((w) => w.path === cwd);
+	const cwd = realpathExisting(".");
+	const cwdWorktree = gitWorktrees.find(
+		(w) => realpathExisting(w.path) === cwd,
+	);
 	if (
 		cwdWorktree &&
 		(cwdWorktree.branch === expectedBranch ||
@@ -431,7 +429,10 @@ async function ensureRunWorktree(
 	const branch = expectedBranch;
 	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath, stateDir);
 
-	const existingByPath = gitWorktrees.find((w) => w.path === wtPath);
+	const physicalWtPath = realpathExisting(wtPath);
+	const existingByPath = gitWorktrees.find(
+		(w) => realpathExisting(w.path) === physicalWtPath,
+	);
 	if (existingByPath) {
 		upsertPlan(db, {
 			planPath,
@@ -743,8 +744,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
 	// (or projectRoot in none mode). This ensures stored plan_path values
 	// are re-rootable into mapped worktrees.
-	const relPath = relative(projectRoot, planPath);
-	if (relPath.startsWith("..") || isAbsolute(relPath)) {
+	if (!isPathUnder(planPath, projectRoot)) {
 		outputError(
 			"PLAN_OUTSIDE_CONTROL_PLANE",
 			`Plan path \`${planPath}\` is outside the repository root \`${projectRoot}\`. Move the plan under the repository root.`,
@@ -1437,7 +1437,7 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 
 	// ── Worktree relink ──────────────────────────────────────────────
 	if (params.worktree !== undefined) {
-		const newWorktreePath = resolve(params.worktree);
+		const newWorktreePath = realpathExisting(params.worktree);
 		if (!existsSync(newWorktreePath)) {
 			outputError(
 				"WORKTREE_NOT_FOUND",

@@ -304,12 +304,14 @@ export async function checkoutBranch(
 
 /**
  * Create a git worktree with a new branch.
- * If the branch already exists, reuses it.
+ * If the branch already exists locally, reuses it. When requested, fetches
+ * remotes and tracks a matching remote branch instead of branching from HEAD.
  */
 export async function createWorktree(
 	repoRoot: string,
 	branch: string,
 	path: string,
+	options: { fetchRemotes?: boolean } = {},
 ): Promise<WorktreeInfo> {
 	// Guard: git worktree add on a repo with no commits creates an orphan
 	// worktree that is not enumerable by `git worktree list`, causing every
@@ -326,10 +328,57 @@ export async function createWorktree(
 	}
 
 	const exists = await branchExists(branch, repoRoot);
+	let remoteBranch: string | undefined;
+
+	if (!exists && options.fetchRemotes) {
+		const fetchResult = await run(["fetch", "--all"], repoRoot);
+		if (fetchResult.exitCode !== 0) {
+			throw new Error(
+				`Failed to fetch remotes before creating branch "${branch}": ${fetchResult.stderr}`,
+			);
+		}
+
+		const [remotesResult, refsResult] = await Promise.all([
+			run(["remote"], repoRoot),
+			run(["for-each-ref", "--format=%(refname)", "refs/remotes"], repoRoot),
+		]);
+		if (remotesResult.exitCode !== 0 || refsResult.exitCode !== 0) {
+			throw new Error(`Failed to inspect remote branches for "${branch}"`);
+		}
+
+		const remoteRefs = new Set(refsResult.stdout.split("\n").filter(Boolean));
+		const matchingRemotes = remotesResult.stdout
+			.split("\n")
+			.filter(Boolean)
+			.filter((remote) => remoteRefs.has(`refs/remotes/${remote}/${branch}`));
+
+		if (matchingRemotes.length === 1) {
+			remoteBranch = `${matchingRemotes[0]}/${branch}`;
+		} else if (matchingRemotes.length > 1) {
+			const defaultRemoteResult = await run(
+				["config", "--get", "checkout.defaultRemote"],
+				repoRoot,
+			);
+			const defaultRemote = defaultRemoteResult.stdout;
+			if (
+				defaultRemoteResult.exitCode === 0 &&
+				matchingRemotes.includes(defaultRemote)
+			) {
+				remoteBranch = `${defaultRemote}/${branch}`;
+			} else {
+				throw new Error(
+					`Branch "${branch}" exists on multiple remotes (${matchingRemotes.join(", ")}). ` +
+						"Set checkout.defaultRemote to select one.",
+				);
+			}
+		}
+	}
 
 	const args = exists
 		? ["worktree", "add", path, branch]
-		: ["worktree", "add", path, "-b", branch];
+		: remoteBranch
+			? ["worktree", "add", "--track", "-b", branch, path, remoteBranch]
+			: ["worktree", "add", path, "-b", branch];
 	const result = await run(args, repoRoot);
 
 	if (result.exitCode !== 0) {

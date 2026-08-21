@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { canonicalizePlanPath } from "../paths.js";
+import { canonicalizePlanPath, realpathExisting } from "../paths.js";
 
 // --- Row types ---
 
@@ -100,18 +100,28 @@ export function upsertPlan(
 }
 
 export function getPlan(db: Database, planPath: string): PlanRow | null {
+	const canonical = canonicalizePlanPath(planPath);
 	return db
-		.query("SELECT * FROM plans WHERE plan_path = ?1")
-		.get(planPath) as PlanRow | null;
+		.query("SELECT * FROM plans WHERE plan_path IN (?1, ?2) LIMIT 1")
+		.get(canonical, planPath) as PlanRow | null;
 }
 
 export function listPlansByWorktreePath(
 	db: Database,
 	worktreePath: string,
 ): PlanRow[] {
-	return db
-		.query("SELECT * FROM plans WHERE worktree_path = ?1 ORDER BY plan_path")
-		.all(worktreePath) as PlanRow[];
+	const canonical = realpathExisting(worktreePath);
+	return (
+		db
+			.query(
+				"SELECT * FROM plans WHERE worktree_path IS NOT NULL ORDER BY plan_path",
+			)
+			.all() as PlanRow[]
+	).filter(
+		(row) =>
+			row.worktree_path !== null &&
+			realpathExisting(row.worktree_path) === canonical,
+	);
 }
 
 // --- Runs ---
@@ -143,19 +153,21 @@ export function updateRunStatus(
 }
 
 export function getActiveRun(db: Database, planPath: string): RunRow | null {
+	const canonical = canonicalizePlanPath(planPath);
 	return db
 		.query(
-			"SELECT * FROM runs WHERE plan_path = ?1 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+			"SELECT * FROM runs WHERE plan_path IN (?1, ?2) AND status = 'active' ORDER BY created_at DESC LIMIT 1",
 		)
-		.get(planPath) as RunRow | null;
+		.get(canonical, planPath) as RunRow | null;
 }
 
 export function getLatestRun(db: Database, planPath: string): RunRow | null {
+	const canonical = canonicalizePlanPath(planPath);
 	return db
 		.query(
-			"SELECT * FROM runs WHERE plan_path = ?1 ORDER BY rowid DESC LIMIT 1",
+			"SELECT * FROM runs WHERE plan_path IN (?1, ?2) ORDER BY rowid DESC LIMIT 1",
 		)
-		.get(planPath) as RunRow | null;
+		.get(canonical, planPath) as RunRow | null;
 }
 
 // --- Reporting ---
@@ -166,14 +178,15 @@ export function getRunHistory(
 	limit: number = 20,
 ): RunSummary[] {
 	if (planPath) {
+		const canonical = canonicalizePlanPath(planPath);
 		return db
 			.query(
 				`SELECT r.*,
            (SELECT COUNT(*) FROM steps WHERE run_id = r.id) as step_count
-         FROM runs r WHERE r.plan_path = ?1
-         ORDER BY r.created_at DESC LIMIT ?2`,
+         FROM runs r WHERE r.plan_path IN (?1, ?2)
+         ORDER BY r.created_at DESC LIMIT ?3`,
 			)
-			.all(planPath, limit) as RunSummary[];
+			.all(canonical, planPath, limit) as RunSummary[];
 	}
 	return db
 		.query(
