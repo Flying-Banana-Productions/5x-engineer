@@ -3,9 +3,11 @@ import { CommanderError } from "@commander-js/extra-typings";
 import { registerCommit } from "./commands/commit.js";
 import { registerConfig } from "./commands/config.js";
 import { registerDiff } from "./commands/diff.js";
+import { registerDoctor } from "./commands/doctor.js";
 import { registerHarness } from "./commands/harness.js";
 import { registerInit } from "./commands/init.js";
 import { registerInvoke } from "./commands/invoke.js";
+import { registerLock } from "./commands/lock.js";
 import { registerPlan } from "./commands/plan-v1.js";
 import { registerPrompt } from "./commands/prompt.js";
 import { registerProtocol } from "./commands/protocol.js";
@@ -16,6 +18,7 @@ import { registerUpgrade } from "./commands/upgrade.js";
 import { registerWorktree } from "./commands/worktree.js";
 import {
 	CliError,
+	formatTextError,
 	getOutputFormat,
 	jsonStringify,
 	setOutputFormat,
@@ -94,6 +97,8 @@ registerTemplate(program);
 registerProtocol(program);
 registerUpgrade(program);
 registerWorktree(program);
+registerLock(program);
+registerDoctor(program);
 
 // Configure output routing
 program.configureOutput({
@@ -116,7 +121,7 @@ try {
 } catch (err: unknown) {
 	if (err instanceof CliError) {
 		if (getOutputFormat() === "text") {
-			console.error(`Error: ${err.message}`);
+			formatTextError(err);
 			process.exit(err.exitCode);
 		}
 		const envelope = {

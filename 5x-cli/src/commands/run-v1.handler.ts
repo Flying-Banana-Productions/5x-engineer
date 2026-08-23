@@ -26,6 +26,7 @@ import {
 	completeRun,
 	computeRunSummary,
 	createRunV1,
+	findExistingStep,
 	getActiveRunV1,
 	getRunV1,
 	getSteps,
@@ -52,12 +53,15 @@ import {
 	acquireLock,
 	isLocked,
 	type LockDirOpts,
+	type LockInfo,
 	registerLockCleanup,
 	releaseLock,
 } from "../lock.js";
 import {
 	CliError,
 	exitCodeForError,
+	formatGenericText,
+	getOutputFormat,
 	outputError,
 	outputSuccess,
 } from "../output.js";
@@ -169,6 +173,8 @@ export interface RecordStepResult {
 	phase: string | null;
 	iteration: number | null;
 	recorded: boolean;
+	/** Post-insert step count (idempotent re-records report the true total). */
+	total_steps: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +220,25 @@ function getMaxStepsPerRun(config: Record<string, unknown>): number {
 		return config.maxAutoIterations;
 	}
 	return 250; // default
+}
+
+/** Fixed v2 warning band — not configurable (203 plan-input assumption). */
+export const STEP_WARNING_RATIO = 0.8;
+
+export interface StepBudget {
+	used: number;
+	max: number;
+	remaining: number;
+}
+
+export function computeStepBudget(used: number, max: number): StepBudget {
+	return { used, max, remaining: Math.max(0, max - used) };
+}
+
+export function stepBudgetWarning(budget: StepBudget): string | undefined {
+	if (budget.max <= 0) return undefined;
+	if (budget.used / budget.max < STEP_WARNING_RATIO) return undefined;
+	return `Approaching maxStepsPerRun (${budget.used}/${budget.max}); raise maxStepsPerRun or split the work.`;
 }
 
 type WorktreeAction = "reused" | "attached" | "created";
@@ -538,7 +563,7 @@ function formatCost(usd: number): string {
  * Renders a run info header, padded step table, and summary line.
  * Omits columns where all values are null.
  */
-function formatStateText(data: {
+export function formatStateText(data: {
 	run: {
 		id: string;
 		plan_path: string;
@@ -565,6 +590,9 @@ function formatStateText(data: {
 		total_cost_usd: number;
 		total_duration_ms: number;
 	};
+	steps_used: number;
+	max_steps: number;
+	steps_remaining: number;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -573,6 +601,9 @@ function formatStateText(data: {
 	console.log(`Plan:    ${run.plan_path}`);
 	console.log(`Status:  ${run.status}`);
 	console.log(`Created: ${run.created_at}`);
+	console.log(
+		`Steps:   ${data.steps_used} / ${data.max_steps} (${data.steps_remaining} remaining)`,
+	);
 
 	if (steps.length === 0) {
 		console.log();
@@ -653,6 +684,20 @@ function formatStateText(data: {
 }
 
 /**
+ * Text formatter for `run record`. Omits `step_budget` / `warnings` so they
+ * stay off stdout (warnings go to stderr in text mode; JSON keeps them).
+ */
+function formatRecordText(
+	data: RecordStepResult & {
+		step_budget?: StepBudget;
+		warnings?: string[];
+	},
+): void {
+	const { step_budget: _budget, warnings: _warnings, ...rest } = data;
+	formatGenericText(rest);
+}
+
+/**
  * Human-readable text formatter for `run list` output.
  *
  * Column-aligned table with ID, Plan, Status, Steps, Created.
@@ -712,6 +757,23 @@ function formatListText(data: {
 		const line = cols.map((c) => row[c.key].padEnd(c.width)).join("  ");
 		console.log(line);
 	}
+}
+
+/**
+ * Additive PLAN_LOCKED detail: keep pid / started_at, add nested holder,
+ * stale: false, and a remediation naming `5x unlock <plan> --force`.
+ */
+export function planLockedDetail(
+	planPath: string,
+	lock: LockInfo,
+): Record<string, unknown> {
+	return {
+		pid: lock.pid,
+		started_at: lock.startedAt,
+		holder: { pid: lock.pid, startedAt: lock.startedAt },
+		stale: false,
+		remediation: `If this process is hung, run \`5x unlock ${planPath} --force\`.`,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -808,13 +870,14 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	// Phase 3c: pass stateDir to anchor locks under controlPlaneRoot/stateDir
 	const lockResult = acquireLock(projectRoot, planPath, lockOpts);
 	if (!lockResult.acquired) {
+		const existing = lockResult.existingLock;
+		if (!existing) {
+			outputError("PLAN_LOCKED", "Plan is locked");
+		}
 		outputError(
 			"PLAN_LOCKED",
-			`Plan is locked by PID ${lockResult.existingLock?.pid}`,
-			{
-				pid: lockResult.existingLock?.pid,
-				started_at: lockResult.existingLock?.startedAt,
-			},
+			`Plan is locked by PID ${existing.pid}`,
+			planLockedDetail(planPath, existing),
 		);
 	}
 
@@ -967,6 +1030,10 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 
 	const steps = getSteps(db, run.id, stepOpts);
 	const summary = computeRunSummary(db, run.id);
+	const maxSteps = getMaxStepsPerRun(
+		config as unknown as Record<string, unknown>,
+	);
+	const budget = computeStepBudget(summary.total_steps, maxSteps);
 
 	// Phase 3b: report worktree path when run has a mapped worktree
 	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
@@ -984,6 +1051,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			},
 			steps: steps.map(formatStep),
 			summary,
+			steps_used: budget.used,
+			max_steps: budget.max,
+			steps_remaining: budget.remaining,
 		},
 		formatStateText,
 	);
@@ -1006,7 +1076,7 @@ export async function recordStepInternal(
 		config: FiveXConfig;
 		controlPlane?: ControlPlaneResult;
 	},
-): Promise<RecordStepResult> {
+): Promise<RecordStepResult & { max_steps: number }> {
 	const { config, db, controlPlane } = dbContext ?? (await resolveDbContext());
 
 	// Verify run exists and is active
@@ -1059,11 +1129,27 @@ export async function recordStepInternal(
 
 	const summary = computeRunSummary(db, params.run);
 	if (summary.total_steps >= maxSteps) {
-		throw new RecordError(
-			"MAX_STEPS_EXCEEDED",
-			`Run has reached the maximum of ${maxSteps} steps`,
-			{ current_steps: summary.total_steps, max_steps: maxSteps },
-		);
+		const existing = findExistingStep(db, {
+			run_id: params.run,
+			step_name: params.stepName,
+			phase: params.phase,
+			iteration: params.iteration,
+		});
+		// Duplicate re-records are a no-op and must not fail at the ceiling.
+		// A new unique step (including omitted iteration, which auto-increments)
+		// is still rejected.
+		if (!existing) {
+			throw new RecordError(
+				"MAX_STEPS_EXCEEDED",
+				`Run has reached the maximum of ${maxSteps} steps`,
+				{
+					current_steps: summary.total_steps,
+					max_steps: maxSteps,
+					remediation:
+						"Raise maxStepsPerRun via `5x config set maxStepsPerRun <n>`, or split the work into a new run.",
+				},
+			);
+		}
 	}
 
 	// Validate JSON
@@ -1091,12 +1177,15 @@ export async function recordStepInternal(
 		head_commit: headCommit,
 	});
 
+	const after = computeRunSummary(db, params.run);
 	return {
 		step_id: dbResult.step_id,
 		step_name: dbResult.step_name,
 		phase: dbResult.phase,
 		iteration: dbResult.iteration,
 		recorded: dbResult.recorded,
+		total_steps: after.total_steps,
+		max_steps: maxSteps,
 	};
 }
 
@@ -1166,7 +1255,19 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 			stepName: params.stepName,
 			result: params.result,
 		});
-		outputSuccess(result);
+		const { max_steps: maxSteps, ...payload } = result;
+		const budget = computeStepBudget(payload.total_steps, maxSteps);
+		const warning = stepBudgetWarning(budget);
+		if (warning && getOutputFormat() === "text") {
+			console.error(warning);
+		}
+		outputSuccess(
+			{
+				...payload,
+				...(warning ? { step_budget: budget, warnings: [warning] } : {}),
+			},
+			formatRecordText,
+		);
 	} catch (err) {
 		if (err instanceof RecordError) {
 			outputError(
@@ -1219,10 +1320,17 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 			!lockStatus.stale &&
 			lockStatus.info?.pid !== process.pid
 		) {
+			const info = lockStatus.info;
+			if (!info) {
+				outputError(
+					"PLAN_LOCKED",
+					"Plan is locked by another process; cannot complete run owned by another process",
+				);
+			}
 			outputError(
 				"PLAN_LOCKED",
-				`Plan is locked by PID ${lockStatus.info?.pid}; cannot complete run owned by another process`,
-				{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				`Plan is locked by PID ${info.pid}; cannot complete run owned by another process`,
+				planLockedDetail(run.plan_path, info),
 			);
 		}
 	}
@@ -1291,10 +1399,17 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 			!lockStatus.stale &&
 			lockStatus.info?.pid !== process.pid
 		) {
+			const info = lockStatus.info;
+			if (!info) {
+				outputError(
+					"PLAN_LOCKED",
+					"Plan is locked by another process; cannot reopen run",
+				);
+			}
 			outputError(
 				"PLAN_LOCKED",
-				`Plan is locked by PID ${lockStatus.info?.pid}; cannot reopen run`,
-				{ pid: lockStatus.info?.pid, started_at: lockStatus.info?.startedAt },
+				`Plan is locked by PID ${info.pid}; cannot reopen run`,
+				planLockedDetail(run.plan_path, info),
 			);
 		}
 	}

@@ -49,7 +49,11 @@ export {
 	recordStep,
 	reopenRun,
 } from "./db/operations-v1.js";
-export { getSchemaVersion, runMigrations } from "./db/schema.js";
+export {
+	getMaxKnownSchemaVersion,
+	getSchemaVersion,
+	runMigrations,
+} from "./db/schema.js";
 // Gates
 export type { QualityCommandResult, QualityResult } from "./gates/quality.js";
 export { runQualityGates } from "./gates/quality.js";
@@ -76,24 +80,32 @@ export {
 // Lock
 export type {
 	LockDirOpts,
+	LockEntry,
 	LockInfo,
+	LockLiveness,
 	LockResult,
 	ReleaseLockResult,
+	RemoveCorruptLockResult,
 } from "./lock.js";
 export {
 	acquireLock,
 	forceReleaseLock,
+	inspectLock,
 	isLocked,
+	listLocks,
 	registerLockCleanup,
 	releaseLock,
+	removeCorruptLock,
 } from "./lock.js";
 // Output helpers (v1 JSON envelope)
 export type { ErrorEnvelope, JsonEnvelope, SuccessEnvelope } from "./output.js";
 export {
 	CliError,
+	formatTextError,
 	jsonStringify,
 	outputError,
 	outputSuccess,
+	remediationFromDetail,
 	setPrettyPrint,
 } from "./output.js";
 // Parsers

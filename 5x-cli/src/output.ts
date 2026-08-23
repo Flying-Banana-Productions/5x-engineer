@@ -104,6 +104,26 @@ export class CliError extends Error {
 	}
 }
 
+/** Return detail.remediation when it is a non-empty string; else undefined. */
+export function remediationFromDetail(detail: unknown): string | undefined {
+	if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+		return undefined;
+	}
+	const value = (detail as Record<string, unknown>).remediation;
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+export function formatTextError(err: {
+	message: string;
+	detail?: unknown;
+}): void {
+	console.error(`Error: ${err.message}`);
+	const remediation = remediationFromDetail(err.detail);
+	if (remediation) console.error(`  → ${remediation}`);
+}
+
 // ---------------------------------------------------------------------------
 // Pretty-print state
 // ---------------------------------------------------------------------------

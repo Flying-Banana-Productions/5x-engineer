@@ -221,7 +221,7 @@ Custom formatters are co-located with their handlers. The generic fallback rende
 
 ### Error handling
 
-In JSON mode, errors are JSON envelopes on stdout. In text mode, errors produce a single `Error: <message>` line on stderr. Commander's built-in parse-error output (help text, suggestions) is suppressed in text mode to prevent duplicate or contract-breaking output.
+In JSON mode, errors are JSON envelopes on stdout. In text mode, errors produce a single `Error: <message>` line on stderr, plus an optional `  → <remediation>` line when `detail.remediation` is a string. This addition is additive and non-breaking; full output/error normalization remains area 205's job. Commander's built-in parse-error output (help text, suggestions) is suppressed in text mode to prevent duplicate or contract-breaking output.
 
 ### Implementation
 

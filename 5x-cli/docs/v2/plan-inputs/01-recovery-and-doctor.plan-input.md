@@ -7,8 +7,8 @@
 | **Slice ID** | `v2-recovery-and-doctor` |
 | **Status** | `draft` |
 | **Owner** | |
-| **Generated plan** | `-` |
-| **Last updated** | 2026-08-13 |
+| **Generated plan** | `docs/development/plans/203-recovery-and-doctor-plan.md` |
+| **Last updated** | 2026-08-18 |
 
 ---
 

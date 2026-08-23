@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import {
 	_migrations,
+	getMaxKnownSchemaVersion,
 	getSchemaVersion,
 	runMigrations,
 } from "../../../src/db/schema.js";
@@ -155,5 +156,13 @@ describe("getSchemaVersion", () => {
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
+	});
+});
+
+describe("getMaxKnownSchemaVersion", () => {
+	test("matches the last migration version", () => {
+		const last = _migrations[_migrations.length - 1]?.version ?? 0;
+		expect(getMaxKnownSchemaVersion()).toBe(last);
+		expect(getMaxKnownSchemaVersion()).toBe(5);
 	});
 });

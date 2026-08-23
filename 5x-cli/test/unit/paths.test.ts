@@ -51,6 +51,17 @@ describe("canonicalizePlanPath", () => {
 		}
 	});
 
+	test("resolves missing files through the parent's realpath", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-missing-parent-"));
+		try {
+			expect(canonicalizePlanPath(join(tmp, "missing.md"))).toBe(
+				realpathExisting(join(tmp, "missing.md")),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
 	test("resolves symlinks to real path when possible", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-"));
 		try {
@@ -155,6 +166,88 @@ describe("resolvePlanArg", () => {
 			writeFileSync(direct, "# Direct\n");
 			writeFileSync(join(plansDir, "x.md"), "# Plans\n");
 			expect(resolvePlanArg(direct, plansDir)).toBe(direct);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+});
+
+describe("realpathExisting", () => {
+	test("realpaths nested missing components through the longest existing prefix", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-nested-missing-"));
+		try {
+			const realDir = join(tmp, "real");
+			mkdirSync(realDir);
+			const alias = join(tmp, "alias");
+			symlinkSync(realDir, alias);
+			const nested = join(alias, "new", "subproject", "file.md");
+			const expected = join(
+				realpathSync(realDir),
+				"new",
+				"subproject",
+				"file.md",
+			);
+			expect(realpathExisting(nested)).toBe(expected);
+			expect(isPathUnder(nested, realDir)).toBe(true);
+			expect(isPathUnder(nested, alias)).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("canonicalizes nested missing paths through a macOS /var alias", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-nested-alias-"));
+		try {
+			const realRoot = realpathSync(tmp);
+			const nestedMissing = join(tmp, "new", "subproject");
+			expect(realpathExisting(nestedMissing)).toBe(
+				join(realRoot, "new", "subproject"),
+			);
+			expect(isPathUnder(nestedMissing, tmp)).toBe(true);
+			expect(isPathUnder(nestedMissing, realRoot)).toBe(true);
+
+			if (realRoot.startsWith("/private/var/")) {
+				const aliasRoot = realRoot.replace(/^\/private\/var\//, "/var/");
+				const aliasNested = join(aliasRoot, "new", "subproject");
+				expect(realpathExisting(aliasNested)).toBe(
+					join(realRoot, "new", "subproject"),
+				);
+				expect(isPathUnder(aliasNested, realRoot)).toBe(true);
+				expect(
+					isPathUnder(join(realRoot, "new", "subproject"), aliasRoot),
+				).toBe(true);
+			}
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+});
+
+describe("isPathUnder", () => {
+	test("treats symlink prefixes as the same tree", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-under-"));
+		try {
+			mkdirSync(join(tmp, "docs"), { recursive: true });
+			const child = join(tmp, "docs", "plan.md");
+			writeFileSync(child, "# Plan\n");
+			const realRoot = realpathSync(tmp);
+			expect(isPathUnder(child, tmp)).toBe(true);
+			expect(isPathUnder(child, realRoot)).toBe(true);
+			expect(isPathUnder(realpathSync(child), tmp)).toBe(true);
+			expect(isPathUnder(join(tmp, "docs"), tmp)).toBe(true);
+			expect(isPathUnder(tmp, tmp)).toBe(true);
+
+			if (realRoot.startsWith("/private/var/")) {
+				const aliasRoot = realRoot.replace(/^\/private\/var\//, "/var/");
+				expect(isPathUnder(join(realRoot, "docs", "plan.md"), aliasRoot)).toBe(
+					true,
+				);
+				expect(isPathUnder(join(aliasRoot, "docs", "plan.md"), realRoot)).toBe(
+					true,
+				);
+			}
+			expect(isPathUnder("/tmp/outside.md", tmp)).toBe(false);
+			expect(isPathUnder("relative/plan.md", tmp)).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

@@ -118,6 +118,19 @@ function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
 
+function expectPlanLockedDetail(error: Record<string, unknown>): void {
+	const detail = error.detail as Record<string, unknown>;
+	expect(detail).toBeDefined();
+	expect(typeof detail.pid).toBe("number");
+	expect(typeof detail.started_at).toBe("string");
+	const holder = detail.holder as Record<string, unknown>;
+	expect(holder.pid).toBe(detail.pid);
+	expect(holder.startedAt).toBe(detail.started_at);
+	expect(detail.stale).toBe(false);
+	expect(String(detail.remediation)).toContain("5x unlock");
+	expect(String(detail.remediation)).toContain("--force");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -183,6 +196,9 @@ describe("5x run lifecycle", () => {
 				expect(steps).toHaveLength(1);
 				const summary = data.summary as Record<string, unknown>;
 				expect(summary.total_steps).toBe(1);
+				expect(data.steps_used).toBe(1);
+				expect(data.max_steps).toBe(250);
+				expect(data.steps_remaining).toBe(249);
 
 				// Complete
 				const completeResult = await run5x(projectRoot, [
@@ -299,9 +315,64 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED exit code
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
+				// JSON stdout is a single envelope; remediation is not required on stderr.
+				expect(() => JSON.parse(result.stdout)).not.toThrow();
+				expect(result.stderr).not.toContain("  → ");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan lock enforcement — --text prints Error plus remediation line",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+
+				const lockDir = join(projectRoot, ".5x", "locks");
+				mkdirSync(lockDir, { recursive: true });
+
+				const { canonicalizePlanPath } = await import("../../../src/paths.js");
+				const { createHash } = await import("node:crypto");
+				const canonical = canonicalizePlanPath(planPath);
+				const hash = createHash("sha256")
+					.update(canonical)
+					.digest("hex")
+					.slice(0, 16);
+				const lockPath = join(lockDir, `${hash}.lock`);
+
+				writeFileSync(
+					lockPath,
+					JSON.stringify({
+						pid: 1,
+						startedAt: new Date().toISOString(),
+						planPath: canonical,
+					}),
 				);
+
+				const result = await run5x(projectRoot, [
+					"--text",
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(4);
+				expect(result.stdout).toBe("");
+				const errorLines = result.stderr
+					.split("\n")
+					.filter((l) => l.startsWith("Error:"));
+				expect(errorLines).toHaveLength(1);
+				expect(errorLines[0]).toContain("locked");
+				expect(result.stderr).toContain("  → ");
+				expect(result.stderr).toContain("5x unlock");
+				expect(result.stderr).toContain("--force");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -590,9 +661,65 @@ describe("5x run lifecycle", () => {
 				expect(overflow.exitCode).toBe(6); // MAX_STEPS_EXCEEDED
 				const overflowData = parseJson(overflow.stdout);
 				expect(overflowData.ok).toBe(false);
-				expect((overflowData.error as Record<string, unknown>).code).toBe(
-					"MAX_STEPS_EXCEEDED",
+				const overflowError = overflowData.error as Record<string, unknown>;
+				expect(overflowError.code).toBe("MAX_STEPS_EXCEEDED");
+				const overflowDetail = overflowError.detail as Record<string, unknown>;
+				expect(String(overflowDetail.remediation)).toContain(
+					"Raise maxStepsPerRun",
 				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"max steps exceeded — --text prints remediation line",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+
+				writeFileSync(join(dir, "5x.toml"), "maxStepsPerRun = 3\n");
+
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--allow-dirty",
+				]);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+
+				const { getDb } = await import("../../../src/db/connection.js");
+				const { _resetForTest, closeDb } = await import(
+					"../../../src/db/connection.js"
+				);
+				const db = getDb(projectRoot);
+				for (let i = 0; i < 3; i++) {
+					db.exec(
+						`INSERT INTO steps (run_id, step_name, iteration, result_json)
+						 VALUES ('${runId}', 'step-${i}', 1, '{}')`,
+					);
+				}
+				closeDb();
+				_resetForTest();
+
+				const overflow = await run5x(projectRoot, [
+					"--text",
+					"run",
+					"record",
+					"step-overflow",
+					"--run",
+					runId,
+					"--result",
+					"{}",
+				]);
+				expect(overflow.exitCode).toBe(6);
+				expect(overflow.stderr).toContain("Error:");
+				expect(overflow.stderr).toContain("  → Raise maxStepsPerRun");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -1144,9 +1271,9 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
-				);
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -1209,9 +1336,9 @@ describe("5x run lifecycle", () => {
 				expect(result.exitCode).toBe(4); // PLAN_LOCKED
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(false);
-				expect((data.error as Record<string, unknown>).code).toBe(
-					"PLAN_LOCKED",
-				);
+				const error = data.error as Record<string, unknown>;
+				expect(error.code).toBe("PLAN_LOCKED");
+				expectPlanLockedDetail(error);
 			} finally {
 				cleanupDir(dir);
 			}

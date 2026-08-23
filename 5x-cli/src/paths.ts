@@ -9,6 +9,7 @@ import {
 	sep,
 } from "node:path";
 
+/** Git env vars that override repo discovery (hooks / inherited worktrees). */
 const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
 
 function sanitizedGitEnv(): Record<string, string | undefined> {

@@ -10,6 +10,14 @@ assets no longer match the current config; the fix is `5x harness sync` (plain
 verified baseline). Honor `harness.freshnessWarnings = "off"` when the operator
 has explicitly silenced the signal.
 
+## Recovery
+
+`5x doctor` is the recovery front door: it reports harness freshness, locks,
+worktrees, lingering runs, and DB health. Use `5x doctor --fix` only for the
+safe repairs (stale/corrupt locks, dead worktree mappings, lossless project
+harness sync). Targeted lock questions go through `5x lock list` / `5x unlock`;
+live holders require `5x unlock <plan> --force`.
+
 ## Test Tiers
 
 **Unit tests** (`test/unit/`) — call functions directly, assert on return values and filesystem side effects (files written, config created, DB records). No subprocesses, no network, no console output capture. Must run deterministically under `--concurrent`.

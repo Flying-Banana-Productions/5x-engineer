@@ -1,9 +1,13 @@
 # 5x CLI v2 — Recovery & `5x doctor`
 
-**Status:** Draft — Not Implemented
+**Status:** Implemented (prompts check deferred to `03-prompt-queue-foundation`)
 **Date:** July 13, 2026
+**Updated:** August 18, 2026
 **Part of:** v2 (`200-overview.md`, area #3)
 **Shared core used:** `5x doctor` (`200-overview.md` §3.3); surfaces the manifest freshness check (`201-harness-freshness.md` §2.4)
+**Implementation plan:** [`docs/development/plans/203-recovery-and-doctor-plan.md`](../development/plans/203-recovery-and-doctor-plan.md)
+
+Shipped: `5x lock list` / `5x unlock [--force]`, additive `PLAN_LOCKED` holder + remediation, step-budget fields and 80% warning, text-mode `→ remediation` line, and `5x doctor [--fix]` with five built-in checks (harness freshness, locks, worktrees, lingering runs, DB health). The orphaned-prompt check is deferred until prompt rows exist.
 
 ---
 
@@ -43,18 +47,16 @@ Error envelopes carry structured `detail` including a `remediation` field (e.g. 
 
 No new lock semantics — new *visibility and control* over existing ones:
 
-- **`5x lock list`** — all locks under `.5x/locks/` with plan path, PID, started-at, and liveness verdict (`live` / `stale` / `corrupt`), via existing `isLocked` / `readLockFile`.
+- **`5x lock list`** — directory scan of every `*.lock` under `.5x/locks/` (or the control-plane `stateDir` lock dir) via exported `listLocks()`, with plan path, PID, started-at, and liveness verdict (`live` / `stale` / `corrupt`). Listing cannot reuse `isLocked` / `readLockFile`: `isLocked` returns `{ locked: false }` for corrupt files and `readLockFile` is private, so those APIs would hide the files operators need to clear.
 - **`5x unlock <plan>`** — safe release: removes the lock iff stale or corrupt (exactly `releaseLock`'s dead-PID path, human-initiated). Refuses on a live holder, showing holder info.
-- **`5x unlock <plan> --force`** — exposes `forceReleaseLock()`. Prints the holder it is overriding. This is the escape hatch for hung-but-alive processes, EPERM misreads, and PID reuse.
+- **`5x unlock <plan> --force`** — exposes `forceReleaseLock()`. Prints the holder it is overriding. This is the escape hatch for hung-but-alive processes, EPERM misreads, and PID reuse. PID-start-time verification is not implemented; `--force` + visible holder is the resolved mitigation.
 - **Enrich `PLAN_LOCKED`** — `detail` gains `{ holder: { pid, startedAt }, stale: false, remediation: "If this process is hung, run `5x unlock <plan> --force`." }`. The error itself becomes the recovery documentation.
-- _TODO:_ PID-reuse mitigation — is a `startedAt`-vs-PID-start-time sanity check worth it, or does `--force` + visible holder info suffice? Leaning: the latter; keep the primitive simple.
 
 ### 2.2 Step budget visibility
 
-- **Warning band in `run record`.** Past a threshold (default 80% of `maxStepsPerRun`), every successful `run record` envelope includes `step_budget: { used, max, remaining }` plus a `warnings: ["…approaching maxStepsPerRun…"]` entry; text mode prints it.
+- **Warning band in `run record`.** Past a fixed 80% of `maxStepsPerRun` (`STEP_WARNING_RATIO`), every successful `run record` envelope includes `step_budget: { used, max, remaining }` plus a `warnings: ["…approaching maxStepsPerRun…"]` entry; text mode prints it. The threshold is not configurable in v2.
 - **Always in `run state`.** The summary gains `steps_used` / `max_steps` unconditionally — the orchestrating agent can self-pace long runs instead of discovering the wall at 250.
 - **Actionable ceiling error.** `MAX_STEPS_EXCEEDED.detail.remediation` names both outs: raise `maxStepsPerRun` (`5x config set …`) or split the work.
-- _TODO:_ threshold configurable (`stepWarningThreshold`) or fixed? Leaning fixed at 80% — one less knob.
 
 ### 2.3 Remediation in text mode
 
@@ -76,17 +78,17 @@ The front door for "why is this broken, what do I run." A check registry, each c
 | `harness-freshness` | Manifest hash mismatch / missing manifest per installed harness+scope (`201` §2.4) | Runs `harness sync` (project scope only — `201` §2.6) |
 | `locks` | Stale / corrupt lock files | Removes them (same safety as `5x unlock`); live locks reported, never auto-removed |
 | `worktrees` | `plans.worktree_path` pointing at a missing/unreadable dir; worktrees on disk with no mapping | Clears dead mappings (equivalent of `worktree detach`); orphan dirs *reported only* — deleting user files is never a `--fix` |
-| `runs` | Runs `active` beyond an age threshold with a dead/absent session | Reported only; suggests `5x run complete --status aborted` / `run reopen` — terminal status is a judgment call |
+| `runs` | Runs `active` beyond 24h (`LINGERING_RUN_AGE_MS`) with a dead/absent lock | Reported only; suggests `5x run complete --run <id> --status aborted` / `run reopen` — terminal status is a judgment call |
 | `db` | Schema version vs CLI expectation; integrity check | Suggests `5x upgrade`; never auto-migrates |
-| `prompts` | Open prompt rows (`202` §3.2) whose run is terminal — orphaned waits | Resolves them as abandoned |
+| `prompts` | Open prompt rows (`202` §3.2) whose run is terminal — orphaned waits | **Deferred** to `03-prompt-queue-foundation` once prompt rows exist |
 
 Semantics:
 
 - **`--fix` fixes only what has exactly one correct answer.** Stale lock → remove. Dead worktree mapping → clear. Anything requiring judgment (terminal status of a run, deleting directories, migrations) is surfaced with the command to run, never executed.
-- **Exit code:** 0 all-ok, non-zero if any `fail` (usable in CI/preflight). _TODO:_ distinct code for warn-only.
+- **Exit code:** 0 unless any finding has status `fail`. Warn-only results (live locks, lingering runs, user-scope freshness) exit 0 — no distinct warn exit code.
 - **Output:** standard envelope; text mode gets a custom formatter (per-check line + remediation) — this command exists primarily for humans.
-- _TODO:_ check registry extensibility — should harness/provider plugins contribute checks (e.g. Cursor rule discovery)? Leaning yes, same pattern as `201` §2.2's fingerprint hook, but v2 ships the built-in six first.
-- _TODO:_ does `doctor` subsume `5x lock list`, or do both exist? Leaning both — `doctor` for the full sweep, `lock list` for the targeted question.
+- **`doctor` and `lock list` both ship.** Doctor is the full sweep; `lock list` answers the targeted question. `unlock` is top-level (`5x unlock`).
+- **Plugin-contributed checks are deferred.** The registry array is the extension point; v2 ships the five builtins above.
 
 ---
 
@@ -105,10 +107,13 @@ Fully additive: new commands (`doctor`, `unlock`, `lock list`), enriched error `
 
 ---
 
-## 5. Open questions
+## 5. Resolved decisions
 
-- _TODO:_ PID-reuse sanity check vs `--force`-suffices (§2.1).
-- _TODO:_ fixed vs configurable step-warning threshold (§2.2).
-- _TODO:_ distinct exit code for warn-only doctor result (§2.4).
-- _TODO:_ plugin-contributed doctor checks in v2 or deferred (§2.4).
-- _TODO:_ age threshold for flagging lingering `active` runs (§2.4).
+Recorded from the implementation plan so this design doc no longer carries open TODOs:
+
+- Warn-only doctor results exit 0 (no distinct warn code).
+- `doctor` and `lock list` both ship.
+- Lingering-run age is 24h (`LINGERING_RUN_AGE_MS`).
+- PID reuse: `--force` + visible holder (no start-time check).
+- Step-warning threshold is fixed at 80% (`STEP_WARNING_RATIO`).
+- Plugin-contributed checks are deferred.
