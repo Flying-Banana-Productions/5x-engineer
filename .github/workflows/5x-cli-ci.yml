@@ -43,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Test
-        run: bun run test
+        run: bun test --concurrent
 
   package:
     runs-on: ubuntu-latest
