@@ -1022,8 +1022,9 @@ export async function resolveLayeredConfig(
 	contextDir?: string,
 	warn: (...args: unknown[]) => void = console.error,
 ): Promise<LayeredConfigResult> {
+	const resolvedRoot = realpathExisting(controlPlaneRoot);
 	// Discover root config — only look at controlPlaneRoot itself (no upward walk)
-	const rootConfigPath = discoverConfigFile(controlPlaneRoot, controlPlaneRoot);
+	const rootConfigPath = discoverConfigFile(resolvedRoot, resolvedRoot);
 	let rootRaw: unknown = null;
 
 	if (rootConfigPath) {
@@ -1046,15 +1047,11 @@ export async function resolveLayeredConfig(
 
 	if (contextDir) {
 		const resolvedContext = realpathExisting(contextDir);
-		const resolvedRoot = realpathExisting(controlPlaneRoot);
 
 		if (resolvedContext !== resolvedRoot) {
 			if (isPathUnder(resolvedContext, resolvedRoot)) {
 				// Bound discovery to controlPlaneRoot to prevent escaping the repo tree
-				nearestConfigPath = discoverConfigFile(
-					resolvedContext,
-					controlPlaneRoot,
-				);
+				nearestConfigPath = discoverConfigFile(resolvedContext, resolvedRoot);
 			}
 
 			// Only use nearest if it's a different file from root

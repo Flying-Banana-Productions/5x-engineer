@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -214,6 +221,56 @@ describe("5x run init --worktree", () => {
 				expect(payload.worktree.action).toBe("attached");
 				expect(payload.worktree.worktree_path).toBe(manualPath);
 				expect(payload.worktree.branch).toBe("5x/001-test-feature");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"attaches an explicit worktree through a filesystem alias",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const manualPath = join(dir, ".5x", "worktrees", "aliased-001");
+				const aliasPath = join(dir, "worktree-alias");
+				mkdirSync(join(dir, ".5x", "worktrees"), { recursive: true });
+
+				const wtCreate = Bun.spawnSync(
+					["git", "worktree", "add", manualPath, "-b", "5x/001-test-feature"],
+					{
+						cwd: dir,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				);
+				expect(wtCreate.exitCode).toBe(0);
+				symlinkSync(
+					manualPath,
+					aliasPath,
+					process.platform === "win32" ? "junction" : "dir",
+				);
+
+				const result = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--worktree",
+					aliasPath,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				const payload = data.data as {
+					worktree: { action: string; worktree_path: string };
+				};
+				expect(payload.worktree.action).toBe("attached");
+				expect(payload.worktree.worktree_path).toBe(realpathSync(manualPath));
 			} finally {
 				cleanupDir(dir);
 			}

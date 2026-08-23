@@ -33,6 +33,7 @@ import { outputError, outputSuccess } from "../output.js";
 import {
 	canonicalizePlanPath,
 	planSlugFromPath,
+	realpathExisting,
 	resolvePlanArg,
 } from "../paths.js";
 import { resolveDbContext } from "./context.js";
@@ -109,7 +110,10 @@ function isLinkedWorktreeContext(
 ): boolean {
 	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
 	if (!checkoutRoot) return false;
-	return resolve(checkoutRoot) !== resolve(controlPlane.controlPlaneRoot);
+	return (
+		realpathExisting(checkoutRoot) !==
+		realpathExisting(controlPlane.controlPlaneRoot)
+	);
 }
 
 /**
@@ -125,7 +129,12 @@ export function emitSplitBrainWarning(
 
 	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
 	if (!checkoutRoot) return;
-	if (resolve(checkoutRoot) === resolve(controlPlane.controlPlaneRoot)) return;
+	if (
+		realpathExisting(checkoutRoot) ===
+		realpathExisting(controlPlane.controlPlaneRoot)
+	) {
+		return;
+	}
 
 	// Check if the checkout also has a local state DB
 	const localStateDir = join(checkoutRoot, controlPlane.stateDir);
@@ -226,7 +235,9 @@ export async function worktreeCreate(
 
 	// Create the worktree
 	try {
-		await createWorktree(projectRoot, branch, wtPath);
+		await createWorktree(projectRoot, branch, wtPath, {
+			fetchRemotes: params.branch !== undefined,
+		});
 	} catch (err) {
 		outputError(
 			"WORKTREE_ERROR",
@@ -286,7 +297,7 @@ export async function worktreeAttach(
 	}
 
 	const canonical = canonicalizePlanPath(planPath);
-	const wtPath = resolve(params.path);
+	const wtPath = realpathExisting(params.path);
 
 	if (!existsSync(wtPath)) {
 		outputError("WORKTREE_NOT_FOUND", `Worktree path not found: ${wtPath}`, {
@@ -303,7 +314,7 @@ export async function worktreeAttach(
 		);
 	}
 
-	const match = gitWorktrees.find((w) => w.path === wtPath);
+	const match = gitWorktrees.find((w) => realpathExisting(w.path) === wtPath);
 	if (!match) {
 		outputError(
 			"WORKTREE_INVALID",
@@ -369,7 +380,10 @@ export async function worktreeRemove(
 
 	// Phase 6: prevent removing current checkout worktree
 	const checkoutRoot = resolveCheckoutRoot(cwd);
-	if (checkoutRoot && resolve(checkoutRoot) === resolve(wtPath)) {
+	if (
+		checkoutRoot &&
+		realpathExisting(checkoutRoot) === realpathExisting(wtPath)
+	) {
 		outputError(
 			"WORKTREE_SELF_REMOVE",
 			"Cannot remove the worktree you are currently inside. " +

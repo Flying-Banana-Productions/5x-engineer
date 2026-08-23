@@ -92,6 +92,22 @@ interface CmdResult {
 	exitCode: number;
 }
 
+function runGit(cwd: string, args: string[]): CmdResult {
+	const result = Bun.spawnSync(["git", ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const decoder = new TextDecoder();
+	return {
+		stdout: decoder.decode(result.stdout).trim(),
+		stderr: decoder.decode(result.stderr).trim(),
+		exitCode: result.exitCode,
+	};
+}
+
 async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
@@ -207,6 +223,82 @@ describe("5x worktree", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+
+	test(
+		"create: fetches and tracks a remote-only custom branch",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const remoteDir = join(dir, "remote.git");
+				const seedDir = join(dir, "seed");
+				const branch = "feature/remote-only";
+
+				expect(runGit(dir, ["init", "--bare", remoteDir]).exitCode).toBe(0);
+				expect(
+					runGit(dir, ["remote", "add", "origin", remoteDir]).exitCode,
+				).toBe(0);
+				expect(runGit(dir, ["push", "origin", "HEAD:main"]).exitCode).toBe(0);
+				expect(
+					runGit(dir, [
+						"--git-dir",
+						remoteDir,
+						"symbolic-ref",
+						"HEAD",
+						"refs/heads/main",
+					]).exitCode,
+				).toBe(0);
+				expect(runGit(dir, ["clone", remoteDir, seedDir]).exitCode).toBe(0);
+				expect(
+					runGit(seedDir, ["config", "user.email", "test@test.com"]).exitCode,
+				).toBe(0);
+				expect(runGit(seedDir, ["config", "user.name", "Test"]).exitCode).toBe(
+					0,
+				);
+				expect(runGit(seedDir, ["switch", "-c", branch]).exitCode).toBe(0);
+				writeFileSync(join(seedDir, "remote-only.txt"), "from remote\n");
+				expect(runGit(seedDir, ["add", "remote-only.txt"]).exitCode).toBe(0);
+				expect(
+					runGit(seedDir, ["commit", "-m", "remote branch commit"]).exitCode,
+				).toBe(0);
+				expect(runGit(seedDir, ["push", "-u", "origin", branch]).exitCode).toBe(
+					0,
+				);
+				expect(
+					runGit(dir, ["show-ref", "--verify", `refs/remotes/origin/${branch}`])
+						.exitCode,
+				).not.toBe(0);
+
+				const result = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+					"--branch",
+					branch,
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				const payload = data.data as { worktree_path: string; branch: string };
+				expect(payload.branch).toBe(branch);
+				expect(existsSync(join(payload.worktree_path, "remote-only.txt"))).toBe(
+					true,
+				);
+				const upstream = runGit(payload.worktree_path, [
+					"rev-parse",
+					"--abbrev-ref",
+					"--symbolic-full-name",
+					"@{upstream}",
+				]);
+				expect(upstream.exitCode).toBe(0);
+				expect(upstream.stdout).toBe(`origin/${branch}`);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
 	);
 
 	test(

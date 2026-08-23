@@ -118,6 +118,7 @@ export {
 	canonicalizePlanPath,
 	isPathUnder,
 	realpathExisting,
+	relativePathUnder,
 } from "./paths.js";
 // Project root
 export { findGitRoot, resolveProjectRoot } from "./project-root.js";

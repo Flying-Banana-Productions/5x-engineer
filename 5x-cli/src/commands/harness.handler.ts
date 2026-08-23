@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { resolveHarnessModelForRole, resolveLayeredConfig } from "../config.js";
 import {
 	listBundledHarnesses,
@@ -45,6 +45,7 @@ import type {
 	RenderedAsset,
 } from "../harnesses/types.js";
 import { outputError, outputSuccess } from "../output.js";
+import { relativePathUnder } from "../paths.js";
 import { version } from "../version.js";
 import {
 	DB_FILENAME,
@@ -422,7 +423,10 @@ function preservedPaths(
  * equal across machines and platforms.
  */
 function toRelativeContextDir(projectRoot: string, contextDir: string): string {
-	const rel = relative(projectRoot, contextDir);
+	const rel = relativePathUnder(contextDir, projectRoot);
+	if (rel === null) {
+		throw new Error("Harness context directory is outside the project root.");
+	}
 	return rel === "" ? "" : rel.split(sep).join("/");
 }
 

@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -1558,7 +1565,13 @@ describe("5x run relink", () => {
 				await run5x(projectRoot, ["run", "complete", "--run", runId]);
 
 				const wtDir = join(dir, "fake-worktree");
+				const wtAlias = join(dir, "fake-worktree-alias");
 				mkdirSync(wtDir);
+				symlinkSync(
+					wtDir,
+					wtAlias,
+					process.platform === "win32" ? "junction" : "dir",
+				);
 
 				const result = await run5x(projectRoot, [
 					"run",
@@ -1566,16 +1579,16 @@ describe("5x run relink", () => {
 					"--run",
 					runId,
 					"--worktree",
-					wtDir,
+					wtAlias,
 				]);
 				expect(result.exitCode).toBe(0);
 				const data = parseJson(result.stdout).data as Record<string, unknown>;
-				expect(data.worktree_path).toBe(wtDir);
+				expect(data.worktree_path).toBe(realpathSync(wtDir));
 				const changes = data.changes as Record<
 					string,
 					{ old: string | null; new: string }
 				>;
-				expect(changes.worktree?.new).toBe(wtDir);
+				expect(changes.worktree?.new).toBe(realpathSync(wtDir));
 			} finally {
 				cleanupDir(dir);
 			}

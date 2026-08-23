@@ -17,8 +17,8 @@
 
 import type { Database } from "bun:sqlite";
 import { accessSync, constants, existsSync } from "node:fs";
-import { join, relative } from "node:path";
-import { isPathUnder, realpathExisting } from "../paths.js";
+import { join } from "node:path";
+import { isPathUnder, relativePathUnder } from "../paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -170,12 +170,16 @@ export function resolveRunExecutionContext(
 			};
 		}
 
-		// Derive worktree-relative plan path using realpath'd prefixes so
-		// macOS /var vs /private/var does not produce a `..` relative path.
-		const relPlanPath = relative(
-			realpathExisting(controlPlaneRoot),
-			realpathExisting(planPath),
-		);
+		const relPlanPath = relativePathUnder(planPath, controlPlaneRoot);
+		if (relPlanPath === null) {
+			return {
+				ok: false,
+				error: {
+					code: "PLAN_PATH_INVALID",
+					message: "Run plan path is outside the control-plane root.",
+				},
+			};
+		}
 		const worktreePlanPath = join(mappedWorktreePath, relPlanPath);
 		const planPathInWorktreeExists = existsSync(worktreePlanPath);
 
@@ -210,9 +214,7 @@ export function resolveRunExecutionContext(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Check if a directory is accessible (exists and readable).
- */
+/** Check if a directory is accessible (exists and readable). */
 function isAccessible(dirPath: string): boolean {
 	try {
 		accessSync(dirPath, constants.R_OK);

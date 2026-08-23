@@ -14,6 +14,7 @@ import {
 	isPathUnder,
 	planSlugFromPath,
 	realpathExisting,
+	relativePathUnder,
 	resolvePlanArg,
 } from "../../src/paths.js";
 
@@ -69,6 +70,50 @@ describe("canonicalizePlanPath", () => {
 			writeFileSync(target, "# Plan\n");
 			symlinkSync(target, link);
 			expect(canonicalizePlanPath(link)).toBe(canonicalizePlanPath(target));
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+});
+
+describe("physical path identity", () => {
+	test("realpaths nested missing paths through the longest existing ancestor", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-nested-"));
+		try {
+			const target = join(tmp, "target");
+			const alias = join(tmp, "alias");
+			mkdirSync(target);
+			symlinkSync(target, alias, "dir");
+
+			const missing = join(alias, "new", "subproject", "plan.md");
+			const expected = join(
+				realpathSync(target),
+				"new",
+				"subproject",
+				"plan.md",
+			);
+			expect(realpathExisting(missing)).toBe(expected);
+			expect(relativePathUnder(missing, target)).toBe(
+				join("new", "subproject", "plan.md"),
+			);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+
+	test("rejects traversal through a symlink outside the parent", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "5x-paths-escape-"));
+		try {
+			const root = join(tmp, "root");
+			const outside = join(tmp, "outside");
+			mkdirSync(root);
+			mkdirSync(outside);
+			symlinkSync(outside, join(root, "escape"), "dir");
+
+			const escaped = join(root, "escape", "missing", "plan.md");
+			expect(isPathUnder(escaped, root)).toBe(false);
+			expect(relativePathUnder(escaped, root)).toBeNull();
+			expect(isPathUnder("relative/plan.md", root)).toBe(false);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}

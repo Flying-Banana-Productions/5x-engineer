@@ -14,14 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import {
-	basename,
-	dirname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-} from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type FiveXConfig,
 	loadConfig,
@@ -78,6 +71,7 @@ import {
 	isPathUnder,
 	planSlugFromPath,
 	realpathExisting,
+	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
 import {
@@ -278,12 +272,8 @@ function deriveWorktreeContextFields(
 	};
 
 	// Derive worktree-relative plan path and include only if the file exists.
-	// Compare realpath'd prefixes so macOS /var vs /private/var is the same tree.
-	if (isPathUnder(planPath, controlPlaneRoot)) {
-		const relPlanPath = relative(
-			realpathExisting(controlPlaneRoot),
-			realpathExisting(planPath),
-		);
+	const relPlanPath = relativePathUnder(planPath, controlPlaneRoot);
+	if (relPlanPath !== null) {
 		const worktreePlanPath = join(worktreeResult.worktree_path, relPlanPath);
 		if (existsSync(worktreePlanPath)) {
 			fields.worktree_plan_path = worktreePlanPath;
@@ -357,8 +347,10 @@ async function ensureRunWorktree(
 	const gitWorktrees = await listWorktrees(projectRoot);
 
 	if (explicitPath) {
-		const absPath = resolve(explicitPath);
-		const match = gitWorktrees.find((w) => w.path === absPath);
+		const absPath = realpathExisting(explicitPath);
+		const match = gitWorktrees.find(
+			(w) => realpathExisting(w.path) === absPath,
+		);
 		if (!match) {
 			if (!existsSync(absPath)) {
 				outputError(
@@ -391,7 +383,10 @@ async function ensureRunWorktree(
 
 	const existing = getPlan(db, planPath);
 	if (existing?.worktree_path) {
-		const match = gitWorktrees.find((w) => w.path === existing.worktree_path);
+		const existingPath = realpathExisting(existing.worktree_path);
+		const match = gitWorktrees.find(
+			(w) => realpathExisting(w.path) === existingPath,
+		);
 		if (match) {
 			return {
 				action: "reused",
@@ -402,8 +397,10 @@ async function ensureRunWorktree(
 	}
 
 	const expectedBranch = branchNameFromPlan(planPath);
-	const cwd = resolve(".");
-	const cwdWorktree = gitWorktrees.find((w) => w.path === cwd);
+	const cwd = realpathExisting(".");
+	const cwdWorktree = gitWorktrees.find(
+		(w) => realpathExisting(w.path) === cwd,
+	);
 	if (
 		cwdWorktree &&
 		(cwdWorktree.branch === expectedBranch ||
@@ -457,7 +454,10 @@ async function ensureRunWorktree(
 	const branch = expectedBranch;
 	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath, stateDir);
 
-	const existingByPath = gitWorktrees.find((w) => w.path === wtPath);
+	const physicalWtPath = realpathExisting(wtPath);
+	const existingByPath = gitWorktrees.find(
+		(w) => realpathExisting(w.path) === physicalWtPath,
+	);
 	if (existingByPath) {
 		upsertPlan(db, {
 			planPath,
@@ -805,8 +805,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 
 	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
 	// (or projectRoot in none mode). This ensures stored plan_path values
-	// are re-rootable into mapped worktrees. Compare via realpath so macOS
-	// `/var` vs `/private/var` does not false-reject in-repo plans.
+	// are re-rootable into mapped worktrees.
 	if (!isPathUnder(planPath, projectRoot)) {
 		outputError(
 			"PLAN_OUTSIDE_CONTROL_PLANE",
@@ -1553,7 +1552,7 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 
 	// ── Worktree relink ──────────────────────────────────────────────
 	if (params.worktree !== undefined) {
-		const newWorktreePath = resolve(params.worktree);
+		const newWorktreePath = realpathExisting(params.worktree);
 		if (!existsSync(newWorktreePath)) {
 			outputError(
 				"WORKTREE_NOT_FOUND",

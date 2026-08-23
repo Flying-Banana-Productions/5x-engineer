@@ -424,6 +424,111 @@ describe("worktree operations", () => {
 		);
 	});
 
+	test("fetches and tracks a remote branch when requested", async () => {
+		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")],
+			[cmd("rev-parse", "--verify"), fail("not found")],
+			[cmd("fetch", "--all"), ok("")],
+			[cmd("remote"), ok("origin")],
+			[cmd("for-each-ref"), ok("refs/remotes/origin/feature/remote-only")],
+			[cmd("worktree", "add"), ok("Preparing worktree")],
+		);
+
+		await createWorktree("/repo", "feature/remote-only", "/repo/wt/remote", {
+			fetchRemotes: true,
+		});
+
+		expect(execGitSpy).toHaveBeenCalledWith(["fetch", "--all"], "/repo");
+		expect(execGitSpy).toHaveBeenCalledWith(
+			[
+				"worktree",
+				"add",
+				"--track",
+				"-b",
+				"feature/remote-only",
+				"/repo/wt/remote",
+				"origin/feature/remote-only",
+			],
+			"/repo",
+		);
+	});
+
+	test("uses checkout.defaultRemote when a branch exists on multiple remotes", async () => {
+		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")],
+			[cmd("rev-parse", "--verify"), fail("not found")],
+			[cmd("fetch", "--all"), ok("")],
+			[cmd("remote"), ok("origin\nupstream")],
+			[
+				cmd("for-each-ref"),
+				ok(
+					"refs/remotes/origin/feature/shared\nrefs/remotes/upstream/feature/shared",
+				),
+			],
+			[cmd("config", "--get", "checkout.defaultRemote"), ok("upstream")],
+			[cmd("worktree", "add"), ok("Preparing worktree")],
+		);
+
+		await createWorktree("/repo", "feature/shared", "/repo/wt/shared", {
+			fetchRemotes: true,
+		});
+
+		expect(execGitSpy).toHaveBeenCalledWith(
+			[
+				"worktree",
+				"add",
+				"--track",
+				"-b",
+				"feature/shared",
+				"/repo/wt/shared",
+				"upstream/feature/shared",
+			],
+			"/repo",
+		);
+	});
+
+	test("requires checkout.defaultRemote for an ambiguous remote branch", async () => {
+		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")],
+			[cmd("rev-parse", "--verify"), fail("not found")],
+			[cmd("fetch", "--all"), ok("")],
+			[cmd("remote"), ok("origin\nupstream")],
+			[
+				cmd("for-each-ref"),
+				ok(
+					"refs/remotes/origin/feature/shared\nrefs/remotes/upstream/feature/shared",
+				),
+			],
+			[cmd("config", "--get", "checkout.defaultRemote"), fail("not set")],
+		);
+
+		await expect(
+			createWorktree("/repo", "feature/shared", "/repo/wt/shared", {
+				fetchRemotes: true,
+			}),
+		).rejects.toThrow("checkout.defaultRemote");
+	});
+
+	test("creates a new branch when no fetched remote branch matches", async () => {
+		mockGit(
+			[cmd("rev-parse", "HEAD"), ok("abc123")],
+			[cmd("rev-parse", "--verify"), fail("not found")],
+			[cmd("fetch", "--all"), ok("")],
+			[cmd("remote"), ok("origin")],
+			[cmd("for-each-ref"), ok("refs/remotes/origin/main")],
+			[cmd("worktree", "add"), ok("Preparing worktree")],
+		);
+
+		await createWorktree("/repo", "feature/new", "/repo/wt/new", {
+			fetchRemotes: true,
+		});
+
+		expect(execGitSpy).toHaveBeenCalledWith(
+			["worktree", "add", "/repo/wt/new", "-b", "feature/new"],
+			"/repo",
+		);
+	});
+
 	test("create worktree fails with clear message on empty repo (no commits)", async () => {
 		mockGit([
 			cmd("rev-parse", "HEAD"),

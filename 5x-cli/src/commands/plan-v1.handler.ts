@@ -35,7 +35,7 @@ import {
 	canonicalizePlanPath,
 	isPathUnder,
 	planSlugFromPath,
-	realpathExisting,
+	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
 import { resolveDbContext } from "./context.js";
@@ -261,13 +261,8 @@ function effectivePlanReadPath(
 	worktreePath: string | null | undefined,
 ): string {
 	if (!worktreePath) return canonicalPlanPath;
-	if (!isPathUnder(canonicalPlanPath, projectRoot)) {
-		return canonicalPlanPath;
-	}
-	const relPlanPath = relative(
-		realpathExisting(projectRoot),
-		realpathExisting(canonicalPlanPath),
-	);
+	const relPlanPath = relativePathUnder(canonicalPlanPath, projectRoot);
+	if (relPlanPath === null) return canonicalPlanPath;
 	const candidate = join(worktreePath, relPlanPath);
 	return existsSync(candidate) ? candidate : canonicalPlanPath;
 }
@@ -583,7 +578,8 @@ function resolveWorktreePlanPath(planPath: string): string | null {
 		if (!worktreePath) return null;
 
 		// Re-root the plan path into the worktree
-		const relPlanPath = relative(cp.controlPlaneRoot, planPath);
+		const relPlanPath = relativePathUnder(planPath, cp.controlPlaneRoot);
+		if (relPlanPath === null) return null;
 		const worktreePlanPath = join(worktreePath, relPlanPath);
 
 		if (!existsSync(worktreePlanPath)) return null;

@@ -31,7 +31,8 @@ export function registerWorktree(parent: Command) {
 		.description(
 			"Create a new git worktree and associate it with an implementation plan. The\n" +
 				"branch name defaults to a sanitized form of the plan filename. The worktree\n" +
-				"is registered in the database for automatic resolution.",
+				"is registered in the database for automatic resolution. An explicitly named\n" +
+				"branch tracks a matching branch fetched from a configured remote.",
 		)
 		.requiredOption("-p, --plan <path>", "Path to implementation plan")
 		.option(

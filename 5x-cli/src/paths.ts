@@ -6,6 +6,7 @@ import {
 	join,
 	relative,
 	resolve,
+	sep,
 } from "node:path";
 
 /** Git env vars that override repo discovery (hooks / inherited worktrees). */
@@ -13,16 +14,14 @@ const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
 
 function sanitizedGitEnv(): Record<string, string | undefined> {
 	const env = { ...process.env };
-	for (const key of GIT_ENV_VARS) {
-		delete env[key];
-	}
+	for (const key of GIT_ENV_VARS) delete env[key];
 	return env;
 }
 
 /**
- * Resolve `rawPath` to an absolute path, realpath'ing the longest existing
- * prefix. Missing files still inherit the parent's realpath so macOS
- * `/var` vs `/private/var` (and `/tmp` vs `/private/tmp`) compare equal.
+ * Resolve a path through its longest existing ancestor. This gives missing
+ * paths the same physical prefix as existing paths reached through aliases or
+ * symlinks, such as macOS `/var` and `/private/var`.
  */
 export function realpathExisting(rawPath: string): string {
 	const abs = resolve(rawPath);
@@ -33,10 +32,7 @@ export function realpathExisting(rawPath: string): string {
 		let current = abs;
 		while (true) {
 			const parent = dirname(current);
-			if (parent === current) {
-				// Reached the filesystem root without an existing prefix.
-				return abs;
-			}
+			if (parent === current) return abs;
 			missing.unshift(basename(current));
 			if (existsSync(parent)) {
 				return join(realpathSync(parent), ...missing);
@@ -44,22 +40,30 @@ export function realpathExisting(rawPath: string): string {
 			current = parent;
 		}
 	} catch {
-		// Fall through to the unresolved absolute path.
+		return abs;
 	}
-	return abs;
 }
 
-/**
- * True when `childPath` is `parentPath` or a descendant after resolve/realpath.
- * Mixed symlink prefixes (`/var` vs `/private/var`) do not false-reject.
- */
+/** Return a physical relative path when `childPath` is inside `parentPath`. */
+export function relativePathUnder(
+	childPath: string,
+	parentPath: string,
+): string | null {
+	if (!isAbsolute(childPath)) return null;
+	const rel = relative(
+		realpathExisting(parentPath),
+		realpathExisting(childPath),
+	);
+	if (rel === "") return rel;
+	if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) {
+		return null;
+	}
+	return rel;
+}
+
+/** True when `childPath` is `parentPath` or a descendant by physical identity. */
 export function isPathUnder(childPath: string, parentPath: string): boolean {
-	// Relative stored paths (legacy DB rows) are not under any root.
-	if (!isAbsolute(childPath)) return false;
-	const child = realpathExisting(childPath);
-	const parent = realpathExisting(parentPath);
-	const rel = relative(parent, child);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+	return relativePathUnder(childPath, parentPath) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +96,7 @@ function detectWorktreeReroot(): {
 		const gitDir = Bun.spawnSync(["git", "rev-parse", "--git-dir"], {
 			cwd,
 			env,
+			stdin: "ignore",
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -103,7 +108,7 @@ function detectWorktreeReroot(): {
 
 		const gitCommonDir = Bun.spawnSync(
 			["git", "rev-parse", "--git-common-dir"],
-			{ cwd, env, stderr: "ignore" },
+			{ cwd, env, stdin: "ignore", stderr: "ignore" },
 		)
 			.stdout.toString()
 			.trim();
@@ -123,6 +128,7 @@ function detectWorktreeReroot(): {
 		const toplevel = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
 			cwd,
 			env,
+			stdin: "ignore",
 			stderr: "ignore",
 		})
 			.stdout.toString()
@@ -193,11 +199,11 @@ export function canonicalizePlanPath(rawPath: string): string {
 	// If we're in a worktree and the path falls inside the worktree checkout,
 	// re-root it to the main repo — but only if the file exists there.
 	const reroot = detectWorktreeReroot();
-	if (reroot && isPathUnder(real, reroot.checkoutRoot)) {
-		const rel = relative(reroot.checkoutRoot, real);
-		const mainPath = join(reroot.mainRoot, rel);
-		if (existsSync(mainPath)) {
-			return realpathExisting(mainPath);
+	if (reroot) {
+		const rel = relativePathUnder(real, reroot.checkoutRoot);
+		if (rel !== null) {
+			const mainPath = join(reroot.mainRoot, rel);
+			if (existsSync(mainPath)) return realpathExisting(mainPath);
 		}
 	}
 
