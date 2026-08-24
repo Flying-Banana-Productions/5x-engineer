@@ -339,6 +339,42 @@ export async function protocolValidateCore(
 	return { role, valid: true, result: validated, warnings };
 }
 
+/**
+ * Resolve the phase used when recording a protocol result.
+ * result_json.phase is authoritative; --phase must match when both are set.
+ */
+export function resolveRecordPhase(
+	commandPhase: string | undefined,
+	validated: unknown,
+): string {
+	const resultPhase =
+		validated &&
+		typeof validated === "object" &&
+		!Array.isArray(validated) &&
+		"phase" in validated
+			? String((validated as Record<string, unknown>).phase)
+			: undefined;
+
+	if (commandPhase && resultPhase) {
+		if (commandPhase !== resultPhase) {
+			outputError(
+				"PHASE_MISMATCH",
+				`--phase is "${commandPhase}" but result_json.phase is "${resultPhase}". ` +
+					"These must match. Remove --phase to use result_json as authoritative, " +
+					"or correct the phase value.",
+			);
+		}
+		return commandPhase;
+	}
+	if (commandPhase) return commandPhase;
+	if (resultPhase) return resultPhase;
+	outputError(
+		"PHASE_REQUIRED",
+		"Phase is required when recording. Provide --phase or include " +
+			'a "phase" field in the result JSON.',
+	);
+}
+
 export async function protocolValidate(
 	params: ProtocolValidateParams,
 ): Promise<void> {
@@ -413,38 +449,7 @@ export async function protocolValidate(
 			);
 		}
 		recordStepName = params.step;
-
-		// Phase enforcement: resolve from --phase and/or result_json.phase.
-		// result_json is authoritative; --phase must match if both are present.
-		const resultPhase =
-			validated &&
-			typeof validated === "object" &&
-			!Array.isArray(validated) &&
-			"phase" in validated
-				? String((validated as Record<string, unknown>).phase)
-				: undefined;
-
-		if (params.phase && resultPhase) {
-			if (params.phase !== resultPhase) {
-				outputError(
-					"PHASE_MISMATCH",
-					`--phase is "${params.phase}" but result_json.phase is "${resultPhase}". ` +
-						"These must match. Remove --phase to use result_json as authoritative, " +
-						"or correct the phase value.",
-				);
-			}
-			resolvedPhase = params.phase;
-		} else if (params.phase) {
-			resolvedPhase = params.phase;
-		} else if (resultPhase) {
-			resolvedPhase = resultPhase;
-		} else {
-			outputError(
-				"PHASE_REQUIRED",
-				"Phase is required when recording. Provide --phase or include " +
-					'a "phase" field in the result JSON.',
-			);
-		}
+		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
 
 	// -----------------------------------------------------------------------

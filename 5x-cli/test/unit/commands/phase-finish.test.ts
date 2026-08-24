@@ -26,6 +26,7 @@ import {
 	writePointer,
 } from "../../../src/commands/run-pointer.js";
 import { FiveXConfigSchema } from "../../../src/config.js";
+import { upsertPlan } from "../../../src/db/operations.js";
 import { createRunV1, getSteps } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
@@ -445,6 +446,75 @@ describe("phaseFinish", () => {
 			);
 			expect(viaFlag.run_id).toBe(ctx.runId);
 			expect(viaPointer.run_id).toBe(ctx.runId);
+		} finally {
+			teardown(ctx);
+		}
+	});
+
+	test("quality executes in mapped worktree, not startDir", async () => {
+		const ctx = setup();
+		try {
+			const wt = join(ctx.tmp, "linked-wt");
+			mkdirSync(wt, { recursive: true });
+			upsertPlan(ctx.db, {
+				planPath: ctx.planPath,
+				worktreePath: wt,
+			});
+			const input = writeAuthor(ctx, {
+				result: "complete",
+				commit: "abc123def",
+			});
+			await phaseFinishCore(
+				finishParams(ctx, { input, phaseChecklistValidate: false }),
+			);
+			expect(existsSync(join(wt, GATE_LOG))).toBe(true);
+			expect(existsSync(join(ctx.tmp, GATE_LOG))).toBe(false);
+		} finally {
+			teardown(ctx);
+		}
+	});
+
+	test("author payload phase different from --phase: PHASE_MISMATCH; quality recorded; no author row", async () => {
+		const ctx = setup();
+		try {
+			const input = writeAuthor(ctx, {
+				result: "complete",
+				commit: "abc123def",
+				phase: "2",
+			});
+			try {
+				await phaseFinishCore(finishParams(ctx, { input }));
+				throw new Error("expected PHASE_MISMATCH");
+			} catch (err) {
+				const cli = expectCliError(err, "PHASE_MISMATCH");
+				const detail = cli.detail as Record<string, unknown>;
+				expect(detail.failing_step).toBe("protocol");
+				const steps = detail.steps as Array<Record<string, unknown>>;
+				expect(steps[0]?.status).toBe("completed");
+				expect(steps[1]?.status).toBe("failed");
+				expect(steps[2]?.status).toBe("skipped");
+			}
+			expect(getSteps(ctx.db, ctx.runId).map((r) => r.step_name)).toEqual([
+				"quality:check",
+			]);
+		} finally {
+			teardown(ctx);
+		}
+	});
+
+	test("author payload phase matching --phase records successfully", async () => {
+		const ctx = setup();
+		try {
+			const input = writeAuthor(ctx, {
+				result: "complete",
+				commit: "abc123def",
+				phase: "1",
+			});
+			const data = await phaseFinishCore(finishParams(ctx, { input }));
+			expect(data.steps.every((s) => s.status === "completed")).toBe(true);
+			expect(
+				getSteps(ctx.db, ctx.runId).some((r) => r.step_name === AUTHOR_STEP),
+			).toBe(true);
 		} finally {
 			teardown(ctx);
 		}

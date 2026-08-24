@@ -14,6 +14,7 @@ import {
 	evaluatePhaseChecklist,
 	isNumericPhaseRef,
 	protocolValidateCore,
+	resolveRecordPhase,
 } from "./protocol.handler.js";
 import { runQualityCore } from "./quality-v1.handler.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -73,6 +74,8 @@ function remediationFor(code: string): string {
 			return "Pass a --phase that exists in the plan, or --no-phase-checklist-validate to skip the gate.";
 		case "RUN_CONTEXT_REQUIRED":
 			return REQUIRED_REMEDIATION;
+		case "PHASE_MISMATCH":
+			return "Correct the author payload's phase field to match --phase, then re-run `5x phase finish` with the same keys. Quality is skipped on resume if it already passed.";
 		default:
 			return "Re-run `5x phase finish` with the same --phase/--iteration/--step after addressing the failing sub-step. Successful sub-steps resume.";
 	}
@@ -221,7 +224,7 @@ export async function phaseFinishCore(
 					iteration: params.iteration,
 					record: false,
 					recordStep: qualityStepName,
-					workdir: params.startDir,
+					startDir: params.startDir,
 					env: params.env,
 					db,
 				},
@@ -292,6 +295,7 @@ export async function phaseFinishCore(
 				startDir: params.startDir,
 			});
 			authorPayload = core.result;
+			resolveRecordPhase(params.phase, authorPayload);
 			for (const w of core.warnings) {
 				console.error(`Warning: ${w}`);
 			}

@@ -44,6 +44,11 @@ export interface QualityParams {
 	phase?: string;
 	iteration?: number;
 	workdir?: string;
+	/**
+	 * Discovery root for control-plane and ambient identity.
+	 * Unlike `workdir`, this does not override a mapped worktree.
+	 */
+	startDir?: string;
 	env?: NodeJS.Dict<string>;
 	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
 	db?: Database;
@@ -125,7 +130,7 @@ export async function runQualityCore(
 
 	if (params.run) validateRunId(params.run);
 
-	const startDir = params.workdir;
+	const startDir = params.workdir ?? params.startDir;
 	const controlPlane = resolveControlPlaneRoot(startDir);
 
 	if (controlPlane.mode !== "none") {
@@ -222,7 +227,7 @@ export async function runQualityCore(
 		skipQualityGates = ctx.config.skipQualityGates;
 	} else {
 		// Default: resolve from cwd
-		const ctx = await resolveProjectContext({ startDir: params.workdir });
+		const ctx = await resolveProjectContext({ startDir });
 		projectRoot = ctx.projectRoot;
 		qualityGates = ctx.config.qualityGates;
 		skipQualityGates = ctx.config.skipQualityGates;
