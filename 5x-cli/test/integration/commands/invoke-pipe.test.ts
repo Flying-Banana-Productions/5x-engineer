@@ -168,6 +168,31 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
+/** Piped stdin that never receives a chunk or EOF — exercises the 200ms pipe timeout. */
+async function run5xWithHangingStdin(
+	cwd: string,
+	args: string[],
+): Promise<CmdResult> {
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	try {
+		proc.stdin.end();
+	} catch {
+		// Child already exited.
+	}
+	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
 function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
@@ -384,6 +409,73 @@ describe("invoke pipe ingestion", () => {
 			}
 		},
 		{ timeout: 20000 },
+	);
+
+	test(
+		"dangling stdin with --run still invokes; warning does not appear on stdout",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				const result = await run5xWithHangingStdin(projectRoot, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=test",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.run_id).toBe(runId);
+				expect(result.stdout).not.toContain("no upstream envelope detected");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"dangling stdin without --run uses ambient identity; timeout warning on stderr not stdout",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+
+				const result = await run5xWithHangingStdin(projectRoot, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=test",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				const data = json.data as Record<string, unknown>;
+				expect(data.run_id).toBe(runId);
+				expect(result.stdout).not.toContain("no upstream envelope detected");
+				expect(result.stderr).toContain("no upstream envelope detected");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
 	);
 
 	test(

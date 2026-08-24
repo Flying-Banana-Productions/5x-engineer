@@ -5,7 +5,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { extractInvokeMetadata, extractPipeContext } from "../../src/pipe.js";
+import {
+	extractInvokeMetadata,
+	extractPipeContext,
+	PIPE_TIMEOUT_WARNING,
+} from "../../src/pipe.js";
 import { cleanGitEnv } from "../helpers/clean-env.js";
 
 // ---------------------------------------------------------------------------
@@ -302,9 +306,34 @@ describe("readUpstreamEnvelope", () => {
 		"pipe-read-helper.ts",
 	);
 
-	async function runWithStdin(
-		input: string,
-	): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+	interface HelperOutput {
+		ok: boolean;
+		result?: unknown;
+		error?: string;
+		stderrCaptured?: string[];
+		stderr: string;
+		exitCode: number;
+	}
+
+	async function finishHelper(proc: {
+		stdout: ReadableStream<Uint8Array>;
+		stderr: ReadableStream<Uint8Array>;
+		exited: Promise<number>;
+		stdin: { end(): void };
+	}): Promise<HelperOutput> {
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		const parsed = JSON.parse(stdout.trim()) as Omit<
+			HelperOutput,
+			"stderr" | "exitCode"
+		>;
+		return { ...parsed, stderr, exitCode };
+	}
+
+	async function runWithStdin(input: string): Promise<HelperOutput> {
 		const proc = Bun.spawn(["bun", "run", HELPER_PATH], {
 			stdin: "pipe",
 			stdout: "pipe",
@@ -313,9 +342,24 @@ describe("readUpstreamEnvelope", () => {
 		});
 		proc.stdin.write(input);
 		proc.stdin.end();
-		const stdout = await new Response(proc.stdout).text();
-		await proc.exited;
-		return JSON.parse(stdout.trim());
+		return finishHelper(proc);
+	}
+
+	/** Piped stdin that never receives a chunk or EOF — exercises the 200ms timeout. */
+	async function runWithHangingStdin(): Promise<HelperOutput> {
+		const proc = Bun.spawn(["bun", "run", HELPER_PATH], {
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+			env: cleanGitEnv(),
+		});
+		const out = await finishHelper(proc);
+		try {
+			proc.stdin.end();
+		} catch {
+			// Child already exited; the write end may already be closed.
+		}
+		return out;
 	}
 
 	test(
@@ -332,9 +376,12 @@ describe("readUpstreamEnvelope", () => {
 			});
 			const out = await runWithStdin(envelope);
 			expect(out.ok).toBe(true);
+			expect(out.exitCode).toBe(0);
 			expect(out.result).not.toBeNull();
 			const r = out.result as { data: Record<string, unknown> };
 			expect(r.data.run_id).toBe("run_abc");
+			expect(out.stderr).not.toContain("no upstream envelope detected");
+			expect(out.stderrCaptured ?? []).toEqual([]);
 		},
 		{ timeout: 15000 },
 	);
@@ -351,8 +398,11 @@ describe("readUpstreamEnvelope", () => {
 			});
 			const out = await runWithStdin(envelope);
 			expect(out.ok).toBe(true);
+			expect(out.exitCode).toBe(0);
 			const r = out.result as { data: Record<string, unknown> };
 			expect(r.data.passed).toBe(true);
+			expect(out.stderr).not.toContain("no upstream envelope detected");
+			expect(out.stderrCaptured ?? []).toEqual([]);
 		},
 		{ timeout: 15000 },
 	);
@@ -390,13 +440,15 @@ describe("readUpstreamEnvelope", () => {
 			// readUpstreamEnvelope directly. This is a unit seam test.
 			const { readUpstreamEnvelope } = await import("../../src/pipe.js");
 			const origIsTTY = process.stdin.isTTY;
+			const warnings: string[] = [];
 			try {
 				Object.defineProperty(process.stdin, "isTTY", {
 					value: true,
 					configurable: true,
 				});
-				const result = await readUpstreamEnvelope();
+				const result = await readUpstreamEnvelope((m) => warnings.push(m));
 				expect(result).toBeNull();
+				expect(warnings).toEqual([]);
 			} finally {
 				Object.defineProperty(process.stdin, "isTTY", {
 					value: origIsTTY,
@@ -412,7 +464,11 @@ describe("readUpstreamEnvelope", () => {
 		async () => {
 			const out = await runWithStdin("");
 			expect(out.ok).toBe(true);
+			expect(out.exitCode).toBe(0);
 			expect(out.result).toBeNull();
+			// Immediate EOF is a successful empty body, not a timeout.
+			expect(out.stderr).not.toContain("no upstream envelope detected");
+			expect(out.stderrCaptured ?? []).toEqual([]);
 		},
 		{ timeout: 15000 },
 	);
@@ -423,6 +479,21 @@ describe("readUpstreamEnvelope", () => {
 			const out = await runWithStdin(JSON.stringify({ data: { foo: "bar" } }));
 			expect(out.ok).toBe(false);
 			expect(out.error).toContain('missing "ok" field');
+			expect(out.stderr).not.toContain("no upstream envelope detected");
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"piped stdin with no data times out: warning on stderr, null result, exit 0",
+		async () => {
+			const out = await runWithHangingStdin();
+			expect(out.ok).toBe(true);
+			expect(out.exitCode).toBe(0);
+			expect(out.result).toBeNull();
+			expect(out.stderrCaptured).toEqual([PIPE_TIMEOUT_WARNING]);
+			expect(out.stderr).toContain("no upstream envelope detected");
+			expect(out.stderr).toContain(PIPE_TIMEOUT_WARNING);
 		},
 		{ timeout: 15000 },
 	);

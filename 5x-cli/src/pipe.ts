@@ -76,14 +76,25 @@ export function isStdinPiped(): boolean {
 	return !process.stdin.isTTY;
 }
 
+/** Stderr note when a piped stdin read times out with no first chunk. */
+export const PIPE_TIMEOUT_WARNING =
+	"Warning: no upstream envelope detected on stdin (timeout); continuing without piped context.";
+
 /**
  * Read and parse an upstream 5x JSON envelope from stdin.
  *
  * Returns null if stdin is not piped (isTTY is true).
  * Throws if stdin is piped but content is not valid JSON or not a
  * successful envelope ({ ok: true }).
+ *
+ * When stdin is piped but the first chunk does not arrive within 200ms,
+ * emits {@link PIPE_TIMEOUT_WARNING} via `warn` (default `console.error`)
+ * and returns null. Immediate EOF / empty body after a successful read
+ * is silent so timeout can be distinguished from a closed empty pipe.
  */
-export async function readUpstreamEnvelope(): Promise<{
+export async function readUpstreamEnvelope(
+	warn: (msg: string) => void = (m) => console.error(m),
+): Promise<{
 	data: Record<string, unknown>;
 	raw: string;
 } | null> {
@@ -96,16 +107,17 @@ export async function readUpstreamEnvelope(): Promise<{
 	// a blocking read would hang forever. Use a timeout on the first chunk
 	// to distinguish the two cases.
 	const reader = Bun.stdin.stream().getReader();
+	const timeoutSentinel = { timeout: true as const };
 	const first = await Promise.race([
 		reader.read(),
-		Bun.sleep(200).then(
-			() =>
-				({
-					done: true,
-					value: undefined,
-				}) as ReadableStreamReadResult<Uint8Array>,
-		),
+		Bun.sleep(200).then(() => timeoutSentinel),
 	]);
+
+	if ("timeout" in first) {
+		warn(PIPE_TIMEOUT_WARNING);
+		reader.releaseLock();
+		return null;
+	}
 
 	if (first.done || !first.value) {
 		reader.releaseLock();

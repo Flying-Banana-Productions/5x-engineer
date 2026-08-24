@@ -808,9 +808,9 @@ On `:110-113` (`first.done || !first.value` after the 200ms race), if `isStdinPi
 Do not warn when `!isStdinPiped()` (early return `:90-92`).
 Do not warn when a first chunk arrives but `raw.trim()` is empty after the full read (`:124-126`) — that is a successful empty body, not a timeout. Optional: same warning is acceptable; **prefer timeout-only** so tests can distinguish.
 
-- [ ] Inject `warn` for unit tests.
-- [ ] Timeout path warns; TTY path silent; valid JSON path silent.
-- [ ] Warning goes to stderr only.
+- [x] Inject `warn` for unit tests.
+- [x] Timeout path warns; TTY path silent; valid JSON path silent.
+- [x] Warning goes to stderr only.
 
 ### 6.2 Tests
 
@@ -820,10 +820,10 @@ Extend the helper to print `{ ok, result, stderrCaptured }` or assert from the p
 
 Add a unit-level test if you extract the timeout branch with a fake reader; otherwise subprocess is enough.
 
-- [ ] Piped-empty: warning on stderr, `result: null`, exit 0 from helper.
-- [ ] Valid piped envelope: no warning.
-- [ ] TTY: no warning (`readUpstreamEnvelope` with `isTTY` true — existing seam test ~`:388-398`).
-- [ ] `run record` / `invoke` with dangling stdin still succeed when `--run` or ambient identity is present; warning must not appear on stdout (JSON still one envelope). Cover via existing `test/integration/commands/run-record-pipe.test.ts` / `invoke-pipe.test.ts` plus a stderr assertion.
+- [x] Piped-empty: warning on stderr, `result: null`, exit 0 from helper.
+- [x] Valid piped envelope: no warning.
+- [x] TTY: no warning (`readUpstreamEnvelope` with `isTTY` true — existing seam test ~`:388-398`).
+- [x] `run record` / `invoke` with dangling stdin still succeed when `--run` or ambient identity is present; warning must not appear on stdout (JSON still one envelope). Cover via existing `test/integration/commands/run-record-pipe.test.ts` / `invoke-pipe.test.ts` plus a stderr assertion.
 
 ---
 
