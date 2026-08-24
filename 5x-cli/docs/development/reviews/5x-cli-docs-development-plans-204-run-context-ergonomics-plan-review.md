@@ -106,3 +106,24 @@ The pointer fix correctly recognizes that `path.join(controlPlaneRoot, absoluteS
 
 - **Plan readiness:** ⚠️ — ready with corrections; P1.3 is a mechanical `auto_fix`.
 - **Ready for implementation:** ⚠️ — after P1.3 is incorporated.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.2 re-review
+
+**Reviewed:** `e9b31cf266a4c17f678adcc7ec2a9c82ffa3a96a` — plan version 1.2
+
+### Prior issues
+
+- **P1.1 — Absolute configured state directory:** **Addressed.** `currentRunPath` now delegates to the shared state-root helper and retains relative/absolute coverage.
+- **P1.2 — Conditional checklist gate:** **Addressed.** The prior result-aware fresh and resumed checklist semantics and tests remain intact.
+- **P1.3 — Absolute `stateDir` DB resolution:** **Addressed.** The plan adds `controlPlaneStatePath` / `controlPlaneDbPath`, applies them to `resolveDbContext`, `runV1Init`, and the direct in-scope run-scoped handlers, and specifies an integration test that pre-creates the real absolute-root database and rejects shadow DB/pointer paths.
+
+### Remaining concerns
+
+- None identified. The revised helper contract, call-site inventory, and absolute-path integration scenario close the prior correctness gap without introducing a conflicting resolution path.
+
+### Updated readiness
+
+- **Plan readiness:** ✅ — ready; no corrections remain.
+- **Ready for implementation:** ✅
