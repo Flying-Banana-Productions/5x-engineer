@@ -1,8 +1,9 @@
 # Prompt-Queue Foundation — Durable UUID Prompts, CAS Answers, Doctor Hygiene
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 24, 2026
-**Status:** Draft — pending staff engineer review
+**Last updated:** August 24, 2026
+**Status:** Ready for implementation
 
 ---
 
@@ -38,7 +39,8 @@
 | **`run_id` nullable** | Skills call `5x prompt` without `--run` today. Requiring a run would break them. `--run` is optional and explicit. |
 | **Abandonment is a third state, not a fake answer** | Timeout/interrupt/orphan repair must not look like a human answer. CAS on both answer and abandon. |
 | **no-TTY + `--default` CAS-es immediately** | Preserves CI. TTY waits; a store writer can still win. no-TTY without default stays fail-fast `NON_INTERACTIVE` after persist+abandon. |
-| **Cancellable `readLine` via `AbortSignal`** | When a store writer wins, the pending TTY read must stop. Spike this before wiring the race. |
+| **Cancellable `readLine` via `AbortSignal`** | When a store writer wins, the pending TTY read must stop. Spike this before wiring the race. Always abort **both** race branches (stdin and poll/timeout) so a loser cannot keep the process alive. |
+| **CLI lifecycle owns SIGINT/SIGTERM; DB and lock utilities never `process.exit`** | `getDb()` (`src/db/connection.ts:47–54`) and `registerLockCleanup()` (`src/lock.ts:433–440`) currently exit on the first SIGINT, which races ahead of prompt abandonment. Centralize at the CLI boundary: first SIGINT aborts work without exiting so an active prompt can CAS-abandon `interrupted` while SQLite is open; then release locks, close the DB, emit `INTERRUPTED`, exit 130. Second SIGINT or a bounded grace timeout force-exits. |
 | **Doctor `--fix` abandons orphaned prompts** | Terminal run + open prompt has exactly one correct answer. Uses `findingKey` identity `detail.promptId`. |
 
 ### References
@@ -62,14 +64,16 @@
 4. [Phase 1: Schema v6 and row types](#phase-1-schema-v6-and-row-types)
 5. [Phase 2: PromptStore contract, SQLite, memory, CAS tests](#phase-2-promptstore-contract-sqlite-memory-cas-tests)
 6. [Phase 3: Doctor orphaned-prompt check](#phase-3-doctor-orphaned-prompt-check)
-7. [Phase 4: Cancellable stdin and poll helper](#phase-4-cancellable-stdin-and-poll-helper)
-8. [Phase 5: Prompt command integration](#phase-5-prompt-command-integration)
-9. [Phase 6: Concurrency, CLI compatibility, and docs](#phase-6-concurrency-cli-compatibility-and-docs)
-10. [Files Touched](#files-touched)
-11. [Tests](#tests)
-12. [Not In Scope](#not-in-scope)
-13. [Estimated Timeline](#estimated-timeline)
-14. [Provenance](#provenance)
+7. [Phase 4: CLI signal lifecycle](#phase-4-cli-signal-lifecycle)
+8. [Phase 5: Cancellable stdin and poll helper](#phase-5-cancellable-stdin-and-poll-helper)
+9. [Phase 6: Prompt command integration](#phase-6-prompt-command-integration)
+10. [Phase 7: Concurrency, CLI compatibility, and docs](#phase-7-concurrency-cli-compatibility-and-docs)
+11. [Files Touched](#files-touched)
+12. [Tests](#tests)
+13. [Not In Scope](#not-in-scope)
+14. [Estimated Timeline](#estimated-timeline)
+15. [Revision History](#revision-history)
+16. [Provenance](#provenance)
 
 ---
 
@@ -91,7 +95,8 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 - Every prompt command resolves a DB via `resolveDbContext`, creates an open `prompts` row (UUID), then waits or CAS-es.
 - Terminal, `--default`, and test/control-plane writers call one `answerPrompt`. Exactly one write succeeds; losers receive the stored winning answer and still emit the existing success envelope.
 - no-TTY + `--default`: persist, CAS immediately with `answered_by = 'default'`. no-TTY + no default: persist, abandon (`non-interactive`), `NON_INTERACTIVE`.
-- TTY: persist, render as today, race cancellable stdin against a 250ms poll. Store win aborts the TTY read. Interrupt/EOF abandon then existing errors (EOF may still apply default when `--default` is set).
+- TTY: persist, render as today, race cancellable stdin against a 250ms poll. The winner always aborts the losing branch (store win aborts stdin; TTY/EOF/timeout win abort the poll). Interrupt/EOF abandon then existing errors (EOF may still apply default when `--default` is set). Multiline `readAll` SIGINT is `interrupted`, not a partial answer.
+- First SIGINT is owned by the CLI lifecycle: abort in-flight work, let the prompt CAS-abandon `interrupted` while the DB is open, emit `INTERRUPTED`, then release locks, close SQLite, and exit 130. A second SIGINT or grace timeout force-exits.
 - `5x doctor` reports `PROMPT_ORPHANED` for open rows whose `run_id` points at `completed` or `aborted`; `--fix` abandons with reason `run-terminal`.
 
 **Prerequisites:**
@@ -109,15 +114,17 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 
 **`run_id` is a nullable FK.** `REFERENCES runs(id)` without `NOT NULL`. Standalone `5x prompt choose` (skills, ad-hoc) keeps working. Optional `--run <id>`: if set, `getRunV1` must find the row or error `RUN_NOT_FOUND`; do not invent ambient resolution. Doctor orphans only rows with a non-null `run_id` whose run status is not `active`.
 
-**Abandonment is first-class.** Columns `abandoned_at` and `abandon_reason` (`timeout` \| `interrupted` \| `eof` \| `non-interactive` \| `run-terminal`). Open means both answer and abandon timestamps are null. `answerPrompt` and `abandonPrompt` are both `UPDATE … WHERE id = ? AND answered_at IS NULL AND abandoned_at IS NULL`. A human answer must never be encoded as an abandon, and `--fix` must never invent `{ choice }` / `{ confirmed }` / `{ input }`.
+**Abandonment is first-class, and the schema enforces the pair.** Columns `abandoned_at` and `abandon_reason` (`timeout` \| `interrupted` \| `eof` \| `non-interactive` \| `run-terminal`). Open means both answer and abandon timestamps are null. `answerPrompt` and `abandonPrompt` are both `UPDATE … WHERE id = ? AND answered_at IS NULL AND abandoned_at IS NULL`. CHECKs make `(abandoned_at, abandon_reason)` all-or-nothing, keep those columns null on answered/open rows, and keep answered mutually exclusive with abandoned. A human answer must never be encoded as an abandon, and `--fix` must never invent `{ choice }` / `{ confirmed }` / `{ input }`.
 
-**`--default` + no-TTY is immediate CAS, not a poll.** Matches `202` §3.3 recommendation and existing CI (`prompt.handler.ts:84–87`, `:177–180`). TTY still waits so a test/control-plane writer can win. no-TTY without `--default` stays fail-fast (do not hang CI): persist, abandon `non-interactive`, same `NON_INTERACTIVE` envelope/exit 3. Opt-in wait via `--timeout <ms>` (and `FIVEX_PROMPT_TIMEOUT_MS`) for tests and the future dashboard.
+**`--default` + no-TTY is immediate CAS, not a poll.** Matches `202` §3.3 recommendation and existing CI (`prompt.handler.ts:84–87`, `:177–180`). TTY still waits so a test/control-plane writer can win. no-TTY without `--default` stays fail-fast (do not hang CI): persist, abandon `non-interactive`, same `NON_INTERACTIVE` envelope/exit 3. Opt-in wait via `--timeout <ms>` (and `FIVEX_PROMPT_TIMEOUT_MS`) for tests and the future dashboard. Parse both sources with `parseIntArg` / `intArg` from `src/utils/parse-args.ts` (finite, non-negative integer, full-string match). Reject `NaN`, negatives, `Infinity`, and trailing junk **before** `createPrompt`. Do not use Commander `parseInt` (partial parses) or existing `parseTimeout` (seconds, rejects `0`).
 
 **Poll cadence is a constant 250ms with no backoff.** Local SQLite reads are cheap (`202` example 250–500ms). TTY default wall-clock timeout is none (today’s unbounded wait). `--timeout` applies to TTY and to no-TTY-without-default when set.
 
 **Success envelopes stay `{ choice }`, `{ confirmed }`, `{ input }`.** Do not add `prompt_id` in this slice. Losing CAS still prints the winning answer in that shape so agents do not see a new contract. Validation errors (`INVALID_OPTIONS`, `INVALID_DEFAULT`) still fire **before** insert.
 
-**Cancellable stdin is a hard prerequisite to the TTY/store race.** Extend `readLine` / `readAll` (`src/utils/stdin.ts:102–196`) with `AbortSignal`. On abort, remove listeners and resolve a new `ABORTED` sentinel (do not reuse `EOF`/`SIGINT`). If the spike fails, stop Phase 5 TTY racing and escalate — do not ship a dangling `readLine`.
+**Cancellable stdin is a hard prerequisite to the TTY/store race.** Extend `readLine` / `readAll` (`src/utils/stdin.ts:102–196`) with `AbortSignal`. On abort, remove listeners and resolve a new `ABORTED` sentinel (do not reuse `EOF`/`SIGINT`). Every `Promise.race` of stdin vs poll vs timeout must abort **both** losers in `finally` (store win aborts stdin; TTY/EOF win abort the poll; timeout aborts stdin and poll). `readAll` on SIGINT must resolve the `SIGINT` sentinel (not partial text) so multiline interrupt maps to `interrupted`. If the spike fails, stop Phase 6 TTY racing and escalate — do not ship a dangling `readLine`.
+
+**CLI lifecycle owns process signals; prompt abandonment happens while SQLite is still open.** Install a single SIGINT/SIGTERM owner from `src/bin.ts` (new `src/cli-lifecycle.ts`) before `parseAsync`. First SIGINT aborts a process-wide `AbortSignal` and does **not** call `process.exit`, so stdin and the prompt handler can still run. The handler CAS-abandons `interrupted` on the open connection, then `outputError("INTERRUPTED", …)` (exit 130). After the command unwinds, cleanup order is: release locks, close DB, exit 130. `getDb` and `registerLockCleanup` keep idempotent `process.on("exit")` cleanup and **must not** register SIGINT/SIGTERM listeners that call `process.exit`. A second SIGINT, or a bounded grace timeout (`CLI_SIGINT_GRACE_MS`, 2s) if the command does not unwind, force-exits 130 (best-effort envelope). Commands that already complete after abort (e.g. `run watch`) must keep their current exit code: cancel the grace timer when `parseAsync` returns. This is compatible with superseded `011-provider-process-lifecycle.md` (removing `process.exit` from db/lock) and does **not** implement provider cleanup.
 
 **Doctor `--fix` is safe here.** Unlike lingering runs (warn-only, `fixable: false`, `src/doctor/checks/runs.ts:92–107`), an open prompt on a terminal run cannot be answered usefully. `--fix` calls `abandonPrompt(..., 'run-terminal')`. Finding identity is `detail.promptId` via a new `findingKey` case; `fixable: true` without identity must keep throwing.
 
@@ -147,8 +154,10 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
                      │
                      ├─ TTY wins ──► answerPrompt(..., "terminal")
                      │                 lost CAS ──► use stored answer
-                     ├─ store wins ──► abort TTY ──► stored answer
-                     ├─ SIGINT ──► abandon interrupted ──► INTERRUPTED
+                     ├─ store wins ──► abort TTY + abort poll ──► stored answer
+                     ├─ TTY/EOF/timeout ──► abort the losing poll/stdin branch
+                     ├─ SIGINT (lifecycle) ──► CAS-abandon interrupted (DB still open)
+                     │                           ──► INTERRUPTED ──► locks ──► close DB ──► exit 130
                      └─ EOF ──► default CAS or abandon eof ──► EOF
 
   Test / future dashboard
@@ -208,6 +217,10 @@ CREATE TABLE prompts (
     (answered_at IS NULL AND answer IS NULL AND answered_by IS NULL)
     OR (answered_at IS NOT NULL AND answer IS NOT NULL AND answered_by IS NOT NULL)
   ),
+  CHECK (
+    (abandoned_at IS NULL AND abandon_reason IS NULL)
+    OR (abandoned_at IS NOT NULL AND abandon_reason IS NOT NULL)
+  ),
   CHECK (NOT (answered_at IS NOT NULL AND abandoned_at IS NOT NULL))
 );
 CREATE INDEX idx_prompts_open_run
@@ -227,10 +240,13 @@ Those files hard-code max version `5` (`schema.test.ts:28,40,117,136,166`; `sche
 - Fresh DB → version 6; table + both indexes exist (`sqlite_master` / `PRAGMA index_list`).
 - v5 DB (migrate up to 5, then `runMigrations`) gains `prompts` without dropping steps.
 - FK: inserting `run_id` that is not in `runs` throws; `run_id` NULL succeeds.
-- CHECK: cannot set `answered_at` without `answer`/`answered_by`; cannot set both answered and abandoned.
+- CHECK: cannot set `answered_at` without `answer`/`answered_by`.
+- CHECK: cannot set `abandoned_at` without `abandon_reason`; cannot set `abandon_reason` without `abandoned_at`.
+- CHECK: cannot set both answered and abandoned timestamps.
+- CHECK: cannot set an answered triple plus `abandon_reason` (pair integrity + mutex).
 
 - [ ] Update version-5 assertions to 6.
-- [ ] Add `test/unit/db/schema-v6.test.ts` covering table, indexes, FK, CHECKs, v5→v6.
+- [ ] Add `test/unit/db/schema-v6.test.ts` covering table, indexes, FK, CHECKs (including abandon-pair all-or-nothing and mutual exclusion with answered), v5→v6.
 
 ---
 
@@ -401,11 +417,78 @@ Temp DB + `runMigrations` + `createRunV1` + store:
 
 ---
 
-## Phase 4: Cancellable stdin and poll helper
+## Phase 4: CLI signal lifecycle
 
-**Completion gate:** `readLine`/`readAll` honor `AbortSignal`; `waitForPromptAnswer` returns on store answer, timeout, or abort. No CLI wiring yet.
+**Completion gate:** `getDb` and `registerLockCleanup` no longer call `process.exit` on SIGINT/SIGTERM. A process-wide lifecycle installed from `src/bin.ts` aborts in-flight work on first SIGINT without exiting, then (after the command unwinds) releases locks, closes the DB, and exits 130. Second SIGINT or `CLI_SIGINT_GRACE_MS` force-exits. Cleanup is ordered and idempotent. Prompt CLI still unchanged in this phase (end-to-end abandon is Phase 7).
 
-#### 4.1 Stdin — `src/utils/stdin.ts`
+This phase lands **before** command integration so Phase 6 interrupt-abandonment is possible. It is not solved by `AbortSignal` on stdin alone: today `getDb()` registers its SIGINT listener first and exits before `readLine`’s listener runs.
+
+#### 4.1 Lifecycle module — new `src/cli-lifecycle.ts`
+
+```typescript
+export const CLI_SIGINT_GRACE_MS = 2_000;
+
+export function installCliLifecycle(): AbortSignal;
+export function getCliAbortSignal(): AbortSignal;
+export function disarmCliLifecycle(): void; // cancel grace timer; call when parseAsync returns
+```
+
+Install from `src/bin.ts` **before** `program.parseAsync`. Register SIGINT and SIGTERM once (idempotent). Behavior:
+
+| Event | Action |
+|-------|--------|
+| First SIGINT | Abort the process `AbortController`. Do **not** `process.exit`. Start `CLI_SIGINT_GRACE_MS` timer. Remaining SIGINT listeners (stdin, `run watch`) still run. |
+| First SIGTERM | Same abort-without-exit; grace timer; eventual exit 143 if the command does not unwind. |
+| Command completes after abort | Prompt handler CAS-abandons then `outputError("INTERRUPTED")` → `bin.ts` catch emits envelope and `process.exit(130)`. `process.on("exit")` then runs lock release + `closeDb`. `disarmCliLifecycle()` in `bin.ts` `finally` cancels the grace timer. |
+| `parseAsync` returns normally after abort | Example: `run watch` aborts its tailer and returns. Disarm grace timer. Process exits with that command’s code (today 0 for watch). Do **not** force 130. |
+| Second SIGINT / grace timeout | Force `process.exit(130)` (SIGTERM: 143). Sync `exit` listeners still run. Envelope is best-effort only if not already written. |
+
+Force-exit and normal exit must both be idempotent: `closeDb()` is already safe to call twice; lock release must be too; the lifecycle must ignore a second force-exit.
+
+Do **not** emit `INTERRUPTED` from the lifecycle on the graceful path — the prompt handler owns the envelope so it can CAS-abandon first. Lifecycle force-exit may skip the envelope if the process is wedged.
+
+#### 4.2 Strip `process.exit` from DB and lock utilities
+
+`src/db/connection.ts` (`getDb`, lines 41–54 today): keep `process.on("exit", closeDb)`. Remove the SIGINT listener that `closeDb()` + `process.exit(130)` and the SIGTERM listener that exits 143. Closing the DB must remain the `exit` handler’s job so a prompt can still `UPDATE` after first SIGINT.
+
+`src/lock.ts` `registerLockCleanup` (lines 425–441 today): keep `process.on("exit", releaseLock)`. Remove SIGINT/SIGTERM listeners that `releaseLock()` + `process.exit(130/143)`.
+
+Cleanup order on any actual process exit (graceful `bin.ts` `process.exit(130)` or force-exit):
+
+1. Abort in-flight work (already done on first signal).
+2. Command-level durable work (prompt CAS-abandon) — only on the graceful path, while SQLite is open.
+3. Release locks (`registerLockCleanup`’s `exit` handler).
+4. Close DB (`getDb`’s `exit` handler).
+5. Process gone.
+
+`process.on("exit")` listeners run in registration order. Document that lock cleanup is registered per acquire (may be after DB open). Both operations are independent and idempotent; do not require a specific listener order beyond “locks and DB are released on `exit`, never on SIGINT itself.”
+
+`run watch` (`src/commands/run-v1.handler.ts:1665–1696`) already aborts a local `AbortController` and does not `process.exit`. After this change it should keep working: first SIGINT aborts (watch’s own listener still fires), watch returns, grace timer is disarmed, process exits 0. Prefer eventually observing `getCliAbortSignal()` instead of a second process listener, but abort-only extra listeners are allowed. Extra listeners must never call `process.exit`.
+
+Out of scope: provider-process cleanup from superseded `011-provider-process-lifecycle.md`. Removing `process.exit` from db/lock is compatible with that design.
+
+#### 4.3 Tests — `test/unit/cli-lifecycle.test.ts`, `test/unit/db/connection.test.ts`
+
+- [ ] `getDb` SIGINT/SIGTERM listeners do not call `process.exit` (stub `process.exit`; raise a fake signal or inspect listener side effects). After SIGINT the connection is still open (`closeDb` not yet called).
+- [ ] `registerLockCleanup` SIGINT/SIGTERM listeners do not call `process.exit`; lock file still present until `process.emit("exit")` / explicit release.
+- [ ] First SIGINT: `getCliAbortSignal().aborted === true`; `process.exit` not called; grace timer scheduled.
+- [ ] Second SIGINT: `process.exit(130)` once; subsequent signals are no-ops.
+- [ ] Grace timeout: `process.exit(130)` if still armed.
+- [ ] `disarmCliLifecycle()` cancels the grace timer; process does not later force-exit.
+- [ ] `closeDb` + lock release on simulated `exit` are idempotent (double `closeDb` / double release does not throw).
+- [ ] `installCliLifecycle()` is idempotent (no duplicate listeners).
+
+Do not require a spawned prompt in this phase. The real-process “row abandoned `interrupted` + exit 130” test is a Phase 7 gate (needs persist + handler).
+
+- [ ] Existing `run watch` SIGINT integration still exits as today (regression; may live in Phase 7 if it needs a full CLI spawn).
+
+---
+
+## Phase 5: Cancellable stdin and poll helper
+
+**Completion gate:** `readLine`/`readAll` honor `AbortSignal`; `readAll` SIGINT uses the `SIGINT` sentinel (not partial text); `waitForPromptAnswer` returns on store answer, timeout, or abort and stops polling when aborted. No CLI wiring yet.
+
+#### 5.1 Stdin — `src/utils/stdin.ts`
 
 Add `export const ABORTED = Symbol("ABORTED");`.
 
@@ -413,13 +496,20 @@ Add `export const ABORTED = Symbol("ABORTED");`.
 export function readLine(
   signal?: AbortSignal,
 ): Promise<string | typeof EOF | typeof SIGINT | typeof ABORTED>;
+
+export function readAll(
+  signal?: AbortSignal,
+): Promise<string | typeof EOF | typeof SIGINT | typeof ABORTED>;
 ```
 
-If `signal?.aborted` already, resolve `ABORTED`. On `abort`, `cleanup()` and resolve `ABORTED` (do not treat as EOF). Same for `readAll`. Existing tests without a signal must be unchanged.
+If `signal?.aborted` already, resolve `ABORTED`. On `abort`, `cleanup()` and resolve `ABORTED` (do not treat as EOF). Existing tests without a signal must be unchanged for `readLine`.
+
+**`readAll` SIGINT:** today `readAll` (`src/utils/stdin.ts:182–188`) resolves **partial text** on SIGINT. Change it to resolve the `SIGINT` sentinel (same as `readLine`), discarding partial chunks. Prompt `input --multiline` maps that sentinel to abandon `interrupted` / `INTERRUPTED`, never to a successful `{ input }` of partial text.
 
 - [ ] Unit tests: abort before wait → `ABORTED`; abort mid-wait → `ABORTED` and listeners removed; no signal → current EOF/line behavior.
+- [ ] `readAll` SIGINT → `SIGINT` sentinel, not a string of partial chunks; listeners removed.
 
-#### 4.2 Wait helper — `src/control-plane/wait.ts`
+#### 5.2 Wait helper — `src/control-plane/wait.ts`
 
 ```typescript
 export const PROMPT_POLL_INTERVAL_MS = 250;
@@ -440,25 +530,34 @@ export async function waitForPromptAnswer(
 Loop: `getPrompt`; if answered, return; if abandoned, throw `PromptAbandonedError`; if `signal.aborted`, throw `PromptWaitAbortedError`; if `timeoutMs` elapsed, throw `PromptTimeoutError`. Else `sleep(pollIntervalMs)`. Default `sleep` is `Bun.sleep` (or `setTimeout` promisified). Inject `sleep`/`now` in tests.
 
 - [ ] Tests: answers on Nth poll; timeout; abort; abandoned row errors; does not busy-spin (fake sleep records interval 250).
+- [ ] Abort mid-poll: `waitForPromptAnswer` throws `PromptWaitAbortedError` and does not schedule another `sleep`/`getPrompt` after abort.
+
+Every race against this helper (Phase 6) must abort **this** `signal` in `finally` as well as the stdin `AbortController`, including timeout and TTY/EOF wins — not only store wins.
 
 ---
 
-## Phase 5: Prompt command integration
+## Phase 6: Prompt command integration
 
 **Completion gate:** All three commands persist before waiting. `--default` CI path unchanged. TTY races store vs terminal. Interrupt/EOF abandon. Existing success envelopes unchanged. Integration tests run in temp dirs.
 
-#### 5.1 Adapter flags — `src/commands/prompt.ts`
+#### 6.1 Adapter flags — `src/commands/prompt.ts`
 
 Add to `choose`, `confirm`, and `input`:
 
 ```typescript
 .option("--run <id>", "Associate this prompt with a run id")
-.option("--timeout <ms>", "Max wait in ms (TTY: unbounded if omitted; no-TTY without --default: 0)", parseInt)
+.option(
+  "--timeout <ms>",
+  "Max wait in ms (TTY: unbounded if omitted; no-TTY without --default: 0)",
+  intArg("--timeout"),
+)
 ```
+
+Use `intArg` from `src/utils/parse-args.ts` (wraps `parseIntArg`: finite, non-negative integer, full-string match). Do **not** pass Commander `parseInt` (`parseInt("10abc", 10) === 10`, `parseInt("foo") === NaN`). `0` is allowed (immediate timeout). Invalid `--timeout` must fail with `INVALID_ARGS` **before** `createPrompt`.
 
 Pass `run` / `timeout` into handlers. Do not add `--run` as required.
 
-#### 5.2 Handler deps and shared flow — `src/commands/prompt.handler.ts`
+#### 6.2 Handler deps and shared flow — `src/commands/prompt.handler.ts`
 
 ```typescript
 export interface PromptHandlerDeps {
@@ -487,18 +586,20 @@ Default `resolveStore`: `resolveDbContext()` then `createSqlitePromptStore(ctx.d
 
 Shared sequence after existing validation (`INVALID_OPTIONS` / `INVALID_DEFAULT` **before** create):
 
-1. Optional `run`: `getRunV1`; missing → `outputError("RUN_NOT_FOUND", ...)`.
-2. `createPrompt({ runId, kind, message, options, defaultValue })`.
-3. Branch:
+1. Resolve timeout: if `--timeout` omitted, read `FIVEX_PROMPT_TIMEOUT_MS`. Parse with `parseIntArg("FIVEX_PROMPT_TIMEOUT_MS")` (same rules as `--timeout`). Unset/empty env → omitted (unbounded TTY; no-TTY-without-default stays 0). Invalid env or flag → `INVALID_ARGS` **before** `createPrompt`. Re-check `Number.isFinite(timeout) && timeout >= 0` in the handler so injected deps cannot sneak `NaN`/`Infinity` past the adapter.
+2. Optional `run`: `getRunV1`; missing → `outputError("RUN_NOT_FOUND", ...)`.
+3. `createPrompt({ runId, kind, message, options, defaultValue })`.
+4. Branch:
    - **no-TTY + default (choose/confirm):** `answerPrompt(id, normalized, "default")`; `outputSuccess` from `result.prompt` (winner’s answer if CAS lost).
    - **no-TTY, no default, timeout 0/omitted:** `abandonPrompt(id, "non-interactive")`; `outputError("NON_INTERACTIVE", ...)` same message as today (`:89–92`, `:182–185`).
    - **no-TTY input + pipe:** persist, `readStdinPipe()`, `answerPrompt(..., "terminal")` (pipe is a local writer, not `--default`).
-   - **TTY or positive timeout:** render as today; `AbortController`; `Promise.race` wait helper vs abortable `readLine`/`readAll`.
-     - Store answered: `controller.abort()`; map stored answer to envelope.
-     - TTY value: `answerPrompt(..., "terminal")`; if `ok: false` and the row is answered, still success from stored answer; if abandoned, map reason to `INTERRUPTED` / `EOF` / timeout error.
-     - `SIGINT`: abandon `interrupted`; `INTERRUPTED`.
-     - `EOF`: if default, CAS `"default"` (today’s EOF+default); else abandon `eof`; `EOF`.
-     - `PromptTimeoutError`: abandon `timeout`; new code `PROMPT_TIMEOUT` (exit 3, add to `EXIT_CODE_MAP` in `src/output.ts:50–71`). Only reachable with `--timeout` / env on TTY, or no-TTY wait opt-in.
+   - **TTY or positive timeout:** render as today. Create **two** `AbortController`s (stdin + poll) and `Promise.race` abortable `readLine`/`readAll` against `waitForPromptAnswer({ signal: poll.signal, timeoutMs })`. In `finally`, abort **both** controllers (idempotent) so the loser cannot keep polling or listening.
+     - Store answered: abort stdin; map stored answer to envelope. Poll branch is already complete.
+     - TTY value: abort poll; `answerPrompt(..., "terminal")`; if `ok: false` and the row is answered, still success from stored answer; if abandoned, map reason to `INTERRUPTED` / `EOF` / timeout error.
+     - `SIGINT` (stdin sentinel or `getCliAbortSignal()`): abort poll; `abandonPrompt(..., "interrupted")` **while the DB is still open**; `outputError("INTERRUPTED", ...)`. Lifecycle then releases locks, closes SQLite, exits 130.
+     - `EOF`: abort poll; if default, CAS `"default"` (today’s EOF+default); else abandon `eof`; `EOF`.
+     - `PromptTimeoutError`: abort stdin; abandon `timeout`; new code `PROMPT_TIMEOUT` (exit 3, add to `EXIT_CODE_MAP` in `src/output.ts:50–71`). Only reachable with `--timeout` / env on TTY, or no-TTY wait opt-in.
+     - `ABORTED` from stdin after store win: treat as store win, not interrupt.
 
 Envelope mappers (keep exact keys):
 
@@ -510,55 +611,63 @@ Envelope mappers (keep exact keys):
 
 `try/finally`: if the function is about to throw/`outputError` and the row is still open, abandon with the matching reason so doctor is not required for the happy-path failure.
 
-#### 5.3 Env override
+#### 6.3 Env override
 
-Read `FIVEX_PROMPT_TIMEOUT_MS` when `--timeout` is omitted. Document in 101. Tests can set a short wait without new argv in every case.
+Read `FIVEX_PROMPT_TIMEOUT_MS` when `--timeout` is omitted. Validate with `parseIntArg` **before** `createPrompt` (reject non-finite, negative, empty-but-set, `10abc`, `Infinity`). Document in 101. Tests can set a short wait without new argv in every case.
 
-#### 5.4 Handler unit tests — `test/unit/commands/prompt-store.test.ts`
+#### 6.4 Handler unit tests — `test/unit/commands/prompt-store.test.ts`
 
 Inject memory store + fake TTY/sleep:
 
 - [ ] Choose `--default` no-TTY: one open-then-answered row, `answeredBy === "default"`, stdout `{ choice }`.
 - [ ] Choose no-TTY no default: abandoned `non-interactive`, `NON_INTERACTIVE`.
 - [ ] Invalid default: no row created.
-- [ ] Parallel: create via handler TTY path (fake `readLine` that never resolves until abort); second task `answerPrompt(..., "control-plane")`; handler returns the control-plane answer; `readLine` was aborted.
+- [ ] Parallel: create via handler TTY path (fake `readLine` that never resolves until abort); second task `answerPrompt(..., "control-plane")`; handler returns the control-plane answer; `readLine` was aborted **and** the poll helper’s signal was aborted.
+- [ ] Timeout win: stdin `AbortController` aborted; poll stopped; row abandoned `timeout`.
+- [ ] TTY/EOF win: poll signal aborted (no further `getPrompt` after the race settles).
+- [ ] Multiline `readAll` → `SIGINT`: abandoned `interrupted`, `INTERRUPTED`; no success envelope with partial text.
+- [ ] `--timeout -1` / `abc` / `10ms` / `NaN`: `INVALID_ARGS`, **no row**.
+- [ ] `FIVEX_PROMPT_TIMEOUT_MS=nope` with flag omitted: `INVALID_ARGS`, **no row**.
 - [ ] `--run` unknown: `RUN_NOT_FOUND`, no row.
 - [ ] Confirm/input equivalent persist+CAS.
 
-#### 5.5 Integration tests — rewrite `test/integration/commands/prompt.test.ts`
+#### 6.5 Integration tests — rewrite `test/integration/commands/prompt.test.ts`
 
 Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cwd: dir`. Re-assert every current case (defaults, `NON_INTERACTIVE` exit 3, `INVALID_*`, interactive `5X_FORCE_TTY`, EOF, pipe input). Add:
 
 - [ ] After `--default` success, SQLite has one answered row `answered_by = 'default'`.
 - [ ] After `NON_INTERACTIVE`, row is abandoned not open.
 - [ ] `--run` + real `createRunV1` sets `run_id`.
+- [ ] `--timeout abc` and `--timeout -1` exit non-zero with `INVALID_ARGS` and insert no prompt row.
 
 ---
 
-## Phase 6: Concurrency, CLI compatibility, and docs
+## Phase 7: Concurrency, CLI compatibility, and docs
 
-**Completion gate:** CAS race, timeout, interrupt, doctor CLI, and docs match the contract. Full `bun test` green.
+**Completion gate:** CAS race, timeout, **real-process SIGINT abandon**, doctor CLI, and docs match the contract. Full `bun test` green.
 
-#### 6.1 Concurrency / lifecycle tests — `test/unit/control-plane/cas-race.test.ts`, `test/integration/commands/prompt-queue.test.ts`
+#### 7.1 Concurrency / lifecycle tests — `test/unit/control-plane/cas-race.test.ts`, `test/integration/commands/prompt-queue.test.ts`
 
 - [ ] Two `answerPrompt` writers (terminal vs `control-plane`) on sqlite: one winner; loser payload equals winner.
-- [ ] TTY handler + injected store writer: handler exit 0, envelope is the stored winner even if TTY later produces a line.
-- [ ] `--timeout 50` TTY with no input: `PROMPT_TIMEOUT` exit 3, row abandoned `timeout`.
-- [ ] SIGINT during TTY: `INTERRUPTED` 130, abandoned `interrupted` (if spawn-signal is flaky, keep this at unit level with fake `readLine` → `SIGINT`).
+- [ ] TTY handler + injected store writer: handler exit 0, envelope is the stored winner even if TTY later produces a line; stdin and poll both aborted.
+- [ ] `--timeout 50` TTY with no input: `PROMPT_TIMEOUT` exit 3, row abandoned `timeout`; stdin listeners gone.
+- [ ] **Required real-process SIGINT test** (not unit-only): `Bun.spawn` the CLI (`5X_FORCE_TTY=1`) in a temp project with a migrated DB; keep stdin open so the prompt waits; poll SQLite until the open `prompts` row exists; `proc.kill("SIGINT")`; assert exit code **130**, stdout error envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Do not accept a fake-`readLine` unit test as a substitute for this gate.
+- [ ] Second SIGINT while abandoning: process still exits 130 (force path); no hang.
 - [ ] Doctor integration: seed orphaned prompt in temp project; `5x doctor` JSON contains `PROMPT_ORPHANED`; `5x doctor --fix` lists it under `fixed` and re-run is clean.
+- [ ] `5x run watch` SIGINT still exits as today (do not force 130 after a clean watch abort).
 
-#### 6.2 Docs
+#### 7.2 Docs
 
 - [ ] `docs/v2/202-control-plane.md`: mark store/schema/polling TODOs resolved for this slice; record `--default` precedence, 250ms poll, abandonment, nullable `run_id`, no `decisions` table. Leave dashboard/server TODOs.
 - [ ] `docs/v2/203-recovery-and-doctor.md`: prompts check is implemented (fail + `--fix` abandon); drop “deferred” on the table row; status line ~10.
-- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout`; success envelopes unchanged; no-TTY `--default` immediate; no-TTY no-default still `NON_INTERACTIVE` after abandon.
+- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse); success envelopes unchanged; no-TTY `--default` immediate; no-TTY no-default still `NON_INTERACTIVE` after abandon; Ctrl-C CAS-abandons `interrupted` then exits 130.
 - [ ] `docs/v2/200-overview.md` §3.2: one sentence that the prompt queue is implemented locally via `PromptStore`.
 - [ ] `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md`: set **Generated plan** to this file; status `planned`.
 - [ ] `src/index.ts`: export `PromptStore`, `PromptRecord`, `createSqlitePromptStore`, `createMemoryPromptStore`, CAS types.
 
-#### 6.3 AGENTS.md / doctor order
+#### 7.3 AGENTS.md / doctor order
 
-If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comment “five builtins” in 203 docs already updated in 6.2.
+If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comment “five builtins” in 203 docs already updated in 7.2.
 
 ---
 
@@ -566,7 +675,11 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 
 | File | Change |
 |------|--------|
-| `src/db/schema.ts` | Migration 6: `prompts` table + indexes |
+| `src/cli-lifecycle.ts` | **New** — process SIGINT/SIGTERM owner; abort-without-exit; grace/second-signal force-exit |
+| `src/bin.ts` | `installCliLifecycle()` before `parseAsync`; `disarmCliLifecycle()` in `finally` |
+| `src/db/connection.ts` | Remove SIGINT/SIGTERM `process.exit`; keep idempotent `exit` → `closeDb` |
+| `src/lock.ts` | `registerLockCleanup`: remove SIGINT/SIGTERM `process.exit`; keep `exit` → release |
+| `src/db/schema.ts` | Migration 6: `prompts` table + indexes + abandon-pair CHECKs |
 | `src/control-plane/ids.ts` | **New** — `createPromptId()` |
 | `src/control-plane/types.ts` | **New** — records, CAS result, enums |
 | `src/control-plane/store.ts` | **New** — `PromptStore` |
@@ -574,29 +687,31 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | `src/control-plane/memory-store.ts` | **New** — test impl |
 | `src/control-plane/wait.ts` | **New** — poll helper + constants |
 | `src/control-plane/index.ts` | **New** — factory re-exports |
-| `src/utils/stdin.ts` | `AbortSignal` + `ABORTED` on `readLine`/`readAll` |
-| `src/commands/prompt.ts` | `--run`, `--timeout` |
-| `src/commands/prompt.handler.ts` | Persist, CAS, race, abandon; optional deps |
+| `src/utils/stdin.ts` | `AbortSignal` + `ABORTED`; `readAll` SIGINT sentinel |
+| `src/commands/prompt.ts` | `--run`, `--timeout` via `intArg` |
+| `src/commands/prompt.handler.ts` | Persist, CAS, dual-abort race, abandon; optional deps |
 | `src/output.ts` | `PROMPT_TIMEOUT` → exit 3 |
 | `src/doctor/checks/prompts.ts` | **New** — orphan detect/fix |
 | `src/doctor/registry.ts` | Register check; `findingKey` `PROMPT_ORPHANED` |
 | `src/index.ts` | Export control-plane types/factories |
+| `test/unit/cli-lifecycle.test.ts` | **New** — first/second SIGINT, grace, disarm, idempotency |
+| `test/unit/db/connection.test.ts` | SIGINT does not `process.exit`; connection stays open |
 | `test/unit/db/schema.test.ts` | Expect version 6 |
 | `test/unit/db/schema-v4.test.ts` | Expect version 6 |
-| `test/unit/db/schema-v6.test.ts` | **New** |
+| `test/unit/db/schema-v6.test.ts` | **New** — including abandon-pair CHECKs |
 | `test/unit/control-plane/store-contract.test.ts` | **New** |
 | `test/unit/control-plane/cas-race.test.ts` | **New** |
-| `test/unit/control-plane/wait.test.ts` | **New** |
-| `test/unit/utils/stdin-abort.test.ts` | **New** |
-| `test/unit/commands/prompt-store.test.ts` | **New** |
+| `test/unit/control-plane/wait.test.ts` | **New** — including abort stops further polls |
+| `test/unit/utils/stdin-abort.test.ts` | **New** — `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel |
+| `test/unit/commands/prompt-store.test.ts` | **New** — dual-abort race, timeout validation, multiline SIGINT |
 | `test/unit/doctor/prompts.test.ts` | **New** |
 | `test/unit/doctor/registry.test.ts` | Sixth check; `findingKey` |
-| `test/integration/commands/prompt.test.ts` | Temp cwd; persistence assertions |
-| `test/integration/commands/prompt-queue.test.ts` | **New** — timeout/doctor/CAS CLI |
+| `test/integration/commands/prompt.test.ts` | Temp cwd; persistence + invalid timeout |
+| `test/integration/commands/prompt-queue.test.ts` | **New** — timeout/doctor/CAS CLI + **required** real-process SIGINT |
 | `test/integration/commands/doctor.test.ts` | Orphan `--fix` case if not in prompt-queue file |
 | `docs/v2/202-control-plane.md` | Resolve in-slice TODOs |
 | `docs/v2/203-recovery-and-doctor.md` | Prompts check shipped |
-| `docs/v1/101-cli-primitives.md` | Contract shift |
+| `docs/v1/101-cli-primitives.md` | Contract shift; Ctrl-C abandon |
 | `docs/v2/200-overview.md` | Prompt queue implemented locally |
 | `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md` | Generated-plan pointer |
 
@@ -606,16 +721,18 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `schema-v6.test.ts` | v6 DDL, indexes, FK, CHECKs, v5→v6 |
+| Unit | `schema-v6.test.ts` | v6 DDL, indexes, FK, CHECKs (answered triple, abandon pair, mutex), v5→v6 |
 | Unit | `store-contract.test.ts` | create/get/list/CAS/abandon on SQLite **and** memory |
 | Unit | `cas-race.test.ts` | Parallel first-writer-wins; loser sees winner |
-| Unit | `wait.test.ts` | Poll, timeout, abort, abandon |
-| Unit | `stdin-abort.test.ts` | `ABORTED` vs EOF/SIGINT |
-| Unit | `prompt-store.test.ts` | Handler persist/CAS/race with injected store |
+| Unit | `wait.test.ts` | Poll, timeout, abort, abandon; abort stops further polls |
+| Unit | `stdin-abort.test.ts` | `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel (not partial text) |
+| Unit | `cli-lifecycle.test.ts` | First SIGINT aborts without exit; second/grace force-exit 130; disarm; idempotent cleanup |
+| Unit | `connection` signal tests | `getDb` / `registerLockCleanup` do not `process.exit` on SIGINT; DB stays open |
+| Unit | `prompt-store.test.ts` | Handler persist/CAS/dual-abort race, timeout validation before insert, multiline SIGINT |
 | Unit | `doctor/prompts.test.ts` | Orphan detect/fix; null run_id skipped; missing DB |
 | Unit | `doctor/registry.test.ts` | Check order; `PROMPT_ORPHANED` identity |
-| Integration | `prompt.test.ts` | Existing CLI envelopes/exits on a temp project + DB rows |
-| Integration | `prompt-queue.test.ts` | Timeout, doctor `--fix`, optional spawn CAS |
+| Integration | `prompt.test.ts` | Existing CLI envelopes/exits on a temp project + DB rows + invalid timeout |
+| Integration | `prompt-queue.test.ts` | Timeout, doctor `--fix`, CAS CLI, **required real-process SIGINT** (exit 130 + `abandon_reason='interrupted'`) |
 | Integration | `doctor.test.ts` | Sweep still green; optional orphan case |
 
 ---
@@ -638,15 +755,32 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 
 | Phase | Description | Time |
 |-------|-------------|------|
-| 1 | Schema v6 + tests | 0.5–1 day |
+| 1 | Schema v6 + tests (including abandon-pair CHECKs) | 0.5–1 day |
 | 2 | PromptStore + SQLite + memory + CAS contract tests | 1–2 days |
 | 3 | Doctor prompts check + `findingKey` | 1 day |
-| 4 | Abortable stdin + wait helper | 1 day |
-| 5 | Prompt command integration + temp-dir CLI tests | 2 days |
-| 6 | Race/timeout/interrupt/docs/exports | 1–2 days |
-| **Total** | | **6.5–9 days** |
+| 4 | CLI signal lifecycle (strip `process.exit` from db/lock) | 1 day |
+| 5 | Abortable stdin + wait helper (both-branch cancel, `readAll` SIGINT) | 1 day |
+| 6 | Prompt command integration + timeout validation + temp-dir CLI tests | 2 days |
+| 7 | Race/timeout/real-process SIGINT/docs/exports | 1–2 days |
+| **Total** | | **7.5–10 days** |
 
-Phase 4 is the schedule risk (TTY cancellation). If `AbortSignal` cannot stop `readLine` cleanly, do not start Phase 5 TTY racing.
+Phase 4 is a P0 prerequisite to Phase 6 interrupt-abandonment. Phase 5 remains a schedule risk (TTY cancellation): if `AbortSignal` cannot stop `readLine` cleanly, do not start Phase 6 TTY racing. Phase 7’s real-process SIGINT test is a hard gate, not optional.
+
+---
+
+## Revision History
+
+### 1.1 — August 24, 2026
+
+Addresses P0.1, P1.1, P1.2, and P2.1 in [`docs/development/reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md`](../reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md) (no addendums; P0.1 was `human_required` and is resolved here by the CLI-lifecycle decision).
+
+**P0.1 — SIGINT ownership.** Centralize signal handling at the CLI lifecycle (`src/cli-lifecycle.ts` installed from `src/bin.ts`). First SIGINT aborts in-flight work without exiting so an active prompt can CAS-abandon `interrupted` while SQLite is open; then release locks, close the DB, emit `INTERRUPTED`, and exit 130. Second SIGINT or `CLI_SIGINT_GRACE_MS` force-exits. `getDb` and `registerLockCleanup` keep idempotent `process.on("exit")` cleanup and lose `process.exit` on SIGINT/SIGTERM. Phase 7 requires a real-process test: spawn CLI, interrupt an active DB-backed prompt, assert exit 130 and `abandon_reason = 'interrupted'`.
+
+**P1.1 — Cancel both race branches; multiline SIGINT.** Every stdin/poll/timeout `Promise.race` aborts **both** losers in `finally`. `readAll` SIGINT resolves the `SIGINT` sentinel (not partial text) and maps to `interrupted`. Tests cover timeout cleanup, terminal-win poll cleanup, store-win read cleanup, and multiline SIGINT.
+
+**P1.2 — Abandonment-pair integrity.** Migration 6 CHECK makes `(abandoned_at, abandon_reason)` all-or-nothing and keeps those columns null on answered/open rows, in addition to the existing answered-vs-abandoned mutex. Schema tests cover the invalid combinations.
+
+**P2.1 — Timeout validation.** `--timeout` and `FIVEX_PROMPT_TIMEOUT_MS` are parsed with `parseIntArg` / `intArg` (finite, non-negative integer, full-string match) **before** `createPrompt`. Commander `parseInt` is not used.
 
 ---
 
