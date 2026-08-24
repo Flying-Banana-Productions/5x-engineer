@@ -55,6 +55,7 @@ import {
 } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import { requireAmbientRunId } from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
@@ -92,6 +93,7 @@ export interface InvokeParams {
 	recordStep?: string;
 	phase?: string;
 	iteration?: number;
+	env?: NodeJS.Dict<string>;
 }
 
 interface InvokeResult {
@@ -173,9 +175,13 @@ export async function invokeAgent(
 	role: InvokeRole,
 	params: InvokeParams,
 ): Promise<void> {
+	// Preserve INVALID_ARGS for an explicit malformed --run (path traversal, etc.).
+	if (params.run) validateRunId(params.run);
+
 	// Read upstream context from stdin when --run is not provided
 	// and no --var uses @- (which would consume stdin).
 	let pipeContext: PipeContext | undefined;
+	let pipeRunId: string | undefined;
 
 	const hasStdinVar = hasStdinVarFlag(params.vars);
 
@@ -183,18 +189,9 @@ export async function invokeAgent(
 		const upstream = await readUpstreamEnvelope();
 		if (upstream) {
 			pipeContext = extractPipeContext(upstream.data);
-			params.run ??= pipeContext.runId;
+			pipeRunId = pipeContext.runId;
 		}
 	}
-
-	// Validate --run (required) — reject path traversal
-	if (!params.run) {
-		outputError(
-			"INVALID_ARGS",
-			"--run is required (provide it or pipe from an upstream command)",
-		);
-	}
-	validateRunId(params.run);
 
 	// -----------------------------------------------------------------------
 	// Phase 2: Resolve control-plane root and run execution context.
@@ -246,7 +243,18 @@ export async function invokeAgent(
 			);
 		}
 
-		const ctxResult = resolveRunExecutionContext(db, params.run, {
+		const runId = requireAmbientRunId({
+			explicitRun: params.run,
+			pipeRunId,
+			startDir: params.workdir,
+			env: params.env,
+			db,
+			controlPlane,
+		});
+		validateRunId(runId);
+		params.run = runId;
+
+		const ctxResult = resolveRunExecutionContext(db, runId, {
 			controlPlaneRoot: controlPlane.controlPlaneRoot,
 			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
 		});

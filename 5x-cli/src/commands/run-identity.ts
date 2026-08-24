@@ -17,6 +17,7 @@ import type { Database } from "bun:sqlite";
 import { resolve } from "node:path";
 import { getPlan, listPlansByWorktreePath } from "../db/operations.js";
 import { getActiveRunV1, getRunV1 } from "../db/operations-v1.js";
+import { outputError } from "../output.js";
 import { realpathExisting } from "../paths.js";
 import { SAFE_RUN_ID } from "../run-id.js";
 import {
@@ -87,8 +88,36 @@ export type AmbientRunResult =
 			};
 	  };
 
-const REQUIRED_REMEDIATION =
+export const REQUIRED_REMEDIATION =
 	"Pass --run <id>, set FIVEX_RUN, run from a uniquely mapped worktree, or write the run id to .5x/current-run.";
+
+/** Commander `--run` help text for required-run commands. */
+export const AMBIENT_RUN_OPTION_HELP =
+	"Run ID (or ambient: FIVEX_RUN, unique worktree mapping, or .5x/current-run)";
+
+/** Commander `--run` help text when `--record` makes identity required. */
+export const AMBIENT_RUN_OPTION_HELP_WITH_RECORD =
+	"Run ID (required with --record; otherwise ambient: FIVEX_RUN, unique worktree mapping, or .5x/current-run)";
+
+export function outputAmbientError(
+	result: Extract<AmbientRunResult, { ok: false }>,
+): never {
+	outputError(result.error.code, result.error.message, result.error.detail);
+}
+
+/** Resolve a required run id and surface ambient errors via `outputError`. */
+export function requireAmbientRunId(
+	req: Omit<AmbientRunRequest, "required">,
+): string {
+	const ambient = resolveAmbientRunId({ ...req, required: true });
+	if (!ambient.ok) outputAmbientError(ambient);
+	if (!ambient.runId) {
+		outputError("RUN_CONTEXT_REQUIRED", "No run identity resolved.", {
+			remediation: REQUIRED_REMEDIATION,
+		});
+	}
+	return ambient.runId;
+}
 
 /**
  * True when the checkout toplevel is not the control-plane root

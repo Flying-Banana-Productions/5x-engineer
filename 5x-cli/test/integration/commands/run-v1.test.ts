@@ -104,10 +104,14 @@ interface CmdResult {
 	exitCode: number;
 }
 
-async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
+async function run5x(
+	cwd: string,
+	args: string[],
+	extraEnv?: Record<string, string | undefined>,
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env: { ...cleanGitEnv(), ...extraEnv },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -2162,5 +2166,130 @@ describe("5x run focus pointer", () => {
 			}
 		},
 		{ timeout: 30000 },
+	);
+});
+
+describe("5x run ambient identity", () => {
+	test(
+		"run state without --run uses the focus pointer",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+
+				const state = await run5x(projectRoot, ["run", "state"]);
+				expect(state.exitCode).toBe(0);
+				const run = (parseJson(state.stdout).data as Record<string, unknown>)
+					.run as Record<string, unknown>;
+				expect(run.id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"FIVEX_RUN satisfies run state without --run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				rmSync(pointerPath(projectRoot), { force: true });
+
+				const state = await run5x(projectRoot, ["run", "state"], {
+					FIVEX_RUN: runId,
+				});
+				expect(state.exitCode).toBe(0);
+				const run = (parseJson(state.stdout).data as Record<string, unknown>)
+					.run as Record<string, unknown>;
+				expect(run.id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"run state without identity fails with RUN_CONTEXT_REQUIRED",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				await run5x(projectRoot, ["run", "init", "--plan", planPath]);
+				rmSync(pointerPath(projectRoot), { force: true });
+
+				const state = await run5x(projectRoot, ["run", "state"]);
+				expect(state.exitCode).not.toBe(0);
+				const json = parseJson(state.stdout);
+				expect(json.ok).toBe(false);
+				expect((json.error as Record<string, unknown>).code).toBe(
+					"RUN_CONTEXT_REQUIRED",
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"run state --plan ignores a conflicting FIVEX_RUN",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const initA = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				const runA = (parseJson(initA.stdout).data as Record<string, unknown>)
+					.run_id as string;
+
+				const planB = addPlan(dir, "other-plan.md");
+				const initB = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planB,
+					"--allow-dirty",
+				]);
+				const runB = (parseJson(initB.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				expect(runB).not.toBe(runA);
+
+				const state = await run5x(
+					projectRoot,
+					["run", "state", "--plan", planB],
+					{ FIVEX_RUN: runA },
+				);
+				expect(state.exitCode).toBe(0);
+				const run = (parseJson(state.stdout).data as Record<string, unknown>)
+					.run as Record<string, unknown>;
+				expect(run.id).toBe(runB);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
 	);
 });

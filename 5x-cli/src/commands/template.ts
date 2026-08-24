@@ -8,6 +8,7 @@
 
 import type { Command } from "@commander-js/extra-typings";
 import { collect } from "../utils/parse-args.js";
+import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
 import {
 	templateDescribe,
 	templateList,
@@ -37,7 +38,7 @@ export function registerTemplate(parent: Command) {
 		)
 		.option(
 			"-r, --run <id>",
-			"Run ID — enables run/worktree context resolution and plan path injection",
+			`${AMBIENT_RUN_OPTION_HELP} — enables run/worktree context`,
 		)
 		.option(
 			"--var <key=value>",
@@ -69,6 +70,7 @@ export function registerTemplate(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
+				"  $ 5x template render author-next-phase             # ambient run identity when available\n" +
 				"  $ 5x template render author-next-phase -r abc123\n" +
 				"  $ 5x template render reviewer-plan --var plan_path=./plan.md\n" +
 				"  $ 5x template render author-next-phase -r abc123 --session sess_abc\n" +

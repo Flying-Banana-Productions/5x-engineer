@@ -26,6 +26,7 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import { outputAmbientError, resolveAmbientRunId } from "./run-identity.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
 	isPlanReviewTemplate,
@@ -48,6 +49,7 @@ export interface TemplateRenderParams {
 	continueNative?: boolean;
 	workdir?: string;
 	allowPlanPathOverride?: boolean;
+	env?: NodeJS.Dict<string>;
 }
 
 export interface TemplateRenderOutput {
@@ -78,35 +80,46 @@ export async function templateRender(
 	// -----------------------------------------------------------------------
 	let resolvedPlanPath: string | null = null;
 	let resolvedWorktreeRoot: string | null = null;
-	let projectRoot: string;
-	let stateDir: string;
 	let runDb: ReturnType<typeof getDb> | undefined;
+
+	const controlPlane = resolveControlPlaneRoot(params.workdir);
+
+	if (controlPlane.mode === "none") {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+
+	const projectRoot = controlPlane.controlPlaneRoot;
+	const stateDir = controlPlane.stateDir;
+
+	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
+	runDb = db;
+	try {
+		runMigrations(db);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+		);
+	}
+
+	if (params.run) validateRunId(params.run);
+
+	const ambient = resolveAmbientRunId({
+		explicitRun: params.run,
+		required: false,
+		startDir: params.workdir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	if (!ambient.ok) outputAmbientError(ambient);
+	params.run = ambient.runId;
 
 	if (params.run) {
 		validateRunId(params.run);
-
-		const controlPlane = resolveControlPlaneRoot(params.workdir);
-
-		if (controlPlane.mode === "none") {
-			outputError(
-				"NO_CONTROL_PLANE",
-				`No 5x control-plane DB found. Initialize with "5x init" first.`,
-			);
-		}
-
-		projectRoot = controlPlane.controlPlaneRoot;
-		stateDir = controlPlane.stateDir;
-
-		const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
-		runDb = db;
-		try {
-			runMigrations(db);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			throw new Error(
-				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-			);
-		}
 
 		const ctxResult = resolveRunExecutionContext(db, params.run, {
 			controlPlaneRoot: projectRoot,
@@ -122,17 +135,6 @@ export async function templateRender(
 		const ctx = ctxResult.context;
 		resolvedPlanPath = ctx.effectivePlanPath;
 		resolvedWorktreeRoot = ctx.mappedWorktreePath;
-	} else {
-		// No --run: resolve project root for config/template loading only
-		const controlPlane = resolveControlPlaneRoot(params.workdir);
-		if (controlPlane.mode === "none") {
-			outputError(
-				"NO_CONTROL_PLANE",
-				`No 5x control-plane DB found. Initialize with "5x init" first.`,
-			);
-		}
-		projectRoot = controlPlane.controlPlaneRoot;
-		stateDir = controlPlane.stateDir;
 	}
 
 	// -----------------------------------------------------------------------

@@ -8,6 +8,7 @@
 
 import { type Command, Option } from "@commander-js/extra-typings";
 import { floatArg, intArg } from "../utils/parse-args.js";
+import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
 import {
 	runV1Complete,
 	runV1Init,
@@ -104,7 +105,7 @@ export function registerRun(parent: Command) {
 				"efficient polling. Accepts either --run (by ID) or --plan (finds the active\n" +
 				"run for that plan).",
 		)
-		.option("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option("-p, --plan <path>", "Plan path (alternative to --run)")
 		.option(
 			"-t, --tail <n>",
@@ -119,6 +120,7 @@ export function registerRun(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
+				"  $ 5x run state                                     # ambient run identity\n" +
 				"  $ 5x run state -r abc123\n" +
 				"  $ 5x run state -p plan.md\n" +
 				"  $ 5x run state -r abc123 -t 5                      # last 5 steps only\n" +
@@ -144,7 +146,7 @@ export function registerRun(parent: Command) {
 				"provided as a JSON string, read from stdin (-), or read from a file (@path).",
 		)
 		.argument("[step-name]", "Step name (e.g. author:impl:status)")
-		.option("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option(
 			"--result <value>",
 			'Result JSON (raw string, "-" for stdin, "@path" for file)',
@@ -169,11 +171,12 @@ export function registerRun(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nOption Groups:\n" +
-				"  Required:  [step-name], -r/--run\n" +
+				"  Required:  [step-name], run identity (-r/--run, FIVEX_RUN, worktree, or .5x/current-run)\n" +
 				'  Result:    --result (raw string, "-" for stdin, "@path" for file)\n' +
 				"  Metadata:  -p/--phase, --iteration, --session-id, --model\n" +
 				"  Metrics:   --tokens-in, --tokens-out, --cost-usd, --duration-ms, --log-path\n" +
 				"\nExamples:\n" +
+				'  $ 5x run record author:impl:status --result \'{"status":"complete"}\'\n' +
 				'  $ 5x run record author:impl:status -r abc123 --result \'{"status":"complete"}\'\n' +
 				"  $ echo '{\"ok\":true}' | 5x run record quality:check -r abc123 --result=-\n" +
 				"  $ 5x run record review:verdict -r abc123 --result=@/tmp/verdict.json\n" +
@@ -205,7 +208,7 @@ export function registerRun(parent: Command) {
 			'Set a run\'s terminal status to "completed" or "aborted". Once completed, no\n' +
 				'further steps can be recorded. Use "run reopen" to reverse this.',
 		)
-		.requiredOption("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.addOption(
 			new Option(
 				"-s, --status <status>",
@@ -218,6 +221,7 @@ export function registerRun(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
+				"  $ 5x run complete                                  # ambient run identity\n" +
 				"  $ 5x run complete -r abc123\n" +
 				'  $ 5x run complete -r abc123 -s aborted --reason "Plan superseded"',
 		)
@@ -237,8 +241,13 @@ export function registerRun(parent: Command) {
 			"Return a terminated run to active status, allowing additional steps to be\n" +
 				"recorded. Useful when a run was completed prematurely.",
 		)
-		.requiredOption("-r, --run <id>", "Run ID")
-		.addHelpText("after", "\nExamples:\n" + "  $ 5x run reopen -r abc123")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x run reopen                                    # ambient run identity\n" +
+				"  $ 5x run reopen -r abc123",
+		)
 		.action(async (opts) => {
 			await runV1Reopen({
 				run: opts.run,
@@ -292,7 +301,7 @@ export function registerRun(parent: Command) {
 				"When --plan is given without a path, searches for a file with the same name\n" +
 				"in the configured plans directory (paths.plans in 5x.toml).",
 		)
-		.requiredOption("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option(
 			"--plan [path]",
 			"New plan path, or omit path to auto-search by filename in paths.plans",
@@ -323,7 +332,7 @@ export function registerRun(parent: Command) {
 				"In human-readable mode, formats log entries with timestamps and optional\n" +
 				"reasoning display. Useful for monitoring a running agent session.",
 		)
-		.requiredOption("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option(
 			"--human-readable",
 			"Render human-readable output instead of raw NDJSON",
@@ -345,6 +354,7 @@ export function registerRun(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
+				"  $ 5x run watch                                     # ambient run identity\n" +
 				"  $ 5x run watch -r abc123\n" +
 				"  $ 5x run watch -r abc123 --human-readable --show-reasoning\n" +
 				"  $ 5x run watch -r abc123 --tail-only                # skip replay, live only",

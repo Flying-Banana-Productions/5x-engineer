@@ -349,21 +349,27 @@ describe("protocol validate — invalid input (unit)", () => {
 // ===========================================================================
 
 describe("protocol validate --record arg validation (unit)", () => {
-	test("--record without --run fails with INVALID_ARGS", async () => {
+	test("--record without --run fails with RUN_CONTEXT_REQUIRED", async () => {
 		const dir = makeTmpDir();
 		try {
 			const inputPath = writeInput(dir, {
 				result: "complete",
 				commit: "abc123",
 			});
-			await expect(
-				protocolValidate({
+			try {
+				await protocolValidate({
 					role: "author",
 					input: inputPath,
 					record: true,
 					step: "test",
-				}),
-			).rejects.toThrow(CliError);
+					startDir: dir,
+					env: {},
+				});
+				expect(true).toBe(false);
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("RUN_CONTEXT_REQUIRED");
+			}
 		} finally {
 			cleanupDir(dir);
 		}

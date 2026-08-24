@@ -567,10 +567,11 @@ describe("--var key=@- (stdin read)", () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+				rmSync(join(projectRoot, ".5x", "current-run"), { force: true });
 
 				// Pipe a valid envelope, but with --var user_notes=@-
 				// The @- should consume stdin, preventing envelope parsing.
-				// Without --run, this should fail with INVALID_ARGS.
+				// Without --run (and with the pointer cleared), this should fail.
 				const envelope = makeRunInitEnvelope(runId, planPath);
 				const result = await run5xWithStdin(
 					projectRoot,
@@ -594,8 +595,7 @@ describe("--var key=@- (stdin read)", () => {
 				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(false);
 				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-				expect(error.message).toContain("--run");
+				expect(error.code).toBe("RUN_CONTEXT_REQUIRED");
 			} finally {
 				cleanupDir(dir);
 			}

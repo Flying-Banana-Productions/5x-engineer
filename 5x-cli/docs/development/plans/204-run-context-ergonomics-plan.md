@@ -576,9 +576,9 @@ Param types: `RunCompleteParams.run`, `RunReopenParams.run`, `RunRelinkParams.ru
 
 Help examples may show flag-less forms (`5x run complete`, `5x commit -m "…" --all-files`) in addition to explicit `--run`.
 
-- [ ] Replace every `requiredOption` for `--run`.
-- [ ] Update help strings to name `--run`, `FIVEX_RUN`, worktree mapping, and `.5x/current-run`.
-- [ ] Widen param types to `run?: string`.
+- [x] Replace every `requiredOption` for `--run`.
+- [x] Update help strings to name `--run`, `FIVEX_RUN`, worktree mapping, and `.5x/current-run`.
+- [x] Widen param types to `run?: string`.
 
 ### 3.3 Handler call sites
 
@@ -605,9 +605,9 @@ For `invoke` / `record` pipe ordering: today they set `params.run ??= ctx.runId`
 
 Quality `--record` without identity: today warns on stderr after output (`quality-v1.handler.ts:53-58`). After this phase, identity is resolved *before* gates when `--record` is set, so missing identity is `RUN_CONTEXT_REQUIRED` **before** running gates (fail closed). That is stricter and correct for recording.
 
-- [ ] Wire every row in the table.
-- [ ] Swap `worktree.handler.ts` `isLinkedWorktreeContext` to the shared helper if not done in Phase 1.
-- [ ] `run state --plan` does not read `FIVEX_RUN` or the pointer (unit or integration assertion).
+- [x] Wire every row in the table.
+- [x] Swap `worktree.handler.ts` `isLinkedWorktreeContext` to the shared helper if not done in Phase 1.
+- [x] `run state --plan` does not read `FIVEX_RUN` or the pointer (unit or integration assertion).
 
 ### 3.4 Tests
 
@@ -618,12 +618,12 @@ Quality `--record` without identity: today warns on stderr after output (`qualit
 - New `test/unit/commands/run-identity-wiring.test.ts` **or** extend handler unit tests: `commit` / `runV1State` with injected db + pointer.
 - Existing `--run` tests must keep passing (no behavior change when the flag is present).
 
-- [ ] Flag-present tests unchanged.
-- [ ] Required-run missing identity → `RUN_CONTEXT_REQUIRED`.
-- [ ] `FIVEX_RUN` satisfies `invoke` / `commit` / `run state` without `--run`.
-- [ ] Pointer satisfies the same on the main checkout.
-- [ ] `run state --plan` ignores a conflicting `FIVEX_RUN`.
-- [ ] Optional `diff` / `quality run` without identity still exit 0 in a bare project.
+- [x] Flag-present tests unchanged.
+- [x] Required-run missing identity → `RUN_CONTEXT_REQUIRED`.
+- [x] `FIVEX_RUN` satisfies `invoke` / `commit` / `run state` without `--run`.
+- [x] Pointer satisfies the same on the main checkout.
+- [x] `run state --plan` ignores a conflicting `FIVEX_RUN`.
+- [x] Optional `diff` / `quality run` without identity still exit 0 in a bare project.
 
 ---
 

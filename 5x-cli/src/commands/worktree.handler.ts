@@ -44,6 +44,7 @@ import {
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import { isLinkedWorktreeCheckout } from "./run-identity.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -99,22 +100,6 @@ function worktreeDir(
 	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
 	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
-}
-
-/**
- * Detect if the current checkout is a linked worktree (not the main checkout).
- * Returns true if the checkout root differs from the control-plane root.
- */
-function isLinkedWorktreeContext(
-	controlPlane: ControlPlaneResult,
-	startDir?: string,
-): boolean {
-	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
-	if (!checkoutRoot) return false;
-	return (
-		realpathExisting(checkoutRoot) !==
-		realpathExisting(controlPlane.controlPlaneRoot)
-	);
 }
 
 /**
@@ -182,7 +167,7 @@ export async function worktreeCreate(
 	if (
 		!params.allowNested &&
 		controlPlane.mode !== "none" &&
-		isLinkedWorktreeContext(controlPlane, params.startDir)
+		isLinkedWorktreeCheckout(controlPlane, params.startDir)
 	) {
 		outputError(
 			"WORKTREE_CONTEXT_INVALID",

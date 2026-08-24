@@ -21,6 +21,11 @@ import {
 } from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	resolveAmbientRunId,
+} from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -40,6 +45,8 @@ export interface ProtocolValidateParams {
 	iteration?: number;
 	plan?: string;
 	phaseChecklistValidate?: boolean;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +167,7 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 	// Auto-discover plan path from run context if --plan not provided
 	if (!planPath && params.run) {
 		try {
-			const controlPlane = resolveControlPlaneRoot();
+			const controlPlane = resolveControlPlaneRoot(params.startDir);
 			if (controlPlane.mode !== "none") {
 				const db = getDb(
 					controlPlane.controlPlaneRoot,
@@ -312,6 +319,43 @@ export async function protocolValidate(
 	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
 	for (const w of warnings) {
 		console.error(`Warning: ${w}`);
+	}
+
+	// -----------------------------------------------------------------------
+	// Ambient run identity (optional fill-in; required when --record)
+	// -----------------------------------------------------------------------
+	if (params.run) validateRunId(params.run);
+	const identityControlPlane = resolveControlPlaneRoot(params.startDir);
+	if (identityControlPlane.mode !== "none") {
+		const db = getDb(
+			identityControlPlane.controlPlaneRoot,
+			controlPlaneDbPath(
+				identityControlPlane.controlPlaneRoot,
+				identityControlPlane.stateDir,
+			),
+		);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+		const ambient = resolveAmbientRunId({
+			explicitRun: params.run,
+			required: Boolean(params.record),
+			startDir: params.startDir,
+			env: params.env,
+			db,
+			controlPlane: identityControlPlane,
+		});
+		if (!ambient.ok) outputAmbientError(ambient);
+		params.run = ambient.runId;
+	} else if (params.record && !params.run) {
+		outputError("RUN_CONTEXT_REQUIRED", "No run identity resolved.", {
+			remediation: REQUIRED_REMEDIATION,
+		});
 	}
 
 	// -----------------------------------------------------------------------

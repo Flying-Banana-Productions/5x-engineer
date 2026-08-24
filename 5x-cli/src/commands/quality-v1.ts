@@ -8,6 +8,7 @@
 
 import type { Command } from "@commander-js/extra-typings";
 import { runQuality } from "./quality-v1.handler.js";
+import { AMBIENT_RUN_OPTION_HELP_WITH_RECORD } from "./run-identity.js";
 
 export function registerQuality(parent: Command) {
 	const quality = parent
@@ -34,7 +35,7 @@ export function registerQuality(parent: Command) {
 			"--record-step <name>",
 			'Override step name for recording (default: "quality:check")',
 		)
-		.option("-r, --run <id>", "Run ID (required when using --record)")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP_WITH_RECORD)
 		.option("-p, --phase <name>", "Phase identifier (used with --record)")
 		.option(
 			"-w, --workdir <path>",
@@ -44,6 +45,7 @@ export function registerQuality(parent: Command) {
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x quality run\n" +
+				"  $ 5x quality run --record -p phase-1               # ambient run identity\n" +
 				"  $ 5x quality run --record -r abc123 -p phase-1\n" +
 				"  $ 5x quality run -w /path/to/worktree",
 		)

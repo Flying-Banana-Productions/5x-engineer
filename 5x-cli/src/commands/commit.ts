@@ -9,6 +9,7 @@
 
 import type { Command } from "@commander-js/extra-typings";
 import { runCommit } from "./commit.handler.js";
+import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
 
 export function registerCommit(parent: Command) {
 	parent
@@ -18,7 +19,7 @@ export function registerCommit(parent: Command) {
 			"Stage files, create a git commit, and record it as a `git:commit` step\n" +
 				"in the run journal. Either --files or --all-files is required.",
 		)
-		.requiredOption("-r, --run <id>", "Run ID")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.requiredOption("-m, --message <msg>", "Commit message")
 		.option("--files <paths...>", "Specific files to stage")
 		.option("--all-files", "Stage all changes (git add -A)")
@@ -27,6 +28,7 @@ export function registerCommit(parent: Command) {
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
+				'  $ 5x commit -m "implement feature" --all-files      # ambient run identity\n' +
 				'  $ 5x commit --run abc123 -m "implement feature" --all-files\n' +
 				'  $ 5x commit --run abc123 -m "fix bug" --files src/foo.ts src/bar.ts\n' +
 				'  $ 5x commit --run abc123 -m "test" --all-files --dry-run',

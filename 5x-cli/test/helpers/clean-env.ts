@@ -20,11 +20,16 @@
  */
 
 const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+/** Strip session identity so tests do not inherit the parent process's run. */
+const RUN_ENV_VARS = ["FIVEX_RUN"];
 
 /** Return a copy of `process.env` with git-override vars removed. */
 export function cleanGitEnv(): Record<string, string | undefined> {
 	const env = { ...process.env };
 	for (const key of GIT_ENV_VARS) {
+		delete env[key];
+	}
+	for (const key of RUN_ENV_VARS) {
 		delete env[key];
 	}
 	return env;

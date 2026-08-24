@@ -18,12 +18,18 @@ import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { runQualityGates } from "../gates/quality.js";
 import { outputError, outputSuccess } from "../output.js";
+import { validateRunId } from "../run-id.js";
 import { resolveProjectContext } from "./context.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	resolveAmbientRunId,
+} from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +42,7 @@ export interface QualityParams {
 	run?: string;
 	phase?: string;
 	workdir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,19 +111,12 @@ export async function runQuality(
 	let explicitWorkdir: string | undefined;
 	let configContextDir: string | undefined;
 
-	if (params.run) {
-		const controlPlane = resolveControlPlaneRoot(params.workdir);
+	if (params.run) validateRunId(params.run);
 
-		if (controlPlane.mode === "none") {
-			// Phase 3 fix: --run was explicitly provided but no control-plane DB
-			// exists. This is a hard error — silently falling through to cwd-based
-			// execution would violate the run-scoped contract.
-			outputError(
-				"NO_CONTROL_PLANE",
-				`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
-			);
-		}
+	const startDir = params.workdir;
+	const controlPlane = resolveControlPlaneRoot(startDir);
 
+	if (controlPlane.mode !== "none") {
 		controlPlaneRoot = controlPlane.controlPlaneRoot;
 		stateDir = controlPlane.stateDir;
 
@@ -133,25 +133,50 @@ export async function runQuality(
 			);
 		}
 
-		const ctxResult = resolveRunExecutionContext(db, params.run, {
-			controlPlaneRoot,
-			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+		const ambient = resolveAmbientRunId({
+			explicitRun: params.run,
+			required: Boolean(params.record),
+			startDir,
+			env: params.env,
+			db,
+			controlPlane,
 		});
+		if (!ambient.ok) outputAmbientError(ambient);
+		params.run = ambient.runId;
 
-		// Phase 3 fix: all run-context errors are hard errors, including
-		// RUN_NOT_FOUND. A typo in the run ID should not silently execute
-		// quality gates against the current cwd.
-		if (!ctxResult.ok) {
-			outputError(ctxResult.error.code, ctxResult.error.message, {
-				detail: ctxResult.error.detail,
+		if (params.run) {
+			const ctxResult = resolveRunExecutionContext(db, params.run, {
+				controlPlaneRoot,
+				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
 			});
-		}
 
-		const ctx = ctxResult.context;
-		explicitWorkdir = params.workdir ? resolve(params.workdir) : undefined;
-		effectiveWorkdir = explicitWorkdir ?? ctx.mappedWorktreePath ?? undefined;
-		// Use plan path directory for config layering
-		configContextDir = dirname(ctx.effectivePlanPath);
+			// Phase 3 fix: all run-context errors are hard errors, including
+			// RUN_NOT_FOUND. A typo in the run ID should not silently execute
+			// quality gates against the current cwd.
+			if (!ctxResult.ok) {
+				outputError(ctxResult.error.code, ctxResult.error.message, {
+					detail: ctxResult.error.detail,
+				});
+			}
+
+			const ctx = ctxResult.context;
+			explicitWorkdir = params.workdir ? resolve(params.workdir) : undefined;
+			effectiveWorkdir = explicitWorkdir ?? ctx.mappedWorktreePath ?? undefined;
+			// Use plan path directory for config layering
+			configContextDir = dirname(ctx.effectivePlanPath);
+		}
+	} else if (params.run) {
+		// Phase 3 fix: --run was explicitly provided but no control-plane DB
+		// exists. This is a hard error — silently falling through to cwd-based
+		// execution would violate the run-scoped contract.
+		outputError(
+			"NO_CONTROL_PLANE",
+			`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
+		);
+	} else if (params.record) {
+		outputError("RUN_CONTEXT_REQUIRED", "No run identity resolved.", {
+			remediation: REQUIRED_REMEDIATION,
+		});
 	}
 
 	// Resolve project context — use layered config if we have a contextDir

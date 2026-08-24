@@ -9,6 +9,7 @@
 import type { Command } from "@commander-js/extra-typings";
 import { collect, intArg, timeoutArg } from "../utils/parse-args.js";
 import { invokeAgent } from "./invoke.handler.js";
+import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
 
 /**
  * Register shared options on an invoke subcommand.
@@ -17,10 +18,7 @@ import { invokeAgent } from "./invoke.handler.js";
 function addInvokeOptions<C extends Command>(cmd: C) {
 	return cmd
 		.argument("<template>", "Template name (e.g. author-next-phase)")
-		.option(
-			"-r, --run <id>",
-			"Run ID (provide via flag or pipe from upstream command)",
-		)
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option(
 			"--var <key=value>",
 			"Template variable (key=value, repeatable)",
@@ -114,7 +112,8 @@ export function registerInvoke(parent: Command) {
 		.addHelpText(
 			"after",
 			invokeHelpSuffix(
-				"  $ 5x invoke author author-next-phase -r abc123\n" +
+				"  $ 5x invoke author author-next-phase                # ambient run identity\n" +
+					"  $ 5x invoke author author-next-phase -r abc123\n" +
 					'  $ 5x invoke author author-fix-quality -r abc123 --var user_notes="fix lint"\n' +
 					"  $ 5x invoke author author-next-phase -r abc123 -m claude-opus -t 300\n" +
 					"  $ 5x invoke author author-next-phase -r abc123 --record --phase phase-1",

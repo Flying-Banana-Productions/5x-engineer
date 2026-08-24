@@ -13,8 +13,13 @@ export type {
 	AmbientRunSource,
 } from "./commands/run-identity.js";
 export {
+	AMBIENT_RUN_OPTION_HELP,
+	AMBIENT_RUN_OPTION_HELP_WITH_RECORD,
 	isLinkedWorktreeCheckout,
 	listActiveRunsForCheckout,
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	requireAmbientRunId,
 	resolveAmbientRunId,
 } from "./commands/run-identity.js";
 export {

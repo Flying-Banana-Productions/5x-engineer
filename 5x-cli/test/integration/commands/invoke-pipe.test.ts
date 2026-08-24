@@ -359,6 +359,7 @@ describe("invoke pipe ingestion", () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot } = await setupProjectWithRun(dir);
+				rmSync(join(projectRoot, ".5x", "current-run"), { force: true });
 
 				// No --run, no stdin piped
 				const result = await run5x(projectRoot, [
@@ -377,8 +378,7 @@ describe("invoke pipe ingestion", () => {
 				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(false);
 				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
-				expect(error.message).toContain("--run");
+				expect(error.code).toBe("RUN_CONTEXT_REQUIRED");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -392,11 +392,12 @@ describe("invoke pipe ingestion", () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot, runId, planPath } = await setupProjectWithRun(dir);
+				rmSync(join(projectRoot, ".5x", "current-run"), { force: true });
 
 				// Pipe contains a valid envelope, but --var uses @- which should
 				// prevent envelope parsing. Since @- is Phase 5, this test verifies
 				// that the hasStdinVar check correctly skips pipe reading.
-				// Without --run, invoke should fail with INVALID_ARGS.
+				// Without --run (and with the pointer cleared), invoke should fail.
 				const envelope = makeRunInitEnvelope(runId, planPath);
 				const result = await run5xWithStdin(
 					projectRoot,
@@ -420,7 +421,7 @@ describe("invoke pipe ingestion", () => {
 				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(false);
 				const error = json.error as Record<string, unknown>;
-				expect(error.code).toBe("INVALID_ARGS");
+				expect(error.code).toBe("RUN_CONTEXT_REQUIRED");
 			} finally {
 				cleanupDir(dir);
 			}

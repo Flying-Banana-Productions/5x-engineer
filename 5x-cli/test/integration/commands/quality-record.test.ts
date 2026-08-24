@@ -129,10 +129,14 @@ interface CmdResult {
 	exitCode: number;
 }
 
-async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
+async function run5x(
+	cwd: string,
+	args: string[],
+	extraEnv?: Record<string, string | undefined>,
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env: { ...cleanGitEnv(), ...extraEnv },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -241,28 +245,21 @@ describe("quality run --record", () => {
 	);
 
 	test(
-		"--record without --run errors with warning on stderr, not a second envelope",
+		"--record without identity fails with RUN_CONTEXT_REQUIRED before gates",
 		async () => {
 			const dir = makeTmpDir();
 			try {
 				const { projectRoot } = await setupProjectWithRun(dir);
+				rmSync(join(projectRoot, ".5x", "current-run"), { force: true });
 
 				const result = await run5x(projectRoot, ["quality", "run", "--record"]);
 
-				// Quality runs first (producing the primary envelope), then recording
-				// validation fails because --run is missing. The warning goes to stderr
-				// (never outputError, which would produce a second JSON envelope on stdout).
 				expect(result.exitCode).not.toBe(0);
-
-				// Primary envelope should be the only JSON on stdout
-				const trimmed = result.stdout.trim();
-				const json = JSON.parse(trimmed) as Record<string, unknown>;
-				expect(json.ok).toBe(true);
-				expect(() => JSON.parse(trimmed)).not.toThrow();
-
-				// stderr should contain a warning about --run
-				expect(result.stderr).toContain("--run");
-				expect(result.stderr).toContain("Warning");
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				expect((json.error as Record<string, unknown>).code).toBe(
+					"RUN_CONTEXT_REQUIRED",
+				);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -370,30 +367,28 @@ describe("quality run --record", () => {
 	);
 
 	test(
-		"--record without --run emits warning to stderr, does not corrupt stdout with a second envelope",
+		"--record without --run uses the focus pointer",
 		async () => {
 			const dir = makeTmpDir();
 			try {
-				const { projectRoot } = await setupProjectWithRun(dir);
+				const { projectRoot, runId } = await setupProjectWithRun(dir);
 
 				const result = await run5x(projectRoot, ["quality", "run", "--record"]);
 
-				// The primary quality envelope should be the only JSON on stdout
-				const trimmed = result.stdout.trim();
-				const json = JSON.parse(trimmed) as Record<string, unknown>;
+				const json = parseJson(result.stdout);
 				expect(json.ok).toBe(true);
 				const data = json.data as Record<string, unknown>;
 				expect(data.passed).toBe(true);
 
-				// Verify there's exactly one JSON object — no second error envelope
-				expect(() => JSON.parse(trimmed)).not.toThrow();
-
-				// stderr should contain a warning about --run being required
-				expect(result.stderr).toContain("--run");
-				expect(result.stderr).toContain("Warning");
-
-				// Exit code should be non-zero
-				expect(result.exitCode).not.toBe(0);
+				const state = await run5x(projectRoot, [
+					"run",
+					"state",
+					"--run",
+					runId,
+				]);
+				const steps = (parseJson(state.stdout).data as Record<string, unknown>)
+					.steps as Array<Record<string, unknown>>;
+				expect(steps[0]?.step_name).toBe("quality:check");
 			} finally {
 				cleanupDir(dir);
 			}
