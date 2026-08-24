@@ -102,3 +102,19 @@ This recovery records the finding with the canonical reviewer item metadata requ
   "summary": "One mechanical state-root correction and regression test are required before Phase 2 is complete."
 }
 ```
+
+## Re-review addendum — `cad56406ecb48a7d001d60c3b05cc0a7b15e7c56`
+
+**Prior P1.1 status:** addressed. `runV1Init` now passes `stateDirForDb` to both resumed and newly-created pointer writes, so none-mode first use of an absolute configured `db.path` puts `5x.db` and `current-run` in the same absolute state root. On completion, control-plane discovery is managed and resolves that same root for the conditional clear.
+
+The added integration case starts with no state DB, asserts that the DB and pointer are created only in the configured absolute state root, rules out local/shadow paths, and verifies matching completion clears that pointer. The full current Phase 2 implementation was inspected; no new in-scope issues were identified. `bun run lint` and the focused Phase 2 unit/integration suite passed (55 tests).
+
+### Canonical re-review outcome
+
+```json
+{
+  "readiness": "ready",
+  "items": [],
+  "summary": "The prior bootstrap state-root split is addressed and no new Phase 2 issues were found."
+}
+```
