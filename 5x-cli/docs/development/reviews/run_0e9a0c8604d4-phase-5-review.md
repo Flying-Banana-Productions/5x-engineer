@@ -61,3 +61,38 @@ require no product or design decision.
   "summary": "Phase 5 remains not ready: the composite diverges from its granular quality and protocol-record primitives in two mechanical, auto-fixable compatibility cases."
 }
 ```
+
+## Re-review addendum — `7389cc6c31d2b7943cb054c1857d35c2a4ad6e18`
+
+**P1.1 mapped-worktree quality execution: addressed.** `phaseFinishCore` now
+passes the caller directory as `startDir`, not `workdir`, to `runQualityCore`.
+`startDir` is used only for control-plane discovery, while the absent explicit
+workdir allows the run execution context to select the mapped worktree. The new
+unit case proves the gate writes only in the mapped worktree.
+
+**P1.2 payload phase consistency: addressed.** The composite now applies the
+shared `resolveRecordPhase(params.phase, authorPayload)` check before checklist
+evaluation or recording. A mismatched payload fails the protocol sub-step with
+`PHASE_MISMATCH`, retains the successfully recorded quality step, and does not
+write an author row; matching phases record successfully.
+
+No new Phase 5 issues were identified in the fix range or current composite,
+quality-core, and protocol-core implementations.
+
+### Verification
+
+- `bun test test/unit/commands/phase-finish.test.ts` — passed (14 tests)
+- `bun test test/integration/commands/phase-finish.test.ts` — passed (3 tests)
+- `bun run lint` — passed
+- Reported quality gates: `bun test --concurrent` — passed (2692 tests; the
+  unrelated concurrent integration flake passed targeted and on retry).
+
+### Canonical re-review outcome
+
+```json
+{
+  "readiness": "ready",
+  "items": [],
+  "summary": "Both prior Phase 5 compatibility findings are addressed, and no new in-scope issues were identified."
+}
+```
