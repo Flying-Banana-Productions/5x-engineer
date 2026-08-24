@@ -32,3 +32,32 @@ corrupt resume state.
 
 - `bun test --concurrent` — passed (2689 tests)
 - `bun run lint` — passed
+
+## Protocol-metadata recovery addendum
+
+Re-check confirmed both findings against the Phase 5 implementation and the
+granular primitives. They are directly derivable compatibility corrections and
+require no product or design decision.
+
+```json
+{
+  "readiness": "not_ready",
+  "items": [
+    {
+      "id": "P1.1",
+      "title": "Composite quality step overrides the mapped worktree with the caller directory",
+      "action": "auto_fix",
+      "reason": "phaseFinishCore passes params.startDir as workdir to runQualityCore, where an explicit workdir takes precedence over the run's mapped worktree. Omit workdir so phase finish matches granular quality run --record --run behavior.",
+      "priority": "P1"
+    },
+    {
+      "id": "P1.2",
+      "title": "Composite author record accepts a payload phase different from --phase",
+      "action": "auto_fix",
+      "reason": "phaseFinishCore validates the author schema but does not compare result_json.phase with params.phase before recording. Apply the granular protocol validate --record PHASE_MISMATCH check before the composite records the author result.",
+      "priority": "P1"
+    }
+  ],
+  "summary": "Phase 5 remains not ready: the composite diverges from its granular quality and protocol-record primitives in two mechanical, auto-fixable compatibility cases."
+}
+```
