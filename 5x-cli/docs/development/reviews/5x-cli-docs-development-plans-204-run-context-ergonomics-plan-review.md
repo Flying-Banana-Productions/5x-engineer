@@ -62,3 +62,21 @@ The existing granular protocol command only invokes `validatePhaseChecklist` for
 **P1 recommended**
 - [ ] Make `current-run` path construction honor absolute `stateDir` values and test it.
 - [ ] Gate composite checklist validation on an author `complete` result, including resume behavior.
+
+---
+
+## Addendum (2026-08-24) — Protocol metadata recovery review
+
+**Reviewed:** `docs/development/plans/204-run-context-ergonomics-plan.md` version 1.0 (unchanged)
+
+The plan and the referenced control-plane and protocol implementations were re-checked. The original assessment remains valid: both open corrections are directly derivable from existing behavior and require no policy or architectural decision.
+
+### Remaining concerns
+
+- **P1.1 — Absolute configured state directory:** **Action:** `auto_fix`. Make `currentRunPath` use `join(stateDir, "current-run")` when `stateDir` is absolute; otherwise use `join(controlPlaneRoot, stateDir, "current-run")`. Test both configured path forms.
+- **P1.2 — Conditional checklist gate:** **Action:** `auto_fix`. Preserve the validated author result (and parse the existing recorded result on resume), then run the checklist only for `result: "complete"`; report it as skipped otherwise. Test fresh and resumed non-complete author results.
+
+### Updated readiness
+
+- **Plan readiness:** ⚠️ — ready with corrections; both remaining items are mechanical `auto_fix` work.
+- **Ready for implementation:** ⚠️ — after P1.1 and P1.2 are incorporated into the plan.
