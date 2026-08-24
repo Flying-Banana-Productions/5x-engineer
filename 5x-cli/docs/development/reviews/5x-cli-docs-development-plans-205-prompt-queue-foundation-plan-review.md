@@ -71,3 +71,39 @@ Migration 6 prevents simultaneous answer and abandonment timestamps, but it perm
 - [ ] Specify cancellation and cleanup for both sides of every input/poll/timeout race, including multiline SIGINT.
 - [ ] Add database constraints and migration tests for complete, mutually exclusive abandonment state.
 - [ ] Define strict CLI/environment timeout validation.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.1 re-review
+
+**Reviewed:** `docs/development/plans/205-prompt-queue-foundation-plan.md` version 1.1
+
+### What's addressed (✅)
+- **P0.1 — CLI signal ownership:** Resolved. Phase 4 makes `src/bin.ts` the sole SIGINT/SIGTERM lifecycle owner, removes early exits from DB and lock utilities, retains exit-time cleanup, and requires an end-to-end SIGINT test that proves the persisted row is abandoned before exit 130.
+- **P1.1 — Race cleanup and multiline interruption:** Resolved. The plan now uses distinct stdin and polling controllers, aborts both in `finally`, gives `readAll` a SIGINT sentinel, and tests timeout/store/TTY cleanup paths.
+- **P1.2 — Abandonment integrity:** Resolved. Migration 6 now pairs `abandoned_at` with `abandon_reason` and tests both incomplete-pair and answered-plus-abandonment-invalid cases.
+- **P2.1 — Timeout parsing:** Resolved. The plan specifies the existing strict integer parser for flags and environment values, validates before persistence, and covers invalid input with no-row tests.
+
+### Remaining concerns
+
+#### P1.3 — Wire the lifecycle abort signal into every active prompt race
+
+**Action:** `auto_fix`
+
+Phase 4 aborts `getCliAbortSignal()` for both SIGINT and SIGTERM, but Phase 6 races only stdin and polling signals. SIGINT happens to reach the stdin listener, while SIGTERM does not; therefore a waiting prompt will not observe the lifecycle abort, CAS-abandon, or unwind before the two-second force exit. Add the lifecycle signal as an explicit race participant (or propagate it to both prompt controllers), define SIGTERM’s durable abandonment mapping, and test first-SIGTERM against a real DB-backed waiting prompt. This is required by the selected centralized-lifecycle contract and is mechanically derivable from it.
+
+#### P1.4 — Make `--timeout` and control-plane answers work for non-TTY piped input
+
+**Action:** `auto_fix`
+
+The Phase 6 `no-TTY input + pipe` branch unconditionally awaits `readStdinPipe()`. It bypasses the positive-timeout race, cannot be interrupted when a store writer wins, and contradicts the stated rule that `--timeout` applies to no-TTY prompts without defaults. Specify an abortable/raced pipe-reader path for opt-in waiting (or explicitly constrain and document the flag semantics), then add timeout and store-wins-pipe tests. The stated all-writers CAS contract and existing stdin utilities make the needed behavior derivable without a policy decision.
+
+#### P1.5 — Provide the run-validation dependency required by the handler flow
+
+**Action:** `auto_fix`
+
+The proposed handler dependencies expose only `PromptStore`/`resolveStore`, but the shared flow requires `getRunV1` before `createPrompt`. A `PromptStore` does not expose a run lookup and the handler no longer has the `Database` returned by `resolveDbContext`; as written, `--run` validation cannot be implemented without adding an unplanned direct-DB path. Add a small injected `runExists`/prompt-context resolver backed by the already-resolved DB (and matching unit tests), keeping prompt handlers independent of `bun:sqlite` as the plan requires.
+
+### Updated readiness
+- **Prompt-queue foundation plan:** ⚠️ — Revision 1.1 resolves all prior findings and the centralized lifecycle is sound, but the three mechanical wiring gaps above must be specified before implementation.
+- **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.3–P1.5 are incorporated; no further human decision is required.
