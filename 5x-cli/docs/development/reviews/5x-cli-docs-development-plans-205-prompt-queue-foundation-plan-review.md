@@ -130,3 +130,24 @@ Fan-in aborts `pollCtl`, causing `waitForPromptAnswer()` to reject `PromptWaitAb
 ### Updated readiness
 - **Prompt-queue foundation plan:** ⚠️ — Version 1.2 fully addresses P1.3–P1.5 and preserves the intended architecture; one mechanical race-error mapping remains.
 - **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.6 is specified and tested; no human decision is required.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.3 final re-review
+
+**Reviewed:** `29e97c15fae274d4aa0c9936b9bb7d0cf8e9a6c3` / plan version 1.3
+
+### What's addressed (✅)
+- **P1.6 — Lifecycle-cancelled polling:** Resolved. The plan wraps `waitForPromptAnswer` into tagged race results, routes `poll-aborted` plus a lifecycle cause through durable abandonment, explicitly retains local cancellation as non-interrupting, and adds both unit and real-process poll-only coverage.
+
+### Remaining concerns
+
+#### P1.7 — Preserve input EOF compatibility explicitly
+
+**Action:** `auto_fix`
+
+The shared EOF outcome says to abandon and emit `EOF` when there is no default. That is correct for choose/confirm, but it conflicts with current `promptInput` behavior: a single-line input EOF returns successful `{ input: "" }` (`src/commands/prompt.handler.ts:249-251`), and multiline EOF successfully completes the collected text. The plan also requires re-asserting all current EOF cases. Specify kind-aware EOF handling: retain successful empty input for single-line input EOF and successful collected text for multiline EOF, CAS-persisting those terminal answers; only choose/confirm without defaults should abandon with `EOF`. Add unit and integration assertions for both input EOF modes.
+
+### Updated readiness
+- **Prompt-queue foundation plan:** ⚠️ — Version 1.3 resolves P1.6 and the lifecycle race is now fully specified; one deterministic input-compatibility correction remains.
+- **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.7 is incorporated; no human decision is required.
