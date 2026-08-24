@@ -21,13 +21,18 @@ export function registerPhase(parent: Command) {
 
 	phase
 		.command("finish")
-		.summary("Run quality, protocol validate, and checklist for a phase iteration")
+		.summary(
+			"Run quality, protocol validate, and checklist for a phase iteration",
+		)
 		.description(
 			"Fail-forward composite: quality gates, then author protocol validate/record,\n" +
-				"then (when the author result is \"complete\") the phase checklist. Successful\n" +
+				'then (when the author result is "complete") the phase checklist. Successful\n' +
 				"sub-steps are skipped on resume for the same (run, phase, iteration).",
 		)
-		.requiredOption("--phase <name>", "Phase identifier (resume key; not inferred)")
+		.requiredOption(
+			"--phase <name>",
+			"Phase identifier (resume key; not inferred)",
+		)
 		.requiredOption(
 			"--iteration <n>",
 			"Iteration number (resume key; not inferred)",
@@ -56,7 +61,7 @@ export function registerPhase(parent: Command) {
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x phase finish --phase 1 --iteration 1 --step author:impl --input result.json\n" +
-				"  $ echo \"$RESULT\" | 5x phase finish --phase 1 --iteration 1 --step author:impl\n" +
+				'  $ echo "$RESULT" | 5x phase finish --phase 1 --iteration 1 --step author:impl\n' +
 				"  $ 5x phase finish --phase 1 --iteration 1 --step author:impl --no-phase-checklist-validate",
 		)
 		.action(async (opts) => {

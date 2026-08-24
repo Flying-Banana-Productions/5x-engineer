@@ -103,7 +103,10 @@ export function nextIteration(
 export function findExistingStep(
 	db: Database,
 	input: Pick<RecordStepInput, "run_id" | "step_name" | "phase" | "iteration">,
-): Pick<StepRow, "id" | "step_name" | "phase" | "iteration" | "result_json"> | null {
+): Pick<
+	StepRow,
+	"id" | "step_name" | "phase" | "iteration" | "result_json"
+> | null {
 	if (input.iteration === undefined) return null;
 	// UNIQUE(run_id, step_name, phase, iteration) treats NULL phase as distinct,
 	// so a NULL-phase insert is never an INSERT OR IGNORE no-op.

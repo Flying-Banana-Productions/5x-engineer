@@ -11,6 +11,7 @@
  * Log paths are anchored to `controlPlaneRoot/stateDir`.
  */
 
+import type { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { resolveLayeredConfig } from "../config.js";
@@ -44,6 +45,8 @@ export interface QualityParams {
 	iteration?: number;
 	workdir?: string;
 	env?: NodeJS.Dict<string>;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
 }
 
 export interface QualityCoreResult {
@@ -129,17 +132,18 @@ export async function runQualityCore(
 		controlPlaneRoot = controlPlane.controlPlaneRoot;
 		stateDir = controlPlane.stateDir;
 
-		const db = getDb(
-			controlPlaneRoot,
-			controlPlaneDbPath(controlPlaneRoot, stateDir),
-		);
-		try {
-			runMigrations(db);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			throw new Error(
-				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-			);
+		const db =
+			params.db ??
+			getDb(controlPlaneRoot, controlPlaneDbPath(controlPlaneRoot, stateDir));
+		if (!params.db) {
+			try {
+				runMigrations(db);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				throw new Error(
+					`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+				);
+			}
 		}
 
 		const ambient = resolveAmbientRunId({

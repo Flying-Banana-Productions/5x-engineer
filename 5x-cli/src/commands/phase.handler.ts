@@ -9,18 +9,15 @@
 import { findExistingStep } from "../db/operations-v1.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import { validateRunId } from "../run-id.js";
-import { resolveDbContext } from "./context.js";
+import { type DbContext, resolveDbContext } from "./context.js";
 import {
 	evaluatePhaseChecklist,
 	isNumericPhaseRef,
 	protocolValidateCore,
 } from "./protocol.handler.js";
 import { runQualityCore } from "./quality-v1.handler.js";
-import {
-	outputAmbientError,
-	REQUIRED_REMEDIATION,
-	resolveAmbientRunId,
-} from "./run-identity.js";
+import { resolveRunExecutionContext } from "./run-context.js";
+import { REQUIRED_REMEDIATION, requireAmbientRunId } from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +34,8 @@ export interface PhaseFinishParams {
 	phaseChecklistValidate?: boolean;
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	dbContext?: DbContext;
 }
 
 export type PhaseFinishStepStatus = "completed" | "failed" | "skipped";
@@ -160,9 +159,12 @@ function failFromCaught(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
+export async function phaseFinishCore(
+	params: PhaseFinishParams,
+): Promise<PhaseFinishSuccess> {
 	const qualityStepName = params.recordStep ?? "quality:check";
-	const dbContext = await resolveDbContext({ startDir: params.startDir });
+	const dbContext =
+		params.dbContext ?? (await resolveDbContext({ startDir: params.startDir }));
 	const { db, config, controlPlane } = dbContext;
 
 	if (!controlPlane || controlPlane.mode === "none") {
@@ -173,16 +175,13 @@ export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
 		}
 		validateRunId(params.run);
 	} else {
-		const ambient = resolveAmbientRunId({
+		params.run = requireAmbientRunId({
 			explicitRun: params.run,
-			required: true,
 			startDir: params.startDir,
 			env: params.env,
 			db,
 			controlPlane,
 		});
-		if (!ambient.ok) outputAmbientError(ambient);
-		params.run = ambient.runId;
 		validateRunId(params.run);
 	}
 
@@ -224,6 +223,7 @@ export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
 					recordStep: qualityStepName,
 					workdir: params.startDir,
 					env: params.env,
+					db,
 				},
 				() => {
 					// Composite swallows the empty-gates warning; envelope reports skipped.
@@ -234,12 +234,7 @@ export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
 		}
 
 		if (!qualityData.passed) {
-			failForward(
-				steps,
-				"quality",
-				"QUALITY_FAILED",
-				"Quality gates failed.",
-			);
+			failForward(steps, "quality", "QUALITY_FAILED", "Quality gates failed.");
 		}
 
 		const payload = {
@@ -327,11 +322,21 @@ export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
 	} else if (!authorComplete) {
 		steps[2] = { name: "checklist", status: "skipped" };
 	} else {
+		let planPath: string | undefined;
+		if (controlPlane) {
+			const ctxResult = resolveRunExecutionContext(db, runId, {
+				controlPlaneRoot: controlPlane.controlPlaneRoot,
+			});
+			if (ctxResult.ok) {
+				planPath = ctxResult.context.effectivePlanPath;
+			}
+		}
 		const checklist = evaluatePhaseChecklist({
 			role: "author",
 			run: runId,
 			phase: params.phase,
 			startDir: params.startDir,
+			...(planPath ? { plan: planPath } : {}),
 		});
 		if (!checklist.ok) {
 			failForward(steps, "checklist", checklist.code, checklist.message);
@@ -366,13 +371,15 @@ export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
 		}
 	}
 
-	outputSuccess(
-		{
-			run_id: runId,
-			phase: params.phase,
-			iteration: params.iteration,
-			steps,
-		} satisfies PhaseFinishSuccess,
-		formatPhaseFinishText,
-	);
+	return {
+		run_id: runId,
+		phase: params.phase,
+		iteration: params.iteration,
+		steps,
+	};
+}
+
+export async function phaseFinish(params: PhaseFinishParams): Promise<void> {
+	const data = await phaseFinishCore(params);
+	outputSuccess(data, formatPhaseFinishText);
 }

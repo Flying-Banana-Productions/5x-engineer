@@ -1,33 +1,48 @@
 /**
- * Unit tests for `phaseFinish` (Phase 5 composite).
+ * Unit tests for `phaseFinishCore` (Phase 5 composite).
  *
- * Calls the handler directly against a temp git repo + DB. Quality gates
- * are `echo ok` or `false`. Author JSON is file-based (`--input`).
+ * Calls the core directly against a temp git repo + injected DB so tests
+ * stay off the process-wide `getDb` singleton and `--concurrent` safe.
+ * Quality gates append to `.gate-ran` so resume can assert they were not
+ * re-invoked without monkey-patching `console` or `runQualityGates`.
  */
 
 import { Database } from "bun:sqlite";
-import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { phaseFinish } from "../../../src/commands/phase.handler.js";
-import { writePointer } from "../../../src/commands/run-pointer.js";
-import { currentRunPath } from "../../../src/commands/run-pointer.js";
+import { join, resolve } from "node:path";
+import type { DbContext } from "../../../src/commands/context.js";
+import { phaseFinishCore } from "../../../src/commands/phase.handler.js";
+import {
+	currentRunPath,
+	writePointer,
+} from "../../../src/commands/run-pointer.js";
+import { FiveXConfigSchema } from "../../../src/config.js";
 import { createRunV1, getSteps } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
-import * as qualityGates from "../../../src/gates/quality.js";
 import { CliError } from "../../../src/output.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 interface TestCtx {
 	tmp: string;
 	db: Database;
+	dbContext: DbContext;
 	planPath: string;
 	runId: string;
 }
 
 const RUN_ID = "run_phasefin001";
 const AUTHOR_STEP = "author:impl";
+const GATE_LOG = ".gate-ran";
+const PASSING_GATE = `echo ran >> ${GATE_LOG} && echo ok`;
 
 function setup(opts?: {
 	gates?: string[];
@@ -64,7 +79,7 @@ function setup(opts?: {
 		`# Test Plan\n\n## Phase 1: Setup\n\n- [${checked}] Do the thing\n`,
 	);
 
-	const gates = opts?.gates ?? ["echo ok"];
+	const gates = opts?.gates ?? [PASSING_GATE];
 	writeFileSync(
 		join(tmp, "5x.toml"),
 		`qualityGates = [${gates.map((g) => `"${g}"`).join(", ")}]\n`,
@@ -88,13 +103,25 @@ function setup(opts?: {
 	});
 
 	mkdirSync(join(tmp, ".5x"), { recursive: true });
-	const db = new Database(join(tmp, ".5x", "5x.db"));
+	const db = new Database(resolve(tmp, ".5x", "5x.db"));
 	db.exec("PRAGMA journal_mode=WAL");
 	db.exec("PRAGMA foreign_keys=ON");
+	db.exec("PRAGMA busy_timeout=5000");
 	runMigrations(db);
 	createRunV1(db, { id: RUN_ID, planPath });
 
-	return { tmp, db, planPath, runId: RUN_ID };
+	const dbContext: DbContext = {
+		projectRoot: tmp,
+		config: FiveXConfigSchema.parse({}),
+		db,
+		controlPlane: {
+			controlPlaneRoot: tmp,
+			stateDir: ".5x",
+			mode: "isolated",
+		},
+	};
+
+	return { tmp, db, dbContext, planPath, runId: RUN_ID };
 }
 
 function teardown(ctx: TestCtx): void {
@@ -120,23 +147,12 @@ function writeAuthor(
 	return p;
 }
 
-async function captureSuccess(
-	fn: () => Promise<void>,
-): Promise<Record<string, unknown>> {
-	const lines: string[] = [];
-	const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
-		lines.push(args.map(String).join(" "));
-	});
-	try {
-		await fn();
-	} finally {
-		spy.mockRestore();
-	}
-	const jsonLine = lines.find((l) => l.trim().startsWith("{"));
-	if (!jsonLine) {
-		throw new Error(`No JSON envelope captured. logs=${JSON.stringify(lines)}`);
-	}
-	return JSON.parse(jsonLine) as Record<string, unknown>;
+function gateRunCount(ctx: TestCtx): number {
+	const log = join(ctx.tmp, GATE_LOG);
+	if (!existsSync(log)) return 0;
+	const text = readFileSync(log, "utf-8").trim();
+	if (!text) return 0;
+	return text.split("\n").length;
 }
 
 function expectCliError(err: unknown, code: string): CliError {
@@ -144,6 +160,22 @@ function expectCliError(err: unknown, code: string): CliError {
 	const cli = err as CliError;
 	expect(cli.code).toBe(code);
 	return cli;
+}
+
+function finishParams(
+	ctx: TestCtx,
+	overrides: Partial<Parameters<typeof phaseFinishCore>[0]> = {},
+) {
+	return {
+		phase: "1",
+		iteration: 1,
+		step: AUTHOR_STEP,
+		run: ctx.runId,
+		startDir: ctx.tmp,
+		env: {},
+		dbContext: ctx.dbContext,
+		...overrides,
+	};
 }
 
 describe("phaseFinish", () => {
@@ -154,26 +186,15 @@ describe("phaseFinish", () => {
 				result: "complete",
 				commit: "abc123def",
 			});
-			const envelope = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 2,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				}),
+			const data = await phaseFinishCore(
+				finishParams(ctx, { iteration: 2, input }),
 			);
-			expect(envelope.ok).toBe(true);
-			const data = envelope.data as Record<string, unknown>;
-			const steps = data.steps as Array<Record<string, unknown>>;
-			expect(steps.map((s) => s.name)).toEqual([
+			expect(data.steps.map((s) => s.name)).toEqual([
 				"quality",
 				"protocol",
 				"checklist",
 			]);
-			expect(steps.every((s) => s.status === "completed")).toBe(true);
+			expect(data.steps.every((s) => s.status === "completed")).toBe(true);
 
 			const rows = getSteps(ctx.db, ctx.runId);
 			expect(rows.map((r) => r.step_name).sort()).toEqual(
@@ -190,37 +211,24 @@ describe("phaseFinish", () => {
 
 	test("rerun same keys: no extra rows; recorded false; quality core not re-invoked", async () => {
 		const ctx = setup();
-		const spy = spyOn(qualityGates, "runQualityGates");
 		try {
 			const input = writeAuthor(ctx, {
 				result: "complete",
 				commit: "abc123def",
 			});
-			const params = {
-				phase: "1",
-				iteration: 1,
-				step: AUTHOR_STEP,
-				run: ctx.runId,
-				input,
-				startDir: ctx.tmp,
-				env: {},
-			};
-			await captureSuccess(() => phaseFinish(params));
-			const firstCalls = spy.mock.calls.length;
-			expect(firstCalls).toBeGreaterThanOrEqual(1);
+			const params = finishParams(ctx, { input });
+			await phaseFinishCore(params);
+			expect(gateRunCount(ctx)).toBeGreaterThanOrEqual(1);
+			const firstGates = gateRunCount(ctx);
 			const before = getSteps(ctx.db, ctx.runId).length;
 
-			const envelope = await captureSuccess(() => phaseFinish(params));
-			expect(spy.mock.calls.length).toBe(firstCalls);
+			const data = await phaseFinishCore(params);
+			expect(gateRunCount(ctx)).toBe(firstGates);
 			expect(getSteps(ctx.db, ctx.runId).length).toBe(before);
-
-			const data = envelope.data as Record<string, unknown>;
-			const steps = data.steps as Array<Record<string, unknown>>;
-			expect(steps.every((s) => s.status === "completed")).toBe(true);
-			expect(steps[0]?.recorded).toBe(false);
-			expect(steps[1]?.recorded).toBe(false);
+			expect(data.steps.every((s) => s.status === "completed")).toBe(true);
+			expect(data.steps[0]?.recorded).toBe(false);
+			expect(data.steps[1]?.recorded).toBe(false);
 		} finally {
-			spy.mockRestore();
 			teardown(ctx);
 		}
 	});
@@ -233,15 +241,7 @@ describe("phaseFinish", () => {
 				commit: "abc123def",
 			});
 			try {
-				await phaseFinish({
-					phase: "1",
-					iteration: 3,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				});
+				await phaseFinishCore(finishParams(ctx, { iteration: 3, input }));
 				throw new Error("expected QUALITY_FAILED");
 			} catch (err) {
 				const cli = expectCliError(err, "QUALITY_FAILED");
@@ -254,19 +254,14 @@ describe("phaseFinish", () => {
 			}
 			expect(getSteps(ctx.db, ctx.runId)).toEqual([]);
 
-			writeFileSync(join(ctx.tmp, "5x.toml"), 'qualityGates = ["echo ok"]\n');
-			const envelope = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 3,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				}),
+			writeFileSync(
+				join(ctx.tmp, "5x.toml"),
+				`qualityGates = ["${PASSING_GATE}"]\n`,
 			);
-			expect(envelope.ok).toBe(true);
+			const data = await phaseFinishCore(
+				finishParams(ctx, { iteration: 3, input }),
+			);
+			expect(data.steps.every((s) => s.status === "completed")).toBe(true);
 			const rows = getSteps(ctx.db, ctx.runId);
 			expect(rows.some((r) => r.step_name === "quality:check")).toBe(true);
 			expect(rows.every((r) => r.iteration === 3)).toBe(true);
@@ -280,15 +275,7 @@ describe("phaseFinish", () => {
 		try {
 			const input = writeAuthor(ctx, { nope: true });
 			try {
-				await phaseFinish({
-					phase: "1",
-					iteration: 1,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				});
+				await phaseFinishCore(finishParams(ctx, { input }));
 				throw new Error("expected protocol failure");
 			} catch (err) {
 				const cli = err as CliError;
@@ -309,23 +296,14 @@ describe("phaseFinish", () => {
 
 	test("incomplete checklist with author complete: PHASE_CHECKLIST_INCOMPLETE; quality recorded; no author record; rerun skips quality", async () => {
 		const ctx = setup({ checklistChecked: false });
-		const spy = spyOn(qualityGates, "runQualityGates");
 		try {
 			const input = writeAuthor(ctx, {
 				result: "complete",
 				commit: "abc123def",
 			});
-			const params = {
-				phase: "1",
-				iteration: 1,
-				step: AUTHOR_STEP,
-				run: ctx.runId,
-				input,
-				startDir: ctx.tmp,
-				env: {},
-			};
+			const params = finishParams(ctx, { input });
 			try {
-				await phaseFinish(params);
+				await phaseFinishCore(params);
 				throw new Error("expected PHASE_CHECKLIST_INCOMPLETE");
 			} catch (err) {
 				const cli = expectCliError(err, "PHASE_CHECKLIST_INCOMPLETE");
@@ -336,19 +314,18 @@ describe("phaseFinish", () => {
 			expect(getSteps(ctx.db, ctx.runId).map((r) => r.step_name)).toEqual([
 				"quality:check",
 			]);
-			const callsAfterFail = spy.mock.calls.length;
+			const callsAfterFail = gateRunCount(ctx);
 
 			writeFileSync(
 				ctx.planPath,
 				"# Test Plan\n\n## Phase 1: Setup\n\n- [x] Do the thing\n",
 			);
-			await captureSuccess(() => phaseFinish(params));
-			expect(spy.mock.calls.length).toBe(callsAfterFail);
+			await phaseFinishCore(params);
+			expect(gateRunCount(ctx)).toBe(callsAfterFail);
 			expect(
 				getSteps(ctx.db, ctx.runId).some((r) => r.step_name === AUTHOR_STEP),
 			).toBe(true);
 		} finally {
-			spy.mockRestore();
 			teardown(ctx);
 		}
 	});
@@ -360,22 +337,9 @@ describe("phaseFinish", () => {
 				result: "needs_human",
 				reason: "Need a design decision",
 			});
-			const envelope = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 1,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				}),
-			);
-			expect(envelope.ok).toBe(true);
-			const steps = (envelope.data as Record<string, unknown>)
-				.steps as Array<Record<string, unknown>>;
-			expect(steps[1]?.status).toBe("completed");
-			expect(steps[2]?.status).toBe("skipped");
+			const data = await phaseFinishCore(finishParams(ctx, { input }));
+			expect(data.steps[1]?.status).toBe("completed");
+			expect(data.steps[2]?.status).toBe("skipped");
 			const author = getSteps(ctx.db, ctx.runId).find(
 				(r) => r.step_name === AUTHOR_STEP,
 			);
@@ -395,22 +359,12 @@ describe("phaseFinish", () => {
 				result: "needs_human",
 				reason: "Need a design decision",
 			});
-			const params = {
-				phase: "1",
-				iteration: 1,
-				step: AUTHOR_STEP,
-				run: ctx.runId,
-				input,
-				startDir: ctx.tmp,
-				env: {},
-			};
-			await captureSuccess(() => phaseFinish(params));
+			const params = finishParams(ctx, { input });
+			await phaseFinishCore(params);
 			const before = getSteps(ctx.db, ctx.runId).length;
-			const envelope = await captureSuccess(() => phaseFinish(params));
+			const data = await phaseFinishCore(params);
 			expect(getSteps(ctx.db, ctx.runId).length).toBe(before);
-			const steps = (envelope.data as Record<string, unknown>)
-				.steps as Array<Record<string, unknown>>;
-			expect(steps[2]?.status).toBe("skipped");
+			expect(data.steps[2]?.status).toBe("skipped");
 		} finally {
 			teardown(ctx);
 		}
@@ -423,24 +377,14 @@ describe("phaseFinish", () => {
 				result: "complete",
 				commit: "abc123def",
 			});
-			const params = {
-				phase: "1",
-				iteration: 1,
-				step: AUTHOR_STEP,
-				run: ctx.runId,
-				input,
-				startDir: ctx.tmp,
-				env: {},
-			};
-			await captureSuccess(() => phaseFinish(params));
+			const params = finishParams(ctx, { input });
+			await phaseFinishCore(params);
 			writeFileSync(
 				ctx.planPath,
 				"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Undone again\n",
 			);
-			const envelope = await captureSuccess(() => phaseFinish(params));
-			const steps = (envelope.data as Record<string, unknown>)
-				.steps as Array<Record<string, unknown>>;
-			expect(steps[2]?.status).toBe("completed");
+			const data = await phaseFinishCore(params);
+			expect(data.steps[2]?.status).toBe("completed");
 		} finally {
 			teardown(ctx);
 		}
@@ -453,21 +397,10 @@ describe("phaseFinish", () => {
 				result: "complete",
 				commit: "abc123def",
 			});
-			const envelope = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 1,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					phaseChecklistValidate: false,
-					startDir: ctx.tmp,
-					env: {},
-				}),
+			const data = await phaseFinishCore(
+				finishParams(ctx, { input, phaseChecklistValidate: false }),
 			);
-			const steps = (envelope.data as Record<string, unknown>)
-				.steps as Array<Record<string, unknown>>;
-			expect(steps[2]?.status).toBe("completed");
+			expect(data.steps[2]?.status).toBe("completed");
 			expect(
 				getSteps(ctx.db, ctx.runId).some((r) => r.step_name === AUTHOR_STEP),
 			).toBe(true);
@@ -478,28 +411,19 @@ describe("phaseFinish", () => {
 
 	test("missing run / env / pointer: RUN_CONTEXT_REQUIRED before gates", async () => {
 		const ctx = setup();
-		const spy = spyOn(qualityGates, "runQualityGates");
 		try {
 			const input = writeAuthor(ctx, {
 				result: "complete",
 				commit: "abc123def",
 			});
 			try {
-				await phaseFinish({
-					phase: "1",
-					iteration: 1,
-					step: AUTHOR_STEP,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				});
+				await phaseFinishCore(finishParams(ctx, { input, run: undefined }));
 				throw new Error("expected RUN_CONTEXT_REQUIRED");
 			} catch (err) {
 				expectCliError(err, "RUN_CONTEXT_REQUIRED");
 			}
-			expect(spy.mock.calls.length).toBe(0);
+			expect(gateRunCount(ctx)).toBe(0);
 		} finally {
-			spy.mockRestore();
 			teardown(ctx);
 		}
 	});
@@ -513,33 +437,14 @@ describe("phaseFinish", () => {
 			});
 			writePointer(currentRunPath(ctx.tmp, ".5x"), ctx.runId);
 
-			const viaFlag = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 4,
-					step: AUTHOR_STEP,
-					run: ctx.runId,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				}),
+			const viaFlag = await phaseFinishCore(
+				finishParams(ctx, { iteration: 4, input }),
 			);
-			const viaPointer = await captureSuccess(() =>
-				phaseFinish({
-					phase: "1",
-					iteration: 5,
-					step: AUTHOR_STEP,
-					input,
-					startDir: ctx.tmp,
-					env: {},
-				}),
+			const viaPointer = await phaseFinishCore(
+				finishParams(ctx, { iteration: 5, input, run: undefined }),
 			);
-			expect(viaFlag.ok).toBe(true);
-			expect(viaPointer.ok).toBe(true);
-			expect((viaFlag.data as Record<string, unknown>).run_id).toBe(ctx.runId);
-			expect((viaPointer.data as Record<string, unknown>).run_id).toBe(
-				ctx.runId,
-			);
+			expect(viaFlag.run_id).toBe(ctx.runId);
+			expect(viaPointer.run_id).toBe(ctx.runId);
 		} finally {
 			teardown(ctx);
 		}
