@@ -886,8 +886,12 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// Managed/isolated: open the same state root the pointer uses.
-	// None-mode stateDir is default `.5x` even if config overrides db.path.
+	// Effective state root for both the DB and the focus pointer.
+	// Managed/isolated: controlPlane.stateDir (already the configured root).
+	// None mode: controlPlane.stateDir is the default `.5x` even when config
+	// overrides db.path, so use the configured path — otherwise a first-use
+	// absolute db.path would write 5x.db at the configured root and
+	// current-run under the checkout `.5x`.
 	const stateDirForDb =
 		controlPlane.mode !== "none"
 			? controlPlane.stateDir
@@ -972,7 +976,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
-			writeFocusPointer(projectRoot, stateDir, existing.id);
+			writeFocusPointer(projectRoot, stateDirForDb, existing.id);
 			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
 			outputSuccess({
@@ -1002,7 +1006,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}),
 		});
 
-		writeFocusPointer(projectRoot, stateDir, runId);
+		writeFocusPointer(projectRoot, stateDirForDb, runId);
 		registerLockCleanup(projectRoot, planPath, lockOpts);
 		lockCleanupRegistered = true;
 

@@ -2091,4 +2091,76 @@ describe("5x run focus pointer", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"absolute db.path first-use: init and matching complete use only the configured state root",
+		async () => {
+			const dir = makeTmpDir();
+			const absStateDir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				writeFileSync(
+					join(projectRoot, "5x.toml"),
+					`[db]\npath = ${JSON.stringify(absStateDir)}\n`,
+					"utf-8",
+				);
+
+				expect(existsSync(join(absStateDir, DB_FILENAME))).toBe(false);
+
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--allow-dirty",
+				]);
+				expect(init.exitCode).toBe(0);
+				const initData = parseJson(init.stdout).data as Record<string, unknown>;
+				const runId = initData.run_id as string;
+				expect(runId).toMatch(/^run_[a-f0-9]{12}$/);
+
+				const realDb = join(absStateDir, DB_FILENAME);
+				const realPointer = join(absStateDir, CURRENT_RUN_FILENAME);
+				const localPointer = join(projectRoot, ".5x", CURRENT_RUN_FILENAME);
+				const shadowDb = join(projectRoot, absStateDir, DB_FILENAME);
+				const shadowPointer = join(
+					projectRoot,
+					absStateDir,
+					CURRENT_RUN_FILENAME,
+				);
+
+				expect(existsSync(realDb)).toBe(true);
+				expect(existsSync(realPointer)).toBe(true);
+				expect(readFileSync(realPointer, "utf-8").trim()).toBe(runId);
+				expect(existsSync(localPointer)).toBe(false);
+				expect(existsSync(shadowDb)).toBe(false);
+				expect(existsSync(shadowPointer)).toBe(false);
+
+				const inspect = new Database(realDb, { readonly: true });
+				try {
+					const row = inspect
+						.query("SELECT id FROM runs WHERE id = ?1")
+						.get(runId) as { id: string } | null;
+					expect(row?.id).toBe(runId);
+				} finally {
+					inspect.close();
+				}
+
+				const complete = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(complete.exitCode).toBe(0);
+				expect(existsSync(realPointer)).toBe(false);
+				expect(existsSync(localPointer)).toBe(false);
+				expect(existsSync(shadowPointer)).toBe(false);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(absStateDir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });
