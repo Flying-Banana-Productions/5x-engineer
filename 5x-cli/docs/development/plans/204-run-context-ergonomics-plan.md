@@ -1,6 +1,6 @@
 # Run-Context Ergonomics — Ambient Identity, Pointer, Composite, Pipe Warning
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** August 24, 2026
 **Last updated:** August 24, 2026
 **Status:** Ready for implementation
@@ -19,6 +19,7 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 
 - Strict ambient run resolution for every command that accepts `--run`.
 - Linked-worktree inference from canonical `plans.worktree_path` (no per-worktree pointer registry).
+- Shared control-plane state-file/DB-path helper so pointer and DB honor absolute configured `db.path` (no shadow path under the control-plane root).
 - Control-plane state-root `current-run` write on init and conditional clear on complete (`.5x/current-run` by default; absolute configured `db.path` is the state root).
 - Ambient marker + source on `5x run list`.
 - `5x phase finish` composite with fail-forward sub-step reporting and idempotent resume.
@@ -43,7 +44,7 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 | **Linked worktree = checkout root ≠ control-plane root** | Same predicate as `isLinkedWorktreeContext` (`worktree.handler.ts:107-117`). Covers git-linked and externally attached checkouts sharing one DB. |
 | **Worktree inference only considers `status = 'active'` mappings** | Terminal runs must not steal implicit identity. `--run` / `FIVEX_RUN` may still select them. |
 | **Pointer is last implicit fallback and must be compatible** | A shared file must never select a run mapped to another linked checkout. Ambiguity never consults the pointer. |
-| **Pointer path honors absolute `stateDir`** | `ControlPlaneResult.stateDir` may be an absolute configured `db.path` (`control-plane.ts:32`, `166-179`). Node `join` does not treat a later absolute segment as a new root, so `join(controlPlaneRoot, "/var/lib/project-state", "current-run")` would write *under* the control-plane root. Resolve like `init.handler.ts:91-93` / `resolveStateDir`: absolute `stateDir` is the state root; relative `stateDir` joins under `controlPlaneRoot`. Do not copy `lock.ts:35-38`. |
+| **Shared `controlPlaneStatePath` for DB and pointer** | `ControlPlaneResult.stateDir` may be an absolute configured `db.path` (`control-plane.ts:32`, `166-179`). Node `join` does not treat a later absolute segment as a new root: `join(controlPlaneRoot, "/var/lib/project-state", "5x.db")` becomes `<controlPlaneRoot>/var/lib/project-state/5x.db` — a **shadow** file, not the DB `resolveControlPlaneRoot` discovered at `<absolute-state-dir>/5x.db`. One helper in `control-plane.ts` returns `join(stateDir, filename)` when `stateDir` is absolute and `join(controlPlaneRoot, stateDir, filename)` otherwise (same rule as `resolveStateDir` / `init.handler.ts:91-93`; do not copy `lock.ts:35-38`). `currentRunPath`, `resolveDbContext`, `runV1Init`, and every plan-named handler that currently does `join(stateDir, DB_FILENAME)` must use it. |
 | **Composite checklist matches the granular author-complete gate** | `protocol validate` runs `validatePhaseChecklist` only when the author `result` is `"complete"` (`protocol.handler.ts:376-385`). The composite retains that result (fresh `protocolValidateCore` return, or parsed `result_json` on resume) and skips checklist for `needs_human` / `failed` rather than returning `PHASE_CHECKLIST_INCOMPLETE`. |
 | **Optional-run commands keep no-run behavior when identity is absent** | `quality run`, `diff`, `template render`, and `protocol validate` without `--record` currently work without a run. Ambient fill-in is additive; missing identity is not a new error. |
 | **Pipe `run_id` ranks after pointer** | Pipe support stays (out of scope to remove) but is no longer the reliable default. |
@@ -69,7 +70,7 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 2. [Design Decisions](#design-decisions)
 3. [Architecture Overview](#architecture-overview)
 4. [Phase 1: Ambient identity resolver](#phase-1-ambient-identity-resolver)
-5. [Phase 2: Focus pointer lifecycle](#phase-2-focus-pointer-lifecycle)
+5. [Phase 2: State-root path helper and focus pointer lifecycle](#phase-2-state-root-path-helper-and-focus-pointer-lifecycle)
 6. [Phase 3: Wire resolver into run-scoped commands](#phase-3-wire-resolver-into-run-scoped-commands)
 7. [Phase 4: `run list` marker and two-worktree integration](#phase-4-run-list-marker-and-two-worktree-integration)
 8. [Phase 5: `5x phase finish` composite](#phase-5-5x-phase-finish-composite)
@@ -107,6 +108,7 @@ Today every run-scoped command either requires `--run` at the adapter (`required
 - A shared `.5x/current-run` never selects a run mapped to a different linked checkout. Multiple active mappings to one checkout fail with candidates.
 - `FIVEX_RUN` pins a session even when another process rewrites the pointer.
 - Completing run A leaves the pointer alone if it now names run B.
+- Absolute configured `db.path` is the state root for both `5x.db` and `current-run`; `run init` and later run-scoped reads use that pre-existing DB and never create a shadow copy under the control-plane root.
 - `5x run list` marks the ambiently resolved run and its source without changing persisted `status`.
 - `5x phase finish` runs quality → author protocol validate/record → checklist (checklist only when the author `result` is `"complete"`; otherwise the checklist sub-step is `skipped`), reports `completed` / `failed` / `skipped` per sub-step, and resumes successful steps for the same `(run, phase, iteration)`.
 - A timed-out implicit pipe read prints one stderr line and never writes to stdout.
@@ -150,7 +152,11 @@ Do not add a SQL table, pointer-per-worktree file, or new column. The pointer do
 
 **Pipe `run_id` is precedence 5, after the pointer.** `Removing implicit pipe-context support` is out of scope, so `run record` / `invoke` still accept upstream `run_id` when nothing above produced one. Pipe no longer beats `FIVEX_RUN` or a compatible pointer. Template-var injection from pipe (`extractPipeContext`) is unchanged aside from the timeout warning in Phase 6.
 
-**Pointer I/O is a plain file at the control-plane state root.** Path: `currentRunPath(controlPlaneRoot, stateDir)` — `join(stateDir, "current-run")` when `stateDir` is absolute, otherwise `join(controlPlaneRoot, stateDir, "current-run")`. This matches `resolveStateDir` / `init.handler.ts:91-93`. Do **not** copy `lock.ts:35-38` (`join(projectRoot, sd, "locks")`), which concatenates an absolute `stateDir` under the project root. Contents: the run id, optional trailing newline, nothing else. No JSON, no UUID, no CAS. `run init` overwrites it after the run row exists (new or resumed). `run complete` reads the file and unlinks **iff** the trimmed contents equal the completed run id; otherwise it leaves the file. Do not take a lock; document the remaining TOCTOU as acceptable for a convenience file. Tests must cover “pointer now names B while completing A” and both relative and absolute configured `db.path`.
+**Pointer I/O is a plain file at the control-plane state root.** Path: `currentRunPath(controlPlaneRoot, stateDir)` — a thin wrapper around `controlPlaneStatePath` (below) with filename `current-run`. Contents: the run id, optional trailing newline, nothing else. No JSON, no UUID, no CAS. `run init` overwrites it after the run row exists (new or resumed). `run complete` reads the file and unlinks **iff** the trimmed contents equal the completed run id; otherwise it leaves the file. Do not take a lock; document the remaining TOCTOU as acceptable for a convenience file. Tests must cover “pointer now names B while completing A” and both relative and absolute configured `db.path`.
+
+**DB and pointer share one absolute-`stateDir` helper.** Add `controlPlaneStatePath(controlPlaneRoot, stateDir, filename)` (and `controlPlaneDbPath` = that helper with `DB_FILENAME`) to `src/commands/control-plane.ts`, next to `DB_FILENAME` / `normalizeDbPath`. Returns `join(stateDir, filename)` when `isAbsolute(stateDir)`, otherwise `join(controlPlaneRoot, stateDir, filename)`. Same rule as `resolveStateDir` (`control-plane.ts:166-169`) and `init.handler.ts:91-93`. Do **not** copy `lock.ts:35-38`. The return value is a complete filesystem path; pass it as `getDb`'s `dbPath` (`getDb` uses `path.resolve`, which honors an absolute second argument). Never `join` the helper result with `controlPlaneRoot` again.
+
+Call sites in this slice that today derive a DB path from `controlPlane.stateDir` (or `config.db.path` in `runV1Init`) must switch to the helper. Without that, the absolute-`db.path` pointer lifecycle test initializes and reads a **shadow** DB at `<controlPlaneRoot>/<absolute-state-dir-without-leading-slash>/5x.db` and cannot validate the intended pointer-next-to-DB behavior. Out of this slice: `plan-v1.handler.ts`, `doctor.handler.ts`, `upgrade.handler.ts`, and `lock.ts` keep their current construction unless they already go through `resolveDbContext`.
 
 **`run init` adds additive `export_hint`.** Success payload gains `export_hint: "export FIVEX_RUN=<id>"` (and the same string in text mode on stderr is acceptable but not required). This resolves the 204 §2.1 TODO in favor of an envelope field. Windows skills translate to `$env:FIVEX_RUN = '...'`.
 
@@ -248,9 +254,10 @@ phase finish (cores, no nested CLI):
        │                                      │                              │
        └──────── fail-forward envelope (completed | failed | skipped) ───────┘
 
-Pointer (currentRunPath; absolute stateDir is the state root, not joined under controlPlaneRoot):
-  run init  ──write──►  <stateRoot>/current-run
-  run complete ──unlink iff contents === completed id──► same file
+Pointer and DB (controlPlaneStatePath; absolute stateDir is the state root, not joined under controlPlaneRoot):
+  <stateRoot>/5x.db          ← resolveDbContext, runV1Init, direct run-scoped handlers
+  <stateRoot>/current-run    ← run init write / run complete unlink-iff-match
+  stateRoot = stateDir when absolute, else join(controlPlaneRoot, stateDir)
 ```
 
 Ambient source values surfaced on `run list`: `flag` is never used there (list has no `--run`); sources are `environment` | `worktree` | `pointer`. Commands that resolved via `--run` do not need to advertise source except internally.
@@ -375,11 +382,65 @@ Use in-memory DB + temp directories like `test/unit/commands/run-context.test.ts
 
 ---
 
-## Phase 2: Focus pointer lifecycle
+## Phase 2: State-root path helper and focus pointer lifecycle
 
-**Completion gate:** `run init` writes the pointer at `currentRunPath(controlPlaneRoot, stateDir)` (relative `stateDir` → `<controlPlaneRoot>/<stateDir>/current-run`; absolute `stateDir` → `<stateDir>/current-run`); `run complete` deletes it only when contents still match; unit tests cover overwrite, mismatch leave-in-place, missing file, malformed file, and both relative and absolute configured `db.path`.
+**Completion gate:** `controlPlaneStatePath` / `controlPlaneDbPath` honor absolute `stateDir`; `resolveDbContext`, `runV1Init`, and every plan-named direct run-scoped DB open use the helper; `run init` writes the pointer at `currentRunPath(controlPlaneRoot, stateDir)` (relative `stateDir` → `<controlPlaneRoot>/<stateDir>/current-run`; absolute `stateDir` → `<stateDir>/current-run`); `run complete` deletes it only when contents still match; unit tests cover overwrite, mismatch leave-in-place, missing file, malformed file, and both relative and absolute configured `db.path`; integration asserts `run init` plus a subsequent run-scoped read use the pre-existing DB in the configured absolute state root and never create the shadow path.
 
-### 2.1 Pointer helpers
+### 2.1 Shared control-plane state-file/DB-path helper
+
+**File:** `src/commands/control-plane.ts` (export next to `DB_FILENAME` / `normalizeDbPath`)
+
+```typescript
+export function controlPlaneStatePath(
+	controlPlaneRoot: string,
+	stateDir: string,
+	filename: string,
+): string {
+	return isAbsolute(stateDir)
+		? join(stateDir, filename)
+		: join(controlPlaneRoot, stateDir, filename);
+}
+
+export function controlPlaneDbPath(
+	controlPlaneRoot: string,
+	stateDir: string,
+): string {
+	return controlPlaneStatePath(controlPlaneRoot, stateDir, DB_FILENAME);
+}
+```
+
+`isAbsolute` is already imported in this file. Absolute `stateDir` (configured `db.path`) is the state root — never `join(controlPlaneRoot, "/var/lib/project-state", …)`, which Node treats as `<controlPlaneRoot>/var/lib/project-state/<filename>`. Relative `stateDir` (default `.5x`) still joins under `controlPlaneRoot`. Same rule as `resolveStateDir` (`:166-169`) and `init.handler.ts:91-93`.
+
+The return value is a complete filesystem path. Callers pass it as `getDb(controlPlaneRoot, controlPlaneDbPath(…))` or `openDbReadOnly(…)` `dbPath`. Do not `join` it with `controlPlaneRoot` again.
+
+Replace every in-scope construction of `join(stateDir, DB_FILENAME)` / `join(controlPlaneRoot, stateDir, DB_FILENAME)` used to open or name the control-plane DB:
+
+| Call site | Current construction | Replacement |
+|-----------|----------------------|-------------|
+| `resolveDbContext` managed/isolated (`context.ts:108-110`) | `join(controlPlane.stateDir, DB_FILENAME)` then `getDb(root, dbRelPath)` | `getDb(root, controlPlaneDbPath(root, controlPlane.stateDir))`. Update the comment that currently says “relative to controlPlaneRoot”. |
+| `resolveDbContext` `'none'` (`context.ts:134-136`) | `join(normalizeDbPath(config.db.path), DB_FILENAME)` then `getDb(projectRoot, dbRelPath)` | `getDb(projectRoot, controlPlaneDbPath(projectRoot, normalizeDbPath(config.db.path)))` so an absolute `config.db.path` in none-mode also avoids the shadow path |
+| `runV1Init` (`run-v1.handler.ts:854-856`) | `join(normalizeDbPath(config.db.path), DB_FILENAME)` then `getDb(projectRoot, dbRelPath)` | When `controlPlane.mode !== "none"`, use `controlPlane.stateDir` (same value the pointer uses). When `'none'`, use `normalizeDbPath(config.db.path)` (none-mode `stateDir` is the default `.5x` even if config overrides `db.path`). Then `getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDirForDb))` |
+| `runDiff` (`diff.handler.ts:119-120`) | `join(controlPlane.stateDir, DB_FILENAME)` | `controlPlaneDbPath(controlPlane.controlPlaneRoot, controlPlane.stateDir)` |
+| `runQuality` (`quality-v1.handler.ts:120-121`) | `join(stateDir, DB_FILENAME)` | `controlPlaneDbPath(controlPlaneRoot, stateDir)` |
+| `protocolValidate` checklist discovery (`protocol.handler.ts:162-163`) | `join(controlPlane.stateDir, DB_FILENAME)` | `controlPlaneDbPath(controlPlane.controlPlaneRoot, controlPlane.stateDir)` |
+| `invokeAgent` (`invoke.handler.ts:232-233`) | `join(stateDir, DB_FILENAME)` | `controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir)` |
+| `templateRender` (`template.handler.ts:97-98`) | `join(stateDir, DB_FILENAME)` | `controlPlaneDbPath(projectRoot, stateDir)` |
+
+Handlers that already go through `resolveDbContext` (`runV1State` / `record` / `complete` / `reopen` / `relink` / `watch` / `list`, `runCommit`) pick this up automatically — do not add a second open.
+
+`worktree.handler.ts:144-148` builds `join(controlPlane.controlPlaneRoot, controlPlane.stateDir, DB_FILENAME)` only for the local-vs-root DB warning string. Replace that path with `controlPlaneDbPath` so the warning names the real DB; the `join(checkoutRoot, controlPlane.stateDir)` local-DB probe is a different question (local relative layout) and stays as-is.
+
+Out of this slice (do not convert unless already going through `resolveDbContext`): `plan-v1.handler.ts:567-570`, `doctor.handler.ts:48-59`, `upgrade.handler.ts`, `lock.ts`.
+
+**File:** `src/index.ts` — export `controlPlaneStatePath` and `controlPlaneDbPath` next to other control-plane / path helpers.
+
+- [ ] Add `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts`.
+- [ ] Switch `resolveDbContext` (both branches), `runV1Init`, and every direct run-scoped handler in the table.
+- [ ] Switch the worktree managed-mode warning’s root DB path.
+- [ ] Export from `src/index.ts`.
+- [ ] Unit tests in `test/unit/commands/control-plane-state-path.test.ts` (new): relative `stateDir` → `join(controlPlaneRoot, stateDir, filename)`; absolute `stateDir` → `join(stateDir, filename)` and **not** prefixed with `controlPlaneRoot`; `controlPlaneDbPath` uses `DB_FILENAME`.
+
+### 2.2 Pointer helpers
 
 **File:** `src/commands/run-pointer.ts` (new)
 
@@ -390,10 +451,11 @@ export function currentRunPath(
 	controlPlaneRoot: string,
 	stateDir: string,
 ): string {
-	const stateRoot = isAbsolute(stateDir)
-		? stateDir
-		: join(controlPlaneRoot, stateDir);
-	return join(stateRoot, CURRENT_RUN_FILENAME);
+	return controlPlaneStatePath(
+		controlPlaneRoot,
+		stateDir,
+		CURRENT_RUN_FILENAME,
+	);
 }
 
 export function readPointer(path: string): string | null; // missing → null
@@ -401,16 +463,16 @@ export function writePointer(path: string, runId: string): void;
 export function clearPointerIfMatch(path: string, runId: string): boolean;
 ```
 
-`isAbsolute` from `node:path`. Absolute `stateDir` (configured `db.path`) is the state root — never `join(controlPlaneRoot, "/var/lib/project-state", …)`, which Node would treat as `<controlPlaneRoot>/var/lib/project-state/current-run`. Relative `stateDir` (default `.5x`) still joins under `controlPlaneRoot`. Same rule as `resolveStateDir` (`control-plane.ts:166-169`) and `init.handler.ts:91-93`.
+Do not reimplement the absolute/`join` branch here — import `controlPlaneStatePath` from `control-plane.ts`. Absolute `stateDir` (configured `db.path`) is the state root; relative `stateDir` (default `.5x`) still joins under `controlPlaneRoot`.
 
 `readPointer`: if missing, `null`. If present, trim whitespace; empty → treat as invalid at the identity layer (`RUN_POINTER_INVALID`), so this helper can return `""` or throw; prefer returning the raw trimmed string (including `""`) and let `resolveAmbientRunId` classify. `writePointer`: `mkdirSync` parent `recursive: true`, write `runId + "\n"` (POSIX text). `clearPointerIfMatch`: read, compare, `unlinkSync` only on equality; return whether unlinked. Ignore `ENOENT` on unlink.
 
 - [ ] Implement helpers with no logging and no `process.exit`.
 - [ ] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
 
-### 2.2 `run init` writes the pointer
+### 2.3 `run init` writes the pointer
 
-**File:** `src/commands/run-v1.handler.ts`, `runV1Init` success paths at `:967-978` (new run) and the resumed-run `outputSuccess` above it (~`:930-960` — both new and resume must write). After the run id is known and the row exists, `writePointer(currentRunPath(projectRoot, stateDir), runId)`. Pass `controlPlane.stateDir` unchanged (it may be absolute); do not pre-join it with `projectRoot`.
+**File:** `src/commands/run-v1.handler.ts`, `runV1Init` success paths at `:967-978` (new run) and the resumed-run `outputSuccess` above it (~`:930-960` — both new and resume must write). After the run id is known and the row exists, `writePointer(currentRunPath(projectRoot, stateDir), runId)`. Pass `controlPlane.stateDir` unchanged (it may be absolute); do not pre-join it with `projectRoot`. The DB open in this handler must already use `controlPlaneDbPath` (section 2.1) so the run row and the pointer land in the same state root.
 
 Add `export_hint: \`export FIVEX_RUN=${runId}\`` to both success payloads.
 
@@ -418,7 +480,7 @@ Add `export_hint: \`export FIVEX_RUN=${runId}\`` to both success payloads.
 - [ ] Include `export_hint` on the JSON payload (text formatter may ignore unknown fields via `formatGenericText`).
 - [ ] If pointer write fails (EACCES), fail the command (`outputError` / wrap) — a half-inited run without a pointer is worse than a loud error. Keep this a hard error, not a warning.
 
-### 2.3 `run complete` clears conditionally
+### 2.4 `run complete` clears conditionally
 
 **File:** `src/commands/run-v1.handler.ts`, `runV1Complete` after `completeRun` (`:1350`) and lock release (`:1354-1356`), before `outputSuccess` (`:1358-1362`).
 
@@ -435,19 +497,31 @@ Do **not** clear on `reopen`. Abort (`--status aborted`) is still a completion o
 - [ ] Completing A while the file names B leaves B.
 - [ ] Missing file is not an error.
 
-### 2.4 Tests
+### 2.5 Tests
 
-**File:** `test/unit/commands/run-pointer.test.ts` (new) plus handler-level tests.
+**Files:** `test/unit/commands/control-plane-state-path.test.ts` (new), `test/unit/commands/run-pointer.test.ts` (new), plus handler-level tests.
 
-`runV1Init` / `runV1Complete` currently go through `resolveDbContext` and git. Prefer:
+`runV1Init` / `runV1Complete` currently go through `resolveDbContext` and git (`runV1Init` opens DB itself). Prefer:
 
-- Unit: pointer helpers (above).
+- Unit: `controlPlaneStatePath` / `controlPlaneDbPath` (above) and pointer helpers (above).
 - Integration (can live in Phase 2 or 4): `5x run init` creates `.5x/current-run`; second `run init` for another plan overwrites; `run complete` of the named run deletes; `run complete` of a different run does not.
 
 Existing init tests: `test/integration/commands/run-v1.test.ts` and `run-init-worktree.test.ts`. Extend one of them rather than a third copy of `setupProject` if feasible.
 
+Absolute configured `db.path` integration (required; this is what makes the pointer lifecycle test valid):
+
+1. Temp git repo; `5x.toml` with `db.path` set to a temp directory **outside** the project (absolute).
+2. Pre-create `<absStateDir>/5x.db` (mkdir + `getDb`/`runMigrations` against that absolute path) so `resolveControlPlaneRoot` discovers managed mode at the real state root — do not rely on `run init` to create it in the wrong place.
+3. `5x run init` for a plan; then a subsequent run-scoped read (`5x run state` with no `--run`, via the pointer).
+4. Assert the new run row exists in the **pre-existing** `<absStateDir>/5x.db`.
+5. Assert the shadow path does **not** exist: `join(controlPlaneRoot, absStateDir, DB_FILENAME)` (Node posix-join → `<controlPlaneRoot>/<absolute-state-dir-without-leading-slash>/5x.db`). Also assert no `current-run` under that shadow directory.
+6. Assert the pointer is at `<absStateDir>/current-run`, not under the control-plane root.
+7. Matching `run complete` clears that pointer; complete of a different run does not.
+
+- [ ] `controlPlaneStatePath` / `controlPlaneDbPath` unit tests (relative + absolute `stateDir`).
 - [ ] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
-- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites. Repeat the write/clear cycle with an **absolute** configured `db.path` (temp directory outside the project) so the pointer is created at `<absStateDir>/current-run`, not `<controlPlaneRoot>/<absStateDir>/current-run`.
+- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
+- [ ] Integration: absolute `db.path` — pre-existing DB is the one init/state use; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer write/clear is at `<absStateDir>/current-run`.
 
 ---
 
@@ -481,7 +555,7 @@ if (!ambient.ok) outputAmbientError(ambient);
 params.run = ambient.runId; // may be undefined when required: false
 ```
 
-Call this **after** `resolveDbContext` / `getDb` so `db` and `controlPlane` exist, and **before** `resolveRunExecutionContext`.
+Call this **after** `resolveDbContext` / `getDb` so `db` and `controlPlane` exist, and **before** `resolveRunExecutionContext`. Direct `getDb` call sites in this table must keep using `controlPlaneDbPath` from Phase 2 — do not reintroduce `join(stateDir, DB_FILENAME)`.
 
 ### 3.2 Adapter: `--run` is never required at parse time
 
@@ -519,11 +593,11 @@ Apply the helper at each site that currently requires or optionally uses a run i
 | `runV1Relink` | `:1494` | true | Not in 204’s example list but takes `--run`; include for identical precedence |
 | `runV1Watch` | `:1605` | true | |
 | `runCommit` | `commit.handler.ts:97` | true | |
-| `invokeAgent` | `invoke.handler.ts:173-194` | true | Same pipe-then-ambient pattern as record |
-| `runQuality` | `quality-v1.handler.ts:104` | `Boolean(params.record)` | If `!params.run && !params.record`, still *try* ambient with `required: false`; on hit, take the run-scoped path (workdir/config). On miss, keep cwd path (`:180-186`) |
-| `protocolValidate` | `protocol.handler.ts:319-325` | `Boolean(params.record)` | Same optional fill-in when not recording |
-| `templateRender` | `template.handler.ts:74-80` | false | Optional fill-in enables run-aware fields without `--run` |
-| `runDiff` | `diff.handler.ts` (~`:101`) | false | Optional fill-in diffs the mapped worktree |
+| `invokeAgent` | `invoke.handler.ts:173-194` | true | Same pipe-then-ambient pattern as record. DB open already uses `controlPlaneDbPath` (Phase 2) |
+| `runQuality` | `quality-v1.handler.ts:104` | `Boolean(params.record)` | If `!params.run && !params.record`, still *try* ambient with `required: false`; on hit, take the run-scoped path (workdir/config). On miss, keep cwd path (`:180-186`). DB open already uses `controlPlaneDbPath` (Phase 2) |
+| `protocolValidate` | `protocol.handler.ts:319-325` | `Boolean(params.record)` | Same optional fill-in when not recording. Checklist-discovery DB open already uses `controlPlaneDbPath` (Phase 2) |
+| `templateRender` | `template.handler.ts:74-80` | false | Optional fill-in enables run-aware fields without `--run`. DB open already uses `controlPlaneDbPath` (Phase 2) |
+| `runDiff` | `diff.handler.ts` (~`:101`) | false | Optional fill-in diffs the mapped worktree. DB open already uses `controlPlaneDbPath` (Phase 2) |
 
 `validateRunId` remains after a concrete id is chosen.
 
@@ -667,7 +741,7 @@ Flags: `--phase` (required), `--iteration` (required), `--step` (required), `--r
 
 Handler algorithm:
 
-1. `resolveDbContext` / control plane; `resolveAmbientRunId({ required: true })`; `validateRunId`.
+1. `resolveDbContext` / control plane; `resolveAmbientRunId({ required: true })`; `validateRunId`. Open the DB only through `resolveDbContext` (already on `controlPlaneDbPath` from Phase 2) — do not add a parallel `join(stateDir, DB_FILENAME)` open.
 2. Build `steps: PhaseFinishStep[]` for `quality`, `protocol`, `checklist` (pre-fill `skipped` and overwrite as you go).
 3. Quality: if successful existing `quality:check` (or `recordStep`) at `(run, phase, iteration)` (`result_json.passed === true` or `skipped === true`) → mark completed. Else `runQualityCore` with record-on-success-only. `passed: false` → fail envelope `QUALITY_FAILED`, skip the rest. On throw, map to the core’s code.
 4. Protocol: if existing `--step` row → completed; parse that row’s `result_json` into `authorResult` (the recorded author payload). Else read input (must not use `readUpstreamEnvelope`; this is payload stdin, same `readInput` as protocol). `protocolValidateCore`. Keep the returned validated object as `authorResult`. Schema failure → `INVALID_STRUCTURED_OUTPUT` (or whatever `validateStructuredOutputOrThrow` uses today), skip checklist.
@@ -815,29 +889,31 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 
 | File | Change |
 |------|--------|
+| `src/commands/control-plane.ts` | **Export** `controlPlaneStatePath` / `controlPlaneDbPath` — absolute `stateDir` is the state root |
+| `src/commands/context.ts` | `resolveDbContext` opens DB via `controlPlaneDbPath` (managed/isolated and none) |
 | `src/commands/run-identity.ts` | **New** — `resolveAmbientRunId`, checkout linkage, active-run listing |
-| `src/commands/run-pointer.ts` | **New** — `current-run` read/write/clearIfMatch; `currentRunPath` honors absolute `stateDir` |
+| `src/commands/run-pointer.ts` | **New** — `current-run` read/write/clearIfMatch; `currentRunPath` wraps `controlPlaneStatePath` |
 | `src/commands/phase.ts` | **New** — `5x phase finish` adapter |
 | `src/commands/phase.handler.ts` | **New** — fail-forward composite |
 | `src/commands/run-v1.ts` | `--run` optional on complete/reopen/relink/watch; help |
-| `src/commands/run-v1.handler.ts` | Pointer write/clear; ambient resolve; `export_hint`; list marker; param types |
+| `src/commands/run-v1.handler.ts` | `runV1Init` DB via `controlPlaneDbPath`; pointer write/clear; ambient resolve; `export_hint`; list marker; param types |
 | `src/commands/commit.ts` | `--run` optional |
 | `src/commands/commit.handler.ts` | Ambient resolve; `run?: string` |
 | `src/commands/invoke.ts` | Help |
-| `src/commands/invoke.handler.ts` | Ambient + pipe rank 5 |
+| `src/commands/invoke.handler.ts` | DB via `controlPlaneDbPath`; ambient + pipe rank 5 |
 | `src/commands/quality-v1.ts` | `--iteration`; help |
-| `src/commands/quality-v1.handler.ts` | Core extract; ambient; iteration on record |
+| `src/commands/quality-v1.handler.ts` | DB via `controlPlaneDbPath`; core extract; ambient; iteration on record |
 | `src/commands/protocol.ts` | Help |
-| `src/commands/protocol.handler.ts` | Core extract; `evaluatePhaseChecklist`; ambient |
+| `src/commands/protocol.handler.ts` | DB via `controlPlaneDbPath`; core extract; `evaluatePhaseChecklist`; ambient |
 | `src/db/operations-v1.ts` | `findExistingStep` (or sibling) returns `result_json` for quality/author resume |
 | `src/commands/template.ts` | Help |
-| `src/commands/template.handler.ts` | Optional ambient fill-in |
+| `src/commands/template.handler.ts` | DB via `controlPlaneDbPath`; optional ambient fill-in |
 | `src/commands/diff.ts` | Help |
-| `src/commands/diff.handler.ts` | Optional ambient fill-in |
-| `src/commands/worktree.handler.ts` | Use shared `isLinkedWorktreeCheckout` |
+| `src/commands/diff.handler.ts` | DB via `controlPlaneDbPath`; optional ambient fill-in |
+| `src/commands/worktree.handler.ts` | Use shared `isLinkedWorktreeCheckout`; root-DB warning path via `controlPlaneDbPath` |
 | `src/pipe.ts` | Timeout stderr warning; injectable `warn` |
 | `src/bin.ts` | `registerPhase` |
-| `src/index.ts` | Export identity/pointer APIs |
+| `src/index.ts` | Export identity/pointer APIs and `controlPlaneStatePath` / `controlPlaneDbPath` |
 | `src/output.ts` | `QUALITY_FAILED` in exit map if missing |
 | `src/skills/base/5x/SKILL.tmpl.md` | `FIVEX_RUN`; ambient examples |
 | `src/skills/base/5x-phase-execution/SKILL.tmpl.md` | `phase finish` hot loop; granular recovery |
@@ -850,6 +926,7 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | `docs/v1/100-architecture.md` | Composite-as-sugar note |
 | `docs/v2/plan-inputs/02-run-context-ergonomics.plan-input.md` | Generated plan pointer |
 | `5x-cli/AGENTS.md` | Ambient identity + worker caveat |
+| `test/unit/commands/control-plane-state-path.test.ts` | **New** — relative vs absolute `stateDir` path construction |
 | `test/unit/commands/run-identity.test.ts` | **New** |
 | `test/unit/commands/run-pointer.test.ts` | **New** |
 | `test/unit/commands/phase-finish.test.ts` | **New** |
@@ -862,7 +939,7 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | `test/integration/commands/invoke.test.ts` | Missing `--run` vs ambient |
 | `test/integration/commands/quality-record.test.ts` | `--record` identity |
 
-`src/commands/run-context.ts` is reused, not modified, unless a re-export is cleaner. `src/db/operations.ts` `listPlansByWorktreePath` is reused, not modified. `src/db/operations-v1.ts` `findExistingStep` is extended only to expose `result_json` for resume inspection.
+`src/commands/run-context.ts` is reused, not modified, unless a re-export is cleaner. `src/db/operations.ts` `listPlansByWorktreePath` is reused, not modified. `src/db/operations-v1.ts` `findExistingStep` is extended only to expose `result_json` for resume inspection. `plan-v1.handler.ts`, `doctor.handler.ts`, `upgrade.handler.ts`, and `lock.ts` are **not** converted in this slice.
 
 ---
 
@@ -870,19 +947,20 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 
 | Type | Scope | Validates |
 |------|-------|-----------|
+| Unit | `controlPlaneStatePath` / `controlPlaneDbPath` | Relative `stateDir` joins under `controlPlaneRoot`; absolute `stateDir` is the state root and is not prefixed with `controlPlaneRoot` |
 | Unit | `run-identity.ts` | Precedence 1–5; optional none; required none; ambiguity + candidates; incompatible pointer; stale/invalid pointer; `FIVEX_RUN` invalid; canonical symlink/nested checkout via injected root |
 | Unit | `run-pointer.ts` | Write/read; clear match; refuse mismatch; missing file; **relative vs absolute `stateDir` path construction** |
 | Unit | `phase-finish` handler | Happy path keys; resume skip; quality fail not recorded; protocol/checklist failures; `--no-phase-checklist-validate`; **fresh and resumed non-complete author results skip checklist** |
 | Unit | `evaluatePhaseChecklist` | Same fail-closed/fail-open cases as current protocol tests |
 | Unit | skills (OpenCode/Cursor) | `FIVEX_RUN`, `phase finish`, granular fallbacks still present |
-| Integration | `run init` / `complete` | Pointer write; conditional clear; `export_hint`; **absolute configured `db.path` writes/clears `<absStateDir>/current-run`** |
+| Integration | `run init` / `complete` | Pointer write; conditional clear; `export_hint`; **absolute configured `db.path`: init and a subsequent run-scoped read use the pre-existing `<absStateDir>/5x.db`; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer is `<absStateDir>/current-run`** |
 | Integration | two worktrees | Unique mapping per checkout; pointer cannot cross; `FIVEX_RUN` override; ambiguity; `run list` source; `diff`/`quality`/`state` without `--run` |
 | Integration | `phase finish` CLI | `--input` happy path; exit codes; single JSON envelope |
 | Integration | pipe timeout | Stderr warning; stdout not polluted; TTY silent |
 | Integration | invoke / quality-record | Flag-less failure without ambient; success with `FIVEX_RUN` / pointer |
 | Regression | existing `--run` tests | Explicit flag behavior unchanged |
 
-Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd under a worktree; two plans → one checkout; pointer rewritten during complete; `FIVEX_RUN` of a completed run on `run state`; optional `quality run` with no control plane; absolute `db.path` pointer location; `phase finish` with `needs_human` / `failed` author JSON.
+Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd under a worktree; two plans → one checkout; pointer rewritten during complete; `FIVEX_RUN` of a completed run on `run state`; optional `quality run` with no control plane; absolute `db.path` pointer **and** DB location (no shadow file); `phase finish` with `needs_human` / `failed` author JSON.
 
 ---
 
@@ -897,6 +975,7 @@ Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd un
 - **Execution-target registry** (containers, VMs, remote sandboxes).
 - **Breaking text/JSON output changes** — `09-output-normalization-release` / `205`.
 - **Changing granular `quality run` to exit non-zero on `passed: false`** — composite-only `QUALITY_FAILED`.
+- **Converting `plan-v1` / `doctor` / `upgrade` / `lock` DB-path construction** — not run-scoped identity work; they keep current joins unless they already go through `resolveDbContext`.
 
 ---
 
@@ -905,13 +984,13 @@ Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd un
 | Phase | Description | Time |
 |-------|-------------|------|
 | 1 | Ambient identity resolver + unit tests | 1.5 days |
-| 2 | Pointer file + init/complete lifecycle | 1 day |
+| 2 | State-root path helper + pointer file + init/complete lifecycle | 1.5 days |
 | 3 | Wire all `--run` commands; adapter optionality | 2 days |
 | 4 | `run list` marker; two-worktree integration | 1.5 days |
 | 5 | Quality/protocol cores + `phase finish` | 2 days |
 | 6 | Pipe timeout warning | 0.5 day |
 | 7 | Skills, docs, skill tests | 1.5 days |
-| **Total** | | **~10 days** |
+| **Total** | | **~10.5 days** |
 
 Phases 1–2 are sequential. Phase 6 can overlap with 4–5. Phase 7 depends on 3 and 5 (skill examples must match real flags).
 
@@ -924,6 +1003,12 @@ Implements v2 area #4 (`docs/v2/204-run-context-ergonomics.md`) from plan input 
 ---
 
 ## Revision History
+
+### 1.2 — August 24, 2026
+
+Addresses **P1.3** in the **Addendum (2026-08-24) — Revision 1.1 re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-204-run-context-ergonomics-plan-review.md`](../reviews/5x-cli-docs-development-plans-204-run-context-ergonomics-plan-review.md). P1.1 and P1.2 from the prior addendum remain addressed. No P0 or P2 items.
+
+**P1.3 — Control-plane database resolution honors absolute `stateDir`.** The pointer-only `currentRunPath` branch was not enough: `resolveDbContext`, `runV1Init`, and the direct run-scoped handlers still derived DB paths with `join(stateDir, DB_FILENAME)` / `join(controlPlaneRoot, stateDir, DB_FILENAME)`, which for an absolute configured `db.path` opens a shadow DB under the control-plane root. Phase 2 now lands `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts` (absolute → `join(stateDir, filename)`, else `join(controlPlaneRoot, stateDir, filename)`). `currentRunPath` wraps that helper. `resolveDbContext`, `runV1Init`, and every plan-named handler that currently opens the DB from `controlPlane.stateDir` must use it. Absolute-`db.path` integration pre-creates the real DB, then asserts `run init` plus a subsequent run-scoped read use that file and never create the shadow path.
 
 ### 1.1 — August 24, 2026
 
