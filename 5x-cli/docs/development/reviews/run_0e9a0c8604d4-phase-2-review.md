@@ -84,3 +84,21 @@ None.
   "summary": "Phase 2 correctly handles existing absolute state roots, but first-use absolute db.path bootstrap splits the DB and pointer roots. Apply the mechanical state-root fix and regression test before proceeding."
 }
 ```
+
+## Protocol-metadata recovery addendum
+
+This recovery records the finding with the canonical reviewer item metadata required for routing. The state-root split is directly derivable from the implementation and is an automatic correction, not a human decision.
+
+```json
+{
+  "readiness": "ready_with_corrections",
+  "items": [
+    {
+      "title": "Bootstrap pointer uses a different state root than its DB",
+      "action": "auto_fix",
+      "reason": "In none mode with a first-use absolute db.path, run init opens the DB at the configured absolute state root but writes current-run under the checkout .5x directory; later completion clears the absolute location and leaves the local pointer stale."
+    }
+  ],
+  "summary": "One mechanical state-root correction and regression test are required before Phase 2 is complete."
+}
+```
