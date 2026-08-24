@@ -93,7 +93,12 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
-import { requireAmbientRunId } from "./run-identity.js";
+import {
+	type AmbientRunResult,
+	type AmbientRunSource,
+	requireAmbientRunId,
+	resolveAmbientRunId,
+} from "./run-identity.js";
 import {
 	clearPointerIfMatch,
 	currentRunPath,
@@ -155,6 +160,54 @@ export interface RunListParams {
 	plan?: string;
 	status?: string;
 	limit?: number;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
+}
+
+/** Ambient sources `run list` may advertise. `flag` / `pipe` are never used here. */
+export type ListAmbientSource = "environment" | "worktree" | "pointer";
+
+const LIST_FOCUS_LABEL: Record<ListAmbientSource, string> = {
+	environment: "env",
+	worktree: "worktree",
+	pointer: "pointer",
+};
+
+export interface ListRunRow {
+	id: string;
+	plan_path: string;
+	status: string;
+	created_at: string;
+	updated_at: string;
+	step_count: number;
+	ambient?: true;
+	ambient_source?: ListAmbientSource;
+}
+
+function isListAmbientSource(
+	source: AmbientRunSource,
+): source is ListAmbientSource {
+	return (
+		source === "environment" || source === "worktree" || source === "pointer"
+	);
+}
+
+/**
+ * Stamp the ambiently focused run (if listed). Resolution failures and
+ * `source: "none"` leave the payload unmarked — list itself still succeeds.
+ */
+export function applyAmbientListMarker(
+	runs: ListRunRow[],
+	ambient: AmbientRunResult,
+): ListRunRow[] {
+	if (!ambient.ok || !ambient.runId || !isListAmbientSource(ambient.source)) {
+		return runs;
+	}
+	const focused = runs.find((r) => r.id === ambient.runId);
+	if (!focused) return runs;
+	focused.ambient = true;
+	focused.ambient_source = ambient.source;
+	return runs;
 }
 
 export interface RunRelinkParams {
@@ -716,19 +769,10 @@ function formatRecordText(
 /**
  * Human-readable text formatter for `run list` output.
  *
- * Column-aligned table with ID, Plan, Status, Steps, Created.
+ * Column-aligned table with Focus, ID, Plan, Status, Steps, Created.
  * Truncates long plan paths with `...`.
  */
-function formatListText(data: {
-	runs: Array<{
-		id: string;
-		plan_path: string;
-		status: string;
-		step_count: number;
-		created_at: string;
-		updated_at: string;
-	}>;
-}): void {
+function formatListText(data: { runs: ListRunRow[] }): void {
 	const { runs } = data;
 
 	if (runs.length === 0) {
@@ -745,6 +789,8 @@ function formatListText(data: {
 
 	// Format rows first to compute widths
 	const rows = runs.map((r) => ({
+		focus:
+			r.ambient && r.ambient_source ? LIST_FOCUS_LABEL[r.ambient_source] : "",
 		id: r.id,
 		plan: truncatePlan(r.plan_path),
 		status: r.status,
@@ -754,6 +800,7 @@ function formatListText(data: {
 
 	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
 	const cols: ColDef[] = [
+		{ header: "Focus", key: "focus", width: 5 },
 		{ header: "ID", key: "id", width: 2 },
 		{ header: "Plan", key: "plan", width: 4 },
 		{ header: "Status", key: "status", width: 6 },
@@ -1565,7 +1612,9 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 }
 
 export async function runV1List(params: RunListParams): Promise<void> {
-	const { config, db } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 
 	const runs = listRuns(db, {
 		planPath: params.plan
@@ -1575,19 +1624,27 @@ export async function runV1List(params: RunListParams): Promise<void> {
 		limit: params.limit,
 	});
 
-	outputSuccess(
-		{
-			runs: runs.map((r) => ({
-				id: r.id,
-				plan_path: r.plan_path,
-				status: r.status,
-				created_at: r.created_at,
-				updated_at: r.updated_at,
-				step_count: r.step_count,
-			})),
-		},
-		formatListText,
-	);
+	const listed: ListRunRow[] = runs.map((r) => ({
+		id: r.id,
+		plan_path: r.plan_path,
+		status: r.status,
+		created_at: r.created_at,
+		updated_at: r.updated_at,
+		step_count: r.step_count,
+	}));
+
+	if (controlPlane) {
+		const ambient = resolveAmbientRunId({
+			required: false,
+			db,
+			controlPlane,
+			startDir: params.startDir,
+			env: params.env,
+		});
+		applyAmbientListMarker(listed, ambient);
+	}
+
+	outputSuccess({ runs: listed }, formatListText);
 }
 
 // ---------------------------------------------------------------------------

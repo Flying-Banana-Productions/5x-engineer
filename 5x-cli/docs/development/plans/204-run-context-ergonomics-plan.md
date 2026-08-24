@@ -646,10 +646,10 @@ Do not add `ambient: false` on others (keep payloads small). Do not change `stat
 
 `runV1List` currently does not destructure `controlPlane` (`:1437`). Use `const { config, db, controlPlane } = await resolveDbContext()`.
 
-- [ ] JSON marker + source on the focused run only.
-- [ ] Text column for focus.
-- [ ] No marker when resolution fails or source is `none`.
-- [ ] Marker is independent of `status: "active"` (a focused completed run via `FIVEX_RUN` still shows `status: completed` plus ambient marker).
+- [x] JSON marker + source on the focused run only.
+- [x] Text column for focus.
+- [x] No marker when resolution fails or source is `none`.
+- [x] Marker is independent of `status: "active"` (a focused completed run via `FIVEX_RUN` still shows `status: completed` plus ambient marker).
 
 ### 4.2 Two-worktree integration tests
 
@@ -670,12 +670,12 @@ Setup (use `cleanGitEnv()`, `stdin: "ignore"`, `timeout: 30000`):
 
 Reuse helpers from `test/integration/commands/run-scoped-context.test.ts` / `run-init-worktree.test.ts` where possible.
 
-- [ ] Shared-DB two-worktree isolation without flags.
-- [ ] Pointer cannot cross linked checkouts.
-- [ ] `FIVEX_RUN` overrides pointer and worktree.
-- [ ] Ambiguity lists candidates.
-- [ ] `run list` source is `worktree` when invoked from a uniquely mapped checkout even if the pointer names the same or a different run.
-- [ ] Completing A does not delete a pointer that names B (if not covered in Phase 2 integration).
+- [x] Shared-DB two-worktree isolation without flags.
+- [x] Pointer cannot cross linked checkouts.
+- [x] `FIVEX_RUN` overrides pointer and worktree.
+- [x] Ambiguity lists candidates.
+- [x] `run list` source is `worktree` when invoked from a uniquely mapped checkout even if the pointer names the same or a different run.
+- [x] Completing A does not delete a pointer that names B (if not covered in Phase 2 integration).
 
 ---
 
