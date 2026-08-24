@@ -50,14 +50,14 @@ A small JSON file written **adjacent to installed harness assets** (not in `.5x/
 - **Baked inputs hashed:** resolved `authorModel` / `reviewerModel` (after `harnessModels` override), `authorDelegationMode` / `reviewerDelegationMode`, CLI version, harness plugin version. (See `src/harnesses/opencode/plugin.ts` for the current bake surface.) Bundled template drift is caught not by a version string but by per-file content hashes recorded in the manifest — see `201-harness-freshness.md` §2.2 for the resulting two-tier check (free input compare on hot paths; re-render compare in `doctor` / `sync`).
 - **Consumed by:** #1 (freshness check + `harness sync`), surfaced by #3 (`doctor`).
 
-### 3.2 Run-state surface (new SQLite tables)
+### 3.2 Run-state surface (persistent local state)
 
-v2 adds persistent rows that outlive a single CLI invocation, alongside the v1 `runs` / `steps` / `plans` tables (`src/db/schema.ts`):
+v2 adds persistent state that outlives a single CLI invocation, alongside the v1 `runs` / `steps` / `plans` tables (`src/db/schema.ts`):
 
 - **Pending-prompt / decision queue.** When `5x prompt` is invoked, it writes a pending row and polls for an answer. The answer may arrive from the terminal **or** from the control plane (#2) — first writer wins. This converts the existing blocking-CLI prompt contract into a two-way channel **without** inter-process signaling or a daemon-to-agent socket.
-- **Active-run pointer.** A small piece of state (`.5x/current-run`, file or table) set by `5x run init`, recording the run the next command defaults to — git-style implicit context.
+- **Ambient run context.** `5x run init` writes a local control-plane focus pointer (`.5x/current-run`), while commands in linked worktrees first infer a unique active run from the existing plan/worktree mapping. Explicit `--run` and session-scoped `FIVEX_RUN` remain authoritative; the pointer is operator convenience, not invocation identity.
 - **Review-budget baseline and decisions.** The plan records stable scored work items; the CLI derives an immutable initial baseline, current forecast, and budget status. Run state preserves those calculations plus human budget/scope/risk decisions and the full audit trail (`206-review-budget-governance.md` §6.4).
-- **Consumed by:** #2 (dashboard selects on and answers via these), #4 (active-run pointer eliminates most `--run`/`--phase` threading), #6 (budget baselines and tradeoff decisions).
+- **Consumed by:** #2 (dashboard selects on and answers via these), #4 (ambient resolution eliminates most `--run` threading while composites reduce phase-loop plumbing), #6 (budget baselines and tradeoff decisions).
 
 ### 3.3 `5x doctor`
 

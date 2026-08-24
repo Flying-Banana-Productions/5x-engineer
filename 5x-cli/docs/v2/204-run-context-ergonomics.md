@@ -23,31 +23,42 @@ Meanwhile, run-scoped resolution is already centralized: `resolveRunExecutionCon
 
 ## 2. Design
 
-### 2.1 Active-run pointer
+### 2.1 Ambient run resolution
 
-Git-style implicit context: commands that take `--run` default it from ambient state when the flag is omitted.
+Commands that take `--run` may default it from ambient state when the flag is omitted. Ambient resolution is a CLI/operator convenience, not authoritative run identity for queued or remote execution.
 
 **Resolution precedence (strict):**
 
 1. Explicit `--run <id>` — always wins (unchanged v1 behavior).
 2. `FIVEX_RUN` environment variable — session-scoped override.
-3. Active-run pointer — `.5x/current-run`, written by `5x run init`.
-4. None → error (same as today's missing `--run`), with remediation naming all three mechanisms.
+3. Current linked-worktree association — if the command is running in a linked worktree and exactly one active run is mapped to that checkout through `plans.worktree_path`, use it.
+4. Active-run pointer — `.5x/current-run` by default (the configured control-plane state root's `current-run` file), written by `5x run init`, only when it does not conflict with the current linked-worktree context.
+5. None → error (same as today's missing `--run`), with remediation naming the applicable mechanisms.
+
+`--plan` remains an explicit alternative selector on commands that already support it (for example, `run state --plan`) and is resolved before ambient run context.
+
+**Linked-worktree rules:**
+
+- Compare checkout and mapped worktree paths by canonical physical identity so symlinks, nested working directories, and externally attached worktrees resolve consistently.
+- One mapped active run selects that run without consulting the shared pointer. This allows worktrees A and B to resolve different runs while sharing one root `.5x` control plane.
+- More than one mapped active run is ambiguous and fails with the candidate run ids plus remediation to pass `--run` or set `FIVEX_RUN`. The pointer does not break this tie.
+- With no mapped active run, a linked worktree must not consume a pointer for a run mapped to another checkout. A stale, missing, terminal, or incompatible pointer fails with actionable remediation rather than silently selecting unrelated work.
+- Explicit `--run` and `FIVEX_RUN` may intentionally select a run mapped elsewhere; existing run execution-context resolution then moves execution to that run's mapped worktree. Worktree awareness constrains only implicit fallback.
 
 **Pointer mechanics:**
 
-- `5x run init` writes the new/resumed run id to `.5x/current-run` (plain text, one id). `5x run complete` clears it **iff** it still points at the completed run.
-- _TODO:_ file vs table. Leaning **file**: trivially inspectable (`cat .5x/current-run`), no migration, matches `.5x/locks/` precedent. The pointer is a local convenience, not durable state — losing it costs one `--run` flag.
+- `5x run init` writes the new/resumed run id to the control-plane state root's `current-run` file (plain text, one id; `.5x/current-run` by default). `5x run complete` clears it **iff** it still points at the completed run.
+- The pointer remains a single file at the local control-plane state root: trivially inspectable (`cat .5x/current-run`), migration-free, and consistent with `.5x/locks/`. It records the control plane's last operator-focused run; it is not a per-worktree registry and is not durable workflow state.
 - `5x run state` (no args) resolves via the same precedence, making "what am I working on?" zero-flag.
-- Surface the active marker in `5x run list` output.
+- Surface the ambiently resolved marker and its source (`environment`, `worktree`, or `pointer`) in `5x run list` output without conflating it with the run's persisted `active` status.
 
-**Concurrency caveat (the honest limit):** the pointer file is shared mutable state per control plane. Two concurrent runs in one repo (different plans — plan locks don't prevent this) would fight over it. This is why `FIVEX_RUN` sits above the pointer: a harness session driving run A exports `FIVEX_RUN` once and is immune to run B re-pointing the file. Skills should be updated to `export FIVEX_RUN` right after `run init` — one line replacing per-command `--run` threading, and concurrency-safe.
+**Concurrency boundary:** distinct linked worktrees do not depend on the shared pointer and therefore do not collide. Multiple sessions intentionally operating from the same checkout still need session identity; this is why `FIVEX_RUN` sits above ambient filesystem state. A harness session driving run A exports `FIVEX_RUN` once and is immune to run B re-pointing the file. Skills should be updated to `export FIVEX_RUN` right after `run init` — one line replacing per-command `--run` threading.
 
 - _TODO:_ should `run init` print a hint (or the envelope include `export_hint`) nudging the `FIVEX_RUN` pattern?
 
 **What defaults, what doesn't:**
 
-- `--run` defaults from the pointer everywhere `resolveRunExecutionContext` is used (`invoke`, `run record/state/complete/reopen`, `quality run`, `commit`, `diff`, `template render`, `protocol validate`).
+- `--run` defaults through the shared ambient resolver everywhere `resolveRunExecutionContext` is used (`invoke`, `run record/state/complete/reopen`, `quality run`, `commit`, `diff`, `template render`, `protocol validate`).
 - `--phase` / `--iteration`: _TODO_ — defaulting phase from "latest recorded step's phase" is tempting but risky (a stale phase silently mis-records a step; idempotency keys include phase, so a wrong default is a *wrong write*, not an error). Leaning: **do not default phase in v2**; revisit after composite verbs (§2.2) remove most of the need.
 - `--session`: not defaulted — session continuity has deliberate explicit semantics (`--session` / `--new-session`, `docs/v1/100-architecture.md` §3) and auto-defaulting would blur the recovery escape hatch.
 
@@ -72,7 +83,7 @@ Collapse the hottest fixed sequences into single commands with one envelope. Can
 
 ### 2.3 Pipe-context de-emphasis
 
-With the pointer + `FIVEX_RUN` covering run identity and composites collapsing multi-command sequences, the pipe channel (`src/pipe.ts`) stops being load-bearing for context:
+With explicit/session identity, worktree inference, and the focus pointer covering interactive run resolution, while composites collapse multi-command sequences, the pipe channel (`src/pipe.ts`) stops being load-bearing for context:
 
 - Keep `--var @-` / explicit stdin *data* input (results into `protocol validate`) — that is payload, not context, and has no silent-drop problem.
 - _TODO:_ deprecation posture for implicit context extraction (`extractPipeContext` template-var injection): keep-but-document vs warn-when-used vs remove in v2. Leaning: keep for back-compat, remove the *silent* part — if stdin is piped and the 200ms race expires, emit a one-line stderr note that upstream context was not detected, so drops are at least visible.
@@ -89,7 +100,9 @@ The v2 skills (OpenCode + future Cursor) should be re-rendered to the new idiom:
 
 ## 3. Forward compatibility
 
-Per `200-overview.md` §3a #4: the active-run pointer is **local workspace state, not control-plane state** — the analogue of git's `HEAD` in a checkout, not of the repository. It records "what this workspace is focused on," is not synced, carries no UUID/CAS requirements, and different machines attached to the same future cloud control plane will correctly hold *different* pointers. The control-plane UI's "focused run" (`202-control-plane.md` §5) is a *view* concern that may read the pointer locally but must not treat it as authoritative shared state.
+Per `200-overview.md` §3a #4: the active-run pointer is **local control-plane operator focus, not authoritative workflow state**. It is not synced, carries no UUID/CAS requirements, and different machines attached to the same future cloud control plane may correctly hold different focus pointers. The control-plane UI's "focused run" (`202-control-plane.md` §5) is likewise a view concern that may read the pointer locally but must not treat it as authoritative shared state.
+
+Worktree inference is also local materialization awareness, not logical run identity. A future prompt queue / invocation registry must bind every queued invocation to its `run_id` explicitly and provide that identity to the worker. Whether the worker executes in a git worktree, container, dedicated VM, or remote sandbox is an orthogonal execution-target concern; workers must not use `.5x/current-run` or CWD inference to discover which invocation they own.
 
 Composite verbs are pure CLI sugar over primitives and inherit whatever store the primitives use — nothing to guard.
 
@@ -100,7 +113,8 @@ Composite verbs are pure CLI sugar over primitives and inherit whatever store th
 Fully additive:
 
 - Explicit `--run` call sites behave identically (precedence rule 1).
-- The pointer file is new; its absence reproduces v1 behavior exactly.
+- A linked worktree with one mapped active run gains a new implicit default. Without a unique association or pointer, missing `--run` reproduces the v1 error behavior.
+- The pointer file is new and remains a singleton convenience; no per-worktree state or schema migration is introduced.
 - Composite verbs are new commands; no granular command changes shape.
 - Pipe-context extraction unchanged except (pending §2.3 decision) a new stderr visibility note.
 
@@ -108,7 +122,6 @@ Fully additive:
 
 ## 5. Open questions
 
-- _TODO:_ pointer file vs DB table (§2.1).
 - _TODO:_ default `--phase` from latest step — revisit post-composites (§2.1).
 - _TODO:_ `phase start` composite — worth it, or is `template render` sufficient (§2.2)?
 - _TODO:_ pipe implicit-context deprecation posture (§2.3).
