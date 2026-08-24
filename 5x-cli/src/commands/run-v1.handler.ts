@@ -88,11 +88,16 @@ import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
-	DB_FILENAME,
+	controlPlaneDbPath,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	clearPointerIfMatch,
+	currentRunPath,
+	writePointer,
+} from "./run-pointer.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -777,6 +782,36 @@ export function planLockedDetail(
 }
 
 // ---------------------------------------------------------------------------
+// Focus pointer
+// ---------------------------------------------------------------------------
+
+function exportHint(runId: string): string {
+	return `export FIVEX_RUN=${runId}`;
+}
+
+/** Write the local focus pointer. Fail the command on I/O errors. */
+function writeFocusPointer(
+	projectRoot: string,
+	stateDir: string,
+	runId: string,
+): void {
+	const path = currentRunPath(projectRoot, stateDir);
+	try {
+		writePointer(path, runId);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		outputError(
+			"RUN_POINTER_WRITE_FAILED",
+			`Failed to write focus pointer: ${msg}`,
+			{
+				path,
+				run_id: runId,
+			},
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -851,9 +886,13 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// Normalize db.path to directory semantics (backward compat: `.5x/5x.db` → `.5x`)
-	const dbRelPath = join(normalizeDbPath(config.db.path), DB_FILENAME);
-	const db = getDb(projectRoot, dbRelPath);
+	// Managed/isolated: open the same state root the pointer uses.
+	// None-mode stateDir is default `.5x` even if config overrides db.path.
+	const stateDirForDb =
+		controlPlane.mode !== "none"
+			? controlPlane.stateDir
+			: normalizeDbPath(config.db.path);
+	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDirForDb));
 	runMigrations(db);
 
 	const requestedWorktreePath =
@@ -933,6 +972,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
+			writeFocusPointer(projectRoot, stateDir, existing.id);
 			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
 			outputSuccess({
@@ -941,6 +981,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				status: existing.status,
 				created_at: existing.created_at,
 				resumed: true,
+				export_hint: exportHint(existing.id),
 				...(worktreeResult ? { worktree: worktreeResult } : {}),
 				// Phase 4: top-level worktree context for downstream pipe consumers
 				...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
@@ -961,6 +1002,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}),
 		});
 
+		writeFocusPointer(projectRoot, stateDir, runId);
 		registerLockCleanup(projectRoot, planPath, lockOpts);
 		lockCleanupRegistered = true;
 
@@ -971,6 +1013,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			status: "active",
 			created_at: run?.created_at ?? new Date().toISOString(),
 			resumed: false,
+			export_hint: exportHint(runId),
 			...(worktreeResult ? { worktree: worktreeResult } : {}),
 			// Phase 4: top-level worktree context for downstream pipe consumers
 			...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
@@ -1354,6 +1397,11 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 	if (run.plan_path) {
 		releaseLock(projectRoot, run.plan_path, lockOpts);
 	}
+
+	clearPointerIfMatch(
+		currentRunPath(projectRoot, controlPlane?.stateDir ?? ".5x"),
+		params.run,
+	);
 
 	outputSuccess({
 		run_id: params.run,

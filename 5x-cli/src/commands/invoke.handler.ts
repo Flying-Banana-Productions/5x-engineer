@@ -49,7 +49,10 @@ import type {
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
@@ -229,8 +232,10 @@ export async function invokeAgent(
 	let runDb: ReturnType<typeof getDb> | undefined;
 
 	{
-		const dbRelPath = join(stateDir, DB_FILENAME);
-		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+		const db = getDb(
+			controlPlane.controlPlaneRoot,
+			controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir),
+		);
 		runDb = db;
 		try {
 			runMigrations(db);

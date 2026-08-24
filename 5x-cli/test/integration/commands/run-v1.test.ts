@@ -1,6 +1,9 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
+	readFileSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -9,6 +12,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DB_FILENAME } from "../../../src/commands/control-plane.js";
+import { CURRENT_RUN_FILENAME } from "../../../src/commands/run-pointer.js";
+import { runMigrations } from "../../../src/db/schema.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -159,6 +165,9 @@ describe("5x run lifecycle", () => {
 				expect((initData.data as Record<string, unknown>).resumed).toBe(false);
 				expect((initData.data as Record<string, unknown>).status).toBe(
 					"active",
+				);
+				expect((initData.data as Record<string, unknown>).export_hint).toBe(
+					`export FIVEX_RUN=${runId}`,
 				);
 
 				// Record a step
@@ -1216,6 +1225,9 @@ describe("5x run lifecycle", () => {
 					abortStep?.result_json as string,
 				) as Record<string, unknown>;
 				expect(result_json.reason).toBe("user requested abort");
+				expect(existsSync(join(projectRoot, ".5x", CURRENT_RUN_FILENAME))).toBe(
+					false,
+				);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -1798,5 +1810,285 @@ describe("5x run relink", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Focus pointer lifecycle
+// ---------------------------------------------------------------------------
+
+function pointerPath(root: string, stateDir = ".5x"): string {
+	return join(root, stateDir, CURRENT_RUN_FILENAME);
+}
+
+function readFocusPointer(root: string, stateDir = ".5x"): string | null {
+	try {
+		return readFileSync(pointerPath(root, stateDir), "utf-8").trim();
+	} catch {
+		return null;
+	}
+}
+
+function addPlan(dir: string, name: string): string {
+	const planPath = join(dir, "docs", "development", name);
+	writeFileSync(planPath, `# ${name}\n\n## Phase 1: Setup\n\n- [ ] Do thing\n`);
+	return planPath;
+}
+
+describe("5x run focus pointer", () => {
+	test(
+		"init writes pointer; second plan overwrites; matching complete clears; other complete leaves",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const initA = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(initA.exitCode).toBe(0);
+				const runA = (parseJson(initA.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				expect(readFocusPointer(projectRoot)).toBe(runA);
+				expect(
+					(parseJson(initA.stdout).data as Record<string, unknown>).export_hint,
+				).toBe(`export FIVEX_RUN=${runA}`);
+
+				const planB = addPlan(dir, "other-plan.md");
+				const initB = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planB,
+					"--allow-dirty",
+				]);
+				expect(initB.exitCode).toBe(0);
+				const runB = (parseJson(initB.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				expect(runB).not.toBe(runA);
+				expect(readFocusPointer(projectRoot)).toBe(runB);
+
+				const completeA = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runA,
+				]);
+				expect(completeA.exitCode).toBe(0);
+				expect(readFocusPointer(projectRoot)).toBe(runB);
+
+				const completeB = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runB,
+				]);
+				expect(completeB.exitCode).toBe(0);
+				expect(readFocusPointer(projectRoot)).toBeNull();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"resume init overwrites the pointer",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+
+				const initA = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				const runA = (parseJson(initA.stdout).data as Record<string, unknown>)
+					.run_id as string;
+
+				const planB = addPlan(dir, "other-plan.md");
+				await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planB,
+					"--allow-dirty",
+				]);
+				expect(readFocusPointer(projectRoot)).not.toBe(runA);
+
+				const resume = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--allow-dirty",
+				]);
+				expect(resume.exitCode).toBe(0);
+				const data = parseJson(resume.stdout).data as Record<string, unknown>;
+				expect(data.resumed).toBe(true);
+				expect(data.run_id).toBe(runA);
+				expect(data.export_hint).toBe(`export FIVEX_RUN=${runA}`);
+				expect(readFocusPointer(projectRoot)).toBe(runA);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"complete of a matching run is not an error when the pointer file is missing",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				rmSync(pointerPath(projectRoot), { force: true });
+
+				const complete = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(complete.exitCode).toBe(0);
+				expect(readFocusPointer(projectRoot)).toBeNull();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"absolute db.path: init and state use the pre-existing DB; shadow path is never created",
+		async () => {
+			const dir = makeTmpDir();
+			const absStateDir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				writeFileSync(
+					join(projectRoot, "5x.toml"),
+					`[db]\npath = ${JSON.stringify(absStateDir)}\n`,
+					"utf-8",
+				);
+
+				const seedDb = new Database(join(absStateDir, DB_FILENAME));
+				try {
+					runMigrations(seedDb);
+				} finally {
+					seedDb.close();
+				}
+
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--allow-dirty",
+				]);
+				expect(init.exitCode).toBe(0);
+				const initData = parseJson(init.stdout).data as Record<string, unknown>;
+				const runId = initData.run_id as string;
+				expect(runId).toMatch(/^run_[a-f0-9]{12}$/);
+				expect(initData.export_hint).toBe(`export FIVEX_RUN=${runId}`);
+
+				const realPointer = join(absStateDir, CURRENT_RUN_FILENAME);
+				expect(existsSync(realPointer)).toBe(true);
+				expect(readFileSync(realPointer, "utf-8").trim()).toBe(runId);
+
+				const shadowDb = join(projectRoot, absStateDir, DB_FILENAME);
+				const shadowPointer = join(
+					projectRoot,
+					absStateDir,
+					CURRENT_RUN_FILENAME,
+				);
+				expect(existsSync(shadowDb)).toBe(false);
+				expect(existsSync(shadowPointer)).toBe(false);
+
+				const inspect = new Database(join(absStateDir, DB_FILENAME), {
+					readonly: true,
+				});
+				try {
+					const row = inspect
+						.query("SELECT id FROM runs WHERE id = ?1")
+						.get(runId) as { id: string } | null;
+					expect(row?.id).toBe(runId);
+				} finally {
+					inspect.close();
+				}
+
+				const state = await run5x(projectRoot, [
+					"run",
+					"state",
+					"--run",
+					runId,
+				]);
+				expect(state.exitCode).toBe(0);
+				const stateRun = (
+					parseJson(state.stdout).data as Record<string, unknown>
+				).run as Record<string, unknown>;
+				expect(stateRun.id).toBe(runId);
+
+				const planState = await run5x(projectRoot, [
+					"run",
+					"state",
+					"--plan",
+					planPath,
+				]);
+				expect(planState.exitCode).toBe(0);
+				const planStateRun = (
+					parseJson(planState.stdout).data as Record<string, unknown>
+				).run as Record<string, unknown>;
+				expect(planStateRun.id).toBe(runId);
+
+				const planB = addPlan(dir, "other-plan.md");
+				const initB = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planB,
+					"--allow-dirty",
+				]);
+				expect(initB.exitCode).toBe(0);
+				const runB = (parseJson(initB.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				expect(readFileSync(realPointer, "utf-8").trim()).toBe(runB);
+
+				const completeA = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(completeA.exitCode).toBe(0);
+				expect(readFileSync(realPointer, "utf-8").trim()).toBe(runB);
+				expect(existsSync(shadowPointer)).toBe(false);
+
+				const completeB = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runB,
+				]);
+				expect(completeB.exitCode).toBe(0);
+				expect(existsSync(realPointer)).toBe(false);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(absStateDir);
+			}
+		},
+		{ timeout: 30000 },
 	);
 });

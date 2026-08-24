@@ -21,7 +21,10 @@ import {
 	loadTemplate,
 	setTemplateOverrideDir,
 } from "../templates/loader.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
@@ -94,8 +97,7 @@ export async function templateRender(
 		projectRoot = controlPlane.controlPlaneRoot;
 		stateDir = controlPlane.stateDir;
 
-		const dbRelPath = join(stateDir, DB_FILENAME);
-		const db = getDb(projectRoot, dbRelPath);
+		const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
 		runDb = db;
 		try {
 			runMigrations(db);

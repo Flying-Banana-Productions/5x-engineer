@@ -9,13 +9,16 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import { validateRunId } from "../run-id.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
@@ -159,8 +162,13 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		try {
 			const controlPlane = resolveControlPlaneRoot();
 			if (controlPlane.mode !== "none") {
-				const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
-				const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+				const db = getDb(
+					controlPlane.controlPlaneRoot,
+					controlPlaneDbPath(
+						controlPlane.controlPlaneRoot,
+						controlPlane.stateDir,
+					),
+				);
 				try {
 					runMigrations(db);
 				} catch {

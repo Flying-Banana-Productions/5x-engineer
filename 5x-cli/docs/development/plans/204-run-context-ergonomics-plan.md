@@ -434,11 +434,11 @@ Out of this slice (do not convert unless already going through `resolveDbContext
 
 **File:** `src/index.ts` — export `controlPlaneStatePath` and `controlPlaneDbPath` next to other control-plane / path helpers.
 
-- [ ] Add `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts`.
-- [ ] Switch `resolveDbContext` (both branches), `runV1Init`, and every direct run-scoped handler in the table.
-- [ ] Switch the worktree managed-mode warning’s root DB path.
-- [ ] Export from `src/index.ts`.
-- [ ] Unit tests in `test/unit/commands/control-plane-state-path.test.ts` (new): relative `stateDir` → `join(controlPlaneRoot, stateDir, filename)`; absolute `stateDir` → `join(stateDir, filename)` and **not** prefixed with `controlPlaneRoot`; `controlPlaneDbPath` uses `DB_FILENAME`.
+- [x] Add `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts`.
+- [x] Switch `resolveDbContext` (both branches), `runV1Init`, and every direct run-scoped handler in the table.
+- [x] Switch the worktree managed-mode warning’s root DB path.
+- [x] Export from `src/index.ts`.
+- [x] Unit tests in `test/unit/commands/control-plane-state-path.test.ts` (new): relative `stateDir` → `join(controlPlaneRoot, stateDir, filename)`; absolute `stateDir` → `join(stateDir, filename)` and **not** prefixed with `controlPlaneRoot`; `controlPlaneDbPath` uses `DB_FILENAME`.
 
 ### 2.2 Pointer helpers
 
@@ -467,8 +467,8 @@ Do not reimplement the absolute/`join` branch here — import `controlPlaneState
 
 `readPointer`: if missing, `null`. If present, trim whitespace; empty → treat as invalid at the identity layer (`RUN_POINTER_INVALID`), so this helper can return `""` or throw; prefer returning the raw trimmed string (including `""`) and let `resolveAmbientRunId` classify. `writePointer`: `mkdirSync` parent `recursive: true`, write `runId + "\n"` (POSIX text). `clearPointerIfMatch`: read, compare, `unlinkSync` only on equality; return whether unlinked. Ignore `ENOENT` on unlink.
 
-- [ ] Implement helpers with no logging and no `process.exit`.
-- [ ] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
+- [x] Implement helpers with no logging and no `process.exit`.
+- [x] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
 
 ### 2.3 `run init` writes the pointer
 
@@ -476,9 +476,9 @@ Do not reimplement the absolute/`join` branch here — import `controlPlaneState
 
 Add `export_hint: \`export FIVEX_RUN=${runId}\`` to both success payloads.
 
-- [ ] Write pointer for new and resumed runs.
-- [ ] Include `export_hint` on the JSON payload (text formatter may ignore unknown fields via `formatGenericText`).
-- [ ] If pointer write fails (EACCES), fail the command (`outputError` / wrap) — a half-inited run without a pointer is worse than a loud error. Keep this a hard error, not a warning.
+- [x] Write pointer for new and resumed runs.
+- [x] Include `export_hint` on the JSON payload (text formatter may ignore unknown fields via `formatGenericText`).
+- [x] If pointer write fails (EACCES), fail the command (`outputError` / wrap) — a half-inited run without a pointer is worse than a loud error. Keep this a hard error, not a warning.
 
 ### 2.4 `run complete` clears conditionally
 
@@ -493,9 +493,9 @@ clearPointerIfMatch(
 
 Do **not** clear on `reopen`. Abort (`--status aborted`) is still a completion of *this* run: clear iff match.
 
-- [ ] Clear only on match.
-- [ ] Completing A while the file names B leaves B.
-- [ ] Missing file is not an error.
+- [x] Clear only on match.
+- [x] Completing A while the file names B leaves B.
+- [x] Missing file is not an error.
 
 ### 2.5 Tests
 
@@ -518,10 +518,10 @@ Absolute configured `db.path` integration (required; this is what makes the poin
 6. Assert the pointer is at `<absStateDir>/current-run`, not under the control-plane root.
 7. Matching `run complete` clears that pointer; complete of a different run does not.
 
-- [ ] `controlPlaneStatePath` / `controlPlaneDbPath` unit tests (relative + absolute `stateDir`).
-- [ ] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
-- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
-- [ ] Integration: absolute `db.path` — pre-existing DB is the one init/state use; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer write/clear is at `<absStateDir>/current-run`.
+- [x] `controlPlaneStatePath` / `controlPlaneDbPath` unit tests (relative + absolute `stateDir`).
+- [x] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
+- [x] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
+- [x] Integration: absolute `db.path` — pre-existing DB is the one init/state use; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer write/clear is at `<absStateDir>/current-run`.
 
 ---
 

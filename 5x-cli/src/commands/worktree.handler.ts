@@ -39,6 +39,7 @@ import {
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
+	controlPlaneDbPath,
 	DB_FILENAME,
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
@@ -141,10 +142,9 @@ export function emitSplitBrainWarning(
 	const localDbPath = join(localStateDir, DB_FILENAME);
 	if (!existsSync(localDbPath)) return;
 
-	const rootDbPath = join(
+	const rootDbPath = controlPlaneDbPath(
 		controlPlane.controlPlaneRoot,
 		controlPlane.stateDir,
-		DB_FILENAME,
 	);
 	process.stderr.write(
 		`Warning: Local state DB at \`${localDbPath}\` is being ignored — using control-plane DB at \`${rootDbPath}\`. ` +

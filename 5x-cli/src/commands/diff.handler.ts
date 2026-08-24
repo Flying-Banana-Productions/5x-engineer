@@ -9,13 +9,15 @@
  * Existing behavior is preserved when `--run` is omitted.
  */
 
-import { join } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveProjectRoot } from "../project-root.js";
 import { subprocess } from "../utils/subprocess.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 
 // ---------------------------------------------------------------------------
@@ -116,8 +118,10 @@ export async function runDiff(params: DiffParams): Promise<void> {
 			);
 		}
 
-		const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
-		const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+		const db = getDb(
+			controlPlane.controlPlaneRoot,
+			controlPlaneDbPath(controlPlane.controlPlaneRoot, controlPlane.stateDir),
+		);
 		try {
 			runMigrations(db);
 		} catch (err) {

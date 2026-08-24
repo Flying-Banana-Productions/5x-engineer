@@ -19,7 +19,10 @@ import { runMigrations } from "../db/schema.js";
 import { runQualityGates } from "../gates/quality.js";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveProjectContext } from "./context.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
@@ -117,8 +120,10 @@ export async function runQuality(
 		controlPlaneRoot = controlPlane.controlPlaneRoot;
 		stateDir = controlPlane.stateDir;
 
-		const dbRelPath = join(stateDir, DB_FILENAME);
-		const db = getDb(controlPlaneRoot, dbRelPath);
+		const db = getDb(
+			controlPlaneRoot,
+			controlPlaneDbPath(controlPlaneRoot, stateDir),
+		);
 		try {
 			runMigrations(db);
 		} catch (err) {
