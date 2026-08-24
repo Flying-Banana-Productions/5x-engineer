@@ -107,3 +107,26 @@ The proposed handler dependencies expose only `PromptStore`/`resolveStore`, but 
 ### Updated readiness
 - **Prompt-queue foundation plan:** ⚠️ — Revision 1.1 resolves all prior findings and the centralized lifecycle is sound, but the three mechanical wiring gaps above must be specified before implementation.
 - **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.3–P1.5 are incorporated; no further human decision is required.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.2 re-review
+
+**Reviewed:** `baa0646662242ce02216a2995f6698ffe6884b37` / plan version 1.2
+
+### What's addressed (✅)
+- **P1.3 — Lifecycle abort in prompt races:** Resolved in design. The plan now fans the process lifecycle signal into both local controllers, records the signal cause, defines SIGTERM's durable/exit mapping, and makes real-process SIGINT and SIGTERM tests hard gates.
+- **P1.4 — Piped-input race:** Resolved in design. `readStdinPipe` becomes abortable, no-TTY input joins the same store/timeout/lifecycle race, and both hanging-pipe timeout and store-wins cases are covered.
+- **P1.5 — Run validation:** Resolved in design. `PromptCommandContext` supplies a `PromptStore` and injected `runExists` closure from one resolved DB, preserving the handler's SQLite independence and enabling no-row unknown-run tests.
+
+### Remaining concerns
+
+#### P1.6 — Map poll cancellation caused by the lifecycle signal
+
+**Action:** `auto_fix`
+
+Fan-in aborts `pollCtl`, causing `waitForPromptAnswer()` to reject `PromptWaitAbortedError`. The race outcome list only distinguishes `ABORTED` values from stdin/pipe; it does not specify handling this poll rejection. In no-TTY choose/confirm with a positive timeout there is no input promise at all, so a SIGINT/SIGTERM necessarily reaches this unhandled rejection rather than the promised CAS-abandon path. Specify that a `PromptWaitAbortedError` with `getAbortCause()` is routed to the corresponding lifecycle-abandon outcome (and otherwise is an internal/local cancellation), and add coverage for lifecycle interruption of the poll-only wait. This is a deterministic consequence of the selected fan-in design.
+
+### Updated readiness
+- **Prompt-queue foundation plan:** ⚠️ — Version 1.2 fully addresses P1.3–P1.5 and preserves the intended architecture; one mechanical race-error mapping remains.
+- **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.6 is specified and tested; no human decision is required.
