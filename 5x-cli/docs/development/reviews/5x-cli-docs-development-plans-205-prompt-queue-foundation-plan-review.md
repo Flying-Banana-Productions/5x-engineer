@@ -151,3 +151,19 @@ The shared EOF outcome says to abandon and emit `EOF` when there is no default. 
 ### Updated readiness
 - **Prompt-queue foundation plan:** ⚠️ — Version 1.3 resolves P1.6 and the lifecycle race is now fully specified; one deterministic input-compatibility correction remains.
 - **Ready for next phase:** ⚠️ — **Ready with corrections** once P1.7 is incorporated; no human decision is required.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.4 final approval
+
+**Reviewed:** `4a7e680e50cc7a3392d010d4e027a18987412a26` / plan version 1.4
+
+### What's addressed (✅)
+- **P1.7 — Input EOF compatibility:** Resolved. The plan now distinguishes choose/confirm EOF abandonment from input EOF success, preserves single-line empty-input and multiline collected-text envelopes, persists both input outcomes as terminal CAS answers, and covers the behavior at unit and integration levels.
+
+### Remaining concerns
+- None. The plan has resolved all prior readiness findings. Its repository boundary, schema invariants, lifecycle ownership, race cancellation, compatibility behavior, and test gates are implementation-ready.
+
+### Updated readiness
+- **Prompt-queue foundation plan:** ✅ — Ready for implementation.
+- **Ready for next phase:** ✅ — No corrections or human decisions remain.
