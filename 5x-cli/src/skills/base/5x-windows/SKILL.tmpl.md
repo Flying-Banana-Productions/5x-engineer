@@ -20,6 +20,31 @@ Windows-hosted IDE terminal.
 - You need Windows-native JSON parsing examples.
 - You are copying 5x workflow snippets into an IDE, PowerShell, or `pwsh`.
 
+## Run identity
+
+After `5x run init`, pin the session to that run so later commands do not
+need `--run`:
+
+```powershell
+$init = 5x run init --plan $PLAN_PATH --worktree | ConvertFrom-Json
+$env:FIVEX_RUN = $init.data.run_id
+```
+
+`--run` is optional when `$env:FIVEX_RUN`, a unique worktree mapping, or
+`.5x/current-run` already identifies the run. Pass `--run` in Recovery
+when identity is missing or ambiguous.
+
+## Phase finish (PowerShell)
+
+Pipe author JSON into the post-author composite (quality → protocol →
+checklist). `--phase` and `--iteration` are required:
+
+```powershell
+$RESULT | 5x phase finish --phase $PHASE --iteration $ITERATION --step $STEP
+```
+
+Or from a file: `5x phase finish --phase $PHASE --iteration $ITERATION --step $STEP --input .\result.json`
+
 ## Shell Differences
 
 - **PowerShell 5.1** does not support `&&`. Use `;` or separate lines.
@@ -30,7 +55,7 @@ Example:
 
 ```powershell
 Set-Location -LiteralPath "C:\src\repo"
-$rendered = 5x template render author-next-phase --run $RUN --var phase_number=1 | ConvertFrom-Json
+$rendered = 5x template render author-next-phase --var phase_number=1 | ConvertFrom-Json
 ```
 
 ## JSON Parsing
@@ -42,13 +67,13 @@ $rendered = 5x template render author-next-phase --run $RUN --var phase_number=1
 Examples:
 
 ```powershell
-$rendered = 5x template render reviewer-plan --run $RUN | ConvertFrom-Json
+$rendered = 5x template render reviewer-plan | ConvertFrom-Json
 $prompt = $rendered.data.prompt
 $step = $rendered.data.step_name
 ```
 
 ```powershell
-Get-Content .\result.json -Raw | 5x run record $step --run $RUN --result -
+Get-Content .\result.json -Raw | 5x run record $step --result -
 ```
 
 ## Paths and Worktrees

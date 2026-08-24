@@ -849,10 +849,10 @@ Add a unit-level test if you extract the timeout branch with a fake reader; othe
 
 Do not rewrite unrelated workflow judgment. Do not remove native vs invoke conditionals.
 
-- [ ] `export FIVEX_RUN` / `$env:FIVEX_RUN` immediately after `run init` in every workflow skill that inits a run.
-- [ ] Phase-execution hot loop uses `phase finish`.
-- [ ] Recovery sections still show `quality run`, `protocol validate --record`, `run record`, `commit --run`.
-- [ ] Tools lists mention ambient identity.
+- [x] `export FIVEX_RUN` / `$env:FIVEX_RUN` immediately after `run init` in every workflow skill that inits a run.
+- [x] Phase-execution hot loop uses `phase finish`.
+- [x] Recovery sections still show `quality run`, `protocol validate --record`, `run record`, `commit --run`.
+- [x] Tools lists mention ambient identity.
 
 ### 7.2 Skill tests
 
@@ -865,7 +865,7 @@ Assert rendered content (via `listSkills()` / `getDefaultSkillRaw`):
 - Windows skill contains `FIVEX_RUN`.
 - Existing token tests (`task_id=` / `resume=`, no `[[NATIVE_CONTINUE_PARAM]]`) still pass.
 
-- [ ] OpenCode + Cursor rendered skills cover the new idiom and fallbacks.
+- [x] OpenCode + Cursor rendered skills cover the new idiom and fallbacks.
 
 ### 7.3 Docs
 
@@ -881,7 +881,7 @@ Assert rendered content (via `listSkills()` / `getDefaultSkillRaw`):
 
 Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already references it (dashboard reading the pointer is a later slice).
 
-- [ ] Docs match shipped precedence, pointer rules, composite contract, pipe warning, and worker non-use of ambient identity.
+- [x] Docs match shipped precedence, pointer rules, composite contract, pipe warning, and worker non-use of ambient identity.
 
 ---
 

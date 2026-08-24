@@ -47,6 +47,8 @@ Commands support two output formats controlled by global flags:
 
 JSON is always the default to ensure deterministic pipe-chain behavior. A user building a pipe chain tests individual commands in a terminal, then pipes them together — if output format changed based on TTY detection, the tested output would differ from the piped output.
 
+**Piped context timeout:** when stdin is piped but the first chunk does not arrive within 200ms, `readUpstreamEnvelope` emits one stderr line (`Warning: no upstream envelope detected on stdin (timeout); continuing without piped context.`) and continues without piped context. The warning never writes to stdout. TTY stdin and a successful (including empty-body) read stay silent. Payload stdin (`protocol validate`, `phase finish --input` / stdin JSON) is unrelated to this timeout.
+
 **Text mode behavior:**
 
 - Commands with custom text formatters produce tailored output (e.g., `diff` prints raw diff text, `run state` prints a formatted step table, `run list` prints a column-aligned table, `plan list` prints a summary table, `plan phases` prints a checklist).
@@ -81,9 +83,10 @@ These primitives are not yet implemented. This document is an implementation-rea
 
 | Group | Commands | Purpose |
 |---|---|---|
-| **Run lifecycle** | `run init`, `run state`, `run record`, `run list` | Create runs, query state, record steps |
+| **Run lifecycle** | `run init`, `run state`, `run record`, `run list`, `run complete`, `run reopen` | Create runs, query state, record steps |
 | **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
 | **Quality** | `quality run` | Execute quality gates |
+| **Phase composites** | `phase finish` | Sugar over quality + author protocol validate/record + checklist |
 | **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
 | **Worktree** | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
@@ -91,6 +94,21 @@ These primitives are not yet implemented. This document is an implementation-rea
 ---
 
 ## 3. Run Lifecycle
+
+### Ambient run identity
+
+Commands that accept `--run` resolve a run id when the flag is omitted, in **strict precedence**:
+
+1. Explicit `--run <id>` — always wins.
+2. `FIVEX_RUN` environment variable — session-scoped override. Invalid or unknown values error (`RUN_ENV_INVALID`); they do not fall through.
+3. Unique active run mapped to the current linked checkout via `plans.worktree_path`. Zero matches → continue. Two or more → `RUN_CONTEXT_AMBIGUOUS` (lists candidate ids). The pointer does not break this tie.
+4. Compatible `.5x/current-run` (the control-plane state root's `current-run` file; absolute configured `db.path` is the state root). In a linked worktree, the named run must map to *this* checkout or be unmapped; otherwise `RUN_POINTER_INCOMPATIBLE` / `RUN_POINTER_STALE` / `RUN_POINTER_INVALID`.
+5. Piped upstream `run_id` (on `run record` / `invoke` only), after the pointer.
+6. Required-run commands → `RUN_CONTEXT_REQUIRED` (remediation names `--run`, `FIVEX_RUN`, worktree mapping, and `.5x/current-run`). Optional-run commands (`quality run` without `--record`, `diff`, `template render`, `protocol validate` without `--record`) keep their no-run path.
+
+`--plan` on `run state` is an explicit selector resolved **before** ambient identity; a conflicting `FIVEX_RUN` is ignored. Prompt-queue and invocation-registry workers receive an explicit `run_id` and must not use this resolver.
+
+`5x run init` writes the focus pointer and includes `export_hint: "export FIVEX_RUN=<id>"` on the success payload. `5x run complete` unlinks the pointer **iff** the file still names that run.
 
 ### `5x run init`
 
@@ -118,12 +136,13 @@ Create a new run for a plan (or resume an existing one).
     "status": "active",
     "created_at": "2026-03-04T10:00:00Z",
     "worktree_path": "/path/to/repo/.5x/worktrees/001-impl-feature",
-    "worktree_plan_path": "/path/to/repo/.5x/worktrees/001-impl-feature/docs/development/001-impl-feature.md"
+    "worktree_plan_path": "/path/to/repo/.5x/worktrees/001-impl-feature/docs/development/001-impl-feature.md",
+    "export_hint": "export FIVEX_RUN=run_abc123"
   }
 }
 ```
 
-The `worktree_path` and `worktree_plan_path` fields are present when the run is mapped to a worktree. These fields are included in the pipe context for downstream commands.
+The `worktree_path` and `worktree_plan_path` fields are present when the run is mapped to a worktree. These fields are included in the pipe context for downstream commands. `export_hint` is a copy-pasteable `export FIVEX_RUN=<id>` string (Windows skills translate to `$env:FIVEX_RUN`).
 
 **Behavior:**
 
@@ -134,6 +153,7 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 - Validates that the plan path resolves inside the configured `paths.plans` directory. The file itself may be created later by the author workflow.
 - When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
 - Run state is always stored in the control-plane root DB, regardless of which checkout the command is run from.
+- Writes the run id to the control-plane state root's `current-run` file (`.5x/current-run` by default; absolute configured `db.path` is the state root). Overwrites on resume.
 
 ---
 
@@ -142,8 +162,8 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 Query the current state of a run.
 
 ```
-5x run state --run <id>
-5x run state --plan <path>     # find active run for this plan
+5x run state [--run <id>]
+5x run state --plan <path>     # find active run for this plan (ignores FIVEX_RUN / pointer)
 ```
 
 **Returns:**
@@ -199,14 +219,14 @@ Query the current state of a run.
 Record a completed step. This is the primary persistence primitive.
 
 ```
-5x run record <step-name> --run <id> --result '<json>' \
+5x run record <step-name> [--run <id>] --result '<json>' \
   [--phase <id>] [--iteration <n>]
 ```
 
 | Arg/Flag | Required | Description |
 |---|---|---|
 | `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:review`) |
-| `--run` | Yes | Run ID |
+| `--run` | No | Run ID. Ambient-resolved when omitted (see Ambient run identity). Required-run: missing identity is `RUN_CONTEXT_REQUIRED`. |
 | `--result` | Yes | Step result as JSON string. Use `-` to read from stdin, or `@path` to read from a file. |
 | `--phase` | No | Phase identifier |
 | `--iteration` | No | Iteration number within the phase (default: auto-increment) |
@@ -247,10 +267,10 @@ If `--iteration` is omitted, the CLI computes `MAX(iteration) + 1` for the given
 Mark a run as completed or aborted.
 
 ```
-5x run complete --run <id> [--status completed|aborted] [--reason <text>]
+5x run complete [--run <id>] [--status completed|aborted] [--reason <text>]
 ```
 
-Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step, updates the run status, and releases the plan lock.
+Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step, updates the run status, and releases the plan lock. `--run` is ambient-resolved when omitted. Clears `.5x/current-run` **iff** the file still names this run.
 
 ---
 
@@ -259,7 +279,7 @@ Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step, 
 Re-activate a completed or aborted run for manual correction.
 
 ```
-5x run reopen --run <id>
+5x run reopen [--run <id>]
 ```
 
 Sets the run status back to `active`. Records a `run:reopen` step with the previous status. This is an escape hatch for runs that ended in a bad state (e.g., aborted by a crash before all phases completed). Normal workflows should not need this.
@@ -274,7 +294,7 @@ List runs, optionally filtered.
 5x run list [--plan <path>] [--status active|completed|aborted] [--limit <n>]
 ```
 
-Returns an array of run summaries (same shape as `run state` but without the full step list).
+Returns an array of run summaries (same shape as `run state` but without the full step list). The ambiently resolved run (if any) is marked with `ambient: true` and `ambient_source` (`environment` | `worktree` | `pointer`) on that element only — this does not change persisted `status`. Text mode adds a `Focus` column (`env` / `worktree` / `pointer` / empty). No marker when resolution fails or source is `none`.
 
 ---
 
@@ -285,7 +305,7 @@ Returns an array of run summaries (same shape as `run state` but without the ful
 Invoke the author sub-agent with a prompt template.
 
 ```
-5x invoke author <template> --run <id> \
+5x invoke author <template> [--run <id>] \
   [--var key=value ...] \
   [--model <model>] \
   [--workdir <path>] \
@@ -296,7 +316,7 @@ Invoke the author sub-agent with a prompt template.
 | Arg/Flag | Required | Description |
 |---|---|---|
 | `template` | Yes | Full template name (e.g., `author-next-phase`, `author-process-impl-review`, `author-generate-plan`) |
-| `--run` | Yes | Run ID (for logging and metadata) |
+| `--run` | No | Run ID (for logging and metadata). Ambient-resolved when omitted (see Ambient run identity). |
 | `--var` | No | Template variable substitution (repeatable) |
 | `--model` | No | Model override. Falls back to config `author.model`. |
 | `--workdir` | No | Working directory for tool execution. Defaults to project root. When `--run` is mapped to a worktree, auto-resolves to the mapped worktree unless `--workdir` is explicitly provided. |
@@ -430,13 +450,13 @@ Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author
 Execute configured quality gates.
 
 ```
-5x quality run [--config <path>] [--run <id>] [--workdir <path>]
+5x quality run [--config <path>] [--run <id>] [--workdir <path>] [--record] [--iteration <n>]
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--config` | No | Path to config file |
-| `--run` | No | Run ID. When provided and the run is mapped to a worktree, quality gates execute in the mapped worktree. Config is resolved from the plan's location for correct sub-project `qualityGates`. |
+| `--run` | No | Run ID. Ambient-resolved when omitted. When `--record` is set, missing identity is `RUN_CONTEXT_REQUIRED` before gates run. When provided (or resolved) and the run is mapped to a worktree, quality gates execute in the mapped worktree. Config is resolved from the plan's location for correct sub-project `qualityGates`. |
 | `--workdir` | No | Explicit working directory override. Takes precedence over worktree mapping. |
 
 Reads `qualityGates` from config (array of shell commands). Executes each sequentially with a 5-minute timeout per command.
@@ -457,6 +477,42 @@ Reads `qualityGates` from config (array of shell commands). Executes each sequen
 ```
 
 The `output` field is bounded (last N bytes, same as v0). Full output written to log files.
+
+---
+
+## 5a. Phase finish composite
+
+### `5x phase finish`
+
+Fail-forward sugar over the post-author sequence. Calls the same handler cores as the granular commands and records the same idempotency keys. One stdout envelope. Skills prefer this in the phase-execution hot loop and keep granular `quality run` / `protocol validate --record` in Recovery.
+
+```
+5x phase finish --phase <p> --iteration <n> --step <name> \
+  [--run <id>] [--input <path>] [--record-step <name>] \
+  [--no-phase-checklist-validate]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--phase` | Yes | Phase identifier (resume key; not inferred) |
+| `--iteration` | Yes | Iteration number (resume key; not inferred) |
+| `--step` | Yes | Author step name to record (typically from `template render`) |
+| `--run` | No | Run ID. Ambient-resolved when omitted (required-run). |
+| `--input` | No | Path to author JSON (default: read from stdin — payload, not piped context) |
+| `--record-step` | No | Quality step name (default: `quality:check`) |
+| `--no-phase-checklist-validate` | No | Skip checklist evaluation (sub-step still reports `completed`) |
+
+**Sub-steps, in order:**
+
+1. **quality** — same as `quality run --record --phase --iteration` except a failing gate is **not** recorded (so the key stays reusable). `skipped: true` (config `skipQualityGates`) counts as success. `passed: false` fails the composite with `QUALITY_FAILED` (exit 1). Granular `quality run` still returns `{ ok: true, data: { passed: false } }` with exit 0.
+2. **protocol** — same as `protocol validate author --record --step --phase --iteration` with `--no-phase-checklist-validate` for the schema/record half.
+3. **checklist** — `validatePhaseChecklist` **only when** the author `result` is `"complete"`. Non-complete results (`needs_human`, `failed`) report this sub-step as `skipped` and still record the author step.
+
+**Resume:** before executing a sub-step, look up `(run, step_name, phase, iteration)`. Successful recorded quality (`passed` or `skipped`) and an existing author `--step` row are not re-executed. Re-running after partial success does not insert a duplicate row (`recorded: false`).
+
+**Fail-forward envelope:** always one JSON object on stdout. On any sub-step failure, `ok: false` with `error.detail.failing_step` and `error.detail.steps` (every sub-step: `name`, `status` `completed`|`failed`|`skipped`, `step_id?`, `recorded?`, `error?`). Remaining sub-steps after a failure are `skipped`. Exit code is the failing sub-step's existing code (`QUALITY_FAILED` → 1, `INVALID_STRUCTURED_OUTPUT` → 7, `PHASE_CHECKLIST_INCOMPLETE` / `PHASE_NOT_FOUND` → 8).
+
+Success payload: `{ run_id, phase, iteration, steps }`. Non-complete author results are a successful composite (`ok: true`, checklist `skipped`, exit 0).
 
 ---
 
@@ -544,7 +600,7 @@ Get a git diff relative to a reference.
 |---|---|
 | `--since` | Git ref to diff against (commit, branch, tag). Required — no default. The skill should always pass an explicit ref (e.g., the commit hash from the author result). If omitted, diffs the working tree against HEAD (unstaged + staged changes only). |
 | `--stat` | Include diffstat summary. |
-| `--run` | Run ID. When provided and the run is mapped to a worktree, the diff is computed in the mapped worktree directory. |
+| `--run` | Run ID. Ambient-resolved when omitted (see Ambient run identity). When resolved and the run is mapped to a worktree, the diff is computed in the mapped worktree directory. |
 
 **Returns:**
 

@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | **Slice ID** | `v2-run-context-ergonomics` |
-| **Status** | `draft` |
+| **Status** | `planned` |
 | **Owner** | |
-| **Generated plan** | `-` |
+| **Generated plan** | `docs/development/plans/204-run-context-ergonomics-plan.md` |
 | **Last updated** | 2026-08-24 |
 
 ---
