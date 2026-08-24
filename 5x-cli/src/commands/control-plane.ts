@@ -160,6 +160,35 @@ export function normalizeDbPath(dbPath: string): string {
 }
 
 /**
+ * Resolve a file under the control-plane state directory.
+ *
+ * Absolute `stateDir` (configured `db.path`) is the state root — never
+ * `join(controlPlaneRoot, stateDir, filename)`, which Node treats as a
+ * shadow path under the control-plane root. Relative `stateDir` (default
+ * `.5x`) still joins under `controlPlaneRoot`.
+ *
+ * The return value is a complete filesystem path. Do not `join` it with
+ * `controlPlaneRoot` again.
+ */
+export function controlPlaneStatePath(
+	controlPlaneRoot: string,
+	stateDir: string,
+	filename: string,
+): string {
+	return isAbsolute(stateDir)
+		? join(stateDir, filename)
+		: join(controlPlaneRoot, stateDir, filename);
+}
+
+/** Path to the control-plane SQLite database (`5x.db`). */
+export function controlPlaneDbPath(
+	controlPlaneRoot: string,
+	stateDir: string,
+): string {
+	return controlPlaneStatePath(controlPlaneRoot, stateDir, DB_FILENAME);
+}
+
+/**
  * Resolve the state directory from a root dir and optional raw db.path.
  * Returns an absolute path to the state directory.
  */

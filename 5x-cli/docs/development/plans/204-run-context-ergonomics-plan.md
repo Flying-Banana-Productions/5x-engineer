@@ -352,11 +352,11 @@ See Phase 2.1 for the API. Phase 1 unit tests that cover precedence 4 should cal
 
 **File:** `src/index.ts` — export the new types and `resolveAmbientRunId` next to existing run-context consumers (after the lock exports around `:80-99`, or beside path helpers).
 
-- [ ] Add `run-identity.ts` with the types and functions above.
-- [ ] Implement `listActiveRunsForCheckout` on top of `listPlansByWorktreePath` + `getActiveRunV1`.
-- [ ] Implement precedence 1–3 and required/optional none without pointer if pointer helpers are deferred; otherwise 1–6.
-- [ ] Export from `src/index.ts`.
-- [ ] Do not change any command adapter in this phase.
+- [x] Add `run-identity.ts` with the types and functions above.
+- [x] Implement `listActiveRunsForCheckout` on top of `listPlansByWorktreePath` + `getActiveRunV1`.
+- [x] Implement precedence 1–3 and required/optional none without pointer if pointer helpers are deferred; otherwise 1–6.
+- [x] Export from `src/index.ts`.
+- [x] Do not change any command adapter in this phase.
 
 ### 1.2 Unit tests
 
@@ -364,21 +364,21 @@ See Phase 2.1 for the API. Phase 1 unit tests that cover precedence 4 should cal
 
 Use in-memory DB + temp directories like `test/unit/commands/run-context.test.ts:20-50`. Inject `startDir` / `env`. Create two temp dirs with distinct `realpath` values as fake worktree roots (they need not be git repos for the mapping query). Control plane root = tmp.
 
-- [ ] `--run` wins over `FIVEX_RUN`, worktree mapping, and pointer.
-- [ ] `FIVEX_RUN` wins over worktree mapping and pointer.
-- [ ] Unique active mapping to `startDir`’s checkout (via `controlPlane` + mocked checkout root — if `resolveCheckoutRoot` needs a real git toplevel, either init a git repo + worktree in the unit test or add an injectable `checkoutRoot` on `AmbientRunRequest` for tests; **prefer injectable `checkoutRoot?: string`** to keep this file under `--concurrent` and off git).
-- [ ] Two active runs mapped to the same canonical path → `RUN_CONTEXT_AMBIGUOUS` with both ids, no pointer consult (pointer file can name a third id; must not be chosen).
-- [ ] Linked checkout with zero mappings + pointer to a run mapped elsewhere → `RUN_POINTER_INCOMPATIBLE`.
-- [ ] Linked checkout with zero mappings + pointer to the unique run mapped *here* → `source: "pointer"` (compatibility success).
-- [ ] Non-linked checkout (checkoutRoot === controlPlaneRoot) uses pointer even if that run maps to another path.
-- [ ] `required: false` and no signals → `{ ok: true, runId: undefined, source: "none" }`.
-- [ ] `required: true` and no signals → `RUN_CONTEXT_REQUIRED` with remediation mentioning `--run`, `FIVEX_RUN`, worktree, and `.5x/current-run`.
-- [ ] Canonical match: symlink worktree path stored in DB vs real `startDir` (use `symlinkSync`).
-- [ ] Nested `startDir` under a worktree matches the toplevel mapping when `checkoutRoot` is the toplevel (inject toplevel).
-- [ ] `FIVEX_RUN` unknown id → `RUN_ENV_INVALID`, no fallback.
-- [ ] Pipe id used only when 1–4 produced none (`pipeRunId` set, no flag/env/mapping/pointer).
-- [ ] Terminal run in mapping is ignored for worktree inference; pointer to that terminal run → `RUN_POINTER_STALE`.
-- [ ] Absolute `stateDir`: write the pointer via `currentRunPath(controlPlaneRoot, absStateDir)` into a temp absolute directory; resolver source is `pointer`; the file is not created under `join(controlPlaneRoot, absStateDir)`. Skip this case if Phase 1 injects `readPointer` and defers filesystem pointer helpers to Phase 2.
+- [x] `--run` wins over `FIVEX_RUN`, worktree mapping, and pointer.
+- [x] `FIVEX_RUN` wins over worktree mapping and pointer.
+- [x] Unique active mapping to `startDir`’s checkout (via `controlPlane` + mocked checkout root — if `resolveCheckoutRoot` needs a real git toplevel, either init a git repo + worktree in the unit test or add an injectable `checkoutRoot` on `AmbientRunRequest` for tests; **prefer injectable `checkoutRoot?: string`** to keep this file under `--concurrent` and off git).
+- [x] Two active runs mapped to the same canonical path → `RUN_CONTEXT_AMBIGUOUS` with both ids, no pointer consult (pointer file can name a third id; must not be chosen).
+- [x] Linked checkout with zero mappings + pointer to a run mapped elsewhere → `RUN_POINTER_INCOMPATIBLE`.
+- [x] Linked checkout with zero mappings + pointer to the unique run mapped *here* → `source: "pointer"` (compatibility success).
+- [x] Non-linked checkout (checkoutRoot === controlPlaneRoot) uses pointer even if that run maps to another path.
+- [x] `required: false` and no signals → `{ ok: true, runId: undefined, source: "none" }`.
+- [x] `required: true` and no signals → `RUN_CONTEXT_REQUIRED` with remediation mentioning `--run`, `FIVEX_RUN`, worktree, and `.5x/current-run`.
+- [x] Canonical match: symlink worktree path stored in DB vs real `startDir` (use `symlinkSync`).
+- [x] Nested `startDir` under a worktree matches the toplevel mapping when `checkoutRoot` is the toplevel (inject toplevel).
+- [x] `FIVEX_RUN` unknown id → `RUN_ENV_INVALID`, no fallback.
+- [x] Pipe id used only when 1–4 produced none (`pipeRunId` set, no flag/env/mapping/pointer).
+- [x] Terminal run in mapping is ignored for worktree inference; pointer to that terminal run → `RUN_POINTER_STALE`.
+- [x] Absolute `stateDir`: write the pointer via `currentRunPath(controlPlaneRoot, absStateDir)` into a temp absolute directory; resolver source is `pointer`; the file is not created under `join(controlPlaneRoot, absStateDir)`. Skip this case if Phase 1 injects `readPointer` and defers filesystem pointer helpers to Phase 2.
 
 ---
 
