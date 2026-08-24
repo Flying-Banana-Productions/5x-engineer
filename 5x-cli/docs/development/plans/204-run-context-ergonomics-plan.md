@@ -1,8 +1,9 @@
 # Run-Context Ergonomics — Ambient Identity, Pointer, Composite, Pipe Warning
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 24, 2026
-**Status:** Draft — pending staff engineer review
+**Last updated:** August 24, 2026
+**Status:** Ready for implementation
 
 ---
 
@@ -18,7 +19,7 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 
 - Strict ambient run resolution for every command that accepts `--run`.
 - Linked-worktree inference from canonical `plans.worktree_path` (no per-worktree pointer registry).
-- Control-plane-local `.5x/current-run` write on init and conditional clear on complete.
+- Control-plane state-root `current-run` write on init and conditional clear on complete (`.5x/current-run` by default; absolute configured `db.path` is the state root).
 - Ambient marker + source on `5x run list`.
 - `5x phase finish` composite with fail-forward sub-step reporting and idempotent resume.
 - Stderr warning when implicit piped-context read times out.
@@ -42,6 +43,8 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 | **Linked worktree = checkout root ≠ control-plane root** | Same predicate as `isLinkedWorktreeContext` (`worktree.handler.ts:107-117`). Covers git-linked and externally attached checkouts sharing one DB. |
 | **Worktree inference only considers `status = 'active'` mappings** | Terminal runs must not steal implicit identity. `--run` / `FIVEX_RUN` may still select them. |
 | **Pointer is last implicit fallback and must be compatible** | A shared file must never select a run mapped to another linked checkout. Ambiguity never consults the pointer. |
+| **Pointer path honors absolute `stateDir`** | `ControlPlaneResult.stateDir` may be an absolute configured `db.path` (`control-plane.ts:32`, `166-179`). Node `join` does not treat a later absolute segment as a new root, so `join(controlPlaneRoot, "/var/lib/project-state", "current-run")` would write *under* the control-plane root. Resolve like `init.handler.ts:91-93` / `resolveStateDir`: absolute `stateDir` is the state root; relative `stateDir` joins under `controlPlaneRoot`. Do not copy `lock.ts:35-38`. |
+| **Composite checklist matches the granular author-complete gate** | `protocol validate` runs `validatePhaseChecklist` only when the author `result` is `"complete"` (`protocol.handler.ts:376-385`). The composite retains that result (fresh `protocolValidateCore` return, or parsed `result_json` on resume) and skips checklist for `needs_human` / `failed` rather than returning `PHASE_CHECKLIST_INCOMPLETE`. |
 | **Optional-run commands keep no-run behavior when identity is absent** | `quality run`, `diff`, `template render`, and `protocol validate` without `--record` currently work without a run. Ambient fill-in is additive; missing identity is not a new error. |
 | **Pipe `run_id` ranks after pointer** | Pipe support stays (out of scope to remove) but is no longer the reliable default. |
 | **Composite calls handler cores, not subprocesses** | Preserves identical step names and `UNIQUE(run_id, step_name, phase, iteration)` keys. One stdout envelope. |
@@ -77,6 +80,7 @@ Queued or remote workers are out of scope and must keep receiving an explicit `r
 13. [Not In Scope](#not-in-scope)
 14. [Estimated Timeline](#estimated-timeline)
 15. [Provenance](#provenance)
+16. [Revision History](#revision-history)
 
 ---
 
@@ -104,7 +108,7 @@ Today every run-scoped command either requires `--run` at the adapter (`required
 - `FIVEX_RUN` pins a session even when another process rewrites the pointer.
 - Completing run A leaves the pointer alone if it now names run B.
 - `5x run list` marks the ambiently resolved run and its source without changing persisted `status`.
-- `5x phase finish` runs quality → author protocol validate/record → checklist, reports `completed` / `failed` / `skipped` per sub-step, and resumes successful steps for the same `(run, phase, iteration)`.
+- `5x phase finish` runs quality → author protocol validate/record → checklist (checklist only when the author `result` is `"complete"`; otherwise the checklist sub-step is `skipped`), reports `completed` / `failed` / `skipped` per sub-step, and resumes successful steps for the same `(run, phase, iteration)`.
 - A timed-out implicit pipe read prints one stderr line and never writes to stdout.
 - Skills `export FIVEX_RUN` after `run init`, prefer `phase finish` in the hot loop, and keep granular recovery commands.
 
@@ -146,7 +150,7 @@ Do not add a SQL table, pointer-per-worktree file, or new column. The pointer do
 
 **Pipe `run_id` is precedence 5, after the pointer.** `Removing implicit pipe-context support` is out of scope, so `run record` / `invoke` still accept upstream `run_id` when nothing above produced one. Pipe no longer beats `FIVEX_RUN` or a compatible pointer. Template-var injection from pipe (`extractPipeContext`) is unchanged aside from the timeout warning in Phase 6.
 
-**Pointer I/O is a plain file at the control-plane state root.** Path: `join(controlPlaneRoot, stateDir, "current-run")` — same joining convention as locks (`src/lock.ts:35-38`). Contents: the run id, optional trailing newline, nothing else. No JSON, no UUID, no CAS. `run init` overwrites it after the run row exists (new or resumed). `run complete` reads the file and unlinks **iff** the trimmed contents equal the completed run id; otherwise it leaves the file. Do not take a lock; document the remaining TOCTOU as acceptable for a convenience file. Tests must cover “pointer now names B while completing A”.
+**Pointer I/O is a plain file at the control-plane state root.** Path: `currentRunPath(controlPlaneRoot, stateDir)` — `join(stateDir, "current-run")` when `stateDir` is absolute, otherwise `join(controlPlaneRoot, stateDir, "current-run")`. This matches `resolveStateDir` / `init.handler.ts:91-93`. Do **not** copy `lock.ts:35-38` (`join(projectRoot, sd, "locks")`), which concatenates an absolute `stateDir` under the project root. Contents: the run id, optional trailing newline, nothing else. No JSON, no UUID, no CAS. `run init` overwrites it after the run row exists (new or resumed). `run complete` reads the file and unlinks **iff** the trimmed contents equal the completed run id; otherwise it leaves the file. Do not take a lock; document the remaining TOCTOU as acceptable for a convenience file. Tests must cover “pointer now names B while completing A” and both relative and absolute configured `db.path`.
 
 **`run init` adds additive `export_hint`.** Success payload gains `export_hint: "export FIVEX_RUN=<id>"` (and the same string in text mode on stderr is acceptable but not required). This resolves the 204 §2.1 TODO in favor of an envelope field. Windows skills translate to `$env:FIVEX_RUN = '...'`.
 
@@ -167,15 +171,18 @@ Do not add a SQL table, pointer-per-worktree file, or new column. The pointer do
 
 1. `quality` — same as `quality run --record --run <id> --phase <phase> --iteration <n>` except the composite **does not record** when `passed: false` (so the key stays reusable). `skipped: true` (config `skipQualityGates`) counts as success.
 2. `protocol` — same as `protocol validate author --record --run <id> --step <step> --phase <phase> --iteration <n>` with `--no-phase-checklist-validate` for the schema/record half (checklist is the next sub-step). Input from `--input` or stdin, same as protocol validate (`src/commands/protocol.handler.ts:51-68`).
-3. `checklist` — same `validatePhaseChecklist` logic currently inline at `src/commands/protocol.handler.ts:145-239`, exported as a result-returning function so the composite can report it without a second stdout envelope.
+3. `checklist` — same `validatePhaseChecklist` logic currently inline at `src/commands/protocol.handler.ts:145-239`, **invoked only when the author `result` is `"complete"`** (the gate at `:376-385`). Non-complete author results (`needs_human`, `failed`) report this sub-step as `skipped` and still record the author step. Export as a result-returning function so the composite can report it without a second stdout envelope.
 
 `--phase` and `--iteration` are **required** on the composite so resume keys are stable (`recordStep` auto-increments when iteration is omitted — `src/db/operations-v1.ts:141-143` — which would break resume). `--step` is required (author step name, typically from `template render`). `--run` is ambient-resolved. Do not infer phase.
 
-**Resume skips only successful sub-steps.** Before executing a sub-step, `findExistingStep` (`src/db/operations-v1.ts:103-123`) for that `(run, step_name, phase, iteration)`:
+**Resume skips only successful sub-steps.** Before executing a sub-step, look up that `(run, step_name, phase, iteration)`. `findExistingStep` (`src/db/operations-v1.ts:103-123`) currently SELECTs `id, step_name, phase, iteration` only — **extend it (or add a sibling lookup) to also return `result_json`**, because both quality resume (`passed` / `skipped`) and the checklist gate (`result`) need the stored payload.
 
-- `quality:check` exists and `result_json.passed === true` or `skipped === true` → status `completed` (not re-executed); include existing `step_id`.
-- author `--step` exists → protocol `completed`; checklist implied complete if that recorded result is author `complete`.
-- Otherwise execute. Failed prior attempts that were *not* recorded (quality fail, schema fail, checklist incomplete) re-run.
+- `quality:check` exists and parsed `result_json.passed === true` or `skipped === true` → status `completed` (not re-executed); include existing `step_id`.
+- author `--step` exists → protocol `completed`. Parse `result_json` (the recorded author payload from `JSON.stringify(validated)`) and read `result`:
+  - `"complete"` → checklist implied complete (it already passed, or the gate was disabled / non-numeric when recorded); status `completed`, do not re-evaluate.
+  - any other valid author result (`needs_human`, `failed`) → checklist `skipped` (inapplicable); do not evaluate. Granular `protocol validate --record` would not have run the checklist either.
+- Fresh path (no existing author row): retain `protocolValidateCore`'s validated object. Run the checklist **only** when `result === "complete"` and the gate is enabled for a numeric phase — same predicate as `protocol.handler.ts:376-385`. Non-complete results skip checklist (`skipped`) and still record the author step.
+- Otherwise execute. Failed prior attempts that were *not* recorded (quality fail, schema fail, checklist incomplete on a `complete` result) re-run.
 
 Re-running after partial success must not insert a duplicate row (`recorded: false` is success, not a new write). Assert the same `step_id`.
 
@@ -237,12 +244,12 @@ Precedence (strict):
   6. required → RUN_CONTEXT_REQUIRED ; optional → no-run path
 
 phase finish (cores, no nested CLI):
-  quality core ──record quality:check──► protocol core ──record --step──► checklist
+  quality core ──record quality:check──► protocol core ──record --step──► checklist (only if author result === "complete")
        │                                      │                              │
        └──────── fail-forward envelope (completed | failed | skipped) ───────┘
 
-Pointer:
-  run init  ──write──►  <controlPlaneRoot>/<stateDir>/current-run
+Pointer (currentRunPath; absolute stateDir is the state root, not joined under controlPlaneRoot):
+  run init  ──write──►  <stateRoot>/current-run
   run complete ──unlink iff contents === completed id──► same file
 ```
 
@@ -364,12 +371,13 @@ Use in-memory DB + temp directories like `test/unit/commands/run-context.test.ts
 - [ ] `FIVEX_RUN` unknown id → `RUN_ENV_INVALID`, no fallback.
 - [ ] Pipe id used only when 1–4 produced none (`pipeRunId` set, no flag/env/mapping/pointer).
 - [ ] Terminal run in mapping is ignored for worktree inference; pointer to that terminal run → `RUN_POINTER_STALE`.
+- [ ] Absolute `stateDir`: write the pointer via `currentRunPath(controlPlaneRoot, absStateDir)` into a temp absolute directory; resolver source is `pointer`; the file is not created under `join(controlPlaneRoot, absStateDir)`. Skip this case if Phase 1 injects `readPointer` and defers filesystem pointer helpers to Phase 2.
 
 ---
 
 ## Phase 2: Focus pointer lifecycle
 
-**Completion gate:** `run init` writes `<stateDir>/current-run`; `run complete` deletes it only when contents still match; unit tests cover overwrite, mismatch leave-in-place, missing file, and malformed file.
+**Completion gate:** `run init` writes the pointer at `currentRunPath(controlPlaneRoot, stateDir)` (relative `stateDir` → `<controlPlaneRoot>/<stateDir>/current-run`; absolute `stateDir` → `<stateDir>/current-run`); `run complete` deletes it only when contents still match; unit tests cover overwrite, mismatch leave-in-place, missing file, malformed file, and both relative and absolute configured `db.path`.
 
 ### 2.1 Pointer helpers
 
@@ -382,7 +390,10 @@ export function currentRunPath(
 	controlPlaneRoot: string,
 	stateDir: string,
 ): string {
-	return join(controlPlaneRoot, stateDir, CURRENT_RUN_FILENAME);
+	const stateRoot = isAbsolute(stateDir)
+		? stateDir
+		: join(controlPlaneRoot, stateDir);
+	return join(stateRoot, CURRENT_RUN_FILENAME);
 }
 
 export function readPointer(path: string): string | null; // missing → null
@@ -390,14 +401,16 @@ export function writePointer(path: string, runId: string): void;
 export function clearPointerIfMatch(path: string, runId: string): boolean;
 ```
 
+`isAbsolute` from `node:path`. Absolute `stateDir` (configured `db.path`) is the state root — never `join(controlPlaneRoot, "/var/lib/project-state", …)`, which Node would treat as `<controlPlaneRoot>/var/lib/project-state/current-run`. Relative `stateDir` (default `.5x`) still joins under `controlPlaneRoot`. Same rule as `resolveStateDir` (`control-plane.ts:166-169`) and `init.handler.ts:91-93`.
+
 `readPointer`: if missing, `null`. If present, trim whitespace; empty → treat as invalid at the identity layer (`RUN_POINTER_INVALID`), so this helper can return `""` or throw; prefer returning the raw trimmed string (including `""`) and let `resolveAmbientRunId` classify. `writePointer`: `mkdirSync` parent `recursive: true`, write `runId + "\n"` (POSIX text). `clearPointerIfMatch`: read, compare, `unlinkSync` only on equality; return whether unlinked. Ignore `ENOENT` on unlink.
 
 - [ ] Implement helpers with no logging and no `process.exit`.
-- [ ] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write.
+- [ ] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
 
 ### 2.2 `run init` writes the pointer
 
-**File:** `src/commands/run-v1.handler.ts`, `runV1Init` success paths at `:967-978` (new run) and the resumed-run `outputSuccess` above it (~`:930-960` — both new and resume must write). After the run id is known and the row exists, `writePointer(currentRunPath(projectRoot, stateDir), runId)`.
+**File:** `src/commands/run-v1.handler.ts`, `runV1Init` success paths at `:967-978` (new run) and the resumed-run `outputSuccess` above it (~`:930-960` — both new and resume must write). After the run id is known and the row exists, `writePointer(currentRunPath(projectRoot, stateDir), runId)`. Pass `controlPlane.stateDir` unchanged (it may be absolute); do not pre-join it with `projectRoot`.
 
 Add `export_hint: \`export FIVEX_RUN=${runId}\`` to both success payloads.
 
@@ -433,8 +446,8 @@ Do **not** clear on `reopen`. Abort (`--status aborted`) is still a completion o
 
 Existing init tests: `test/integration/commands/run-v1.test.ts` and `run-init-worktree.test.ts`. Extend one of them rather than a third copy of `setupProject` if feasible.
 
-- [ ] Pointer helpers unit tests.
-- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
+- [ ] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
+- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites. Repeat the write/clear cycle with an **absolute** configured `db.path` (temp directory outside the project) so the pointer is created at `<absStateDir>/current-run`, not `<controlPlaneRoot>/<absStateDir>/current-run`.
 
 ---
 
@@ -594,7 +607,7 @@ Reuse helpers from `test/integration/commands/run-scoped-context.test.ts` / `run
 
 ## Phase 5: `5x phase finish` composite
 
-**Completion gate:** `5x phase finish --phase P --iteration N --step S` with author JSON on stdin/file runs quality → protocol record → checklist; partial rerun skips successful recorded steps; failed quality does not insert `quality:check`; stdout is a single envelope; exit code matches the failing sub-step.
+**Completion gate:** `5x phase finish --phase P --iteration N --step S` with author JSON on stdin/file runs quality → protocol record → checklist **only when the author `result` is `"complete"`** (otherwise checklist is `skipped`); partial rerun skips successful recorded steps; failed quality does not insert `quality:check`; stdout is a single envelope; exit code matches the failing sub-step.
 
 ### 5.1 Extract non-printing cores
 
@@ -609,7 +622,9 @@ When `params.record` and iteration is provided, `recordStepInternal` must receiv
 **File:** `src/commands/protocol.handler.ts`
 
 - Export `evaluatePhaseChecklist(params): { ok: true } | { ok: false; code: string; message: string }` replacing the `outputError` calls inside `validatePhaseChecklist` (`:145-239`). Keep `protocolValidate` calling it and `outputError` on `ok: false` so granular behavior is identical.
-- Extract `protocolValidateCore(params): Promise<{ role; valid; result; warnings: string[] }>` for parse + schema validate **without** printing or recording or checklist. `protocolValidate` becomes: core → checklist (if author complete) → `outputSuccess` → record.
+- Extract `protocolValidateCore(params): Promise<{ role; valid; result; warnings: string[] }>` for parse + schema validate **without** printing or recording or checklist. `protocolValidate` becomes: core → checklist (if author `result === "complete"`) → `outputSuccess` → record. The composite **must keep `result`** (the validated object) for the same gate.
+
+**File:** `src/db/operations-v1.ts` — extend `findExistingStep` (or add a sibling) so the returned row includes `result_json`. Quality resume already needs `passed` / `skipped`; the checklist gate needs the author `result` field. Today's SELECT (`:113`) omits it.
 
 **File:** `src/commands/protocol.handler.ts` `isNumericPhaseRef` is already exported (`:121`). Keep it.
 
@@ -654,11 +669,16 @@ Handler algorithm:
 
 1. `resolveDbContext` / control plane; `resolveAmbientRunId({ required: true })`; `validateRunId`.
 2. Build `steps: PhaseFinishStep[]` for `quality`, `protocol`, `checklist` (pre-fill `skipped` and overwrite as you go).
-3. Quality: if successful existing `quality:check` (or `recordStep`) at `(run, phase, iteration)` → mark completed. Else `runQualityCore` with record-on-success-only. `passed: false` → fail envelope `QUALITY_FAILED`, skip the rest. On throw, map to the core’s code.
-4. Protocol: if existing `--step` row → completed. Else read input (must not use `readUpstreamEnvelope`; this is payload stdin, same `readInput` as protocol). `protocolValidateCore`. Schema failure → `INVALID_STRUCTURED_OUTPUT` (or whatever `validateStructuredOutputOrThrow` uses today), skip checklist.
-5. Checklist: if `phaseChecklistValidate === false` or non-numeric phase (`isNumericPhaseRef`) → `completed` (skipped gate, same as granular). Else `evaluatePhaseChecklist`. Failure → `PHASE_CHECKLIST_INCOMPLETE` / `PHASE_NOT_FOUND`; do not record the author step.
-6. Record author step via `recordStepInternal` with the same fields as `protocolValidate` (`:405-413`). Idempotent `recorded: false` is success.
-7. All completed → `outputSuccess({ run_id, phase, iteration, steps })`.
+3. Quality: if successful existing `quality:check` (or `recordStep`) at `(run, phase, iteration)` (`result_json.passed === true` or `skipped === true`) → mark completed. Else `runQualityCore` with record-on-success-only. `passed: false` → fail envelope `QUALITY_FAILED`, skip the rest. On throw, map to the core’s code.
+4. Protocol: if existing `--step` row → completed; parse that row’s `result_json` into `authorResult` (the recorded author payload). Else read input (must not use `readUpstreamEnvelope`; this is payload stdin, same `readInput` as protocol). `protocolValidateCore`. Keep the returned validated object as `authorResult`. Schema failure → `INVALID_STRUCTURED_OUTPUT` (or whatever `validateStructuredOutputOrThrow` uses today), skip checklist.
+5. Checklist — same author-complete predicate as `protocol.handler.ts:376-385`. Let `authorComplete` mean `authorResult` is an object with `result === "complete"`.
+   - If protocol failed (no `authorResult`) → already `skipped` from the fail-forward remainder.
+   - If resuming an existing author `--step` row: do **not** re-evaluate. `authorComplete` → `completed`; otherwise `skipped` (inapplicable).
+   - Else if `phaseChecklistValidate === false` or non-numeric phase (`!isNumericPhaseRef`) → `completed` (gate skipped, same as granular success path).
+   - Else if `!authorComplete` (`needs_human`, `failed`, or other valid non-complete) → `skipped` (inapplicable). Do **not** call `evaluatePhaseChecklist`. Still record the author step (step 6).
+   - Else (`authorComplete`) → `evaluatePhaseChecklist`. Failure → `PHASE_CHECKLIST_INCOMPLETE` / `PHASE_NOT_FOUND`; do **not** record the author step.
+6. Record author step via `recordStepInternal` with the same fields as `protocolValidate` (`:405-413`), including non-complete results (checklist was skipped, matching granular `--record`). Idempotent `recorded: false` is success. Skip this write when step 4 resumed an existing row.
+7. All completed (or protocol completed with checklist `skipped` as inapplicable) → `outputSuccess({ run_id, phase, iteration, steps })`. Non-complete author results are a successful composite: `ok: true`, checklist `skipped`, exit 0.
 
 Stdin: quality does not read stdin; protocol payload does. Do not call `readUpstreamEnvelope` in this command.
 
@@ -668,6 +688,7 @@ Text formatter: one line per sub-step (`quality completed (step 12)`, `protocol 
 - [ ] Require `--phase`, `--iteration`, `--step`.
 - [ ] Ambient `--run`.
 - [ ] Single stdout envelope.
+- [ ] Retain `protocolValidateCore`’s validated result (and parse existing `result_json` on resume); run checklist only when `result === "complete"`; report `skipped` when inapplicable.
 - [ ] Add `QUALITY_FAILED: 1` to `EXIT_CODE_MAP` in `src/output.ts:50-71` if not present (fallback is already 1).
 
 ### 5.3 Tests
@@ -680,7 +701,10 @@ Unit (handler + temp git repo / `startDir`, gates `echo ok` or `false`):
 - [ ] Rerun same keys: no extra rows; `recorded: false`; quality core not re-invoked (spy `runQualityGates` or assert gate log not duplicated).
 - [ ] Quality fail (`false` gate): envelope `QUALITY_FAILED`; no `quality:check` row; protocol/checklist `skipped`; rerun after switching gates to `echo ok` records success at the same iteration.
 - [ ] Invalid author JSON: protocol `failed`; checklist `skipped`; no author step row.
-- [ ] Incomplete checklist: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
+- [ ] Incomplete checklist **with author `result: "complete"`**: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
+- [ ] Fresh non-complete author result (`needs_human` or `failed`, valid schema, numeric phase, checkboxes unchecked): protocol `completed`; checklist `skipped` (not `PHASE_CHECKLIST_INCOMPLETE`); author step recorded; exit 0. Same as granular `protocol validate author --record`.
+- [ ] Resumed non-complete author result: existing `--step` row whose `result_json` has `result: "needs_human"` (or `"failed"`); checklist `skipped`; no extra row; `evaluatePhaseChecklist` not invoked even if the plan checklist is incomplete.
+- [ ] Resumed `complete` author result: checklist `completed` without re-evaluating (implied complete from the recorded row).
 - [ ] `--no-phase-checklist-validate`: checklist `completed` without reading plan checkboxes.
 - [ ] Missing `--run` / env / pointer: `RUN_CONTEXT_REQUIRED` before gates.
 - [ ] Explicit `--run` unchanged vs ambient.
@@ -792,7 +816,7 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | File | Change |
 |------|--------|
 | `src/commands/run-identity.ts` | **New** — `resolveAmbientRunId`, checkout linkage, active-run listing |
-| `src/commands/run-pointer.ts` | **New** — `current-run` read/write/clearIfMatch |
+| `src/commands/run-pointer.ts` | **New** — `current-run` read/write/clearIfMatch; `currentRunPath` honors absolute `stateDir` |
 | `src/commands/phase.ts` | **New** — `5x phase finish` adapter |
 | `src/commands/phase.handler.ts` | **New** — fail-forward composite |
 | `src/commands/run-v1.ts` | `--run` optional on complete/reopen/relink/watch; help |
@@ -805,6 +829,7 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | `src/commands/quality-v1.handler.ts` | Core extract; ambient; iteration on record |
 | `src/commands/protocol.ts` | Help |
 | `src/commands/protocol.handler.ts` | Core extract; `evaluatePhaseChecklist`; ambient |
+| `src/db/operations-v1.ts` | `findExistingStep` (or sibling) returns `result_json` for quality/author resume |
 | `src/commands/template.ts` | Help |
 | `src/commands/template.handler.ts` | Optional ambient fill-in |
 | `src/commands/diff.ts` | Help |
@@ -837,7 +862,7 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | `test/integration/commands/invoke.test.ts` | Missing `--run` vs ambient |
 | `test/integration/commands/quality-record.test.ts` | `--record` identity |
 
-`src/commands/run-context.ts` is reused, not modified, unless a re-export is cleaner. `src/db/operations.ts` `listPlansByWorktreePath` is reused, not modified.
+`src/commands/run-context.ts` is reused, not modified, unless a re-export is cleaner. `src/db/operations.ts` `listPlansByWorktreePath` is reused, not modified. `src/db/operations-v1.ts` `findExistingStep` is extended only to expose `result_json` for resume inspection.
 
 ---
 
@@ -846,18 +871,18 @@ Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already r
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `run-identity.ts` | Precedence 1–5; optional none; required none; ambiguity + candidates; incompatible pointer; stale/invalid pointer; `FIVEX_RUN` invalid; canonical symlink/nested checkout via injected root |
-| Unit | `run-pointer.ts` | Write/read; clear match; refuse mismatch; missing file |
-| Unit | `phase-finish` handler | Happy path keys; resume skip; quality fail not recorded; protocol/checklist failures; `--no-phase-checklist-validate` |
+| Unit | `run-pointer.ts` | Write/read; clear match; refuse mismatch; missing file; **relative vs absolute `stateDir` path construction** |
+| Unit | `phase-finish` handler | Happy path keys; resume skip; quality fail not recorded; protocol/checklist failures; `--no-phase-checklist-validate`; **fresh and resumed non-complete author results skip checklist** |
 | Unit | `evaluatePhaseChecklist` | Same fail-closed/fail-open cases as current protocol tests |
 | Unit | skills (OpenCode/Cursor) | `FIVEX_RUN`, `phase finish`, granular fallbacks still present |
-| Integration | `run init` / `complete` | Pointer write; conditional clear; `export_hint` |
+| Integration | `run init` / `complete` | Pointer write; conditional clear; `export_hint`; **absolute configured `db.path` writes/clears `<absStateDir>/current-run`** |
 | Integration | two worktrees | Unique mapping per checkout; pointer cannot cross; `FIVEX_RUN` override; ambiguity; `run list` source; `diff`/`quality`/`state` without `--run` |
 | Integration | `phase finish` CLI | `--input` happy path; exit codes; single JSON envelope |
 | Integration | pipe timeout | Stderr warning; stdout not polluted; TTY silent |
 | Integration | invoke / quality-record | Flag-less failure without ambient; success with `FIVEX_RUN` / pointer |
 | Regression | existing `--run` tests | Explicit flag behavior unchanged |
 
-Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd under a worktree; two plans → one checkout; pointer rewritten during complete; `FIVEX_RUN` of a completed run on `run state`; optional `quality run` with no control plane.
+Edge cases the implementer must not skip: symlink `worktree_path`; nested cwd under a worktree; two plans → one checkout; pointer rewritten during complete; `FIVEX_RUN` of a completed run on `run state`; optional `quality run` with no control plane; absolute `db.path` pointer location; `phase finish` with `needs_human` / `failed` author JSON.
 
 ---
 
@@ -895,3 +920,15 @@ Phases 1–2 are sequential. Phase 6 can overlap with 4–5. Phase 7 depends on 
 ## Provenance
 
 Implements v2 area #4 (`docs/v2/204-run-context-ergonomics.md`) from plan input `docs/v2/plan-inputs/02-run-context-ergonomics.plan-input.md`. Builds on the shipped v1 execution-context resolver (`src/commands/run-context.ts`) and plan/worktree mappings (`plans.worktree_path`) without waiting on prompt-queue or dashboard slices. Suggested next slice: `03-prompt-queue-foundation.plan-input.md`, which must pass explicit `run_id` into workers and must not call `resolveAmbientRunId` for dispatch.
+
+---
+
+## Revision History
+
+### 1.1 — August 24, 2026
+
+Addresses **P1.1** and **P1.2** in the **Addendum (2026-08-24) — Protocol metadata recovery review** of [`docs/development/reviews/5x-cli-docs-development-plans-204-run-context-ergonomics-plan-review.md`](../reviews/5x-cli-docs-development-plans-204-run-context-ergonomics-plan-review.md). Both items were `auto_fix` in the original review and remained open because the plan body was unchanged. No P0 or P2 items.
+
+**P1.1 — Absolute configured state directory.** `currentRunPath` now uses `join(stateDir, "current-run")` when `stateDir` is absolute, otherwise `join(controlPlaneRoot, stateDir, "current-run")` — the same rule as `resolveStateDir` / `init.handler.ts:91-93`, not `lock.ts:35-38`. Init/complete pass `controlPlane.stateDir` through unchanged. Unit tests cover both path forms; lifecycle integration repeats write/clear against an absolute `db.path`.
+
+**P1.2 — Conditional checklist gate.** The composite retains `protocolValidateCore`’s validated author result and, on resume, parses the existing author step’s `result_json` (`findExistingStep` extended to return it). Checklist runs only when `result === "complete"` (plus the existing disabled / non-numeric skips); `needs_human` / `failed` report checklist as `skipped` and still record the author step. Unit tests cover fresh and resumed non-complete author results.
