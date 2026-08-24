@@ -7,6 +7,7 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
+import { intArg } from "../utils/parse-args.js";
 import { runQuality } from "./quality-v1.handler.js";
 import { AMBIENT_RUN_OPTION_HELP_WITH_RECORD } from "./run-identity.js";
 
@@ -38,6 +39,11 @@ export function registerQuality(parent: Command) {
 		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP_WITH_RECORD)
 		.option("-p, --phase <name>", "Phase identifier (used with --record)")
 		.option(
+			"--iteration <n>",
+			"Iteration number (used with --record)",
+			intArg("--iteration"),
+		)
+		.option(
 			"-w, --workdir <path>",
 			"Working directory override (aligns with invoke --workdir precedence model)",
 		)
@@ -55,6 +61,7 @@ export function registerQuality(parent: Command) {
 				recordStep: opts.recordStep,
 				run: opts.run,
 				phase: opts.phase,
+				iteration: opts.iteration,
 				workdir: opts.workdir,
 			});
 		});

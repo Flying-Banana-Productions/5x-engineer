@@ -702,9 +702,9 @@ When `params.record` and iteration is provided, `recordStepInternal` must receiv
 
 **File:** `src/commands/protocol.handler.ts` `isNumericPhaseRef` is already exported (`:121`). Keep it.
 
-- [ ] `runQuality` / `protocolValidate` stdout and exit behavior unchanged (existing tests).
-- [ ] Cores have no `outputSuccess` / `outputError` (checklist helper returns instead of throwing).
-- [ ] `quality run --iteration N --record` writes that iteration.
+- [x] `runQuality` / `protocolValidate` stdout and exit behavior unchanged (existing tests).
+- [x] Cores have no `outputSuccess` / `outputError` (checklist helper returns instead of throwing).
+- [x] `quality run --iteration N --record` writes that iteration.
 
 ### 5.2 Composite handler and adapter
 
@@ -758,12 +758,12 @@ Stdin: quality does not read stdin; protocol payload does. Do not call `readUpst
 
 Text formatter: one line per sub-step (`quality completed (step 12)`, `protocol failed …`).
 
-- [ ] Register `phase finish`.
-- [ ] Require `--phase`, `--iteration`, `--step`.
-- [ ] Ambient `--run`.
-- [ ] Single stdout envelope.
-- [ ] Retain `protocolValidateCore`’s validated result (and parse existing `result_json` on resume); run checklist only when `result === "complete"`; report `skipped` when inapplicable.
-- [ ] Add `QUALITY_FAILED: 1` to `EXIT_CODE_MAP` in `src/output.ts:50-71` if not present (fallback is already 1).
+- [x] Register `phase finish`.
+- [x] Require `--phase`, `--iteration`, `--step`.
+- [x] Ambient `--run`.
+- [x] Single stdout envelope.
+- [x] Retain `protocolValidateCore`’s validated result (and parse existing `result_json` on resume); run checklist only when `result === "complete"`; report `skipped` when inapplicable.
+- [x] Add `QUALITY_FAILED: 1` to `EXIT_CODE_MAP` in `src/output.ts:50-71` if not present (fallback is already 1).
 
 ### 5.3 Tests
 
@@ -771,17 +771,17 @@ Text formatter: one line per sub-step (`quality completed (step 12)`, `protocol 
 
 Unit (handler + temp git repo / `startDir`, gates `echo ok` or `false`):
 
-- [ ] Happy path: three `completed`; `quality:check` and author `--step` rows exist with the given iteration.
-- [ ] Rerun same keys: no extra rows; `recorded: false`; quality core not re-invoked (spy `runQualityGates` or assert gate log not duplicated).
-- [ ] Quality fail (`false` gate): envelope `QUALITY_FAILED`; no `quality:check` row; protocol/checklist `skipped`; rerun after switching gates to `echo ok` records success at the same iteration.
-- [ ] Invalid author JSON: protocol `failed`; checklist `skipped`; no author step row.
-- [ ] Incomplete checklist **with author `result: "complete"`**: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
-- [ ] Fresh non-complete author result (`needs_human` or `failed`, valid schema, numeric phase, checkboxes unchecked): protocol `completed`; checklist `skipped` (not `PHASE_CHECKLIST_INCOMPLETE`); author step recorded; exit 0. Same as granular `protocol validate author --record`.
-- [ ] Resumed non-complete author result: existing `--step` row whose `result_json` has `result: "needs_human"` (or `"failed"`); checklist `skipped`; no extra row; `evaluatePhaseChecklist` not invoked even if the plan checklist is incomplete.
-- [ ] Resumed `complete` author result: checklist `completed` without re-evaluating (implied complete from the recorded row).
-- [ ] `--no-phase-checklist-validate`: checklist `completed` without reading plan checkboxes.
-- [ ] Missing `--run` / env / pointer: `RUN_CONTEXT_REQUIRED` before gates.
-- [ ] Explicit `--run` unchanged vs ambient.
+- [x] Happy path: three `completed`; `quality:check` and author `--step` rows exist with the given iteration.
+- [x] Rerun same keys: no extra rows; `recorded: false`; quality core not re-invoked (spy `runQualityGates` or assert gate log not duplicated).
+- [x] Quality fail (`false` gate): envelope `QUALITY_FAILED`; no `quality:check` row; protocol/checklist `skipped`; rerun after switching gates to `echo ok` records success at the same iteration.
+- [x] Invalid author JSON: protocol `failed`; checklist `skipped`; no author step row.
+- [x] Incomplete checklist **with author `result: "complete"`**: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
+- [x] Fresh non-complete author result (`needs_human` or `failed`, valid schema, numeric phase, checkboxes unchecked): protocol `completed`; checklist `skipped` (not `PHASE_CHECKLIST_INCOMPLETE`); author step recorded; exit 0. Same as granular `protocol validate author --record`.
+- [x] Resumed non-complete author result: existing `--step` row whose `result_json` has `result: "needs_human"` (or `"failed"`); checklist `skipped`; no extra row; `evaluatePhaseChecklist` not invoked even if the plan checklist is incomplete.
+- [x] Resumed `complete` author result: checklist `completed` without re-evaluating (implied complete from the recorded row).
+- [x] `--no-phase-checklist-validate`: checklist `completed` without reading plan checkboxes.
+- [x] Missing `--run` / env / pointer: `RUN_CONTEXT_REQUIRED` before gates.
+- [x] Explicit `--run` unchanged vs ambient.
 
 Integration: spawn `5x phase finish` with `--input` file so stdin is not the protocol payload vs harness-piped-empty issue; assert stdout JSON and exit codes.
 

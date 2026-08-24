@@ -41,8 +41,16 @@ export interface QualityParams {
 	recordStep?: string;
 	run?: string;
 	phase?: string;
+	iteration?: number;
 	workdir?: string;
 	env?: NodeJS.Dict<string>;
+}
+
+export interface QualityCoreResult {
+	passed: boolean;
+	results: unknown[];
+	skipped?: boolean;
+	workdir: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +84,7 @@ async function autoRecord(
 			stepName,
 			result: JSON.stringify(qualityData),
 			phase: params.phase,
+			iteration: params.iteration,
 		});
 	} catch (err) {
 		// Recording is a side effect — primary envelope already written.
@@ -96,10 +105,10 @@ async function autoRecord(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function runQuality(
+export async function runQualityCore(
 	params: QualityParams = {},
 	warn: (...args: unknown[]) => void = console.error,
-): Promise<void> {
+): Promise<QualityCoreResult> {
 	// -----------------------------------------------------------------------
 	// Phase 3a: When --run is present, resolve control-plane root and run
 	// execution context to determine effective workdir and plan path for
@@ -217,17 +226,12 @@ export async function runQuality(
 
 	if (skipQualityGates && qualityGates.length === 0) {
 		// Intentional skip of empty gates — no warning, output includes skipped: true
-		const qualityData = {
+		return {
 			passed: true,
 			results: [] as unknown[],
 			skipped: true,
+			workdir: projectRoot,
 		};
-		outputSuccess(qualityData);
-
-		if (params.record) {
-			await autoRecord(params, qualityData);
-		}
-		return;
 	}
 
 	if (qualityGates.length === 0) {
@@ -235,17 +239,11 @@ export async function runQuality(
 		warn(
 			"Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates = true to suppress this warning.",
 		);
-		const qualityData = {
+		return {
 			passed: true,
 			results: [] as unknown[],
+			workdir: projectRoot,
 		};
-		outputSuccess(qualityData);
-
-		// Auto-record the empty-gates success if --record is set
-		if (params.record) {
-			await autoRecord(params, qualityData);
-		}
-		return;
 	}
 
 	// Use a temporary run context for logging purposes
@@ -262,7 +260,7 @@ export async function runQuality(
 		attempt: 1,
 	});
 
-	const qualityData = {
+	return {
 		passed: result.passed,
 		results: result.results.map((r) => ({
 			command: r.command,
@@ -270,12 +268,18 @@ export async function runQuality(
 			duration_ms: Math.round(r.duration),
 			output: r.output,
 		})),
+		workdir: projectRoot,
 	};
+}
 
-	outputSuccess(qualityData);
-
-	// Auto-record if --record is set
+export async function runQuality(
+	params: QualityParams = {},
+	warn: (...args: unknown[]) => void = console.error,
+): Promise<void> {
+	const qualityData = await runQualityCore(params, warn);
+	const { workdir: _workdir, ...payload } = qualityData;
+	outputSuccess(payload);
 	if (params.record) {
-		await autoRecord(params, qualityData);
+		await autoRecord(params, payload);
 	}
 }

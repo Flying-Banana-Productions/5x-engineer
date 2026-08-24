@@ -152,11 +152,13 @@ export function isNumericPhaseRef(phase: string): boolean {
  * - If --phase is a non-numeric semantic identifier (e.g., "plan", "review") → skip
  *   the gate entirely. Such values can never match a plan parser phase heading.
  */
-function validatePhaseChecklist(params: ProtocolValidateParams): void {
+export function evaluatePhaseChecklist(
+	params: ProtocolValidateParams,
+): { ok: true } | { ok: false; code: string; message: string } {
 	// Skip for non-numeric phase identifiers — they are semantic context
 	// labels (e.g., "plan", "review") that don't map to plan file phases.
 	if (params.phase && !isNumericPhaseRef(params.phase)) {
-		return;
+		return { ok: true };
 	}
 
 	const explicitPlan = !!params.plan;
@@ -180,7 +182,7 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 					runMigrations(db);
 				} catch {
 					// DB migration error — skip checklist gate gracefully
-					return;
+					return { ok: true };
 				}
 				const ctxResult = resolveRunExecutionContext(db, params.run, {
 					controlPlaneRoot: controlPlane.controlPlaneRoot,
@@ -192,20 +194,24 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 			}
 		} catch {
 			// Auto-discovery failed — skip silently
-			return;
+			return { ok: true };
 		}
 	}
 
 	// No plan path resolved — skip silently
-	if (!planPath) return;
+	if (!planPath) return { ok: true };
 
 	// Check file exists
 	if (!existsSync(planPath)) {
 		if (explicitPlan) {
-			outputError("PLAN_NOT_FOUND", `Plan file not found: ${params.plan}`);
+			return {
+				ok: false,
+				code: "PLAN_NOT_FOUND",
+				message: `Plan file not found: ${params.plan}`,
+			};
 		}
 		// Auto-discovered path doesn't exist — skip silently
-		return;
+		return { ok: true };
 	}
 
 	// Parse the plan
@@ -214,15 +220,19 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		planContent = readFileSync(planPath, "utf-8");
 	} catch {
 		if (explicitPlan) {
-			outputError("PLAN_NOT_FOUND", `Failed to read plan file: ${params.plan}`);
+			return {
+				ok: false,
+				code: "PLAN_NOT_FOUND",
+				message: `Failed to read plan file: ${params.plan}`,
+			};
 		}
-		return;
+		return { ok: true };
 	}
 
 	const plan = parsePlan(planContent);
 
 	// If no --phase provided, skip checklist gate (can't determine which phase)
-	if (!params.phase) return;
+	if (!params.phase) return { ok: true };
 
 	// Find the matching phase
 	const phase = plan.phases.find(
@@ -238,28 +248,38 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		// Fail-closed: --phase is always explicit input (no auto-discovery for
 		// phase). Once a plan is resolved (by any means), a missing phase must
 		// error so orchestrators don't silently skip validation.
-		outputError(
-			"PHASE_NOT_FOUND",
-			`Phase '${params.phase}' not found in plan: ${planPath}`,
-		);
+		return {
+			ok: false,
+			code: "PHASE_NOT_FOUND",
+			message: `Phase '${params.phase}' not found in plan: ${planPath}`,
+		};
 	}
 
 	// Check if phase is complete
 	if (!phase.isComplete) {
-		outputError(
-			"PHASE_CHECKLIST_INCOMPLETE",
-			`Phase ${params.phase} checklist is not complete. Mark all items [x] before returning result: complete.`,
-		);
+		return {
+			ok: false,
+			code: "PHASE_CHECKLIST_INCOMPLETE",
+			message: `Phase ${params.phase} checklist is not complete. Mark all items [x] before returning result: complete.`,
+		};
 	}
+	return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function protocolValidate(
+export interface ProtocolValidateCoreResult {
+	role: ProtocolRole;
+	valid: true;
+	result: unknown;
+	warnings: string[];
+}
+
+export async function protocolValidateCore(
 	params: ProtocolValidateParams,
-): Promise<void> {
+): Promise<ProtocolValidateCoreResult> {
 	const { role } = params;
 
 	// -----------------------------------------------------------------------
@@ -315,6 +335,15 @@ export async function protocolValidate(
 			context: `protocol validate ${role}`,
 		},
 	);
+
+	return { role, valid: true, result: validated, warnings };
+}
+
+export async function protocolValidate(
+	params: ProtocolValidateParams,
+): Promise<void> {
+	const { role } = params;
+	const { result: validated, warnings } = await protocolValidateCore(params);
 
 	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
 	for (const w of warnings) {
@@ -433,7 +462,10 @@ export async function protocolValidate(
 		(validated as Record<string, unknown>).result === "complete" &&
 		params.phaseChecklistValidate !== false
 	) {
-		validatePhaseChecklist(params);
+		const checklist = evaluatePhaseChecklist(params);
+		if (!checklist.ok) {
+			outputError(checklist.code, checklist.message);
+		}
 	}
 
 	// -----------------------------------------------------------------------

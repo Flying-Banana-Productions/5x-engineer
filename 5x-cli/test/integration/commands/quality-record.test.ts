@@ -445,4 +445,45 @@ describe("quality run --record", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"--iteration N --record writes that iteration",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId } = await setupProjectWithRun(dir);
+
+				const result = await run5x(projectRoot, [
+					"quality",
+					"run",
+					"--record",
+					"--run",
+					runId,
+					"--phase",
+					"1",
+					"--iteration",
+					"7",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+
+				const state = await run5x(projectRoot, [
+					"run",
+					"state",
+					"--run",
+					runId,
+				]);
+				const steps = (parseJson(state.stdout).data as Record<string, unknown>)
+					.steps as Array<Record<string, unknown>>;
+				expect(steps[0]?.step_name).toBe("quality:check");
+				expect(steps[0]?.iteration).toBe(7);
+				expect(steps[0]?.phase).toBe("1");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });

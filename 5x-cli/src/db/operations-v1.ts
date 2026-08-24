@@ -103,14 +103,14 @@ export function nextIteration(
 export function findExistingStep(
 	db: Database,
 	input: Pick<RecordStepInput, "run_id" | "step_name" | "phase" | "iteration">,
-): Pick<StepRow, "id" | "step_name" | "phase" | "iteration"> | null {
+): Pick<StepRow, "id" | "step_name" | "phase" | "iteration" | "result_json"> | null {
 	if (input.iteration === undefined) return null;
 	// UNIQUE(run_id, step_name, phase, iteration) treats NULL phase as distinct,
 	// so a NULL-phase insert is never an INSERT OR IGNORE no-op.
 	if (input.phase == null) return null;
 	const row = db
 		.query(
-			`SELECT id, step_name, phase, iteration FROM steps
+			`SELECT id, step_name, phase, iteration, result_json FROM steps
 			 WHERE run_id = ?1 AND step_name = ?2 AND phase = ?3 AND iteration = ?4`,
 		)
 		.get(input.run_id, input.step_name, input.phase, input.iteration) as {
@@ -118,6 +118,7 @@ export function findExistingStep(
 		step_name: string;
 		phase: string | null;
 		iteration: number;
+		result_json: string;
 	} | null;
 	return row ?? null;
 }
