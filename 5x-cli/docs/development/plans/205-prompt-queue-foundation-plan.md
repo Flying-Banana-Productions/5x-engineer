@@ -1,6 +1,6 @@
 # Prompt-Queue Foundation — Durable UUID Prompts, CAS Answers, Doctor Hygiene
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** August 24, 2026
 **Last updated:** August 24, 2026
 **Status:** Ready for implementation
@@ -17,7 +17,7 @@
 
 - `prompts` table (schema v6), UUID ids, open/recent indexes, SQLite repository plus an in-memory test implementation.
 - `PromptStore` contract: `createPrompt`, `getPrompt`, `listOpenPrompts`, `answerPrompt` (CAS), `abandonPrompt` (CAS).
-- Bounded poll loop, timeout/interrupt/EOF/SIGTERM abandonment, terminal vs store race with cancellable stdin **and** piped input; poll-only waits map `PromptWaitAbortedError` to lifecycle-abandon.
+- Bounded poll loop, timeout/interrupt/SIGTERM abandonment, kind-aware EOF (choose/confirm abandon `eof`; input EOF is a successful terminal answer), terminal vs store race with cancellable stdin **and** piped input; poll-only waits map `PromptWaitAbortedError` to lifecycle-abandon.
 - `5x prompt choose|confirm|input` persist-then-wait; preserve `--default` CI behavior and existing success envelopes.
 - Doctor `prompts` check: open rows whose run is terminal; `--fix` abandons them deterministically.
 
@@ -41,6 +41,7 @@
 | **no-TTY + `--default` CAS-es immediately** | Preserves CI. TTY waits; a store writer can still win. no-TTY choose/confirm without default stays fail-fast `NON_INTERACTIVE` after persist+abandon. no-TTY `input` waits on the pipe **inside the same abortable race** (`--timeout` and store writers apply). |
 | **Cancellable `readLine` / `readAll` / `readStdinPipe` via `AbortSignal`** | When a store writer, timeout, or lifecycle abort wins, the pending TTY or pipe read must stop. Spike this before wiring the race. Always abort **every** race branch (stdin/pipe, poll/timeout, and the lifecycle-linked controllers) so a loser cannot keep the process alive. |
 | **CLI lifecycle owns SIGINT/SIGTERM; waiting prompts observe `getCliAbortSignal()`** | `getDb()` (`src/db/connection.ts:47–54`) and `registerLockCleanup()` (`src/lock.ts:433–440`) currently exit on the first SIGINT, which races ahead of prompt abandonment. Centralize at the CLI boundary: first SIGINT/SIGTERM aborts work without exiting. Every active prompt race fans that signal into stdin/pipe and poll controllers so the handler can CAS-abandon `interrupted` while SQLite is open, then emit `INTERRUPTED` (130) or `TERMINATED` (143). Fan-in aborts `pollCtl`, so `waitForPromptAnswer` rejects `PromptWaitAbortedError` — that error **is** a race outcome: with `getAbortCause()` it maps to lifecycle-abandon; without a cause it is local cancellation. Second signal or a bounded grace timeout force-exits. |
+| **Kind-aware EOF** | Choose/confirm without `--default` still abandon `eof` and emit `EOF`. Input must not: single-line `readLine` EOF is successful `{ input: "" }`; multiline `readAll` stream-end is the collected text. Both CAS-persist as `answered_by = 'terminal'`. A shared abandon-on-EOF rule would regress current envelopes. |
 | **Doctor `--fix` abandons orphaned prompts** | Terminal run + open prompt has exactly one correct answer. Uses `findingKey` identity `detail.promptId`. |
 
 ### References
@@ -95,7 +96,7 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 - Every prompt command resolves `{ store, runExists }` via `defaultResolvePromptContext` (one `resolveDbContext`), creates an open `prompts` row (UUID), then waits or CAS-es. Optional `--run` is validated with `runExists` **before** insert.
 - Terminal, `--default`, and test/control-plane writers call one `answerPrompt`. Exactly one write succeeds; losers receive the stored winning answer and still emit the existing success envelope.
 - no-TTY + `--default`: persist, CAS immediately with `answered_by = 'default'`. no-TTY choose/confirm without default: persist, abandon (`non-interactive`), `NON_INTERACTIVE` (unless positive `--timeout`).
-- TTY: persist, render as today, race cancellable stdin against a 250ms poll **and** `getCliAbortSignal()`. The winner always aborts the losing branches (store win aborts stdin; TTY/EOF/timeout win abort the poll; lifecycle abort aborts both). Interrupt/EOF abandon then existing errors (EOF may still apply default when `--default` is set). Multiline `readAll` SIGINT is `interrupted`, not a partial answer.
+- TTY: persist, render as today, race cancellable stdin against a 250ms poll **and** `getCliAbortSignal()`. The winner always aborts the losing branches (store win aborts stdin; TTY/EOF/timeout win abort the poll; lifecycle abort aborts both). Interrupt/SIGTERM abandon then existing errors. **EOF is kind-aware:** choose/confirm apply `--default` when set, otherwise abandon `eof` and emit `EOF`; single-line input EOF is successful `{ input: "" }`; multiline input EOF is successful collected text; both input modes CAS-persist as `answered_by = 'terminal'` (never abandon `eof`). Multiline `readAll` SIGINT is `interrupted`, not a partial answer.
 - no-TTY `input` (piped stdin): persist, then the same race with abortable `readStdinPipe` instead of TTY `readLine` — `--timeout` and control-plane CAS both apply; a hanging pipe does not bypass the wait contract.
 - First SIGINT/SIGTERM is owned by the CLI lifecycle: abort in-flight work (prompt races observe this signal explicitly; SIGTERM never reaches the stdin listener). Fan-in aborts the poll controller, so `waitForPromptAnswer` rejects `PromptWaitAbortedError`; the handler maps that (when `getAbortCause()` is set) to CAS-abandon `interrupted` — this is the **only** interrupt surface on poll-only waits (no-TTY choose/confirm + positive timeout, no stdin promise). Then emit `INTERRUPTED` (exit 130) or `TERMINATED` (exit 143), release locks, close SQLite, and exit. A second signal or grace timeout force-exits.
 - `5x doctor` reports `PROMPT_ORPHANED` for open rows whose `run_id` points at `completed` or `aborted`; `--fix` abandons with reason `run-terminal`.
@@ -121,7 +122,7 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 
 **Poll cadence is a constant 250ms with no backoff.** Local SQLite reads are cheap (`202` example 250–500ms). TTY default wall-clock timeout is none (today’s unbounded wait). `--timeout` applies to TTY waits, to no-TTY choose/confirm without `--default` when set, **and** to no-TTY `input` pipe waits.
 
-**Success envelopes stay `{ choice }`, `{ confirmed }`, `{ input }`.** Do not add `prompt_id` in this slice. Losing CAS still prints the winning answer in that shape so agents do not see a new contract. Validation errors (`INVALID_OPTIONS`, `INVALID_DEFAULT`) still fire **before** insert.
+**Success envelopes stay `{ choice }`, `{ confirmed }`, `{ input }`.** Do not add `prompt_id` in this slice. Losing CAS still prints the winning answer in that shape so agents do not see a new contract. Validation errors (`INVALID_OPTIONS`, `INVALID_DEFAULT`) still fire **before** insert. **EOF handling is kind-aware and must re-assert today’s envelopes:** choose/confirm `readLine` `EOF` with `--default` CAS-es `"default"`; without default, `abandonPrompt(..., "eof")` and `outputError("EOF")`. Input never takes the abandon-`eof` path. Single-line `readLine` `EOF` is a successful terminal answer `""` (`{ input: "" }`, `src/commands/prompt.handler.ts:249–251`). Multiline `readAll` stream-end is a successful terminal answer of the collected text, including `""` (`:242–245`). Both input modes call `answerPrompt(..., "terminal")`. `readAll` must not resolve the `EOF` sentinel on stream end — Ctrl+D *completes* multiline input; the `EOF` sentinel is `readLine`-only.
 
 **Cancellable stdin (TTY and pipe) is a hard prerequisite to the store race.** Extend `readLine` / `readAll` (`src/utils/stdin.ts:102–196`) **and** `readStdinPipe` (`:199–201`) with `AbortSignal`. On abort, remove listeners / cancel the stream reader and resolve a new `ABORTED` sentinel (do not reuse `EOF`/`SIGINT`). Every `Promise.race` of stdin/pipe vs poll vs timeout vs lifecycle must abort **all** losers in `finally` (store win aborts stdin/pipe; TTY/EOF/pipe win abort the poll; timeout aborts stdin/pipe and poll; lifecycle abort aborts both local controllers). `readAll` on SIGINT must resolve the `SIGINT` sentinel (not partial text) so multiline interrupt maps to `interrupted`. If the spike fails, stop Phase 6 TTY/pipe racing and escalate — do not ship a dangling `readLine` or an uncancellable `readStdinPipe`.
 
@@ -170,7 +171,9 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
                      │                       ──► INTERRUPTED ──► locks ──► close DB ──► exit 130
                      ├─ lifecycle SIGTERM ──► CAS-abandon interrupted (DB still open)
                      │                       ──► TERMINATED ──► locks ──► close DB ──► exit 143
-                     └─ EOF ──► default CAS or abandon eof ──► EOF
+                     ├─ input single-line EOF ──► answerPrompt("", "terminal") ──► { input: "" }
+                     ├─ input multiline stream-end ──► answerPrompt(collected, "terminal")
+                     └─ choose/confirm EOF ──► default CAS or abandon eof ──► EOF
 
   Test / future dashboard
            └─ store.answerPrompt(id, answer, "control-plane")   // same CAS
@@ -517,7 +520,7 @@ export function readLine(
 
 export function readAll(
   signal?: AbortSignal,
-): Promise<string | typeof EOF | typeof SIGINT | typeof ABORTED>;
+): Promise<string | typeof SIGINT | typeof ABORTED>;
 
 export function readStdinPipe(
   signal?: AbortSignal,
@@ -530,8 +533,11 @@ If `signal?.aborted` already, resolve `ABORTED`. On `abort`, `cleanup()` and res
 
 **`readAll` SIGINT:** today `readAll` (`src/utils/stdin.ts:182–188`) resolves **partial text** on SIGINT. Change it to resolve the `SIGINT` sentinel (same as `readLine`), discarding partial chunks. Prompt `input --multiline` maps that sentinel to abandon `interrupted` / `INTERRUPTED`, never to a successful `{ input }` of partial text.
 
+**`readAll` stream-end is collected text, not `EOF`.** Today `readAll` (`src/utils/stdin.ts:175–180`) resolves the joined chunks on `end`, including `""`. Keep that: stream-end / Ctrl+D *completes* multiline input. Do **not** resolve the `EOF` sentinel from `readAll` — that sentinel is `readLine`-only. Empty multiline EOF is successful `{ input: "" }`, not an `EOF` error.
+
 - [ ] Unit tests: abort before wait → `ABORTED`; abort mid-wait → `ABORTED` and listeners removed; no signal → current EOF/line/pipe-text behavior.
 - [ ] `readAll` SIGINT → `SIGINT` sentinel, not a string of partial chunks; listeners removed.
+- [ ] `readAll` stream-end (empty and non-empty) → collected string, **not** `EOF`; listeners removed.
 - [ ] `readStdinPipe` abort mid-read → `ABORTED`; stream reader cancelled; no-signal path still returns piped text.
 
 #### 5.2 Wait helper — `src/control-plane/wait.ts`
@@ -570,7 +576,7 @@ Every race against this helper (Phase 6) must abort **this** `signal` in `finall
 
 ## Phase 6: Prompt command integration
 
-**Completion gate:** All three commands persist before waiting. `--default` CI path unchanged. TTY and no-TTY `input` pipe race store vs local reader vs timeout vs lifecycle abort. Poll-only waits (no-TTY choose/confirm + positive timeout) map `PromptWaitAbortedError` + `getAbortCause()` to lifecycle-abandon. `--run` uses injected `runExists`. Interrupt/EOF/SIGTERM abandon. Existing success envelopes unchanged. Integration tests run in temp dirs.
+**Completion gate:** All three commands persist before waiting. `--default` CI path unchanged. TTY and no-TTY `input` pipe race store vs local reader vs timeout vs lifecycle abort. Poll-only waits (no-TTY choose/confirm + positive timeout) map `PromptWaitAbortedError` + `getAbortCause()` to lifecycle-abandon. `--run` uses injected `runExists`. Interrupt/SIGTERM abandon. **Kind-aware EOF:** choose/confirm abandon `eof` (or CAS default); input EOF CAS-persists a successful terminal answer. Existing success envelopes unchanged. Integration tests run in temp dirs.
 
 #### 6.1 Adapter flags — `src/commands/prompt.ts`
 
@@ -684,7 +690,12 @@ async function settlePoll(): Promise<PollRace> {
    - Lifecycle abort (`getAbortCause() === "SIGTERM"`): abort both; `abandonPrompt(..., "interrupted")` (same durable reason; no new CHECK value); `outputError("TERMINATED", "Prompt terminated")` (add `TERMINATED: 143` to `EXIT_CODE_MAP` in `src/output.ts:50–71`). Do not emit `INTERRUPTED`/130 for SIGTERM.
    - `poll-aborted` (`PromptWaitAbortedError`) **and** `getAbortCause()` is `"SIGINT"` or `"SIGTERM"`: this **is** the lifecycle-abandon path above. Required for poll-only waits; also the SIGTERM path when stdin never settles. Do not treat it as an internal error or let it escape unmapped.
    - `poll-aborted` **and** `getAbortCause()` is `undefined`: internal/local cancellation (`finally` after store/TTY/pipe/timeout won). Do **not** CAS-abandon as `interrupted` and do **not** emit `INTERRUPTED`/`TERMINATED`; take the winning branch’s outcome.
-   - `EOF`: abort poll; if default, CAS `"default"` (today’s EOF+default); else abandon `eof`; `EOF`.
+   - **Kind-aware `EOF` / stream-end** (abort poll first):
+     - **choose/confirm**, `readLine` → `EOF`, `--default` set: CAS `"default"` (today’s EOF+default); success envelope from stored answer.
+     - **choose/confirm**, `readLine` → `EOF`, no default: `abandonPrompt(..., "eof")`; `outputError("EOF")`.
+     - **input single-line**, `readLine` → `EOF`: `answerPrompt(id, "", "terminal")`; `outputSuccess({ input: "" })`. Do **not** abandon `eof` and do **not** emit `EOF`. Lost CAS still succeeds from the stored answer.
+     - **input multiline**, `readAll` stream-end (string, including `""`): this is a TTY-value win, not the `EOF` sentinel — `answerPrompt(id, collected, "terminal")`; `outputSuccess({ input: collected })`. Empty collected text is still success `{ input: "" }`.
+     - no-TTY `input` empty/closed pipe is a pipe-value string (possibly `""`), same as today’s `readStdinPipe` success — not the `EOF` sentinel.
    - `PromptTimeoutError` / `timeout` tag: abort stdin/pipe; abandon `timeout`; new code `PROMPT_TIMEOUT` (exit 3, add to `EXIT_CODE_MAP`). Reachable with `--timeout` / env on TTY, no-TTY wait opt-in, **and** no-TTY `input` pipe.
    - `ABORTED` from stdin/pipe after store win: treat as store win, not interrupt.
    - `ABORTED` from stdin/pipe because lifecycle aborted: treat as the lifecycle-abandon path above (inspect `getAbortCause()`), not as store win.
@@ -697,7 +708,7 @@ Envelope mappers (keep exact keys):
 | confirm | `"true"` / `"false"` | `{ confirmed: boolean }` |
 | input | text | `{ input }` |
 
-`try/finally`: if the function is about to throw/`outputError` and the row is still open, abandon with the matching reason so doctor is not required for the happy-path failure.
+`try/finally`: if the function is about to throw/`outputError` and the row is still open, abandon with the matching reason so doctor is not required for the happy-path failure. Input EOF is a **success** path (`outputSuccess`); do **not** abandon it in `finally`.
 
 #### 6.3 Env override
 
@@ -713,6 +724,11 @@ Inject memory store + `runExists` + fake TTY/sleep + injectable abort signal/cau
 - [ ] Parallel: create via handler TTY path (fake `readLine` that never resolves until abort); second task `answerPrompt(..., "control-plane")`; handler returns the control-plane answer; `readLine` was aborted **and** the poll helper’s signal was aborted.
 - [ ] Timeout win: stdin `AbortController` aborted; poll stopped; row abandoned `timeout`.
 - [ ] TTY/EOF win: poll signal aborted (no further `getPrompt` after the race settles).
+- [ ] Choose/confirm `readLine` → `EOF` without default: abandoned `eof`, envelope `EOF`; poll aborted.
+- [ ] Choose/confirm `readLine` → `EOF` with `--default`: answered `default`, success envelope; poll aborted.
+- [ ] **Input single-line** `readLine` → `EOF`: `answerPrompt` with `""` / `answeredBy === "terminal"`; `{ input: "" }`; row is **not** abandoned; poll aborted.
+- [ ] **Input multiline** `readAll` stream-end with collected text: `answerPrompt` with that text / `answeredBy === "terminal"`; `{ input }`; row is **not** abandoned.
+- [ ] **Input multiline** `readAll` stream-end with empty text (immediate Ctrl+D): `{ input: "" }`; answered `terminal`; **not** abandoned; **not** envelope `EOF`.
 - [ ] Multiline `readAll` → `SIGINT`: abandoned `interrupted`, `INTERRUPTED`; no success envelope with partial text.
 - [ ] Injected lifecycle abort with cause `"SIGTERM"` during TTY wait: both controllers aborted; row abandoned `interrupted`; envelope `TERMINATED` (not `INTERRUPTED`).
 - [ ] Injected lifecycle abort with cause `"SIGINT"` during TTY wait: abandoned `interrupted`, `INTERRUPTED`.
@@ -729,7 +745,7 @@ Inject memory store + `runExists` + fake TTY/sleep + injectable abort signal/cau
 
 #### 6.5 Integration tests — rewrite `test/integration/commands/prompt.test.ts`
 
-Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cwd: dir`. Re-assert every current case (defaults, `NON_INTERACTIVE` exit 3, `INVALID_*`, interactive `5X_FORCE_TTY`, EOF, pipe input). Add:
+Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cwd: dir`. Re-assert every current case (defaults, `NON_INTERACTIVE` exit 3, `INVALID_*`, interactive `5X_FORCE_TTY`, choose/confirm EOF, **input single-line EOF `{ input: "" }`**, **multiline Ctrl+D collected text**, pipe input). Add:
 
 - [ ] After `--default` success, SQLite has one answered row `answered_by = 'default'`.
 - [ ] After `NON_INTERACTIVE`, row is abandoned not open.
@@ -738,12 +754,16 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 - [ ] `--timeout abc` and `--timeout -1` exit non-zero with `INVALID_ARGS` and insert no prompt row.
 - [ ] no-TTY `input` with a hanging stdin pipe + `--timeout 50`: `PROMPT_TIMEOUT` exit 3; row abandoned `timeout`; process exits (pipe did not hang the CLI).
 - [ ] no-TTY `input` with a hanging stdin pipe: a second process `answerPrompt`s via sqlite; waiter exits 0 with the stored `{ input }`; pipe reader aborted.
+- [ ] Interactive single-line `input` EOF (empty stdin, `5X_FORCE_TTY=1`): exit 0, `{ input: "" }`; SQLite row answered `answered_by = 'terminal'`, `answer = ''`; **not** abandoned; **not** envelope `EOF`.
+- [ ] Interactive multiline `input` EOF with collected text: exit 0, `{ input }` equals collected text; row answered `terminal`; **not** abandoned.
+- [ ] Interactive multiline `input` immediate EOF (empty): exit 0, `{ input: "" }`; row answered `terminal`; **not** abandoned.
+- [ ] Interactive choose/confirm EOF without default: exit 3, envelope `EOF`; row abandoned `eof` (regression of current cases, plus persist assertion).
 
 ---
 
 ## Phase 7: Concurrency, CLI compatibility, and docs
 
-**Completion gate:** CAS race, timeout, pipe-vs-store, **real-process SIGINT and SIGTERM abandon** (including poll-only SIGINT), doctor CLI, and docs match the contract. Full `bun test` green.
+**Completion gate:** CAS race, timeout, pipe-vs-store, **real-process SIGINT and SIGTERM abandon** (including poll-only SIGINT), **kind-aware input EOF** (success + persisted terminal answer), doctor CLI, and docs match the contract. Full `bun test` green.
 
 #### 7.1 Concurrency / lifecycle tests — `test/unit/control-plane/cas-race.test.ts`, `test/integration/commands/prompt-queue.test.ts`
 
@@ -763,7 +783,7 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 
 - [ ] `docs/v2/202-control-plane.md`: mark store/schema/polling TODOs resolved for this slice; record `--default` precedence, 250ms poll, abandonment, nullable `run_id`, no `decisions` table. Leave dashboard/server TODOs.
 - [ ] `docs/v2/203-recovery-and-doctor.md`: prompts check is implemented (fail + `--fix` abandon); drop “deferred” on the table row; status line ~10.
-- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY, no-TTY `input` pipe, and no-TTY choose/confirm opt-in wait); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon unless `--timeout`; Ctrl-C / SIGTERM CAS-abandon `interrupted` (including poll-only waits) then exit 130 / 143 (`TERMINATED`).
+- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY, no-TTY `input` pipe, and no-TTY choose/confirm opt-in wait); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon unless `--timeout`; **kind-aware EOF** (choose/confirm without default abandon `eof` / emit `EOF`; single-line input EOF `{ input: "" }` and multiline input EOF collected text both persist as `answered_by = 'terminal'`); Ctrl-C / SIGTERM CAS-abandon `interrupted` (including poll-only waits) then exit 130 / 143 (`TERMINATED`).
 - [ ] `docs/v2/200-overview.md` §3.2: one sentence that the prompt queue is implemented locally via `PromptStore`.
 - [ ] `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md`: set **Generated plan** to this file; status `planned`.
 - [ ] `src/index.ts`: export `PromptStore`, `PromptRecord`, `createSqlitePromptStore`, `createMemoryPromptStore`, CAS types.
@@ -790,10 +810,10 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | `src/control-plane/memory-store.ts` | **New** — test impl |
 | `src/control-plane/wait.ts` | **New** — poll helper + constants; `PromptWaitAbortedError` on signal abort |
 | `src/control-plane/index.ts` | **New** — factory re-exports |
-| `src/utils/stdin.ts` | `AbortSignal` + `ABORTED`; `readAll` SIGINT sentinel; abortable `readStdinPipe` |
+| `src/utils/stdin.ts` | `AbortSignal` + `ABORTED`; `readAll` SIGINT sentinel (stream-end stays collected text, not `EOF`); abortable `readStdinPipe` |
 | `src/commands/prompt-context.ts` | **New** — `defaultResolvePromptContext()` (`store` + `runExists` over one DB) |
 | `src/commands/prompt.ts` | `--run`, `--timeout` via `intArg`; inject `resolveContext` |
-| `src/commands/prompt.handler.ts` | Persist, CAS, dual-abort race with lifecycle fan-in, wrap `PromptWaitAbortedError` via `getAbortCause()`, pipe race, poll-only wait, `runExists`; optional deps |
+| `src/commands/prompt.handler.ts` | Persist, CAS, dual-abort race with lifecycle fan-in, wrap `PromptWaitAbortedError` via `getAbortCause()`, pipe race, poll-only wait, kind-aware EOF, `runExists`; optional deps |
 | `src/output.ts` | `PROMPT_TIMEOUT` → exit 3; `TERMINATED` → exit 143 |
 | `src/doctor/checks/prompts.ts` | **New** — orphan detect/fix |
 | `src/doctor/registry.ts` | Register check; `findingKey` `PROMPT_ORPHANED` |
@@ -806,17 +826,17 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | `test/unit/control-plane/store-contract.test.ts` | **New** |
 | `test/unit/control-plane/cas-race.test.ts` | **New** |
 | `test/unit/control-plane/wait.test.ts` | **New** — including abort stops further polls |
-| `test/unit/utils/stdin-abort.test.ts` | **New** — `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel; pipe abort |
-| `test/unit/commands/prompt-store.test.ts` | **New** — dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` mapping, pipe timeout/store-win, `runExists`, timeout validation, multiline SIGINT |
+| `test/unit/utils/stdin-abort.test.ts` | **New** — `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel; `readAll` stream-end is string not `EOF`; pipe abort |
+| `test/unit/commands/prompt-store.test.ts` | **New** — dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` mapping, pipe timeout/store-win, `runExists`, timeout validation, multiline SIGINT, kind-aware input/choose EOF |
 | `test/unit/commands/prompt-context.test.ts` | **New** — factory returns store + `runExists` over one DB; missing run is false |
 | `test/unit/doctor/prompts.test.ts` | **New** |
 | `test/unit/doctor/registry.test.ts` | Sixth check; `findingKey` |
-| `test/integration/commands/prompt.test.ts` | Temp cwd; persistence + invalid timeout + `--run` + pipe timeout/store-win |
+| `test/integration/commands/prompt.test.ts` | Temp cwd; persistence + invalid timeout + `--run` + pipe timeout/store-win + input single-line/multiline EOF as answered rows |
 | `test/integration/commands/prompt-queue.test.ts` | **New** — timeout/doctor/CAS CLI + **required** real-process SIGINT, SIGTERM, and poll-only SIGINT |
 | `test/integration/commands/doctor.test.ts` | Orphan `--fix` case if not in prompt-queue file |
 | `docs/v2/202-control-plane.md` | Resolve in-slice TODOs |
 | `docs/v2/203-recovery-and-doctor.md` | Prompts check shipped |
-| `docs/v1/101-cli-primitives.md` | Contract shift; Ctrl-C / SIGTERM abandon |
+| `docs/v1/101-cli-primitives.md` | Contract shift; Ctrl-C / SIGTERM abandon; kind-aware EOF |
 | `docs/v2/200-overview.md` | Prompt queue implemented locally |
 | `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md` | Generated-plan pointer |
 
@@ -830,14 +850,14 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | Unit | `store-contract.test.ts` | create/get/list/CAS/abandon on SQLite **and** memory |
 | Unit | `cas-race.test.ts` | Parallel first-writer-wins; loser sees winner |
 | Unit | `wait.test.ts` | Poll, timeout, abort, abandon; abort stops further polls |
-| Unit | `stdin-abort.test.ts` | `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel (not partial text); `readStdinPipe` abort |
+| Unit | `stdin-abort.test.ts` | `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel (not partial text); `readAll` stream-end is collected string not `EOF`; `readStdinPipe` abort |
 | Unit | `cli-lifecycle.test.ts` | First SIGINT/SIGTERM aborts without exit and records cause; second/grace force-exit 130/143; disarm; idempotent cleanup |
 | Unit | `connection` signal tests | `getDb` / `registerLockCleanup` do not `process.exit` on SIGINT; DB stays open |
-| Unit | `prompt-store.test.ts` | Handler persist/CAS/dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` → lifecycle-abandon, pipe timeout/store-win, `runExists`, timeout validation before insert, multiline SIGINT |
+| Unit | `prompt-store.test.ts` | Handler persist/CAS/dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` → lifecycle-abandon, pipe timeout/store-win, `runExists`, timeout validation before insert, multiline SIGINT, kind-aware EOF (input success vs choose/confirm abandon) |
 | Unit | `prompt-context.test.ts` | Default factory: one DB, `runExists` true/false, store usable |
 | Unit | `doctor/prompts.test.ts` | Orphan detect/fix; null run_id skipped; missing DB |
 | Unit | `doctor/registry.test.ts` | Check order; `PROMPT_ORPHANED` identity |
-| Integration | `prompt.test.ts` | Existing CLI envelopes/exits on a temp project + DB rows + invalid timeout + `--run` + pipe timeout/store-win |
+| Integration | `prompt.test.ts` | Existing CLI envelopes/exits on a temp project + DB rows + invalid timeout + `--run` + pipe timeout/store-win + input single-line/multiline EOF persisted as terminal answers |
 | Integration | `prompt-queue.test.ts` | Timeout, doctor `--fix`, CAS CLI, **required real-process SIGINT (130)**, **SIGTERM (143 + `abandon_reason='interrupted'`)**, and **poll-only SIGINT (130)** |
 | Integration | `doctor.test.ts` | Sweep still green; optional orphan case |
 
@@ -866,7 +886,7 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | 3 | Doctor prompts check + `findingKey` | 1 day |
 | 4 | CLI signal lifecycle (strip `process.exit` from db/lock; abort cause) | 1 day |
 | 5 | Abortable stdin/pipe + wait helper (both-branch cancel, `readAll` SIGINT) | 1 day |
-| 6 | Prompt command integration + lifecycle race + poll-abort mapping + pipe race + `runExists` + timeout validation + temp-dir CLI tests | 2–2.5 days |
+| 6 | Prompt command integration + lifecycle race + poll-abort mapping + pipe race + kind-aware EOF + `runExists` + timeout validation + temp-dir CLI tests | 2–2.5 days |
 | 7 | Race/timeout/real-process SIGINT+SIGTERM+poll-only SIGINT/docs/exports | 1–2 days |
 | **Total** | | **7.5–10.5 days** |
 
@@ -875,6 +895,12 @@ Phase 4 is a P0 prerequisite to Phase 6 interrupt-abandonment. Phase 5 remains a
 ---
 
 ## Revision History
+
+### 1.4 — August 24, 2026
+
+Addresses **P1.7** in the **Addendum (2026-08-24) — Revision 1.3 final re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md`](../reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md). Prior P0.1 / P1.1–P1.6 / P2.1 remain as specified in 1.1–1.3.
+
+**P1.7 — Kind-aware EOF preserves input compatibility.** The shared race no longer treats every `EOF` as abandon-when-no-default. Choose/confirm without `--default` still `abandonPrompt(..., "eof")` and emit `EOF`; with `--default` they still CAS `"default"`. Single-line input `readLine` `EOF` CAS-persists `""` as `answered_by = 'terminal'` and returns `{ input: "" }`. Multiline `readAll` stream-end CAS-persists the collected text (including empty) as a terminal answer — `readAll` does not resolve the `EOF` sentinel. Unit and integration tests cover both input EOF modes as answered rows, not abandoned `eof`.
 
 ### 1.3 — August 24, 2026
 
