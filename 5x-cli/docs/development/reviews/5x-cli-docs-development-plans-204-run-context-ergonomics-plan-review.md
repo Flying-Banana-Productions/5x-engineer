@@ -80,3 +80,29 @@ The plan and the referenced control-plane and protocol implementations were re-c
 
 - **Plan readiness:** ⚠️ — ready with corrections; both remaining items are mechanical `auto_fix` work.
 - **Ready for implementation:** ⚠️ — after P1.1 and P1.2 are incorporated into the plan.
+
+---
+
+## Addendum (2026-08-24) — Revision 1.1 re-review
+
+**Reviewed:** `f9f659bb1fb42af9c2f992d91b7ad880558ff64a` — plan version 1.1
+
+### Prior issues
+
+- **P1.1 — Absolute configured state directory:** **Addressed.** The revised `currentRunPath` branches on absolute `stateDir`, requires the init/complete lifecycle to pass it through unchanged, and adds unit plus integration coverage for both path forms.
+- **P1.2 — Conditional checklist gate:** **Addressed.** The composite now retains the fresh validated result, reads `result_json` for resumed author steps, runs the checklist only for `result: "complete"`, and covers fresh/resumed non-complete results.
+
+### Remaining concerns
+
+#### P1.3 — Make control-plane database resolution honor absolute `stateDir`
+
+**Action:** `auto_fix`
+
+The pointer fix correctly recognizes that `path.join(controlPlaneRoot, absoluteStateDir, ...)` does not reset to the absolute segment, but the plan still relies on that same broken construction for the database used by the run-scoped commands. `resolveDbContext` currently builds `join(controlPlane.stateDir, DB_FILENAME)` before passing it to `getDb(controlPlaneRoot, ...)` (`src/commands/context.ts`), while several direct handlers do the same. For an absolute configured `db.path`, this opens `<controlPlaneRoot>/<absolute-state-dir-without-leading-slash>/5x.db` rather than the database that `resolveControlPlaneRoot` discovered at `<absolute-state-dir>/5x.db`. The planned absolute-path lifecycle test would therefore initialize/read a shadow DB and cannot validate the intended pointer behavior.
+
+**Requirement:** Add a shared control-plane state-file/DB-path helper that returns `join(stateDir, DB_FILENAME)` for absolute state directories and `join(controlPlaneRoot, stateDir, DB_FILENAME)` otherwise. Use it in `resolveDbContext`, `runV1Init`, and every direct run-scoped handler named in the plan that currently derives a DB path from `controlPlane.stateDir`; add an integration assertion that `run init` and a subsequent run-scoped read use the pre-existing DB in the configured absolute state root and never create the shadow path.
+
+### Updated readiness
+
+- **Plan readiness:** ⚠️ — ready with corrections; P1.3 is a mechanical `auto_fix`.
+- **Ready for implementation:** ⚠️ — after P1.3 is incorporated.
