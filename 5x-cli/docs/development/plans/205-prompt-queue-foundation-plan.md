@@ -1,6 +1,6 @@
 # Prompt-Queue Foundation — Durable UUID Prompts, CAS Answers, Doctor Hygiene
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** August 24, 2026
 **Last updated:** August 24, 2026
 **Status:** Ready for implementation
@@ -17,7 +17,7 @@
 
 - `prompts` table (schema v6), UUID ids, open/recent indexes, SQLite repository plus an in-memory test implementation.
 - `PromptStore` contract: `createPrompt`, `getPrompt`, `listOpenPrompts`, `answerPrompt` (CAS), `abandonPrompt` (CAS).
-- Bounded poll loop, timeout/interrupt/EOF/SIGTERM abandonment, terminal vs store race with cancellable stdin **and** piped input.
+- Bounded poll loop, timeout/interrupt/EOF/SIGTERM abandonment, terminal vs store race with cancellable stdin **and** piped input; poll-only waits map `PromptWaitAbortedError` to lifecycle-abandon.
 - `5x prompt choose|confirm|input` persist-then-wait; preserve `--default` CI behavior and existing success envelopes.
 - Doctor `prompts` check: open rows whose run is terminal; `--fix` abandons them deterministically.
 
@@ -40,7 +40,7 @@
 | **Abandonment is a third state, not a fake answer** | Timeout/interrupt/orphan repair must not look like a human answer. CAS on both answer and abandon. |
 | **no-TTY + `--default` CAS-es immediately** | Preserves CI. TTY waits; a store writer can still win. no-TTY choose/confirm without default stays fail-fast `NON_INTERACTIVE` after persist+abandon. no-TTY `input` waits on the pipe **inside the same abortable race** (`--timeout` and store writers apply). |
 | **Cancellable `readLine` / `readAll` / `readStdinPipe` via `AbortSignal`** | When a store writer, timeout, or lifecycle abort wins, the pending TTY or pipe read must stop. Spike this before wiring the race. Always abort **every** race branch (stdin/pipe, poll/timeout, and the lifecycle-linked controllers) so a loser cannot keep the process alive. |
-| **CLI lifecycle owns SIGINT/SIGTERM; waiting prompts observe `getCliAbortSignal()`** | `getDb()` (`src/db/connection.ts:47–54`) and `registerLockCleanup()` (`src/lock.ts:433–440`) currently exit on the first SIGINT, which races ahead of prompt abandonment. Centralize at the CLI boundary: first SIGINT/SIGTERM aborts work without exiting. Every active prompt race fans that signal into stdin/pipe and poll controllers so the handler can CAS-abandon `interrupted` while SQLite is open, then emit `INTERRUPTED` (130) or `TERMINATED` (143). Second signal or a bounded grace timeout force-exits. |
+| **CLI lifecycle owns SIGINT/SIGTERM; waiting prompts observe `getCliAbortSignal()`** | `getDb()` (`src/db/connection.ts:47–54`) and `registerLockCleanup()` (`src/lock.ts:433–440`) currently exit on the first SIGINT, which races ahead of prompt abandonment. Centralize at the CLI boundary: first SIGINT/SIGTERM aborts work without exiting. Every active prompt race fans that signal into stdin/pipe and poll controllers so the handler can CAS-abandon `interrupted` while SQLite is open, then emit `INTERRUPTED` (130) or `TERMINATED` (143). Fan-in aborts `pollCtl`, so `waitForPromptAnswer` rejects `PromptWaitAbortedError` — that error **is** a race outcome: with `getAbortCause()` it maps to lifecycle-abandon; without a cause it is local cancellation. Second signal or a bounded grace timeout force-exits. |
 | **Doctor `--fix` abandons orphaned prompts** | Terminal run + open prompt has exactly one correct answer. Uses `findingKey` identity `detail.promptId`. |
 
 ### References
@@ -97,7 +97,7 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 - no-TTY + `--default`: persist, CAS immediately with `answered_by = 'default'`. no-TTY choose/confirm without default: persist, abandon (`non-interactive`), `NON_INTERACTIVE` (unless positive `--timeout`).
 - TTY: persist, render as today, race cancellable stdin against a 250ms poll **and** `getCliAbortSignal()`. The winner always aborts the losing branches (store win aborts stdin; TTY/EOF/timeout win abort the poll; lifecycle abort aborts both). Interrupt/EOF abandon then existing errors (EOF may still apply default when `--default` is set). Multiline `readAll` SIGINT is `interrupted`, not a partial answer.
 - no-TTY `input` (piped stdin): persist, then the same race with abortable `readStdinPipe` instead of TTY `readLine` — `--timeout` and control-plane CAS both apply; a hanging pipe does not bypass the wait contract.
-- First SIGINT/SIGTERM is owned by the CLI lifecycle: abort in-flight work (prompt races observe this signal explicitly; SIGTERM never reaches the stdin listener). The handler CAS-abandons `interrupted` while the DB is open, emits `INTERRUPTED` (exit 130) or `TERMINATED` (exit 143), then release locks, close SQLite, and exit. A second signal or grace timeout force-exits.
+- First SIGINT/SIGTERM is owned by the CLI lifecycle: abort in-flight work (prompt races observe this signal explicitly; SIGTERM never reaches the stdin listener). Fan-in aborts the poll controller, so `waitForPromptAnswer` rejects `PromptWaitAbortedError`; the handler maps that (when `getAbortCause()` is set) to CAS-abandon `interrupted` — this is the **only** interrupt surface on poll-only waits (no-TTY choose/confirm + positive timeout, no stdin promise). Then emit `INTERRUPTED` (exit 130) or `TERMINATED` (exit 143), release locks, close SQLite, and exit. A second signal or grace timeout force-exits.
 - `5x doctor` reports `PROMPT_ORPHANED` for open rows whose `run_id` points at `completed` or `aborted`; `--fix` abandons with reason `run-terminal`.
 
 **Prerequisites:**
@@ -125,7 +125,7 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
 
 **Cancellable stdin (TTY and pipe) is a hard prerequisite to the store race.** Extend `readLine` / `readAll` (`src/utils/stdin.ts:102–196`) **and** `readStdinPipe` (`:199–201`) with `AbortSignal`. On abort, remove listeners / cancel the stream reader and resolve a new `ABORTED` sentinel (do not reuse `EOF`/`SIGINT`). Every `Promise.race` of stdin/pipe vs poll vs timeout vs lifecycle must abort **all** losers in `finally` (store win aborts stdin/pipe; TTY/EOF/pipe win abort the poll; timeout aborts stdin/pipe and poll; lifecycle abort aborts both local controllers). `readAll` on SIGINT must resolve the `SIGINT` sentinel (not partial text) so multiline interrupt maps to `interrupted`. If the spike fails, stop Phase 6 TTY/pipe racing and escalate — do not ship a dangling `readLine` or an uncancellable `readStdinPipe`.
 
-**CLI lifecycle owns process signals; every waiting prompt observes that abort.** Install a single SIGINT/SIGTERM owner from `src/bin.ts` (new `src/cli-lifecycle.ts`) before `parseAsync`. First SIGINT/SIGTERM records `getCliAbortCause()` (`"SIGINT"` \| `"SIGTERM"`), aborts `getCliAbortSignal()`, and does **not** call `process.exit`. Phase 6 **must** fan that signal into both the stdin/pipe controller and the poll controller (`AbortSignal.any` or a local fan-in; do not import `anySignal` from `src/providers/opencode.ts`). SIGINT may also hit the stdin listener; SIGTERM does not — the lifecycle signal is the only SIGTERM path. On lifecycle abort the handler CAS-abandons `interrupted` (same durable reason for both signals; no new CHECK value) while SQLite is open, then `outputError("INTERRUPTED", …)` (exit 130) or `outputError("TERMINATED", …)` (exit 143). After the command unwinds, cleanup order is: release locks, close DB, exit. `getDb` and `registerLockCleanup` keep idempotent `process.on("exit")` cleanup and **must not** register SIGINT/SIGTERM listeners that call `process.exit`. A second signal, or a bounded grace timeout (`CLI_SIGINT_GRACE_MS`, 2s) if the command does not unwind, force-exits 130 (SIGINT) or 143 (SIGTERM) (best-effort envelope). Commands that already complete after abort (e.g. `run watch`) must keep their current exit code: cancel the grace timer when `parseAsync` returns. This is compatible with superseded `011-provider-process-lifecycle.md` (removing `process.exit` from db/lock) and does **not** implement provider cleanup.
+**CLI lifecycle owns process signals; every waiting prompt observes that abort.** Install a single SIGINT/SIGTERM owner from `src/bin.ts` (new `src/cli-lifecycle.ts`) before `parseAsync`. First SIGINT/SIGTERM records `getCliAbortCause()` (`"SIGINT"` \| `"SIGTERM"`), aborts `getCliAbortSignal()`, and does **not** call `process.exit`. Phase 6 **must** fan that signal into both the stdin/pipe controller and the poll controller (`AbortSignal.any` or a local fan-in; do not import `anySignal` from `src/providers/opencode.ts`). SIGINT may also hit the stdin listener; SIGTERM does not — the lifecycle signal is the only SIGTERM path. Fan-in aborts `pollCtl`, which makes `waitForPromptAnswer` throw `PromptWaitAbortedError`. That throw is a first-class race outcome, not an unhandled rejection: wrap the poll promise so `Promise.race` settles, then if `getAbortCause()` is `"SIGINT"` or `"SIGTERM"` take the lifecycle-abandon path; if the cause is unset, the abort was local (`finally` after another branch won) and must not emit `INTERRUPTED`/`TERMINATED`. Poll-only waits have no stdin promise, so lifecycle interruption **only** arrives as this poll error. On lifecycle abort the handler CAS-abandons `interrupted` (same durable reason for both signals; no new CHECK value) while SQLite is open, then `outputError("INTERRUPTED", …)` (exit 130) or `outputError("TERMINATED", …)` (exit 143). After the command unwinds, cleanup order is: release locks, close DB, exit. `getDb` and `registerLockCleanup` keep idempotent `process.on("exit")` cleanup and **must not** register SIGINT/SIGTERM listeners that call `process.exit`. A second signal, or a bounded grace timeout (`CLI_SIGINT_GRACE_MS`, 2s) if the command does not unwind, force-exits 130 (SIGINT) or 143 (SIGTERM) (best-effort envelope). Commands that already complete after abort (e.g. `run watch`) must keep their current exit code: cancel the grace timer when `parseAsync` returns. This is compatible with superseded `011-provider-process-lifecycle.md` (removing `process.exit` from db/lock) and does **not** implement provider cleanup.
 
 **Doctor `--fix` is safe here.** Unlike lingering runs (warn-only, `fixable: false`, `src/doctor/checks/runs.ts:92–107`), an open prompt on a terminal run cannot be answered usefully. `--fix` calls `abandonPrompt(..., 'run-terminal')`. Finding identity is `detail.promptId` via a new `findingKey` case; `fixable: true` without identity must keep throwing.
 
@@ -154,14 +154,18 @@ Human gates are ephemeral TTY reads. v2 makes them durable control-plane records
                      ├─ render prompt (stderr /dev/tty) as today (TTY only)
                      ├─ two local AbortControllers (stdin/pipe + poll)
                      ├─ fan-in getCliAbortSignal() into both controllers
-                     ├─ race: abortable readLine/readAll/readStdinPipe
+                     ├─ race: abortable readLine/readAll/readStdinPipe (if any)
                      │        vs  poll getPrompt every 250ms
                      │        vs  timeout (if set)
+                     │        (poll-only: no-TTY choose/confirm + positive timeout)
                      │
                      ├─ TTY/pipe wins ──► answerPrompt(..., "terminal")
                      │                     lost CAS ──► use stored answer
                      ├─ store wins ──► abort stdin/pipe + abort poll ──► stored answer
                      ├─ TTY/EOF/pipe/timeout ──► abort the losing poll/stdin branch
+                     ├─ poll PromptWaitAbortedError + getAbortCause()
+                     │        ──► same lifecycle-abandon path (poll-only SIGINT/SIGTERM surface)
+                     ├─ poll PromptWaitAbortedError, no cause ──► local cancel (other branch won)
                      ├─ lifecycle SIGINT ──► CAS-abandon interrupted (DB still open)
                      │                       ──► INTERRUPTED ──► locks ──► close DB ──► exit 130
                      ├─ lifecycle SIGTERM ──► CAS-abandon interrupted (DB still open)
@@ -550,16 +554,23 @@ export async function waitForPromptAnswer(
 
 Loop: `getPrompt`; if answered, return; if abandoned, throw `PromptAbandonedError`; if `signal.aborted`, throw `PromptWaitAbortedError`; if `timeoutMs` elapsed, throw `PromptTimeoutError`. Else `sleep(pollIntervalMs)`. Default `sleep` is `Bun.sleep` (or `setTimeout` promisified). Inject `sleep`/`now` in tests.
 
+`PromptWaitAbortedError` is the poll branch’s abort result. It does **not** inspect `getCliAbortCause()` itself — the helper only knows its `signal` was aborted. Phase 6 must classify that error:
+
+- `PromptWaitAbortedError` **and** `getAbortCause()` is `"SIGINT"` or `"SIGTERM"` → lifecycle-abandon outcome (CAS-abandon `interrupted`, then `INTERRUPTED`/130 or `TERMINATED`/143).
+- `PromptWaitAbortedError` **and** `getAbortCause()` is `undefined` → internal/local cancellation (`finally` or another branch aborted `pollCtl`); do not emit `INTERRUPTED`/`TERMINATED`.
+
+Fan-in from the lifecycle signal aborts `pollCtl`, so a waiting poll **will** reject this error on SIGINT/SIGTERM. On poll-only waits there is no stdin promise, so this is the only interrupt surface.
+
 - [ ] Tests: answers on Nth poll; timeout; abort; abandoned row errors; does not busy-spin (fake sleep records interval 250).
 - [ ] Abort mid-poll: `waitForPromptAnswer` throws `PromptWaitAbortedError` and does not schedule another `sleep`/`getPrompt` after abort.
 
-Every race against this helper (Phase 6) must abort **this** `signal` in `finally` as well as the stdin/pipe `AbortController`, including timeout, TTY/EOF/pipe wins, **and lifecycle abort** — not only store wins. Phase 6 fans `getCliAbortSignal()` into this `signal` (and the stdin/pipe controller) so SIGTERM is observed.
+Every race against this helper (Phase 6) must abort **this** `signal` in `finally` as well as the stdin/pipe `AbortController`, including timeout, TTY/EOF/pipe wins, **and lifecycle abort** — not only store wins. Phase 6 fans `getCliAbortSignal()` into this `signal` (and the stdin/pipe controller) so SIGTERM is observed. Phase 6 **must** wrap `waitForPromptAnswer` so `PromptWaitAbortedError` settles as a race outcome instead of rejecting `Promise.race` (which would skip CAS-abandon on poll-only waits).
 
 ---
 
 ## Phase 6: Prompt command integration
 
-**Completion gate:** All three commands persist before waiting. `--default` CI path unchanged. TTY and no-TTY `input` pipe race store vs local reader vs timeout vs lifecycle abort. `--run` uses injected `runExists`. Interrupt/EOF/SIGTERM abandon. Existing success envelopes unchanged. Integration tests run in temp dirs.
+**Completion gate:** All three commands persist before waiting. `--default` CI path unchanged. TTY and no-TTY `input` pipe race store vs local reader vs timeout vs lifecycle abort. Poll-only waits (no-TTY choose/confirm + positive timeout) map `PromptWaitAbortedError` + `getAbortCause()` to lifecycle-abandon. `--run` uses injected `runExists`. Interrupt/EOF/SIGTERM abandon. Existing success envelopes unchanged. Integration tests run in temp dirs.
 
 #### 6.1 Adapter flags — `src/commands/prompt.ts`
 
@@ -643,15 +654,38 @@ Shared sequence after existing validation (`INVALID_OPTIONS` / `INVALID_DEFAULT`
 
 1. Create **two** local `AbortController`s (`stdinCtl`, `pollCtl`).
 2. Read `lifecycle = deps.getAbortSignal?.() ?? getCliAbortSignal()`. Fan-in: `lifecycle.addEventListener("abort", () => { stdinCtl.abort(); pollCtl.abort(); }, { once: true })` (or `AbortSignal.any([local, lifecycle])` passed into each waiter). If `lifecycle` is already aborted, skip the race and take the lifecycle-abandon path immediately.
-3. `Promise.race` the input promise (if any) against `waitForPromptAnswer({ signal: pollCtl.signal, timeoutMs, sleep, now })`. no-TTY choose/confirm + timeout has no stdin promise — poll/timeout/lifecycle only.
-4. In `finally`, abort **both** local controllers (idempotent) so the loser cannot keep polling or listening.
+3. Wrap `waitForPromptAnswer({ signal: pollCtl.signal, timeoutMs, sleep, now })` so its errors **settle** instead of rejecting the race (illustrative; keep this wrap next to the race, not in `wait.ts`):
+
+```typescript
+type PollRace =
+  | { tag: "answered"; prompt: PromptRecord }
+  | { tag: "timeout" }
+  | { tag: "abandoned"; prompt: PromptRecord }
+  | { tag: "poll-aborted" }; // PromptWaitAbortedError
+
+async function settlePoll(): Promise<PollRace> {
+  try {
+    return { tag: "answered", prompt: await waitForPromptAnswer(...) };
+  } catch (err) {
+    if (err instanceof PromptTimeoutError) return { tag: "timeout" };
+    if (err instanceof PromptAbandonedError) return { tag: "abandoned", prompt: err.prompt };
+    if (err instanceof PromptWaitAbortedError) return { tag: "poll-aborted" };
+    throw err;
+  }
+}
+```
+
+   Then `Promise.race` the input promise (if any) against `settlePoll()`. no-TTY choose/confirm + timeout has **no stdin promise** — poll/timeout/lifecycle only. A SIGINT/SIGTERM on that path **cannot** produce stdin `ABORTED`/`SIGINT`; it **must** arrive as `poll-aborted`.
+4. In `finally`, abort **both** local controllers (idempotent) so the loser cannot keep polling or listening. The wrap above also prevents a losing `PromptWaitAbortedError` from becoming an unhandled rejection.
 5. Outcomes:
    - Store answered: abort stdin/pipe; map stored answer to envelope. Poll branch is already complete.
    - TTY/pipe value: abort poll; `answerPrompt(..., "terminal")`; if `ok: false` and the row is answered, still success from stored answer; if abandoned, map reason to `INTERRUPTED` / `TERMINATED` / `EOF` / timeout error.
    - Lifecycle abort (`getAbortCause() === "SIGINT"` or stdin `SIGINT` sentinel): abort both; `abandonPrompt(..., "interrupted")` **while the DB is still open**; `outputError("INTERRUPTED", ...)`. Lifecycle then releases locks, closes SQLite, exits 130.
    - Lifecycle abort (`getAbortCause() === "SIGTERM"`): abort both; `abandonPrompt(..., "interrupted")` (same durable reason; no new CHECK value); `outputError("TERMINATED", "Prompt terminated")` (add `TERMINATED: 143` to `EXIT_CODE_MAP` in `src/output.ts:50–71`). Do not emit `INTERRUPTED`/130 for SIGTERM.
+   - `poll-aborted` (`PromptWaitAbortedError`) **and** `getAbortCause()` is `"SIGINT"` or `"SIGTERM"`: this **is** the lifecycle-abandon path above. Required for poll-only waits; also the SIGTERM path when stdin never settles. Do not treat it as an internal error or let it escape unmapped.
+   - `poll-aborted` **and** `getAbortCause()` is `undefined`: internal/local cancellation (`finally` after store/TTY/pipe/timeout won). Do **not** CAS-abandon as `interrupted` and do **not** emit `INTERRUPTED`/`TERMINATED`; take the winning branch’s outcome.
    - `EOF`: abort poll; if default, CAS `"default"` (today’s EOF+default); else abandon `eof`; `EOF`.
-   - `PromptTimeoutError`: abort stdin/pipe; abandon `timeout`; new code `PROMPT_TIMEOUT` (exit 3, add to `EXIT_CODE_MAP`). Reachable with `--timeout` / env on TTY, no-TTY wait opt-in, **and** no-TTY `input` pipe.
+   - `PromptTimeoutError` / `timeout` tag: abort stdin/pipe; abandon `timeout`; new code `PROMPT_TIMEOUT` (exit 3, add to `EXIT_CODE_MAP`). Reachable with `--timeout` / env on TTY, no-TTY wait opt-in, **and** no-TTY `input` pipe.
    - `ABORTED` from stdin/pipe after store win: treat as store win, not interrupt.
    - `ABORTED` from stdin/pipe because lifecycle aborted: treat as the lifecycle-abandon path above (inspect `getAbortCause()`), not as store win.
 
@@ -682,6 +716,9 @@ Inject memory store + `runExists` + fake TTY/sleep + injectable abort signal/cau
 - [ ] Multiline `readAll` → `SIGINT`: abandoned `interrupted`, `INTERRUPTED`; no success envelope with partial text.
 - [ ] Injected lifecycle abort with cause `"SIGTERM"` during TTY wait: both controllers aborted; row abandoned `interrupted`; envelope `TERMINATED` (not `INTERRUPTED`).
 - [ ] Injected lifecycle abort with cause `"SIGINT"` during TTY wait: abandoned `interrupted`, `INTERRUPTED`.
+- [ ] **Poll-only** wait (no-TTY choose/confirm, no default, positive timeout, **no** input promise): injected lifecycle abort with cause `"SIGINT"` surfaces as `PromptWaitAbortedError` / `poll-aborted`; handler maps it to abandon `interrupted` + `INTERRUPTED`; both controllers aborted; no unhandled rejection.
+- [ ] **Poll-only** wait with cause `"SIGTERM"`: abandon `interrupted` + `TERMINATED` (not `INTERRUPTED`).
+- [ ] **Poll-only** wait + store writer: poll abort from `finally` has no lifecycle cause → success from stored `{ choice }`, **not** `INTERRUPTED`.
 - [ ] no-TTY `input` + hanging pipe + `--timeout`: pipe aborted; row abandoned `timeout`; `PROMPT_TIMEOUT`.
 - [ ] no-TTY `input` + hanging pipe + store writer: pipe aborted; envelope is the stored `{ input }`.
 - [ ] `--timeout -1` / `abc` / `10ms` / `NaN`: `INVALID_ARGS`, **no row**.
@@ -706,7 +743,7 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 
 ## Phase 7: Concurrency, CLI compatibility, and docs
 
-**Completion gate:** CAS race, timeout, pipe-vs-store, **real-process SIGINT and SIGTERM abandon**, doctor CLI, and docs match the contract. Full `bun test` green.
+**Completion gate:** CAS race, timeout, pipe-vs-store, **real-process SIGINT and SIGTERM abandon** (including poll-only SIGINT), doctor CLI, and docs match the contract. Full `bun test` green.
 
 #### 7.1 Concurrency / lifecycle tests — `test/unit/control-plane/cas-race.test.ts`, `test/integration/commands/prompt-queue.test.ts`
 
@@ -715,6 +752,7 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 - [ ] `--timeout 50` TTY with no input: `PROMPT_TIMEOUT` exit 3, row abandoned `timeout`; stdin listeners gone.
 - [ ] **Required real-process SIGINT test** (not unit-only): `Bun.spawn` the CLI (`5X_FORCE_TTY=1`) in a temp project with a migrated DB; keep stdin open so the prompt waits; poll SQLite until the open `prompts` row exists; `proc.kill("SIGINT")`; assert exit code **130**, stdout error envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Do not accept a fake-`readLine` unit test as a substitute for this gate.
 - [ ] **Required real-process SIGTERM test** (not unit-only): same setup as SIGINT; `proc.kill("SIGTERM")`; assert exit code **143**, stdout error envelope `TERMINATED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Proves the lifecycle signal is in the race (stdin has no SIGTERM listener). Do not accept an injected-abort unit test as a substitute.
+- [ ] **Required real-process poll-only SIGINT test** (not unit-only): no-TTY `5x prompt choose --timeout <large>` with no `--default` (poll-only wait: no stdin promise); poll SQLite until the open row exists; `proc.kill("SIGINT")`; assert exit **130**, envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'`. Proves `PromptWaitAbortedError` is mapped when stdin is not in the race. Do not accept the injected poll-only unit test as a substitute for this gate.
 - [ ] Second SIGINT while abandoning: process still exits 130 (force path); no hang.
 - [ ] no-TTY `input` hanging pipe + `--timeout`: CLI exits `PROMPT_TIMEOUT`; row abandoned `timeout`.
 - [ ] no-TTY `input` hanging pipe + control-plane `answerPrompt`: waiter exits 0 with stored `{ input }`.
@@ -725,7 +763,7 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 
 - [ ] `docs/v2/202-control-plane.md`: mark store/schema/polling TODOs resolved for this slice; record `--default` precedence, 250ms poll, abandonment, nullable `run_id`, no `decisions` table. Leave dashboard/server TODOs.
 - [ ] `docs/v2/203-recovery-and-doctor.md`: prompts check is implemented (fail + `--fix` abandon); drop “deferred” on the table row; status line ~10.
-- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY and no-TTY `input` pipe); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon; Ctrl-C CAS-abandons `interrupted` then exits 130; SIGTERM CAS-abandons `interrupted` then exits 143 (`TERMINATED`).
+- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY, no-TTY `input` pipe, and no-TTY choose/confirm opt-in wait); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon unless `--timeout`; Ctrl-C / SIGTERM CAS-abandon `interrupted` (including poll-only waits) then exit 130 / 143 (`TERMINATED`).
 - [ ] `docs/v2/200-overview.md` §3.2: one sentence that the prompt queue is implemented locally via `PromptStore`.
 - [ ] `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md`: set **Generated plan** to this file; status `planned`.
 - [ ] `src/index.ts`: export `PromptStore`, `PromptRecord`, `createSqlitePromptStore`, `createMemoryPromptStore`, CAS types.
@@ -750,12 +788,12 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | `src/control-plane/store.ts` | **New** — `PromptStore` |
 | `src/control-plane/sqlite-store.ts` | **New** — SQLite impl |
 | `src/control-plane/memory-store.ts` | **New** — test impl |
-| `src/control-plane/wait.ts` | **New** — poll helper + constants |
+| `src/control-plane/wait.ts` | **New** — poll helper + constants; `PromptWaitAbortedError` on signal abort |
 | `src/control-plane/index.ts` | **New** — factory re-exports |
 | `src/utils/stdin.ts` | `AbortSignal` + `ABORTED`; `readAll` SIGINT sentinel; abortable `readStdinPipe` |
 | `src/commands/prompt-context.ts` | **New** — `defaultResolvePromptContext()` (`store` + `runExists` over one DB) |
 | `src/commands/prompt.ts` | `--run`, `--timeout` via `intArg`; inject `resolveContext` |
-| `src/commands/prompt.handler.ts` | Persist, CAS, dual-abort race with lifecycle fan-in, pipe race, `runExists`; optional deps |
+| `src/commands/prompt.handler.ts` | Persist, CAS, dual-abort race with lifecycle fan-in, wrap `PromptWaitAbortedError` via `getAbortCause()`, pipe race, poll-only wait, `runExists`; optional deps |
 | `src/output.ts` | `PROMPT_TIMEOUT` → exit 3; `TERMINATED` → exit 143 |
 | `src/doctor/checks/prompts.ts` | **New** — orphan detect/fix |
 | `src/doctor/registry.ts` | Register check; `findingKey` `PROMPT_ORPHANED` |
@@ -769,12 +807,12 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | `test/unit/control-plane/cas-race.test.ts` | **New** |
 | `test/unit/control-plane/wait.test.ts` | **New** — including abort stops further polls |
 | `test/unit/utils/stdin-abort.test.ts` | **New** — `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel; pipe abort |
-| `test/unit/commands/prompt-store.test.ts` | **New** — dual-abort race, lifecycle SIGTERM, pipe timeout/store-win, `runExists`, timeout validation, multiline SIGINT |
+| `test/unit/commands/prompt-store.test.ts` | **New** — dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` mapping, pipe timeout/store-win, `runExists`, timeout validation, multiline SIGINT |
 | `test/unit/commands/prompt-context.test.ts` | **New** — factory returns store + `runExists` over one DB; missing run is false |
 | `test/unit/doctor/prompts.test.ts` | **New** |
 | `test/unit/doctor/registry.test.ts` | Sixth check; `findingKey` |
 | `test/integration/commands/prompt.test.ts` | Temp cwd; persistence + invalid timeout + `--run` + pipe timeout/store-win |
-| `test/integration/commands/prompt-queue.test.ts` | **New** — timeout/doctor/CAS CLI + **required** real-process SIGINT and SIGTERM |
+| `test/integration/commands/prompt-queue.test.ts` | **New** — timeout/doctor/CAS CLI + **required** real-process SIGINT, SIGTERM, and poll-only SIGINT |
 | `test/integration/commands/doctor.test.ts` | Orphan `--fix` case if not in prompt-queue file |
 | `docs/v2/202-control-plane.md` | Resolve in-slice TODOs |
 | `docs/v2/203-recovery-and-doctor.md` | Prompts check shipped |
@@ -795,12 +833,12 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | Unit | `stdin-abort.test.ts` | `ABORTED` vs EOF/SIGINT; `readAll` SIGINT sentinel (not partial text); `readStdinPipe` abort |
 | Unit | `cli-lifecycle.test.ts` | First SIGINT/SIGTERM aborts without exit and records cause; second/grace force-exit 130/143; disarm; idempotent cleanup |
 | Unit | `connection` signal tests | `getDb` / `registerLockCleanup` do not `process.exit` on SIGINT; DB stays open |
-| Unit | `prompt-store.test.ts` | Handler persist/CAS/dual-abort race, lifecycle SIGTERM, pipe timeout/store-win, `runExists`, timeout validation before insert, multiline SIGINT |
+| Unit | `prompt-store.test.ts` | Handler persist/CAS/dual-abort race, lifecycle SIGTERM, poll-only `PromptWaitAbortedError` → lifecycle-abandon, pipe timeout/store-win, `runExists`, timeout validation before insert, multiline SIGINT |
 | Unit | `prompt-context.test.ts` | Default factory: one DB, `runExists` true/false, store usable |
 | Unit | `doctor/prompts.test.ts` | Orphan detect/fix; null run_id skipped; missing DB |
 | Unit | `doctor/registry.test.ts` | Check order; `PROMPT_ORPHANED` identity |
 | Integration | `prompt.test.ts` | Existing CLI envelopes/exits on a temp project + DB rows + invalid timeout + `--run` + pipe timeout/store-win |
-| Integration | `prompt-queue.test.ts` | Timeout, doctor `--fix`, CAS CLI, **required real-process SIGINT (130)** and **SIGTERM (143 + `abandon_reason='interrupted'`)** |
+| Integration | `prompt-queue.test.ts` | Timeout, doctor `--fix`, CAS CLI, **required real-process SIGINT (130)**, **SIGTERM (143 + `abandon_reason='interrupted'`)**, and **poll-only SIGINT (130)** |
 | Integration | `doctor.test.ts` | Sweep still green; optional orphan case |
 
 ---
@@ -828,15 +866,21 @@ If `5x-cli/AGENTS.md` lists the five doctor checks, add `prompts`. Registry comm
 | 3 | Doctor prompts check + `findingKey` | 1 day |
 | 4 | CLI signal lifecycle (strip `process.exit` from db/lock; abort cause) | 1 day |
 | 5 | Abortable stdin/pipe + wait helper (both-branch cancel, `readAll` SIGINT) | 1 day |
-| 6 | Prompt command integration + lifecycle race + pipe race + `runExists` + timeout validation + temp-dir CLI tests | 2–2.5 days |
-| 7 | Race/timeout/real-process SIGINT+SIGTERM/docs/exports | 1–2 days |
+| 6 | Prompt command integration + lifecycle race + poll-abort mapping + pipe race + `runExists` + timeout validation + temp-dir CLI tests | 2–2.5 days |
+| 7 | Race/timeout/real-process SIGINT+SIGTERM+poll-only SIGINT/docs/exports | 1–2 days |
 | **Total** | | **7.5–10.5 days** |
 
-Phase 4 is a P0 prerequisite to Phase 6 interrupt-abandonment. Phase 5 remains a schedule risk (TTY/pipe cancellation): if `AbortSignal` cannot stop `readLine` or `readStdinPipe` cleanly, do not start Phase 6 TTY/pipe racing. Phase 7’s real-process SIGINT **and** SIGTERM tests are hard gates, not optional.
+Phase 4 is a P0 prerequisite to Phase 6 interrupt-abandonment. Phase 5 remains a schedule risk (TTY/pipe cancellation): if `AbortSignal` cannot stop `readLine` or `readStdinPipe` cleanly, do not start Phase 6 TTY/pipe racing. Phase 7’s real-process SIGINT, SIGTERM, **and poll-only SIGINT** tests are hard gates, not optional.
 
 ---
 
 ## Revision History
+
+### 1.3 — August 24, 2026
+
+Addresses **P1.6** in the **Addendum (2026-08-24) — Revision 1.2 re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md`](../reviews/5x-cli-docs-development-plans-205-prompt-queue-foundation-plan-review.md). Prior P0.1 / P1.1–P1.5 / P2.1 remain as specified in 1.1–1.2.
+
+**P1.6 — Map poll cancellation caused by the lifecycle signal.** Fan-in aborts `pollCtl`, so `waitForPromptAnswer` rejects `PromptWaitAbortedError`. Phase 6 wraps that promise so `Promise.race` settles: with `getAbortCause()` the error is the lifecycle-abandon path (`interrupted` + `INTERRUPTED`/130 or `TERMINATED`/143); without a cause it is local cancellation after another branch won. Poll-only waits (no-TTY choose/confirm + positive timeout, no stdin promise) have no stdin `ABORTED`/`SIGINT` surface — SIGINT/SIGTERM reach CAS-abandon only through this mapping. Unit tests cover poll-only SIGINT, SIGTERM, and store-win; Phase 7 requires a real-process poll-only SIGINT.
 
 ### 1.2 — August 24, 2026
 
