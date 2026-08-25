@@ -98,6 +98,7 @@ The orchestration skill is separate from the toolbelt. Different agents can use 
 - Enforces hard constraints (not suggestions): max steps per run, required human gates, structured output validation
 - Handles structured output extraction internally (provider-specific, transparent to callers)
 - Each command is independently useful — no implicit ordering or required sequences
+- Composite verbs such as `5x phase finish` are sugar over those primitives: they call the same handlers, record the same idempotency keys, and can always be replaced by the granular commands
 - Pluggable provider architecture for sub-agent invocation (see Section 7)
 - Specified fully in `101-cli-primitives.md`
 

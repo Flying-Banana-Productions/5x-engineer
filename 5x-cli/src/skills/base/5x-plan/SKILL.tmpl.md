@@ -45,17 +45,21 @@ timeout handling.
 
 ## Tools
 
-- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
-- `5x run state --run <id>` — check what's been done
-- `5x run record <step> --run <id> --result '<json>'` — record a step
-- `5x run complete --run <id>` — mark run finished
-- `5x run list` — list runs (filter by --plan, --status)
-- `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+`--run` is optional on run-scoped commands when `FIVEX_RUN`, a unique
+worktree mapping, or `.5x/current-run` already identifies the run. Pass
+`--run` explicitly in Recovery or when identity is missing/ambiguous.
+
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree). Export `FIVEX_RUN` from the envelope (`run_id` or `export_hint`).
+- `5x run state` — check what's been done (ambient run identity)
+- `5x run record <step> --result '<json>'` — record a step
+- `5x run complete` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status); marks the ambiently resolved run
+- `5x template render <template> [--var key=val ...]` — render a task prompt with run/worktree context
 {{#if any_native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+- `5x protocol validate <author|reviewer> [--record --step <name> ...]` — validate and optionally record structured output (native roles)
 {{/if}}
 {{#if any_invoke}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
+- `5x invoke <author|reviewer> <template> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — get phase list and check plan parses
 {{#if any_native}}
@@ -97,7 +101,11 @@ If your chosen delegation path does not match the resolved
 
 ### Step 1: Initialize
 
-Run `5x run init --plan $PLAN_PATH --worktree`.
+```bash
+INIT=$(5x run init --plan $PLAN_PATH --worktree)
+export FIVEX_RUN=$(echo "$INIT" | jq -r '.data.run_id')
+# equivalent: eval "$(echo "$INIT" | jq -r '.data.export_hint')"
+```
 
 `$PLAN_PATH` is the output plan path to be generated. It may not exist yet,
 but it must resolve inside `paths.plans`. The requirements/design document is
@@ -105,11 +113,11 @@ separate: pass it as `$PRD_PATH`, then provide it to the author via
 `--var prd_path=$PRD_PATH`.
 
 The `--worktree` flag ensures an isolated git worktree is resolved or
-created for this plan. All subsequent `--run`-scoped commands
+created for this plan. All subsequent run-scoped commands
 (`invoke`, `quality run`, `diff`) automatically execute in the mapped
 worktree — no manual `cd` or `--workdir` is needed.
 
-If a run already exists (returned by init), call `5x run state --run $RUN`
+If a run already exists (returned by init), call `5x run state`
 and skip to the appropriate step based on recorded history.
 
 ### Step 2: Generate the plan
@@ -118,7 +126,7 @@ and skip to the appropriate step based on recorded history.
 Delegate to the plan author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-generate-plan --run $RUN \
+RENDERED=$(5x template render author-generate-plan \
   --var prd_path=$PRD_PATH)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -126,13 +134,13 @@ STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase plan
+  --record --step $STEP --phase plan
 ```
 {{else}}
 Delegate to the plan author via `5x invoke`:
 
 ```bash
-RESULT=$(5x invoke author author-generate-plan --run $RUN \
+RESULT=$(5x invoke author author-generate-plan \
   --var prd_path=$PRD_PATH \
   --record --record-step author:generate-plan --phase plan)
 
@@ -164,7 +172,7 @@ using the same $RUN (do not create a new run).
 
 After the review loop approves the plan (or the human overrides):
 
-    5x run complete --run $RUN
+    5x run complete
 
 Report to the human: plan is ready at $PLAN_PATH.
 
@@ -202,6 +210,13 @@ Report to the human: plan is ready at $PLAN_PATH.
   If it fails again, escalate to the human.
 - **Subagent returns empty or invalid output**: Retry once without `--session`.
   If it fails again, escalate to the human.
+{{/if}}
+- **Missing or ambiguous run identity**: pass `--run` explicitly, for example
+  `5x run record "human:gate" --run $FIVEX_RUN --result '...'`,
+  `5x commit --run $FIVEX_RUN -m "plan: generate" --all-files`, or
+  `5x run complete --run $FIVEX_RUN`.
+{{#if any_native}}
+  Native recovery also uses `5x protocol validate author --record --run $FIVEX_RUN --step $STEP --phase plan`.
 {{/if}}
 
 ## Completion

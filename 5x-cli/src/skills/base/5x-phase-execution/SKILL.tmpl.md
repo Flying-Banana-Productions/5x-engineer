@@ -47,22 +47,27 @@ timeout handling.
 
 ## Tools
 
-- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
-- `5x run state --run <id>` — check what's been done
-- `5x run record <step> --run <id> --result '<json>'` — record a step
-- `5x run complete --run <id>` — mark run finished
-- `5x run list` — list runs (filter by --plan, --status)
-- `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+`--run` is optional on run-scoped commands when `FIVEX_RUN`, a unique
+worktree mapping, or `.5x/current-run` already identifies the run. Pass
+`--run` explicitly in Recovery or when identity is missing/ambiguous.
+
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree). Export `FIVEX_RUN` from the envelope (`run_id` or `export_hint`).
+- `5x run state` — check what's been done (ambient run identity)
+- `5x run record <step> --result '<json>'` — record a step
+- `5x run complete` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status); marks the ambiently resolved run
+- `5x template render <template> [--var key=val ...]` — render a task prompt with run/worktree context
+- `5x phase finish --phase <p> --iteration <n> --step <name>` — post-author composite: quality → protocol validate/record → checklist (prefer this in the hot loop)
 {{#if any_native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+- `5x protocol validate <author|reviewer> [--record --step <name> ...]` — granular validate and optionally record (recovery; `--run` required with `--record` only when ambient identity is missing)
 {{/if}}
 {{#if any_invoke}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
+- `5x invoke <author|reviewer> <template> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
-- `5x quality run --run <id>` — run quality gates (auto-resolves worktree when `--run` is mapped)
+- `5x quality run [--record]` — granular quality gates (recovery; auto-resolves worktree when a run is mapped)
 - `5x plan phases <path>` — get phase list and status
-- `5x commit --run <id> -m <msg> --all-files|--files <list>` — stage, commit, and record in the run journal
-- `5x diff --run <id>` — inspect changes in mapped worktree
+- `5x commit -m <msg> --all-files|--files <list>` — stage, commit, and record in the run journal
+- `5x diff` — inspect changes in mapped worktree
 - `5x diff --since <ref>` — inspect changes (without run context)
 - `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
 {{#if any_native}}
@@ -161,11 +166,15 @@ Confirm each role's path before delegating:
 If your chosen delegation path does not match the resolved
 `delegationMode` for that role, stop and correct before proceeding.
 
-    5x run init --plan $PLAN_PATH --worktree
+```bash
+INIT=$(5x run init --plan $PLAN_PATH --worktree)
+export FIVEX_RUN=$(echo "$INIT" | jq -r '.data.run_id')
+# equivalent: eval "$(echo "$INIT" | jq -r '.data.export_hint')"
+```
 
 The `--worktree` flag ensures an isolated git worktree is resolved or
 created for this plan. The worktree mapping is stored in the root DB,
-and all subsequent `--run`-scoped commands automatically execute in
+and all subsequent run-scoped commands automatically execute in
 that worktree.
 
 **Timeout note:** `run init --worktree` may take 30+ seconds for large
@@ -175,7 +184,7 @@ retry with a longer timeout — the command is idempotent and will resume
 the existing run.
 
 If resuming an existing run (including runs migrated from v0), call
-`5x run state --run $RUN` to review recorded history.
+`5x run state` to review recorded history.
 
 **Budget check:** Run `5x config show` and note `maxStepsPerRun`. Each
 phase with one review-fix cycle burns roughly 10–12 steps. If
@@ -207,23 +216,22 @@ Track $SESSION_ID = "" (for optional session reuse within this phase — invoke 
 Delegate to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-next-phase --run $RUN \
+RENDERED=$(5x template render author-next-phase \
   --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
 RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
-
-echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase $PHASE
 ```
 {{else}}
 Delegate to the code author via `5x invoke`:
 
 ```bash
-RESULT=$(5x invoke author author-next-phase --run $RUN \
+STEP=author:next-phase
+RESULT=$(5x invoke author author-next-phase \
   --var phase_number=$PHASE_NUMBER \
-  --record --record-step author:next-phase --phase $PHASE)
+  --record --record-step $STEP --phase $PHASE \
+  --iteration $REVIEW_ITERATIONS)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
@@ -247,17 +255,32 @@ Check the result:
 
 Capture $COMMIT from the result for the reviewer.
 
-#### Step 2: Quality gates
+#### Step 2: Quality, protocol, and checklist (`phase finish`)
 
-    5x quality run --record --run $RUN --phase $PHASE
+Pipe the author result into the composite. It runs quality gates, then
+protocol validate/record, then the phase checklist **only when** the
+author `result` is `"complete"` (otherwise checklist is `skipped`).
+`--phase` and `--iteration` are required so resume keys stay stable.
 
-`--record` auto-records as `quality:check`. When `--run` is mapped to
-a worktree, quality gates execute in the mapped worktree automatically.
+```bash
+echo "$RESULT" | 5x phase finish --phase $PHASE --iteration $REVIEW_ITERATIONS --step $STEP
+```
 
-Check the result:
-- `passed: true` — continue to Step 3.
-- `skipped: true` — quality gates are intentionally disabled (`skipQualityGates: true` in config). Proceed to Step 3.
-- `passed: false` — go to Step 2a (Quality retry).
+When a run is mapped to a worktree, quality gates execute in the mapped
+worktree automatically. Re-running the same keys resumes past successful
+sub-steps (`recorded: false` is success, not a new write).
+
+Check the envelope:
+- All sub-steps `completed` (or checklist `skipped` for a non-complete
+  author result) — continue to Step 3.
+- Quality `skipped` (`skipQualityGates: true` in config) counts as
+  success for that sub-step — continue to Step 3 if protocol/checklist
+  succeeded.
+- Quality `failed` (`QUALITY_FAILED`) — go to Step 2a (Quality retry).
+- Protocol or checklist `failed` — see Recovery
+{{#if any_native}}
+  (granular `5x protocol validate author --record` / checklist mismatch).
+{{/if}}
 
 ##### Step 2a: Quality retry
 
@@ -276,31 +299,30 @@ If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
 {{/if}}
   - retry: reset $QUALITY_RETRIES, go to Step 2a below
   - skip: record human override, go to Step 3
-  - abort: `5x run complete --run $RUN --status aborted`
+  - abort: `5x run complete --run $FIVEX_RUN --status aborted`
 
 {{#if author_native}}
 Delegate fix to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-fix-quality --run $RUN \
+RENDERED=$(5x template render author-fix-quality \
   --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES")
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
 RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
-
-echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase $PHASE
 ```
 {{else}}
 Delegate fix to the code author via `5x invoke`:
 
 ```bash
-RESULT=$(5x invoke author author-fix-quality --run $RUN \
+STEP=author:fix-quality
+RESULT=$(5x invoke author author-fix-quality \
   --var phase_number=$PHASE \
   --var user_notes="Quality gate failures: $FAILURES" \
-  --record --record-step author:fix-quality --phase $PHASE)
+  --record --record-step $STEP --phase $PHASE \
+  --iteration $REVIEW_ITERATIONS)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
@@ -308,7 +330,20 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
-Loop back to Step 2.
+Prefer re-invoking `phase finish` so resume skips a now-passing quality
+sub-step and then records protocol/checklist:
+
+```bash
+echo "$RESULT" | 5x phase finish --phase $PHASE --iteration $REVIEW_ITERATIONS --step $STEP
+```
+
+Granular fallback after a targeted gate fix (then loop back to Step 2
+so protocol/checklist still run through the composite):
+
+    5x quality run --record --phase $PHASE --iteration $REVIEW_ITERATIONS
+
+Loop back to Step 2 if you used the granular quality command rather
+than `phase finish`.
 
 #### Step 3: Code review
 
@@ -321,7 +356,7 @@ Delegate to the reviewer via the Task tool:
 # Fall back to --new-session only for recovery or when no -continued
 # variant is defined. Never pass $NATIVE_SUBTASK_ID as --session —
 # --session takes a provider session id, not a native subtask id.
-RENDERED=$(5x template render reviewer-commit --run $RUN \
+RENDERED=$(5x template render reviewer-commit \
   --var commit_hash=$COMMIT \
   --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
@@ -332,7 +367,7 @@ RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
-  --run $RUN --record --step $STEP --phase $PHASE \
+  --record --step $STEP --phase $PHASE \
   --iteration $REVIEW_ITERATIONS
 ```
 {{else}}
@@ -342,13 +377,13 @@ Delegate to the reviewer via `5x invoke`:
 # Extract review_path (needed for post-review verification).
 # Native path reads this from `5x template render`; invoke renders the
 # template internally, so v1 does a separate render here.
-REVIEW_PATH=$(5x template render reviewer-commit --run $RUN \
+REVIEW_PATH=$(5x template render reviewer-commit \
   --var commit_hash=$COMMIT \
   --var phase_number=$PHASE \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
-RESULT=$(5x invoke reviewer reviewer-commit --run $RUN \
+RESULT=$(5x invoke reviewer reviewer-commit \
   --var commit_hash=$COMMIT \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:commit --phase $PHASE \
@@ -368,7 +403,7 @@ review document was committed:
 If the review file was not committed, commit it on behalf of the
 reviewer before proceeding:
 
-    5x commit --run $RUN -m "review: phase $PHASE" --files $REVIEW_PATH
+    5x commit -m "review: phase $PHASE" --files $REVIEW_PATH
 
 {{#if reviewer_native}}
 After a successful review, set `$NATIVE_SUBTASK_ID` from the Task tool
@@ -409,22 +444,19 @@ If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
 Delegate to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-impl-review --run $RUN)
+RENDERED=$(5x template render author-process-impl-review)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
 RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
-
-echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase $PHASE \
-  --iteration $REVIEW_ITERATIONS
 ```
 {{else}}
 Delegate to the code author via `5x invoke`:
 
 ```bash
-RESULT=$(5x invoke author author-process-impl-review --run $RUN \
-  --record --record-step author:process-impl-review --phase $PHASE \
+STEP=author:process-impl-review
+RESULT=$(5x invoke author author-process-impl-review \
+  --record --record-step $STEP --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
@@ -510,7 +542,7 @@ If `PHASE_STATUS` is not `true`:
 
 If `PHASE_STATUS` is `true`, record phase completion:
 
-    5x run record "phase:complete" --run $RUN --phase $PHASE --result '{"phase":"$PHASE"}'
+    5x run record "phase:complete" --phase $PHASE --result '{"phase":"$PHASE"}'
 
 If this is NOT the last phase, confirm with the human:
 {{#if any_native}}
@@ -529,7 +561,7 @@ Using your **native UI**, ask whether to **continue** to the next phase, **exit*
 
 ### After all phases complete:
 
-    5x run complete --run $RUN
+    5x run complete
 
 Report to the human: all phases implemented and reviewed.
 
@@ -537,7 +569,7 @@ Report to the human: all phases implemented and reviewed.
 
 ### After author implementation (Step 1):
 - AuthorStatus.commit must be present (non-empty string)
-- `5x diff --run $RUN --since $COMMIT~1` must show a non-empty diff (auto-resolves worktree)
+- `5x diff --since $COMMIT~1` must show a non-empty diff (auto-resolves worktree)
 - Changed files should relate to the current phase (check against plan)
 
 ### After quality gates (Step 2):
@@ -658,6 +690,33 @@ still says not_ready on the same issues.
 {{/if}}
 2. If it fails again, escalate to the human — the model may not support
    the structured output format or the prompt may need adjustment.
+
+### Granular fallbacks (identity missing, composite blocked, or partial retry)
+
+Prefer `5x phase finish` in the hot loop. When you need to recover a
+single sub-step, or ambient identity is missing, use the granular
+commands with an explicit `--run`:
+
+```bash
+5x quality run --record --run $FIVEX_RUN --phase $PHASE --iteration $REVIEW_ITERATIONS
+{{#if any_native}}
+echo "$RESULT" | 5x protocol validate author --record --run $FIVEX_RUN \
+  --step $STEP --phase $PHASE --iteration $REVIEW_ITERATIONS
+{{/if}}
+5x run record "phase:complete" --run $FIVEX_RUN --phase $PHASE \
+  --result '{"phase":"$PHASE"}'
+5x commit --run $FIVEX_RUN -m "fix: phase $PHASE" --all-files
+```
+
+{{#if any_native}}
+`5x protocol validate --record` and `5x quality run --record` remain the
+recovery recording points when the composite cannot run.
+{{else}}
+`5x quality run --record` remains the recovery recording point when the
+composite cannot run.
+{{/if}}
+Pass `--run` whenever `FIVEX_RUN` / worktree mapping / `.5x/current-run`
+is absent or ambiguous.
 
 ## Completion
 

@@ -79,10 +79,14 @@ interface CmdResult {
 	exitCode: number;
 }
 
-async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
+async function run5x(
+	cwd: string,
+	args: string[],
+	extraEnv?: Record<string, string | undefined>,
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env: { ...cleanGitEnv(), ...extraEnv },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -549,6 +553,93 @@ describe("5x commit (integration)", () => {
 				expect(json.ok).toBe(false);
 				const error = json.error as { code: string };
 				expect(error.code).toBe("PHASE_REQUIRED");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"FIVEX_RUN satisfies commit without --run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+				writeFileSync(join(dir, "via-env.ts"), "export const e = 1;\n");
+
+				const result = await run5x(
+					dir,
+					["commit", "-m", "via env", "--all-files", "--phase", "1"],
+					{ FIVEX_RUN: runId },
+				);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				expect((json.data as Record<string, unknown>).run_id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"pointer satisfies commit without --run",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+				writeFileSync(join(dir, "via-ptr.ts"), "export const p = 1;\n");
+
+				const result = await run5x(dir, [
+					"commit",
+					"-m",
+					"via pointer",
+					"--all-files",
+					"--phase",
+					"1",
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(true);
+				expect((json.data as Record<string, unknown>).run_id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"commit without identity fails with RUN_CONTEXT_REQUIRED",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				await initRun(dir, planPath);
+				rmSync(join(dir, ".5x", "current-run"), { force: true });
+				writeFileSync(join(dir, "orphan.ts"), "export const o = 1;\n");
+
+				const result = await run5x(dir, [
+					"commit",
+					"-m",
+					"no identity",
+					"--all-files",
+					"--phase",
+					"1",
+				]);
+
+				expect(result.exitCode).not.toBe(0);
+				const json = parseJson(result.stdout);
+				expect(json.ok).toBe(false);
+				expect((json.error as { code: string }).code).toBe(
+					"RUN_CONTEXT_REQUIRED",
+				);
 			} finally {
 				cleanupDir(dir);
 			}

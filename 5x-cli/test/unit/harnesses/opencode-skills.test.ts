@@ -463,6 +463,34 @@ describe("5x-phase-execution skill — Task tool delegation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ambient run identity + phase finish idiom (area 204)
+// ---------------------------------------------------------------------------
+
+describe("ambient run identity and phase finish idiom", () => {
+	test("combined skills contain FIVEX_RUN and phase finish", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+		expect(combined).toContain("FIVEX_RUN");
+		expect(combined).toContain("phase finish");
+	});
+
+	test("5x-phase-execution keeps granular quality and protocol fallbacks", () => {
+		const content = getDefaultSkillRaw("5x-phase-execution");
+		expect(content).toContain("5x protocol validate");
+		expect(content).toContain("5x quality run");
+		expect(content).toContain("5x phase finish");
+		expect(content).toContain("export FIVEX_RUN");
+	});
+
+	test("windows skill exports FIVEX_RUN", () => {
+		const content = getDefaultSkillRaw("5x-windows");
+		expect(content).toContain("FIVEX_RUN");
+		expect(content).toContain("phase finish");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Run watch guidance removal
 // ---------------------------------------------------------------------------
 

@@ -9,15 +9,23 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import { validateRunId } from "../run-id.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	resolveAmbientRunId,
+} from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +45,8 @@ export interface ProtocolValidateParams {
 	iteration?: number;
 	plan?: string;
 	phaseChecklistValidate?: boolean;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,11 +152,13 @@ export function isNumericPhaseRef(phase: string): boolean {
  * - If --phase is a non-numeric semantic identifier (e.g., "plan", "review") → skip
  *   the gate entirely. Such values can never match a plan parser phase heading.
  */
-function validatePhaseChecklist(params: ProtocolValidateParams): void {
+export function evaluatePhaseChecklist(
+	params: ProtocolValidateParams,
+): { ok: true } | { ok: false; code: string; message: string } {
 	// Skip for non-numeric phase identifiers — they are semantic context
 	// labels (e.g., "plan", "review") that don't map to plan file phases.
 	if (params.phase && !isNumericPhaseRef(params.phase)) {
-		return;
+		return { ok: true };
 	}
 
 	const explicitPlan = !!params.plan;
@@ -157,15 +169,20 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 	// Auto-discover plan path from run context if --plan not provided
 	if (!planPath && params.run) {
 		try {
-			const controlPlane = resolveControlPlaneRoot();
+			const controlPlane = resolveControlPlaneRoot(params.startDir);
 			if (controlPlane.mode !== "none") {
-				const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
-				const db = getDb(controlPlane.controlPlaneRoot, dbRelPath);
+				const db = getDb(
+					controlPlane.controlPlaneRoot,
+					controlPlaneDbPath(
+						controlPlane.controlPlaneRoot,
+						controlPlane.stateDir,
+					),
+				);
 				try {
 					runMigrations(db);
 				} catch {
 					// DB migration error — skip checklist gate gracefully
-					return;
+					return { ok: true };
 				}
 				const ctxResult = resolveRunExecutionContext(db, params.run, {
 					controlPlaneRoot: controlPlane.controlPlaneRoot,
@@ -177,20 +194,24 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 			}
 		} catch {
 			// Auto-discovery failed — skip silently
-			return;
+			return { ok: true };
 		}
 	}
 
 	// No plan path resolved — skip silently
-	if (!planPath) return;
+	if (!planPath) return { ok: true };
 
 	// Check file exists
 	if (!existsSync(planPath)) {
 		if (explicitPlan) {
-			outputError("PLAN_NOT_FOUND", `Plan file not found: ${params.plan}`);
+			return {
+				ok: false,
+				code: "PLAN_NOT_FOUND",
+				message: `Plan file not found: ${params.plan}`,
+			};
 		}
 		// Auto-discovered path doesn't exist — skip silently
-		return;
+		return { ok: true };
 	}
 
 	// Parse the plan
@@ -199,15 +220,19 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		planContent = readFileSync(planPath, "utf-8");
 	} catch {
 		if (explicitPlan) {
-			outputError("PLAN_NOT_FOUND", `Failed to read plan file: ${params.plan}`);
+			return {
+				ok: false,
+				code: "PLAN_NOT_FOUND",
+				message: `Failed to read plan file: ${params.plan}`,
+			};
 		}
-		return;
+		return { ok: true };
 	}
 
 	const plan = parsePlan(planContent);
 
 	// If no --phase provided, skip checklist gate (can't determine which phase)
-	if (!params.phase) return;
+	if (!params.phase) return { ok: true };
 
 	// Find the matching phase
 	const phase = plan.phases.find(
@@ -223,28 +248,38 @@ function validatePhaseChecklist(params: ProtocolValidateParams): void {
 		// Fail-closed: --phase is always explicit input (no auto-discovery for
 		// phase). Once a plan is resolved (by any means), a missing phase must
 		// error so orchestrators don't silently skip validation.
-		outputError(
-			"PHASE_NOT_FOUND",
-			`Phase '${params.phase}' not found in plan: ${planPath}`,
-		);
+		return {
+			ok: false,
+			code: "PHASE_NOT_FOUND",
+			message: `Phase '${params.phase}' not found in plan: ${planPath}`,
+		};
 	}
 
 	// Check if phase is complete
 	if (!phase.isComplete) {
-		outputError(
-			"PHASE_CHECKLIST_INCOMPLETE",
-			`Phase ${params.phase} checklist is not complete. Mark all items [x] before returning result: complete.`,
-		);
+		return {
+			ok: false,
+			code: "PHASE_CHECKLIST_INCOMPLETE",
+			message: `Phase ${params.phase} checklist is not complete. Mark all items [x] before returning result: complete.`,
+		};
 	}
+	return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function protocolValidate(
+export interface ProtocolValidateCoreResult {
+	role: ProtocolRole;
+	valid: true;
+	result: unknown;
+	warnings: string[];
+}
+
+export async function protocolValidateCore(
 	params: ProtocolValidateParams,
-): Promise<void> {
+): Promise<ProtocolValidateCoreResult> {
 	const { role } = params;
 
 	// -----------------------------------------------------------------------
@@ -301,9 +336,91 @@ export async function protocolValidate(
 		},
 	);
 
+	return { role, valid: true, result: validated, warnings };
+}
+
+/**
+ * Resolve the phase used when recording a protocol result.
+ * result_json.phase is authoritative; --phase must match when both are set.
+ */
+export function resolveRecordPhase(
+	commandPhase: string | undefined,
+	validated: unknown,
+): string {
+	const resultPhase =
+		validated &&
+		typeof validated === "object" &&
+		!Array.isArray(validated) &&
+		"phase" in validated
+			? String((validated as Record<string, unknown>).phase)
+			: undefined;
+
+	if (commandPhase && resultPhase) {
+		if (commandPhase !== resultPhase) {
+			outputError(
+				"PHASE_MISMATCH",
+				`--phase is "${commandPhase}" but result_json.phase is "${resultPhase}". ` +
+					"These must match. Remove --phase to use result_json as authoritative, " +
+					"or correct the phase value.",
+			);
+		}
+		return commandPhase;
+	}
+	if (commandPhase) return commandPhase;
+	if (resultPhase) return resultPhase;
+	outputError(
+		"PHASE_REQUIRED",
+		"Phase is required when recording. Provide --phase or include " +
+			'a "phase" field in the result JSON.',
+	);
+}
+
+export async function protocolValidate(
+	params: ProtocolValidateParams,
+): Promise<void> {
+	const { role } = params;
+	const { result: validated, warnings } = await protocolValidateCore(params);
+
 	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
 	for (const w of warnings) {
 		console.error(`Warning: ${w}`);
+	}
+
+	// -----------------------------------------------------------------------
+	// Ambient run identity (optional fill-in; required when --record)
+	// -----------------------------------------------------------------------
+	if (params.run) validateRunId(params.run);
+	const identityControlPlane = resolveControlPlaneRoot(params.startDir);
+	if (identityControlPlane.mode !== "none") {
+		const db = getDb(
+			identityControlPlane.controlPlaneRoot,
+			controlPlaneDbPath(
+				identityControlPlane.controlPlaneRoot,
+				identityControlPlane.stateDir,
+			),
+		);
+		try {
+			runMigrations(db);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(
+				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+			);
+		}
+		const ambient = resolveAmbientRunId({
+			explicitRun: params.run,
+			required: Boolean(params.record),
+			startDir: params.startDir,
+			env: params.env,
+			db,
+			controlPlane: identityControlPlane,
+		});
+		if (!ambient.ok) outputAmbientError(ambient);
+		params.run = ambient.runId;
+	} else if (params.record && !params.run) {
+		outputError("RUN_CONTEXT_REQUIRED", "No run identity resolved.", {
+			remediation: REQUIRED_REMEDIATION,
+		});
 	}
 
 	// -----------------------------------------------------------------------
@@ -332,38 +449,7 @@ export async function protocolValidate(
 			);
 		}
 		recordStepName = params.step;
-
-		// Phase enforcement: resolve from --phase and/or result_json.phase.
-		// result_json is authoritative; --phase must match if both are present.
-		const resultPhase =
-			validated &&
-			typeof validated === "object" &&
-			!Array.isArray(validated) &&
-			"phase" in validated
-				? String((validated as Record<string, unknown>).phase)
-				: undefined;
-
-		if (params.phase && resultPhase) {
-			if (params.phase !== resultPhase) {
-				outputError(
-					"PHASE_MISMATCH",
-					`--phase is "${params.phase}" but result_json.phase is "${resultPhase}". ` +
-						"These must match. Remove --phase to use result_json as authoritative, " +
-						"or correct the phase value.",
-				);
-			}
-			resolvedPhase = params.phase;
-		} else if (params.phase) {
-			resolvedPhase = params.phase;
-		} else if (resultPhase) {
-			resolvedPhase = resultPhase;
-		} else {
-			outputError(
-				"PHASE_REQUIRED",
-				"Phase is required when recording. Provide --phase or include " +
-					'a "phase" field in the result JSON.',
-			);
-		}
+		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
 
 	// -----------------------------------------------------------------------
@@ -381,7 +467,10 @@ export async function protocolValidate(
 		(validated as Record<string, unknown>).result === "complete" &&
 		params.phaseChecklistValidate !== false
 	) {
-		validatePhaseChecklist(params);
+		const checklist = evaluatePhaseChecklist(params);
+		if (!checklist.ok) {
+			outputError(checklist.code, checklist.message);
+		}
 	}
 
 	// -----------------------------------------------------------------------

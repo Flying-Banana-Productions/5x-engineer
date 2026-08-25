@@ -157,6 +157,31 @@ async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
+/** Piped stdin that never receives a chunk or EOF — exercises the 200ms pipe timeout. */
+async function run5xWithHangingStdin(
+	cwd: string,
+	args: string[],
+): Promise<CmdResult> {
+	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
+		cwd,
+		env: cleanGitEnv(),
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	try {
+		proc.stdin.end();
+	} catch {
+		// Child already exited.
+	}
+	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
 function parseJson(stdout: string): Record<string, unknown> {
 	return JSON.parse(stdout) as Record<string, unknown>;
 }
@@ -560,6 +585,39 @@ describe("run record pipe ingestion", () => {
 				const data = parseJson(result.stdout);
 				expect(data.ok).toBe(true);
 				expect((data.data as Record<string, unknown>).recorded).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"dangling stdin with --run still records; timeout warning on stderr not stdout",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { projectRoot, runId } = await setupProjectWithRun(dir);
+
+				const result = await run5xWithHangingStdin(projectRoot, [
+					"run",
+					"record",
+					"manual:step",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+				]);
+
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(true);
+				expect((data.data as Record<string, unknown>).recorded).toBe(true);
+				expect((data.data as Record<string, unknown>).step_name).toBe(
+					"manual:step",
+				);
+				expect(result.stdout).not.toContain("no upstream envelope detected");
+				expect(result.stderr).toContain("no upstream envelope detected");
 			} finally {
 				cleanupDir(dir);
 			}

@@ -11,6 +11,7 @@
  * Log paths are anchored to `controlPlaneRoot/stateDir`.
  */
 
+import type { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { resolveLayeredConfig } from "../config.js";
@@ -18,9 +19,18 @@ import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { runQualityGates } from "../gates/quality.js";
 import { outputError, outputSuccess } from "../output.js";
+import { validateRunId } from "../run-id.js";
 import { resolveProjectContext } from "./context.js";
-import { DB_FILENAME, resolveControlPlaneRoot } from "./control-plane.js";
+import {
+	controlPlaneDbPath,
+	resolveControlPlaneRoot,
+} from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	resolveAmbientRunId,
+} from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +42,23 @@ export interface QualityParams {
 	recordStep?: string;
 	run?: string;
 	phase?: string;
+	iteration?: number;
 	workdir?: string;
+	/**
+	 * Discovery root for control-plane and ambient identity.
+	 * Unlike `workdir`, this does not override a mapped worktree.
+	 */
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
+}
+
+export interface QualityCoreResult {
+	passed: boolean;
+	results: unknown[];
+	skipped?: boolean;
+	workdir: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +92,7 @@ async function autoRecord(
 			stepName,
 			result: JSON.stringify(qualityData),
 			phase: params.phase,
+			iteration: params.iteration,
 		});
 	} catch (err) {
 		// Recording is a side effect — primary envelope already written.
@@ -86,10 +113,10 @@ async function autoRecord(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function runQuality(
+export async function runQualityCore(
 	params: QualityParams = {},
 	warn: (...args: unknown[]) => void = console.error,
-): Promise<void> {
+): Promise<QualityCoreResult> {
 	// -----------------------------------------------------------------------
 	// Phase 3a: When --run is present, resolve control-plane root and run
 	// execution context to determine effective workdir and plan path for
@@ -101,52 +128,73 @@ export async function runQuality(
 	let explicitWorkdir: string | undefined;
 	let configContextDir: string | undefined;
 
-	if (params.run) {
-		const controlPlane = resolveControlPlaneRoot(params.workdir);
+	if (params.run) validateRunId(params.run);
 
-		if (controlPlane.mode === "none") {
-			// Phase 3 fix: --run was explicitly provided but no control-plane DB
-			// exists. This is a hard error — silently falling through to cwd-based
-			// execution would violate the run-scoped contract.
-			outputError(
-				"NO_CONTROL_PLANE",
-				`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
-			);
-		}
+	const startDir = params.workdir ?? params.startDir;
+	const controlPlane = resolveControlPlaneRoot(startDir);
 
+	if (controlPlane.mode !== "none") {
 		controlPlaneRoot = controlPlane.controlPlaneRoot;
 		stateDir = controlPlane.stateDir;
 
-		const dbRelPath = join(stateDir, DB_FILENAME);
-		const db = getDb(controlPlaneRoot, dbRelPath);
-		try {
-			runMigrations(db);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			throw new Error(
-				`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-			);
+		const db =
+			params.db ??
+			getDb(controlPlaneRoot, controlPlaneDbPath(controlPlaneRoot, stateDir));
+		if (!params.db) {
+			try {
+				runMigrations(db);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				throw new Error(
+					`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
+				);
+			}
 		}
 
-		const ctxResult = resolveRunExecutionContext(db, params.run, {
-			controlPlaneRoot,
-			explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
+		const ambient = resolveAmbientRunId({
+			explicitRun: params.run,
+			required: Boolean(params.record),
+			startDir,
+			env: params.env,
+			db,
+			controlPlane,
 		});
+		if (!ambient.ok) outputAmbientError(ambient);
+		params.run = ambient.runId;
 
-		// Phase 3 fix: all run-context errors are hard errors, including
-		// RUN_NOT_FOUND. A typo in the run ID should not silently execute
-		// quality gates against the current cwd.
-		if (!ctxResult.ok) {
-			outputError(ctxResult.error.code, ctxResult.error.message, {
-				detail: ctxResult.error.detail,
+		if (params.run) {
+			const ctxResult = resolveRunExecutionContext(db, params.run, {
+				controlPlaneRoot,
+				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
 			});
-		}
 
-		const ctx = ctxResult.context;
-		explicitWorkdir = params.workdir ? resolve(params.workdir) : undefined;
-		effectiveWorkdir = explicitWorkdir ?? ctx.mappedWorktreePath ?? undefined;
-		// Use plan path directory for config layering
-		configContextDir = dirname(ctx.effectivePlanPath);
+			// Phase 3 fix: all run-context errors are hard errors, including
+			// RUN_NOT_FOUND. A typo in the run ID should not silently execute
+			// quality gates against the current cwd.
+			if (!ctxResult.ok) {
+				outputError(ctxResult.error.code, ctxResult.error.message, {
+					detail: ctxResult.error.detail,
+				});
+			}
+
+			const ctx = ctxResult.context;
+			explicitWorkdir = params.workdir ? resolve(params.workdir) : undefined;
+			effectiveWorkdir = explicitWorkdir ?? ctx.mappedWorktreePath ?? undefined;
+			// Use plan path directory for config layering
+			configContextDir = dirname(ctx.effectivePlanPath);
+		}
+	} else if (params.run) {
+		// Phase 3 fix: --run was explicitly provided but no control-plane DB
+		// exists. This is a hard error — silently falling through to cwd-based
+		// execution would violate the run-scoped contract.
+		outputError(
+			"NO_CONTROL_PLANE",
+			`--run was specified but no 5x control-plane DB was found. Initialize with "5x init" first.`,
+		);
+	} else if (params.record) {
+		outputError("RUN_CONTEXT_REQUIRED", "No run identity resolved.", {
+			remediation: REQUIRED_REMEDIATION,
+		});
 	}
 
 	// Resolve project context — use layered config if we have a contextDir
@@ -179,7 +227,7 @@ export async function runQuality(
 		skipQualityGates = ctx.config.skipQualityGates;
 	} else {
 		// Default: resolve from cwd
-		const ctx = await resolveProjectContext({ startDir: params.workdir });
+		const ctx = await resolveProjectContext({ startDir });
 		projectRoot = ctx.projectRoot;
 		qualityGates = ctx.config.qualityGates;
 		skipQualityGates = ctx.config.skipQualityGates;
@@ -187,17 +235,12 @@ export async function runQuality(
 
 	if (skipQualityGates && qualityGates.length === 0) {
 		// Intentional skip of empty gates — no warning, output includes skipped: true
-		const qualityData = {
+		return {
 			passed: true,
 			results: [] as unknown[],
 			skipped: true,
+			workdir: projectRoot,
 		};
-		outputSuccess(qualityData);
-
-		if (params.record) {
-			await autoRecord(params, qualityData);
-		}
-		return;
 	}
 
 	if (qualityGates.length === 0) {
@@ -205,17 +248,11 @@ export async function runQuality(
 		warn(
 			"Warning: no quality gates configured. Add qualityGates to 5x.toml or set skipQualityGates = true to suppress this warning.",
 		);
-		const qualityData = {
+		return {
 			passed: true,
 			results: [] as unknown[],
+			workdir: projectRoot,
 		};
-		outputSuccess(qualityData);
-
-		// Auto-record the empty-gates success if --record is set
-		if (params.record) {
-			await autoRecord(params, qualityData);
-		}
-		return;
 	}
 
 	// Use a temporary run context for logging purposes
@@ -232,7 +269,7 @@ export async function runQuality(
 		attempt: 1,
 	});
 
-	const qualityData = {
+	return {
 		passed: result.passed,
 		results: result.results.map((r) => ({
 			command: r.command,
@@ -240,12 +277,18 @@ export async function runQuality(
 			duration_ms: Math.round(r.duration),
 			output: r.output,
 		})),
+		workdir: projectRoot,
 	};
+}
 
-	outputSuccess(qualityData);
-
-	// Auto-record if --record is set
+export async function runQuality(
+	params: QualityParams = {},
+	warn: (...args: unknown[]) => void = console.error,
+): Promise<void> {
+	const qualityData = await runQualityCore(params, warn);
+	const { workdir: _workdir, ...payload } = qualityData;
+	outputSuccess(payload);
 	if (params.record) {
-		await autoRecord(params, qualityData);
+		await autoRecord(params, payload);
 	}
 }

@@ -1,5 +1,34 @@
 // Public API exports — v1
 
+// Control-plane state paths
+export {
+	controlPlaneDbPath,
+	controlPlaneStatePath,
+} from "./commands/control-plane.js";
+// Run identity
+export type {
+	AmbientRunErrorCode,
+	AmbientRunRequest,
+	AmbientRunResult,
+	AmbientRunSource,
+} from "./commands/run-identity.js";
+export {
+	AMBIENT_RUN_OPTION_HELP,
+	AMBIENT_RUN_OPTION_HELP_WITH_RECORD,
+	isLinkedWorktreeCheckout,
+	listActiveRunsForCheckout,
+	outputAmbientError,
+	REQUIRED_REMEDIATION,
+	requireAmbientRunId,
+	resolveAmbientRunId,
+} from "./commands/run-identity.js";
+export {
+	CURRENT_RUN_FILENAME,
+	clearPointerIfMatch,
+	currentRunPath,
+	readPointer,
+	writePointer,
+} from "./commands/run-pointer.js";
 // Config
 export type { AgentConfigRole, FiveXConfig } from "./config.js";
 export {

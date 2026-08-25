@@ -63,4 +63,26 @@ describe("cursor skills loader", () => {
 			expect(frontmatter.description.length).toBeGreaterThan(0);
 		}
 	});
+
+	test("combined skills contain FIVEX_RUN and phase finish", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+		expect(combined).toContain("FIVEX_RUN");
+		expect(combined).toContain("phase finish");
+	});
+
+	test("5x-phase-execution keeps granular quality and protocol fallbacks", () => {
+		const phase = listSkills().find((s) => s.name === "5x-phase-execution");
+		expect(phase).toBeDefined();
+		expect(phase?.content).toContain("5x protocol validate");
+		expect(phase?.content).toContain("5x quality run");
+		expect(phase?.content).toContain("5x phase finish");
+	});
+
+	test("windows skill contains FIVEX_RUN", () => {
+		const windows = listSkills().find((s) => s.name === "5x-windows");
+		expect(windows).toBeDefined();
+		expect(windows?.content).toContain("FIVEX_RUN");
+	});
 });

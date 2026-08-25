@@ -88,11 +88,22 @@ import { StreamWriter } from "../utils/stream-writer.js";
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
-	DB_FILENAME,
+	controlPlaneDbPath,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import {
+	type AmbientRunResult,
+	type AmbientRunSource,
+	requireAmbientRunId,
+	resolveAmbientRunId,
+} from "./run-identity.js";
+import {
+	clearPointerIfMatch,
+	currentRunPath,
+	writePointer,
+} from "./run-pointer.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -110,6 +121,8 @@ export interface RunStateParams {
 	plan?: string;
 	tail?: number;
 	sinceStep?: number;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 export interface RunRecordParams {
@@ -125,28 +138,84 @@ export interface RunRecordParams {
 	costUsd?: number;
 	durationMs?: number;
 	logPath?: string;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 export interface RunCompleteParams {
-	run: string;
+	run?: string;
 	status?: "completed" | "aborted";
 	reason?: string;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 export interface RunReopenParams {
-	run: string;
+	run?: string;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 export interface RunListParams {
 	plan?: string;
 	status?: string;
 	limit?: number;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
+}
+
+/** Ambient sources `run list` may advertise. `flag` / `pipe` are never used here. */
+export type ListAmbientSource = "environment" | "worktree" | "pointer";
+
+const LIST_FOCUS_LABEL: Record<ListAmbientSource, string> = {
+	environment: "env",
+	worktree: "worktree",
+	pointer: "pointer",
+};
+
+export interface ListRunRow {
+	id: string;
+	plan_path: string;
+	status: string;
+	created_at: string;
+	updated_at: string;
+	step_count: number;
+	ambient?: true;
+	ambient_source?: ListAmbientSource;
+}
+
+function isListAmbientSource(
+	source: AmbientRunSource,
+): source is ListAmbientSource {
+	return (
+		source === "environment" || source === "worktree" || source === "pointer"
+	);
+}
+
+/**
+ * Stamp the ambiently focused run (if listed). Resolution failures and
+ * `source: "none"` leave the payload unmarked — list itself still succeeds.
+ */
+export function applyAmbientListMarker(
+	runs: ListRunRow[],
+	ambient: AmbientRunResult,
+): ListRunRow[] {
+	if (!ambient.ok || !ambient.runId || !isListAmbientSource(ambient.source)) {
+		return runs;
+	}
+	const focused = runs.find((r) => r.id === ambient.runId);
+	if (!focused) return runs;
+	focused.ambient = true;
+	focused.ambient_source = ambient.source;
+	return runs;
 }
 
 export interface RunRelinkParams {
-	run: string;
+	run?: string;
 	plan?: string | true; // path, or true for auto-search by filename
 	worktree?: string;
+	startDir?: string;
+	env?: NodeJS.Dict<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -700,19 +769,10 @@ function formatRecordText(
 /**
  * Human-readable text formatter for `run list` output.
  *
- * Column-aligned table with ID, Plan, Status, Steps, Created.
+ * Column-aligned table with Focus, ID, Plan, Status, Steps, Created.
  * Truncates long plan paths with `...`.
  */
-function formatListText(data: {
-	runs: Array<{
-		id: string;
-		plan_path: string;
-		status: string;
-		step_count: number;
-		created_at: string;
-		updated_at: string;
-	}>;
-}): void {
+function formatListText(data: { runs: ListRunRow[] }): void {
 	const { runs } = data;
 
 	if (runs.length === 0) {
@@ -729,6 +789,8 @@ function formatListText(data: {
 
 	// Format rows first to compute widths
 	const rows = runs.map((r) => ({
+		focus:
+			r.ambient && r.ambient_source ? LIST_FOCUS_LABEL[r.ambient_source] : "",
 		id: r.id,
 		plan: truncatePlan(r.plan_path),
 		status: r.status,
@@ -738,6 +800,7 @@ function formatListText(data: {
 
 	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
 	const cols: ColDef[] = [
+		{ header: "Focus", key: "focus", width: 5 },
 		{ header: "ID", key: "id", width: 2 },
 		{ header: "Plan", key: "plan", width: 4 },
 		{ header: "Status", key: "status", width: 6 },
@@ -774,6 +837,36 @@ export function planLockedDetail(
 		stale: false,
 		remediation: `If this process is hung, run \`5x unlock ${planPath} --force\`.`,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Focus pointer
+// ---------------------------------------------------------------------------
+
+function exportHint(runId: string): string {
+	return `export FIVEX_RUN=${runId}`;
+}
+
+/** Write the local focus pointer. Fail the command on I/O errors. */
+function writeFocusPointer(
+	projectRoot: string,
+	stateDir: string,
+	runId: string,
+): void {
+	const path = currentRunPath(projectRoot, stateDir);
+	try {
+		writePointer(path, runId);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		outputError(
+			"RUN_POINTER_WRITE_FAILED",
+			`Failed to write focus pointer: ${msg}`,
+			{
+				path,
+				run_id: runId,
+			},
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -851,9 +944,17 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// Normalize db.path to directory semantics (backward compat: `.5x/5x.db` → `.5x`)
-	const dbRelPath = join(normalizeDbPath(config.db.path), DB_FILENAME);
-	const db = getDb(projectRoot, dbRelPath);
+	// Effective state root for both the DB and the focus pointer.
+	// Managed/isolated: controlPlane.stateDir (already the configured root).
+	// None mode: controlPlane.stateDir is the default `.5x` even when config
+	// overrides db.path, so use the configured path — otherwise a first-use
+	// absolute db.path would write 5x.db at the configured root and
+	// current-run under the checkout `.5x`.
+	const stateDirForDb =
+		controlPlane.mode !== "none"
+			? controlPlane.stateDir
+			: normalizeDbPath(config.db.path);
+	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDirForDb));
 	runMigrations(db);
 
 	const requestedWorktreePath =
@@ -933,6 +1034,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
+			writeFocusPointer(projectRoot, stateDirForDb, existing.id);
 			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
 			outputSuccess({
@@ -941,6 +1043,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				status: existing.status,
 				created_at: existing.created_at,
 				resumed: true,
+				export_hint: exportHint(existing.id),
 				...(worktreeResult ? { worktree: worktreeResult } : {}),
 				// Phase 4: top-level worktree context for downstream pipe consumers
 				...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
@@ -961,6 +1064,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}),
 		});
 
+		writeFocusPointer(projectRoot, stateDirForDb, runId);
 		registerLockCleanup(projectRoot, planPath, lockOpts);
 		lockCleanupRegistered = true;
 
@@ -971,6 +1075,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			status: "active",
 			created_at: run?.created_at ?? new Date().toISOString(),
 			resumed: false,
+			export_hint: exportHint(runId),
 			...(worktreeResult ? { worktree: worktreeResult } : {}),
 			// Phase 4: top-level worktree context for downstream pipe consumers
 			...deriveWorktreeContextFields(worktreeResult, planPath, projectRoot),
@@ -985,19 +1090,35 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { config, db, controlPlane } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 
-	// Resolve run by ID or plan path
+	// `--plan` is an explicit selector: skip ambient identity (including FIVEX_RUN).
+	// `--run` wins when both are present (checked first today).
 	let run: RunRowV1 | null = null;
-	if (params.run) {
-		run = getRunV1(db, params.run);
-	} else if (params.plan) {
+	if (params.plan && !params.run) {
 		const planPath = canonicalizePlanPath(
 			resolvePlanArg(params.plan, config.paths.plans),
 		);
 		run = getActiveRunV1(db, planPath);
 	} else {
-		outputError("INVALID_ARGS", "Either --run or --plan is required");
+		if (!controlPlane) {
+			outputError(
+				"NO_CONTROL_PLANE",
+				`No 5x control-plane DB found. Initialize with "5x init" first.`,
+			);
+		}
+		const runId = requireAmbientRunId({
+			explicitRun: params.run,
+			startDir: params.startDir,
+			env: params.env,
+			db,
+			controlPlane,
+		});
+		validateRunId(runId);
+		params.run = runId;
+		run = getRunV1(db, runId);
 	}
 
 	if (!run) {
@@ -1200,14 +1321,15 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 	}
 
 	// If stdin is piped and not consumed by --result -, parse upstream envelope
+	let pipeRunId: string | undefined;
 	if (!stdinConsumedByResult && isStdinPiped()) {
 		const upstream = await readUpstreamEnvelope();
 		if (upstream) {
 			const ctx = extractPipeContext(upstream.data);
 			const invoke = extractInvokeMetadata(upstream.data);
 
-			// Auto-populate from pipe context (CLI flags take precedence via ??=)
-			params.run ??= ctx.runId;
+			// Pipe run_id is rank 5 — do not assign onto params.run so FIVEX_RUN wins.
+			pipeRunId = ctx.runId;
 			params.stepName ??= ctx.stepName;
 			params.phase ??= ctx.phase;
 
@@ -1228,13 +1350,25 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 		}
 	}
 
-	// Validate required params are now resolved (after merge)
-	if (!params.run) {
+	const dbContext = await resolveDbContext({ startDir: params.startDir });
+	if (!dbContext.controlPlane) {
 		outputError(
-			"INVALID_ARGS",
-			"--run is required (provide it or pipe from an upstream command)",
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
 		);
 	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		pipeRunId,
+		startDir: params.startDir,
+		env: params.env,
+		db: dbContext.db,
+		controlPlane: dbContext.controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
+	// Validate remaining required params (after pipe merge + ambient identity)
 	if (!params.stepName) {
 		outputError(
 			"INVALID_ARGS",
@@ -1249,12 +1383,15 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 	}
 
 	try {
-		const result = await recordStepInternal({
-			...params,
-			run: params.run,
-			stepName: params.stepName,
-			result: params.result,
-		});
+		const result = await recordStepInternal(
+			{
+				...params,
+				run: runId,
+				stepName: params.stepName,
+				result: params.result,
+			},
+			dbContext,
+		);
 		const { max_steps: maxSteps, ...payload } = result;
 		const budget = computeStepBudget(payload.total_steps, maxSteps);
 		const warning = stepBudgetWarning(budget);
@@ -1282,12 +1419,30 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 }
 
 export async function runV1Complete(params: RunCompleteParams): Promise<void> {
-	const { projectRoot, db, controlPlane } = await resolveDbContext();
+	const { projectRoot, db, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 
-	const run = getRunV1(db, params.run);
+	if (!controlPlane) {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		startDir: params.startDir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
+	const run = getRunV1(db, runId);
 	if (!run) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+		outputError("RUN_NOT_FOUND", `Run ${runId} not found`);
 	}
 
 	// Phase 3 fix: validate run-scoped context via shared resolver to honor
@@ -1338,7 +1493,7 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 	// Record terminal step
 	const stepName = status === "completed" ? "run:complete" : "run:abort";
 	recordStep(db, {
-		run_id: params.run,
+		run_id: runId,
 		step_name: stepName,
 		result_json: JSON.stringify({
 			status,
@@ -1347,7 +1502,7 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 	});
 
 	// Update run status
-	completeRun(db, params.run, status);
+	completeRun(db, runId, status);
 
 	// Release plan lock (ownership-safe: only releases if we own it or it's stale)
 	// Phase 3b: pass stateDir to releaseLock
@@ -1355,20 +1510,43 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		releaseLock(projectRoot, run.plan_path, lockOpts);
 	}
 
+	clearPointerIfMatch(
+		currentRunPath(projectRoot, controlPlane?.stateDir ?? ".5x"),
+		runId,
+	);
+
 	outputSuccess({
-		run_id: params.run,
+		run_id: runId,
 		status,
 		reason: params.reason ?? null,
 	});
 }
 
 export async function runV1Reopen(params: RunReopenParams): Promise<void> {
-	const { projectRoot, db, controlPlane } = await resolveDbContext();
+	const { projectRoot, db, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
 
-	const run = getRunV1(db, params.run);
+	if (!controlPlane) {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		startDir: params.startDir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
+	const run = getRunV1(db, runId);
 	if (!run) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+		outputError("RUN_NOT_FOUND", `Run ${runId} not found`);
 	}
 
 	// Phase 3 fix: validate run-scoped context via shared resolver to honor
@@ -1376,7 +1554,7 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 	// worktree should fail rather than allow drift.
 	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
 	if (controlPlaneRoot) {
-		const ctxResult = resolveRunExecutionContext(db, params.run, {
+		const ctxResult = resolveRunExecutionContext(db, runId, {
 			controlPlaneRoot,
 		});
 		if (!ctxResult.ok) {
@@ -1387,7 +1565,7 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 	}
 
 	if (run.status === "active") {
-		outputError("RUN_ALREADY_ACTIVE", `Run ${params.run} is already active`);
+		outputError("RUN_ALREADY_ACTIVE", `Run ${runId} is already active`);
 	}
 
 	// Enforce lock ownership: if the plan is locked by another live PID, refuse.
@@ -1416,7 +1594,7 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 
 	// Record reopen step with previous status
 	recordStep(db, {
-		run_id: params.run,
+		run_id: runId,
 		step_name: "run:reopen",
 		result_json: JSON.stringify({
 			previous_status: run.status,
@@ -1424,17 +1602,19 @@ export async function runV1Reopen(params: RunReopenParams): Promise<void> {
 	});
 
 	// Set run back to active
-	reopenRun(db, params.run);
+	reopenRun(db, runId);
 
 	outputSuccess({
-		run_id: params.run,
+		run_id: runId,
 		status: "active",
 		previous_status: run.status,
 	});
 }
 
 export async function runV1List(params: RunListParams): Promise<void> {
-	const { config, db } = await resolveDbContext();
+	const { config, db, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 
 	const runs = listRuns(db, {
 		planPath: params.plan
@@ -1444,19 +1624,27 @@ export async function runV1List(params: RunListParams): Promise<void> {
 		limit: params.limit,
 	});
 
-	outputSuccess(
-		{
-			runs: runs.map((r) => ({
-				id: r.id,
-				plan_path: r.plan_path,
-				status: r.status,
-				created_at: r.created_at,
-				updated_at: r.updated_at,
-				step_count: r.step_count,
-			})),
-		},
-		formatListText,
-	);
+	const listed: ListRunRow[] = runs.map((r) => ({
+		id: r.id,
+		plan_path: r.plan_path,
+		status: r.status,
+		created_at: r.created_at,
+		updated_at: r.updated_at,
+		step_count: r.step_count,
+	}));
+
+	if (controlPlane) {
+		const ambient = resolveAmbientRunId({
+			required: false,
+			db,
+			controlPlane,
+			startDir: params.startDir,
+			env: params.env,
+		});
+		applyAmbientListMarker(listed, ambient);
+	}
+
+	outputSuccess({ runs: listed }, formatListText);
 }
 
 // ---------------------------------------------------------------------------
@@ -1489,11 +1677,29 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 		);
 	}
 
-	const { db, config } = await resolveDbContext();
+	const { db, config, controlPlane } = await resolveDbContext({
+		startDir: params.startDir,
+	});
 
-	const run = getRunV1(db, params.run);
+	if (!controlPlane) {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		startDir: params.startDir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
+	const run = getRunV1(db, runId);
 	if (!run) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
+		outputError("RUN_NOT_FOUND", `Run ${runId} not found`);
 	}
 
 	const changes: Record<string, { old: string | null; new: string | null }> =
@@ -1543,7 +1749,7 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 
 		const canonical = canonicalizePlanPath(newPlanPath);
 		const oldPlanPath = run.plan_path;
-		updateRunPlanPath(db, params.run, canonical);
+		updateRunPlanPath(db, runId, canonical);
 		upsertPlan(db, { planPath: canonical });
 		effectivePlanPath = canonical;
 
@@ -1572,14 +1778,14 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 	}
 
 	// Fetch final state for output
-	const updatedRun = getRunV1(db, params.run) as NonNullable<
+	const updatedRun = getRunV1(db, runId) as NonNullable<
 		ReturnType<typeof getRunV1>
 	>;
 	const updatedPlan = getPlan(db, effectivePlanPath);
 
 	outputSuccess(
 		{
-			run_id: params.run,
+			run_id: runId,
 			plan_path: updatedRun.plan_path,
 			worktree_path: updatedPlan?.worktree_path ?? null,
 			changes,
@@ -1593,35 +1799,53 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface RunWatchParams {
-	run: string;
+	run?: string;
 	humanReadable?: boolean;
 	showReasoning?: boolean;
 	noReplay?: boolean;
 	workdir?: string;
 	pollInterval?: number;
+	env?: NodeJS.Dict<string>;
 }
 
 export async function runV1Watch(params: RunWatchParams): Promise<void> {
-	validateRunId(params.run);
+	// Preserve INVALID_ARGS for an explicit malformed --run (path traversal, etc.).
+	if (params.run) validateRunId(params.run);
 
 	// Validate run exists — try DB first, fall back to log dir existence
 	const { projectRoot, db, controlPlane } = await resolveDbContext({
 		startDir: params.workdir,
 	});
-	const run = getRunV1(db, params.run);
+	if (!controlPlane) {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		startDir: params.workdir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
+	const run = getRunV1(db, runId);
 	// Phase 3b: re-anchor log path to controlPlaneRoot/stateDir
 	const stateDir = controlPlane?.stateDir ?? ".5x";
-	const logDir = join(projectRoot, stateDir, "logs", params.run);
+	const logDir = join(projectRoot, stateDir, "logs", runId);
 
 	if (!run) {
 		if (existsSync(logDir)) {
 			process.stderr.write(
-				`[watch] Warning: run '${params.run}' not found in DB, but log directory exists. Proceeding.\n`,
+				`[watch] Warning: run '${runId}' not found in DB, but log directory exists. Proceeding.\n`,
 			);
 		} else {
 			outputError(
 				"RUN_NOT_FOUND",
-				`Run '${params.run}' not found (no DB entry and no log directory)`,
+				`Run '${runId}' not found (no DB entry and no log directory)`,
 			);
 		}
 	}
@@ -1632,7 +1856,7 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	if (run) {
 		const controlPlaneRoot = controlPlane?.controlPlaneRoot;
 		if (controlPlaneRoot) {
-			const ctxResult = resolveRunExecutionContext(db, params.run, {
+			const ctxResult = resolveRunExecutionContext(db, runId, {
 				controlPlaneRoot,
 				explicitWorkdir: params.workdir ? resolve(params.workdir) : undefined,
 			});

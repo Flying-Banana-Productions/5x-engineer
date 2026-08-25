@@ -64,17 +64,21 @@ Only use `--new-session` for recovery (context loss, empty output).
 
 ## Tools
 
-- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree)
-- `5x run state --run <id>` — check what's been done
-- `5x run record <step> --run <id> --result '<json>'` — record a step
-- `5x run complete --run <id>` — mark run finished
-- `5x run list` — list runs (filter by --plan, --status)
-- `5x template render <template> --run <id> [--var key=val ...]` — render a task prompt with run/worktree context
+`--run` is optional on run-scoped commands when `FIVEX_RUN`, a unique
+worktree mapping, or `.5x/current-run` already identifies the run. Pass
+`--run` explicitly in Recovery or when identity is missing/ambiguous.
+
+- `5x run init --plan <path> [--worktree]` — create or resume a run (use `--worktree` to auto-resolve or create an isolated worktree). Export `FIVEX_RUN` from the envelope (`run_id` or `export_hint`).
+- `5x run state` — check what's been done (ambient run identity)
+- `5x run record <step> --result '<json>'` — record a step
+- `5x run complete` — mark run finished
+- `5x run list` — list runs (filter by --plan, --status); marks the ambiently resolved run
+- `5x template render <template> [--var key=val ...]` — render a task prompt with run/worktree context
 {{#if any_native}}
-- `5x protocol validate <author|reviewer> [--run <id> --record --step <name> ...]` — validate and optionally record structured output (native roles)
+- `5x protocol validate <author|reviewer> [--record --step <name> ...]` — validate and optionally record structured output (native roles)
 {{/if}}
 {{#if any_invoke}}
-- `5x invoke <author|reviewer> <template> --run <id> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
+- `5x invoke <author|reviewer> <template> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
 {{#if any_native}}
@@ -99,7 +103,7 @@ Only use `--new-session` for recovery (context loss, empty output).
 #    selects the -continued template variant without a provider session id).
 #    Never pass $NATIVE_SUBTASK_ID as --session — that flag takes a provider
 #    session id (persisted in steps.session_id), not a harness task id.
-RENDERED=$(5x template render reviewer-plan --run $RUN \
+RENDERED=$(5x template render reviewer-plan \
   ${NATIVE_SUBTASK_ID:+--continue-native})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -111,7 +115,7 @@ RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate reviewer \
-  --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
+  --record --step $STEP --phase plan --iteration $ITERATION
 
 # 4. Capture agent id for reuse in subsequent reviews
 NATIVE_SUBTASK_ID=<agent id from Task tool result>
@@ -137,7 +141,7 @@ common source of stale re-reviews.
 **Canonical delegation example (reviewer:review):**
 
 ```bash
-RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
+RESULT=$(5x invoke reviewer reviewer-plan \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -183,6 +187,16 @@ Confirm each role's path before delegating:
 If your chosen delegation path does not match the resolved
 `delegationMode` for that role, stop and correct before proceeding.
 
+If you do not already have `FIVEX_RUN` exported for this plan:
+
+```bash
+INIT=$(5x run init --plan $PLAN_PATH --worktree)
+export FIVEX_RUN=$(echo "$INIT" | jq -r '.data.run_id')
+```
+
+If a run already exists, export `FIVEX_RUN` from the init envelope or
+from `5x run state --plan $PLAN_PATH`.
+
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
 Track $NATIVE_SUBTASK_ID (initially empty). When `reviewer.continuePhaseSessions`
@@ -211,7 +225,7 @@ Read $REVIEW_PATH from a separate template render call before each reviewer invo
 Delegate to the reviewer via the Task tool:
 
 ```bash
-RENDERED=$(5x template render reviewer-plan --run $RUN \
+RENDERED=$(5x template render reviewer-plan \
   ${NATIVE_SUBTASK_ID:+--continue-native})
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -221,7 +235,7 @@ RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 echo "$RESULT" | 5x protocol validate reviewer \
-  --run $RUN --record --step $STEP --phase plan --iteration $ITERATION
+  --record --step $STEP --phase plan --iteration $ITERATION
 ```
 
 `--continue-native` selects the `reviewer-plan-continued` template
@@ -235,11 +249,11 @@ Delegate to the reviewer via `5x invoke`:
 
 ```bash
 # Extract review_path for reporting/audit
-REVIEW_PATH=$(5x template render reviewer-plan --run $RUN \
+REVIEW_PATH=$(5x template render reviewer-plan \
   ${SESSION_ID:+--session $SESSION_ID} \
   | jq -r '.data.variables.review_path')
 
-RESULT=$(5x invoke reviewer reviewer-plan --run $RUN \
+RESULT=$(5x invoke reviewer reviewer-plan \
   ${SESSION_ID:+--session $SESSION_ID} \
   --record --record-step reviewer:plan --phase plan --iteration $ITERATION)
 
@@ -276,21 +290,21 @@ Read the verdict from `READINESS` (`.data.result.readiness`):
 Delegate to the plan author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-plan-review --run $RUN)
+RENDERED=$(5x template render author-process-plan-review)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
 RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
 
 echo "$RESULT" | 5x protocol validate author \
-  --run $RUN --record --step $STEP --phase plan \
+  --record --step $STEP --phase plan \
   --no-phase-checklist-validate
 ```
 {{else}}
 Delegate to the plan author via `5x invoke`:
 
 ```bash
-RESULT=$(5x invoke author author-process-plan-review --run $RUN \
+RESULT=$(5x invoke author author-process-plan-review \
   --record --record-step author:process-plan-review --phase plan)
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
@@ -375,7 +389,7 @@ Present the situation and your per-item recommendations to the human:
 
 ### Step 5: Complete
 
-    5x run complete --run $RUN
+    5x run complete
 
 Report to the human: plan review is complete. Verdict: approved
 (or overridden). Review document is at the auto-generated review path
@@ -421,6 +435,14 @@ Report to the human: plan review is complete. Verdict: approved
 {{else}}
 - **Subagent returns empty or invalid output (author)**: Retry once without `--session`.
   If it fails again, escalate to the human.
+{{/if}}
+- **Missing or ambiguous run identity**: pass `--run` on granular commands, for example
+  `5x run record "human:gate" --run $FIVEX_RUN --phase plan --result '...'`,
+  `5x commit --run $FIVEX_RUN -m "plan: revise" --all-files`.
+{{#if any_native}}
+  Native recovery also uses
+  `5x protocol validate reviewer --record --run $FIVEX_RUN --step $STEP --phase plan --iteration $ITERATION` and
+  `5x protocol validate author --record --run $FIVEX_RUN --step $STEP --phase plan --no-phase-checklist-validate`.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires a
   continuation signal because `continuePhaseSessions` is enabled and

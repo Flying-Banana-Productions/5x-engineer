@@ -108,10 +108,11 @@ async function run5x(
 	cwd: string,
 	args: string[],
 	timeoutMs = 15000,
+	extraEnv?: Record<string, string | undefined>,
 ): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env: { ...cleanGitEnv(), ...extraEnv },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -611,6 +612,79 @@ describe("invoke CLI integration", () => {
 						"user_notes=none",
 					]);
 					expect(result.exitCode).not.toBe(0);
+					const json = parseJson(result.stdout);
+					expect(json.ok).toBe(false);
+					expect((json.error as Record<string, unknown>).code).toBe(
+						"RUN_CONTEXT_REQUIRED",
+					);
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"invoke without --run succeeds identity via FIVEX_RUN",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					insertRun(dir, "run_envtest01");
+					const result = await run5x(
+						dir,
+						[
+							"invoke",
+							"author",
+							"author-next-phase",
+							"--var",
+							"plan_path=/p",
+							"--var",
+							"phase_number=1",
+							"--var",
+							"user_notes=none",
+						],
+						20000,
+						{ FIVEX_RUN: "run_envtest01" },
+					);
+					const json = parseJson(result.stdout);
+					if (!json.ok) {
+						const error = json.error as Record<string, unknown>;
+						expect(error.code).not.toBe("RUN_CONTEXT_REQUIRED");
+						expect(error.code).not.toBe("INVALID_ARGS");
+					}
+				} finally {
+					cleanupDir(dir);
+				}
+			},
+			{ timeout: 20000 },
+		);
+
+		test(
+			"invoke without --run succeeds identity via pointer",
+			async () => {
+				const dir = makeTmpDir();
+				try {
+					setupProject(dir);
+					insertRun(dir, "run_ptrtest01");
+					writeFileSync(join(dir, ".5x", "current-run"), "run_ptrtest01\n");
+					const result = await run5x(dir, [
+						"invoke",
+						"author",
+						"author-next-phase",
+						"--var",
+						"plan_path=/p",
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=none",
+					]);
+					const json = parseJson(result.stdout);
+					if (!json.ok) {
+						const error = json.error as Record<string, unknown>;
+						expect(error.code).not.toBe("RUN_CONTEXT_REQUIRED");
+						expect(error.code).not.toBe("INVALID_ARGS");
+					}
 				} finally {
 					cleanupDir(dir);
 				}

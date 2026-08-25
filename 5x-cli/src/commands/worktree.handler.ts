@@ -39,10 +39,12 @@ import {
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
+	controlPlaneDbPath,
 	DB_FILENAME,
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import { isLinkedWorktreeCheckout } from "./run-identity.js";
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -101,22 +103,6 @@ function worktreeDir(
 }
 
 /**
- * Detect if the current checkout is a linked worktree (not the main checkout).
- * Returns true if the checkout root differs from the control-plane root.
- */
-function isLinkedWorktreeContext(
-	controlPlane: ControlPlaneResult,
-	startDir?: string,
-): boolean {
-	const checkoutRoot = resolveCheckoutRoot(resolve(startDir ?? "."));
-	if (!checkoutRoot) return false;
-	return (
-		realpathExisting(checkoutRoot) !==
-		realpathExisting(controlPlane.controlPlaneRoot)
-	);
-}
-
-/**
  * Emit a split-brain warning to stderr when a root state DB (managed mode)
  * shadows a local state DB in the current checkout. Emitted once per command
  * invocation — callers should invoke this at most once.
@@ -141,10 +127,9 @@ export function emitSplitBrainWarning(
 	const localDbPath = join(localStateDir, DB_FILENAME);
 	if (!existsSync(localDbPath)) return;
 
-	const rootDbPath = join(
+	const rootDbPath = controlPlaneDbPath(
 		controlPlane.controlPlaneRoot,
 		controlPlane.stateDir,
-		DB_FILENAME,
 	);
 	process.stderr.write(
 		`Warning: Local state DB at \`${localDbPath}\` is being ignored — using control-plane DB at \`${rootDbPath}\`. ` +
@@ -182,7 +167,7 @@ export async function worktreeCreate(
 	if (
 		!params.allowNested &&
 		controlPlane.mode !== "none" &&
-		isLinkedWorktreeContext(controlPlane, params.startDir)
+		isLinkedWorktreeCheckout(controlPlane, params.startDir)
 	) {
 		outputError(
 			"WORKTREE_CONTEXT_INVALID",

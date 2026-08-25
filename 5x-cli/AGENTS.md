@@ -18,6 +18,10 @@ safe repairs (stale/corrupt locks, dead worktree mappings, lossless project
 harness sync). Targeted lock questions go through `5x lock list` / `5x unlock`;
 live holders require `5x unlock <plan> --force`.
 
+Run-scoped commands resolve `--run` from `FIVEX_RUN`, a unique linked-worktree
+mapping, or `.5x/current-run` when the flag is omitted; prompt-queue and
+invocation-registry workers still pass `--run` explicitly.
+
 ## Test Tiers
 
 **Unit tests** (`test/unit/`) — call functions directly, assert on return values and filesystem side effects (files written, config created, DB records). No subprocesses, no network, no console output capture. Must run deterministically under `--concurrent`.

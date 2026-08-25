@@ -352,11 +352,11 @@ See Phase 2.1 for the API. Phase 1 unit tests that cover precedence 4 should cal
 
 **File:** `src/index.ts` — export the new types and `resolveAmbientRunId` next to existing run-context consumers (after the lock exports around `:80-99`, or beside path helpers).
 
-- [ ] Add `run-identity.ts` with the types and functions above.
-- [ ] Implement `listActiveRunsForCheckout` on top of `listPlansByWorktreePath` + `getActiveRunV1`.
-- [ ] Implement precedence 1–3 and required/optional none without pointer if pointer helpers are deferred; otherwise 1–6.
-- [ ] Export from `src/index.ts`.
-- [ ] Do not change any command adapter in this phase.
+- [x] Add `run-identity.ts` with the types and functions above.
+- [x] Implement `listActiveRunsForCheckout` on top of `listPlansByWorktreePath` + `getActiveRunV1`.
+- [x] Implement precedence 1–3 and required/optional none without pointer if pointer helpers are deferred; otherwise 1–6.
+- [x] Export from `src/index.ts`.
+- [x] Do not change any command adapter in this phase.
 
 ### 1.2 Unit tests
 
@@ -364,21 +364,21 @@ See Phase 2.1 for the API. Phase 1 unit tests that cover precedence 4 should cal
 
 Use in-memory DB + temp directories like `test/unit/commands/run-context.test.ts:20-50`. Inject `startDir` / `env`. Create two temp dirs with distinct `realpath` values as fake worktree roots (they need not be git repos for the mapping query). Control plane root = tmp.
 
-- [ ] `--run` wins over `FIVEX_RUN`, worktree mapping, and pointer.
-- [ ] `FIVEX_RUN` wins over worktree mapping and pointer.
-- [ ] Unique active mapping to `startDir`’s checkout (via `controlPlane` + mocked checkout root — if `resolveCheckoutRoot` needs a real git toplevel, either init a git repo + worktree in the unit test or add an injectable `checkoutRoot` on `AmbientRunRequest` for tests; **prefer injectable `checkoutRoot?: string`** to keep this file under `--concurrent` and off git).
-- [ ] Two active runs mapped to the same canonical path → `RUN_CONTEXT_AMBIGUOUS` with both ids, no pointer consult (pointer file can name a third id; must not be chosen).
-- [ ] Linked checkout with zero mappings + pointer to a run mapped elsewhere → `RUN_POINTER_INCOMPATIBLE`.
-- [ ] Linked checkout with zero mappings + pointer to the unique run mapped *here* → `source: "pointer"` (compatibility success).
-- [ ] Non-linked checkout (checkoutRoot === controlPlaneRoot) uses pointer even if that run maps to another path.
-- [ ] `required: false` and no signals → `{ ok: true, runId: undefined, source: "none" }`.
-- [ ] `required: true` and no signals → `RUN_CONTEXT_REQUIRED` with remediation mentioning `--run`, `FIVEX_RUN`, worktree, and `.5x/current-run`.
-- [ ] Canonical match: symlink worktree path stored in DB vs real `startDir` (use `symlinkSync`).
-- [ ] Nested `startDir` under a worktree matches the toplevel mapping when `checkoutRoot` is the toplevel (inject toplevel).
-- [ ] `FIVEX_RUN` unknown id → `RUN_ENV_INVALID`, no fallback.
-- [ ] Pipe id used only when 1–4 produced none (`pipeRunId` set, no flag/env/mapping/pointer).
-- [ ] Terminal run in mapping is ignored for worktree inference; pointer to that terminal run → `RUN_POINTER_STALE`.
-- [ ] Absolute `stateDir`: write the pointer via `currentRunPath(controlPlaneRoot, absStateDir)` into a temp absolute directory; resolver source is `pointer`; the file is not created under `join(controlPlaneRoot, absStateDir)`. Skip this case if Phase 1 injects `readPointer` and defers filesystem pointer helpers to Phase 2.
+- [x] `--run` wins over `FIVEX_RUN`, worktree mapping, and pointer.
+- [x] `FIVEX_RUN` wins over worktree mapping and pointer.
+- [x] Unique active mapping to `startDir`’s checkout (via `controlPlane` + mocked checkout root — if `resolveCheckoutRoot` needs a real git toplevel, either init a git repo + worktree in the unit test or add an injectable `checkoutRoot` on `AmbientRunRequest` for tests; **prefer injectable `checkoutRoot?: string`** to keep this file under `--concurrent` and off git).
+- [x] Two active runs mapped to the same canonical path → `RUN_CONTEXT_AMBIGUOUS` with both ids, no pointer consult (pointer file can name a third id; must not be chosen).
+- [x] Linked checkout with zero mappings + pointer to a run mapped elsewhere → `RUN_POINTER_INCOMPATIBLE`.
+- [x] Linked checkout with zero mappings + pointer to the unique run mapped *here* → `source: "pointer"` (compatibility success).
+- [x] Non-linked checkout (checkoutRoot === controlPlaneRoot) uses pointer even if that run maps to another path.
+- [x] `required: false` and no signals → `{ ok: true, runId: undefined, source: "none" }`.
+- [x] `required: true` and no signals → `RUN_CONTEXT_REQUIRED` with remediation mentioning `--run`, `FIVEX_RUN`, worktree, and `.5x/current-run`.
+- [x] Canonical match: symlink worktree path stored in DB vs real `startDir` (use `symlinkSync`).
+- [x] Nested `startDir` under a worktree matches the toplevel mapping when `checkoutRoot` is the toplevel (inject toplevel).
+- [x] `FIVEX_RUN` unknown id → `RUN_ENV_INVALID`, no fallback.
+- [x] Pipe id used only when 1–4 produced none (`pipeRunId` set, no flag/env/mapping/pointer).
+- [x] Terminal run in mapping is ignored for worktree inference; pointer to that terminal run → `RUN_POINTER_STALE`.
+- [x] Absolute `stateDir`: write the pointer via `currentRunPath(controlPlaneRoot, absStateDir)` into a temp absolute directory; resolver source is `pointer`; the file is not created under `join(controlPlaneRoot, absStateDir)`. Skip this case if Phase 1 injects `readPointer` and defers filesystem pointer helpers to Phase 2.
 
 ---
 
@@ -434,11 +434,11 @@ Out of this slice (do not convert unless already going through `resolveDbContext
 
 **File:** `src/index.ts` — export `controlPlaneStatePath` and `controlPlaneDbPath` next to other control-plane / path helpers.
 
-- [ ] Add `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts`.
-- [ ] Switch `resolveDbContext` (both branches), `runV1Init`, and every direct run-scoped handler in the table.
-- [ ] Switch the worktree managed-mode warning’s root DB path.
-- [ ] Export from `src/index.ts`.
-- [ ] Unit tests in `test/unit/commands/control-plane-state-path.test.ts` (new): relative `stateDir` → `join(controlPlaneRoot, stateDir, filename)`; absolute `stateDir` → `join(stateDir, filename)` and **not** prefixed with `controlPlaneRoot`; `controlPlaneDbPath` uses `DB_FILENAME`.
+- [x] Add `controlPlaneStatePath` / `controlPlaneDbPath` in `control-plane.ts`.
+- [x] Switch `resolveDbContext` (both branches), `runV1Init`, and every direct run-scoped handler in the table.
+- [x] Switch the worktree managed-mode warning’s root DB path.
+- [x] Export from `src/index.ts`.
+- [x] Unit tests in `test/unit/commands/control-plane-state-path.test.ts` (new): relative `stateDir` → `join(controlPlaneRoot, stateDir, filename)`; absolute `stateDir` → `join(stateDir, filename)` and **not** prefixed with `controlPlaneRoot`; `controlPlaneDbPath` uses `DB_FILENAME`.
 
 ### 2.2 Pointer helpers
 
@@ -467,8 +467,8 @@ Do not reimplement the absolute/`join` branch here — import `controlPlaneState
 
 `readPointer`: if missing, `null`. If present, trim whitespace; empty → treat as invalid at the identity layer (`RUN_POINTER_INVALID`), so this helper can return `""` or throw; prefer returning the raw trimmed string (including `""`) and let `resolveAmbientRunId` classify. `writePointer`: `mkdirSync` parent `recursive: true`, write `runId + "\n"` (POSIX text). `clearPointerIfMatch`: read, compare, `unlinkSync` only on equality; return whether unlinked. Ignore `ENOENT` on unlink.
 
-- [ ] Implement helpers with no logging and no `process.exit`.
-- [ ] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
+- [x] Implement helpers with no logging and no `process.exit`.
+- [x] Unit tests in `test/unit/commands/run-pointer.test.ts` (new): write/read round-trip; clear matching; refuse to clear mismatch; missing file clear is no-op; parent dir created on write; **relative `stateDir` resolves to `join(controlPlaneRoot, stateDir, "current-run")`; absolute `stateDir` resolves to `join(stateDir, "current-run")` and is not prefixed with `controlPlaneRoot`**.
 
 ### 2.3 `run init` writes the pointer
 
@@ -476,9 +476,9 @@ Do not reimplement the absolute/`join` branch here — import `controlPlaneState
 
 Add `export_hint: \`export FIVEX_RUN=${runId}\`` to both success payloads.
 
-- [ ] Write pointer for new and resumed runs.
-- [ ] Include `export_hint` on the JSON payload (text formatter may ignore unknown fields via `formatGenericText`).
-- [ ] If pointer write fails (EACCES), fail the command (`outputError` / wrap) — a half-inited run without a pointer is worse than a loud error. Keep this a hard error, not a warning.
+- [x] Write pointer for new and resumed runs.
+- [x] Include `export_hint` on the JSON payload (text formatter may ignore unknown fields via `formatGenericText`).
+- [x] If pointer write fails (EACCES), fail the command (`outputError` / wrap) — a half-inited run without a pointer is worse than a loud error. Keep this a hard error, not a warning.
 
 ### 2.4 `run complete` clears conditionally
 
@@ -493,9 +493,9 @@ clearPointerIfMatch(
 
 Do **not** clear on `reopen`. Abort (`--status aborted`) is still a completion of *this* run: clear iff match.
 
-- [ ] Clear only on match.
-- [ ] Completing A while the file names B leaves B.
-- [ ] Missing file is not an error.
+- [x] Clear only on match.
+- [x] Completing A while the file names B leaves B.
+- [x] Missing file is not an error.
 
 ### 2.5 Tests
 
@@ -518,10 +518,10 @@ Absolute configured `db.path` integration (required; this is what makes the poin
 6. Assert the pointer is at `<absStateDir>/current-run`, not under the control-plane root.
 7. Matching `run complete` clears that pointer; complete of a different run does not.
 
-- [ ] `controlPlaneStatePath` / `controlPlaneDbPath` unit tests (relative + absolute `stateDir`).
-- [ ] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
-- [ ] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
-- [ ] Integration: absolute `db.path` — pre-existing DB is the one init/state use; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer write/clear is at `<absStateDir>/current-run`.
+- [x] `controlPlaneStatePath` / `controlPlaneDbPath` unit tests (relative + absolute `stateDir`).
+- [x] Pointer helpers unit tests (relative + absolute `stateDir` / `db.path`).
+- [x] Integration: init writes; complete matching clears; complete other leaves; resume init overwrites.
+- [x] Integration: absolute `db.path` — pre-existing DB is the one init/state use; shadow `<controlPlaneRoot>/<stripped-abs-stateDir>/5x.db` is never created; pointer write/clear is at `<absStateDir>/current-run`.
 
 ---
 
@@ -576,9 +576,9 @@ Param types: `RunCompleteParams.run`, `RunReopenParams.run`, `RunRelinkParams.ru
 
 Help examples may show flag-less forms (`5x run complete`, `5x commit -m "…" --all-files`) in addition to explicit `--run`.
 
-- [ ] Replace every `requiredOption` for `--run`.
-- [ ] Update help strings to name `--run`, `FIVEX_RUN`, worktree mapping, and `.5x/current-run`.
-- [ ] Widen param types to `run?: string`.
+- [x] Replace every `requiredOption` for `--run`.
+- [x] Update help strings to name `--run`, `FIVEX_RUN`, worktree mapping, and `.5x/current-run`.
+- [x] Widen param types to `run?: string`.
 
 ### 3.3 Handler call sites
 
@@ -605,9 +605,9 @@ For `invoke` / `record` pipe ordering: today they set `params.run ??= ctx.runId`
 
 Quality `--record` without identity: today warns on stderr after output (`quality-v1.handler.ts:53-58`). After this phase, identity is resolved *before* gates when `--record` is set, so missing identity is `RUN_CONTEXT_REQUIRED` **before** running gates (fail closed). That is stricter and correct for recording.
 
-- [ ] Wire every row in the table.
-- [ ] Swap `worktree.handler.ts` `isLinkedWorktreeContext` to the shared helper if not done in Phase 1.
-- [ ] `run state --plan` does not read `FIVEX_RUN` or the pointer (unit or integration assertion).
+- [x] Wire every row in the table.
+- [x] Swap `worktree.handler.ts` `isLinkedWorktreeContext` to the shared helper if not done in Phase 1.
+- [x] `run state --plan` does not read `FIVEX_RUN` or the pointer (unit or integration assertion).
 
 ### 3.4 Tests
 
@@ -618,12 +618,12 @@ Quality `--record` without identity: today warns on stderr after output (`qualit
 - New `test/unit/commands/run-identity-wiring.test.ts` **or** extend handler unit tests: `commit` / `runV1State` with injected db + pointer.
 - Existing `--run` tests must keep passing (no behavior change when the flag is present).
 
-- [ ] Flag-present tests unchanged.
-- [ ] Required-run missing identity → `RUN_CONTEXT_REQUIRED`.
-- [ ] `FIVEX_RUN` satisfies `invoke` / `commit` / `run state` without `--run`.
-- [ ] Pointer satisfies the same on the main checkout.
-- [ ] `run state --plan` ignores a conflicting `FIVEX_RUN`.
-- [ ] Optional `diff` / `quality run` without identity still exit 0 in a bare project.
+- [x] Flag-present tests unchanged.
+- [x] Required-run missing identity → `RUN_CONTEXT_REQUIRED`.
+- [x] `FIVEX_RUN` satisfies `invoke` / `commit` / `run state` without `--run`.
+- [x] Pointer satisfies the same on the main checkout.
+- [x] `run state --plan` ignores a conflicting `FIVEX_RUN`.
+- [x] Optional `diff` / `quality run` without identity still exit 0 in a bare project.
 
 ---
 
@@ -646,10 +646,10 @@ Do not add `ambient: false` on others (keep payloads small). Do not change `stat
 
 `runV1List` currently does not destructure `controlPlane` (`:1437`). Use `const { config, db, controlPlane } = await resolveDbContext()`.
 
-- [ ] JSON marker + source on the focused run only.
-- [ ] Text column for focus.
-- [ ] No marker when resolution fails or source is `none`.
-- [ ] Marker is independent of `status: "active"` (a focused completed run via `FIVEX_RUN` still shows `status: completed` plus ambient marker).
+- [x] JSON marker + source on the focused run only.
+- [x] Text column for focus.
+- [x] No marker when resolution fails or source is `none`.
+- [x] Marker is independent of `status: "active"` (a focused completed run via `FIVEX_RUN` still shows `status: completed` plus ambient marker).
 
 ### 4.2 Two-worktree integration tests
 
@@ -670,12 +670,12 @@ Setup (use `cleanGitEnv()`, `stdin: "ignore"`, `timeout: 30000`):
 
 Reuse helpers from `test/integration/commands/run-scoped-context.test.ts` / `run-init-worktree.test.ts` where possible.
 
-- [ ] Shared-DB two-worktree isolation without flags.
-- [ ] Pointer cannot cross linked checkouts.
-- [ ] `FIVEX_RUN` overrides pointer and worktree.
-- [ ] Ambiguity lists candidates.
-- [ ] `run list` source is `worktree` when invoked from a uniquely mapped checkout even if the pointer names the same or a different run.
-- [ ] Completing A does not delete a pointer that names B (if not covered in Phase 2 integration).
+- [x] Shared-DB two-worktree isolation without flags.
+- [x] Pointer cannot cross linked checkouts.
+- [x] `FIVEX_RUN` overrides pointer and worktree.
+- [x] Ambiguity lists candidates.
+- [x] `run list` source is `worktree` when invoked from a uniquely mapped checkout even if the pointer names the same or a different run.
+- [x] Completing A does not delete a pointer that names B (if not covered in Phase 2 integration).
 
 ---
 
@@ -702,9 +702,9 @@ When `params.record` and iteration is provided, `recordStepInternal` must receiv
 
 **File:** `src/commands/protocol.handler.ts` `isNumericPhaseRef` is already exported (`:121`). Keep it.
 
-- [ ] `runQuality` / `protocolValidate` stdout and exit behavior unchanged (existing tests).
-- [ ] Cores have no `outputSuccess` / `outputError` (checklist helper returns instead of throwing).
-- [ ] `quality run --iteration N --record` writes that iteration.
+- [x] `runQuality` / `protocolValidate` stdout and exit behavior unchanged (existing tests).
+- [x] Cores have no `outputSuccess` / `outputError` (checklist helper returns instead of throwing).
+- [x] `quality run --iteration N --record` writes that iteration.
 
 ### 5.2 Composite handler and adapter
 
@@ -758,12 +758,12 @@ Stdin: quality does not read stdin; protocol payload does. Do not call `readUpst
 
 Text formatter: one line per sub-step (`quality completed (step 12)`, `protocol failed …`).
 
-- [ ] Register `phase finish`.
-- [ ] Require `--phase`, `--iteration`, `--step`.
-- [ ] Ambient `--run`.
-- [ ] Single stdout envelope.
-- [ ] Retain `protocolValidateCore`’s validated result (and parse existing `result_json` on resume); run checklist only when `result === "complete"`; report `skipped` when inapplicable.
-- [ ] Add `QUALITY_FAILED: 1` to `EXIT_CODE_MAP` in `src/output.ts:50-71` if not present (fallback is already 1).
+- [x] Register `phase finish`.
+- [x] Require `--phase`, `--iteration`, `--step`.
+- [x] Ambient `--run`.
+- [x] Single stdout envelope.
+- [x] Retain `protocolValidateCore`’s validated result (and parse existing `result_json` on resume); run checklist only when `result === "complete"`; report `skipped` when inapplicable.
+- [x] Add `QUALITY_FAILED: 1` to `EXIT_CODE_MAP` in `src/output.ts:50-71` if not present (fallback is already 1).
 
 ### 5.3 Tests
 
@@ -771,17 +771,17 @@ Text formatter: one line per sub-step (`quality completed (step 12)`, `protocol 
 
 Unit (handler + temp git repo / `startDir`, gates `echo ok` or `false`):
 
-- [ ] Happy path: three `completed`; `quality:check` and author `--step` rows exist with the given iteration.
-- [ ] Rerun same keys: no extra rows; `recorded: false`; quality core not re-invoked (spy `runQualityGates` or assert gate log not duplicated).
-- [ ] Quality fail (`false` gate): envelope `QUALITY_FAILED`; no `quality:check` row; protocol/checklist `skipped`; rerun after switching gates to `echo ok` records success at the same iteration.
-- [ ] Invalid author JSON: protocol `failed`; checklist `skipped`; no author step row.
-- [ ] Incomplete checklist **with author `result: "complete"`**: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
-- [ ] Fresh non-complete author result (`needs_human` or `failed`, valid schema, numeric phase, checkboxes unchecked): protocol `completed`; checklist `skipped` (not `PHASE_CHECKLIST_INCOMPLETE`); author step recorded; exit 0. Same as granular `protocol validate author --record`.
-- [ ] Resumed non-complete author result: existing `--step` row whose `result_json` has `result: "needs_human"` (or `"failed"`); checklist `skipped`; no extra row; `evaluatePhaseChecklist` not invoked even if the plan checklist is incomplete.
-- [ ] Resumed `complete` author result: checklist `completed` without re-evaluating (implied complete from the recorded row).
-- [ ] `--no-phase-checklist-validate`: checklist `completed` without reading plan checkboxes.
-- [ ] Missing `--run` / env / pointer: `RUN_CONTEXT_REQUIRED` before gates.
-- [ ] Explicit `--run` unchanged vs ambient.
+- [x] Happy path: three `completed`; `quality:check` and author `--step` rows exist with the given iteration.
+- [x] Rerun same keys: no extra rows; `recorded: false`; quality core not re-invoked (spy `runQualityGates` or assert gate log not duplicated).
+- [x] Quality fail (`false` gate): envelope `QUALITY_FAILED`; no `quality:check` row; protocol/checklist `skipped`; rerun after switching gates to `echo ok` records success at the same iteration.
+- [x] Invalid author JSON: protocol `failed`; checklist `skipped`; no author step row.
+- [x] Incomplete checklist **with author `result: "complete"`**: protocol schema ok, checklist `failed` `PHASE_CHECKLIST_INCOMPLETE` (exit 8); no author record; quality already recorded; rerun skips quality.
+- [x] Fresh non-complete author result (`needs_human` or `failed`, valid schema, numeric phase, checkboxes unchecked): protocol `completed`; checklist `skipped` (not `PHASE_CHECKLIST_INCOMPLETE`); author step recorded; exit 0. Same as granular `protocol validate author --record`.
+- [x] Resumed non-complete author result: existing `--step` row whose `result_json` has `result: "needs_human"` (or `"failed"`); checklist `skipped`; no extra row; `evaluatePhaseChecklist` not invoked even if the plan checklist is incomplete.
+- [x] Resumed `complete` author result: checklist `completed` without re-evaluating (implied complete from the recorded row).
+- [x] `--no-phase-checklist-validate`: checklist `completed` without reading plan checkboxes.
+- [x] Missing `--run` / env / pointer: `RUN_CONTEXT_REQUIRED` before gates.
+- [x] Explicit `--run` unchanged vs ambient.
 
 Integration: spawn `5x phase finish` with `--input` file so stdin is not the protocol payload vs harness-piped-empty issue; assert stdout JSON and exit codes.
 
@@ -808,9 +808,9 @@ On `:110-113` (`first.done || !first.value` after the 200ms race), if `isStdinPi
 Do not warn when `!isStdinPiped()` (early return `:90-92`).
 Do not warn when a first chunk arrives but `raw.trim()` is empty after the full read (`:124-126`) — that is a successful empty body, not a timeout. Optional: same warning is acceptable; **prefer timeout-only** so tests can distinguish.
 
-- [ ] Inject `warn` for unit tests.
-- [ ] Timeout path warns; TTY path silent; valid JSON path silent.
-- [ ] Warning goes to stderr only.
+- [x] Inject `warn` for unit tests.
+- [x] Timeout path warns; TTY path silent; valid JSON path silent.
+- [x] Warning goes to stderr only.
 
 ### 6.2 Tests
 
@@ -820,10 +820,10 @@ Extend the helper to print `{ ok, result, stderrCaptured }` or assert from the p
 
 Add a unit-level test if you extract the timeout branch with a fake reader; otherwise subprocess is enough.
 
-- [ ] Piped-empty: warning on stderr, `result: null`, exit 0 from helper.
-- [ ] Valid piped envelope: no warning.
-- [ ] TTY: no warning (`readUpstreamEnvelope` with `isTTY` true — existing seam test ~`:388-398`).
-- [ ] `run record` / `invoke` with dangling stdin still succeed when `--run` or ambient identity is present; warning must not appear on stdout (JSON still one envelope). Cover via existing `test/integration/commands/run-record-pipe.test.ts` / `invoke-pipe.test.ts` plus a stderr assertion.
+- [x] Piped-empty: warning on stderr, `result: null`, exit 0 from helper.
+- [x] Valid piped envelope: no warning.
+- [x] TTY: no warning (`readUpstreamEnvelope` with `isTTY` true — existing seam test ~`:388-398`).
+- [x] `run record` / `invoke` with dangling stdin still succeed when `--run` or ambient identity is present; warning must not appear on stdout (JSON still one envelope). Cover via existing `test/integration/commands/run-record-pipe.test.ts` / `invoke-pipe.test.ts` plus a stderr assertion.
 
 ---
 
@@ -849,10 +849,10 @@ Add a unit-level test if you extract the timeout branch with a fake reader; othe
 
 Do not rewrite unrelated workflow judgment. Do not remove native vs invoke conditionals.
 
-- [ ] `export FIVEX_RUN` / `$env:FIVEX_RUN` immediately after `run init` in every workflow skill that inits a run.
-- [ ] Phase-execution hot loop uses `phase finish`.
-- [ ] Recovery sections still show `quality run`, `protocol validate --record`, `run record`, `commit --run`.
-- [ ] Tools lists mention ambient identity.
+- [x] `export FIVEX_RUN` / `$env:FIVEX_RUN` immediately after `run init` in every workflow skill that inits a run.
+- [x] Phase-execution hot loop uses `phase finish`.
+- [x] Recovery sections still show `quality run`, `protocol validate --record`, `run record`, `commit --run`.
+- [x] Tools lists mention ambient identity.
 
 ### 7.2 Skill tests
 
@@ -865,7 +865,7 @@ Assert rendered content (via `listSkills()` / `getDefaultSkillRaw`):
 - Windows skill contains `FIVEX_RUN`.
 - Existing token tests (`task_id=` / `resume=`, no `[[NATIVE_CONTINUE_PARAM]]`) still pass.
 
-- [ ] OpenCode + Cursor rendered skills cover the new idiom and fallbacks.
+- [x] OpenCode + Cursor rendered skills cover the new idiom and fallbacks.
 
 ### 7.3 Docs
 
@@ -881,7 +881,7 @@ Assert rendered content (via `listSkills()` / `getDefaultSkillRaw`):
 
 Do not edit `docs/v2/202-control-plane.md` beyond a pointer if 204 §3 already references it (dashboard reading the pointer is a later slice).
 
-- [ ] Docs match shipped precedence, pointer rules, composite contract, pipe warning, and worker non-use of ambient identity.
+- [x] Docs match shipped precedence, pointer rules, composite contract, pipe warning, and worker non-use of ambient identity.
 
 ---
 

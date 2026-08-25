@@ -8,6 +8,7 @@
 
 import type { Command } from "@commander-js/extra-typings";
 import { runDiff } from "./diff.handler.js";
+import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
 
 export function registerDiff(parent: Command) {
 	parent
@@ -25,7 +26,7 @@ export function registerDiff(parent: Command) {
 		.option("--stat", "Include diffstat summary")
 		.option(
 			"-r, --run <id>",
-			"Run ID — resolve mapped worktree and diff in that directory",
+			`${AMBIENT_RUN_OPTION_HELP} — resolve mapped worktree and diff there`,
 		)
 		.addHelpText(
 			"after",
@@ -33,6 +34,7 @@ export function registerDiff(parent: Command) {
 				"  $ 5x diff\n" +
 				"  $ 5x diff -s main                                   # diff against main\n" +
 				"  $ 5x diff -s HEAD~3 --stat                          # summary of last 3 commits\n" +
+				"  $ 5x diff                                          # ambient worktree when identity resolves\n" +
 				"  $ 5x diff -r abc123                                 # diff in run's worktree",
 		)
 		.action(async (opts) => {

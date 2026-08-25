@@ -10,9 +10,11 @@
 
 import type { Database } from "bun:sqlite";
 import { outputError, outputSuccess } from "../output.js";
+import { validateRunId } from "../run-id.js";
 import { subprocess } from "../utils/subprocess.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
+import { requireAmbientRunId } from "./run-identity.js";
 import { recordStepInternal } from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -20,7 +22,7 @@ import { recordStepInternal } from "./run-v1.handler.js";
 // ---------------------------------------------------------------------------
 
 export interface CommitParams {
-	run: string;
+	run?: string;
 	message: string;
 	files?: string[];
 	allFiles?: boolean;
@@ -28,6 +30,7 @@ export interface CommitParams {
 	dryRun?: boolean;
 	startDir?: string; // for testability; defaults to run context resolution
 	dbContext?: DbContext; // for testability; bypasses singleton DB when provided
+	env?: NodeJS.Dict<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +96,24 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		);
 	}
 
+	if (!controlPlane) {
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
+	const runId = requireAmbientRunId({
+		explicitRun: params.run,
+		startDir: params.startDir,
+		env: params.env,
+		db,
+		controlPlane,
+	});
+	validateRunId(runId);
+	params.run = runId;
+
 	// 2. Resolve run execution context (respects worktree mapping)
-	const ctxResult = resolveRunExecutionContext(db, params.run, {
+	const ctxResult = resolveRunExecutionContext(db, runId, {
 		controlPlaneRoot,
 	});
 
@@ -110,14 +129,14 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	if (ctx.run.status !== "active") {
 		outputError(
 			"RUN_NOT_ACTIVE",
-			`Run ${params.run} is ${ctx.run.status}, not active. Only active runs can record commits.`,
+			`Run ${runId} is ${ctx.run.status}, not active. Only active runs can record commits.`,
 		);
 	}
 
 	// 3b. Resolve phase: explicit --phase wins, then inherit from run history
 	let resolvedPhase = params.phase;
 	if (!resolvedPhase) {
-		resolvedPhase = inheritPhaseFromRun(db, params.run);
+		resolvedPhase = inheritPhaseFromRun(db, runId);
 		if (!resolvedPhase) {
 			outputError(
 				"PHASE_REQUIRED",
@@ -222,7 +241,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	//    would target the wrong DB when called from a linked worktree.
 	const stepResult = await recordStepInternal(
 		{
-			run: params.run,
+			run: runId,
 			stepName: "git:commit",
 			phase: resolvedPhase,
 			result: JSON.stringify({
@@ -242,7 +261,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 			short_hash,
 			message: params.message,
 			files,
-			run_id: params.run,
+			run_id: runId,
 			step_id: stepResult.step_id,
 		},
 		formatCommitText,

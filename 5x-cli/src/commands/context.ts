@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -14,7 +14,7 @@ import { runMigrations } from "../db/schema.js";
 import { resolveProjectRoot } from "../project-root.js";
 import {
 	type ControlPlaneResult,
-	DB_FILENAME,
+	controlPlaneDbPath,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
@@ -70,8 +70,8 @@ export async function resolveProjectContext(opts?: {
  * For commands that need DB (run, worktree).
  *
  * Uses the control-plane resolver to determine DB location:
- * - In managed mode: DB is at `<controlPlaneRoot>/<stateDir>/5x.db`.
- * - In isolated mode: DB is at `<checkoutRoot>/<stateDir>/5x.db`.
+ * - In managed/isolated mode: DB is at `controlPlaneDbPath(root, stateDir)`
+ *   (absolute `stateDir` is the state root; relative joins under the root).
  * - In 'none' mode: falls back to legacy projectRoot-based resolution.
  *
  * @param opts.startDir - Starting directory for project root resolution
@@ -105,9 +105,7 @@ export async function resolveDbContext(opts?: {
 			config = result.config;
 		}
 
-		// Compute DB path: <stateDir>/5x.db relative to controlPlaneRoot
-		const dbRelPath = join(controlPlane.stateDir, DB_FILENAME);
-		const db = getDb(root, dbRelPath);
+		const db = getDb(root, controlPlaneDbPath(root, controlPlane.stateDir));
 
 		if (opts?.migrate !== false) {
 			try {
@@ -129,11 +127,10 @@ export async function resolveDbContext(opts?: {
 		providerNames: opts?.providerNames,
 		contextDir: effectiveContextDir,
 	});
-	// Normalize db.path: treat as directory, append DB_FILENAME.
-	// Backward compat: `.5x/5x.db` normalizes to `.5x` → `.5x/5x.db`.
+	// Normalize db.path: treat as directory. Absolute configured db.path
+	// is the state root (not joined under projectRoot).
 	const normalizedDir = normalizeDbPath(config.db.path);
-	const dbRelPath = join(normalizedDir, DB_FILENAME);
-	const db = getDb(projectRoot, dbRelPath);
+	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, normalizedDir));
 
 	if (opts?.migrate !== false) {
 		try {

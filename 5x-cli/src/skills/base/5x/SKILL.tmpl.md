@@ -27,6 +27,30 @@ platforms unless you specifically need those examples.
   of hardcoding numbers. The `--context` flag resolves nearest-config
   overrides for monorepo sub-projects.
 
+## Run identity
+
+Run-scoped commands resolve `--run` from ambient identity when the flag
+is omitted, in this order: `FIVEX_RUN` → unique linked-worktree mapping →
+`.5x/current-run`. After `5x run init`, export the run id so the rest of
+the session does not thread `--run` on every call:
+
+```bash
+export FIVEX_RUN=<run_id>   # from init envelope `run_id` or `export_hint`
+```
+
+`--run` is optional when any of those signals already identifies the run.
+
+### Recovery / explicit identity
+
+Pass `--run $FIVEX_RUN` (or `--run <id>`) when ambient resolution is
+missing or ambiguous — for example `5x commit --run $FIVEX_RUN` and
+`5x run record … --run $FIVEX_RUN`.
+{{#if any_native}}
+Native roles also use `5x protocol validate … --run $FIVEX_RUN --record`.
+{{/if}}
+Queue workers and remote invocations must still receive an explicit
+`--run`; they must not rely on CWD or `.5x/current-run`.
+
 ## Delegation mode precedence
 
 Before the **first** author or reviewer delegation in a workflow, read
@@ -127,8 +151,8 @@ Delegate work by rendering the prompt, launching a subagent via the Task
 tool, then validating and recording the result:
 
 ```bash
-# 1. Render the prompt
-RENDERED=$(5x template render <template> --run $RUN \
+# 1. Render the prompt (ambient run identity; pass --run only if needed)
+RENDERED=$(5x template render <template> \
   --var key=value)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
@@ -138,7 +162,7 @@ RESULT=<Task tool: subagent_type=<agent>, prompt=$PROMPT>
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate <role> \
-  --run $RUN --record --step $STEP
+  --record --step $STEP
 ```
 
 This pattern applies to **native** roles only.
@@ -162,7 +186,7 @@ Delegate work by invoking the role/template pair directly and letting
 `5x invoke --record` validate and record in one step:
 
 ```bash
-RESULT=$(5x invoke <author|reviewer> <template> --run $RUN \
+RESULT=$(5x invoke <author|reviewer> <template> \
   --var key=value \
   --record --record-step <step_name>)
 
@@ -232,8 +256,9 @@ work.
   and move on.
 {{/if}}
 - **`result: "complete"` without a commit = invariant violation** in any
-  author step. Authors commit via `5x commit --run $RUN` (which records
-  the commit in the run journal).
+  author step. Authors commit via `5x commit` (ambient run identity;
+  records the commit in the run journal). If identity is missing, use
+  `5x commit --run $FIVEX_RUN` (see Recovery / explicit identity).
 {{#if author_native}}
 - For native author: Re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`).
 {{/if}}

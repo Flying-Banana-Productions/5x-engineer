@@ -1,7 +1,8 @@
 # 5x CLI v2 — Run-Context Ergonomics
 
-**Status:** Draft — Not Implemented
+**Status:** Implemented — see plan `docs/development/plans/204-run-context-ergonomics-plan.md`
 **Date:** July 13, 2026
+**Updated:** August 24, 2026
 **Part of:** v2 (`200-overview.md`, area #4)
 **Shared core used:** Active-run pointer (`200-overview.md` §3.2)
 
@@ -33,7 +34,8 @@ Commands that take `--run` may default it from ambient state when the flag is om
 2. `FIVEX_RUN` environment variable — session-scoped override.
 3. Current linked-worktree association — if the command is running in a linked worktree and exactly one active run is mapped to that checkout through `plans.worktree_path`, use it.
 4. Active-run pointer — `.5x/current-run` by default (the configured control-plane state root's `current-run` file), written by `5x run init`, only when it does not conflict with the current linked-worktree context.
-5. None → error (same as today's missing `--run`), with remediation naming the applicable mechanisms.
+5. Piped upstream `run_id` (`run record` / `invoke` only).
+6. None → required-run commands error (`RUN_CONTEXT_REQUIRED`) with remediation naming the applicable mechanisms; optional-run commands keep their no-run path.
 
 `--plan` remains an explicit alternative selector on commands that already support it (for example, `run state --plan`) and is resolved before ambient run context.
 
@@ -52,49 +54,50 @@ Commands that take `--run` may default it from ambient state when the flag is om
 - `5x run state` (no args) resolves via the same precedence, making "what am I working on?" zero-flag.
 - Surface the ambiently resolved marker and its source (`environment`, `worktree`, or `pointer`) in `5x run list` output without conflating it with the run's persisted `active` status.
 
-**Concurrency boundary:** distinct linked worktrees do not depend on the shared pointer and therefore do not collide. Multiple sessions intentionally operating from the same checkout still need session identity; this is why `FIVEX_RUN` sits above ambient filesystem state. A harness session driving run A exports `FIVEX_RUN` once and is immune to run B re-pointing the file. Skills should be updated to `export FIVEX_RUN` right after `run init` — one line replacing per-command `--run` threading.
+**Concurrency boundary:** distinct linked worktrees do not depend on the shared pointer and therefore do not collide. Multiple sessions intentionally operating from the same checkout still need session identity; this is why `FIVEX_RUN` sits above ambient filesystem state. A harness session driving run A exports `FIVEX_RUN` once and is immune to run B re-pointing the file. Skills `export FIVEX_RUN` right after `run init` — one line replacing per-command `--run` threading.
 
-- _TODO:_ should `run init` print a hint (or the envelope include `export_hint`) nudging the `FIVEX_RUN` pattern?
+`5x run init` includes additive `export_hint: "export FIVEX_RUN=<id>"` on the success envelope so callers can `eval` the hint. Skills still export explicitly.
 
 **What defaults, what doesn't:**
 
-- `--run` defaults through the shared ambient resolver everywhere `resolveRunExecutionContext` is used (`invoke`, `run record/state/complete/reopen`, `quality run`, `commit`, `diff`, `template render`, `protocol validate`).
-- `--phase` / `--iteration`: _TODO_ — defaulting phase from "latest recorded step's phase" is tempting but risky (a stale phase silently mis-records a step; idempotency keys include phase, so a wrong default is a *wrong write*, not an error). Leaning: **do not default phase in v2**; revisit after composite verbs (§2.2) remove most of the need.
+- `--run` defaults through the shared ambient resolver everywhere `resolveRunExecutionContext` is used (`invoke`, `run record/state/complete/reopen`, `quality run`, `commit`, `diff`, `template render`, `protocol validate`, `phase finish`).
+- `--phase` / `--iteration` are **not** defaulted. Defaulting phase from "latest recorded step's phase" is tempting but risky (a stale phase silently mis-records a step; idempotency keys include phase, so a wrong default is a *wrong write*, not an error). Revisit after composites see production use.
 - `--session`: not defaulted — session continuity has deliberate explicit semantics (`--session` / `--new-session`, `docs/v1/100-architecture.md` §3) and auto-defaulting would blur the recovery escape hatch.
 
 ### 2.2 Composite verbs
 
 Collapse the hottest fixed sequences into single commands with one envelope. Candidates, in priority order:
 
-**`5x phase finish`** — the post-author convergence sequence:
-1. `quality run` (all gates)
-2. `protocol validate author --record` (from `--input` / stdin)
-3. phase checklist validation
-4. single envelope: gates × pass/fail, validation result, checklist state, recorded step ids
+**`5x phase finish`** — the post-author convergence sequence (shipped):
 
-**`5x phase start`** — _TODO:_ evaluate: `template render` + session-continuity check + (delegation-mode-aware) prompt assembly. Value is lower — rendering is already one call — but it could own phase-number derivation from `plan phases`.
+1. `quality run` (all gates; record only on pass/skip)
+2. `protocol validate author --record` (from `--input` / stdin; `--no-phase-checklist-validate` for this half)
+3. phase checklist validation **only when** the author `result` is `"complete"` (otherwise the checklist sub-step is `skipped`)
+4. single envelope: every sub-step's status (`completed` / `failed` / `skipped`), recorded step ids, failing step's full error + remediation
+
+Required flags: `--phase`, `--iteration`, `--step`. `--run` is ambient-resolved. Exit code is the failing sub-step's existing code (`QUALITY_FAILED`, `INVALID_STRUCTURED_OUTPUT`, `PHASE_CHECKLIST_INCOMPLETE`, …) — not a composite-only code.
+
+**`5x phase start`** — deferred. Evaluate later: `template render` + session-continuity check + (delegation-mode-aware) prompt assembly. Value is lower — rendering is already one call — but it could own phase-number derivation from `plan phases`. Measure remaining `template render` overhead first.
 
 **Rules for composites:**
 
 - **Sugar, not new semantics.** A composite calls the same handlers as the granular commands and records the same steps with the same idempotency keys. The granular primitives remain the contract; skills can always drop down. This preserves v1's "each command independently useful" invariant (`docs/v1/100-architecture.md` §3, Layer 2).
 - **Fail-forward error envelope.** If a sub-step fails, the composite stops, and the envelope reports every sub-step's status (`completed` / `failed` / `skipped`), the failing step's full error + remediation, and — because steps are idempotent — re-running the composite resumes past already-recorded steps for the same `(run, phase, iteration)`. Partial state is not rolled back; it is *reported*.
-- _TODO:_ exit code for partial failure — propagate the failing sub-step's code vs a dedicated composite code.
-- _TODO:_ enumerate exact sub-step set and flag surface of `phase finish` against the current skill prose (which sequences do skills actually always run together?).
+- **Exit code = failing sub-step.** Propagate `exitCodeForError(code)` of the failing sub-step rather than a dedicated composite code.
 
 ### 2.3 Pipe-context de-emphasis
 
 With explicit/session identity, worktree inference, and the focus pointer covering interactive run resolution, while composites collapse multi-command sequences, the pipe channel (`src/pipe.ts`) stops being load-bearing for context:
 
 - Keep `--var @-` / explicit stdin *data* input (results into `protocol validate`) — that is payload, not context, and has no silent-drop problem.
-- _TODO:_ deprecation posture for implicit context extraction (`extractPipeContext` template-var injection): keep-but-document vs warn-when-used vs remove in v2. Leaning: keep for back-compat, remove the *silent* part — if stdin is piped and the 200ms race expires, emit a one-line stderr note that upstream context was not detected, so drops are at least visible.
+- Implicit context extraction (`extractPipeContext` / `readUpstreamEnvelope`) stays for back-compat. The *silent* timeout is gone: if stdin is piped and the 200ms race expires, emit a one-line stderr warning that upstream context was not detected. stdout is unchanged (null envelope / command continues). TTY stdin stays silent.
 
 ### 2.4 Skill updates
 
-The v2 skills (OpenCode + future Cursor) should be re-rendered to the new idiom:
+The bundled skills (OpenCode + Cursor, via `src/skills/base/*.tmpl.md`) use the new idiom:
 
-- `export FIVEX_RUN` after `run init`; drop per-command `--run`.
-- Use `phase finish` in the hot loop; keep granular fallbacks in the recovery prose.
-- _TODO:_ measure the prose/token reduction across bundled skills (expected: meaningful — the plumbing paragraphs shrink to a line or two).
+- `export FIVEX_RUN` after `run init`; drop per-command `--run` in the happy path.
+- Use `phase finish` in the phase-execution hot loop; keep granular fallbacks (`quality run`, `protocol validate --record`, `run record`, `commit --run`) in the recovery prose.
 
 ---
 
@@ -102,7 +105,7 @@ The v2 skills (OpenCode + future Cursor) should be re-rendered to the new idiom:
 
 Per `200-overview.md` §3a #4: the active-run pointer is **local control-plane operator focus, not authoritative workflow state**. It is not synced, carries no UUID/CAS requirements, and different machines attached to the same future cloud control plane may correctly hold different focus pointers. The control-plane UI's "focused run" (`202-control-plane.md` §5) is likewise a view concern that may read the pointer locally but must not treat it as authoritative shared state.
 
-Worktree inference is also local materialization awareness, not logical run identity. A future prompt queue / invocation registry must bind every queued invocation to its `run_id` explicitly and provide that identity to the worker. Whether the worker executes in a git worktree, container, dedicated VM, or remote sandbox is an orthogonal execution-target concern; workers must not use `.5x/current-run` or CWD inference to discover which invocation they own.
+Worktree inference is also local materialization awareness, not logical run identity. Prompt-queue and invocation-registry workers receive an explicit `run_id` and must not call the ambient resolver. `.5x/current-run` and CWD inference are not dispatch or ownership mechanisms. Whether the worker executes in a git worktree, container, dedicated VM, or remote sandbox is an orthogonal execution-target concern; workers must not use `.5x/current-run` or CWD inference to discover which invocation they own.
 
 Composite verbs are pure CLI sugar over primitives and inherit whatever store the primitives use — nothing to guard.
 
@@ -116,13 +119,12 @@ Fully additive:
 - A linked worktree with one mapped active run gains a new implicit default. Without a unique association or pointer, missing `--run` reproduces the v1 error behavior.
 - The pointer file is new and remains a singleton convenience; no per-worktree state or schema migration is introduced.
 - Composite verbs are new commands; no granular command changes shape.
-- Pipe-context extraction unchanged except (pending §2.3 decision) a new stderr visibility note.
+- Pipe-context extraction unchanged except a new stderr visibility note when the implicit 200ms read times out.
 
 ---
 
 ## 5. Open questions
 
-- _TODO:_ default `--phase` from latest step — revisit post-composites (§2.1).
-- _TODO:_ `phase start` composite — worth it, or is `template render` sufficient (§2.2)?
-- _TODO:_ pipe implicit-context deprecation posture (§2.3).
-- _TODO:_ does the control-plane UI read the local pointer for initial focus, or maintain its own selection only (§3, `202` §5)?
+- Default `--phase` from latest step — remains deferred; revisit post-composites in production (§2.1).
+- `phase start` composite — worth it, or is `template render` sufficient (§2.2)? Measure remaining plumbing first.
+- Does the control-plane UI read the local pointer for initial focus, or maintain its own selection only (§3, `202` §5)? Dashboard reading the pointer is a later slice.

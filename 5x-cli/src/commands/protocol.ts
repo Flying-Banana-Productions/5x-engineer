@@ -15,6 +15,7 @@ import {
 	protocolEmitAuthor,
 	protocolEmitReviewer,
 } from "./protocol-emit.handler.js";
+import { AMBIENT_RUN_OPTION_HELP_WITH_RECORD } from "./run-identity.js";
 
 function collect(value: string, previous: string[]): string[] {
 	return [...previous, value];
@@ -50,7 +51,7 @@ export function registerProtocol(parent: Command) {
 			"-i, --input <path>",
 			"Path to input JSON file (default: read from stdin)",
 		)
-		.option("-r, --run <id>", "Run ID (used with --record)")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP_WITH_RECORD)
 		.option("--record", "Record the validated result as a run step")
 		.option("--step <name>", "Step name for recording (used with --record)")
 		.option("--phase <name>", "Phase identifier (used with --record)")
@@ -80,7 +81,7 @@ export function registerProtocol(parent: Command) {
 			"\nExamples:\n" +
 				"  $ 5x protocol validate author -i /tmp/author-result.json\n" +
 				"  $ cat result.json | 5x protocol validate author\n" +
-				"  $ 5x protocol validate author -i result.json --record -r abc123 --phase phase-1\n" +
+				"  $ 5x protocol validate author -i result.json --record --phase phase-1\n" +
 				"  $ 5x protocol validate author -i result.json --no-require-commit",
 		)
 		.action(async (opts) => {
@@ -108,7 +109,7 @@ export function registerProtocol(parent: Command) {
 			"-i, --input <path>",
 			"Path to input JSON file (default: read from stdin)",
 		)
-		.option("-r, --run <id>", "Run ID (used with --record)")
+		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP_WITH_RECORD)
 		.option("--record", "Record the validated result as a run step")
 		.option("--step <name>", "Step name for recording (used with --record)")
 		.option("--phase <name>", "Phase identifier (used with --record)")
@@ -121,7 +122,7 @@ export function registerProtocol(parent: Command) {
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x protocol validate reviewer -i /tmp/verdict.json\n" +
-				"  $ cat verdict.json | 5x protocol validate reviewer --record -r abc123",
+				"  $ cat verdict.json | 5x protocol validate reviewer --record",
 		)
 		.action(async (opts) => {
 			await protocolValidate({
