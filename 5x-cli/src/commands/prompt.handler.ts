@@ -151,6 +151,21 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	return parseIntArg(env, "FIVEX_PROMPT_TIMEOUT_MS");
 }
 
+/**
+ * Explicit `--run` (including empty) is checked before insert.
+ * Omitted `--run` stays unassociated (`null`).
+ */
+function resolveAssociatedRunId(
+	runId: string | undefined,
+	runExists: (id: string) => boolean,
+): string | null {
+	if (runId === undefined) return null;
+	if (!runExists(runId)) {
+		outputError("RUN_NOT_FOUND", `Run ${runId} not found`);
+	}
+	return runId;
+}
+
 async function resolvePromptCommandContext(
 	deps: PromptHandlerDeps,
 ): Promise<PromptCommandContext> {
@@ -487,9 +502,7 @@ export async function promptChoose(
 
 	const timeoutMs = resolveTimeoutMs(params.timeout);
 	const { store, runExists } = await resolvePromptCommandContext(deps);
-	if (params.run && !runExists(params.run)) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
-	}
+	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
 	const readLine = deps.readLine ?? defaultReadLine;
@@ -497,7 +510,7 @@ export async function promptChoose(
 	await withCreatedPrompt(
 		store,
 		{
-			runId: params.run ?? null,
+			runId,
 			kind: "choose",
 			message: params.message,
 			options: optionsList,
@@ -605,9 +618,7 @@ export async function promptConfirm(
 
 	const timeoutMs = resolveTimeoutMs(params.timeout);
 	const { store, runExists } = await resolvePromptCommandContext(deps);
-	if (params.run && !runExists(params.run)) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
-	}
+	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
 	const readLine = deps.readLine ?? defaultReadLine;
@@ -615,7 +626,7 @@ export async function promptConfirm(
 	await withCreatedPrompt(
 		store,
 		{
-			runId: params.run ?? null,
+			runId,
 			kind: "confirm",
 			message: params.message,
 			options: null,
@@ -707,9 +718,7 @@ export async function promptInput(
 ): Promise<void> {
 	const timeoutMs = resolveTimeoutMs(params.timeout);
 	const { store, runExists } = await resolvePromptCommandContext(deps);
-	if (params.run && !runExists(params.run)) {
-		outputError("RUN_NOT_FOUND", `Run ${params.run} not found`);
-	}
+	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
 	const readLine = deps.readLine ?? defaultReadLine;
@@ -719,7 +728,7 @@ export async function promptInput(
 	await withCreatedPrompt(
 		store,
 		{
-			runId: params.run ?? null,
+			runId,
 			kind: "input",
 			message: params.message,
 			options: null,

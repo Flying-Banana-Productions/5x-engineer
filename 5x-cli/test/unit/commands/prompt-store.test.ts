@@ -662,6 +662,86 @@ describe("--run via runExists", () => {
 		const record = lastRecord(store);
 		expect(record?.runId).toBe(runId);
 	});
+
+	test("omitted run: row created with null runId and runExists is not called", async () => {
+		const store = createMemoryPromptStore();
+		let checked = 0;
+		const result = await invoke(() =>
+			promptChoose(
+				{ message: "Pick", options: "a,b", default: "a" },
+				{
+					store,
+					runExists: () => {
+						checked++;
+						return false;
+					},
+					isTTY: () => false,
+				},
+			),
+		);
+		expect(result.ok).toBe(true);
+		expect(checked).toBe(0);
+		expect(lastRecord(store)?.runId).toBeNull();
+	});
+
+	test.each([
+		{
+			name: "choose",
+			invokeHandler: (
+				run: string,
+				deps: { store: PromptStore; runExists: (id: string) => boolean },
+			) =>
+				promptChoose(
+					{ message: "Pick", options: "a,b", run },
+					{ ...deps, isTTY: () => false },
+				),
+		},
+		{
+			name: "confirm",
+			invokeHandler: (
+				run: string,
+				deps: { store: PromptStore; runExists: (id: string) => boolean },
+			) =>
+				promptConfirm({ message: "OK?", run }, { ...deps, isTTY: () => false }),
+		},
+		{
+			name: "input",
+			invokeHandler: (
+				run: string,
+				deps: { store: PromptStore; runExists: (id: string) => boolean },
+			) =>
+				promptInput(
+					{ message: "Enter", run },
+					{
+						...deps,
+						isTTY: () => false,
+						readStdinPipe: (async () => "unused") as typeof readStdinPipe,
+					},
+				),
+		},
+	])(
+		"empty --run ($name): RUN_NOT_FOUND, runExists checked, no row",
+		async ({ invokeHandler }) => {
+			const store = createMemoryPromptStore();
+			let created = 0;
+			const seen: string[] = [];
+			const wrapped = wrapStore(store, { onCreate: () => created++ });
+			const result = await invoke(() =>
+				invokeHandler("", {
+					store: wrapped,
+					runExists: (id) => {
+						seen.push(id);
+						return false;
+					},
+				}),
+			);
+			expect(seen).toEqual([""]);
+			expect(result.ok).toBe(false);
+			expect(result.error?.code).toBe("RUN_NOT_FOUND");
+			expect(created).toBe(0);
+			expect(lastRecord(store)).toBeNull();
+		},
+	);
 });
 
 describe("confirm/input equivalent persist+CAS", () => {

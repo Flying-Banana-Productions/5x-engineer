@@ -350,6 +350,29 @@ describe("5x prompt choose", () => {
 	);
 
 	test(
+		'empty --run "": RUN_NOT_FOUND, no prompt row',
+		async () => {
+			await withProject(async (dir) => {
+				const result = await run5x(dir, [
+					"prompt",
+					"choose",
+					"Pick",
+					"--options",
+					"a,b",
+					"--run",
+					"",
+				]);
+				expect(result.exitCode).not.toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				expect((data.error as { code: string }).code).toBe("RUN_NOT_FOUND");
+				expect(loadPrompts(dir)).toHaveLength(0);
+			});
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"--timeout abc and --timeout -1 exit non-zero with INVALID_ARGS and insert no prompt row",
 		async () => {
 			await withProject(async (dir) => {
@@ -495,6 +518,27 @@ describe("5x prompt confirm", () => {
 				expect(data.ok).toBe(true);
 				const payload = data.data as { confirmed: boolean };
 				expect(payload.confirmed).toBe(false);
+			});
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		'empty --run "": RUN_NOT_FOUND, no prompt row',
+		async () => {
+			await withProject(async (dir) => {
+				const result = await run5x(dir, [
+					"prompt",
+					"confirm",
+					"OK?",
+					"--run",
+					"",
+				]);
+				expect(result.exitCode).not.toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				expect((data.error as { code: string }).code).toBe("RUN_NOT_FOUND");
+				expect(loadPrompts(dir)).toHaveLength(0);
 			});
 		},
 		{ timeout: 15000 },
@@ -671,6 +715,27 @@ describe("5x prompt input", () => {
 				expect((data.data as { input: string }).input).toBe(
 					"from-control-plane",
 				);
+			});
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		'empty --run "": RUN_NOT_FOUND, no prompt row',
+		async () => {
+			await withProject(async (dir) => {
+				const result = await run5x(dir, [
+					"prompt",
+					"input",
+					"Enter text",
+					"--run",
+					"",
+				]);
+				expect(result.exitCode).not.toBe(0);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				expect((data.error as { code: string }).code).toBe("RUN_NOT_FOUND");
+				expect(loadPrompts(dir)).toHaveLength(0);
 			});
 		},
 		{ timeout: 15000 },
