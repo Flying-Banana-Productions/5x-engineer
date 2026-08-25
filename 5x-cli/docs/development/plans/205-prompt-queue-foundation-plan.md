@@ -535,10 +535,10 @@ If `signal?.aborted` already, resolve `ABORTED`. On `abort`, `cleanup()` and res
 
 **`readAll` stream-end is collected text, not `EOF`.** Today `readAll` (`src/utils/stdin.ts:175–180`) resolves the joined chunks on `end`, including `""`. Keep that: stream-end / Ctrl+D *completes* multiline input. Do **not** resolve the `EOF` sentinel from `readAll` — that sentinel is `readLine`-only. Empty multiline EOF is successful `{ input: "" }`, not an `EOF` error.
 
-- [ ] Unit tests: abort before wait → `ABORTED`; abort mid-wait → `ABORTED` and listeners removed; no signal → current EOF/line/pipe-text behavior.
-- [ ] `readAll` SIGINT → `SIGINT` sentinel, not a string of partial chunks; listeners removed.
-- [ ] `readAll` stream-end (empty and non-empty) → collected string, **not** `EOF`; listeners removed.
-- [ ] `readStdinPipe` abort mid-read → `ABORTED`; stream reader cancelled; no-signal path still returns piped text.
+- [x] Unit tests: abort before wait → `ABORTED`; abort mid-wait → `ABORTED` and listeners removed; no signal → current EOF/line/pipe-text behavior.
+- [x] `readAll` SIGINT → `SIGINT` sentinel, not a string of partial chunks; listeners removed.
+- [x] `readAll` stream-end (empty and non-empty) → collected string, **not** `EOF`; listeners removed.
+- [x] `readStdinPipe` abort mid-read → `ABORTED`; stream reader cancelled; no-signal path still returns piped text.
 
 #### 5.2 Wait helper — `src/control-plane/wait.ts`
 
@@ -567,8 +567,8 @@ Loop: `getPrompt`; if answered, return; if abandoned, throw `PromptAbandonedErro
 
 Fan-in from the lifecycle signal aborts `pollCtl`, so a waiting poll **will** reject this error on SIGINT/SIGTERM. On poll-only waits there is no stdin promise, so this is the only interrupt surface.
 
-- [ ] Tests: answers on Nth poll; timeout; abort; abandoned row errors; does not busy-spin (fake sleep records interval 250).
-- [ ] Abort mid-poll: `waitForPromptAnswer` throws `PromptWaitAbortedError` and does not schedule another `sleep`/`getPrompt` after abort.
+- [x] Tests: answers on Nth poll; timeout; abort; abandoned row errors; does not busy-spin (fake sleep records interval 250).
+- [x] Abort mid-poll: `waitForPromptAnswer` throws `PromptWaitAbortedError` and does not schedule another `sleep`/`getPrompt` after abort.
 
 Every race against this helper (Phase 6) must abort **this** `signal` in `finally` as well as the stdin/pipe `AbortController`, including timeout, TTY/EOF/pipe wins, **and lifecycle abort** — not only store wins. Phase 6 fans `getCliAbortSignal()` into this `signal` (and the stdin/pipe controller) so SIGTERM is observed. Phase 6 **must** wrap `waitForPromptAnswer` so `PromptWaitAbortedError` settles as a race outcome instead of rejecting `Promise.race` (which would skip CAS-abandon on poll-only waits).
 

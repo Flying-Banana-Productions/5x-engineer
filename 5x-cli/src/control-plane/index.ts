@@ -17,3 +17,11 @@ export type {
 	PromptRecord,
 } from "./types.js";
 export { PromptStoreError } from "./types.js";
+export type { WaitForPromptAnswerOptions } from "./wait.js";
+export {
+	PROMPT_POLL_INTERVAL_MS,
+	PromptAbandonedError,
+	PromptTimeoutError,
+	PromptWaitAbortedError,
+	waitForPromptAnswer,
+} from "./wait.js";

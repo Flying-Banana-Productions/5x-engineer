@@ -123,6 +123,7 @@ export async function promptChoose(params: ChooseParams): Promise<void> {
 			outputError("INTERRUPTED", "Prompt interrupted by user");
 		}
 
+		if (typeof input !== "string") continue;
 		const trimmed = input.trim();
 
 		// Empty input → use default if available, otherwise reprompt
@@ -208,6 +209,7 @@ export async function promptConfirm(params: ConfirmParams): Promise<void> {
 			outputError("INTERRUPTED", "Prompt interrupted by user");
 		}
 
+		if (typeof input !== "string") continue;
 		const trimmed = input.trim().toLowerCase();
 
 		if (!trimmed && defaultBool !== undefined) {
