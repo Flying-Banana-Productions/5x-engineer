@@ -84,3 +84,20 @@ None.
 ### Updated readiness
 - **Phase 7 completion:** ⚠️ — functional gates pass, pending the derivable typecheck correction.
 - **Ready for next phase:** ⚠️ — after P1.1 is corrected and the complete configured quality suite is green.
+
+---
+
+## Addendum (2026-08-25) — Spawned-process typing correction
+
+**Reviewed:** `c035c11f26126d6574690e5590b0737643235e97`
+
+### What's addressed (✅)
+- **P1.1 — Phase 7 integration-test spawned-process typing:** The prompt-queue spawn helper now returns the concrete `Bun.Subprocess<"pipe" | "ignore", "pipe", "pipe">` type, so `collect()` and `killLater()` no longer receive Bun's broad overload union. The prior `Response(proc.stdout/stderr)` TypeScript errors are resolved.
+- **Quality verification:** `bun run typecheck` passed; `bun run lint` passed; the Phase 7 integration suite passed (9 tests); focused prompt/store regression coverage passed (80 tests); and the configured full suite, `bun run test`, passed (2,828 tests across 163 files).
+
+### Remaining concerns
+- None identified in the follow-on diff or verification.
+
+### Updated readiness
+- **Phase 7 completion:** ✅ — all plan hard gates, the release typecheck, focused regressions, and the full configured suite are green.
+- **Ready for next phase:** ✅
