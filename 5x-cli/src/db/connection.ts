@@ -40,17 +40,11 @@ export function getDb(projectRoot: string, dbPath?: string): Database {
 
 	if (!cleanupRegistered) {
 		cleanupRegistered = true;
-		const cleanup = () => {
+		// Close on process exit only. SIGINT/SIGTERM are owned by
+		// `cli-lifecycle.ts` so in-flight work (e.g. prompt CAS-abandon)
+		// can still use SQLite before the process unwinds.
+		process.on("exit", () => {
 			closeDb();
-		};
-		process.on("exit", cleanup);
-		process.on("SIGINT", () => {
-			cleanup();
-			process.exit(130);
-		});
-		process.on("SIGTERM", () => {
-			cleanup();
-			process.exit(143);
 		});
 	}
 

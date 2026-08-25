@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { CommanderError } from "@commander-js/extra-typings";
+import { disarmCliLifecycle, installCliLifecycle } from "./cli-lifecycle.js";
 import { registerCommit } from "./commands/commit.js";
 import { registerConfig } from "./commands/config.js";
 import { registerDiff } from "./commands/diff.js";
@@ -118,6 +119,8 @@ program.configureOutput({
 	},
 });
 
+installCliLifecycle();
+
 try {
 	await program.parseAsync(process.argv);
 } catch (err: unknown) {
@@ -190,4 +193,6 @@ try {
 	};
 	console.log(jsonStringify(envelope));
 	process.exit(1);
+} finally {
+	disarmCliLifecycle();
 }

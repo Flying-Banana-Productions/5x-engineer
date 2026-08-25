@@ -489,19 +489,19 @@ Out of scope: provider-process cleanup from superseded `011-provider-process-lif
 
 #### 4.3 Tests — `test/unit/cli-lifecycle.test.ts`, `test/unit/db/connection.test.ts`
 
-- [ ] `getDb` SIGINT/SIGTERM listeners do not call `process.exit` (stub `process.exit`; raise a fake signal or inspect listener side effects). After SIGINT the connection is still open (`closeDb` not yet called).
-- [ ] `registerLockCleanup` SIGINT/SIGTERM listeners do not call `process.exit`; lock file still present until `process.emit("exit")` / explicit release.
-- [ ] First SIGINT: `getCliAbortSignal().aborted === true`; `getCliAbortCause() === "SIGINT"`; `process.exit` not called; grace timer scheduled.
-- [ ] First SIGTERM: `getCliAbortSignal().aborted === true`; `getCliAbortCause() === "SIGTERM"`; `process.exit` not called.
-- [ ] Second SIGINT: `process.exit(130)` once; subsequent signals are no-ops.
-- [ ] Grace timeout: `process.exit(130)` if still armed after SIGINT; `process.exit(143)` if still armed after SIGTERM.
-- [ ] `disarmCliLifecycle()` cancels the grace timer; process does not later force-exit.
-- [ ] `closeDb` + lock release on simulated `exit` are idempotent (double `closeDb` / double release does not throw).
-- [ ] `installCliLifecycle()` is idempotent (no duplicate listeners).
+- [x] `getDb` SIGINT/SIGTERM listeners do not call `process.exit` (stub `process.exit`; raise a fake signal or inspect listener side effects). After SIGINT the connection is still open (`closeDb` not yet called).
+- [x] `registerLockCleanup` SIGINT/SIGTERM listeners do not call `process.exit`; lock file still present until `process.emit("exit")` / explicit release.
+- [x] First SIGINT: `getCliAbortSignal().aborted === true`; `getCliAbortCause() === "SIGINT"`; `process.exit` not called; grace timer scheduled.
+- [x] First SIGTERM: `getCliAbortSignal().aborted === true`; `getCliAbortCause() === "SIGTERM"`; `process.exit` not called.
+- [x] Second SIGINT: `process.exit(130)` once; subsequent signals are no-ops.
+- [x] Grace timeout: `process.exit(130)` if still armed after SIGINT; `process.exit(143)` if still armed after SIGTERM.
+- [x] `disarmCliLifecycle()` cancels the grace timer; process does not later force-exit.
+- [x] `closeDb` + lock release on simulated `exit` are idempotent (double `closeDb` / double release does not throw).
+- [x] `installCliLifecycle()` is idempotent (no duplicate listeners).
 
 Do not require a spawned prompt in this phase. The real-process “row abandoned `interrupted` + exit 130/143” tests (SIGINT and SIGTERM) are Phase 7 gates (need persist + handler).
 
-- [ ] Existing `run watch` SIGINT integration still exits as today (regression; may live in Phase 7 if it needs a full CLI spawn).
+- [x] Existing `run watch` SIGINT integration still exits as today (regression; may live in Phase 7 if it needs a full CLI spawn).
 
 ---
 
