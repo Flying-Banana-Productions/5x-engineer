@@ -25,13 +25,14 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("registers freshness, locks, worktrees, runs, and db in that order", () => {
+	test("registers freshness, locks, worktrees, runs, db, and prompts in that order", () => {
 		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
 			"harness-freshness",
 			"locks",
 			"worktrees",
 			"runs",
 			"db",
+			"prompts",
 		]);
 	});
 });
@@ -196,6 +197,40 @@ describe("findingKey", () => {
 				}),
 			),
 		).toBe("worktrees:WORKTREE_MAPPING_MISSING:docs/foo.md");
+	});
+
+	test("distinguishes two PROMPT_ORPHANED findings by detail.promptId", () => {
+		const a = finding({
+			check: "prompts",
+			code: "PROMPT_ORPHANED",
+			status: "fail",
+			fixable: true,
+			detail: { promptId: "prompt-a", runId: "run_1" },
+		});
+		const b = finding({
+			check: "prompts",
+			code: "PROMPT_ORPHANED",
+			status: "fail",
+			fixable: true,
+			detail: { promptId: "prompt-b", runId: "run_1" },
+		});
+		expect(findingKey(a)).toBe("prompts:PROMPT_ORPHANED:prompt-a");
+		expect(findingKey(b)).toBe("prompts:PROMPT_ORPHANED:prompt-b");
+		expect(findingKey(a)).not.toBe(findingKey(b));
+	});
+
+	test("throws when fixable PROMPT_ORPHANED is missing promptId", () => {
+		expect(() =>
+			findingKey(
+				finding({
+					check: "prompts",
+					code: "PROMPT_ORPHANED",
+					status: "fail",
+					fixable: true,
+					detail: { runId: "run_1" },
+				}),
+			),
+		).toThrow(/empty identity/);
 	});
 
 	test("throws when fixable: true and identity is empty (unknown code)", () => {

@@ -412,23 +412,23 @@ Close connections in `finally`.
 
 #### 3.2 Registry — `src/doctor/registry.ts`
 
-- [ ] Import `promptsCheck` and append after `dbCheck` (203 table order: prompts last).
-- [ ] `findingKey`: `case "PROMPT_ORPHANED": return String(d.promptId ?? "");`
-- [ ] Update `test/unit/doctor/registry.test.ts` order assertion (`:28–35`) to include `"prompts"` last.
-- [ ] Add registry tests: two orphans with the same code but different `promptId` produce different keys; `fixable` + missing `promptId` throws.
+- [x] Import `promptsCheck` and append after `dbCheck` (203 table order: prompts last).
+- [x] `findingKey`: `case "PROMPT_ORPHANED": return String(d.promptId ?? "");`
+- [x] Update `test/unit/doctor/registry.test.ts` order assertion (`:28–35`) to include `"prompts"` last.
+- [x] Add registry tests: two orphans with the same code but different `promptId` produce different keys; `fixable` + missing `promptId` throws.
 
 #### 3.3 Unit tests — `test/unit/doctor/prompts.test.ts`
 
 Temp DB + `runMigrations` + `createRunV1` + store:
 
-- [ ] Open prompt + `active` run → `PROMPTS_OK`.
-- [ ] Open prompt + `completeRun(..., "completed")` → `PROMPT_ORPHANED` fail fixable.
-- [ ] Open prompt + `aborted` run → same.
-- [ ] Answered prompt + terminal run → not reported.
-- [ ] Open prompt + `run_id` NULL → not reported.
-- [ ] `--fix` path: `fix()` then re-`run()` no longer lists that `promptId`.
-- [ ] Missing DB file → `[]`.
-- [ ] Unreadable DB → `PROMPT_DB_UNREADABLE`.
+- [x] Open prompt + `active` run → `PROMPTS_OK`.
+- [x] Open prompt + `completeRun(..., "completed")` → `PROMPT_ORPHANED` fail fixable.
+- [x] Open prompt + `aborted` run → same.
+- [x] Answered prompt + terminal run → not reported.
+- [x] Open prompt + `run_id` NULL → not reported.
+- [x] `--fix` path: `fix()` then re-`run()` no longer lists that `promptId`.
+- [x] Missing DB file → `[]`.
+- [x] Unreadable DB → `PROMPT_DB_UNREADABLE`.
 
 ---
 
