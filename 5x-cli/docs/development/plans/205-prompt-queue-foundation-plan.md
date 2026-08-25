@@ -368,13 +368,13 @@ Re-export types from `src/index.ts` so slice 4 does not import deep paths. Do no
 
 Parameterized factory: run the same suite for sqlite (temp `getDb` + `runMigrations`) and memory.
 
-- [ ] `createPrompt` then `getPrompt` round-trips UUID, kind, message, options, default, null answer.
-- [ ] `listOpenPrompts()` omits answered and abandoned; `listOpenPrompts(runId)` filters; null `run_id` rows appear only in the unfiltered list.
-- [ ] First `answerPrompt` wins; second returns `{ ok: false }` with the first answer; stored `answered_by` unchanged.
-- [ ] `Promise.all` two `answerPrompt` calls → exactly one `ok: true`.
-- [ ] `abandonPrompt` then `answerPrompt` loses; `answerPrompt` then `abandonPrompt` loses.
-- [ ] Abandoned rows are not open.
-- [ ] SQLite: two stores on one DB still CAS correctly (shared file).
+- [x] `createPrompt` then `getPrompt` round-trips UUID, kind, message, options, default, null answer.
+- [x] `listOpenPrompts()` omits answered and abandoned; `listOpenPrompts(runId)` filters; null `run_id` rows appear only in the unfiltered list.
+- [x] First `answerPrompt` wins; second returns `{ ok: false }` with the first answer; stored `answered_by` unchanged.
+- [x] `Promise.all` two `answerPrompt` calls → exactly one `ok: true`.
+- [x] `abandonPrompt` then `answerPrompt` loses; `answerPrompt` then `abandonPrompt` loses.
+- [x] Abandoned rows are not open.
+- [x] SQLite: two stores on one DB still CAS correctly (shared file).
 
 Do not start prompt CLI tests in this phase.
 
