@@ -25,7 +25,7 @@ describe("runMigrations", () => {
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(5);
+			expect(getSchemaVersion(db)).toBe(6);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -37,7 +37,7 @@ describe("runMigrations", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(5);
+			expect(getSchemaVersion(db)).toBe(6);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -114,7 +114,7 @@ describe("runMigrations", () => {
       `);
 
 			expect(() => runMigrations(db)).toThrow(
-				"DB schema version v999 is newer than this CLI's maximum known version v5",
+				"DB schema version v999 is newer than this CLI's maximum known version v6",
 			);
 		} finally {
 			rmSync(tmp, { recursive: true });
@@ -133,7 +133,7 @@ describe("runMigrations", () => {
 			expect(getSchemaVersion(db)).toBe(1);
 
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(5);
+			expect(getSchemaVersion(db)).toBe(6);
 
 			// v1 tables exist
 			const columns = db.query("PRAGMA table_info(steps)").all() as Array<{
@@ -163,6 +163,6 @@ describe("getMaxKnownSchemaVersion", () => {
 	test("matches the last migration version", () => {
 		const last = _migrations[_migrations.length - 1]?.version ?? 0;
 		expect(getMaxKnownSchemaVersion()).toBe(last);
-		expect(getMaxKnownSchemaVersion()).toBe(5);
+		expect(getMaxKnownSchemaVersion()).toBe(6);
 	});
 });

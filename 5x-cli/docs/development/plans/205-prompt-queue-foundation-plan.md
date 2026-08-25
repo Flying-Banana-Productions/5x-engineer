@@ -2,7 +2,7 @@
 
 **Version:** 1.4
 **Created:** August 24, 2026
-**Last updated:** August 24, 2026
+**Last updated:** August 25, 2026
 **Status:** Ready for implementation
 
 ---
@@ -245,8 +245,8 @@ CREATE INDEX idx_prompts_recent ON prompts(created_at DESC);
 
 `run_id` nullable (standalone prompts). `options_json` is a JSON array of strings for `choose`, NULL otherwise. Confirm `--default` stores the raw flag text (`yes`/`no`/…); the handler still maps to boolean in the envelope.
 
-- [ ] Add migration 6 with the SQL above; description names UUID prompts + open/recent indexes.
-- [ ] Do not alter `runs` / `steps` / `plans`.
+- [x] Add migration 6 with the SQL above; description names UUID prompts + open/recent indexes.
+- [x] Do not alter `runs` / `steps` / `plans`.
 
 #### 1.2 Schema tests — `test/unit/db/schema.test.ts`, `test/unit/db/schema-v4.test.ts`
 
@@ -260,8 +260,8 @@ Those files hard-code max version `5` (`schema.test.ts:28,40,117,136,166`; `sche
 - CHECK: cannot set both answered and abandoned timestamps.
 - CHECK: cannot set an answered triple plus `abandon_reason` (pair integrity + mutex).
 
-- [ ] Update version-5 assertions to 6.
-- [ ] Add `test/unit/db/schema-v6.test.ts` covering table, indexes, FK, CHECKs (including abandon-pair all-or-nothing and mutual exclusion with answered), v5→v6.
+- [x] Update version-5 assertions to 6.
+- [x] Add `test/unit/db/schema-v6.test.ts` covering table, indexes, FK, CHECKs (including abandon-pair all-or-nothing and mutual exclusion with answered), v5→v6.
 
 ---
 
