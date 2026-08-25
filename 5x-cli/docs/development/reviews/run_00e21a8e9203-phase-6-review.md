@@ -62,3 +62,20 @@ None.
 
 **P2 follow-up**
 - [ ] Validate an explicitly supplied empty `--run` rather than treating it as an omitted run.
+
+---
+
+## Addendum (2026-08-25) — Empty `--run` validation fix
+
+**Reviewed:** `d11536a3791e5450faa278eefdbc9870721e4010`
+
+### What's addressed (✅)
+- **P2.1 — Empty `--run` bypasses run validation:** `resolveAssociatedRunId` distinguishes `undefined` from `""`, calls `runExists` for every explicit value, and returns `RUN_NOT_FOUND` before creation when the value is empty or unknown. Choose, confirm, and input all use the helper before constructing their prompt input.
+- **Regression coverage:** Parameterized unit coverage verifies all three handlers call `runExists("")` and create no row; isolated CLI tests assert the same `RUN_NOT_FOUND`/no-row contract for each command. Omitted runs remain deliberately unassociated and do not invoke `runExists`.
+
+### Remaining concerns
+- None identified in the follow-on diff.
+
+### Updated readiness
+- **Phase 6 completion:** ✅ — the prior auto-fix is complete and focused tests (78) plus lint pass.
+- **Ready for next phase:** ✅
