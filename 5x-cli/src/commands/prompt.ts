@@ -1,15 +1,19 @@
 /**
  * v1 Human interaction commands — commander adapter.
  *
- * `5x prompt choose <message> --options <a,b,c> [--default <a>]`
- * `5x prompt confirm <message> [--default yes|no]`
- * `5x prompt input <message> [--multiline]`
+ * `5x prompt choose <message> --options <a,b,c> [--default <a>] [--run <id>] [--timeout <ms>]`
+ * `5x prompt confirm <message> [--default yes|no] [--run <id>] [--timeout <ms>]`
+ * `5x prompt input <message> [--multiline] [--run <id>] [--timeout <ms>]`
  *
  * Business logic lives in prompt.handler.ts.
  */
 
 import type { Command } from "@commander-js/extra-typings";
+import { intArg } from "../utils/parse-args.js";
 import { promptChoose, promptConfirm, promptInput } from "./prompt.handler.js";
+import { defaultResolvePromptContext } from "./prompt-context.js";
+
+const promptDeps = { resolveContext: defaultResolvePromptContext };
 
 export function registerPrompt(parent: Command) {
 	const prompt = parent
@@ -34,6 +38,12 @@ export function registerPrompt(parent: Command) {
 			"-d, --default <value>",
 			"Default option (used in non-interactive mode)",
 		)
+		.option("--run <id>", "Associate this prompt with a run id")
+		.option(
+			"--timeout <ms>",
+			"Max wait in ms (TTY and no-TTY input pipe: unbounded if omitted; no-TTY choose/confirm without --default: 0)",
+			intArg("--timeout"),
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -41,11 +51,16 @@ export function registerPrompt(parent: Command) {
 				'  $ 5x prompt choose "Action?" -o "approve,reject" -d approve',
 		)
 		.action(async (message, opts) => {
-			await promptChoose({
-				message,
-				options: opts.options,
-				default: opts.default,
-			});
+			await promptChoose(
+				{
+					message,
+					options: opts.options,
+					default: opts.default,
+					run: opts.run,
+					timeout: opts.timeout,
+				},
+				promptDeps,
+			);
 		});
 
 	prompt
@@ -57,6 +72,12 @@ export function registerPrompt(parent: Command) {
 		)
 		.argument("<message>", "Prompt message")
 		.option("-d, --default <value>", 'Default value: "yes" or "no"')
+		.option("--run <id>", "Associate this prompt with a run id")
+		.option(
+			"--timeout <ms>",
+			"Max wait in ms (TTY and no-TTY input pipe: unbounded if omitted; no-TTY choose/confirm without --default: 0)",
+			intArg("--timeout"),
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -64,10 +85,15 @@ export function registerPrompt(parent: Command) {
 				'  $ 5x prompt confirm "Continue?" -d yes',
 		)
 		.action(async (message, opts) => {
-			await promptConfirm({
-				message,
-				default: opts.default,
-			});
+			await promptConfirm(
+				{
+					message,
+					default: opts.default,
+					run: opts.run,
+					timeout: opts.timeout,
+				},
+				promptDeps,
+			);
 		});
 
 	prompt
@@ -79,6 +105,12 @@ export function registerPrompt(parent: Command) {
 		)
 		.argument("<message>", "Prompt message")
 		.option("--multiline", "Read multiline input (Ctrl+D to finish)")
+		.option("--run <id>", "Associate this prompt with a run id")
+		.option(
+			"--timeout <ms>",
+			"Max wait in ms (TTY and no-TTY input pipe: unbounded if omitted; no-TTY choose/confirm without --default: 0)",
+			intArg("--timeout"),
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -87,9 +119,14 @@ export function registerPrompt(parent: Command) {
 				'  $ echo "automated input" | 5x prompt input "Question"',
 		)
 		.action(async (message, opts) => {
-			await promptInput({
-				message,
-				multiline: opts.multiline,
-			});
+			await promptInput(
+				{
+					message,
+					multiline: opts.multiline,
+					run: opts.run,
+					timeout: opts.timeout,
+				},
+				promptDeps,
+			);
 		});
 }

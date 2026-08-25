@@ -13,7 +13,7 @@
  *   1 — General error / unhandled
  *   2 — TEMPLATE_NOT_FOUND, PLAN_NOT_FOUND, PROVIDER_NOT_FOUND, INVALID_PROVIDER,
  *       HARNESS_ASSETS_MODIFIED
- *   3 — NON_INTERACTIVE, EOF (interactive prompt required / stdin closed)
+ *   3 — NON_INTERACTIVE, EOF, PROMPT_TIMEOUT (interactive prompt required / stdin closed / wait timed out)
  *   4 — PLAN_LOCKED
  *   5 — DIRTY_WORKTREE
  *   6 — MAX_STEPS_EXCEEDED
@@ -21,6 +21,7 @@
  *   8 — PHASE_CHECKLIST_INCOMPLETE, PHASE_NOT_FOUND
  *   9 — SESSION_REQUIRED
  * 130 — INTERRUPTED (prompt cancelled via SIGINT)
+ * 143 — TERMINATED (prompt cancelled via SIGTERM)
  */
 
 // ---------------------------------------------------------------------------
@@ -55,7 +56,9 @@ const EXIT_CODE_MAP: Record<string, number> = {
 	HARNESS_ASSETS_MODIFIED: 2,
 	NON_INTERACTIVE: 3,
 	EOF: 3,
+	PROMPT_TIMEOUT: 3,
 	INTERRUPTED: 130,
+	TERMINATED: 143,
 	PLAN_LOCKED: 4,
 	DIRTY_WORKTREE: 5,
 	MAX_STEPS_EXCEEDED: 6,

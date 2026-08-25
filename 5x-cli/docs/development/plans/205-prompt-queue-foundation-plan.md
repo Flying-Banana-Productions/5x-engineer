@@ -718,46 +718,46 @@ Read `FIVEX_PROMPT_TIMEOUT_MS` when `--timeout` is omitted. Validate with `parse
 
 Inject memory store + `runExists` + fake TTY/sleep + injectable abort signal/cause:
 
-- [ ] Choose `--default` no-TTY: one open-then-answered row, `answeredBy === "default"`, stdout `{ choice }`.
-- [ ] Choose no-TTY no default: abandoned `non-interactive`, `NON_INTERACTIVE`.
-- [ ] Invalid default: no row created.
-- [ ] Parallel: create via handler TTY path (fake `readLine` that never resolves until abort); second task `answerPrompt(..., "control-plane")`; handler returns the control-plane answer; `readLine` was aborted **and** the poll helper’s signal was aborted.
-- [ ] Timeout win: stdin `AbortController` aborted; poll stopped; row abandoned `timeout`.
-- [ ] TTY/EOF win: poll signal aborted (no further `getPrompt` after the race settles).
-- [ ] Choose/confirm `readLine` → `EOF` without default: abandoned `eof`, envelope `EOF`; poll aborted.
-- [ ] Choose/confirm `readLine` → `EOF` with `--default`: answered `default`, success envelope; poll aborted.
-- [ ] **Input single-line** `readLine` → `EOF`: `answerPrompt` with `""` / `answeredBy === "terminal"`; `{ input: "" }`; row is **not** abandoned; poll aborted.
-- [ ] **Input multiline** `readAll` stream-end with collected text: `answerPrompt` with that text / `answeredBy === "terminal"`; `{ input }`; row is **not** abandoned.
-- [ ] **Input multiline** `readAll` stream-end with empty text (immediate Ctrl+D): `{ input: "" }`; answered `terminal`; **not** abandoned; **not** envelope `EOF`.
-- [ ] Multiline `readAll` → `SIGINT`: abandoned `interrupted`, `INTERRUPTED`; no success envelope with partial text.
-- [ ] Injected lifecycle abort with cause `"SIGTERM"` during TTY wait: both controllers aborted; row abandoned `interrupted`; envelope `TERMINATED` (not `INTERRUPTED`).
-- [ ] Injected lifecycle abort with cause `"SIGINT"` during TTY wait: abandoned `interrupted`, `INTERRUPTED`.
-- [ ] **Poll-only** wait (no-TTY choose/confirm, no default, positive timeout, **no** input promise): injected lifecycle abort with cause `"SIGINT"` surfaces as `PromptWaitAbortedError` / `poll-aborted`; handler maps it to abandon `interrupted` + `INTERRUPTED`; both controllers aborted; no unhandled rejection.
-- [ ] **Poll-only** wait with cause `"SIGTERM"`: abandon `interrupted` + `TERMINATED` (not `INTERRUPTED`).
-- [ ] **Poll-only** wait + store writer: poll abort from `finally` has no lifecycle cause → success from stored `{ choice }`, **not** `INTERRUPTED`.
-- [ ] no-TTY `input` + hanging pipe + `--timeout`: pipe aborted; row abandoned `timeout`; `PROMPT_TIMEOUT`.
-- [ ] no-TTY `input` + hanging pipe + store writer: pipe aborted; envelope is the stored `{ input }`.
-- [ ] `--timeout -1` / `abc` / `10ms` / `NaN`: `INVALID_ARGS`, **no row**.
-- [ ] `FIVEX_PROMPT_TIMEOUT_MS=nope` with flag omitted: `INVALID_ARGS`, **no row**.
-- [ ] `--run` unknown (`runExists` → false): `RUN_NOT_FOUND`, **no row**.
-- [ ] `--run` known (`runExists` → true): row created with that `runId`.
-- [ ] Confirm/input equivalent persist+CAS.
+- [x] Choose `--default` no-TTY: one open-then-answered row, `answeredBy === "default"`, stdout `{ choice }`.
+- [x] Choose no-TTY no default: abandoned `non-interactive`, `NON_INTERACTIVE`.
+- [x] Invalid default: no row created.
+- [x] Parallel: create via handler TTY path (fake `readLine` that never resolves until abort); second task `answerPrompt(..., "control-plane")`; handler returns the control-plane answer; `readLine` was aborted **and** the poll helper’s signal was aborted.
+- [x] Timeout win: stdin `AbortController` aborted; poll stopped; row abandoned `timeout`.
+- [x] TTY/EOF win: poll signal aborted (no further `getPrompt` after the race settles).
+- [x] Choose/confirm `readLine` → `EOF` without default: abandoned `eof`, envelope `EOF`; poll aborted.
+- [x] Choose/confirm `readLine` → `EOF` with `--default`: answered `default`, success envelope; poll aborted.
+- [x] **Input single-line** `readLine` → `EOF`: `answerPrompt` with `""` / `answeredBy === "terminal"`; `{ input: "" }`; row is **not** abandoned; poll aborted.
+- [x] **Input multiline** `readAll` stream-end with collected text: `answerPrompt` with that text / `answeredBy === "terminal"`; `{ input }`; row is **not** abandoned.
+- [x] **Input multiline** `readAll` stream-end with empty text (immediate Ctrl+D): `{ input: "" }`; answered `terminal`; **not** abandoned; **not** envelope `EOF`.
+- [x] Multiline `readAll` → `SIGINT`: abandoned `interrupted`, `INTERRUPTED`; no success envelope with partial text.
+- [x] Injected lifecycle abort with cause `"SIGTERM"` during TTY wait: both controllers aborted; row abandoned `interrupted`; envelope `TERMINATED` (not `INTERRUPTED`).
+- [x] Injected lifecycle abort with cause `"SIGINT"` during TTY wait: abandoned `interrupted`, `INTERRUPTED`.
+- [x] **Poll-only** wait (no-TTY choose/confirm, no default, positive timeout, **no** input promise): injected lifecycle abort with cause `"SIGINT"` surfaces as `PromptWaitAbortedError` / `poll-aborted`; handler maps it to abandon `interrupted` + `INTERRUPTED`; both controllers aborted; no unhandled rejection.
+- [x] **Poll-only** wait with cause `"SIGTERM"`: abandon `interrupted` + `TERMINATED` (not `INTERRUPTED`).
+- [x] **Poll-only** wait + store writer: poll abort from `finally` has no lifecycle cause → success from stored `{ choice }`, **not** `INTERRUPTED`.
+- [x] no-TTY `input` + hanging pipe + `--timeout`: pipe aborted; row abandoned `timeout`; `PROMPT_TIMEOUT`.
+- [x] no-TTY `input` + hanging pipe + store writer: pipe aborted; envelope is the stored `{ input }`.
+- [x] `--timeout -1` / `abc` / `10ms` / `NaN`: `INVALID_ARGS`, **no row**.
+- [x] `FIVEX_PROMPT_TIMEOUT_MS=nope` with flag omitted: `INVALID_ARGS`, **no row**.
+- [x] `--run` unknown (`runExists` → false): `RUN_NOT_FOUND`, **no row**.
+- [x] `--run` known (`runExists` → true): row created with that `runId`.
+- [x] Confirm/input equivalent persist+CAS.
 
 #### 6.5 Integration tests — rewrite `test/integration/commands/prompt.test.ts`
 
 Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cwd: dir`. Re-assert every current case (defaults, `NON_INTERACTIVE` exit 3, `INVALID_*`, interactive `5X_FORCE_TTY`, choose/confirm EOF, **input single-line EOF `{ input: "" }`**, **multiline Ctrl+D collected text**, pipe input). Add:
 
-- [ ] After `--default` success, SQLite has one answered row `answered_by = 'default'`.
-- [ ] After `NON_INTERACTIVE`, row is abandoned not open.
-- [ ] `--run` + real `createRunV1` sets `run_id`.
-- [ ] `--run` unknown: `RUN_NOT_FOUND`, no prompt row.
-- [ ] `--timeout abc` and `--timeout -1` exit non-zero with `INVALID_ARGS` and insert no prompt row.
-- [ ] no-TTY `input` with a hanging stdin pipe + `--timeout 50`: `PROMPT_TIMEOUT` exit 3; row abandoned `timeout`; process exits (pipe did not hang the CLI).
-- [ ] no-TTY `input` with a hanging stdin pipe: a second process `answerPrompt`s via sqlite; waiter exits 0 with the stored `{ input }`; pipe reader aborted.
-- [ ] Interactive single-line `input` EOF (empty stdin, `5X_FORCE_TTY=1`): exit 0, `{ input: "" }`; SQLite row answered `answered_by = 'terminal'`, `answer = ''`; **not** abandoned; **not** envelope `EOF`.
-- [ ] Interactive multiline `input` EOF with collected text: exit 0, `{ input }` equals collected text; row answered `terminal`; **not** abandoned.
-- [ ] Interactive multiline `input` immediate EOF (empty): exit 0, `{ input: "" }`; row answered `terminal`; **not** abandoned.
-- [ ] Interactive choose/confirm EOF without default: exit 3, envelope `EOF`; row abandoned `eof` (regression of current cases, plus persist assertion).
+- [x] After `--default` success, SQLite has one answered row `answered_by = 'default'`.
+- [x] After `NON_INTERACTIVE`, row is abandoned not open.
+- [x] `--run` + real `createRunV1` sets `run_id`.
+- [x] `--run` unknown: `RUN_NOT_FOUND`, no prompt row.
+- [x] `--timeout abc` and `--timeout -1` exit non-zero with `INVALID_ARGS` and insert no prompt row.
+- [x] no-TTY `input` with a hanging stdin pipe + `--timeout 50`: `PROMPT_TIMEOUT` exit 3; row abandoned `timeout`; process exits (pipe did not hang the CLI).
+- [x] no-TTY `input` with a hanging stdin pipe: a second process `answerPrompt`s via sqlite; waiter exits 0 with the stored `{ input }`; pipe reader aborted.
+- [x] Interactive single-line `input` EOF (empty stdin, `5X_FORCE_TTY=1`): exit 0, `{ input: "" }`; SQLite row answered `answered_by = 'terminal'`, `answer = ''`; **not** abandoned; **not** envelope `EOF`.
+- [x] Interactive multiline `input` EOF with collected text: exit 0, `{ input }` equals collected text; row answered `terminal`; **not** abandoned.
+- [x] Interactive multiline `input` immediate EOF (empty): exit 0, `{ input: "" }`; row answered `terminal`; **not** abandoned.
+- [x] Interactive choose/confirm EOF without default: exit 3, envelope `EOF`; row abandoned `eof` (regression of current cases, plus persist assertion).
 
 ---
 
