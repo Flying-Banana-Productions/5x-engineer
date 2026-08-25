@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | **Slice ID** | `v2-prompt-queue-foundation` |
-| **Status** | `draft` |
+| **Status** | `planned` |
 | **Owner** | |
-| **Generated plan** | `-` |
-| **Last updated** | 2026-08-13 |
+| **Generated plan** | `docs/development/plans/205-prompt-queue-foundation-plan.md` |
+| **Last updated** | 2026-08-25 |
 
 ---
 

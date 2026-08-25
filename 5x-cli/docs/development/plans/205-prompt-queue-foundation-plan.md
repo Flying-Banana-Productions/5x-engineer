@@ -767,26 +767,26 @@ Use temp dir + git init + migrated DB (`doctor.test.ts:49–62`). Spawn with `cw
 
 #### 7.1 Concurrency / lifecycle tests — `test/unit/control-plane/cas-race.test.ts`, `test/integration/commands/prompt-queue.test.ts`
 
-- [ ] Two `answerPrompt` writers (terminal vs `control-plane`) on sqlite: one winner; loser payload equals winner.
-- [ ] TTY handler + injected store writer: handler exit 0, envelope is the stored winner even if TTY later produces a line; stdin and poll both aborted.
-- [ ] `--timeout 50` TTY with no input: `PROMPT_TIMEOUT` exit 3, row abandoned `timeout`; stdin listeners gone.
-- [ ] **Required real-process SIGINT test** (not unit-only): `Bun.spawn` the CLI (`5X_FORCE_TTY=1`) in a temp project with a migrated DB; keep stdin open so the prompt waits; poll SQLite until the open `prompts` row exists; `proc.kill("SIGINT")`; assert exit code **130**, stdout error envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Do not accept a fake-`readLine` unit test as a substitute for this gate.
-- [ ] **Required real-process SIGTERM test** (not unit-only): same setup as SIGINT; `proc.kill("SIGTERM")`; assert exit code **143**, stdout error envelope `TERMINATED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Proves the lifecycle signal is in the race (stdin has no SIGTERM listener). Do not accept an injected-abort unit test as a substitute.
-- [ ] **Required real-process poll-only SIGINT test** (not unit-only): no-TTY `5x prompt choose --timeout <large>` with no `--default` (poll-only wait: no stdin promise); poll SQLite until the open row exists; `proc.kill("SIGINT")`; assert exit **130**, envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'`. Proves `PromptWaitAbortedError` is mapped when stdin is not in the race. Do not accept the injected poll-only unit test as a substitute for this gate.
-- [ ] Second SIGINT while abandoning: process still exits 130 (force path); no hang.
-- [ ] no-TTY `input` hanging pipe + `--timeout`: CLI exits `PROMPT_TIMEOUT`; row abandoned `timeout`.
-- [ ] no-TTY `input` hanging pipe + control-plane `answerPrompt`: waiter exits 0 with stored `{ input }`.
-- [ ] Doctor integration: seed orphaned prompt in temp project; `5x doctor` JSON contains `PROMPT_ORPHANED`; `5x doctor --fix` lists it under `fixed` and re-run is clean.
-- [ ] `5x run watch` SIGINT still exits as today (do not force 130 after a clean watch abort).
+- [x] Two `answerPrompt` writers (terminal vs `control-plane`) on sqlite: one winner; loser payload equals winner.
+- [x] TTY handler + injected store writer: handler exit 0, envelope is the stored winner even if TTY later produces a line; stdin and poll both aborted.
+- [x] `--timeout 50` TTY with no input: `PROMPT_TIMEOUT` exit 3, row abandoned `timeout`; stdin listeners gone.
+- [x] **Required real-process SIGINT test** (not unit-only): `Bun.spawn` the CLI (`5X_FORCE_TTY=1`) in a temp project with a migrated DB; keep stdin open so the prompt waits; poll SQLite until the open `prompts` row exists; `proc.kill("SIGINT")`; assert exit code **130**, stdout error envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Do not accept a fake-`readLine` unit test as a substitute for this gate.
+- [x] **Required real-process SIGTERM test** (not unit-only): same setup as SIGINT; `proc.kill("SIGTERM")`; assert exit code **143**, stdout error envelope `TERMINATED`, and `abandon_reason = 'interrupted'` (and `abandoned_at` set) on that row. Proves the lifecycle signal is in the race (stdin has no SIGTERM listener). Do not accept an injected-abort unit test as a substitute.
+- [x] **Required real-process poll-only SIGINT test** (not unit-only): no-TTY `5x prompt choose --timeout <large>` with no `--default` (poll-only wait: no stdin promise); poll SQLite until the open row exists; `proc.kill("SIGINT")`; assert exit **130**, envelope `INTERRUPTED`, and `abandon_reason = 'interrupted'`. Proves `PromptWaitAbortedError` is mapped when stdin is not in the race. Do not accept the injected poll-only unit test as a substitute for this gate.
+- [x] Second SIGINT while abandoning: process still exits 130 (force path); no hang.
+- [x] no-TTY `input` hanging pipe + `--timeout`: CLI exits `PROMPT_TIMEOUT`; row abandoned `timeout`.
+- [x] no-TTY `input` hanging pipe + control-plane `answerPrompt`: waiter exits 0 with stored `{ input }`.
+- [x] Doctor integration: seed orphaned prompt in temp project; `5x doctor` JSON contains `PROMPT_ORPHANED`; `5x doctor --fix` lists it under `fixed` and re-run is clean.
+- [x] `5x run watch` SIGINT still exits as today (do not force 130 after a clean watch abort).
 
 #### 7.2 Docs
 
-- [ ] `docs/v2/202-control-plane.md`: mark store/schema/polling TODOs resolved for this slice; record `--default` precedence, 250ms poll, abandonment, nullable `run_id`, no `decisions` table. Leave dashboard/server TODOs.
-- [ ] `docs/v2/203-recovery-and-doctor.md`: prompts check is implemented (fail + `--fix` abandon); drop “deferred” on the table row; status line ~10.
-- [ ] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY, no-TTY `input` pipe, and no-TTY choose/confirm opt-in wait); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon unless `--timeout`; **kind-aware EOF** (choose/confirm without default abandon `eof` / emit `EOF`; single-line input EOF `{ input: "" }` and multiline input EOF collected text both persist as `answered_by = 'terminal'`); Ctrl-C / SIGTERM CAS-abandon `interrupted` (including poll-only waits) then exit 130 / 143 (`TERMINATED`).
-- [ ] `docs/v2/200-overview.md` §3.2: one sentence that the prompt queue is implemented locally via `PromptStore`.
-- [ ] `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md`: set **Generated plan** to this file; status `planned`.
-- [ ] `src/index.ts`: export `PromptStore`, `PromptRecord`, `createSqlitePromptStore`, `createMemoryPromptStore`, CAS types.
+- [x] `docs/v2/202-control-plane.md`: mark store/schema/polling TODOs resolved for this slice; record `--default` precedence, 250ms poll, abandonment, nullable `run_id`, no `decisions` table. Leave dashboard/server TODOs.
+- [x] `docs/v2/203-recovery-and-doctor.md`: prompts check is implemented (fail + `--fix` abandon); drop “deferred” on the table row; status line ~10.
+- [x] `docs/v1/101-cli-primitives.md` §7: persist-then-wait; terminal and control-plane are CAS writers; `--run` / `--timeout` (strict integer parse, applies to TTY, no-TTY `input` pipe, and no-TTY choose/confirm opt-in wait); success envelopes unchanged; no-TTY `--default` immediate; no-TTY choose/confirm no-default still `NON_INTERACTIVE` after abandon unless `--timeout`; **kind-aware EOF** (choose/confirm without default abandon `eof` / emit `EOF`; single-line input EOF `{ input: "" }` and multiline input EOF collected text both persist as `answered_by = 'terminal'`); Ctrl-C / SIGTERM CAS-abandon `interrupted` (including poll-only waits) then exit 130 / 143 (`TERMINATED`).
+- [x] `docs/v2/200-overview.md` §3.2: one sentence that the prompt queue is implemented locally via `PromptStore`.
+- [x] `docs/v2/plan-inputs/03-prompt-queue-foundation.plan-input.md`: set **Generated plan** to this file; status `planned`.
+- [x] `src/index.ts`: export `PromptStore`, `PromptRecord`, `createSqlitePromptStore`, `createMemoryPromptStore`, CAS types.
 
 #### 7.3 AGENTS.md / doctor order
 
