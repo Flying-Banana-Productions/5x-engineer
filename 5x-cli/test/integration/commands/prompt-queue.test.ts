@@ -129,11 +129,13 @@ async function withProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	}
 }
 
+type SpawnedProcess = Bun.Subprocess<"pipe" | "ignore", "pipe", "pipe">;
+
 function spawnPrompt(
 	dir: string,
 	args: string[],
 	opts?: { forceTty?: boolean; stdin?: "pipe" | "ignore" },
-): ReturnType<typeof Bun.spawn> {
+): SpawnedProcess {
 	return Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd: dir,
 		stdout: "pipe",
@@ -146,7 +148,7 @@ function spawnPrompt(
 	});
 }
 
-async function collect(proc: ReturnType<typeof Bun.spawn>): Promise<CmdResult> {
+async function collect(proc: SpawnedProcess): Promise<CmdResult> {
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
@@ -155,7 +157,7 @@ async function collect(proc: ReturnType<typeof Bun.spawn>): Promise<CmdResult> {
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
-function killLater(proc: ReturnType<typeof Bun.spawn>, ms: number): void {
+function killLater(proc: SpawnedProcess, ms: number): void {
 	setTimeout(() => {
 		try {
 			proc.kill("SIGKILL");
