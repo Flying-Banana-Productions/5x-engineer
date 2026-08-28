@@ -55,8 +55,8 @@ describe("migration v6: fresh DB", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			expect(getSchemaVersion(db)).toBe(6);
-			expect(getMaxKnownSchemaVersion()).toBe(6);
+			expect(getSchemaVersion(db)).toBe(7);
+			expect(getMaxKnownSchemaVersion()).toBe(7);
 			expect(tableNames(db)).toContain("prompts");
 
 			const indexNames = promptIndexNames(db);
@@ -159,7 +159,7 @@ describe("migration v6: from v5", () => {
 			);
 
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(6);
+			expect(getSchemaVersion(db)).toBe(7);
 			expect(tableNames(db)).toContain("prompts");
 			expect(tableNames(db)).toContain("steps");
 

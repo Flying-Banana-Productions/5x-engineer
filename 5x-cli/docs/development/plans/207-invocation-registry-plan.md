@@ -533,7 +533,7 @@ CREATE INDEX idx_invocations_live
 
 Do not alter `runs` / `steps` / `plans` / `prompts`. Description: `UUID invocations table with opaque handle, cancellation columns, live index`.
 
-- [ ] Append migration 7. Do not add a `pid` column or a process-group column.
+- [x] Append migration 7. Do not add a `pid` column or a process-group column.
 
 #### 2.2 Schema tests
 
@@ -552,8 +552,8 @@ Add `test/unit/db/schema-v7.test.ts` (copy `migrateUpTo` from `schema-v6.test.ts
 - `PRAGMA table_info(invocations)` names do **not** include `pid`.
 - `handle_json` is NOT NULL.
 
-- [ ] Bump version-6 “current max” assertions to 7.
-- [ ] Add `schema-v7.test.ts` covering DDL, indexes, FK, CHECKs, no `pid`, v6→v7.
+- [x] Bump version-6 “current max” assertions to 7.
+- [x] Add `schema-v7.test.ts` covering DDL, indexes, FK, CHECKs, no `pid`, v6→v7.
 
 ---
 
