@@ -24,6 +24,11 @@ import {
 	loadConfig,
 	resolveLayeredConfig,
 } from "../config.js";
+import {
+	createSqliteInvocationStore,
+	type InvocationStore,
+	withInvocationLifecycle,
+} from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
@@ -34,11 +39,11 @@ import {
 	readUpstreamEnvelope,
 } from "../pipe.js";
 import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
-import { createProvider } from "../providers/factory.js";
+import { createProvider as defaultCreateProvider } from "../providers/factory.js";
 import {
 	appendLogLine,
-	appendSessionStart,
-	prepareLogPath,
+	appendSessionStart as defaultAppendSessionStart,
+	prepareLogPath as defaultPrepareLogPath,
 } from "../providers/log-writer.js";
 import type {
 	AgentProvider,
@@ -72,6 +77,13 @@ import {
 // ---------------------------------------------------------------------------
 
 export type InvokeRole = "author" | "reviewer";
+
+export interface InvokeAgentDeps {
+	invocationStore?: InvocationStore;
+	prepareLogPath?: typeof defaultPrepareLogPath;
+	appendSessionStart?: typeof defaultAppendSessionStart;
+	createProvider?: typeof defaultCreateProvider;
+}
 
 export interface InvokeParams {
 	template: string;
@@ -131,6 +143,7 @@ async function invokeStreamed(
 	quiet: boolean,
 	showReasoning: boolean,
 	forceStderr: boolean,
+	onEvent?: () => void,
 ): Promise<RunResult> {
 	const writer =
 		!quiet && (forceStderr || process.stderr.isTTY)
@@ -141,6 +154,7 @@ async function invokeStreamed(
 
 	try {
 		for await (const event of session.runStreamed(prompt, opts)) {
+			onEvent?.();
 			// Write to NDJSON log
 			if (logPath) {
 				appendLogLine(logPath, event);
@@ -174,6 +188,7 @@ async function invokeStreamed(
 export async function invokeAgent(
 	role: InvokeRole,
 	params: InvokeParams,
+	deps?: InvokeAgentDeps,
 ): Promise<void> {
 	// Preserve INVALID_ARGS for an explicit malformed --run (path traversal, etc.).
 	if (params.run) validateRunId(params.run);
@@ -413,6 +428,7 @@ export async function invokeAgent(
 	}
 
 	// 2. Create provider
+	const createProvider = deps?.createProvider ?? defaultCreateProvider;
 	let provider: AgentProvider;
 	try {
 		provider = await createProvider(role, config);
@@ -460,37 +476,34 @@ export async function invokeAgent(
 		throw err;
 	}
 
-	// 4. Prepare log path (--run is required and already validated)
-	// Anchor log dir to controlPlaneRoot/stateDir.
-	const logDir = join(
-		controlPlane.controlPlaneRoot,
-		stateDir,
-		"logs",
-		params.run,
-	);
-	const logPath = prepareLogPath(logDir);
+	if (!runDb) {
+		await provider.close().catch(() => {});
+		outputError(
+			"NO_CONTROL_PLANE",
+			`No 5x control-plane DB found. Initialize with "5x init" first.`,
+		);
+	}
 
-	// 4b. Write session metadata as first NDJSON line (log-only, not an AgentEvent)
+	const runId = params.run;
+	if (!runId) {
+		await provider.close().catch(() => {});
+		outputError("INVALID_ARGS", "--run is required");
+	}
+
+	const store = deps?.invocationStore ?? createSqliteInvocationStore(runDb);
+	const prepareLog = deps?.prepareLogPath ?? defaultPrepareLogPath;
+	const appendStart = deps?.appendSessionStart ?? defaultAppendSessionStart;
+
+	const logDir = join(controlPlane.controlPlaneRoot, stateDir, "logs", runId);
 	const providerName =
 		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
-	appendSessionStart(logPath, {
-		type: "session_start",
-		role,
-		template: resolved.selectedTemplateName,
-		run: params.run,
-		phase_number: variables.phase_number,
-		provider: providerName,
-		model,
-	});
 
-	// 5. Build run options
 	const outputSchema =
 		role === "author" ? AuthorStatusSchema : ReviewerVerdictSchema;
 	const quiet = params.quiet ?? false;
 	const showReasoning = params.showReasoning ?? false;
 	const forceStderr = params.stderr ?? false;
 
-	// CLI --timeout takes precedence, then config [author].timeout / [reviewer].timeout
 	const configTimeout =
 		typeof roleConfig?.timeout === "number" ? roleConfig.timeout : undefined;
 	const runOpts: RunOptions = {
@@ -498,100 +511,114 @@ export async function invokeAgent(
 		timeout: params.timeoutSeconds ?? configTimeout,
 	};
 
-	// 6. Invoke agent
-	let runResult: RunResult;
+	let logPath!: string;
+	let runResult!: RunResult;
+	let structured!: unknown;
+
 	try {
-		runResult = await invokeStreamed(
-			session,
-			renderedPrompt,
-			runOpts,
-			logPath,
-			quiet,
-			showReasoning,
-			forceStderr,
-		);
-	} catch (err) {
-		await provider.close().catch(() => {});
-		throw err;
-	}
+		await withInvocationLifecycle({
+			store,
+			input: {
+				runId,
+				sessionId: session.id,
+				role,
+				providerName,
+				templateName: resolved.selectedTemplateName,
+				handle: { adapter: "none", ref: session.id },
+				cancellationSupported: false,
+			},
+			fn: async ({ heartbeat }) => {
+				logPath = prepareLog(logDir);
+				appendStart(logPath, {
+					type: "session_start",
+					role,
+					template: resolved.selectedTemplateName,
+					run: runId,
+					phase_number: variables.phase_number,
+					provider: providerName,
+					model,
+				});
+				runResult = await invokeStreamed(
+					session,
+					renderedPrompt,
+					runOpts,
+					logPath,
+					quiet,
+					showReasoning,
+					forceStderr,
+					heartbeat,
+				);
 
-	// 7. Validate structured output (shared helper)
-	//    Use the result-based API so we can await provider.close() before
-	//    emitting the error envelope. The previous pattern called outputError()
-	//    directly from the shared helper, which threw CliError before the async
-	//    provider.close() could complete — potentially orphaning subprocesses.
-	const validation = validateStructuredOutput(runResult.structured, role, {
-		context: `invoke ${role}`,
-	});
+				const validation = validateStructuredOutput(
+					runResult.structured,
+					role,
+					{ context: `invoke ${role}` },
+				);
 
-	if (!validation.ok) {
-		await provider.close().catch(() => {});
-
-		const rawDetail =
-			validation.detail && typeof validation.detail === "object"
-				? (validation.detail as Record<string, unknown>)
-				: {};
-		const enrichedDetail: Record<string, unknown> = {
-			...rawDetail,
-			session_id: runResult.sessionId,
-			log_path: logPath,
-			template: resolved.selectedTemplateName,
-			provider: providerName,
-			model,
-			// Include provider text when structured output was missing or for diagnosis.
-			...(runResult.text
-				? { provider_text: runResult.text.slice(0, 4000) }
-				: {}),
-			...(rawDetail.raw == null ? { raw: null } : {}),
-		};
-
-		// Record failed invoke attempt when --record so run state shows the
-		// invocation even when structured output is missing/invalid.
-		if (params.record) {
-			const stepName = params.recordStep ?? resolved.stepName;
-			if (stepName) {
-				try {
-					await recordStepInternal({
-						run: params.run,
-						stepName,
-						result: JSON.stringify({
-							result: "failed",
-							reason: validation.message,
-							invoke_error: validation.code,
-							session_id: runResult.sessionId,
-							log_path: logPath,
-							template: resolved.selectedTemplateName,
-							provider: providerName,
-							model,
-						}),
-						phase: params.phase ?? variables.phase_number,
-						iteration: params.iteration,
-						sessionId: runResult.sessionId,
+				if (!validation.ok) {
+					const rawDetail =
+						validation.detail && typeof validation.detail === "object"
+							? (validation.detail as Record<string, unknown>)
+							: {};
+					const enrichedDetail: Record<string, unknown> = {
+						...rawDetail,
+						session_id: runResult.sessionId,
+						log_path: logPath,
+						template: resolved.selectedTemplateName,
+						provider: providerName,
 						model,
-						durationMs: runResult.durationMs,
-						tokensIn: runResult.tokens.in,
-						tokensOut: runResult.tokens.out,
-						costUsd: runResult.costUsd ?? undefined,
-						logPath: logPath ?? undefined,
-					});
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					console.error(
-						`Warning: failed to record invoke failure step: ${msg}`,
-					);
-				}
-			}
-		}
+						...(runResult.text
+							? { provider_text: runResult.text.slice(0, 4000) }
+							: {}),
+						...(rawDetail.raw == null ? { raw: null } : {}),
+					};
 
-		outputError(validation.code, validation.message, enrichedDetail);
+					if (params.record) {
+						const stepName = params.recordStep ?? resolved.stepName;
+						if (stepName) {
+							try {
+								await recordStepInternal({
+									run: runId,
+									stepName,
+									result: JSON.stringify({
+										result: "failed",
+										reason: validation.message,
+										invoke_error: validation.code,
+										session_id: runResult.sessionId,
+										log_path: logPath,
+										template: resolved.selectedTemplateName,
+										provider: providerName,
+										model,
+									}),
+									phase: params.phase ?? variables.phase_number,
+									iteration: params.iteration,
+									sessionId: runResult.sessionId,
+									model,
+									durationMs: runResult.durationMs,
+									tokensIn: runResult.tokens.in,
+									tokensOut: runResult.tokens.out,
+									costUsd: runResult.costUsd ?? undefined,
+									logPath: logPath ?? undefined,
+								});
+							} catch (err) {
+								const msg = err instanceof Error ? err.message : String(err);
+								console.error(
+									`Warning: failed to record invoke failure step: ${msg}`,
+								);
+							}
+						}
+					}
+
+					outputError(validation.code, validation.message, enrichedDetail);
+				}
+
+				structured = validation.value;
+			},
+		});
+	} finally {
+		await provider.close().catch(() => {});
 	}
 
-	const structured = validation.value;
-
-	// 8. Close provider
-	await provider.close().catch(() => {});
-
-	// 9. Return result — include worktree context for downstream pipelines
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: resolved.stepName,

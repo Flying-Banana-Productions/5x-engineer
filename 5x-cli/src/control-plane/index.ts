@@ -14,6 +14,11 @@ export {
 	registerCancellationAdapter,
 } from "./cancellation-adapter.js";
 export { createInvocationId, createPromptId } from "./ids.js";
+export {
+	INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
+	INVOCATION_STALE_MS,
+	withInvocationLifecycle,
+} from "./invocation-lifecycle.js";
 export type { MemoryInvocationStoreOptions } from "./invocation-memory.js";
 export { createMemoryInvocationStore } from "./invocation-memory.js";
 export { createSqliteInvocationStore } from "./invocation-sqlite.js";

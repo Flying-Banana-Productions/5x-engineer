@@ -784,8 +784,8 @@ The **interval** is the source of truth for “this invocation is still live.”
 
 If `markTerminal` in `try` succeeds, `finally` clears the timer and sees non-running. If `fn` returns without throwing and `markTerminal('completed')` CAS-loses to doctor abandon, leave `abandoned` (do not overwrite).
 
-- [ ] Implement helper with independent heartbeat interval. Do not call adapters here.
-- [ ] Clear the timer in `finally` on both success and error paths.
+- [x] Implement helper with independent heartbeat interval. Do not call adapters here.
+- [x] Clear the timer in `finally` on both success and error paths.
 
 #### 4.2 `invokeStreamed` heartbeat hook
 
@@ -793,7 +793,7 @@ If `markTerminal` in `try` succeeds, `finally` clears the timer and sees non-run
 
 Add optional `onEvent?: () => void` (or `heartbeat?: () => void`) invoked once per streamed event **before** rendering. This is an **optimization** on top of the lifecycle interval (first event can beat immediately). It is **not** sufficient by itself — a silent provider must stay fresh via the timer. Do not change NDJSON or stderr behavior.
 
-- [ ] Add the hook; existing tests that call `invokeStreamed` indirectly still pass.
+- [x] Add the hook; existing tests that call `invokeStreamed` indirectly still pass.
 
 #### 4.3 Wire `invokeAgent`
 
@@ -847,10 +847,10 @@ Do not pass `opts.signal` tied to registry cancel for unsupported providers.
 
 If `runDb` is used after the block that currently scopes it (`:231–279`), keep the connection open through invoke (it already is via `getDb` singleton). Construct the sqlite invocation store from that same db.
 
-- [ ] Register every successful session start, **before** `prepareLogPath` / `appendSessionStart`.
-- [ ] `cancellationSupported: false` and `adapter: "none"` for all production providers in this slice (including OpenCode and sample).
-- [ ] Heartbeat interval from the lifecycle helper; stream hook remains an optimization.
-- [ ] Outer `finally` closes the provider on every post-session path.
+- [x] Register every successful session start, **before** `prepareLogPath` / `appendSessionStart`.
+- [x] `cancellationSupported: false` and `adapter: "none"` for all production providers in this slice (including OpenCode and sample).
+- [x] Heartbeat interval from the lifecycle helper; stream hook remains an optimization.
+- [x] Outer `finally` closes the provider on every post-session path.
 
 #### 4.4 Tests
 
@@ -871,9 +871,9 @@ If `runDb` is used after the block that currently scopes it (`:231–279`), keep
 - After successful sample invoke, `store.list({ runId })[0].status === "completed"` and `cancellationSupported === false`.
 - **Pre-stream fault injection (each path):** inject `prepareLogPath` that throws after a real session start → row is `failed` not `running`, and `provider.close()` ran (spy). Repeat with `appendSessionStart` that throws. These two tests are required; a single “`fn` throws immediately” lifecycle test does **not** substitute for wiring coverage.
 
-- [ ] Lifecycle unit tests including pre-stream fault injection and silent heartbeat-timer coverage.
-- [ ] At least one invoke path writes a `completed` row with `cancellationSupported: false`.
-- [ ] `invokeAgent` tests: `prepareLogPath` throw and `appendSessionStart` throw each leave `failed` and close the provider.
+- [x] Lifecycle unit tests including pre-stream fault injection and silent heartbeat-timer coverage.
+- [x] At least one invoke path writes a `completed` row with `cancellationSupported: false`.
+- [x] `invokeAgent` tests: `prepareLogPath` throw and `appendSessionStart` throw each leave `failed` and close the provider.
 
 ---
 

@@ -69,6 +69,8 @@ export {
 	createSqlitePromptStore,
 	createTestRemoteAdapter,
 	getCancellationAdapter,
+	INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
+	INVOCATION_STALE_MS,
 	InvocationStoreError,
 	isCancellationActor,
 	PromptStoreError,
@@ -77,6 +79,7 @@ export {
 	toClientInvocationState,
 	toClientInvocationView,
 	toInvocationStatusEnvelope,
+	withInvocationLifecycle,
 } from "./control-plane/index.js";
 // DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
