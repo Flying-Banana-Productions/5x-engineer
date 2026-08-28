@@ -1142,7 +1142,7 @@ Replace TODOs with:
 
 Leave dashboard-server TODOs in §3.5 / §5 that 04 owns.
 
-- [ ] Resolve §3.6 in-slice TODOs only.
+- [x] Resolve §3.6 in-slice TODOs only.
 
 #### 7.2 `docs/v2/203-recovery-and-doctor.md`
 
@@ -1154,7 +1154,7 @@ Add check row:
 
 Update counts from six to seven builtins. Point at this plan.
 
-- [ ] Document the seventh check and the no-reap rule.
+- [x] Document the seventh check and the no-reap rule.
 
 #### 7.3 `docs/v1/101-cli-primitives.md`
 
@@ -1168,7 +1168,7 @@ Document:
 - Unsupported → `CANCELLATION_UNSUPPORTED`; run status unchanged.
 - Registry is coordination metadata, not a supervisor.
 
-- [ ] Add primitives; do not promise OpenCode kill.
+- [x] Add primitives; do not promise OpenCode kill.
 
 #### 7.4 `011` and plan-input pointer
 
@@ -1178,8 +1178,8 @@ Document:
 
 Optional: `AGENTS.md` already says invocation-registry workers pass `--run` explicitly (`5x-cli/AGENTS.md:23`). Confirm cancel/status match; no change required unless wording is wrong.
 
-- [ ] Point 011 and the plan-input at this plan.
-- [ ] State in `202` / `101` that OpenCode-specific cancellation is a new post-v2 plan.
+- [x] Point 011 and the plan-input at this plan.
+- [x] State in `202` / `101` that OpenCode-specific cancellation is a new post-v2 plan.
 
 ---
 

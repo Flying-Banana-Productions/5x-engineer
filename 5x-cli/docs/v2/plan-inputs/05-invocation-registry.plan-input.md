@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | **Slice ID** | `v2-invocation-registry` |
-| **Status** | `draft` |
+| **Status** | `planned` |
 | **Owner** | |
-| **Generated plan** | `-` |
-| **Last updated** | 2026-08-13 |
+| **Generated plan** | `docs/development/plans/207-invocation-registry-plan.md` |
+| **Last updated** | 2026-08-28 |
 
 ---
 

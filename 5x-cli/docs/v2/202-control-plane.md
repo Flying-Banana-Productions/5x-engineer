@@ -1,11 +1,11 @@
 # 5x CLI v2 — Interactive Control Plane
 
-**Status:** Prompt-queue foundation implemented locally; dashboard/server deferred to `04-control-plane-dashboard`
+**Status:** Prompt-queue foundation and invocation registry implemented locally; dashboard/server deferred to `04-control-plane-dashboard`
 **Date:** July 13, 2026
-**Updated:** August 25, 2026
+**Updated:** August 28, 2026
 **Part of:** v2 (`200-overview.md`, area #2)
 **Shared core used:** Run-state surface (`200-overview.md` §3.2); honors forward-compat constraints (§3a)
-**Implementation plan:** [`docs/development/plans/205-prompt-queue-foundation-plan.md`](../development/plans/205-prompt-queue-foundation-plan.md)
+**Implementation plan:** [`docs/development/plans/205-prompt-queue-foundation-plan.md`](../development/plans/205-prompt-queue-foundation-plan.md); invocation registry [`docs/development/plans/207-invocation-registry-plan.md`](../development/plans/207-invocation-registry-plan.md)
 **Deprecates:** `docs/10-dashboard.md` (v0-era read-only design)
 
 ---
@@ -120,10 +120,14 @@ The control plane gets no new mutation surface where an existing idempotent prim
 
 Aborting a *run* (§3.4) is bookkeeping. Cancelling an *in-flight agent invocation* needs a handle on a provider-owned process, which v1 deliberately does not track.
 
-- Add an invocation registry: when `5x invoke` (or a native delegation) starts, record a handle. _TODO:_ location (`.5x/agents/<session>.meta`) and contents.
-- **Opaque handles** (constraint #5). Model a running invocation as a handle that knows how to cancel itself: a local PID is one case; a remote provider container's job id reached by RPC is another. Do not bake local-PID-only assumptions in.
-- Unifies with the orphaning gap already flagged in `docs/development/plans/011-provider-process-lifecycle.md` — the same registry that enables operator cancellation enables orphan reaping.
-- _TODO:_ graceful-abort vs hard-kill semantics; allow the agent to record a terminal step on cancel. Explicitly **not** a 5x-level daemon owning agent lifecycle — the registry is a handle store, not a supervisor.
+**Implemented** (`207-invocation-registry-plan.md`). `5x invoke author|reviewer` registers a UUID row **immediately after** session start via `InvocationStore` (sibling of `PromptStore`). Native harness delegations never enter `invoke.handler.ts` and are **not** registered in this slice.
+
+- **Location:** `invocations` table in the control-plane SQLite materialization (schema v7, `.5x/5x.db`). Not `.5x/agents/<session>.meta`.
+- **Contents:** RFC 4122 UUID; `run_id` / `session_id`; opaque adapter-owned `handle_json` (`{ adapter, ref }`); `cancellation_supported`; request / adapter-outcome / terminal timestamps. **No `pid` column.** Public client views omit `handle`.
+- **Opaque handles** (constraint #5). A local PID is one future adapter's private `ref`, not the registry contract. Shipped providers (OpenCode, sample, plugins) register `cancellationSupported: false` and handle `{ adapter: "none", ref: session.id }`. Tests use a synthetic `test-remote` adapter whose `ref` is a job id.
+- **Cancel action:** `requestInvocationCancellation` is the only cancel mutation besides doctor abandon. CLI passes actor `"cli"`; a future dashboard, after verifying the per-process token, passes `"control-plane"`. Unsupported capability → `CANCELLATION_UNSUPPORTED` with no `requested_at`, no adapter call, and no `runs.status` change. Exactly one adapter cancel per invocation (CAS on `requested_at`). A cancel **request** never by itself writes stored `cancelled`. Dashboard POST contract is the table below.
+- **Not a daemon.** The registry is a handle store, not a supervisor. Heartbeat (15 min stale TTL) is the liveness predicate, not PID liveness. Doctor `--fix` CAS-abandons metadata only (`markAbandonedIfStale`); it does not reap provider processes. See `203-recovery-and-doctor.md`.
+- **OpenCode-specific cancellation is a new post-v2 plan.** OpenCode PID discovery, SDK patching, SIGTERM/SIGKILL, process groups, and orphan reaping are **deferred**. Do not revive `011-provider-process-lifecycle.md` (historical failure analysis only).
 
 **HTTP contract (slice 04).** `registerDashboard` is not in this tree; this slice does not add HTTP. In-process actions are the gate: `listInvocationViews`, `getInvocationView`, and `requestInvocationCancellation`. Slice 04 wraps them after verifying the per-process token. Unauthorized requests must not call the action. HTTP JSON **must** use `toInvocationStatusEnvelope` (snake_case `client_state`), not the camelCase `InvocationClientView`. Live status: 04 may poll GET or push `client_state` on the existing WebSocket; this slice does not add WS messages.
 
@@ -138,7 +142,7 @@ Aborting a *run* (§3.4) is bookkeeping. Cancelling an *in-flight agent invocati
 ## 4. Migration / compatibility
 
 - **`5x prompt` contract shift.** Terminal answering is preserved, so interactive use is unchanged. The shift matters only to callers that scripted around the old *block-on-terminal* behavior; documented in `101-cli-primitives.md` §7. Back-compatible in the common case (`200-overview.md` §4).
-- **Schema migration 6** adds `prompts` only. No change to `runs` / `steps` / `plans` shape. Existing autoincrement tables are left as-is (local-only); all v2-new tables are UUID-keyed (constraint #2).
+- **Schema migration 6** adds `prompts` only. **Schema migration 7** adds `invocations` (opaque `handle_json`, no `pid`). No change to `runs` / `steps` / `plans` / `prompts` shape. Existing autoincrement tables are left as-is (local-only); all v2-new tables are UUID-keyed (constraint #2).
 - **Dashboard.** `docs/10-dashboard.md` deprecated; its read path informs the v2 server, its read-only architecture does not. HTTP/UI remain out of scope for this slice.
 
 ---
