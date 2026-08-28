@@ -79,6 +79,15 @@ export const EOF = Symbol("EOF");
 /** Sentinel returned by readLine when SIGINT is received. */
 export const SIGINT = Symbol("SIGINT");
 
+/** Sentinel returned when the waiter's AbortSignal fires. */
+export const ABORTED = Symbol("ABORTED");
+
+/** Process SIGINT seam for unit tests. Production uses `process`. */
+export interface StdinSigintHost {
+	once(event: "SIGINT", listener: () => void): void;
+	removeListener(event: "SIGINT", listener: () => void): void;
+}
+
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -88,20 +97,79 @@ let stdinBuffer = "";
 /** Whether stdin has ended. */
 let stdinEnded = false;
 
+let inputStreamOverride: NodeJS.ReadableStream | null = null;
+let pipeStreamFactory: (() => ReadableStream<Uint8Array>) | null = null;
+let sigintHost: StdinSigintHost = process;
+
+/** @internal Reset module state between unit tests. */
+export function _resetStdinForTest(): void {
+	stdinBuffer = "";
+	stdinEnded = false;
+	inputStreamOverride = null;
+	pipeStreamFactory = null;
+	sigintHost = process;
+}
+
+/** @internal Inject the TTY/line input stream for unit tests. */
+export function _setInputStreamForTest(
+	stream: NodeJS.ReadableStream | null,
+): void {
+	inputStreamOverride = stream;
+}
+
+/** @internal Inject the pipe ReadableStream factory for unit tests. */
+export function _setPipeStreamForTest(
+	factory: (() => ReadableStream<Uint8Array>) | null,
+): void {
+	pipeStreamFactory = factory;
+}
+
+/** @internal Inject the SIGINT host so tests never emit process SIGINT. */
+export function _setSigintHostForTest(host: StdinSigintHost | null): void {
+	sigintHost = host ?? process;
+}
+
 // ---------------------------------------------------------------------------
 // Read functions
 // ---------------------------------------------------------------------------
 
 /** Get the appropriate input stream (process.stdin or /dev/tty fallback). */
 function getInputStream(): NodeJS.ReadableStream {
+	if (inputStreamOverride) return inputStreamOverride;
 	if (ttyIn) return ttyIn;
 	return process.stdin;
 }
 
-/** Read a single line from stdin (or /dev/tty fallback). Returns EOF symbol on close, SIGINT symbol on interrupt. */
-export function readLine(): Promise<string | typeof EOF | typeof SIGINT> {
+function getPipeStream(): ReadableStream<Uint8Array> {
+	if (pipeStreamFactory) return pipeStreamFactory();
+	return Bun.stdin.stream();
+}
+
+function pauseIfPossible(input: NodeJS.ReadableStream): void {
+	if ("pause" in input && typeof input.pause === "function") {
+		(input as NodeJS.ReadStream).pause();
+	}
+}
+
+function resumeIfPossible(input: NodeJS.ReadableStream): void {
+	if ("resume" in input && typeof input.resume === "function") {
+		(input as NodeJS.ReadStream).resume();
+	}
+}
+
+/**
+ * Read a single line from stdin (or /dev/tty fallback).
+ * Returns EOF on close, SIGINT on interrupt, ABORTED if `signal` fires.
+ */
+export function readLine(
+	signal?: AbortSignal,
+): Promise<string | typeof EOF | typeof SIGINT | typeof ABORTED> {
 	return new Promise((resolve) => {
-		// Check buffer for a complete line first
+		if (signal?.aborted) {
+			resolve(ABORTED);
+			return;
+		}
+
 		const nlIdx = stdinBuffer.indexOf("\n");
 		if (nlIdx !== -1) {
 			const line = stdinBuffer.slice(0, nlIdx);
@@ -110,92 +178,155 @@ export function readLine(): Promise<string | typeof EOF | typeof SIGINT> {
 			return;
 		}
 
-		// If stdin already ended and no newline in buffer, return EOF
 		if (stdinEnded) {
 			resolve(EOF);
 			return;
 		}
 
 		const input = getInputStream();
+		let settled = false;
 
 		const cleanup = () => {
 			input.removeListener("data", onData);
 			input.removeListener("end", onEnd);
-			process.removeListener("SIGINT", onSigint);
-			if ("pause" in input && typeof input.pause === "function") {
-				(input as NodeJS.ReadStream).pause();
-			}
+			sigintHost.removeListener("SIGINT", onSigint);
+			signal?.removeEventListener("abort", onAbort);
+			pauseIfPossible(input);
+		};
+
+		const finish = (
+			value: string | typeof EOF | typeof SIGINT | typeof ABORTED,
+		) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve(value);
 		};
 
 		const onData = (chunk: Buffer | string) => {
 			stdinBuffer += typeof chunk === "string" ? chunk : chunk.toString();
-			const nlIdx = stdinBuffer.indexOf("\n");
-			if (nlIdx !== -1) {
-				const line = stdinBuffer.slice(0, nlIdx);
-				stdinBuffer = stdinBuffer.slice(nlIdx + 1);
-				cleanup();
-				resolve(line);
+			const idx = stdinBuffer.indexOf("\n");
+			if (idx !== -1) {
+				const line = stdinBuffer.slice(0, idx);
+				stdinBuffer = stdinBuffer.slice(idx + 1);
+				finish(line);
 			}
 		};
 		const onEnd = () => {
 			stdinEnded = true;
-			cleanup();
-			resolve(EOF);
+			finish(EOF);
 		};
 		const onSigint = () => {
-			cleanup();
-			resolve(SIGINT);
+			finish(SIGINT);
 		};
-		if ("resume" in input && typeof input.resume === "function") {
-			(input as NodeJS.ReadStream).resume();
-		}
+		const onAbort = () => {
+			finish(ABORTED);
+		};
+
+		resumeIfPossible(input);
 		input.on("data", onData);
 		input.on("end", onEnd);
-		process.once("SIGINT", onSigint);
+		sigintHost.once("SIGINT", onSigint);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
-/** Read all remaining stdin until EOF (Ctrl+D). Uses /dev/tty fallback if available. */
-export function readAll(): Promise<string> {
+/**
+ * Read all remaining stdin until stream-end (Ctrl+D). Uses /dev/tty fallback
+ * if available. Stream-end is the collected text (including `""`), never EOF.
+ * SIGINT resolves the SIGINT sentinel (partial chunks are discarded).
+ */
+export function readAll(
+	signal?: AbortSignal,
+): Promise<string | typeof SIGINT | typeof ABORTED> {
 	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve(ABORTED);
+			return;
+		}
+
 		const input = getInputStream();
 		const chunks: (Buffer | string)[] = [];
+		let settled = false;
 
 		const cleanup = () => {
 			input.removeListener("data", onData);
 			input.removeListener("end", onEnd);
-			process.removeListener("SIGINT", onSigint);
-			if ("pause" in input && typeof input.pause === "function") {
-				(input as NodeJS.ReadStream).pause();
-			}
+			sigintHost.removeListener("SIGINT", onSigint);
+			signal?.removeEventListener("abort", onAbort);
+			pauseIfPossible(input);
 		};
+
+		const finish = (value: string | typeof SIGINT | typeof ABORTED) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve(value);
+		};
+
 		const onData = (chunk: Buffer | string) => {
 			chunks.push(chunk);
 		};
 		const onEnd = () => {
-			cleanup();
 			const text = chunks
 				.map((c) => (typeof c === "string" ? c : c.toString()))
 				.join("");
-			resolve(text);
+			finish(text);
 		};
 		const onSigint = () => {
-			cleanup();
-			const text = chunks
-				.map((c) => (typeof c === "string" ? c : c.toString()))
-				.join("");
-			resolve(text);
+			finish(SIGINT);
 		};
-		if ("resume" in input && typeof input.resume === "function") {
-			(input as NodeJS.ReadStream).resume();
-		}
+		const onAbort = () => {
+			finish(ABORTED);
+		};
+
+		resumeIfPossible(input);
 		input.on("data", onData);
 		input.on("end", onEnd);
-		process.once("SIGINT", onSigint);
+		sigintHost.once("SIGINT", onSigint);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
-/** Read stdin pipe (non-TTY) to completion. */
-export async function readStdinPipe(): Promise<string> {
-	return await new Response(Bun.stdin.stream()).text();
+/** Read stdin pipe (non-TTY) to completion. Abort cancels the stream reader. */
+export async function readStdinPipe(
+	signal?: AbortSignal,
+): Promise<string | typeof ABORTED> {
+	if (signal?.aborted) return ABORTED;
+
+	const stream = getPipeStream();
+	const reader = stream.getReader();
+
+	const onAbort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
+
+	try {
+		const chunks: Uint8Array[] = [];
+		while (true) {
+			const result = await reader.read();
+			if (signal?.aborted) return ABORTED;
+			if (result.done) break;
+			if (result.value) chunks.push(result.value);
+		}
+		if (signal?.aborted) return ABORTED;
+		return decodeUtf8Chunks(chunks);
+	} catch (err) {
+		if (signal?.aborted) return ABORTED;
+		throw err;
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+	}
+}
+
+function decodeUtf8Chunks(chunks: Uint8Array[]): string {
+	const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+	const merged = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(merged);
 }

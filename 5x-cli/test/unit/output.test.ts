@@ -150,6 +150,10 @@ describe("exitCodeForError", () => {
 		expect(exitCodeForError("PROVIDER_NOT_FOUND")).toBe(2);
 		expect(exitCodeForError("INVALID_PROVIDER")).toBe(2);
 		expect(exitCodeForError("NON_INTERACTIVE")).toBe(3);
+		expect(exitCodeForError("EOF")).toBe(3);
+		expect(exitCodeForError("PROMPT_TIMEOUT")).toBe(3);
+		expect(exitCodeForError("INTERRUPTED")).toBe(130);
+		expect(exitCodeForError("TERMINATED")).toBe(143);
 		expect(exitCodeForError("PLAN_LOCKED")).toBe(4);
 		expect(exitCodeForError("DIRTY_WORKTREE")).toBe(5);
 		expect(exitCodeForError("MAX_STEPS_EXCEEDED")).toBe(6);

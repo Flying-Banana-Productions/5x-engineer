@@ -126,7 +126,7 @@ function writeLock(
 
 describe("5x doctor (integration)", () => {
 	test(
-		"JSON envelope + five check classes on a healthy project, exit 0",
+		"JSON envelope + six check classes on a healthy project, exit 0",
 		() => {
 			const dir = makeTmpDir();
 			try {
@@ -141,9 +141,11 @@ describe("5x doctor (integration)", () => {
 				expect(checks).toContain("worktrees");
 				expect(checks).toContain("runs");
 				expect(checks).toContain("db");
+				expect(checks).toContain("prompts");
 				expect(report.checks.some((c) => c.code === "DB_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "LOCKS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "RUNS_OK")).toBe(true);
+				expect(report.checks.some((c) => c.code === "PROMPTS_OK")).toBe(true);
 				expect(report.fixed).toEqual([]);
 			} finally {
 				cleanupDir(dir);

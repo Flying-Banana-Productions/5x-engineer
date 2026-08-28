@@ -1,13 +1,13 @@
 # 5x CLI v2 — Recovery & `5x doctor`
 
-**Status:** Implemented (prompts check deferred to `03-prompt-queue-foundation`)
+**Status:** Implemented
 **Date:** July 13, 2026
-**Updated:** August 18, 2026
+**Updated:** August 25, 2026
 **Part of:** v2 (`200-overview.md`, area #3)
 **Shared core used:** `5x doctor` (`200-overview.md` §3.3); surfaces the manifest freshness check (`201-harness-freshness.md` §2.4)
 **Implementation plan:** [`docs/development/plans/203-recovery-and-doctor-plan.md`](../development/plans/203-recovery-and-doctor-plan.md)
 
-Shipped: `5x lock list` / `5x unlock [--force]`, additive `PLAN_LOCKED` holder + remediation, step-budget fields and 80% warning, text-mode `→ remediation` line, and `5x doctor [--fix]` with five built-in checks (harness freshness, locks, worktrees, lingering runs, DB health). The orphaned-prompt check is deferred until prompt rows exist.
+Shipped: `5x lock list` / `5x unlock [--force]`, additive `PLAN_LOCKED` holder + remediation, step-budget fields and 80% warning, text-mode `→ remediation` line, and `5x doctor [--fix]` with six built-in checks (harness freshness, locks, worktrees, lingering runs, DB health, orphaned prompts). The prompts check fails on open rows whose run is terminal; `--fix` CAS-abandons them with reason `run-terminal` (`205-prompt-queue-foundation-plan.md`).
 
 ---
 
@@ -80,7 +80,7 @@ The front door for "why is this broken, what do I run." A check registry, each c
 | `worktrees` | `plans.worktree_path` pointing at a missing/unreadable dir; worktrees on disk with no mapping | Clears dead mappings (equivalent of `worktree detach`); orphan dirs *reported only* — deleting user files is never a `--fix` |
 | `runs` | Runs `active` beyond 24h (`LINGERING_RUN_AGE_MS`) with a dead/absent lock | Reported only; suggests `5x run complete --run <id> --status aborted` / `run reopen` — terminal status is a judgment call |
 | `db` | Schema version vs CLI expectation; integrity check | Suggests `5x upgrade`; never auto-migrates |
-| `prompts` | Open prompt rows (`202` §3.2) whose run is terminal — orphaned waits | **Deferred** to `03-prompt-queue-foundation` once prompt rows exist |
+| `prompts` | Open prompt rows (`202` §3.2) whose run is terminal — orphaned waits | `--fix` calls `abandonPrompt(id, "run-terminal")`; finding identity is `detail.promptId` |
 
 Semantics:
 
@@ -88,7 +88,7 @@ Semantics:
 - **Exit code:** 0 unless any finding has status `fail`. Warn-only results (live locks, lingering runs, user-scope freshness) exit 0 — no distinct warn exit code.
 - **Output:** standard envelope; text mode gets a custom formatter (per-check line + remediation) — this command exists primarily for humans.
 - **`doctor` and `lock list` both ship.** Doctor is the full sweep; `lock list` answers the targeted question. `unlock` is top-level (`5x unlock`).
-- **Plugin-contributed checks are deferred.** The registry array is the extension point; v2 ships the five builtins above.
+- **Plugin-contributed checks are deferred.** The registry array is the extension point; v2 ships the six builtins above.
 
 ---
 

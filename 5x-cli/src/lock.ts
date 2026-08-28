@@ -415,8 +415,11 @@ export function removeCorruptLock(
 }
 
 /**
- * Register process exit handlers that release the lock on exit,
- * SIGINT, and SIGTERM.
+ * Register a process `exit` handler that releases the lock.
+ *
+ * SIGINT/SIGTERM are owned by `cli-lifecycle.ts`; this helper must not
+ * call `process.exit`. Lock release is idempotent and independent of
+ * DB close — both run on `exit`, never on the signal itself.
  *
  * @param projectRoot - Base directory (typically controlPlaneRoot)
  * @param planPath - Plan path whose lock to clean up
@@ -430,12 +433,4 @@ export function registerLockCleanup(
 	const canonicalPlanPath = canonicalizePlanPath(planPath);
 	const cleanup = () => releaseLock(projectRoot, canonicalPlanPath, opts);
 	process.on("exit", cleanup);
-	process.on("SIGINT", () => {
-		cleanup();
-		process.exit(130);
-	});
-	process.on("SIGTERM", () => {
-		cleanup();
-		process.exit(143);
-	});
 }

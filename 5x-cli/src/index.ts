@@ -36,6 +36,22 @@ export {
 	loadConfig,
 	resolveHarnessModelForRole,
 } from "./config.js";
+// Control plane — prompt store (SQLite is one materialization)
+export type {
+	AbandonReason,
+	AnsweredBy,
+	CasResult,
+	CreatePromptInput,
+	PromptKind,
+	PromptRecord,
+	PromptStore,
+} from "./control-plane/index.js";
+export {
+	createMemoryPromptStore,
+	createPromptId,
+	createSqlitePromptStore,
+	PromptStoreError,
+} from "./control-plane/index.js";
 // DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";
 // DB — operations (valid on v4 schema: runs, plans, steps tables)

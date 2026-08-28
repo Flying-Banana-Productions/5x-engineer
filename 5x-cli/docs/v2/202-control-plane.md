@@ -1,9 +1,11 @@
 # 5x CLI v2 — Interactive Control Plane
 
-**Status:** Draft — Not Implemented
+**Status:** Prompt-queue foundation implemented locally; dashboard/server deferred to `04-control-plane-dashboard`
 **Date:** July 13, 2026
+**Updated:** August 25, 2026
 **Part of:** v2 (`200-overview.md`, area #2)
 **Shared core used:** Run-state surface (`200-overview.md` §3.2); honors forward-compat constraints (§3a)
+**Implementation plan:** [`docs/development/plans/205-prompt-queue-foundation-plan.md`](../development/plans/205-prompt-queue-foundation-plan.md)
 **Deprecates:** `docs/10-dashboard.md` (v0-era read-only design)
 
 ---
@@ -57,39 +59,41 @@ This is the keystone of v2's forward compatibility (`200-overview.md` §3a): coo
 
 Per forward-compat constraint #1 (`200-overview.md` §3a), `5x prompt` and all control-plane write-paths go through a **repository abstraction**, not direct SQLite calls.
 
-- _TODO:_ define the minimal interface — `createPrompt(p)`, `getPrompt(id)`, `answerPrompt(id, answer, by)` (CAS), `listOpenPrompts(runId?)`, plus the run/decision operations control actions need (§3.3).
-- v2 ships exactly one impl: SQLite over the existing `.5x/5x.db`. A synced/remote store is a future impl swap, not a command rewrite.
-- _TODO:_ confirm existing `src/db/operations-v1.ts` is the right home or whether a new `control-plane/store.ts` layer sits above it.
+- **Implemented:** `PromptStore` in `src/control-plane/store.ts` — `createPrompt`, `getPrompt`, `listOpenPrompts(runId?)`, `answerPrompt` (CAS), `abandonPrompt` (CAS). Command handlers never import `bun:sqlite`; they receive `{ store, runExists }` from `defaultResolvePromptContext()` over one resolved DB.
+- v2 ships exactly one impl: SQLite (`src/control-plane/sqlite-store.ts`) over the existing `.5x/5x.db`. A memory store exists for tests. A synced/remote store is a future impl swap, not a command rewrite.
+- **Resolved:** prompt SQL does **not** live in `src/db/operations-v1.ts`. The new `control-plane/` layer is the home; `operations-v1` stays runs/steps/plans.
 
-### 3.2 Prompt / decision tables
+### 3.2 Prompt table (no `decisions` table)
 
-Two new tables alongside v1 `runs` / `steps` / `plans` (`src/db/schema.ts`).
+One new table alongside v1 `runs` / `steps` / `plans` (`src/db/schema.ts` migration 6). **Resolved:** there is no `decisions` table. Answered `prompts` rows are the request/answer log; unsolicited control-plane actions (abort, reopen, override) go through §3.4 primitives and land in `steps` as `human:*`.
 
-**`prompts`** — pending and answered human prompts:
+**`prompts`** — pending, answered, and abandoned human prompts:
 
 | Column | Notes |
 |---|---|
 | `id` | **UUID** (constraint #2 — not autoincrement; sync-safe) |
-| `run_id` | FK to `runs.id` |
+| `run_id` | Nullable FK to `runs.id` (standalone `5x prompt` is allowed) |
 | `kind` | `choose` \| `confirm` \| `input` |
 | `message` | prompt text |
-| `options_json` | for `choose` — allowed values |
+| `options_json` | for `choose` — allowed values; NULL otherwise |
 | `default_value` | optional; powers the non-interactive `--default` escape hatch |
 | `created_at` | |
 | `answered_at` | null while open |
 | `answer` | null while open |
 | `answered_by` | `terminal` \| `control-plane` \| `default` |
+| `abandoned_at` | null while open; pair with `abandon_reason` (all-or-nothing CHECK) |
+| `abandon_reason` | `timeout` \| `interrupted` \| `eof` \| `non-interactive` \| `run-terminal` |
 
-- _TODO:_ decide whether `decisions` is a separate table or just answered `prompts` rows. Leaning: prompts cover the request/answer cycle; unsolicited control-plane actions (abort, reopen) go through §3.3 primitives and land in `steps` as `human:*`, so a separate `decisions` table may be unnecessary. Resolve in design.
-- _TODO:_ indices: open prompts by `run_id`; recent prompts for dashboard backfill.
+Indexes: `idx_prompts_open_run` (open rows by `run_id`); `idx_prompts_recent` (`created_at DESC`) for dashboard backfill.
 
 ### 3.3 Answer & polling semantics
 
-- **Poll loop.** `5x prompt` inserts an open row, then polls `getPrompt(id)` until `answered_at` is set or timeout. _TODO:_ cadence (e.g. 250–500ms), backoff, max wait.
-- **Terminal path preserved.** If a TTY is present, render the prompt locally as today; a local answer calls `answerPrompt(id, …, "terminal")` — the same write the control plane would do. Terminal and dashboard are symmetric writers.
-- **Non-interactive `--default`.** Existing escape hatch: if `--default` is set and no answer arrives (or immediately, in CI/no-TTY), resolve with `answered_by = "default"`. _TODO:_ reconcile precedence — does `--default` short-circuit the poll, or seed a fallback after timeout? Recommend: no-TTY + `--default` resolves immediately (preserves CI behavior); TTY waits and a control-plane answer can still win.
-- **First-writer-wins = CAS** (constraint #3). `answerPrompt` is a compare-and-swap on `answer IS NULL`; the losing writer gets a "already answered" result and surfaces the winning answer. This is correct locally and remains correct when the store is synced, where last-write-wins would otherwise corrupt the race.
-- _TODO:_ timeout behavior when neither side answers and no `--default` — error (current `NON_INTERACTIVE`/EOF semantics) vs configurable wait.
+- **Poll loop.** `5x prompt` inserts an open row, then polls `getPrompt(id)` every **250ms with no backoff** until answered, abandoned, timed out, or the CLI lifecycle aborts.
+- **Terminal path preserved.** If a TTY is present, render the prompt locally as today; a local answer calls `answerPrompt(id, …, "terminal")` — the same write the control plane would do. Terminal and dashboard are symmetric CAS writers.
+- **`--default` precedence.** no-TTY + `--default` CAS-es immediately with `answered_by = "default"` (preserves CI). TTY waits so a control-plane writer can still win; `--default` is the EOF fallback on choose/confirm, not a poll short-circuit.
+- **First-writer-wins = CAS** (constraint #3). `answerPrompt` (and `abandonPrompt`) succeed iff the row is still open (`answered_at IS NULL AND abandoned_at IS NULL`). The losing writer receives the stored winning row and surfaces that answer. This is correct locally and remains correct when the store is synced.
+- **Timeout.** `--timeout <ms>` and `FIVEX_PROMPT_TIMEOUT_MS` are strict non-negative integers (full-string parse). TTY and no-TTY `input` pipes are unbounded if omitted. no-TTY choose/confirm without `--default` stay fail-fast (`NON_INTERACTIVE` after persist+abandon) unless a positive timeout opts into a poll-only wait. Elapsed wait CAS-abandons `timeout` and emits `PROMPT_TIMEOUT` (exit 3).
+- **Abandonment** is first-class (not a fake answer). Open means both answer and abandon timestamps are null. Interrupt/SIGTERM CAS-abandon `interrupted` (exit 130 `INTERRUPTED` / 143 `TERMINATED`). Choose/confirm EOF without default abandons `eof`; input EOF is a successful terminal answer (see `101-cli-primitives.md` §7).
 
 ### 3.4 Control actions → existing primitives
 
@@ -125,16 +129,16 @@ Aborting a *run* (§3.4) is bookkeeping. Cancelling an *in-flight agent invocati
 
 ## 4. Migration / compatibility
 
-- **`5x prompt` contract shift.** Terminal answering is preserved, so interactive use is unchanged. The shift matters only to callers that scripted around the old *block-on-terminal* behavior; document it. Back-compatible in the common case (`200-overview.md` §4).
-- **Schema migration** for `prompts` (and `decisions` if separate). New tables only — no change to `runs` / `steps` / `plans` shape, except adopting UUIDs for *new* tables (constraint #2). _TODO:_ decide whether existing autoincrement tables are left as-is (local-only) or migrated; at minimum, all v2-new tables are UUID-keyed.
-- **Dashboard.** `docs/10-dashboard.md` deprecated; its read path informs the v2 server, its read-only architecture does not.
+- **`5x prompt` contract shift.** Terminal answering is preserved, so interactive use is unchanged. The shift matters only to callers that scripted around the old *block-on-terminal* behavior; documented in `101-cli-primitives.md` §7. Back-compatible in the common case (`200-overview.md` §4).
+- **Schema migration 6** adds `prompts` only. No change to `runs` / `steps` / `plans` shape. Existing autoincrement tables are left as-is (local-only); all v2-new tables are UUID-keyed (constraint #2).
+- **Dashboard.** `docs/10-dashboard.md` deprecated; its read path informs the v2 server, its read-only architecture does not. HTTP/UI remain out of scope for this slice.
 
 ---
 
 ## 5. Open questions
 
+Dashboard/server questions (owned by `04-control-plane-dashboard.plan-input.md`):
+
 - _TODO:_ single delivery, or ship read-only server first and add write-paths second?
-- _TODO:_ `decisions` table vs answered-`prompts` rows (§3.2).
-- _TODO:_ `--default` precedence under the poll model (§3.3).
 - _TODO:_ in-process vs subprocess for HTTP write endpoints (§3.4).
 - _TODO:_ should the active-run pointer (`204-run-context-ergonomics.md` §2.1) drive a default "focused run" in the control-plane UI?

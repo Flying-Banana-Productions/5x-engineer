@@ -115,3 +115,21 @@ describe("closeDb", () => {
 		}
 	});
 });
+
+describe("getDb signal listeners", () => {
+	test("SIGINT/SIGTERM listeners do not process.exit; connection stays open", () => {
+		const tmp = makeTmp();
+		const beforeSigint = process.listeners("SIGINT").length;
+		const beforeSigterm = process.listeners("SIGTERM").length;
+		try {
+			const db = getDb(tmp);
+			expect(process.listeners("SIGINT").length).toBe(beforeSigint);
+			expect(process.listeners("SIGTERM").length).toBe(beforeSigterm);
+			expect(getDbPath()).not.toBeNull();
+			const row = db.query("SELECT 1 AS n").get() as { n: number };
+			expect(row.n).toBe(1);
+		} finally {
+			rmSync(tmp, { recursive: true });
+		}
+	});
+});

@@ -13,9 +13,9 @@ has explicitly silenced the signal.
 ## Recovery
 
 `5x doctor` is the recovery front door: it reports harness freshness, locks,
-worktrees, lingering runs, and DB health. Use `5x doctor --fix` only for the
-safe repairs (stale/corrupt locks, dead worktree mappings, lossless project
-harness sync). Targeted lock questions go through `5x lock list` / `5x unlock`;
+worktrees, lingering runs, DB health, and orphaned prompts. Use `5x doctor --fix`
+only for the safe repairs (stale/corrupt locks, dead worktree mappings, lossless
+project harness sync, orphaned-prompt abandonment). Targeted lock questions go through `5x lock list` / `5x unlock`;
 live holders require `5x unlock <plan> --force`.
 
 Run-scoped commands resolve `--run` from `FIVEX_RUN`, a unique linked-worktree

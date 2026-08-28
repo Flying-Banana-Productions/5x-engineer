@@ -16,7 +16,10 @@ import { join } from "node:path";
 import {
 	acquireLock,
 	inspectLock,
+	isLocked,
 	listLocks,
+	registerLockCleanup,
+	releaseLock,
 	removeCorruptLock,
 } from "../../src/lock.js";
 import { canonicalizePlanPath } from "../../src/paths.js";
@@ -234,5 +237,42 @@ describe("removeCorruptLock", () => {
 			removed: false,
 			reason: "not_found",
 		});
+	});
+});
+
+describe("registerLockCleanup", () => {
+	test("SIGINT/SIGTERM do not process.exit; lock remains until exit/release", () => {
+		const tmp = withTmp();
+		const planPath = "/plan.md";
+		acquireLock(tmp, planPath);
+
+		const beforeSigint = process.listeners("SIGINT").length;
+		const beforeSigterm = process.listeners("SIGTERM").length;
+		const beforeExit = new Set(process.listeners("exit"));
+
+		registerLockCleanup(tmp, planPath);
+
+		expect(process.listeners("SIGINT").length).toBe(beforeSigint);
+		expect(process.listeners("SIGTERM").length).toBe(beforeSigterm);
+		expect(isLocked(tmp, planPath).locked).toBe(true);
+
+		const addedExit = process
+			.listeners("exit")
+			.filter((listener) => !beforeExit.has(listener));
+		expect(addedExit.length).toBe(1);
+		for (const listener of addedExit) {
+			(listener as (code?: number) => void)(0);
+		}
+		expect(isLocked(tmp, planPath).locked).toBe(false);
+
+		for (const listener of addedExit) {
+			(listener as (code?: number) => void)(0);
+		}
+		releaseLock(tmp, planPath);
+		releaseLock(tmp, planPath);
+
+		for (const listener of addedExit) {
+			process.off("exit", listener as (...args: unknown[]) => void);
+		}
 	});
 });

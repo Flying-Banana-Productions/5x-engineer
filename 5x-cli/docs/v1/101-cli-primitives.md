@@ -743,14 +743,16 @@ Explicit `--workdir` always overrides automatic worktree resolution.
 
 ## 7. Human Interaction
 
-These commands present interactive prompts to the user (the human at the terminal, not the orchestrating agent). They block until the human responds.
+These commands present interactive prompts to the user (the human at the terminal, not the orchestrating agent). Every invocation **persists an open UUID-keyed `prompts` row, then waits**. The terminal and the control plane are symmetric CAS writers: first writer wins; a losing writer still emits the stored winning answer in the existing success envelope (`{ choice }`, `{ confirmed }`, `{ input }` — no `prompt_id` in this slice).
+
+Optional `--run <id>` associates the row with a run (validated before insert; unknown ids error `RUN_NOT_FOUND`). Optional `--timeout <ms>` is a strict non-negative integer (full-string parse via `intArg`; `0` is immediate timeout). When the flag is omitted, `FIVEX_PROMPT_TIMEOUT_MS` is read with the same parser. Invalid timeout values fail `INVALID_ARGS` **before** `createPrompt`. `--timeout` applies to TTY waits, no-TTY `input` pipes, and no-TTY choose/confirm opt-in waits.
 
 ### `5x prompt choose`
 
 Present a multiple-choice prompt.
 
 ```
-5x prompt choose <message> --options <a,b,c> [--default <a>]
+5x prompt choose <message> --options <a,b,c> [--default <a>] [--run <id>] [--timeout <ms>]
 ```
 
 **Returns:**
@@ -766,14 +768,16 @@ Present a multiple-choice prompt.
 
 **Non-interactive behavior:**
 
-If stdin is not a TTY, returns the `--default` value if provided. If no default, exits with code 1 and `"code": "NON_INTERACTIVE"`. This preserves fail-closed behavior from v0.
+If stdin is not a TTY and `--default` is set, persist then CAS immediately with `answered_by = "default"` (preserves CI). If no default and no positive `--timeout`, persist, abandon `non-interactive`, and exit 3 with `"code": "NON_INTERACTIVE"`. A positive `--timeout` opts into a poll-only wait (no stdin promise) so a control-plane writer or interrupt can still win.
+
+**EOF:** `readLine` EOF with `--default` CAS-es that default. Without default, abandon `eof` and emit `EOF` (exit 3).
 
 ### `5x prompt confirm`
 
 Present a yes/no confirmation.
 
 ```
-5x prompt confirm <message> [--default yes|no]
+5x prompt confirm <message> [--default yes|no] [--run <id>] [--timeout <ms>]
 ```
 
 **Returns:**
@@ -787,12 +791,14 @@ Present a yes/no confirmation.
 }
 ```
 
+Same persist-then-wait, `--default` CI path, `NON_INTERACTIVE`, and kind-aware EOF contract as `choose`.
+
 ### `5x prompt input`
 
 Collect freeform text input from the human.
 
 ```
-5x prompt input <message> [--multiline]
+5x prompt input <message> [--multiline] [--run <id>] [--timeout <ms>]
 ```
 
 **Returns:**
@@ -808,17 +814,24 @@ Collect freeform text input from the human.
 
 This replaces the "continue with guidance" escalation path from v0 — the orchestrating agent asks the human for input via this primitive and includes it in the next sub-agent invocation.
 
+**EOF is success, not abandon.** Single-line `readLine` EOF persists `{ input: "" }` with `answered_by = "terminal"`. Multiline `readAll` stream-end persists the collected text (including `""`) the same way. Input never takes the abandon-`eof` / envelope-`EOF` path. no-TTY input always waits on the abortable pipe race (`--timeout` and store writers apply).
+
 ### Non-interactive behavior (all prompt commands)
 
 v0 uses `--auto` and `--ci` flags to control non-interactive behavior. v1 simplifies this: the `5x prompt *` commands detect whether stdin is a TTY and behave accordingly:
 
 | Condition | Behavior |
 |---|---|
-| **Interactive** (stdin is TTY) | Present prompt, wait for human response |
-| **Non-interactive + `--default` provided** | Return the default value immediately |
-| **Non-interactive + no `--default`** | Exit 1 with `code: "NON_INTERACTIVE"` |
+| **Interactive** (stdin is TTY) | Persist, present prompt, race terminal vs store vs timeout vs lifecycle abort |
+| **Non-interactive + `--default` provided** | Persist, CAS immediately with `answered_by = "default"` |
+| **Non-interactive choose/confirm, no `--default`** | Persist, abandon `non-interactive`, exit 3 `NON_INTERACTIVE` unless `--timeout` / `FIVEX_PROMPT_TIMEOUT_MS` is a positive integer |
+| **Non-interactive `input`** | Persist, wait on the abortable stdin pipe (store / timeout / lifecycle can win) |
 
 There is no `--auto` or `--ci` flag on v1 primitives. The equivalent of v0's `--ci` mode is simply running in a non-TTY environment (e.g., piped stdin) with `--default` values set on all prompt commands in the skill. Skills that need full CI support should provide defaults on every `5x prompt` call.
+
+### Interrupt and termination
+
+Ctrl-C (SIGINT) and SIGTERM CAS-abandon the open row with reason `interrupted` (including poll-only waits) while SQLite is still open, then exit **130** (`INTERRUPTED`) or **143** (`TERMINATED`). A second signal or a 2s grace timeout force-exits the same code. Timeout without an answer CAS-abandons `timeout` and emits `PROMPT_TIMEOUT` (exit 3).
 
 ---
 

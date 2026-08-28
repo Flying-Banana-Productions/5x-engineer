@@ -407,6 +407,46 @@ const migrations: Migration[] = [
 			db.exec(`ALTER TABLE steps ADD COLUMN head_commit TEXT`);
 		},
 	},
+	{
+		version: 6,
+		description: "UUID prompts table with open/recent indexes",
+		up(db) {
+			db.exec(`
+				CREATE TABLE prompts (
+					id TEXT PRIMARY KEY,
+					run_id TEXT REFERENCES runs(id),
+					kind TEXT NOT NULL CHECK (kind IN ('choose', 'confirm', 'input')),
+					message TEXT NOT NULL,
+					options_json TEXT,
+					default_value TEXT,
+					created_at TEXT NOT NULL DEFAULT (datetime('now')),
+					answered_at TEXT,
+					answer TEXT,
+					answered_by TEXT CHECK (
+						answered_by IS NULL OR answered_by IN ('terminal', 'control-plane', 'default')
+					),
+					abandoned_at TEXT,
+					abandon_reason TEXT CHECK (
+						abandon_reason IS NULL OR abandon_reason IN (
+							'timeout', 'interrupted', 'eof', 'non-interactive', 'run-terminal'
+						)
+					),
+					CHECK (
+						(answered_at IS NULL AND answer IS NULL AND answered_by IS NULL)
+						OR (answered_at IS NOT NULL AND answer IS NOT NULL AND answered_by IS NOT NULL)
+					),
+					CHECK (
+						(abandoned_at IS NULL AND abandon_reason IS NULL)
+						OR (abandoned_at IS NOT NULL AND abandon_reason IS NOT NULL)
+					),
+					CHECK (NOT (answered_at IS NOT NULL AND abandoned_at IS NOT NULL))
+				);
+				CREATE INDEX idx_prompts_open_run
+					ON prompts(run_id) WHERE answered_at IS NULL AND abandoned_at IS NULL;
+				CREATE INDEX idx_prompts_recent ON prompts(created_at DESC);
+			`);
+		},
+	},
 ];
 
 /**
