@@ -570,6 +570,40 @@ for (const backend of backends) {
 	});
 }
 
+describe("MemoryInvocationStore omitted getRun", () => {
+	test("run-terminal markAbandonedIfStale fails closed when getRun is omitted", () => {
+		const store = createMemoryInvocationStore({ now: incrementingNow() });
+		const created = store.register(registerInput("run_aaa"));
+		const cas = store.markAbandonedIfStale({
+			id: created.id,
+			reason: "stale-metadata",
+			expectedUpdatedAt: created.updatedAt,
+			staleReason: "run-terminal",
+		});
+		expect(cas.ok).toBe(false);
+		expect(cas.invocation.status).toBe("running");
+		expect(store.get(created.id)?.status).toBe("running");
+		expect(store.get(created.id)?.abandonReason).toBeNull();
+	});
+
+	test("run-terminal markAbandonedIfStale still succeeds when getRun explicitly returns null", () => {
+		const store = createMemoryInvocationStore({
+			now: incrementingNow(),
+			getRun: () => null,
+		});
+		const created = store.register(registerInput("run_aaa"));
+		const cas = store.markAbandonedIfStale({
+			id: created.id,
+			reason: "stale-metadata",
+			expectedUpdatedAt: created.updatedAt,
+			staleReason: "run-terminal",
+		});
+		expect(cas.ok).toBe(true);
+		expect(cas.invocation.status).toBe("abandoned");
+		expect(store.get(created.id)?.status).toBe("abandoned");
+	});
+});
+
 describe("SqliteInvocationStore shared-file CAS", () => {
 	test("two connections: exactly one markCancellationRequested winner", async () => {
 		await withSharedSqliteFile(

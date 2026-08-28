@@ -1,7 +1,8 @@
 /**
  * In-memory InvocationStore. Single-threaded compare-and-set is enough for
  * tests. `getRun` is invoked inside `markAbandonedIfStale` so run-terminal
- * CAS does not reopen a TOCTOU.
+ * CAS does not reopen a TOCTOU. An omitted `getRun` cannot prove the run is
+ * missing or terminal, so run-terminal CAS fails closed.
  */
 
 import { parseRunTimestamp } from "../db/timestamps.js";
@@ -23,6 +24,7 @@ import {
 
 export interface MemoryInvocationStoreOptions {
 	now?: () => string;
+	/** Required for run-terminal CAS. Omitted means liveness cannot be proven stale. */
 	getRun?: (runId: string) => { status: string } | null;
 }
 
@@ -205,7 +207,10 @@ class MemoryInvocationStore implements InvocationStore {
 				return { ok: false, invocation: cloneRecord(current) };
 			}
 		} else {
-			const run = this.getRun?.(current.runId) ?? null;
+			if (this.getRun === undefined) {
+				return { ok: false, invocation: cloneRecord(current) };
+			}
+			const run = this.getRun(current.runId);
 			if (!isRunTerminal(run)) {
 				return { ok: false, invocation: cloneRecord(current) };
 			}

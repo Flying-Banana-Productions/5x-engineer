@@ -59,7 +59,8 @@ export interface InvocationStore {
 	 * staleReason "run-terminal": succeed iff status = 'running'
 	 *   AND the linked run is missing, completed, or aborted
 	 *   (SQLite: same UPDATE, subquery on runs; memory: getRun
-	 *   callback invoked inside this method before the write).
+	 *   callback invoked inside this method before the write.
+	 *   An omitted getRun cannot prove staleness and is a CAS miss).
 	 * Do not AND both predicates globally — a fresh heartbeat must
 	 * not block abandoning a still-terminal run, and a matching
 	 * timestamp must not abandon after a run was reopened.
