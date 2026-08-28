@@ -180,3 +180,31 @@ All five previously active corrections are **addressed** in plan revision 1.1:
 **Ready with corrections.** The revision resolves every prior finding. The
 remaining doctor/heartbeat TOCTOU fix is deterministic and requires no policy
 choice.
+
+---
+
+## Addendum — Revision 1.2 final reassessment (August 28, 2026)
+
+Revision 1.2 fully addresses the remaining doctor-abandonment finding. Doctor
+`--fix` now uses `markAbandonedIfStale`, rather than the status-only abandon
+CAS: heartbeat findings compare the re-read `updated_at`, and run-terminal
+findings evaluate the linked run's current terminal/missing predicate in the
+same SQLite write (with equivalent in-method memory-store lookup). The plan
+also defines precedence when both predicates apply, prevents a heartbeat from
+blocking valid terminal-run cleanup, and requires both store-level and
+doctor-level two-writer tests for heartbeat and run-reopen races.
+
+All prior findings are fully addressed:
+
+- session-success registration and post-session cleanup ownership;
+- adapter-throw and missing-adapter cancellation outcomes;
+- combined status filtering and snake_case envelopes;
+- independent silent-invocation heartbeats; and
+- doctor liveness-predicate CAS protection.
+
+No concrete regressions or new blocking issues were identified in revision
+1.2.
+
+### Addendum readiness
+
+**Ready.**
