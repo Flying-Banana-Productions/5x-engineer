@@ -15,5 +15,6 @@ These files split the remaining v2 design into bounded inputs for separate imple
 | 7 | `07-plan-review-governance.plan-input.md` | Slices 4 and 6 |
 | 8 | `08-implementation-review-governance.plan-input.md` | Slice 7 |
 | 9 | `09-output-normalization-release.plan-input.md` | Slices 1-8 |
+| 10 | `10-git-native-run-records.plan-input.md` | Slice 3; its phase-1 `RecordStore` interface is consumed by slice 6, which proceeds in parallel |
 
 Slices 1 and 2 may be implemented in parallel. After slice 3, slice 4 and slice 6 may also proceed in parallel. Slice 5 establishes only the provider-neutral invocation registry and cancellation contract; provider-specific cancellation adapters, including OpenCode process handling formerly proposed by plan 011, are follow-up work after the v2 foundation is proven.

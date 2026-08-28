@@ -2,7 +2,7 @@
 
 **Status:** Draft — Not Implemented
 **Date:** July 13, 2026
-**Updated:** July 31, 2026
+**Updated:** August 28, 2026
 **Builds on:** `docs/v1/100-architecture.md` (v1 remains authoritative until v2 ships)
 **Deprecates:** `docs/10-dashboard.md` (v0-era read-only dashboard plan — written without cloud control planes or remote providers in view; replaced by the v2 control plane, see `202-control-plane.md`)
 
@@ -23,7 +23,7 @@ v2 closes these gaps. The throughline: **5x evolves from a fire-and-forget toolb
 
 ---
 
-## 2. The Six Areas
+## 2. The Seven Areas
 
 | #   | Area                                                                           | Doc                               | Breaking?                                     |
 | --- | ------------------------------------------------------------------------------ | --------------------------------- | --------------------------------------------- |
@@ -33,8 +33,9 @@ v2 closes these gaps. The throughline: **5x evolves from a fire-and-forget toolb
 | 4   | Run-context ergonomics — active-run pointer + composite verbs                  | `204-run-context-ergonomics.md`   | No (additive; flags preserved)                |
 | 5   | Output normalization — retire grandfathered text-only commands                 | `205-output-normalization.md`     | **Yes**                                       |
 | 6   | Review budget governance — bounded scope growth, convergence, and debt credits | `206-review-budget-governance.md` | Workflow/protocol extension                   |
+| 7   | State segmentation — git-native run records, ref-based progress resolution     | `207-state-segmentation.md`       | No (additive; SQLite becomes an index)        |
 
-These are deliberately bundled rather than shipped as six independent PRDs, because they **share infrastructure** (Section 3). Designing them separately would mean redesigning that shared core repeatedly and letting it drift.
+These are deliberately bundled rather than shipped as independent PRDs, because they **share infrastructure** (Section 3). Designing them separately would mean redesigning that shared core repeatedly and letting it drift.
 
 ---
 
@@ -85,7 +86,7 @@ These axes do not interact badly: a remote agent that calls `5x prompt` writes t
 1. **Queue behind a store interface.** `5x prompt` and the decision/dashboard write-paths must go through a repository abstraction, not read/write SQLite directly. SQLite is the first and only v2 impl; a synced/remote store swaps the impl, not the commands.
 2. **Globally-unique IDs.** Runs, prompts, and decisions use UUIDs, **not** the local `INTEGER AUTOINCREMENT` the v1 `steps` table uses (`src/db/schema.ts`). Autoincrement rows collide the instant two control planes sync. This is the single most painful thing to retrofit — get it right in the v2 schema from day one.
 3. **First-writer-wins = compare-and-swap.** The "first writer wins" answer semantics (terminal vs dashboard, §3.2) must be a CAS on the authoritative store, not a local row insert. Under sync, distributed write races degrade "first row locally" into last-write-wins garbage unless the answer commit is atomic at one point of truth.
-4. **"Source of truth" is the control plane, not SQLite.** v1 phrasing ("SQLite is the source of truth") is locally fine but conceptually leaky for v2. Treat the **control plane** as the source of truth and local SQLite as one *materialization* of it. Avoid command logic that assumes the local DB file *is* the plane rather than a view of it.
+4. **"Source of truth" is the control plane, not SQLite.** v1 phrasing ("SQLite is the source of truth") is locally fine but conceptually leaky for v2. Treat the **control plane** as the source of truth and local SQLite as one *materialization* of it. Avoid command logic that assumes the local DB file *is* the plane rather than a view of it. *Refined by `207-state-segmentation.md` §2.1:* the control plane is authoritative for **coordination** state; the **repository** is authoritative for the completed-work **record**; SQLite materializes both.
 5. **Invocation handles are opaque.** The agent-cancellation registry (`202-control-plane.md` §3.6) must model a running invocation as an opaque handle that knows how to cancel itself — a local PID is one case; a remote container/job id reached by RPC is another. Do not bake local-PID-only assumptions into the registry.
 
 Constraints 1–3 are good hygiene we would want **regardless** of the cloud future; 4–5 are conceptual guards. None expand v2 scope — they only rule out a few shortcuts.
@@ -124,6 +125,7 @@ Unlike the v1 "clean break" (`docs/v1/100-architecture.md` §8), v2 is **not** a
 - Active-run pointer + composite verbs (#4)
 - Output normalization of grandfathered commands (#5)
 - Review budget governance, convergence rules, and bounded architecture-debt credits (#6)
+- Git-native run records, ref-based progress resolution, SQLite as rebuildable index (#7)
 
 ### Not in scope
 
@@ -146,3 +148,4 @@ Unlike the v1 "clean break" (`docs/v1/100-architecture.md` §8), v2 is **not** a
 | `204-run-context-ergonomics.md` | Active-run pointer, composite verbs, pipe-context de-emphasis |
 | `205-output-normalization.md` | Grandfathered-command normalization + migration notes |
 | `206-review-budget-governance.md` | Delivery budgets, review convergence, debt credits, protocol and human-gate changes |
+| `207-state-segmentation.md` | Record vs. coordination tiers, git-native run records, ref-based progress resolution, index rebuild |
