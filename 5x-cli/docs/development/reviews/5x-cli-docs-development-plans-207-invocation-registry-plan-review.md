@@ -132,3 +132,51 @@ correction is required.
 **Ready with corrections.** All five changes are deterministic from the stated
 contract, existing invocation flow, and doctor TTL; no policy decision is
 needed.
+
+---
+
+## Addendum — Revision 1.1 reassessment (August 28, 2026)
+
+### Prior findings
+
+All five previously active corrections are **addressed** in plan revision 1.1:
+
+1. **Session-boundary registration:** addressed. Registration now occurs before
+   `prepareLogPath()` / `appendSessionStart()`, both calls are inside the
+   lifecycle callback, provider close is owned by the outer `finally`, and
+   separate wiring fault-injection tests are required.
+2. **Thrown adapter cancellation:** addressed. The action catches a thrown
+   `adapter.cancel()`, persists `failed`, returns the documented result, and
+   requires distinct coverage.
+3. **Missing adapter outcome:** addressed. A missing adapter for a supported
+   row now records `unsupported`, while returned or thrown adapter failures
+   record `failed`.
+4. **Combined status filtering and output naming:** addressed. `--id` plus
+   `--run` is an intersection with a deterministic not-found result, and the
+   snake_case CLI/HTTP mapper is specified and tested separately from the
+   camelCase in-process view.
+5. **Silent-invocation heartbeat:** addressed. The lifecycle owns an
+   independent, cleared heartbeat interval and includes fake-clock tests for
+   liveness and timer cleanup.
+
+### New active correction
+
+1. **Make doctor abandonment CAS against the observed liveness predicate.**
+   Phase 6 says fix re-validates a stale/orphaned row and then calls
+   `markAbandoned(id, "stale-metadata")`, but the specified store method only
+   CASes `status = 'running'`. A heartbeat can update `updated_at` (or a run can
+   be reopened) between the revalidation read and that update; doctor would
+   then abandon a live invocation despite the new heartbeat interval. Extend
+   the store operation to atomically require the observed stale timestamp/run
+   predicate (for example, an `expectedUpdatedAt` CAS plus an atomic current
+   run-state check, or a dedicated `markAbandonedIfStale` operation) in both
+   SQLite and memory implementations. Add a two-writer test in which a
+   heartbeat lands after detection/revalidation but before the fix mutation and
+   prove `--fix` does not abandon the row; cover a reopened run similarly.
+   - **Action:** `auto_fix`
+
+### Addendum readiness
+
+**Ready with corrections.** The revision resolves every prior finding. The
+remaining doctor/heartbeat TOCTOU fix is deterministic and requires no policy
+choice.
