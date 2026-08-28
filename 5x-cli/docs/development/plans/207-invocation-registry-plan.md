@@ -1,14 +1,14 @@
 # Invocation Registry — Provider-Neutral Handles, Cancellation Contract, Doctor Hygiene
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 28, 2026
-**Status:** Draft — pending staff engineer review
+**Status:** Draft — revision 1.1 addressing staff review addendum (2026-08-28)
 
 ---
 
 ## Executive Summary
 
-`5x invoke` today starts a provider-owned session and forgets it. The control plane has no identity for the in-flight call, no truthful cancellation capability, and no way to distinguish “still running” from “the CLI crashed and left a row.” This slice adds a UUID-keyed invocation registry behind a store interface: opaque adapter-owned handles (never a universal PID field), separate cancellation-request / adapter-outcome / terminal-observation columns, invoke registration in a single `try/finally`, a local cancel/status action, and a doctor check that abandons **metadata only**.
+`5x invoke` today starts a provider-owned session and forgets it. The control plane has no identity for the in-flight call, no truthful cancellation capability, and no way to distinguish “still running” from “the CLI crashed and left a row.” This slice adds a UUID-keyed invocation registry behind a store interface: opaque adapter-owned handles (never a universal PID field), separate cancellation-request / adapter-outcome / terminal-observation columns, invoke registration **immediately after session creation** (before later fallible log/session-start setup) in a single `try/finally` that also owns provider close, an independent heartbeat interval for the running lifetime, a local cancel/status action, and a doctor check that abandons **metadata only**.
 
 Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported: false`. Cancel requests against them are rejected without touching `runs.status`. A synthetic remote test adapter — whose handle is a job id, not a PID — proves that a supported opaque handle receives **exactly one** idempotent cancel and records succeeded/failed. HTTP/UI auth stays owned by slice 04; this slice exports the in-process action 04 will wrap.
 
@@ -38,7 +38,7 @@ Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported:
 | **No `pid` column; handle is opaque JSON owned by the adapter** | `200` §3a constraint #5. A local PID is one future adapter’s private ref, not the registry contract. Tests use a non-PID remote job id. |
 | **Request, adapter outcome, and terminal status are three fields** | Avoids implying cancel succeeded when it was only requested. Client “states” are a derived view. |
 | **Unsupported cancel is a hard reject** | Exit criterion: no run-status change, no local `AbortSignal` abort of the in-flight invoke. Truthful capability, not a fake kill. |
-| **Heartbeat, not PID liveness, for stale detection** | PID liveness is a local-machine concept (`203` §3). Heartbeat keeps long invokes fresh without baking `isPidAlive` into the registry. |
+| **Heartbeat, not PID liveness, for stale detection** | PID liveness is a local-machine concept (`203` §3). An independent interval keeps long invokes fresh even when the provider is silent; do not bake `isPidAlive` into the registry. |
 | **Doctor `--fix` abandons metadata only** | Safe unique repair. Messaging must not claim the provider process was reaped. |
 | **Cancel/status workers take explicit ids; no ambient run resolver** | `200` §3.2 / `204` plan: invocation-registry workers must not call `resolveAmbientRunId`. |
 | **Dashboard HTTP is a consumer, not this slice’s server** | Slice 04 is the auth/live-status host and is not in tree as of this draft. Export the handler 04 wraps. |
@@ -74,7 +74,8 @@ Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported:
 12. [Tests](#tests)
 13. [Not In Scope](#not-in-scope)
 14. [Estimated Timeline](#estimated-timeline)
-15. [Provenance](#provenance)
+15. [Revision History](#revision-history)
+16. [Provenance](#provenance)
 
 ---
 
@@ -93,10 +94,10 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
 
 **New behavior:**
 
-- Every `5x invoke author|reviewer` that reaches session start writes a UUID invocation row: run/session linkage, provider name, opaque handle, `cancellation_supported`, timestamps. Heartbeats during the stream. `try/finally` always drives the row to `completed`, `failed`, `cancelled`, or leaves it `running` only if the process dies before `finally`.
+- Every `5x invoke author|reviewer` that reaches session start writes a UUID invocation row **immediately after** `startSession`/`resumeSession` succeeds: run/session linkage, provider name, opaque handle, `cancellation_supported`, timestamps. `prepareLogPath()` and `appendSessionStart()` run inside that lifecycle so a throw cannot leave an unregistered live session or skip `provider.close()`. A rate-limited heartbeat **interval** runs for the lifetime of the invocation (stream events may beat early as an optimization) and is cleared in `finally`. `try/finally` always drives the row to `completed`, `failed`, `cancelled`, or leaves it `running` only if the process dies before `finally`.
 - Production providers register `cancellationSupported: false` and handle `{ adapter: "none", ref: session.id }`. `5x invoke cancel` rejects with `CANCELLATION_UNSUPPORTED` and does not change `runs.status` or abort the in-flight stream.
-- Tests inject a `test-remote` adapter whose `ref` is a job id. One successful CAS request calls `adapter.cancel` once; a second request is a no-op at the store and does not call the adapter again. Outcome is recorded separately from lifecycle status.
-- `5x invoke status --id <uuid>` / `--run <id>` returns the client view (seven distinguishable states). Workers pass explicit ids; they must not call `requireAmbientRunId` / `resolveAmbientRunId`.
+- Tests inject a `test-remote` adapter whose `ref` is a job id. One successful CAS request calls `adapter.cancel` once; a second request is a no-op at the store and does not call the adapter again. Outcome is recorded separately from lifecycle status. A supported row with no registered adapter records `cancellation_outcome = "unsupported"`; an adapter that returns or throws failure records `"failed"`.
+- `5x invoke status --id <uuid>` / `--run <id>` returns the client view (seven distinguishable states). Supplying both flags requires the id to belong to that run (mismatch or missing → `INVOCATION_NOT_FOUND`; never return a foreign-run row). Workers pass explicit ids; they must not call `requireAmbientRunId` / `resolveAmbientRunId`. CLI JSON uses snake_case (`client_state`); in-process TypeScript uses `clientState`.
 - `5x doctor` reports `INVOCATION_STALE` for non-terminal rows that are heartbeat-stale **or** whose run is missing/terminal. `--fix` CAS-abandons `stale-metadata` and states that no process was reaped.
 
 **Prerequisites:**
@@ -121,13 +122,15 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
 
 **Unsupported providers reject cancel with no side effects on the run or the invoke.** `cancellationSupported: false` (the v2 default for every shipped provider) → `requestInvocationCancellation` returns error `CANCELLATION_UNSUPPORTED`, does not set `requested_at`, does not call any adapter, does not abort `AbortSignal` in the invoke process, does not call `updateRunStatus`. The in-flight invoke continues. Do not “best-effort” abort the local stream — that would be a false guarantee.
 
-**Exactly one adapter cancel per invocation.** `markCancellationRequested` is CAS: `UPDATE … WHERE id = ? AND status = 'running' AND cancellation_requested_at IS NULL AND cancellation_supported = 1`. Winner calls `adapter.cancel(handle)` once, then `recordCancellationOutcome`. Loser returns the stored row and **must not** call the adapter. Calling cancel against an already-terminal row returns the record without an adapter call. Record `outcome = unsupported` only if a supported row’s adapter is missing at cancel time (misconfiguration); that is distinct from the capability flag being false.
+**Exactly one adapter cancel per invocation.** `markCancellationRequested` is CAS: `UPDATE … WHERE id = ? AND status = 'running' AND cancellation_requested_at IS NULL AND cancellation_supported = 1`. Winner looks up the adapter and calls `adapter.cancel(handle)` once inside `try/catch`, then `recordCancellationOutcome`. Loser returns the stored row and **must not** call the adapter. Calling cancel against an already-terminal row returns the record without an adapter call. Record `outcome = unsupported` only if a supported row’s adapter is **missing** at cancel time (misconfiguration); that is distinct from the capability flag being false (`CANCELLATION_UNSUPPORTED`, no `requested_at`) and from an adapter that exists but returns or **throws** failure (`outcome = failed`). A thrown `adapter.cancel()` must not escape the action.
 
-**Heartbeat is the stale predicate, not `isPidAlive`.** `INVOCATION_HEARTBEAT_MIN_INTERVAL_MS = 5_000`. `invokeStreamed` rate-limits `store.heartbeat(id)` on events. `INVOCATION_STALE_MS = 15 * 60 * 1000`. Doctor uses `ctx.now` (already on `DoctorCheckContext`, `src/doctor/types.ts:34–35`). A live long invoke stays fresh; a crashed CLI leaves `running` until TTL (or immediately if the run is already terminal/missing). Do not add a `cli_pid` column to “improve” this.
+**Heartbeat is the stale predicate, not `isPidAlive`.** `INVOCATION_HEARTBEAT_MIN_INTERVAL_MS = 5_000`. After `register()`, `withInvocationLifecycle` starts a rate-limited **interval** that calls `store.heartbeat(id)` independently of streamed events, and **clears that timer in `finally`**. Do not rely on `runStreamed` events as the sole heartbeat source — a live provider that is silent for more than `INVOCATION_STALE_MS` would otherwise be falsely abandoned. `invokeStreamed` may still call `heartbeat()` on events as an optimization (first event can beat immediately). `INVOCATION_STALE_MS = 15 * 60 * 1000`. Doctor uses `ctx.now` (already on `DoctorCheckContext`, `src/doctor/types.ts:34–35`). A live long invoke stays fresh even when silent; a crashed CLI leaves `running` until TTL (or immediately if the run is already terminal/missing). Do not add a `cli_pid` column to “improve” this.
 
-**One registry lifecycle boundary with `try/finally`; do not redesign provider cleanup.** Extract `withInvocationLifecycle` (Phase 4). Register after `startSession`/`resumeSession` succeeds (session id exists). `finally` CAS-marks `failed` if still `running` (normal unwind without a terminal write). Process kill before `finally` is the stale/abandon path. Existing `provider.close()` calls may stay; collapsing them into the same `finally` is allowed only if it does not change close semantics and does not add SIGKILL/PID tracking. Fault-injection tests throw after register, during stream, and after stream — they must not prescribe OpenCode internals.
+**One registry lifecycle boundary with `try/finally`; register immediately after session creation.** Extract `withInvocationLifecycle` (Phase 4). Call it **immediately after** `startSession`/`resumeSession` succeeds (session id exists) — **before** `prepareLogPath()` and `appendSessionStart()`. Those calls, the stream, and structured-output validation all run inside `fn`. A throw from any of them marks the invocation `failed` (or `cancelled` for `AgentCancellationError`) and the outer `finally` still `provider.close()`. Session-start failure stays **outside** the wrapper: close provider, do not register (`invoke.handler.ts:458–460`). Lifecycle `finally` CAS-marks `failed` if still `running` (normal unwind without a terminal write) and always clears the heartbeat timer. Process kill before `finally` is the stale/abandon path. After session success, collapse existing `provider.close()` calls into that outer `finally`; keep close-before-throw on session-start failure. Do not add SIGKILL/PID tracking. Fault-injection tests throw from **each** pre-stream path (`prepareLogPath`, `appendSessionStart`), during stream, and after stream — they must not prescribe OpenCode internals.
 
-**Cancel/status commands are workers: explicit ids only.** `5x invoke cancel <invocation-id>` keys by UUID. `5x invoke status` requires `--id <invocation-id>` and/or `--run <run-id>` (explicit `int`/`string` flags, no ambient fill). Do not import `requireAmbientRunId` in the new handler. Invoke author/reviewer keep today’s ambient resolution; they pass the already-resolved `params.run` into `register`.
+**Cancel/status commands are workers: explicit ids only.** `5x invoke cancel <invocation-id>` keys by UUID. `5x invoke status` requires `--id <invocation-id>` and/or `--run <run-id>` (explicit `int`/`string` flags, no ambient fill). Combined `--id` and `--run` **intersects**: the invocation must exist and `runId` must equal `--run`. A missing id or a run mismatch both return `INVOCATION_NOT_FOUND` (mismatch message names both ids) and **must not** return a row whose run differs from `--run`. Do not import `requireAmbientRunId` in the new handler. Invoke author/reviewer keep today’s ambient resolution; they pass the already-resolved `params.run` into `register`.
+
+**CLI JSON envelopes are snake_case; in-process views stay camelCase.** `InvocationClientView` uses TypeScript camelCase (`clientState`, `runId`, `sessionId`, …) for unit tests and in-process callers. `toInvocationStatusEnvelope()` maps that view to CLI/HTTP JSON keys (`client_state`, `run_id`, `session_id`, `provider_name`, `template_name`, `created_at`, `updated_at`, `terminal_at`, `cancellation.requested_by`). Cancel success also emits `adapter_called`. This matches `InvokeResult` / `5x run list`. Integration tests assert snake_case on spawned CLI stdout. The CLI handler must not `JSON.stringify` the camelCase view directly.
 
 **Authenticated action = typed actor at the store boundary; HTTP auth is slice 04.** `CancellationActor = "cli" | "control-plane"`. `requestInvocationCancellation` requires a valid actor or throws `INVOCATION_INVALID_ACTOR`. CLI passes `"cli"`. Future dashboard, after verifying the per-process token, passes `"control-plane"`. Do not invent a second token scheme in this slice. If `src/commands/dashboard.ts` exists when Phase 5 is implemented, wire `GET/POST` routes to this handler and reuse 04’s token middleware; otherwise document the contract in `202` and stop.
 
@@ -146,16 +149,20 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
            │                                                │
            ├─ existing run/template/provider setup          │
            ├─ startSession / resumeSession                  │
+           │    (failure: close provider, do not register)  │
            ├─ store.register({ uuid, runId, sessionId,      │
            │     handle, cancellationSupported })           │
-           │                                                ├─ requestInvocationCancellation
-           ├─ invokeStreamed + heartbeat ──┐                │    actor: "cli" | "control-plane"
-           │                               │                │
-           │     try / finally             │                ├─ if !supported → CANCELLATION_UNSUPPORTED
-           │                               │                │    (no requested_at, no adapter, no run change)
-           ├─ markTerminal(completed|      │                ├─ CAS requested_at (once)
-           │     failed|cancelled)         │                ├─ adapter.cancel(opaque handle) once
-           └─ provider.close() (unchanged) │                └─ recordCancellationOutcome(succeeded|failed)
+           │    immediately after session success           │
+           ├─ heartbeat interval (5s) ─────────┐            ├─ requestInvocationCancellation
+           ├─ prepareLogPath / appendSessionStart           │    actor: "cli" | "control-plane"
+           ├─ invokeStreamed (+ optional event beat)        │
+           │                               │                ├─ if !supported → CANCELLATION_UNSUPPORTED
+           │     try / finally             │                │    (no requested_at, no adapter, no run change)
+           │     (timer cleared in finally)│                ├─ CAS requested_at (once)
+           ├─ markTerminal(completed|      │                ├─ adapter.cancel(opaque handle) once
+           │     failed|cancelled)         │                │    missing adapter → outcome unsupported
+           └─ provider.close() (outer      │                │    return/throw failure → outcome failed
+                 finally after session)    │                └─ recordCancellationOutcome
                                            │
                                            ▼
                               InvocationStore (control plane)
@@ -164,16 +171,18 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
 
   5x invoke status --id/--run          5x doctor [--fix]
            │                                    │
-           └─ toClientInvocationState           ├─ list non-terminal + stale heartbeat
-              running | cancellation-requested  │    OR run missing/terminal
-              | cancelled | completed           ├─ INVOCATION_STALE (fixable)
-              | failed | abandoned              └─ --fix: CAS abandon stale-metadata
-              | unsupported                        (does NOT reap processes)
+           ├─ --id and --run intersect          ├─ list non-terminal + stale heartbeat
+           │    (mismatch → NOT_FOUND)          │    OR run missing/terminal
+           └─ snake_case envelope               ├─ INVOCATION_STALE (fixable)
+              client_state: running |           └─ --fix: CAS abandon stale-metadata
+              cancellation-requested |             (does NOT reap processes)
+              cancelled | completed |
+              failed | abandoned | unsupported
 
   Future 04 dashboard (not in this slice unless already present)
            │
-           ├─ GET  /api/invocations?run_id=  → list + client view
-           ├─ GET  /api/invocations/:id      → client view
+           ├─ GET  /api/invocations?run_id=  → list + snake_case envelope
+           ├─ GET  /api/invocations/:id      → snake_case envelope
            └─ POST /api/invocations/:id/cancel
                 auth token → actor "control-plane" → same requestInvocationCancellation
 ```
@@ -199,7 +208,7 @@ running && cancellationSupported  → "running"
                   running ──────────────────────────────► abandoned
                    │  ▲                                   (doctor / stale)
                    │  └── cancellation_requested_at
-                   │      + outcome succeeded|failed
+                   │      + outcome succeeded|failed|unsupported
                    │      (status still running until observed)
                    ├── invoke done ─────────────────────► completed
                    ├── invoke error ────────────────────► failed
@@ -302,6 +311,27 @@ export interface InvocationClientView {
   terminalAt: string | null;
 }
 
+/** CLI/HTTP JSON DTO: snake_case keys. Do not stringify InvocationClientView. */
+export interface InvocationStatusEnvelope {
+  id: string;
+  run_id: string;
+  session_id: string | null;
+  role: "author" | "reviewer";
+  provider_name: string;
+  template_name: string | null;
+  status: InvocationStatus;
+  client_state: ClientInvocationState;
+  cancellation: {
+    supported: boolean;
+    requested: boolean;
+    requested_by: CancellationActor | null;
+    outcome: CancellationOutcome | "none";
+  };
+  created_at: string;
+  updated_at: string;
+  terminal_at: string | null;
+}
+
 export interface RegisterInvocationInput {
   runId: string;
   sessionId?: string | null;
@@ -361,12 +391,37 @@ export function toClientInvocationView(
     terminalAt: record.terminalAt,
   };
 }
+
+export function toInvocationStatusEnvelope(
+  view: InvocationClientView,
+): InvocationStatusEnvelope {
+  return {
+    id: view.id,
+    run_id: view.runId,
+    session_id: view.sessionId,
+    role: view.role,
+    provider_name: view.providerName,
+    template_name: view.templateName,
+    status: view.status,
+    client_state: view.clientState,
+    cancellation: {
+      supported: view.cancellation.supported,
+      requested: view.cancellation.requested,
+      requested_by: view.cancellation.requestedBy,
+      outcome: view.cancellation.outcome,
+    },
+    created_at: view.createdAt,
+    updated_at: view.updatedAt,
+    terminal_at: view.terminalAt,
+  };
+}
 ```
 
-Invariant: `toClientInvocationView` must not spread `handle` and must not add `pid`.
+Invariant: `toClientInvocationView` must not spread `handle` and must not add `pid`. `toInvocationStatusEnvelope` is the only JSON shape the CLI handler (and Phase 5.4 HTTP, if wired) may emit for an invocation.
 
-- [ ] Add types + view helpers.
+- [ ] Add types + view helpers + snake_case envelope mapper.
 - [ ] Unit-test all seven `clientState` branches, including `running + supported` vs `running + unsupported` vs `running + requested` (requested wins over unsupported if both could apply — requested should be unreachable when `supported` is false because cancel rejects first; still assert requested takes precedence if a record is constructed that way).
+- [ ] Unit-test `toInvocationStatusEnvelope`: `clientState` → `client_state`, `runId` → `run_id`; no `handle` / `pid` / camelCase client-state key.
 
 #### 1.3 Adapter contract + synthetic remote adapter
 
@@ -602,30 +657,41 @@ Required cases:
 
 ## Phase 4: Invoke registration lifecycle
 
-**Completion gate:** `withInvocationLifecycle` unit tests cover success, thrown error, cancellation error, `finally` when unmarked, and fault injection after register. `invokeAgent` registers around session+stream for sample-provider integration: a successful invoke leaves `completed`; a thrown provider error leaves `failed`. Production register uses `cancellationSupported: false`. `AgentProvider` / `AgentSession` interfaces (`src/providers/types.ts:15–36`) are unchanged.
+**Completion gate:** `withInvocationLifecycle` unit tests cover success, thrown error, cancellation error, `finally` when unmarked, pre-stream fault injection, and a silent invocation that stays non-stale past `INVOCATION_STALE_MS` via the heartbeat timer (timer cleared on completion and on error). `invokeAgent` registers **immediately after** session success, before `prepareLogPath`/`appendSessionStart`; a throw from either leaves `failed` and still closes the provider. A successful sample invoke leaves `completed`; a thrown provider error leaves `failed`. Production register uses `cancellationSupported: false`. `AgentProvider` / `AgentSession` interfaces (`src/providers/types.ts:15–36`) are unchanged.
 
 #### 4.1 Lifecycle helper — new `src/control-plane/invocation-lifecycle.ts`
 
 ```typescript
 export const INVOCATION_HEARTBEAT_MIN_INTERVAL_MS = 5_000;
+export const INVOCATION_STALE_MS = 15 * 60 * 1000;
 
 export async function withInvocationLifecycle<T>(opts: {
   store: InvocationStore;
   input: RegisterInvocationInput;
   isCancellationError?: (err: unknown) => boolean;
+  now?: () => number;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
   fn: (ctx: {
     invocation: InvocationRecord;
     heartbeat: () => void;
   }) => Promise<T>;
 }): Promise<T> {
   const invocation = opts.store.register(opts.input);
+  const nowFn = opts.now ?? Date.now;
   let lastBeat = 0;
   const heartbeat = () => {
-    const now = Date.now();
-    if (now - lastBeat < INVOCATION_HEARTBEAT_MIN_INTERVAL_MS) return;
-    lastBeat = now;
+    const t = nowFn();
+    if (t - lastBeat < INVOCATION_HEARTBEAT_MIN_INTERVAL_MS) return;
+    lastBeat = t;
     opts.store.heartbeat(invocation.id);
   };
+  const setIntervalFn = opts.setIntervalFn ?? setInterval;
+  const clearIntervalFn = opts.clearIntervalFn ?? clearInterval;
+  const timer = setIntervalFn(
+    () => heartbeat(),
+    INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
+  );
   try {
     const result = await opts.fn({ invocation, heartbeat });
     opts.store.markTerminal(invocation.id, "completed");
@@ -638,6 +704,7 @@ export async function withInvocationLifecycle<T>(opts: {
     );
     throw err;
   } finally {
+    clearIntervalFn(timer);
     const current = opts.store.get(invocation.id);
     if (current?.status === "running") {
       opts.store.markTerminal(invocation.id, "failed");
@@ -648,17 +715,18 @@ export async function withInvocationLifecycle<T>(opts: {
 
 `isCancellationError`: default treats `err` with `name === "AgentCancellationError"` (class is in `src/providers/opencode.ts:49–52`; do not import OpenCode from the control-plane helper — duck-type `name` or move `AgentCancellationError` to `src/providers/errors.ts` **only if** a one-line move is needed; prefer duck-typing to avoid a provider refactor).
 
-Heartbeat no-ops inside `fn` are rate-limited here so `invokeStreamed` can call `heartbeat()` on every event.
+The **interval** is the source of truth for “this invocation is still live.” Event-hook `heartbeat()` calls inside `fn` are an optional optimization (rate-limited here so `invokeStreamed` can call `heartbeat()` on every event). Inject `now` / `setIntervalFn` / `clearIntervalFn` so tests can fake-clock a silent `fn` past `INVOCATION_STALE_MS` without waiting 15 minutes. Doctor (Phase 6) **imports** `INVOCATION_STALE_MS` from this module — do not define a second literal.
 
-If `markTerminal` in `try` succeeds, `finally` sees non-running and does nothing. If `fn` returns without throwing and `markTerminal('completed')` CAS-loses to doctor abandon, leave `abandoned` (do not overwrite).
+If `markTerminal` in `try` succeeds, `finally` clears the timer and sees non-running. If `fn` returns without throwing and `markTerminal('completed')` CAS-loses to doctor abandon, leave `abandoned` (do not overwrite).
 
-- [ ] Implement helper. Do not call adapters here.
+- [ ] Implement helper with independent heartbeat interval. Do not call adapters here.
+- [ ] Clear the timer in `finally` on both success and error paths.
 
 #### 4.2 `invokeStreamed` heartbeat hook
 
 **File:** `src/commands/invoke.handler.ts`, `invokeStreamed` at lines 126–168.
 
-Add optional `onEvent?: () => void` (or `heartbeat?: () => void`) invoked once per streamed event **before** rendering. Do not change NDJSON or stderr behavior.
+Add optional `onEvent?: () => void` (or `heartbeat?: () => void`) invoked once per streamed event **before** rendering. This is an **optimization** on top of the lifecycle interval (first event can beat immediately). It is **not** sufficient by itself — a silent provider must stay fresh via the timer. Do not change NDJSON or stderr behavior.
 
 - [ ] Add the hook; existing tests that call `invokeStreamed` indirectly still pass.
 
@@ -671,41 +739,53 @@ Optional deps (do not require sqlite in tests of the helper):
 ```typescript
 export interface InvokeAgentDeps {
   invocationStore?: InvocationStore;
+  prepareLogPath?: typeof prepareLogPath;
+  appendSessionStart?: typeof appendSessionStart;
 }
 ```
 
-After session start (`:445–461`), wrap stream + validate + close-on-success in `withInvocationLifecycle`:
+**Register immediately after session success** (`:445–461`). Today `prepareLogPath()` (`:471`) and `appendSessionStart()` (`:476–484`) run after `startSession`/`resumeSession` and before stream — both can throw. Those calls **must** live inside `fn`, not between session start and `withInvocationLifecycle`. Session-start failure stays outside: close provider, do not register (`:458–460`).
 
 ```typescript
 const store =
   deps?.invocationStore ?? createSqliteInvocationStore(runDb);
-await withInvocationLifecycle({
-  store,
-  input: {
-    runId: params.run,
-    sessionId: session.id,
-    role,
-    providerName,
-    templateName: resolved.selectedTemplateName,
-    handle: { adapter: "none", ref: session.id },
-    cancellationSupported: false,
-  },
-  fn: async ({ heartbeat }) => {
-    runResult = await invokeStreamed(..., heartbeat);
-    // existing validation / record-failure / outputSuccess / record
-  },
-});
+const prepareLog = deps?.prepareLogPath ?? prepareLogPath;
+const appendStart = deps?.appendSessionStart ?? appendSessionStart;
+try {
+  await withInvocationLifecycle({
+    store,
+    input: {
+      runId: params.run,
+      sessionId: session.id,
+      role,
+      providerName,
+      templateName: resolved.selectedTemplateName,
+      handle: { adapter: "none", ref: session.id },
+      cancellationSupported: false,
+    },
+    fn: async ({ heartbeat }) => {
+      const logPath = prepareLog(logDir);
+      appendStart(logPath, { type: "session_start", /* existing fields */ });
+      runResult = await invokeStreamed(..., heartbeat);
+      // existing validation / record-failure (throws on invalid output)
+    },
+  });
+} finally {
+  await provider.close().catch(() => {});
+}
+outputSuccess(output); // after lifecycle has marked completed
 ```
 
-Place `provider.close()` so it still runs on every path (existing catch + success). Prefer: `try { await withInvocationLifecycle(...) } finally { await provider.close().catch(() => {}) }` around the stream/validate/output section, **without** removing close-before-throw on session-start failure (`:458–460` — session never registered, correct).
+Collapse the existing stream-error and validation-error `provider.close()` calls (`:514`, `:528`, `:592`) into that outer `finally`. Do **not** remove close-before-throw on session-start failure. `outputSuccess` / auto-record stay **after** the lifecycle returns (a print/record error must not un-complete a finished invoke).
 
 Do not pass `opts.signal` tied to registry cancel for unsupported providers.
 
 If `runDb` is used after the block that currently scopes it (`:231–279`), keep the connection open through invoke (it already is via `getDb` singleton). Construct the sqlite invocation store from that same db.
 
-- [ ] Register every successful session start.
+- [ ] Register every successful session start, **before** `prepareLogPath` / `appendSessionStart`.
 - [ ] `cancellationSupported: false` and `adapter: "none"` for all production providers in this slice (including OpenCode and sample).
-- [ ] Heartbeat from the stream hook.
+- [ ] Heartbeat interval from the lifecycle helper; stream hook remains an optimization.
+- [ ] Outer `finally` closes the provider on every post-session path.
 
 #### 4.4 Tests
 
@@ -716,21 +796,25 @@ If `runDb` is used after the block that currently scopes it (`:231–279`), keep
 - `fn` throws `{ name: "AgentCancellationError" }` → `cancelled`.
 - `fn` throws after doctor `markAbandoned` → status stays `abandoned` (CAS loss).
 - Fault injection: `fn` throws before any heartbeat; row is `failed` not `running`.
-- Heartbeat rate-limit: 100 calls in 1 ms → at most one `updatedAt` change if clock is frozen… simpler: spy on `store.heartbeat` and call the wrapped heartbeat 3 times within 5s → one call (inject a fake `now` if needed, or assert `heartbeat` method call count via wrapping the store).
+- Heartbeat rate-limit: spy on `store.heartbeat` and call the wrapped heartbeat 3 times within 5s → one call (inject fake `now`).
+- **Silent liveness:** inject fake `now` + `setIntervalFn`/`clearIntervalFn`. Drive store timestamps from the same fake clock (wrap `heartbeat` / pass `now` into `createMemoryInvocationStore` so `updatedAt` is not wall-clock). `fn` waits (never calls `heartbeat`, never emits stream events). Advance `now` past `INVOCATION_STALE_MS` and fire the interval callbacks. `listStale({ olderThanMs: INVOCATION_STALE_MS, nowMs })` must **not** include the row. A control that never fires the timer **does** include it. Then resolve `fn` → `completed` and assert `clearIntervalFn` was called once.
+- **Timer cleared on error:** same fake timer; `fn` throws → `failed` and `clearIntervalFn` called once. After clear, further interval ticks must not call `store.heartbeat`.
 
 **New or extend:** `test/unit/commands/invoke-registry.test.ts`
 
-- Inject `MemoryPromptStore`-style memory invocation store into `invokeAgent` **or** test via sample provider integration (sample is fast: `packages/provider-sample/src/index.ts:66–89`).
-- Preferred: unit-test by extracting is heavy; integration with sample + sqlite is acceptable here **and** required in Phase 5. For Phase 4, lifecycle unit tests are the gate; add one `invokeAgent` unit/integration: after successful sample invoke, `store.list({ runId })[0].status === "completed"` and `clientState === "unsupported"` (running path is unsupported capability after complete → `completed`).
+- Inject a memory invocation store into `invokeAgent` via `InvokeAgentDeps`. Sample provider is fast (`packages/provider-sample/src/index.ts:66–89`).
+- After successful sample invoke, `store.list({ runId })[0].status === "completed"` and `cancellationSupported === false`.
+- **Pre-stream fault injection (each path):** inject `prepareLogPath` that throws after a real session start → row is `failed` not `running`, and `provider.close()` ran (spy). Repeat with `appendSessionStart` that throws. These two tests are required; a single “`fn` throws immediately” lifecycle test does **not** substitute for wiring coverage.
 
-- [ ] Lifecycle unit tests including fault injection.
+- [ ] Lifecycle unit tests including pre-stream fault injection and silent heartbeat-timer coverage.
 - [ ] At least one invoke path writes a `completed` row with `cancellationSupported: false`.
+- [ ] `invokeAgent` tests: `prepareLogPath` throw and `appendSessionStart` throw each leave `failed` and close the provider.
 
 ---
 
 ## Phase 5: Cancel/status action, CLI, dashboard seam
 
-**Completion gate:** `requestInvocationCancellation` rejects unsupported without mutating run or requested_at; supported synthetic adapter is called exactly once; second cancel is idempotent; invalid actor is rejected. CLI `5x invoke status` / `cancel` integration tests pass. No ambient run resolver in the new handler. If dashboard command exists, authenticated HTTP tests pass; if not, the HTTP contract is documented and the in-process action is the gate.
+**Completion gate:** `requestInvocationCancellation` rejects unsupported without mutating run or requested_at; a supported row with no adapter records `unsupported`; a throwing adapter records `failed` and still returns `ok: true`; supported synthetic adapter is called exactly once; second cancel is idempotent; invalid actor is rejected. Combined `--id --run` intersects (mismatch → `INVOCATION_NOT_FOUND`). CLI JSON uses `client_state` (snake_case). CLI `5x invoke status` / `cancel` integration tests pass. No ambient run resolver in the new handler. If dashboard command exists, authenticated HTTP tests pass; if not, the HTTP contract is documented and the in-process action is the gate.
 
 #### 5.1 Action module — new `src/control-plane/invocation-actions.ts`
 
@@ -775,18 +859,21 @@ export async function requestInvocationCancellation(opts: {
   const getAdapter = opts.getAdapter ?? getCancellationAdapter;
   const adapter = getAdapter(cas.invocation.handle.adapter);
   if (!adapter) {
-    opts.store.recordCancellationOutcome(opts.id, "failed");
+    opts.store.recordCancellationOutcome(opts.id, "unsupported");
     return {
       ok: true,
       view: toClientInvocationView(opts.store.get(opts.id)!),
       adapterCalled: false,
     };
   }
-  const result = await adapter.cancel(cas.invocation.handle);
-  opts.store.recordCancellationOutcome(
-    opts.id,
-    result.outcome === "succeeded" ? "succeeded" : "failed",
-  );
+  let outcome: CancellationOutcome;
+  try {
+    const result = await adapter.cancel(cas.invocation.handle);
+    outcome = result.outcome === "succeeded" ? "succeeded" : "failed";
+  } catch {
+    outcome = "failed";
+  }
+  opts.store.recordCancellationOutcome(opts.id, outcome);
   return {
     ok: true,
     view: toClientInvocationView(opts.store.get(opts.id)!),
@@ -797,11 +884,13 @@ export async function requestInvocationCancellation(opts: {
 
 Normative behavior:
 
-- Unsupported: **do not** `markCancellationRequested`; return `CANCELLATION_UNSUPPORTED`; caller must not touch `runs`.
+- Unsupported capability (`cancellationSupported: false`): **do not** `markCancellationRequested`; return `CANCELLATION_UNSUPPORTED`; caller must not touch `runs`.
 - Actor missing/invalid: `INVOCATION_INVALID_ACTOR` (auth test).
 - Already requested / already terminal: `ok: true`, `adapterCalled: false` (idempotent).
 - CAS winner: exactly one `adapter.cancel`.
-- Adapter throw: catch, `recordCancellationOutcome(..., "failed")`, still `ok: true` with `outcome: "failed"` (request happened; adapter failed). Do not convert that into run abort.
+- **Missing adapter** on a supported row: `recordCancellationOutcome(..., "unsupported")`, `ok: true`, `adapterCalled: false`. This is misconfiguration, not a capability-flag reject.
+- **Adapter returns `{ outcome: "failed" }`:** `recordCancellationOutcome(..., "failed")`, `ok: true`, `adapterCalled: true`.
+- **Adapter throw:** catch, `recordCancellationOutcome(..., "failed")`, still `ok: true` with `outcome: "failed"` (request happened; adapter failed). Do not convert that into run abort. The exception must not escape `requestInvocationCancellation`.
 
 Also export `getInvocationView(store, id)` and `listInvocationViews(store, { runId })`.
 
@@ -828,8 +917,14 @@ export async function defaultResolveInvocationContext(opts?: {
 
 **New:** `src/commands/invoke-registry.handler.ts`
 
-- `invokeStatus({ id?, run?, startDir? }, deps)` — require `id` or `run`; if `run` set, `runExists` or `RUN_NOT_FOUND`; never ambient. Envelope: `{ invocations: InvocationClientView[] }` or single `{ invocation: InvocationClientView }`.
-- `invokeCancel({ id }, deps)` — `requestInvocationCancellation({ actor: "cli" })`. Map `CANCELLATION_UNSUPPORTED` / `INVOCATION_NOT_FOUND` through `outputError`. Success: `outputSuccess(view)` plus `adapter_called`.
+- `invokeStatus({ id?, run?, startDir? }, deps)` — require `id` or `run`; never ambient.
+  - `--run` set: `runExists` or `RUN_NOT_FOUND`.
+  - `--id` only: `store.get(id)`; missing → `INVOCATION_NOT_FOUND`; envelope `{ invocation: toInvocationStatusEnvelope(view) }`.
+  - `--run` only: `store.list({ runId: run })`; envelope `{ invocations: views.map(toInvocationStatusEnvelope) }`.
+  - **`--id` and `--run` together:** `store.get(id)`; if missing **or** `record.runId !== run` → `INVOCATION_NOT_FOUND` with a message that names both ids (e.g. `invocation ${id} not found for run ${run}`). **Do not** return a row whose `runId` differs from `--run`. Success envelope is the single `{ invocation }` shape.
+- `invokeCancel({ id }, deps)` — `requestInvocationCancellation({ actor: "cli" })`. Map `CANCELLATION_UNSUPPORTED` / `INVOCATION_NOT_FOUND` through `outputError`. Success: `outputSuccess({ ...toInvocationStatusEnvelope(view), adapter_called })`.
+
+The handler **must** map through `toInvocationStatusEnvelope` before `outputSuccess`. Do not emit camelCase `clientState` / `runId` on CLI stdout.
 
 **File:** `src/commands/invoke.ts`, `registerInvoke` at lines 90–186.
 
@@ -856,29 +951,34 @@ Add `CANCELLATION_UNSUPPORTED`, `INVOCATION_NOT_FOUND`, `INVOCATION_INVALID_ACTO
 **New:** `test/unit/control-plane/invocation-actions.test.ts`
 
 - Invalid actor rejected; `requested_at` unchanged.
-- Unsupported: code `CANCELLATION_UNSUPPORTED`; row still `running`; `requested_at` null. Pair with a fake `runs` row that stays `active` (action tests don’t open `runs` — document that invoke-registry handler tests / integration must assert `getRunV1().status === "active"`).
+- Unsupported capability: code `CANCELLATION_UNSUPPORTED`; row still `running`; `requested_at` null. Pair with a fake `runs` row that stays `active` (action tests don’t open `runs` — document that invoke-registry handler tests / integration must assert `getRunV1().status === "active"`).
 - Synthetic adapter: first cancel `adapterCalled: true`, `outcome: "succeeded"`, `clientState: "cancellation-requested"` (status still `running`).
 - Second cancel: `adapterCalled: false`; adapter `cancelCalls === 1`.
-- Adapter failure: `outcome: "failed"`; still `running`; `clientState: "cancellation-requested"`.
+- Adapter returns `{ outcome: "failed" }`: `outcome: "failed"`; still `running`; `clientState: "cancellation-requested"`; `adapterCalled: true`.
+- **Adapter throws:** `cancel()` rejects/throws; action still `ok: true`; `outcome: "failed"`; `requested_at` set; `adapterCalled: true`; exception does not propagate. Distinct from the returned-failed case — both are required.
+- **Missing adapter** on a `cancellationSupported: true` row (`getAdapter` returns `undefined`): `outcome: "unsupported"`; `adapterCalled: false`; `ok: true`; status still `running`; `clientState: "cancellation-requested"`.
 - Terminal completed: `ok: true`, adapter not called.
 - Missing id: `INVOCATION_NOT_FOUND`.
 
 **New:** `test/unit/commands/invoke-registry.test.ts`
 
 - Inject memory store; `status --run` lists; unknown run → `RUN_NOT_FOUND`.
+- `status --id` returns a single `{ invocation }` envelope with snake_case keys (`client_state`, `run_id`).
+- **Combined `--id --run`:** id that belongs to that run → single `{ invocation }`. id that belongs to a **different** run → `INVOCATION_NOT_FOUND`; the foreign row is not in the envelope. Missing id with a valid `--run` → `INVOCATION_NOT_FOUND`.
 - `cancel` passes `actor: "cli"`.
 - Grep/test: handler module source must not import `requireAmbientRunId` / `resolveAmbientRunId` (or a unit test that status without `--run`/`--id` is `INVALID_ARGS` even when `.5x/current-run` exists).
 
 **New:** `test/integration/commands/invoke-registry.test.ts`
 
-- Temp project + sample provider + `5x invoke author …` then `5x invoke status --run <id>` → one row, `client_state: "completed"` (or `unsupported` only while running — after sample returns, `completed`).
-- `5x invoke cancel <id>` on that completed sample row → success, no adapter, status unchanged.
+- Temp project + sample provider + `5x invoke author …` then `5x invoke status --run <id>` → one row, `client_state: "completed"` (snake_case key; after sample returns, `completed` not `unsupported`). Assert the key is `client_state`, not `clientState`.
+- `5x invoke status --id <uuid> --run <that-run>` → same single invocation. `5x invoke status --id <uuid> --run <other-run>` → error `INVOCATION_NOT_FOUND` (do not print the foreign row).
+- `5x invoke cancel <id>` on that completed sample row → success, no adapter, status unchanged. Success JSON includes `adapter_called` and `client_state`.
 - `5x invoke cancel` on a **running** unsupported row: spawn a slow test by injecting a hanging store row via sqlite in the test (do not hang sample): insert `running` + `cancellation_supported=0`, run cancel CLI, expect error envelope `CANCELLATION_UNSUPPORTED`, then `SELECT status FROM runs` still `active`.
-- Supported path in integration: insert row with `cancellation_supported=1` and handle `test-remote` **cannot** call in-process adapter from a spawned CLI unless the CLI process registers the adapter. **Do not** register test adapters in production `bin.ts`. Cover the supported once-only path in **unit** tests of `requestInvocationCancellation`. Integration covers unsupported reject + status CLI + completed sample row.
+- Supported path in integration: insert row with `cancellation_supported=1` and handle `test-remote` **cannot** call in-process adapter from a spawned CLI unless the CLI process registers the adapter. **Do not** register test adapters in production `bin.ts`. Cover the supported once-only path, throwing-adapter path, and missing-adapter `unsupported` outcome in **unit** tests of `requestInvocationCancellation`. Integration covers unsupported reject + status CLI (including combined `--id --run`) + completed sample row.
 
-- [ ] Unit action tests including idempotent synthetic cancel.
-- [ ] Unit handler tests: no ambient resolution.
-- [ ] Integration: status CLI, unsupported cancel does not abort the run.
+- [ ] Unit action tests including idempotent synthetic cancel, throwing adapter → `failed`, missing adapter → `unsupported`.
+- [ ] Unit handler tests: no ambient resolution; combined `--id --run` intersection; snake_case envelope.
+- [ ] Integration: status CLI (`client_state`), combined `--id --run`, unsupported cancel does not abort the run.
 
 #### 5.4 Dashboard seam (conditional)
 
@@ -892,7 +992,7 @@ Detect: `src/commands/dashboard.ts` **or** `registerDashboard` in `src/bin.ts`.
 | GET | `/api/invocations/:id` | 04 token | `getInvocationView` |
 | POST | `/api/invocations/:id/cancel` | 04 token | `requestInvocationCancellation({ actor: "control-plane" })` |
 
-Unauthorized requests must not call the action (04’s middleware). Live status: 04 may poll GET or push `clientState` on the existing WebSocket; this slice does not add WS messages.
+Unauthorized requests must not call the action (04’s middleware). Live status: 04 may poll GET or push `client_state` (snake_case, same envelope as CLI) on the existing WebSocket; this slice does not add WS messages. HTTP JSON **must** use `toInvocationStatusEnvelope`, not the camelCase `InvocationClientView`.
 
 **If present:** wire those three routes to the exported functions; add one integration test that no token → 401 and token → cancel hits the same CAS as CLI (unsupported row still 409/400 with `CANCELLATION_UNSUPPORTED`, run active).
 
@@ -910,7 +1010,7 @@ Mirror `src/doctor/checks/prompts.ts:1–171`:
 
 - Detect: `existsSync(ctx.dbPath)`; `openDbReadOnly`; `createSqliteInvocationStore`.
 - Findings for each row where `status === "running"` AND (`updatedAt` older than `INVOCATION_STALE_MS` relative to `ctx.now` **OR** `getRunV1` is null / `completed` / `aborted`).
-- Export `INVOCATION_STALE_MS = 15 * 60 * 1000`.
+- Export `INVOCATION_STALE_MS = 15 * 60 * 1000` (same constant as `invocation-lifecycle.ts`; import it — do not duplicate the literal).
 - `code: "INVOCATION_STALE"`, `fixable: true`, `detail: { invocationId, runId, updatedAt, reason: "heartbeat" | "run-terminal" }`.
 - `remediation: "5x doctor --fix"`.
 - **Message must include** that registry metadata can be abandoned and that **the underlying provider process is not reaped** (plan-input: doctor reporting without claiming processes can be reaped).
@@ -985,7 +1085,8 @@ Update counts from six to seven builtins. Point at this plan.
 
 Document:
 
-- `5x invoke status --id|--run` (explicit `--run` only).
+- `5x invoke status --id|--run` (explicit `--run` only; combined flags intersect — mismatch is `INVOCATION_NOT_FOUND`).
+- CLI JSON keys are snake_case (`client_state`, `run_id`); not camelCase `clientState`.
 - `5x invoke cancel <invocation-id>`.
 - Unsupported → `CANCELLATION_UNSUPPORTED`; run status unchanged.
 - Registry is coordination metadata, not a supervisor.
@@ -1010,21 +1111,21 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | File | Change |
 |------|--------|
 | `src/control-plane/ids.ts` | Add `createInvocationId()` |
-| `src/control-plane/invocation-types.ts` | **New** — records, CAS, errors, client view types |
-| `src/control-plane/invocation-view.ts` | **New** — `toClientInvocationState` / `toClientInvocationView` |
+| `src/control-plane/invocation-types.ts` | **New** — records, CAS, errors, client view + snake_case envelope types |
+| `src/control-plane/invocation-view.ts` | **New** — `toClientInvocationState` / `toClientInvocationView` / `toInvocationStatusEnvelope` |
 | `src/control-plane/cancellation-adapter.ts` | **New** — adapter interface + process-local registry |
 | `src/control-plane/test-remote-adapter.ts` | **New** — synthetic non-PID remote adapter |
 | `src/control-plane/invocation-store.ts` | **New** — `InvocationStore` |
 | `src/control-plane/invocation-sqlite.ts` | **New** — SQL materialization |
 | `src/control-plane/invocation-memory.ts` | **New** — test impl |
-| `src/control-plane/invocation-lifecycle.ts` | **New** — `withInvocationLifecycle` + heartbeat interval |
-| `src/control-plane/invocation-actions.ts` | **New** — cancel/status actions |
+| `src/control-plane/invocation-lifecycle.ts` | **New** — `withInvocationLifecycle` + heartbeat interval/timer |
+| `src/control-plane/invocation-actions.ts` | **New** — cancel/status actions (catch adapter throw; missing adapter → `unsupported`) |
 | `src/control-plane/index.ts` | Re-export invocation APIs |
 | `src/db/schema.ts` | Migration 7 |
 | `src/db/timestamps.ts` | **New** (or equivalent) — shared `parseRunTimestamp` |
 | `src/doctor/checks/runs.ts` | Import shared timestamp helper |
-| `src/commands/invoke.handler.ts` | Lifecycle wrap, heartbeat hook, optional `invocationStore` dep |
-| `src/commands/invoke-registry.handler.ts` | **New** — status/cancel |
+| `src/commands/invoke.handler.ts` | Lifecycle wrap immediately after session; log/session-start inside `fn`; heartbeat hook; optional `invocationStore` / log-path deps |
+| `src/commands/invoke-registry.handler.ts` | **New** — status/cancel; combined `--id --run`; snake_case envelope |
 | `src/commands/invoke-registry-context.ts` | **New** — store + `runExists` |
 | `src/commands/invoke.ts` | Register `status` / `cancel` |
 | `src/output.ts` | Error codes for cancel/status |
@@ -1058,17 +1159,17 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `invocation-view.test.ts` | Seven client states; view omits `handle`/`pid` |
+| Unit | `invocation-view.test.ts` | Seven client states; view omits `handle`/`pid`; envelope maps `clientState` → `client_state` |
 | Unit | `test-remote-adapter.test.ts` | Non-PID job ref; abort on cancel; unknown handle fails |
 | Unit | `schema-v7.test.ts` | v7 DDL, indexes, FK, CHECKs, no `pid` column, v6→v7 |
 | Unit | `invocation-store-contract.test.ts` | Register/list/heartbeat; CAS request/terminal/abandon on memory + sqlite |
 | Unit | `cas-race` (in contract or sibling) | Parallel sqlite `markCancellationRequested` → one winner |
-| Unit | `invocation-lifecycle.test.ts` | completed/failed/cancelled; `finally`; abandon CAS win; heartbeat rate-limit; fault injection after register |
-| Unit | `invocation-actions.test.ts` | Unsupported reject; invalid actor; synthetic once-only cancel; adapter failed outcome; terminal no-op |
-| Unit | `invoke-registry.test.ts` | Explicit `--run`/`--id`; no ambient; `actor: "cli"` |
+| Unit | `invocation-lifecycle.test.ts` | completed/failed/cancelled; `finally`; abandon CAS win; heartbeat rate-limit; pre-stream fault injection; silent invocation stays fresh past stale TTL via timer; timer cleared on complete/error |
+| Unit | `invocation-actions.test.ts` | Unsupported reject; invalid actor; synthetic once-only cancel; adapter returned-failed; **adapter throw → failed**; **missing adapter → unsupported**; terminal no-op |
+| Unit | `invoke-registry.test.ts` | Explicit `--run`/`--id`; combined intersection; snake_case envelope; no ambient; `actor: "cli"`; `prepareLogPath`/`appendSessionStart` throw → `failed` + close |
 | Unit | `invocations.test.ts` (doctor) | Stale heartbeat, run-terminal orphan, `--fix` metadata-only, message does not claim reap |
 | Unit | `registry.test.ts` | Seven checks; `findingKey` `INVOCATION_STALE` |
-| Integration | `invoke-registry.test.ts` | Sample invoke → status `completed`; cancel unsupported inserted row; `runs.status` still `active` |
+| Integration | `invoke-registry.test.ts` | Sample invoke → status `client_state: "completed"`; combined `--id --run` match/mismatch; cancel unsupported inserted row; `runs.status` still `active` |
 | Integration | `doctor.test.ts` | Check id present; clean `INVOCATIONS_OK`; optional `--fix` stale row |
 | Integration (conditional) | dashboard auth | No token cannot cancel; token maps to `control-plane` actor |
 
@@ -1096,11 +1197,25 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | 1 | Types, client view, adapter contract, synthetic remote adapter | 1 day |
 | 2 | Schema v7 + migration tests | 0.5–1 day |
 | 3 | InvocationStore sqlite/memory + CAS contract tests | 1–2 days |
-| 4 | `withInvocationLifecycle` + invoke wiring + fault injection | 1–2 days |
+| 4 | `withInvocationLifecycle` (register-at-session, heartbeat timer, pre-stream faults) + invoke wiring | 1–2 days |
 | 5 | Cancel/status action, CLI, auth actor tests, optional dashboard wire | 1–2 days |
 | 6 | Doctor stale check + `--fix` | 1 day |
 | 7 | Docs (`202`, `203`, `101`, `011`, plan-input) | 0.5 day |
 | **Total** | | **6–10 days** |
+
+---
+
+## Revision History
+
+### 1.1 — August 28, 2026
+
+Addresses all five **Active corrections** in the **Addendum — August 28, 2026** of [`docs/development/reviews/5x-cli-docs-development-plans-207-invocation-registry-plan-review.md`](../reviews/5x-cli-docs-development-plans-207-invocation-registry-plan-review.md). Original P1.1–P1.3 / P2 items are the same corrections; this revision implements them in the plan plus the addendum’s independent-heartbeat requirement.
+
+1. **Register immediately after session creation.** `prepareLogPath()` and `appendSessionStart()` move inside `withInvocationLifecycle` `fn`. Session-start failure still closes the provider without registering. Pre-stream fault-injection tests cover each of those two throws (row `failed`, provider closed).
+2. **Catch `adapter.cancel()` throw.** Phase 5 action wraps cancel in `try/catch`, persists `failed`, returns `ok: true`. Unit test for a throwing adapter (distinct from returned `{ outcome: "failed" }`).
+3. **Missing supported adapter → `unsupported`.** Pseudocode and tests record `cancellation_outcome = "unsupported"` when `getAdapter` returns undefined; `failed` is reserved for an adapter that exists but returns or throws failure.
+4. **Combined `status --id --run` and JSON naming.** Both flags intersect: the id must belong to that run or the handler returns `INVOCATION_NOT_FOUND` without emitting a foreign-run row. In-process `InvocationClientView.clientState` stays camelCase; CLI/HTTP JSON uses `toInvocationStatusEnvelope` (`client_state`, `run_id`, …). Integration tests assert snake_case.
+5. **Independent heartbeat interval.** `withInvocationLifecycle` starts a rate-limited timer after `register()` and clears it in `finally`. Stream-event heartbeats remain an optimization. Fake-clock tests prove a silent invocation stays fresh past `INVOCATION_STALE_MS` and that the timer is cleared on completion and on error.
 
 ---
 
