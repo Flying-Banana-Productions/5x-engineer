@@ -70,3 +70,21 @@ None.
 
 **P1 recommended**
 - [ ] `auto_fix`: Make a missing memory `getRun` callback fail closed for `run-terminal` CAS and cover it with a test.
+
+---
+
+## Addendum (2026-08-28) — P1.1 fail-closed memory CAS follow-up
+
+**Reviewed:** `5657a14bd6c035956136a8ea093259d8e862c3e3`
+
+### What's addressed (✅)
+- **P1.1 — `auto_fix`:** Addressed. `MemoryInvocationStore.markAbandonedIfStale` now returns a CAS miss when `getRun` is omitted (`src/control-plane/invocation-memory.ts:210-216`), while an explicit callback result of `null` still represents a missing run and permits abandonment.
+- **Regression coverage:** Added direct tests for both the omitted-callback fail-closed path and the explicit-missing-run success path (`test/unit/control-plane/invocation-store-contract.test.ts:573-605`).
+- **Contract documentation:** The public store contract now states that an omitted memory `getRun` is a CAS miss (`src/control-plane/invocation-store.ts:59-63`).
+
+### Remaining concerns
+- None identified in the reviewed delta. The prior finding is fully addressed; no new correctness, architecture, security, performance, operability, test, or plan-compliance issues were found.
+
+### Updated readiness
+- **Phase 3 completion:** ✅ — The SQLite and memory stores now both honor the run-terminal stale-abandon safety contract, and the focused concurrent tests (33 passing, repeated 10 times), typecheck, and lint pass.
+- **Ready for next phase:** ✅
