@@ -1118,10 +1118,10 @@ Copy fixtures from `test/unit/doctor/prompts.test.ts`.
 - **Two-writer run reopen (required):** same pattern for `reason: "run-terminal"`: wrapper (or second sqlite writer) sets `runs.status` back to `active` after revalidation / before `markAbandonedIfStale`. Assert `--fix` does not abandon. Cover detect → reopen → `--fix` as well.
 - Grep or unit assertion: `src/doctor/checks/invocations.ts` calls `markAbandonedIfStale` and does not call `markAbandoned(`.
 
-- [ ] Implement check + `findingKey`.
-- [ ] Unit + integration doctor coverage.
-- [ ] Two-writer `--fix` tests: competing heartbeat and competing run-reopen do not abandon.
-- [ ] Confirm `--fix` never kills processes (no `process.kill` in the check file — code review / grep in tests).
+- [x] Implement check + `findingKey`.
+- [x] Unit + integration doctor coverage.
+- [x] Two-writer `--fix` tests: competing heartbeat and competing run-reopen do not abandon.
+- [x] Confirm `--fix` never kills processes (no `process.kill` in the check file — code review / grep in tests).
 
 ---
 
