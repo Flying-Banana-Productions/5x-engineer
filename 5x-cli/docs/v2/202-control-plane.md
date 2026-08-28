@@ -125,6 +125,14 @@ Aborting a *run* (§3.4) is bookkeeping. Cancelling an *in-flight agent invocati
 - Unifies with the orphaning gap already flagged in `docs/development/plans/011-provider-process-lifecycle.md` — the same registry that enables operator cancellation enables orphan reaping.
 - _TODO:_ graceful-abort vs hard-kill semantics; allow the agent to record a terminal step on cancel. Explicitly **not** a 5x-level daemon owning agent lifecycle — the registry is a handle store, not a supervisor.
 
+**HTTP contract (slice 04).** `registerDashboard` is not in this tree; this slice does not add HTTP. In-process actions are the gate: `listInvocationViews`, `getInvocationView`, and `requestInvocationCancellation`. Slice 04 wraps them after verifying the per-process token. Unauthorized requests must not call the action. HTTP JSON **must** use `toInvocationStatusEnvelope` (snake_case `client_state`), not the camelCase `InvocationClientView`. Live status: 04 may poll GET or push `client_state` on the existing WebSocket; this slice does not add WS messages.
+
+| Method | Path | Auth | Implementation |
+|--------|------|------|----------------|
+| GET | `/api/invocations?run_id=` | 04 token | `listInvocationViews` |
+| GET | `/api/invocations/:id` | 04 token | `getInvocationView` |
+| POST | `/api/invocations/:id/cancel` | 04 token | `requestInvocationCancellation({ actor: "control-plane" })` |
+
 ---
 
 ## 4. Migration / compatibility

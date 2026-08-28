@@ -959,7 +959,7 @@ Normative behavior:
 
 Also export `getInvocationView(store, id)` and `listInvocationViews(store, { runId })`.
 
-- [ ] Implement actions. No `bun:sqlite`. No `resolveAmbientRunId`.
+- [x] Implement actions. No `bun:sqlite`. No `resolveAmbientRunId`.
 
 #### 5.2 Context factory + handler + CLI
 
@@ -1007,9 +1007,9 @@ Add sibling subcommands **before** or **after** author/reviewer (not nested unde
 
 Add `CANCELLATION_UNSUPPORTED`, `INVOCATION_NOT_FOUND`, `INVOCATION_INVALID_ACTOR` → exit 1 (default). Optional explicit map entries for documentation.
 
-- [ ] Context factory does one `resolveDbContext`.
-- [ ] Handler has no ambient imports (`run-identity.ts`).
-- [ ] Register `status` and `cancel` on `5x invoke`.
+- [x] Context factory does one `resolveDbContext`.
+- [x] Handler has no ambient imports (`run-identity.ts`).
+- [x] Register `status` and `cancel` on `5x invoke`.
 
 #### 5.3 Action and CLI tests
 
@@ -1041,9 +1041,9 @@ Add `CANCELLATION_UNSUPPORTED`, `INVOCATION_NOT_FOUND`, `INVOCATION_INVALID_ACTO
 - `5x invoke cancel` on a **running** unsupported row: spawn a slow test by injecting a hanging store row via sqlite in the test (do not hang sample): insert `running` + `cancellation_supported=0`, run cancel CLI, expect error envelope `CANCELLATION_UNSUPPORTED`, then `SELECT status FROM runs` still `active`.
 - Supported path in integration: insert row with `cancellation_supported=1` and handle `test-remote` **cannot** call in-process adapter from a spawned CLI unless the CLI process registers the adapter. **Do not** register test adapters in production `bin.ts`. Cover the supported once-only path, throwing-adapter path, and missing-adapter `unsupported` outcome in **unit** tests of `requestInvocationCancellation`. Integration covers unsupported reject + status CLI (including combined `--id --run`) + completed sample row.
 
-- [ ] Unit action tests including idempotent synthetic cancel, throwing adapter → `failed`, missing adapter → `unsupported`.
-- [ ] Unit handler tests: no ambient resolution; combined `--id --run` intersection; snake_case envelope.
-- [ ] Integration: status CLI (`client_state`), combined `--id --run`, unsupported cancel does not abort the run.
+- [x] Unit action tests including idempotent synthetic cancel, throwing adapter → `failed`, missing adapter → `unsupported`.
+- [x] Unit handler tests: no ambient resolution; combined `--id --run` intersection; snake_case envelope.
+- [x] Integration: status CLI (`client_state`), combined `--id --run`, unsupported cancel does not abort the run.
 
 #### 5.4 Dashboard seam (conditional)
 
@@ -1061,7 +1061,7 @@ Unauthorized requests must not call the action (04’s middleware). Live status:
 
 **If present:** wire those three routes to the exported functions; add one integration test that no token → 401 and token → cancel hits the same CAS as CLI (unsupported row still 409/400 with `CANCELLATION_UNSUPPORTED`, run active).
 
-- [ ] Either wire 04 routes **or** document the table in `202` and skip HTTP code.
+- [x] Either wire 04 routes **or** document the table in `202` and skip HTTP code.
 
 ---
 

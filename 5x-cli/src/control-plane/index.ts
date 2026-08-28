@@ -15,6 +15,14 @@ export {
 } from "./cancellation-adapter.js";
 export { createInvocationId, createPromptId } from "./ids.js";
 export {
+	CANCELLATION_UNSUPPORTED,
+	getInvocationView,
+	INVOCATION_INVALID_ACTOR,
+	INVOCATION_NOT_FOUND,
+	listInvocationViews,
+	requestInvocationCancellation,
+} from "./invocation-actions.js";
+export {
 	INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
 	INVOCATION_STALE_MS,
 	withInvocationLifecycle,

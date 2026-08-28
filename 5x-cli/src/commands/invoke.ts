@@ -1,7 +1,7 @@
 /**
  * v1 Agent invocation commands — commander adapter.
  *
- * Subcommands: author, reviewer
+ * Subcommands: author, reviewer, status, cancel
  *
  * Business logic lives in invoke.handler.ts.
  */
@@ -9,7 +9,11 @@
 import type { Command } from "@commander-js/extra-typings";
 import { collect, intArg, timeoutArg } from "../utils/parse-args.js";
 import { invokeAgent } from "./invoke.handler.js";
+import { invokeCancel, invokeStatus } from "./invoke-registry.handler.js";
+import { defaultResolveInvocationContext } from "./invoke-registry-context.js";
 import { AMBIENT_RUN_OPTION_HELP } from "./run-identity.js";
+
+const registryDeps = { resolveContext: defaultResolveInvocationContext };
 
 /**
  * Register shared options on an invoke subcommand.
@@ -182,5 +186,44 @@ export function registerInvoke(parent: Command) {
 				phase: opts.phase,
 				iteration: opts.iteration,
 			});
+		});
+
+	invoke
+		.command("status")
+		.summary("Show invocation registry status")
+		.description(
+			"Report the client view of one invocation (--id) or all invocations\n" +
+				"for an explicit run (--run). Combined --id and --run intersect: the\n" +
+				"invocation must belong to that run. Does not use ambient run identity.",
+		)
+		.option("--id <uuid>", "Invocation UUID")
+		.option("--run <id>", "Explicit run id only (no ambient resolution)")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x invoke status --id 11111111-1111-4111-8111-111111111111\n" +
+				"  $ 5x invoke status --run run_abc123def456\n" +
+				"  $ 5x invoke status --id 11111111-1111-4111-8111-111111111111 --run run_abc123def456",
+		)
+		.action(async (opts) => {
+			await invokeStatus({ id: opts.id, run: opts.run }, registryDeps);
+		});
+
+	invoke
+		.command("cancel")
+		.summary("Request cancellation of an invocation")
+		.description(
+			"Request cancellation of a running invocation by UUID. Unsupported\n" +
+				"providers are rejected without changing the run status. Does not use\n" +
+				"ambient run identity.",
+		)
+		.argument("<invocation-id>", "Invocation UUID")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x invoke cancel 11111111-1111-4111-8111-111111111111",
+		)
+		.action(async (invocationId) => {
+			await invokeCancel({ id: invocationId }, registryDeps);
 		});
 }

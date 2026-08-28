@@ -72,6 +72,9 @@ const EXIT_CODE_MAP: Record<string, number> = {
 	ARCHIVE_CONFLICT: 1,
 	INVALID_PLAN: 1,
 	RELINK_NO_OPTIONS: 1,
+	CANCELLATION_UNSUPPORTED: 1,
+	INVOCATION_NOT_FOUND: 1,
+	INVOCATION_INVALID_ACTOR: 1,
 };
 
 /** Resolve exit code from error code. Falls back to 1 for unknown codes. */
