@@ -630,8 +630,8 @@ export interface InvocationStore {
 
 Timestamps: SQLite uses `datetime('now')` like prompts (`sqlite-store.ts:106–107`). Memory store copies `utcNow()` from `memory-store.ts:17–19` (`YYYY-MM-DD HH:MM:SS`). `listStale` must parse with the same UTC rule as `parseRunTimestamp` (`src/doctor/checks/runs.ts:47–54`). Export that helper from `runs.ts` **or** move it to `src/db/timestamps.ts` and update `runs.ts` — prefer a tiny shared helper rather than duplicating timezone bugs. If moving, keep `parseRunTimestamp` as a re-export from `runs.ts` so existing tests keep importing it.
 
-- [ ] Add `InvocationStore` interface.
-- [ ] Share timestamp parsing; do not treat sqlite `datetime('now')` as local time.
+- [x] Add `InvocationStore` interface.
+- [x] Share timestamp parsing; do not treat sqlite `datetime('now')` as local time.
 
 #### 3.2 Implementations
 
@@ -690,8 +690,8 @@ WHERE id = ?2
 
 Memory `createMemoryInvocationStore` takes optional `{ now?: () => string; getRun?: (runId: string) => { status: string } | null }`. `getRun` is invoked **inside** `markAbandonedIfStale` when `staleReason === "run-terminal"` (missing/completed/aborted → allow; active/unknown-non-terminal → CAS miss). Do not read run status in the doctor check and then pass a boolean into the store — that reopens the TOCTOU.
 
-- [ ] SQLite + memory implementations.
-- [ ] Re-export factories from `src/control-plane/index.ts`.
+- [x] SQLite + memory implementations.
+- [x] Re-export factories from `src/control-plane/index.ts`.
 
 #### 3.3 Contract tests — new `test/unit/control-plane/invocation-store-contract.test.ts`
 
@@ -716,7 +716,7 @@ Required cases:
 - `listStale` with injected `nowMs`: fresh heartbeat excluded; old `updated_at` included; completed excluded.
 - Missing id throws `INVOCATION_NOT_FOUND`.
 
-- [ ] Dual-backend contract tests including parallel CAS and `markAbandonedIfStale` two-writer losses.
+- [x] Dual-backend contract tests including parallel CAS and `markAbandonedIfStale` two-writer losses.
 
 ---
 

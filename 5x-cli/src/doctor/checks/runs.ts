@@ -9,6 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { openDbReadOnly } from "../../db/connection.js";
+import { parseRunTimestamp } from "../../db/timestamps.js";
 import { inspectLock } from "../../lock.js";
 import type {
 	DoctorCheck,
@@ -39,19 +40,8 @@ function dbUnreadable(ctx: DoctorCheckContext, err: unknown): DoctorFinding {
 	};
 }
 
-/**
- * Parse a run timestamp. SQLite `datetime('now')` stores
- * `YYYY-MM-DD HH:MM:SS` (UTC, no zone); treat that form as UTC so
- * lingering age is not skewed by the local timezone.
- */
-export function parseRunTimestamp(value: string): number {
-	const trimmed = value.trim();
-	if (!trimmed) return Number.NaN;
-	if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(trimmed)) {
-		return Date.parse(`${trimmed.replace(" ", "T")}Z`);
-	}
-	return Date.parse(trimmed);
-}
+/** Re-export so existing tests keep importing from this module. */
+export { parseRunTimestamp };
 
 async function run(ctx: DoctorCheckContext): Promise<DoctorFinding[]> {
 	if (!existsSync(ctx.dbPath)) return [];

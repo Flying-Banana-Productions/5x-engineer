@@ -53,6 +53,7 @@ export type {
 	InvocationRecord,
 	InvocationStatus,
 	InvocationStatusEnvelope,
+	InvocationStore,
 	OpaqueCancellationHandle,
 	PromptKind,
 	PromptRecord,
@@ -61,8 +62,10 @@ export type {
 } from "./control-plane/index.js";
 export {
 	createInvocationId,
+	createMemoryInvocationStore,
 	createMemoryPromptStore,
 	createPromptId,
+	createSqliteInvocationStore,
 	createSqlitePromptStore,
 	createTestRemoteAdapter,
 	getCancellationAdapter,

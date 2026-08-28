@@ -14,6 +14,10 @@ export {
 	registerCancellationAdapter,
 } from "./cancellation-adapter.js";
 export { createInvocationId, createPromptId } from "./ids.js";
+export type { MemoryInvocationStoreOptions } from "./invocation-memory.js";
+export { createMemoryInvocationStore } from "./invocation-memory.js";
+export { createSqliteInvocationStore } from "./invocation-sqlite.js";
+export type { InvocationStore } from "./invocation-store.js";
 export type {
 	CancellationActor,
 	CancellationOutcome,
