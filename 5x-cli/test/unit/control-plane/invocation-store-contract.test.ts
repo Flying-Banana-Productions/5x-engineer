@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,6 @@ import {
 	InvocationStoreError,
 	type RegisterInvocationInput,
 } from "../../../src/control-plane/index.js";
-import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import {
 	completeRun,
 	createRunV1,
@@ -46,6 +45,41 @@ function incrementingNow(startIso = "2026-08-28T12:00:00.000Z"): () => string {
 	};
 }
 
+function closeOwned(db: Database): void {
+	try {
+		db.close();
+	} catch {
+		// already closed
+	}
+}
+
+function applySqlitePragmas(db: Database, wal: boolean): void {
+	if (wal) db.exec("PRAGMA journal_mode=WAL");
+	db.exec("PRAGMA foreign_keys=ON");
+	db.exec("PRAGMA busy_timeout=5000");
+}
+
+/**
+ * Per-test in-memory SQLite. Avoids the process-wide getDb singleton so
+ * bun test --concurrent cannot close another test's connection.
+ */
+function openOwnedMemoryDb(): Database {
+	const db = new Database(":memory:");
+	applySqlitePragmas(db, false);
+	runMigrations(db);
+	return db;
+}
+
+function openOwnedFileDb(tmp: string): { db: Database; dbPath: string } {
+	const dir = join(tmp, ".5x");
+	mkdirSync(dir, { recursive: true });
+	const dbPath = join(dir, "5x.db");
+	const db = new Database(dbPath);
+	applySqlitePragmas(db, true);
+	runMigrations(db);
+	return { db, dbPath };
+}
+
 function memoryHarness(): StoreHarness {
 	const runs = new Map<string, { status: string }>();
 	return {
@@ -67,9 +101,7 @@ function memoryHarness(): StoreHarness {
 }
 
 function sqliteHarness(): StoreHarness {
-	const tmp = mkdtempSync(join(tmpdir(), "5x-invocation-store-"));
-	const db = getDb(tmp);
-	runMigrations(db);
+	const db = openOwnedMemoryDb();
 	return {
 		store: createSqliteInvocationStore(db),
 		ensureRun: (id) => {
@@ -93,11 +125,8 @@ function sqliteHarness(): StoreHarness {
 			db.exec("PRAGMA foreign_keys=ON");
 		},
 		cleanup: () => {
-			closeDb();
-			_resetForTest();
-			rmSync(tmp, { recursive: true });
+			closeOwned(db);
 		},
-		tmp,
 	};
 }
 
@@ -105,6 +134,45 @@ const backends: Array<{ name: string; setup: () => StoreHarness }> = [
 	{ name: "memory", setup: memoryHarness },
 	{ name: "sqlite", setup: sqliteHarness },
 ];
+
+async function withHarness(
+	setup: () => StoreHarness,
+	fn: (harness: StoreHarness, store: InvocationStore) => void | Promise<void>,
+): Promise<void> {
+	const harness = setup();
+	try {
+		await fn(harness, harness.store);
+	} finally {
+		harness.cleanup();
+	}
+}
+
+async function withSharedSqliteFile(
+	prefix: string,
+	fn: (opts: {
+		store1: InvocationStore;
+		store2: InvocationStore;
+		db: Database;
+		db2: Database;
+	}) => void | Promise<void>,
+): Promise<void> {
+	const tmp = mkdtempSync(join(tmpdir(), prefix));
+	const { db, dbPath } = openOwnedFileDb(tmp);
+	const db2 = new Database(dbPath);
+	applySqlitePragmas(db2, false);
+	try {
+		await fn({
+			store1: createSqliteInvocationStore(db),
+			store2: createSqliteInvocationStore(db2),
+			db,
+			db2,
+		});
+	} finally {
+		closeOwned(db2);
+		closeOwned(db);
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
 
 function registerInput(
 	runId: string,
@@ -159,440 +227,423 @@ function expectNotFound(fn: () => unknown): void {
 
 for (const backend of backends) {
 	describe(`InvocationStore contract (${backend.name})`, () => {
-		let harness: StoreHarness;
-		let store: InvocationStore;
+		test("register then get round-trips UUID, runId, handle, cancellationSupported, running, null cancel fields", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const created = registerRunning(harness);
 
-		beforeEach(() => {
-			harness = backend.setup();
-			store = harness.store;
-		});
+				expect(created.id).toMatch(UUID_RE);
+				expect(created.runId).toBe("run_aaa");
+				expect(created.sessionId).toBe("sess-1");
+				expect(created.role).toBe("author");
+				expect(created.providerName).toBe("sample");
+				expect(created.templateName).toBe("author-next-phase");
+				expect(created.handle).toEqual({
+					adapter: "test-remote",
+					ref: "job-abc",
+				});
+				expect(created.handle).not.toHaveProperty("pid");
+				expect(JSON.stringify(created.handle)).not.toContain("pid");
+				expect(created.cancellationSupported).toBe(true);
+				expect(created.status).toBe("running");
+				expect(created.cancellationRequestedAt).toBeNull();
+				expect(created.cancellationRequestedBy).toBeNull();
+				expect(created.cancellationOutcome).toBeNull();
+				expect(created.cancellationOutcomeAt).toBeNull();
+				expect(created.terminalAt).toBeNull();
+				expect(created.abandonReason).toBeNull();
+				expect(created.createdAt.length).toBeGreaterThan(0);
+				expect(created.updatedAt.length).toBeGreaterThan(0);
 
-		afterEach(() => {
-			harness.cleanup();
-		});
-
-		test("register then get round-trips UUID, runId, handle, cancellationSupported, running, null cancel fields", () => {
-			const created = registerRunning(harness);
-
-			expect(created.id).toMatch(UUID_RE);
-			expect(created.runId).toBe("run_aaa");
-			expect(created.sessionId).toBe("sess-1");
-			expect(created.role).toBe("author");
-			expect(created.providerName).toBe("sample");
-			expect(created.templateName).toBe("author-next-phase");
-			expect(created.handle).toEqual({
-				adapter: "test-remote",
-				ref: "job-abc",
+				const loaded = store.get(created.id);
+				expect(loaded).not.toBeNull();
+				expect(loaded).toEqual(created);
 			});
-			expect(created.handle).not.toHaveProperty("pid");
-			expect(JSON.stringify(created.handle)).not.toContain("pid");
-			expect(created.cancellationSupported).toBe(true);
-			expect(created.status).toBe("running");
-			expect(created.cancellationRequestedAt).toBeNull();
-			expect(created.cancellationRequestedBy).toBeNull();
-			expect(created.cancellationOutcome).toBeNull();
-			expect(created.cancellationOutcomeAt).toBeNull();
-			expect(created.terminalAt).toBeNull();
-			expect(created.abandonReason).toBeNull();
-			expect(created.createdAt.length).toBeGreaterThan(0);
-			expect(created.updatedAt.length).toBeGreaterThan(0);
-
-			const loaded = store.get(created.id);
-			expect(loaded).not.toBeNull();
-			expect(loaded).toEqual(created);
 		});
 
-		test("register rejects handle missing adapter or ref", () => {
-			harness.ensureRun("run_aaa");
-			expect(() =>
-				store.register(
-					registerInput("run_aaa", {
-						handle: { adapter: "", ref: "job-1" },
-					}),
-				),
-			).toThrow(InvocationStoreError);
-			expect(() =>
-				store.register(
-					registerInput("run_aaa", {
-						handle: { adapter: "test-remote", ref: "" },
-					}),
-				),
-			).toThrow(InvocationStoreError);
-		});
-
-		test("list({ runId }) filters; other runs excluded", () => {
-			const a = registerRunning(harness, { runId: "run_aaa" });
-			const b = registerRunning(harness, {
-				runId: "run_bbb",
-				handle: { adapter: "test-remote", ref: "job-bbb" },
+		test("register rejects handle missing adapter or ref", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				harness.ensureRun("run_aaa");
+				expect(() =>
+					store.register(
+						registerInput("run_aaa", {
+							handle: { adapter: "", ref: "job-1" },
+						}),
+					),
+				).toThrow(InvocationStoreError);
+				expect(() =>
+					store.register(
+						registerInput("run_aaa", {
+							handle: { adapter: "test-remote", ref: "" },
+						}),
+					),
+				).toThrow(InvocationStoreError);
 			});
+		});
 
-			const onlyA = store.list({ runId: "run_aaa" });
-			expect(onlyA.map((r) => r.id)).toEqual([a.id]);
-			expect(onlyA.some((r) => r.id === b.id)).toBe(false);
+		test("list({ runId }) filters; other runs excluded", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const a = registerRunning(harness, { runId: "run_aaa" });
+				const b = registerRunning(harness, {
+					runId: "run_bbb",
+					handle: { adapter: "test-remote", ref: "job-bbb" },
+				});
 
-			const onlyB = store.list({ runId: "run_bbb" });
-			expect(onlyB.map((r) => r.id)).toEqual([b.id]);
+				const onlyA = store.list({ runId: "run_aaa" });
+				expect(onlyA.map((r) => r.id)).toEqual([a.id]);
+				expect(onlyA.some((r) => r.id === b.id)).toBe(false);
 
-			const running = store.list({ status: "running" });
-			expect(running.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+				const onlyB = store.list({ runId: "run_bbb" });
+				expect(onlyB.map((r) => r.id)).toEqual([b.id]);
+
+				const running = store.list({ status: "running" });
+				expect(running.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+			});
 		});
 
 		test("heartbeat bumps updatedAt while running; no-op after terminal", async () => {
-			const created = registerRunning(harness);
-			const bumped = await heartbeatUntilBumped(
-				store,
-				created.id,
-				created.updatedAt,
-			);
-			expect(bumped).not.toBe(created.updatedAt);
-			expect(store.get(created.id)?.status).toBe("running");
+			await withHarness(backend.setup, async (harness, store) => {
+				const created = registerRunning(harness);
+				const bumped = await heartbeatUntilBumped(
+					store,
+					created.id,
+					created.updatedAt,
+				);
+				expect(bumped).not.toBe(created.updatedAt);
+				expect(store.get(created.id)?.status).toBe("running");
 
-			const completed = store.markTerminal(created.id, "completed");
-			expect(completed.ok).toBe(true);
-			const afterTerminal = store.heartbeat(created.id);
-			expect(afterTerminal.status).toBe("completed");
-			expect(afterTerminal.updatedAt).toBe(completed.invocation.updatedAt);
-			expect(afterTerminal.terminalAt).toBe(completed.invocation.terminalAt);
-		});
-
-		test("second markCancellationRequested returns ok:false with the winner's requestedBy", () => {
-			const created = registerRunning(harness);
-			const first = store.markCancellationRequested(created.id, "cli");
-			expect(first.ok).toBe(true);
-			expect(first.invocation.cancellationRequestedBy).toBe("cli");
-			expect(first.invocation.cancellationRequestedAt).not.toBeNull();
-
-			const second = store.markCancellationRequested(
-				created.id,
-				"control-plane",
-			);
-			expect(second.ok).toBe(false);
-			expect(second.invocation.cancellationRequestedBy).toBe("cli");
-			expect(second.invocation.cancellationRequestedAt).toBe(
-				first.invocation.cancellationRequestedAt,
-			);
-		});
-
-		test("request against cancellationSupported:false is CAS miss; requested_at stays null", () => {
-			const created = registerRunning(harness, {
-				cancellationSupported: false,
+				const completed = store.markTerminal(created.id, "completed");
+				expect(completed.ok).toBe(true);
+				const afterTerminal = store.heartbeat(created.id);
+				expect(afterTerminal.status).toBe("completed");
+				expect(afterTerminal.updatedAt).toBe(completed.invocation.updatedAt);
+				expect(afterTerminal.terminalAt).toBe(completed.invocation.terminalAt);
 			});
-			const result = store.markCancellationRequested(created.id, "cli");
-			expect(result.ok).toBe(false);
-			expect(result.invocation.cancellationRequestedAt).toBeNull();
-			expect(result.invocation.cancellationRequestedBy).toBeNull();
-			expect(result.invocation.cancellationSupported).toBe(false);
-			expect(store.get(created.id)?.cancellationRequestedAt).toBeNull();
 		});
 
-		test("markTerminal('completed') then markTerminal('failed') → second ok:false, status stays completed", () => {
-			const created = registerRunning(harness);
-			const first = store.markTerminal(created.id, "completed");
-			expect(first.ok).toBe(true);
-			expect(first.invocation.status).toBe("completed");
-			expect(first.invocation.terminalAt).not.toBeNull();
+		test("second markCancellationRequested returns ok:false with the winner's requestedBy", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const created = registerRunning(harness);
+				const first = store.markCancellationRequested(created.id, "cli");
+				expect(first.ok).toBe(true);
+				expect(first.invocation.cancellationRequestedBy).toBe("cli");
+				expect(first.invocation.cancellationRequestedAt).not.toBeNull();
 
-			const second = store.markTerminal(created.id, "failed");
-			expect(second.ok).toBe(false);
-			expect(second.invocation.status).toBe("completed");
-			expect(store.get(created.id)?.status).toBe("completed");
-		});
-
-		test("markAbandoned on running succeeds; on completed fails", () => {
-			const running = registerRunning(harness);
-			const abandoned = store.markAbandoned(running.id, "stale-metadata");
-			expect(abandoned.ok).toBe(true);
-			expect(abandoned.invocation.status).toBe("abandoned");
-			expect(abandoned.invocation.abandonReason).toBe("stale-metadata");
-			expect(abandoned.invocation.terminalAt).not.toBeNull();
-
-			const toComplete = registerRunning(harness, {
-				runId: "run_bbb",
-				handle: { adapter: "test-remote", ref: "job-2" },
+				const second = store.markCancellationRequested(
+					created.id,
+					"control-plane",
+				);
+				expect(second.ok).toBe(false);
+				expect(second.invocation.cancellationRequestedBy).toBe("cli");
+				expect(second.invocation.cancellationRequestedAt).toBe(
+					first.invocation.cancellationRequestedAt,
+				);
 			});
-			expect(store.markTerminal(toComplete.id, "completed").ok).toBe(true);
-			const afterComplete = store.markAbandoned(
-				toComplete.id,
-				"stale-metadata",
-			);
-			expect(afterComplete.ok).toBe(false);
-			expect(afterComplete.invocation.status).toBe("completed");
-			expect(afterComplete.invocation.abandonReason).toBeNull();
+		});
+
+		test("request against cancellationSupported:false is CAS miss; requested_at stays null", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const created = registerRunning(harness, {
+					cancellationSupported: false,
+				});
+				const result = store.markCancellationRequested(created.id, "cli");
+				expect(result.ok).toBe(false);
+				expect(result.invocation.cancellationRequestedAt).toBeNull();
+				expect(result.invocation.cancellationRequestedBy).toBeNull();
+				expect(result.invocation.cancellationSupported).toBe(false);
+				expect(store.get(created.id)?.cancellationRequestedAt).toBeNull();
+			});
+		});
+
+		test("markTerminal('completed') then markTerminal('failed') → second ok:false, status stays completed", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const created = registerRunning(harness);
+				const first = store.markTerminal(created.id, "completed");
+				expect(first.ok).toBe(true);
+				expect(first.invocation.status).toBe("completed");
+				expect(first.invocation.terminalAt).not.toBeNull();
+
+				const second = store.markTerminal(created.id, "failed");
+				expect(second.ok).toBe(false);
+				expect(second.invocation.status).toBe("completed");
+				expect(store.get(created.id)?.status).toBe("completed");
+			});
+		});
+
+		test("markAbandoned on running succeeds; on completed fails", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const running = registerRunning(harness);
+				const abandoned = store.markAbandoned(running.id, "stale-metadata");
+				expect(abandoned.ok).toBe(true);
+				expect(abandoned.invocation.status).toBe("abandoned");
+				expect(abandoned.invocation.abandonReason).toBe("stale-metadata");
+				expect(abandoned.invocation.terminalAt).not.toBeNull();
+
+				const toComplete = registerRunning(harness, {
+					runId: "run_bbb",
+					handle: { adapter: "test-remote", ref: "job-2" },
+				});
+				expect(store.markTerminal(toComplete.id, "completed").ok).toBe(true);
+				const afterComplete = store.markAbandoned(
+					toComplete.id,
+					"stale-metadata",
+				);
+				expect(afterComplete.ok).toBe(false);
+				expect(afterComplete.invocation.status).toBe("completed");
+				expect(afterComplete.invocation.abandonReason).toBeNull();
+			});
 		});
 
 		test("markAbandonedIfStale heartbeat: matching expectedUpdatedAt succeeds; mismatched timestamp stays running", async () => {
-			const match = registerRunning(harness);
-			const hit = store.markAbandonedIfStale({
-				id: match.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: match.updatedAt,
-				staleReason: "heartbeat",
-			});
-			expect(hit.ok).toBe(true);
-			expect(hit.invocation.status).toBe("abandoned");
+			await withHarness(backend.setup, async (harness, store) => {
+				const match = registerRunning(harness);
+				const hit = store.markAbandonedIfStale({
+					id: match.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: match.updatedAt,
+					staleReason: "heartbeat",
+				});
+				expect(hit.ok).toBe(true);
+				expect(hit.invocation.status).toBe("abandoned");
 
-			const live = registerRunning(harness, {
-				runId: "run_bbb",
-				handle: { adapter: "test-remote", ref: "job-live" },
+				const live = registerRunning(harness, {
+					runId: "run_bbb",
+					handle: { adapter: "test-remote", ref: "job-live" },
+				});
+				const observed = live.updatedAt;
+				await heartbeatUntilBumped(store, live.id, observed);
+				const miss = store.markAbandonedIfStale({
+					id: live.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: observed,
+					staleReason: "heartbeat",
+				});
+				expect(miss.ok).toBe(false);
+				expect(miss.invocation.status).toBe("running");
+				expect(store.get(live.id)?.status).toBe("running");
 			});
-			const observed = live.updatedAt;
-			await heartbeatUntilBumped(store, live.id, observed);
-			const miss = store.markAbandonedIfStale({
-				id: live.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: observed,
-				staleReason: "heartbeat",
-			});
-			expect(miss.ok).toBe(false);
-			expect(miss.invocation.status).toBe("running");
-			expect(store.get(live.id)?.status).toBe("running");
 		});
 
-		test("markAbandonedIfStale run-terminal: aborted/completed/missing succeed; active stays running", () => {
-			const aborted = registerRunning(harness, { runId: "run_aborted" });
-			harness.setRunStatus("run_aborted", "aborted");
-			const abortCas = store.markAbandonedIfStale({
-				id: aborted.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: aborted.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(abortCas.ok).toBe(true);
-			expect(abortCas.invocation.status).toBe("abandoned");
+		test("markAbandonedIfStale run-terminal: aborted/completed/missing succeed; active stays running", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const aborted = registerRunning(harness, { runId: "run_aborted" });
+				harness.setRunStatus("run_aborted", "aborted");
+				const abortCas = store.markAbandonedIfStale({
+					id: aborted.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: aborted.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(abortCas.ok).toBe(true);
+				expect(abortCas.invocation.status).toBe("abandoned");
 
-			const completed = registerRunning(harness, {
-				runId: "run_completed",
-				handle: { adapter: "test-remote", ref: "job-completed" },
-			});
-			harness.setRunStatus("run_completed", "completed");
-			const completeCas = store.markAbandonedIfStale({
-				id: completed.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: completed.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(completeCas.ok).toBe(true);
-			expect(completeCas.invocation.status).toBe("abandoned");
+				const completed = registerRunning(harness, {
+					runId: "run_completed",
+					handle: { adapter: "test-remote", ref: "job-completed" },
+				});
+				harness.setRunStatus("run_completed", "completed");
+				const completeCas = store.markAbandonedIfStale({
+					id: completed.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: completed.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(completeCas.ok).toBe(true);
+				expect(completeCas.invocation.status).toBe("abandoned");
 
-			const missing = registerRunning(harness, {
-				runId: "run_missing",
-				handle: { adapter: "test-remote", ref: "job-missing" },
-			});
-			harness.removeRun("run_missing");
-			const missingCas = store.markAbandonedIfStale({
-				id: missing.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: missing.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(missingCas.ok).toBe(true);
-			expect(missingCas.invocation.status).toBe("abandoned");
+				const missing = registerRunning(harness, {
+					runId: "run_missing",
+					handle: { adapter: "test-remote", ref: "job-missing" },
+				});
+				harness.removeRun("run_missing");
+				const missingCas = store.markAbandonedIfStale({
+					id: missing.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: missing.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(missingCas.ok).toBe(true);
+				expect(missingCas.invocation.status).toBe("abandoned");
 
-			const active = registerRunning(harness, {
-				runId: "run_active",
-				handle: { adapter: "test-remote", ref: "job-active" },
+				const active = registerRunning(harness, {
+					runId: "run_active",
+					handle: { adapter: "test-remote", ref: "job-active" },
+				});
+				harness.setRunStatus("run_active", "active");
+				const activeCas = store.markAbandonedIfStale({
+					id: active.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: active.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(activeCas.ok).toBe(false);
+				expect(activeCas.invocation.status).toBe("running");
+				expect(store.get(active.id)?.status).toBe("running");
 			});
-			harness.setRunStatus("run_active", "active");
-			const activeCas = store.markAbandonedIfStale({
-				id: active.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: active.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(activeCas.ok).toBe(false);
-			expect(activeCas.invocation.status).toBe("running");
-			expect(store.get(active.id)?.status).toBe("running");
 		});
 
 		test("two-writer heartbeat: competing heartbeat then markAbandonedIfStale does not abandon", async () => {
-			const created = registerRunning(harness);
-			const observed = created.updatedAt;
-			await heartbeatUntilBumped(store, created.id, observed);
-			const cas = store.markAbandonedIfStale({
-				id: created.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: observed,
-				staleReason: "heartbeat",
-			});
-			expect(cas.ok).toBe(false);
-			expect(cas.invocation.status).toBe("running");
-			expect(store.get(created.id)?.status).toBe("running");
-		});
-
-		test("two-writer run reopen: competing reopen then markAbandonedIfStale does not abandon", () => {
-			const created = registerRunning(harness, { runId: "run_reopen" });
-			harness.setRunStatus("run_reopen", "aborted");
-			harness.setRunStatus("run_reopen", "active");
-			const cas = store.markAbandonedIfStale({
-				id: created.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: created.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(cas.ok).toBe(false);
-			expect(cas.invocation.status).toBe("running");
-			expect(store.get(created.id)?.status).toBe("running");
-		});
-
-		test("listStale with injected nowMs: fresh excluded; old included; completed excluded", () => {
-			const fresh = registerRunning(harness);
-			const old = registerRunning(harness, {
-				runId: "run_bbb",
-				handle: { adapter: "test-remote", ref: "job-old" },
-			});
-			const done = registerRunning(harness, {
-				runId: "run_ccc",
-				handle: { adapter: "test-remote", ref: "job-done" },
-			});
-			expect(store.markTerminal(done.id, "completed").ok).toBe(true);
-
-			const freshMs = parseRunTimestamp(fresh.updatedAt);
-			expect(
-				store
-					.listStale({ olderThanMs: STALE_MS, nowMs: freshMs + 1000 })
-					.map((r) => r.id),
-			).toEqual([]);
-
-			const oldMs = parseRunTimestamp(old.updatedAt);
-			const stale = store.listStale({
-				olderThanMs: STALE_MS,
-				nowMs: oldMs + STALE_MS,
-			});
-			expect(stale.map((r) => r.id).sort()).toEqual([fresh.id, old.id].sort());
-			expect(stale.some((r) => r.id === done.id)).toBe(false);
-		});
-
-		test("missing id throws INVOCATION_NOT_FOUND", () => {
-			expect(store.get("missing")).toBeNull();
-			expectNotFound(() => store.heartbeat("missing"));
-			expectNotFound(() => store.markCancellationRequested("missing", "cli"));
-			expectNotFound(() =>
-				store.recordCancellationOutcome("missing", "failed"),
-			);
-			expectNotFound(() => store.markTerminal("missing", "failed"));
-			expectNotFound(() => store.markAbandoned("missing", "stale-metadata"));
-			expectNotFound(() =>
-				store.markAbandonedIfStale({
-					id: "missing",
+			await withHarness(backend.setup, async (harness, store) => {
+				const created = registerRunning(harness);
+				const observed = created.updatedAt;
+				await heartbeatUntilBumped(store, created.id, observed);
+				const cas = store.markAbandonedIfStale({
+					id: created.id,
 					reason: "stale-metadata",
-					expectedUpdatedAt: "2026-08-28 12:00:00",
+					expectedUpdatedAt: observed,
 					staleReason: "heartbeat",
-				}),
-			);
+				});
+				expect(cas.ok).toBe(false);
+				expect(cas.invocation.status).toBe("running");
+				expect(store.get(created.id)?.status).toBe("running");
+			});
+		});
+
+		test("two-writer run reopen: competing reopen then markAbandonedIfStale does not abandon", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const created = registerRunning(harness, { runId: "run_reopen" });
+				harness.setRunStatus("run_reopen", "aborted");
+				harness.setRunStatus("run_reopen", "active");
+				const cas = store.markAbandonedIfStale({
+					id: created.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: created.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(cas.ok).toBe(false);
+				expect(cas.invocation.status).toBe("running");
+				expect(store.get(created.id)?.status).toBe("running");
+			});
+		});
+
+		test("listStale with injected nowMs: fresh excluded; old included; completed excluded", async () => {
+			await withHarness(backend.setup, (harness, store) => {
+				const fresh = registerRunning(harness);
+				const old = registerRunning(harness, {
+					runId: "run_bbb",
+					handle: { adapter: "test-remote", ref: "job-old" },
+				});
+				const done = registerRunning(harness, {
+					runId: "run_ccc",
+					handle: { adapter: "test-remote", ref: "job-done" },
+				});
+				expect(store.markTerminal(done.id, "completed").ok).toBe(true);
+
+				const freshMs = parseRunTimestamp(fresh.updatedAt);
+				expect(
+					store
+						.listStale({ olderThanMs: STALE_MS, nowMs: freshMs + 1000 })
+						.map((r) => r.id),
+				).toEqual([]);
+
+				const oldMs = parseRunTimestamp(old.updatedAt);
+				const stale = store.listStale({
+					olderThanMs: STALE_MS,
+					nowMs: oldMs + STALE_MS,
+				});
+				expect(stale.map((r) => r.id).sort()).toEqual(
+					[fresh.id, old.id].sort(),
+				);
+				expect(stale.some((r) => r.id === done.id)).toBe(false);
+			});
+		});
+
+		test("missing id throws INVOCATION_NOT_FOUND", async () => {
+			await withHarness(backend.setup, (_harness, store) => {
+				expect(store.get("missing")).toBeNull();
+				expectNotFound(() => store.heartbeat("missing"));
+				expectNotFound(() => store.markCancellationRequested("missing", "cli"));
+				expectNotFound(() =>
+					store.recordCancellationOutcome("missing", "failed"),
+				);
+				expectNotFound(() => store.markTerminal("missing", "failed"));
+				expectNotFound(() => store.markAbandoned("missing", "stale-metadata"));
+				expectNotFound(() =>
+					store.markAbandonedIfStale({
+						id: "missing",
+						reason: "stale-metadata",
+						expectedUpdatedAt: "2026-08-28 12:00:00",
+						staleReason: "heartbeat",
+					}),
+				);
+			});
 		});
 	});
 }
 
 describe("SqliteInvocationStore shared-file CAS", () => {
 	test("two connections: exactly one markCancellationRequested winner", async () => {
-		const tmp = mkdtempSync(join(tmpdir(), "5x-invocation-cas-"));
-		let db2: Database | undefined;
-		try {
-			const db = getDb(tmp);
-			runMigrations(db);
-			createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
-			db2 = new Database(join(tmp, ".5x", "5x.db"));
-			db2.exec("PRAGMA foreign_keys=ON");
-			db2.exec("PRAGMA busy_timeout=5000");
+		await withSharedSqliteFile(
+			"5x-invocation-cas-",
+			async ({ store1, store2, db }) => {
+				createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
+				const created = store1.register(registerInput("run_aaa"));
 
-			const store1 = createSqliteInvocationStore(db);
-			const store2 = createSqliteInvocationStore(db2);
-			const created = store1.register(registerInput("run_aaa"));
+				const [a, b] = await Promise.all([
+					Promise.resolve(store1.markCancellationRequested(created.id, "cli")),
+					Promise.resolve(
+						store2.markCancellationRequested(created.id, "control-plane"),
+					),
+				]);
 
-			const [a, b] = await Promise.all([
-				Promise.resolve(store1.markCancellationRequested(created.id, "cli")),
-				Promise.resolve(
-					store2.markCancellationRequested(created.id, "control-plane"),
-				),
-			]);
-
-			expect([a, b].filter((r) => r.ok)).toHaveLength(1);
-			expect([a, b].filter((r) => !r.ok)).toHaveLength(1);
-			expect(a.invocation.cancellationRequestedBy).toBe(
-				b.invocation.cancellationRequestedBy,
-			);
-			const winner = [a, b].find((r) => r.ok);
-			expect(
-				winner?.invocation.cancellationRequestedBy === "cli" ||
-					winner?.invocation.cancellationRequestedBy === "control-plane",
-			).toBe(true);
-			expect(store1.get(created.id)?.cancellationRequestedBy).toBe(
-				store2.get(created.id)?.cancellationRequestedBy,
-			);
-		} finally {
-			db2?.close();
-			closeDb();
-			_resetForTest();
-			rmSync(tmp, { recursive: true });
-		}
+				expect([a, b].filter((r) => r.ok)).toHaveLength(1);
+				expect([a, b].filter((r) => !r.ok)).toHaveLength(1);
+				expect(a.invocation.cancellationRequestedBy).toBe(
+					b.invocation.cancellationRequestedBy,
+				);
+				const winner = [a, b].find((r) => r.ok);
+				expect(
+					winner?.invocation.cancellationRequestedBy === "cli" ||
+						winner?.invocation.cancellationRequestedBy === "control-plane",
+				).toBe(true);
+				expect(store1.get(created.id)?.cancellationRequestedBy).toBe(
+					store2.get(created.id)?.cancellationRequestedBy,
+				);
+			},
+		);
 	});
 
 	test("two-writer heartbeat: second connection bumps updated_at; first CAS loses", async () => {
-		const tmp = mkdtempSync(join(tmpdir(), "5x-invocation-hb-cas-"));
-		let db2: Database | undefined;
-		try {
-			const db = getDb(tmp);
-			runMigrations(db);
-			createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
-			db2 = new Database(join(tmp, ".5x", "5x.db"));
-			db2.exec("PRAGMA foreign_keys=ON");
-			db2.exec("PRAGMA busy_timeout=5000");
+		await withSharedSqliteFile(
+			"5x-invocation-hb-cas-",
+			async ({ store1, store2, db }) => {
+				createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
+				const created = store1.register(registerInput("run_aaa"));
+				const observed = created.updatedAt;
+				await heartbeatUntilBumped(store2, created.id, observed);
 
-			const store1 = createSqliteInvocationStore(db);
-			const store2 = createSqliteInvocationStore(db2);
-			const created = store1.register(registerInput("run_aaa"));
-			const observed = created.updatedAt;
-			await heartbeatUntilBumped(store2, created.id, observed);
-
-			const cas = store1.markAbandonedIfStale({
-				id: created.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: observed,
-				staleReason: "heartbeat",
-			});
-			expect(cas.ok).toBe(false);
-			expect(cas.invocation.status).toBe("running");
-			expect(store1.get(created.id)?.status).toBe("running");
-			expect(store2.get(created.id)?.status).toBe("running");
-		} finally {
-			db2?.close();
-			closeDb();
-			_resetForTest();
-			rmSync(tmp, { recursive: true });
-		}
+				const cas = store1.markAbandonedIfStale({
+					id: created.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: observed,
+					staleReason: "heartbeat",
+				});
+				expect(cas.ok).toBe(false);
+				expect(cas.invocation.status).toBe("running");
+				expect(store1.get(created.id)?.status).toBe("running");
+				expect(store2.get(created.id)?.status).toBe("running");
+			},
+		);
 	});
 
-	test("two-writer run reopen: second connection reopens run; first CAS loses", () => {
-		const tmp = mkdtempSync(join(tmpdir(), "5x-invocation-reopen-cas-"));
-		let db2: Database | undefined;
-		try {
-			const db = getDb(tmp);
-			runMigrations(db);
-			createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
-			db2 = new Database(join(tmp, ".5x", "5x.db"));
-			db2.exec("PRAGMA foreign_keys=ON");
-			db2.exec("PRAGMA busy_timeout=5000");
+	test("two-writer run reopen: second connection reopens run; first CAS loses", async () => {
+		await withSharedSqliteFile(
+			"5x-invocation-reopen-cas-",
+			({ store1, db, db2 }) => {
+				createRunV1(db, { id: "run_aaa", planPath: "/plan.md" });
+				const created = store1.register(registerInput("run_aaa"));
+				completeRun(db, "run_aaa", "aborted");
+				reopenRun(db2, "run_aaa");
 
-			const store1 = createSqliteInvocationStore(db);
-			const created = store1.register(registerInput("run_aaa"));
-			completeRun(db, "run_aaa", "aborted");
-			reopenRun(db2, "run_aaa");
-
-			const cas = store1.markAbandonedIfStale({
-				id: created.id,
-				reason: "stale-metadata",
-				expectedUpdatedAt: created.updatedAt,
-				staleReason: "run-terminal",
-			});
-			expect(cas.ok).toBe(false);
-			expect(cas.invocation.status).toBe("running");
-			expect(store1.get(created.id)?.status).toBe("running");
-		} finally {
-			db2?.close();
-			closeDb();
-			_resetForTest();
-			rmSync(tmp, { recursive: true });
-		}
+				const cas = store1.markAbandonedIfStale({
+					id: created.id,
+					reason: "stale-metadata",
+					expectedUpdatedAt: created.updatedAt,
+					staleReason: "run-terminal",
+				});
+				expect(cas.ok).toBe(false);
+				expect(cas.invocation.status).toBe("running");
+				expect(store1.get(created.id)?.status).toBe("running");
+			},
+		);
 	});
 });
