@@ -39,18 +39,41 @@ export {
 // Control plane — prompt store (SQLite is one materialization)
 export type {
 	AbandonReason,
+	AdapterCancelResult,
 	AnsweredBy,
+	CancellationActor,
+	CancellationAdapter,
+	CancellationOutcome,
 	CasResult,
+	ClientInvocationState,
 	CreatePromptInput,
+	InvocationAbandonReason,
+	InvocationCasResult,
+	InvocationClientView,
+	InvocationRecord,
+	InvocationStatus,
+	InvocationStatusEnvelope,
+	OpaqueCancellationHandle,
 	PromptKind,
 	PromptRecord,
 	PromptStore,
+	RegisterInvocationInput,
 } from "./control-plane/index.js";
 export {
+	createInvocationId,
 	createMemoryPromptStore,
 	createPromptId,
 	createSqlitePromptStore,
+	createTestRemoteAdapter,
+	getCancellationAdapter,
+	InvocationStoreError,
+	isCancellationActor,
 	PromptStoreError,
+	parseOpaqueCancellationHandle,
+	registerCancellationAdapter,
+	toClientInvocationState,
+	toClientInvocationView,
+	toInvocationStatusEnvelope,
 } from "./control-plane/index.js";
 // DB — connection
 export { closeDb, getDb, openDbReadOnly } from "./db/connection.js";

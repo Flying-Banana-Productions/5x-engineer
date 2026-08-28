@@ -237,7 +237,7 @@ export function createInvocationId(): string {
 }
 ```
 
-- [ ] Export `createInvocationId` from `src/control-plane/index.ts` and `src/index.ts`.
+- [x] Export `createInvocationId` from `src/control-plane/index.ts` and `src/index.ts`.
 
 #### 1.2 Invocation types — new `src/control-plane/invocation-types.ts`
 
@@ -421,9 +421,9 @@ export function toInvocationStatusEnvelope(
 
 Invariant: `toClientInvocationView` must not spread `handle` and must not add `pid`. `toInvocationStatusEnvelope` is the only JSON shape the CLI handler (and Phase 5.4 HTTP, if wired) may emit for an invocation.
 
-- [ ] Add types + view helpers + snake_case envelope mapper.
-- [ ] Unit-test all seven `clientState` branches, including `running + supported` vs `running + unsupported` vs `running + requested` (requested wins over unsupported if both could apply — requested should be unreachable when `supported` is false because cancel rejects first; still assert requested takes precedence if a record is constructed that way).
-- [ ] Unit-test `toInvocationStatusEnvelope`: `clientState` → `client_state`, `runId` → `run_id`; no `handle` / `pid` / camelCase client-state key.
+- [x] Add types + view helpers + snake_case envelope mapper.
+- [x] Unit-test all seven `clientState` branches, including `running + supported` vs `running + unsupported` vs `running + requested` (requested wins over unsupported if both could apply — requested should be unreachable when `supported` is false because cancel rejects first; still assert requested takes precedence if a record is constructed that way).
+- [x] Unit-test `toInvocationStatusEnvelope`: `clientState` → `client_state`, `runId` → `run_id`; no `handle` / `pid` / camelCase client-state key.
 
 #### 1.3 Adapter contract + synthetic remote adapter
 
@@ -468,8 +468,8 @@ export function _resetCancellationAdaptersForTest(): void {
 
 Production `registerCancellationAdapter` is never called from `bin.ts` or provider factory in this slice.
 
-- [ ] Implement registry + test-remote adapter.
-- [ ] Unit tests: non-PID `ref`; unknown handle fails; abort signal fires on success; `handle` JSON has no `pid` key.
+- [x] Implement registry + test-remote adapter.
+- [x] Unit tests: non-PID `ref`; unknown handle fails; abort signal fires on success; `handle` JSON has no `pid` key.
 
 ---
 
