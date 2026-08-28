@@ -79,3 +79,56 @@ None after the required plan corrections below. The issues are plan-level implem
 - [ ] Persist a failed cancellation outcome when `adapter.cancel()` throws (`auto_fix`)
 - [ ] Use and test the declared `unsupported` outcome for a missing supported adapter (`auto_fix`)
 - [ ] Define combined status filter and output field semantics (`auto_fix`)
+
+---
+
+## Addendum — August 28, 2026
+
+The plan and referenced/current implementation were re-reviewed. The original
+corrections remain applicable because the plan still contains the cited
+lifecycle and cancellation pseudocode. One additional deterministic lifecycle
+correction is required.
+
+### Active corrections
+
+1. **Register immediately after session creation and protect all subsequent
+   fallible setup with lifecycle finalization and provider close.**
+   `prepareLogPath()` and `appendSessionStart()` currently occur after a
+   successful `startSession()` / `resumeSession()` and before the proposed
+   wrapper. A failure there otherwise leaves an unregistered session and skips
+   normal close. Add pre-stream fault-injection coverage.
+   - **Action:** `auto_fix`
+
+2. **Catch a thrown `adapter.cancel()` and persist `failed` before returning
+   the documented response.** The Phase 5 sketch currently lets this exception
+   escape, contrary to its normative behavior. Test an adapter that throws.
+   - **Action:** `auto_fix`
+
+3. **Use the specified `unsupported` outcome when a supported row has no
+   registered adapter.** Phase 5 currently writes `failed`, contradicting the
+   plan's own decision at line 124. Retain `failed` for an adapter that exists
+   but returns or throws a failure, and test both cases.
+   - **Action:** `auto_fix`
+
+4. **Define combined `status --id --run` behavior and the JSON field naming.**
+   Require an ID queried with a run to match that run (or return deterministic
+   not-found/mismatch), and reconcile the TypeScript `clientState` property
+   with the integration test's `client_state` expectation.
+   - **Action:** `auto_fix`
+
+5. **Heartbeat independently of streamed events for the lifetime of a running
+   invocation.** Phase 4 only invokes `heartbeat()` when `runStreamed()` emits
+   an event. A live provider that is silent for more than the 15-minute stale
+   TTL is therefore falsely reported stale and can be metadata-abandoned,
+   contradicting the plan's claim that a live long invocation stays fresh.
+   Start a rate-limited interval/timer after registration and clear it in the
+   lifecycle `finally` (event heartbeats may remain an optimization). Add a
+   fake-clock/timer test proving a silent invocation remains fresh past the
+   stale threshold and that the timer is cleared on completion/error.
+   - **Action:** `auto_fix`
+
+### Addendum readiness
+
+**Ready with corrections.** All five changes are deterministic from the stated
+contract, existing invocation flow, and doctor TTL; no policy decision is
+needed.
