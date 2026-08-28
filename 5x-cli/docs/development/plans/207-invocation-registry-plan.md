@@ -1,14 +1,14 @@
 # Invocation Registry — Provider-Neutral Handles, Cancellation Contract, Doctor Hygiene
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** August 28, 2026
-**Status:** Draft — revision 1.1 addressing staff review addendum (2026-08-28)
+**Status:** Draft — revision 1.2 addressing staff review addendum (Revision 1.1 reassessment, 2026-08-28)
 
 ---
 
 ## Executive Summary
 
-`5x invoke` today starts a provider-owned session and forgets it. The control plane has no identity for the in-flight call, no truthful cancellation capability, and no way to distinguish “still running” from “the CLI crashed and left a row.” This slice adds a UUID-keyed invocation registry behind a store interface: opaque adapter-owned handles (never a universal PID field), separate cancellation-request / adapter-outcome / terminal-observation columns, invoke registration **immediately after session creation** (before later fallible log/session-start setup) in a single `try/finally` that also owns provider close, an independent heartbeat interval for the running lifetime, a local cancel/status action, and a doctor check that abandons **metadata only**.
+`5x invoke` today starts a provider-owned session and forgets it. The control plane has no identity for the in-flight call, no truthful cancellation capability, and no way to distinguish “still running” from “the CLI crashed and left a row.” This slice adds a UUID-keyed invocation registry behind a store interface: opaque adapter-owned handles (never a universal PID field), separate cancellation-request / adapter-outcome / terminal-observation columns, invoke registration **immediately after session creation** (before later fallible log/session-start setup) in a single `try/finally` that also owns provider close, an independent heartbeat interval for the running lifetime, a local cancel/status action, and a doctor check that abandons **metadata only** via a liveness-predicate CAS (`markAbandonedIfStale`) so a concurrent heartbeat or run-reopen cannot retire a live row.
 
 Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported: false`. Cancel requests against them are rejected without touching `runs.status`. A synthetic remote test adapter — whose handle is a job id, not a PID — proves that a supported opaque handle receives **exactly one** idempotent cancel and records succeeded/failed. HTTP/UI auth stays owned by slice 04; this slice exports the in-process action 04 will wrap.
 
@@ -18,7 +18,7 @@ Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported:
 
 - Invocation identity, lifecycle, ownership, timestamps, session/run linkage, capability flags, and terminal outcomes (schema v7).
 - Opaque cancellation-handle / adapter contract that can represent local or remote invocations.
-- `InvocationStore` (SQLite + memory) with CAS request, CAS terminal, heartbeat, stale listing, and deterministic abandon.
+- `InvocationStore` (SQLite + memory) with CAS request, CAS terminal, heartbeat, stale listing, status-only `markAbandoned` (lifecycle races), and `markAbandonedIfStale` (doctor `--fix`: atomic expected-`updated_at` and/or still-terminal-run predicate).
 - Register/finalize around `5x invoke` provider execution without changing `AgentProvider` / `AgentSession` or process ownership.
 - Client status DTO and authenticated cancel action (CLI + in-process handler; dashboard HTTP only if slice 04 is already in tree).
 - Doctor reporting for stale/orphaned registry rows; `--fix` is metadata-only.
@@ -39,7 +39,7 @@ Shipped providers (OpenCode, sample, and plugins) report `cancellationSupported:
 | **Request, adapter outcome, and terminal status are three fields** | Avoids implying cancel succeeded when it was only requested. Client “states” are a derived view. |
 | **Unsupported cancel is a hard reject** | Exit criterion: no run-status change, no local `AbortSignal` abort of the in-flight invoke. Truthful capability, not a fake kill. |
 | **Heartbeat, not PID liveness, for stale detection** | PID liveness is a local-machine concept (`203` §3). An independent interval keeps long invokes fresh even when the provider is silent; do not bake `isPidAlive` into the registry. |
-| **Doctor `--fix` abandons metadata only** | Safe unique repair. Messaging must not claim the provider process was reaped. |
+| **Doctor `--fix` abandons metadata only, CAS’d against the observed liveness predicate** | Safe unique repair. Messaging must not claim the provider process was reaped. Abandon must not win if a heartbeat refreshed `updated_at` or a run was reopened after detect/revalidation. |
 | **Cancel/status workers take explicit ids; no ambient run resolver** | `200` §3.2 / `204` plan: invocation-registry workers must not call `resolveAmbientRunId`. |
 | **Dashboard HTTP is a consumer, not this slice’s server** | Slice 04 is the auth/live-status host and is not in tree as of this draft. Export the handler 04 wraps. |
 
@@ -98,7 +98,7 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
 - Production providers register `cancellationSupported: false` and handle `{ adapter: "none", ref: session.id }`. `5x invoke cancel` rejects with `CANCELLATION_UNSUPPORTED` and does not change `runs.status` or abort the in-flight stream.
 - Tests inject a `test-remote` adapter whose `ref` is a job id. One successful CAS request calls `adapter.cancel` once; a second request is a no-op at the store and does not call the adapter again. Outcome is recorded separately from lifecycle status. A supported row with no registered adapter records `cancellation_outcome = "unsupported"`; an adapter that returns or throws failure records `"failed"`.
 - `5x invoke status --id <uuid>` / `--run <id>` returns the client view (seven distinguishable states). Supplying both flags requires the id to belong to that run (mismatch or missing → `INVOCATION_NOT_FOUND`; never return a foreign-run row). Workers pass explicit ids; they must not call `requireAmbientRunId` / `resolveAmbientRunId`. CLI JSON uses snake_case (`client_state`); in-process TypeScript uses `clientState`.
-- `5x doctor` reports `INVOCATION_STALE` for non-terminal rows that are heartbeat-stale **or** whose run is missing/terminal. `--fix` CAS-abandons `stale-metadata` and states that no process was reaped.
+- `5x doctor` reports `INVOCATION_STALE` for non-terminal rows that are heartbeat-stale **or** whose run is missing/terminal. `--fix` CAS-abandons `stale-metadata` via `markAbandonedIfStale` (heartbeat findings: `updated_at` still equals the observed timestamp; run-terminal findings: run still missing/terminal in the same write) and states that no process was reaped.
 
 **Prerequisites:**
 
@@ -125,6 +125,8 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
 **Exactly one adapter cancel per invocation.** `markCancellationRequested` is CAS: `UPDATE … WHERE id = ? AND status = 'running' AND cancellation_requested_at IS NULL AND cancellation_supported = 1`. Winner looks up the adapter and calls `adapter.cancel(handle)` once inside `try/catch`, then `recordCancellationOutcome`. Loser returns the stored row and **must not** call the adapter. Calling cancel against an already-terminal row returns the record without an adapter call. Record `outcome = unsupported` only if a supported row’s adapter is **missing** at cancel time (misconfiguration); that is distinct from the capability flag being false (`CANCELLATION_UNSUPPORTED`, no `requested_at`) and from an adapter that exists but returns or **throws** failure (`outcome = failed`). A thrown `adapter.cancel()` must not escape the action.
 
 **Heartbeat is the stale predicate, not `isPidAlive`.** `INVOCATION_HEARTBEAT_MIN_INTERVAL_MS = 5_000`. After `register()`, `withInvocationLifecycle` starts a rate-limited **interval** that calls `store.heartbeat(id)` independently of streamed events, and **clears that timer in `finally`**. Do not rely on `runStreamed` events as the sole heartbeat source — a live provider that is silent for more than `INVOCATION_STALE_MS` would otherwise be falsely abandoned. `invokeStreamed` may still call `heartbeat()` on events as an optimization (first event can beat immediately). `INVOCATION_STALE_MS = 15 * 60 * 1000`. Doctor uses `ctx.now` (already on `DoctorCheckContext`, `src/doctor/types.ts:34–35`). A live long invoke stays fresh even when silent; a crashed CLI leaves `running` until TTL (or immediately if the run is already terminal/missing). Do not add a `cli_pid` column to “improve” this.
+
+**Doctor `--fix` must CAS against the observed liveness predicate, not `status = 'running'` alone.** `markAbandoned(id, reason)` stays a status-only CAS for lifecycle races (`markTerminal` vs an already-abandoned row). A heartbeat can bump `updated_at`, or a run can be reopened, between doctor’s revalidation `get` and that UPDATE — status-only CAS would then abandon a live invocation. Doctor `--fix` calls `markAbandonedIfStale` (Phase 3 / 6): heartbeat-stale findings require `status = 'running' AND updated_at = expectedUpdatedAt`; run-terminal findings require `status = 'running'` and an atomic still-missing/terminal run check in the same write. Re-validation is a friendly fast-path only; the CAS is the correctness gate. Do not call adapters or `process.kill`.
 
 **One registry lifecycle boundary with `try/finally`; register immediately after session creation.** Extract `withInvocationLifecycle` (Phase 4). Call it **immediately after** `startSession`/`resumeSession` succeeds (session id exists) — **before** `prepareLogPath()` and `appendSessionStart()`. Those calls, the stream, and structured-output validation all run inside `fn`. A throw from any of them marks the invocation `failed` (or `cancelled` for `AgentCancellationError`) and the outer `finally` still `provider.close()`. Session-start failure stays **outside** the wrapper: close provider, do not register (`invoke.handler.ts:458–460`). Lifecycle `finally` CAS-marks `failed` if still `running` (normal unwind without a terminal write) and always clears the heartbeat timer. Process kill before `finally` is the stale/abandon path. After session success, collapse existing `provider.close()` calls into that outer `finally`; keep close-before-throw on session-start failure. Do not add SIGKILL/PID tracking. Fault-injection tests throw from **each** pre-stream path (`prepareLogPath`, `appendSessionStart`), during stream, and after stream — they must not prescribe OpenCode internals.
 
@@ -174,10 +176,10 @@ v1 providers own process lifecycle (`100-architecture.md` §7.4). v2’s control
            ├─ --id and --run intersect          ├─ list non-terminal + stale heartbeat
            │    (mismatch → NOT_FOUND)          │    OR run missing/terminal
            └─ snake_case envelope               ├─ INVOCATION_STALE (fixable)
-              client_state: running |           └─ --fix: CAS abandon stale-metadata
-              cancellation-requested |             (does NOT reap processes)
-              cancelled | completed |
-              failed | abandoned | unsupported
+              client_state: running |           └─ --fix: markAbandonedIfStale
+              cancellation-requested |             heartbeat: expected updated_at
+              cancelled | completed |              run-terminal: run still
+              failed | abandoned | unsupported        missing/terminal (no reap)
 
   Future 04 dashboard (not in this slice unless already present)
            │
@@ -557,7 +559,7 @@ Add `test/unit/db/schema-v7.test.ts` (copy `migrateUpTo` from `schema-v6.test.ts
 
 ## Phase 3: InvocationStore, SQLite, memory, CAS
 
-**Completion gate:** Shared contract tests pass on SQLite and memory: register/get/list, heartbeat, CAS request (exactly one winner under parallel sqlite writers), CAS terminal, CAS abandon, stale listing. Command handlers still unchanged.
+**Completion gate:** Shared contract tests pass on SQLite and memory: register/get/list, heartbeat, CAS request (exactly one winner under parallel sqlite writers), CAS terminal, status-only CAS abandon, `markAbandonedIfStale` (heartbeat expected-`updated_at` and run-terminal predicates; two-writer loss when a heartbeat or run-reopen lands first), stale listing. Command handlers still unchanged.
 
 #### 3.1 Store interface — new `src/control-plane/invocation-store.ts`
 
@@ -587,10 +589,35 @@ export interface InvocationStore {
     id: string,
     status: "completed" | "failed" | "cancelled",
   ): InvocationCasResult;
+  /**
+   * CAS: succeed iff still running. Doctor `--fix` must not use this —
+   * it only CASes status and loses the heartbeat / run-reopen TOCTOU.
+   * Use markAbandonedIfStale.
+   */
   markAbandoned(
     id: string,
     reason: InvocationAbandonReason,
   ): InvocationCasResult;
+  /**
+   * CAS-abandon iff the observed liveness predicate still holds.
+   * Doctor `--fix` uses this. Never a status-only write.
+   *
+   * staleReason "heartbeat": succeed iff status = 'running'
+   *   AND updated_at = expectedUpdatedAt.
+   * staleReason "run-terminal": succeed iff status = 'running'
+   *   AND the linked run is missing, completed, or aborted
+   *   (SQLite: same UPDATE, subquery on runs; memory: getRun
+   *   callback invoked inside this method before the write).
+   * Do not AND both predicates globally — a fresh heartbeat must
+   * not block abandoning a still-terminal run, and a matching
+   * timestamp must not abandon after a run was reopened.
+   */
+  markAbandonedIfStale(opts: {
+    id: string;
+    reason: InvocationAbandonReason;
+    expectedUpdatedAt: string;
+    staleReason: "heartbeat" | "run-terminal";
+  }): InvocationCasResult;
   /**
    * Non-terminal rows with updatedAt older than olderThanMs, using `nowMs`.
    * Does not inspect PIDs.
@@ -627,7 +654,41 @@ WHERE id = ?2
 
 If `changes() = 0`: load row; missing → `INVOCATION_NOT_FOUND`; else `{ ok: false, invocation }`.
 
-`markTerminal` / `markAbandoned` similarly require `status = 'running'`. Abandoned sets `status`, `abandon_reason`, `terminal_at`, `updated_at`.
+`markTerminal` / `markAbandoned` similarly require `status = 'running'`. Abandoned sets `status`, `abandon_reason`, `terminal_at`, `updated_at`. Keep `markAbandoned` for lifecycle CAS races only.
+
+`markAbandonedIfStale` SQL — **heartbeat** (`staleReason = "heartbeat"`):
+
+```sql
+UPDATE invocations
+SET status = 'abandoned',
+    abandon_reason = ?1,
+    terminal_at = datetime('now'),
+    updated_at = datetime('now')
+WHERE id = ?2
+  AND status = 'running'
+  AND updated_at = ?3  -- expectedUpdatedAt from detect/revalidation
+```
+
+`markAbandonedIfStale` SQL — **run-terminal** (`staleReason = "run-terminal"`):
+
+```sql
+UPDATE invocations
+SET status = 'abandoned',
+    abandon_reason = ?1,
+    terminal_at = datetime('now'),
+    updated_at = datetime('now')
+WHERE id = ?2
+  AND status = 'running'
+  AND NOT EXISTS (
+    SELECT 1 FROM runs r
+    WHERE r.id = invocations.run_id
+      AND r.status NOT IN ('completed', 'aborted')
+  )
+```
+
+`expectedUpdatedAt` is still required in the TypeScript signature for both reasons (heartbeat CAS uses it; run-terminal may ignore it in SQL). If `changes() = 0`: load row; missing → `INVOCATION_NOT_FOUND`; else `{ ok: false, invocation }`.
+
+Memory `createMemoryInvocationStore` takes optional `{ now?: () => string; getRun?: (runId: string) => { status: string } | null }`. `getRun` is invoked **inside** `markAbandonedIfStale` when `staleReason === "run-terminal"` (missing/completed/aborted → allow; active/unknown-non-terminal → CAS miss). Do not read run status in the doctor check and then pass a boolean into the store — that reopens the TOCTOU.
 
 - [ ] SQLite + memory implementations.
 - [ ] Re-export factories from `src/control-plane/index.ts`.
@@ -648,10 +709,14 @@ Required cases:
 - Prefer: if `cancellation_supported = 0`, the UPDATE matches 0 rows. Action tests distinguish “unsupported” from “already requested.”
 - `markTerminal('completed')` then `markTerminal('failed')` → second `ok: false`, status stays `completed`.
 - `markAbandoned` on running succeeds; on completed fails.
+- `markAbandonedIfStale` heartbeat: matching `expectedUpdatedAt` on a running row succeeds; mismatched timestamp (heartbeat already bumped `updated_at`) → `ok: false`, status stays `running`.
+- `markAbandonedIfStale` run-terminal: linked run `aborted`/`completed`/missing → `ok: true`; run `active` → `ok: false`, status stays `running`.
+- **Two-writer heartbeat:** observe `updatedAt`; second sqlite connection (or memory `heartbeat`) bumps `updated_at`; first writer `markAbandonedIfStale({ staleReason: "heartbeat", expectedUpdatedAt: observed })` → `ok: false`, row not abandoned. Copy the two-connection pattern from `cas-race.test.ts:60–79` for sqlite.
+- **Two-writer run reopen:** running row + aborted run; second writer sets `runs.status` back to `active` (sqlite `UPDATE runs`; memory: mutate `getRun`); `markAbandonedIfStale({ staleReason: "run-terminal" })` → `ok: false`, row not abandoned.
 - `listStale` with injected `nowMs`: fresh heartbeat excluded; old `updated_at` included; completed excluded.
 - Missing id throws `INVOCATION_NOT_FOUND`.
 
-- [ ] Dual-backend contract tests including parallel CAS.
+- [ ] Dual-backend contract tests including parallel CAS and `markAbandonedIfStale` two-writer losses.
 
 ---
 
@@ -794,7 +859,7 @@ If `runDb` is used after the block that currently scopes it (`:231–279`), keep
 - Memory store; `fn` returns → `completed`.
 - `fn` throws `Error` → `failed`, error propagates.
 - `fn` throws `{ name: "AgentCancellationError" }` → `cancelled`.
-- `fn` throws after doctor `markAbandoned` → status stays `abandoned` (CAS loss).
+- `fn` throws after doctor `markAbandoned` (status-only CAS, simulating an already-abandoned row) → status stays `abandoned` (CAS loss). Doctor `--fix` itself uses `markAbandonedIfStale` (Phase 6); this case only needs a terminal `abandoned` row.
 - Fault injection: `fn` throws before any heartbeat; row is `failed` not `running`.
 - Heartbeat rate-limit: spy on `store.heartbeat` and call the wrapped heartbeat 3 times within 5s → one call (inject fake `now`).
 - **Silent liveness:** inject fake `now` + `setIntervalFn`/`clearIntervalFn`. Drive store timestamps from the same fake clock (wrap `heartbeat` / pass `now` into `createMemoryInvocationStore` so `updatedAt` is not wall-clock). `fn` waits (never calls `heartbeat`, never emits stream events). Advance `now` past `INVOCATION_STALE_MS` and fire the interval callbacks. `listStale({ olderThanMs: INVOCATION_STALE_MS, nowMs })` must **not** include the row. A control that never fires the timer **does** include it. Then resolve `fn` → `completed` and assert `clearIntervalFn` was called once.
@@ -1002,7 +1067,7 @@ Unauthorized requests must not call the action (04’s middleware). Live status:
 
 ## Phase 6: Doctor stale-entry check
 
-**Completion gate:** Doctor lists a seventh check `invocations`. Stale heartbeat and terminal-run leftovers fail `INVOCATION_STALE`. `--fix` CAS-abandons `stale-metadata`. Messages state that provider processes were **not** reaped. Fresh heartbeats are not flagged. `findingKey` uses `detail.invocationId`.
+**Completion gate:** Doctor lists a seventh check `invocations`. Stale heartbeat and terminal-run leftovers fail `INVOCATION_STALE`. `--fix` calls `markAbandonedIfStale` (not status-only `markAbandoned`) so a heartbeat or run-reopen between revalidation and the write cannot abandon a live row. Messages state that provider processes were **not** reaped. Fresh heartbeats are not flagged. `findingKey` uses `detail.invocationId`.
 
 #### 6.1 Check — new `src/doctor/checks/invocations.ts`
 
@@ -1010,12 +1075,19 @@ Mirror `src/doctor/checks/prompts.ts:1–171`:
 
 - Detect: `existsSync(ctx.dbPath)`; `openDbReadOnly`; `createSqliteInvocationStore`.
 - Findings for each row where `status === "running"` AND (`updatedAt` older than `INVOCATION_STALE_MS` relative to `ctx.now` **OR** `getRunV1` is null / `completed` / `aborted`).
+- When both predicates match, set `reason: "run-terminal"` (stronger claim: a still-terminal run must remain abandonable even if a heartbeat lands in the `--fix` window). Otherwise `reason: "heartbeat"` or `"run-terminal"` as matched.
 - Export `INVOCATION_STALE_MS = 15 * 60 * 1000` (same constant as `invocation-lifecycle.ts`; import it — do not duplicate the literal).
-- `code: "INVOCATION_STALE"`, `fixable: true`, `detail: { invocationId, runId, updatedAt, reason: "heartbeat" | "run-terminal" }`.
+- `code: "INVOCATION_STALE"`, `fixable: true`, `detail: { invocationId, runId, updatedAt, reason: "heartbeat" | "run-terminal" }`. `updatedAt` is the value observed at detect (passed through to `--fix` as documentation; the CAS uses the re-read timestamp).
 - `remediation: "5x doctor --fix"`.
 - **Message must include** that registry metadata can be abandoned and that **the underlying provider process is not reaped** (plan-input: doctor reporting without claiming processes can be reaped).
 - Empty: `{ code: "INVOCATIONS_OK", status: "ok" }`.
-- `--fix`: writable `getDb` (not `resolveDbContext` — same comment as `prompts.ts:11–12`). Re-validate still running and still stale/orphaned. `markAbandoned(id, "stale-metadata")`. Do **not** call `getCancellationAdapter` / `adapter.cancel`. Do **not** `process.kill`.
+- `--fix`: writable `getDb` (not `resolveDbContext` — same comment as `prompts.ts:11–12`). Optional test dep `createStore?: (db) => InvocationStore` so unit tests can wrap the store; production uses `createSqliteInvocationStore`.
+  1. Load the row. Missing / not `running` → `{ attempted: false }` (already repaired or terminalized).
+  2. Fast-path re-validate the **finding’s** predicate: `heartbeat` still older than `INVOCATION_STALE_MS` vs `ctx.now`; `run-terminal` still missing/`completed`/`aborted`. If that predicate no longer holds → `{ attempted: false }` with a message (`"invocation is no longer stale"` / `"run is no longer terminal"`). This is UX only — it does not close the TOCTOU.
+  3. **Required write:** `store.markAbandonedIfStale({ id, reason: "stale-metadata", expectedUpdatedAt: record.updatedAt, staleReason: finding.detail.reason })`. Do **not** call `markAbandoned(id, "stale-metadata")`.
+  4. CAS miss (`ok: false`) → `{ attempted: false }` (heartbeat won, run reopened, or another writer terminalized). CAS hit → `{ attempted: true }`.
+- Do **not** call `getCancellationAdapter` / `adapter.cancel`. Do **not** `process.kill`.
+- Do **not** read run status (or `updatedAt`) in the check and pass a precomputed boolean into the store — the run-terminal predicate must be evaluated inside the same `UPDATE` / memory write as the status CAS (Phase 3).
 
 #### 6.2 Registry wiring
 
@@ -1036,14 +1108,19 @@ Copy fixtures from `test/unit/doctor/prompts.test.ts`.
 - Heartbeat-fresh running + active run → `INVOCATIONS_OK`.
 - Running + `updated_at` 16 minutes before `ctx.now` → `INVOCATION_STALE`, `reason: "heartbeat"`.
 - Running + fresh heartbeat + run `aborted` → `INVOCATION_STALE`, `reason: "run-terminal"`.
-- `--fix` abandons; re-detect ok; `status === "abandoned"`.
+- Both predicates match → `reason: "run-terminal"`.
+- `--fix` abandons a still-stale heartbeat row and a still-terminal-run row; re-detect ok; `status === "abandoned"`.
 - `--fix` does not call a registered test adapter (spy `cancelCalls === 0`).
 - Message matches `/not reaped/i` or `/was not reaped/i`.
 - Missing `invocationId` on fixable finding: `findingKey` throws (registry test).
 - Completed invocations never flagged.
+- **Two-writer heartbeat (required):** after detect/revalidation, a heartbeat lands **before** the abandon write. Prove `--fix` does **not** abandon. Deterministic approach: inject `createStore` wrapping the real store so `markAbandonedIfStale` first calls `inner.heartbeat(id)` then delegates (revalidation `get` still sees the stale row). Assert `attempted: false` and `status === "running"`. Also cover detect → heartbeat → `--fix` (fast-path or CAS miss; row not abandoned).
+- **Two-writer run reopen (required):** same pattern for `reason: "run-terminal"`: wrapper (or second sqlite writer) sets `runs.status` back to `active` after revalidation / before `markAbandonedIfStale`. Assert `--fix` does not abandon. Cover detect → reopen → `--fix` as well.
+- Grep or unit assertion: `src/doctor/checks/invocations.ts` calls `markAbandonedIfStale` and does not call `markAbandoned(`.
 
 - [ ] Implement check + `findingKey`.
 - [ ] Unit + integration doctor coverage.
+- [ ] Two-writer `--fix` tests: competing heartbeat and competing run-reopen do not abandon.
 - [ ] Confirm `--fix` never kills processes (no `process.kill` in the check file — code review / grep in tests).
 
 ---
@@ -1073,7 +1150,7 @@ Leave dashboard-server TODOs in §3.5 / §5 that 04 owns.
 
 Add check row:
 
-| `invocations` | Non-terminal registry rows with stale heartbeat or terminal/missing run | `--fix` CAS-abandons `stale-metadata`; does not reap provider processes |
+| `invocations` | Non-terminal registry rows with stale heartbeat or terminal/missing run | `--fix` `markAbandonedIfStale` (expected `updated_at` / still-terminal run); does not reap provider processes |
 
 Update counts from six to seven builtins. Point at this plan.
 
@@ -1115,9 +1192,9 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | `src/control-plane/invocation-view.ts` | **New** — `toClientInvocationState` / `toClientInvocationView` / `toInvocationStatusEnvelope` |
 | `src/control-plane/cancellation-adapter.ts` | **New** — adapter interface + process-local registry |
 | `src/control-plane/test-remote-adapter.ts` | **New** — synthetic non-PID remote adapter |
-| `src/control-plane/invocation-store.ts` | **New** — `InvocationStore` |
-| `src/control-plane/invocation-sqlite.ts` | **New** — SQL materialization |
-| `src/control-plane/invocation-memory.ts` | **New** — test impl |
+| `src/control-plane/invocation-store.ts` | **New** — `InvocationStore` including `markAbandonedIfStale` |
+| `src/control-plane/invocation-sqlite.ts` | **New** — SQL materialization; abandon-if-stale `UPDATE` predicates |
+| `src/control-plane/invocation-memory.ts` | **New** — test impl; `getRun` callback for run-terminal CAS |
 | `src/control-plane/invocation-lifecycle.ts` | **New** — `withInvocationLifecycle` + heartbeat interval/timer |
 | `src/control-plane/invocation-actions.ts` | **New** — cancel/status actions (catch adapter throw; missing adapter → `unsupported`) |
 | `src/control-plane/index.ts` | Re-export invocation APIs |
@@ -1129,7 +1206,7 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | `src/commands/invoke-registry-context.ts` | **New** — store + `runExists` |
 | `src/commands/invoke.ts` | Register `status` / `cancel` |
 | `src/output.ts` | Error codes for cancel/status |
-| `src/doctor/checks/invocations.ts` | **New** — stale detect/fix |
+| `src/doctor/checks/invocations.ts` | **New** — stale detect; `--fix` via `markAbandonedIfStale` |
 | `src/doctor/registry.ts` | Seventh check; `findingKey` |
 | `src/index.ts` | Export invocation store/types/actions |
 | `src/commands/dashboard.ts` (if exists) | Wire GET/POST to actions |
@@ -1137,13 +1214,13 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | `test/unit/db/schema-v4.test.ts` | Expect version 7 |
 | `test/unit/db/schema-v6.test.ts` | `runMigrations` current-max → 7 |
 | `test/unit/db/schema-v7.test.ts` | **New** |
-| `test/unit/control-plane/invocation-store-contract.test.ts` | **New** |
+| `test/unit/control-plane/invocation-store-contract.test.ts` | **New** — including `markAbandonedIfStale` two-writer |
 | `test/unit/control-plane/invocation-lifecycle.test.ts` | **New** |
 | `test/unit/control-plane/invocation-actions.test.ts` | **New** |
 | `test/unit/control-plane/invocation-view.test.ts` | **New** — seven client states |
 | `test/unit/control-plane/test-remote-adapter.test.ts` | **New** |
 | `test/unit/commands/invoke-registry.test.ts` | **New** |
-| `test/unit/doctor/invocations.test.ts` | **New** |
+| `test/unit/doctor/invocations.test.ts` | **New** — stale detect/fix + heartbeat/reopen TOCTOU |
 | `test/unit/doctor/registry.test.ts` | Seventh check; `INVOCATION_STALE` key |
 | `test/integration/commands/invoke-registry.test.ts` | **New** |
 | `test/integration/commands/doctor.test.ts` | `invocations` check present |
@@ -1162,12 +1239,12 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 | Unit | `invocation-view.test.ts` | Seven client states; view omits `handle`/`pid`; envelope maps `clientState` → `client_state` |
 | Unit | `test-remote-adapter.test.ts` | Non-PID job ref; abort on cancel; unknown handle fails |
 | Unit | `schema-v7.test.ts` | v7 DDL, indexes, FK, CHECKs, no `pid` column, v6→v7 |
-| Unit | `invocation-store-contract.test.ts` | Register/list/heartbeat; CAS request/terminal/abandon on memory + sqlite |
+| Unit | `invocation-store-contract.test.ts` | Register/list/heartbeat; CAS request/terminal/abandon on memory + sqlite; `markAbandonedIfStale` expected-`updated_at` and run-terminal predicates; two-writer heartbeat and run-reopen losses |
 | Unit | `cas-race` (in contract or sibling) | Parallel sqlite `markCancellationRequested` → one winner |
 | Unit | `invocation-lifecycle.test.ts` | completed/failed/cancelled; `finally`; abandon CAS win; heartbeat rate-limit; pre-stream fault injection; silent invocation stays fresh past stale TTL via timer; timer cleared on complete/error |
 | Unit | `invocation-actions.test.ts` | Unsupported reject; invalid actor; synthetic once-only cancel; adapter returned-failed; **adapter throw → failed**; **missing adapter → unsupported**; terminal no-op |
 | Unit | `invoke-registry.test.ts` | Explicit `--run`/`--id`; combined intersection; snake_case envelope; no ambient; `actor: "cli"`; `prepareLogPath`/`appendSessionStart` throw → `failed` + close |
-| Unit | `invocations.test.ts` (doctor) | Stale heartbeat, run-terminal orphan, `--fix` metadata-only, message does not claim reap |
+| Unit | `invocations.test.ts` (doctor) | Stale heartbeat, run-terminal orphan, `--fix` metadata-only, message does not claim reap; two-writer `--fix` does not abandon after competing heartbeat or run reopen |
 | Unit | `registry.test.ts` | Seven checks; `findingKey` `INVOCATION_STALE` |
 | Integration | `invoke-registry.test.ts` | Sample invoke → status `client_state: "completed"`; combined `--id --run` match/mismatch; cancel unsupported inserted row; `runs.status` still `active` |
 | Integration | `doctor.test.ts` | Check id present; clean `INVOCATIONS_OK`; optional `--fix` stale row |
@@ -1196,16 +1273,22 @@ Optional: `AGENTS.md` already says invocation-registry workers pass `--run` expl
 |-------|-------------|------|
 | 1 | Types, client view, adapter contract, synthetic remote adapter | 1 day |
 | 2 | Schema v7 + migration tests | 0.5–1 day |
-| 3 | InvocationStore sqlite/memory + CAS contract tests | 1–2 days |
+| 3 | InvocationStore sqlite/memory + CAS contract tests (incl. `markAbandonedIfStale`) | 1–2 days |
 | 4 | `withInvocationLifecycle` (register-at-session, heartbeat timer, pre-stream faults) + invoke wiring | 1–2 days |
 | 5 | Cancel/status action, CLI, auth actor tests, optional dashboard wire | 1–2 days |
-| 6 | Doctor stale check + `--fix` | 1 day |
+| 6 | Doctor stale check + predicate-CAS `--fix` | 1–1.5 days |
 | 7 | Docs (`202`, `203`, `101`, `011`, plan-input) | 0.5 day |
-| **Total** | | **6–10 days** |
+| **Total** | | **6.5–10.5 days** |
 
 ---
 
 ## Revision History
+
+### 1.2 — August 28, 2026
+
+Addresses the **New active correction** in **Addendum — Revision 1.1 reassessment (August 28, 2026)** of [`docs/development/reviews/5x-cli-docs-development-plans-207-invocation-registry-plan-review.md`](../reviews/5x-cli-docs-development-plans-207-invocation-registry-plan-review.md). Prior addendum items (session-boundary registration, thrown adapter cancel, missing-adapter `unsupported`, combined status filters / snake_case envelope, independent heartbeat interval) remain as in 1.1.
+
+1. **Doctor abandonment CAS against the observed liveness predicate.** `markAbandoned(id, reason)` stays status-only for lifecycle races. Doctor `--fix` must call `markAbandonedIfStale`: heartbeat-stale findings CAS `updated_at = expectedUpdatedAt`; run-terminal findings CAS an atomic still-missing/terminal run check in the same write (SQLite subquery; memory `getRun` inside the method). Re-validation is UX only. Store contract and doctor `--fix` two-writer tests prove a competing heartbeat or run-reopen does not abandon the row.
 
 ### 1.1 — August 28, 2026
 
