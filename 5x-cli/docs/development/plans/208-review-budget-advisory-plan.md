@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** August 29, 2026
-**Status:** Draft — revision 1.2 addressing staff review addendum (P1.4)
+**Status:** Draft — revision 1.3 addressing staff review addendum (P0 record-tier persistence)
 
 ---
 
@@ -18,7 +18,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 
 - Required `Delivery Budget` + surface-snapshot sections in newly generated plans, with a fail-closed parser for stable IDs, effort, architecture delta, complete plan-side debt-claim evidence (`targetPhase`, minimal-compliant comparison, non-empty before/after), and `Addresses`.
 - `[reviewBudget]` config (`off` | `advisory` | reserved `enforced`), default `advisory`, layered like the rest of `5x.toml`.
-- `ReviewBudgetStore` (SQLite + memory) with UUID ids: immutable `B0`, original/current ledgers, surface snapshot, assessments, claims, and derived results.
+- Authoritative persistence of immutable `B0`, governing `B`, original/current ledgers, surface snapshot, assessments, and claims as **RecordStore budget lines** (slice 06 owns line payloads and keys; slice 10 owns the frozen `RecordStore` interface). SQLite holds only a rebuildable derived index/cache of those lines plus CLI-computed forecasts.
 - Plan-review protocol emit/validate extensions: per-item deltas, `baselineAssessment`, `creditAssessments`. CLI-owned aggregates are derived, never reviewer-authored.
 - Pure arithmetic module for ceilings, bands, alerts, baseline direction, and `Addresses` dedup.
 - Decorated recorded reviewer steps and `5x run state` output.
@@ -30,7 +30,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 - Implementation-review `scopeClass` enum, `--credit-realization`, `planImpact`, or quality-gated final corrections (`08-implementation-review-governance.plan-input.md`).
 - Dashboard / browser visualization.
 - Calibration of default percentages.
-- Defining `RecordStore` (owned by slice 10). This slice’s store interface is budget-specific and append-only so it can later index record lines.
+- Implementing `RecordStore`, its working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, or progress resolution (owned by slice 10). This slice **consumes** the frozen Phase-1 interface and defines only budget-line payloads, idempotency keys, and the SQLite index projection.
 
 ### Key Design Decisions
 
@@ -38,24 +38,25 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 |----------|-----------|
 | **Pure arithmetic in `src/review-budget/`, not handlers** | Area 206 risk: “budget arithmetic is spread across handlers.” One module, integer `Math.ceil` / `Math.floor` / `Math.max` / `Math.min`, exhaustive fixtures including the documented `B = 4` example. |
 | **Fail-closed plan parse; never silent `B0 = 0`** | Plan-input assumption. Missing/malformed tables **or incomplete debt-claim evidence** error with line-numbered diagnostics. Empty tables are not a zero baseline. Negative rows without `targetPhase` / comparison / before/after cannot establish a ledger claim. |
-| **`ReviewBudgetStore` behind `src/control-plane/`, not `operations-v1.ts`** | Same boundary as `PromptStore` / `InvocationStore`. Handlers never import `bun:sqlite`. UUID PKs (`200` §3a #2). |
-| **Append-only snapshots; `B0` INSERT-once** | Editing plan prose must not rewrite the baseline. `captureBaseline` is CAS on `run_id`. Governing `B` is initialized to `B0`; human `B` changes are slice 07. |
-| **SQLite materialization now; RecordStore later** | Slice 10’s `RecordStore` is not frozen in-tree. Plan input 06 depends on slice 3 and must touch DB/store. Rows are immutable events so they can become a RecordStore index without a rewrite. |
+| **`ReviewBudgetStore` is a RecordStore facade, not a SQLite authority** | Same `src/control-plane/` boundary as `PromptStore`. Handlers never import `bun:sqlite`. UUID ids on record payloads (`200` §3a #2). The facade appends/reads budget lines through frozen `RecordStore`; SQLite is a rebuildable index of those lines plus derived forecasts (`207` §2.5–2.6). |
+| **Append-only snapshots; `B0` INSERT-once** | Editing plan prose must not rewrite the baseline. `captureBaseline` is CAS on the baseline budget-line idempotency key (`budget:baseline:<runId>`). Governing `B` is initialized to `B0`; human `B` changes are slice 07. |
+| **Slice 10 Phase 1 is a hard prerequisite to persistence** | Canonical `207` §2.6 and plan-input 10 require slice 06 to code against the frozen `RecordStore` + in-memory impl, never SQLite-only rows. This slice does **not** define or fork `RecordStore`. Persistence phases wait for that freeze (including budget-stream append/read and atomic multi-append). |
 | **Advisory never changes routing** | `budget.requiresHuman` is telemetry. Do not rewrite `readiness`, skip author cycles, or call `5x prompt`. `enforced` is accepted in config and recorded, then treated as advisory with a warning. |
 | **v1 verdicts remain valid** | New item fields are optional at the protocol schema layer. They become required only when the run has an active baseline (`status = active`). Mid-review runs without a baseline stay `v1_compat`. |
 | **Reject reviewer-authored aggregates** | If input contains `budget`, `budgetBand`, `B0`, `W`, `R`, `S`, `E`, `A`, `P`, `baselineDirection`, or similar CLI-owned keys, fail `INVALID_STRUCTURED_OUTPUT`. Do not strip-and-continue. |
 | **`Addresses` + still-listed items define `R`** | Incorporated finding IDs drop out of `R` unless they still appear in the current verdict `items` (incomplete author claim). Explicit `addressed` / `still_open` enums are slice 07. |
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
-| **Snapshot + reviewer step are one SQLite transaction** | Appending a snapshot before `recordStepInternal` orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the same transaction as the unique `steps` insert on the same resolved Database. Failed or idempotent records insert no snapshot. |
+| **Snapshot + reviewer step are one RecordStore atomic append** | Appending a budget snapshot before the unique step record orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the **same** `RecordStore.atomicAppend` as the unique step line, then project both into the SQLite index. Failed or idempotent records insert no budget line and no index row. |
 | **Carry forward unchanged debt-claim assessments** | First-seen (or changed) claims require a current `--credit-assessment`. Unchanged includes evidence fields (`targetPhase`, minimal deltas, before/after), not only coupling and architectureDelta. Current assessments overlay by `creditClaimId` and must name a persisted claim. |
-| **Snapshot order is insertion-stable** | `datetime('now')` is second-resolution. `latestSnapshot` / `listSnapshots` order by `(created_at, rowid)` (memory: insertion sequence), not `created_at` alone. |
+| **Snapshot order is insertion-stable** | Record lines are append-only; `latestSnapshot` / `listSnapshots` follow `RecordStore` insertion order (memory: sequence; working-tree JSONL: file order). The SQLite index stores that sequence and must not order by `created_at` alone (`datetime('now')` is second-resolution). |
 | **Plan-side debt claims persist full §4.3 evidence** | A negative author row cannot earn `N`/`D` from `DCn` + coupling alone. The parser requires `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty before/after on every negative claim; ledger JSON is what later implementation review reconciles. `--credit-assessment` names that persisted id; reviewer-item `creditClaim` is only for claims the reviewer introduces. |
 
 ### References
 
 - [`docs/v2/200-overview.md`](../../v2/200-overview.md) — §3.2 budget run-state; §3a store / UUID constraints; §4 advisory rollout.
 - [`docs/v2/206-review-budget-governance.md`](../../v2/206-review-budget-governance.md) — canonical model, contracts, persistence, config, staged rollout.
-- [`docs/v2/207-state-segmentation.md`](../../v2/207-state-segmentation.md) — §2.6 budget rows are record-tier; forecasts are derived.
+- [`docs/v2/207-state-segmentation.md`](../../v2/207-state-segmentation.md) — §2.6 budget baselines/ledgers/decisions are **record** tier; forecasts are derived cache; slice 06 codes against frozen `RecordStore`.
+- [`docs/v2/plan-inputs/10-git-native-run-records.plan-input.md`](../../v2/plan-inputs/10-git-native-run-records.plan-input.md) — Phase 1 freezes `RecordStore` + in-memory impl; slice 06 defines budget lines and must never target SQLite-only rows.
 - [`docs/v1/100-architecture.md`](../../v1/100-architecture.md) — CLI as toolbelt; protocol validate/record.
 - [`docs/v1/101-cli-primitives.md`](../../v1/101-cli-primitives.md) — `run state`, `protocol emit` / `validate`.
 - Plan input: [`docs/v2/plan-inputs/06-review-budget-advisory.plan-input.md`](../../v2/plan-inputs/06-review-budget-advisory.plan-input.md).
@@ -72,7 +73,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 4. [Phase 1: Domain types and pure arithmetic](#phase-1-domain-types-and-pure-arithmetic)
 5. [Phase 2: Delivery Budget parser](#phase-2-delivery-budget-parser)
 6. [Phase 3: `reviewBudget` configuration](#phase-3-reviewbudget-configuration)
-7. [Phase 4: Schema v8 and ReviewBudgetStore](#phase-4-schema-v8-and-reviewbudgetstore)
+7. [Phase 4: Budget record lines, RecordStore facade, and rebuildable index](#phase-4-budget-record-lines-recordstore-facade-and-rebuildable-index)
 8. [Phase 5: Protocol types, emit, and normalize](#phase-5-protocol-types-emit-and-normalize)
 9. [Phase 6: Validate, derive, persist, decorate](#phase-6-validate-derive-persist-decorate)
 10. [Phase 7: Baseline capture, preflight, mid-review opt-in](#phase-7-baseline-capture-preflight-mid-review-opt-in)
@@ -97,23 +98,23 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 - Generated plans follow `DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE` (`src/templates/default-artifacts.ts:1–51`) with no scored work items.
 - Reviewer prompts (`src/templates/reviewer-plan.md`, `reviewer-plan-continued.md`) ask for exhaustive findings with no effort/architecture fields and no independent baseline estimate.
 - Schema max is v7 (`src/db/schema.ts:450–505`; `test/unit/db/schema.test.ts` asserts version `7`).
-- Control-plane stores exist for prompts and invocations only (`src/control-plane/store.ts`, `invocation-store.ts`).
+- Control-plane stores exist for prompts and invocations only (`src/control-plane/store.ts`, `invocation-store.ts`). Slice 10 Phase 1 will add `RecordStore`; this slice’s persistence work (Phase 4+) must not start until that freeze is in-tree.
 - Config has no `[reviewBudget]` table (`src/config.ts:166–237`, `src/templates/5x.default.toml`).
 
 **New behavior:**
 
 - New plans include `## Delivery Budget`, a `### Debt Claims` subsection for every negative architecture row, and `### Surface Snapshot`. Parser failures are explicit; incomplete debt evidence cannot become a baseline.
-- Before the first plan-reviewer invocation (when mode is not `off` and the run is not mid-review v1-compat), the CLI parses the table, sums effort into `B0`, and CAS-inserts an immutable baseline.
+- Before the first plan-reviewer invocation (when mode is not `off` and the run is not mid-review v1-compat), the CLI parses the table, sums effort into `B0`, and CAS-appends an immutable baseline **record line**.
 - Reviewers may emit per-item deltas, first-review `baselineAssessment`, and per-claim `creditAssessments`. They must not emit totals or status.
-- On `protocol validate reviewer --phase plan --record` and `invoke reviewer --record` for plan phase, the CLI recomputes `W`/`R`/ceilings/bands, **atomically** persists a snapshot with the unique reviewer step, and decorates `result_json` with a `budget` object. Unchanged debt-claim assessments carry forward.
+- On `protocol validate reviewer --phase plan --record` and `invoke reviewer --record` for plan phase, the CLI recomputes `W`/`R`/ceilings/bands, **atomically** appends a budget snapshot line with the unique reviewer step via `RecordStore`, projects both into the SQLite index, and decorates `result_json` with a `budget` object. Unchanged debt-claim assessments carry forward.
 - `5x run state` includes `review_budget` when a baseline exists.
 - Workflow routing, `maxReviewIterations`, and `human_required` semantics are unchanged.
 
 **Prerequisites:**
 
 - [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md) — `src/control-plane/` store boundary, UUID ids, SQLite vs memory split. **Merged** (schema v6).
-- [`207-invocation-registry-plan.md`](./207-invocation-registry-plan.md) — schema currently v7; this slice adds v8. **Merged**.
-- Slice 10 `RecordStore` is **not** required. See Design Decisions.
+- [`207-invocation-registry-plan.md`](./207-invocation-registry-plan.md) — schema currently v7; this slice adds v8 **index** tables. **Merged**.
+- **Slice 10 Phase 1 (`RecordStore` interface + in-memory implementation) must be merged and frozen before this slice’s persistence work (Phase 4 and every later phase that writes baselines or snapshots).** Arithmetic, parser, and config (Phases 1–3) may proceed in parallel. This slice does not implement `RecordStore`, working-tree JSONL, or `records index`. If the freeze lacks budget-stream append/read or atomic multi-append, those are a coordinated slice-10 contract revision — not a 06 fork. See Design Decisions.
 
 ---
 
@@ -125,9 +126,27 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **Missing Delivery Budget cannot become `B0 = 0`.** `parseDeliveryBudget` returns a `Result` (`ok` + value, or `ok: false` + `code` + `message` + `line`). Callers that would capture a baseline must not catch-and-default. `mode = "off"` skips parse entirely.
 
-**`ReviewBudgetStore` is the persistence seam; SQLite is the v2 materialization.** Command logic receives the store from a factory that uses one `resolveDbContext` Database, matching `PromptCommandContext`. Do not add budget functions to `src/db/operations-v1.ts` for handlers to call. Unit tests inject `MemoryReviewBudgetStore`.
+**`ReviewBudgetStore` is a domain facade over `RecordStore`; SQLite is a rebuildable index.** Command logic receives the facade from a factory that holds one `RecordStore` (slice 10) plus an optional SQLite index on one `resolveDbContext` Database, matching `PromptCommandContext`. Do not add budget functions to `src/db/operations-v1.ts` for handlers to call. Do not implement a SQLite-only `ReviewBudgetStore` that is authoritative in the absence of record lines. Unit tests inject the facade over slice 10’s `MemoryRecordStore`.
 
-**Why not wait for `RecordStore`?** `207` §2.6 asks slice 06 to code against slice 10’s frozen interface. That interface is not in the tree, and plan input 06’s dependency is slice 3 with an explicit “must touch DB/store” constraint. Forking `RecordStore` here would steal slice 10’s opening phase (`10-git-native-run-records.plan-input.md` forbids 06 from defining that contract). Append-only UUID events are the compatible subset: when RecordStore lands, the SQLite impl becomes an index of the same payloads.
+**Record vs cache (`207` §2.2, §2.6).** Authoritative **record** facts: immutable `B0`, governing `B` (equals `B0` until slice 07), original and current parsed ledgers (including complete `DebtClaimEvidence`), surface snapshot, capture kind, first-review `I` / `baselineAssessment`, reviewer deltas, and the effective credit-assessment set. **Derived cache** (never authoritative): `W`, `R`, `S`, `N`, `D`, `E`, `A`, `P`, bands, alerts, `requiresHuman`. Those numbers are recomputed by the pure arithmetic module from the record + current plan; the SQLite index and `result_json` may store them for display. Deleting `.5x/` must not lose baselines, ledgers, assessments, or claims.
+
+**Consumed `RecordStore` surface (slice 10 Phase 1 freeze; 06 does not declare this file).** Persistence phases require these capabilities to already exist on the frozen interface. If any is missing, slice 10 revises the freeze with 06’s agreement:
+
+- Step append / get / list with the existing idempotency key `(run_id, step_name, phase, iteration)`. Re-recording a recorded step appends no duplicate step line.
+- Budget-stream append / get / list that does **not** assume a working-tree path. Slice 06 supplies `idempotencyKey` + JSON payload; slice 10 stores an opaque line (working-tree impl will likely use `budget.jsonl` under the run record dir — 06 does not write that layout).
+- Insertion-ordered reads (`listLines` / equivalent). Equal timestamps must not reorder.
+- **`atomicAppend(ops)`** (name may differ; semantics must not): all-or-nothing list of step and/or budget appends. Duplicate keys return `created: false` and add no lines. A throw leaves none of the ops durable. This is how P1.1 atomicity maps onto the shared contract without 06 forking `RecordStore` or opening a second connection.
+
+**Budget-line payloads and keys this slice owns:**
+
+| Kind | Idempotency key | Payload (authoritative fields) |
+|------|-----------------|--------------------------------|
+| `baseline` | `budget:baseline:<runId>` | `captureKind`, `b0`, `b` (initially `= b0`), `originalLedger`, `surface`, `originalSection?`, `configSnapshot`, `id` (UUID), `createdAt` |
+| `snapshot` | `budget:snapshot:<runId>:<stepName>:<phase>:<iteration>` | `stepKey` (same tuple as the reviewer step), `currentLedger`, `findings`, `assessments` (effective merged set), `baselineAssessment?` (first snapshot only), `id` (UUID), `createdAt` |
+
+Do **not** treat derived forecasts as record payload. Snapshot lines may omit `derived` or carry a denormalized copy marked non-authoritative; `run state` and the index recompute or cache it. Slice 07/08 may add decision / realization line kinds; this slice does not.
+
+**Why not a SQLite-only `ReviewBudgetStore` now?** `207` §2.6 and plan-input 10 forbid stranding budget history in `.5x/5x.db` and then migrating. Plan-input 06’s older “must touch DB/store” constraint is satisfied by the **index** (schema v8 + write-through + `reindexReviewBudget`), not by making SQLite the system of record. Forking `RecordStore` here would steal slice 10’s opening phase. Waiting until slice 10’s **working-tree** impl merges is allowed for process-durable CLI integration tests; the **interface + memory impl** must be in-tree before Phase 4 code is written. This slice never implements a competing store.
 
 **Advisory `requiresHuman` is telemetry.** Compute it exactly as `206` §6.3 (`over_effective`, `over_absolute`, `baseline_disputed`, `positive_architecture_exceeded`, or any item `action === "human_required"`). Write it on the decorated record. Do **not** change `readiness`, skip re-review, or open a prompt. Slice 07 reads the same field and starts routing.
 
@@ -156,11 +175,14 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **Snapshot persistence is atomic with the decorated reviewer step.** `protocolValidate` and `invokeAgent` emit the success envelope and call `recordStepInternal` afterward (`src/commands/protocol.handler.ts:479–515`, `src/commands/invoke.handler.ts:642–684`). If `apply` appended a snapshot first, a failed record (terminal run, step limit, DB error, or retry race) would leave telemetry without a journal row, and a retry could append a second snapshot for the same verdict. Therefore:
 
-- `applyPlanReviewBudget` **computes** (and may CAS-capture a baseline) but **does not** `appendSnapshot`.
-- Handlers resolve **one** `resolveDbContext` Database, construct `ReviewBudgetStore` from it, and pass that same `{ db, config, controlPlane }` into `recordStepInternal`.
-- Snapshot insert and the unique `steps` insert run in **one** `db.transaction(...)`. If the step insert throws or is a duplicate (`recorded: false`), the transaction inserts no new snapshot. If `appendSnapshot` throws, the step insert rolls back.
-- Envelope-before-record stays the v1 contract (record failure is stderr + exit 1). The invariant is journal ↔ snapshot, not envelope ↔ journal.
-- Exactly one snapshot exists per successfully recorded unique reviewer step. Idempotent re-records do not add another.
+- `applyPlanReviewBudget` **computes** (and may CAS-capture a baseline via RecordStore) but **does not** append a snapshot line.
+- Handlers resolve **one** review-budget context: one `RecordStore`, one `ReviewBudgetStore` facade, and one `resolveDbContext` Database for the SQLite index and v1 `steps` projection. They do **not** import `bun:sqlite`.
+- Unique reviewer-step persist uses `RecordStore.atomicAppend([stepOp, budgetSnapshotOp])` with the snapshot’s idempotency key bound to the step key. If the step is a duplicate (`created: false`), the batch adds no budget line. If either op throws, neither line is durable.
+- After a successful unique append, project the step into SQLite `steps` (today’s `recordStep` row, so v1 readers keep working) and the budget snapshot into the v8 index. Index failure after a successful record append does **not** roll back the record — the record is source of truth; `reindexReviewBudget` repairs the cache. Do not insert a SQLite-only budget row without a record line.
+- Envelope-before-record stays the v1 contract (record failure is stderr + exit 1). The invariant is **record step line ↔ record budget snapshot line**, with the SQLite index as a projection.
+- Exactly one budget snapshot line exists per successfully recorded unique reviewer step. Idempotent re-records add neither a second step line nor a second snapshot line.
+
+This slice does **not** implement `atomicAppend` or step-record JSONL. If slice 10 has not yet routed `recordStepInternal` through `RecordStore`, 06 still makes the uniqueness decision on `RecordStore` (budget line + step line in the batch). The SQLite `steps` insert is a projection of the successful batch, not a second authority. Do not wrap “SQLite step insert + SQLite budget insert” as the 1:1 mechanism.
 
 **Effective assessments = current overlay ∪ persisted unchanged claims.** `deriveBudget` must not receive only the current verdict’s `creditAssessments`. A continued review that correctly omits an already-assessed unchanged claim would otherwise drop `N`/`D`/`E` to zero. Apply builds an **effective** assessment set:
 
@@ -173,7 +195,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 Do **not** instruct continued-review skills to re-emit every assessment. That would conflict with the first-seen / changed-only validation rule.
 
-**Snapshot listing is deterministic at equal timestamps.** Schema `created_at` uses SQLite `datetime('now')` (second resolution). `listSnapshots` orders `ORDER BY created_at ASC, rowid ASC`. `latestSnapshot` uses `ORDER BY created_at DESC, rowid DESC LIMIT 1`. The memory store keeps a monotonic insertion sequence and uses it as the `rowid` tie-breaker. Contract tests insert two snapshots with the same `created_at` and assert insertion order.
+**Snapshot listing is deterministic at equal timestamps.** RecordStore `listLines("budget")` returns insertion order. `listSnapshots` follows that order (filter `kind === "snapshot"`). `latestSnapshot` is the last snapshot line. The SQLite index stores `record_seq` from that order and uses `ORDER BY record_seq ASC` (not `created_at` alone). The memory RecordStore already supplies insertion sequence. Contract tests append two snapshot lines with the same `createdAt` and assert insertion order.
 
 **Enforced-mode warning is on every first-capture path.** `ensurePlanReviewBaseline` owns the reserved-mode warning and runs on template-render, invoke-before-stream, **and** apply’s safety-net capture (direct `protocol validate --record` with no prior render). Apply takes the same `warn` callback. Do not rely on Phase 7/8 having already warned.
 
@@ -211,11 +233,12 @@ Do **not** instruct continued-review skills to re-emit every assessment. That wo
            ├─ merge assessments (current overlay ∪ persisted unchanged)
            ├─ deriveBudget(effectiveAssessments) // pure
            ├─ decorate result.budget            // CLI output only
-           └─ --record: appendSnapshot + steps insert in one transaction
-              (no snapshot if the step insert fails or is a duplicate)
+           └─ --record: RecordStore.atomicAppend(step line + budget snapshot line)
+              then project both into the SQLite index
+              (no snapshot line if the unique append fails or is a duplicate)
            │
            ▼
-  steps.result_json + ReviewBudgetStore
+  steps.result_json + RecordStore budget lines (SQLite index is derived)
   5x run state → data.review_budget
 
   mode=off or v1_compat: skip capture/derive/decorate; v1 path unchanged
@@ -224,19 +247,19 @@ Do **not** instruct continued-review skills to re-emit every assessment. That wo
 State per run:
 
 ```
-  (no row) ──mode=off──────────────────────────────────────► never captured
+  (no baseline line) ──mode=off──────────────────────────────────────► never captured
 
-  (no row) ──prior plan-reviewer steps─────────────────────► v1_compat
+  (no baseline line) ──prior plan-reviewer steps─────────────────────► v1_compat
                  │
                  └── --opt-in-budget-baseline + valid table ─► active (opt_in)
 
-  (no row) ──no prior reviewer, valid table── captureBaseline ─► active
+  (no baseline line) ──no prior reviewer, valid table── captureBaseline ─► active
                  │
                  └── missing/malformed table ──► BUDGET_SECTION_MISSING
                                                  (preflight; no B0)
 ```
 
-`B0` row is immutable. Snapshots append, each 1:1 with a successfully recorded unique reviewer step. Derived numbers on a snapshot are a point-in-time record; `run state` prefers the latest snapshot (insertion-order tie-break at equal `created_at`) and may recompute from current plan + latest verdict for display (recompute must match the pure module; if they disagree, that is a bug).
+`B0` budget line is immutable. Snapshot lines append, each 1:1 with a successfully recorded unique reviewer step (same idempotency tuple). Derived numbers on the SQLite index / `result_json` are a point-in-time **cache**; `run state` prefers the latest snapshot’s cached derived values (insertion-order tie-break) and may recompute from current plan + latest verdict for display (recompute must match the pure module; if they disagree, that is a bug). The record always wins over the index.
 
 ---
 
@@ -666,66 +689,77 @@ Layering: existing `deepMerge` (`src/config.ts:695`) already merges nested table
 
 ---
 
-## Phase 4: Schema v8 and ReviewBudgetStore
+## Phase 4: Budget record lines, RecordStore facade, and rebuildable index
 
-**Completion gate:** Fresh DB migrates to v8. v7 → v8 keeps `invocations`. `captureBaseline` is INSERT-once (second call returns existing, does not change `b0`). Memory and SQLite pass the same contract tests. Handlers are not wired yet.
+**Prerequisite:** Slice 10 Phase 1 is merged: frozen `RecordStore` (no working-tree path assumption) + in-memory implementation + contract tests. That freeze must include budget-stream append/get/list, insertion-ordered reads, and `atomicAppend` (or equivalent all-or-nothing multi-append) as specified in Design Decisions. This phase does **not** add `src/control-plane/record-store.ts` or a working-tree JSONL writer.
+
+**Completion gate:** `captureBaseline` appends one `baseline` budget line (INSERT-once; second call returns existing, does not change `b0`). Snapshots append as budget lines keyed to a step tuple. Fresh DB migrates to v8 **index** tables. v7 → v8 keeps `invocations`. Facade tests against `MemoryRecordStore` (with and without a SQLite index) pass the same contract. Wiping the index and calling `reindexReviewBudget` restores baseline + snapshots from record lines. Handlers are not wired yet. No test treats a SQLite row as authoritative when the corresponding record line is absent.
 
 ### 4.1 IDs — `src/control-plane/ids.ts`
 
-Add `createReviewBudgetId(): string` (`randomUUID`), same file as `createPromptId` (`:8–16`).
+Add `createReviewBudgetId(): string` (`randomUUID`), same file as `createPromptId` (`:8–16`). Payload `id` is the line’s UUID; the **idempotency key** is the CAS identity (`budget:baseline:<runId>` / `budget:snapshot:<runId>:<stepName>:<phase>:<iteration>`).
 
-### 4.2 Migration v8 — `src/db/schema.ts`
+### 4.2 Budget line types — `src/review-budget/record-lines.ts` (new)
 
-Append after v7 (`:450–505`). Bump tests that hardcode `getMaxKnownSchemaVersion() === 7` (`test/unit/db/schema.test.ts:28–40`, `:166`; `schema-v6.test.ts`; `schema-v7.test.ts:71`).
-
-```sql
-CREATE TABLE review_budget_baselines (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
-  capture_kind TEXT NOT NULL CHECK (capture_kind IN ('initial', 'opt_in')),
-  b0 INTEGER NOT NULL CHECK (b0 > 0),
-  b INTEGER NOT NULL CHECK (b > 0),
-  original_ledger_json TEXT NOT NULL, -- ParsedDeliveryBudget JSON including debtClaim evidence
-  surface_snapshot_json TEXT NOT NULL,
-  original_section TEXT,
-  config_snapshot_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  CHECK (b0 > 0)
-);
-
-CREATE TABLE review_budget_snapshots (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL REFERENCES runs(id),
-  phase TEXT,
-  iteration INTEGER,
-  current_ledger_json TEXT NOT NULL, -- ParsedDeliveryBudget JSON including debtClaim evidence
-  findings_json TEXT NOT NULL,
-  assessments_json TEXT NOT NULL, -- effective merged set (current overlay ∪ persisted unchanged)
-  derived_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX idx_review_budget_snapshots_run
-  ON review_budget_snapshots(run_id, created_at);
-```
-
-`created_at` is SQLite `datetime('now')` (second resolution). Do **not** order snapshots by `created_at` alone. `listSnapshots` uses `ORDER BY created_at ASC, rowid ASC`. `latestSnapshot` uses `ORDER BY created_at DESC, rowid DESC LIMIT 1`. The implicit `rowid` is the insertion-order tie-breaker (UUID `id` is the PK, so `rowid` remains available). The memory store assigns a monotonic `seq` per insert and sorts `(createdAt, seq)` the same way.
-
-No `UPDATE` of `review_budget_baselines.b0`. This slice never `UPDATE`s the baselines row. Slice 07 may add a decisions table for governing `B`; until then `b` stays equal to `b0`.
-
-`b0 > 0` enforces the empty-table ban at the DB layer.
-
-### 4.3 Store contract — `src/control-plane/review-budget-store.ts` (new)
+This slice owns payloads. Encode/decode helpers live here; they import `RecordStore` **types** from slice 10, not a 06 copy of the interface.
 
 ```typescript
+export type BudgetRecordKind = "baseline" | "snapshot";
+
 export type CaptureKind = "initial" | "opt_in";
 
+export interface BudgetBaselinePayload {
+	kind: "baseline";
+	id: string;
+	runId: string;
+	captureKind: CaptureKind;
+	b0: number;
+	b: number; // governing B; equals b0 until slice 07
+	originalLedger: ParsedDeliveryBudget;
+	surface: SurfaceSnapshot;
+	originalSection: string | null;
+	configSnapshot: Omit<ReviewBudgetConfig, "mode">;
+	createdAt: string;
+}
+
+export interface BudgetSnapshotStepKey {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+}
+
+export interface BudgetSnapshotPayload {
+	kind: "snapshot";
+	id: string;
+	runId: string;
+	stepKey: BudgetSnapshotStepKey;
+	currentLedger: ParsedDeliveryBudget;
+	findings: FindingDelta[];
+	assessments: CreditAssessmentInput[]; // effective merged set
+	baselineAssessment?: BaselineAssessment; // first snapshot only; omit later
+	createdAt: string;
+	// derived forecasts are NOT authoritative on this line
+}
+
+export function baselineIdempotencyKey(runId: string): string;
+export function snapshotIdempotencyKey(
+	runId: string,
+	stepKey: BudgetSnapshotStepKey,
+): string;
+```
+
+`appendSnapshot` on the facade may still accept a `derived` object to write into the **index cache** after a successful record append; that object is not required on the record payload.
+
+### 4.3 Facade — `src/control-plane/review-budget-store.ts` (new)
+
+```typescript
 export interface ReviewBudgetBaseline {
 	id: string;
 	runId: string;
 	captureKind: CaptureKind;
 	b0: number;
 	b: number;
-	originalLedger: ParsedDeliveryBudget; // full work items including debtClaim evidence
+	originalLedger: ParsedDeliveryBudget;
 	surface: SurfaceSnapshot;
 	originalSection: string | null;
 	configSnapshot: Omit<ReviewBudgetConfig, "mode">;
@@ -737,10 +771,11 @@ export interface ReviewBudgetSnapshotRecord {
 	runId: string;
 	phase: string | null;
 	iteration: number | null;
-	currentLedger: ParsedDeliveryBudget; // full work items including debtClaim evidence
+	stepName?: string;
+	currentLedger: ParsedDeliveryBudget;
 	findings: FindingDelta[];
-	assessments: CreditAssessmentInput[]; // effective merged set persisted for the next apply
-	derived: DerivedBudgetResult;
+	assessments: CreditAssessmentInput[];
+	derived: DerivedBudgetResult | null; // index cache; recompute if null
 	createdAt: string;
 }
 
@@ -758,33 +793,109 @@ export type CaptureBaselineResult =
 
 export interface ReviewBudgetStore {
 	getBaseline(runId: string): ReviewBudgetBaseline | null;
-	/** CAS insert. Duplicate run_id returns created: false with the stored row. */
+	/** CAS: RecordStore append of kind baseline. Duplicate key returns created: false. */
 	captureBaseline(input: CaptureBaselineInput): CaptureBaselineResult;
 	appendSnapshot(input: {
 		runId: string;
+		stepName: string;
 		phase?: string;
 		iteration?: number;
 		currentLedger: ParsedDeliveryBudget;
 		findings: FindingDelta[];
-		assessments: CreditAssessmentInput[]; // effective merged set
-		derived: DerivedBudgetResult;
+		assessments: CreditAssessmentInput[];
+		derived?: DerivedBudgetResult; // cache only
 	}): ReviewBudgetSnapshotRecord;
 	latestSnapshot(runId: string): ReviewBudgetSnapshotRecord | null;
 	listSnapshots(runId: string): ReviewBudgetSnapshotRecord[];
 }
+
+export function createReviewBudgetStore(
+	recordStore: RecordStore,
+	index?: ReviewBudgetIndex,
+): ReviewBudgetStore;
 ```
 
-`latestSnapshot` / `listSnapshots` **must** use the insertion-order tie-breaker above. Do not `ORDER BY created_at` without `rowid` (SQLite) or insertion `seq` (memory).
+Reads prefer the index when present and complete; on miss they reconstruct from `recordStore.listLines(runId, "budget")` (or the frozen equivalent) in **insertion order**. Writes always append the record line first (or `created: false`), then upsert the index. `captureBaseline` computes `b0 = sumEffort(parsed.workItems)` and rejects `b0 <= 0` before append.
 
-SQL only in `src/control-plane/review-budget-sqlite.ts`. Memory in `src/control-plane/review-budget-memory.ts`. Re-export from `src/control-plane/index.ts`.
+`latestSnapshot` / `listSnapshots` follow record insertion order. Do not `ORDER BY created_at` without `record_seq`.
 
-`captureBaseline` computes `b0 = sumEffort(parsed.workItems)` and rejects `b0 <= 0` before insert (defense in depth).
+**Do not** ship `review-budget-memory.ts` as a second source of truth. Tests construct `createReviewBudgetStore(memoryRecordStore)` (optionally with a SQLite index). **Do not** ship `createSqliteReviewBudgetStore` that writes SQLite without going through `RecordStore`.
 
-- [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, `b0 > 0` CHECK, FK to `runs`).
+### 4.4 Rebuildable SQLite index — `src/db/schema.ts` + `src/control-plane/review-budget-index.ts` (new)
+
+Append after v7 (`:450–505`). Bump tests that hardcode `getMaxKnownSchemaVersion() === 7` (`test/unit/db/schema.test.ts:28–40`, `:166`; `schema-v6.test.ts`; `schema-v7.test.ts:71`). These tables are an **index**, not the record.
+
+```sql
+CREATE TABLE review_budget_baselines (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+  record_idempotency_key TEXT NOT NULL UNIQUE,
+  capture_kind TEXT NOT NULL CHECK (capture_kind IN ('initial', 'opt_in')),
+  b0 INTEGER NOT NULL CHECK (b0 > 0),
+  b INTEGER NOT NULL CHECK (b > 0),
+  original_ledger_json TEXT NOT NULL, -- ParsedDeliveryBudget JSON including debtClaim evidence
+  surface_snapshot_json TEXT NOT NULL,
+  original_section TEXT,
+  config_snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  CHECK (b0 > 0)
+);
+
+CREATE TABLE review_budget_snapshots (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  record_idempotency_key TEXT NOT NULL UNIQUE,
+  record_seq INTEGER NOT NULL,
+  step_name TEXT,
+  phase TEXT,
+  iteration INTEGER,
+  current_ledger_json TEXT NOT NULL,
+  findings_json TEXT NOT NULL,
+  assessments_json TEXT NOT NULL,
+  derived_json TEXT, -- cache of DerivedBudgetResult; nullable; recompute from record if null
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_review_budget_snapshots_run
+  ON review_budget_snapshots(run_id, record_seq);
+```
+
+Index `listSnapshots` uses `ORDER BY record_seq ASC`. `latestSnapshot` uses `ORDER BY record_seq DESC LIMIT 1`. `record_seq` is the RecordStore insertion ordinal for that run’s budget stream (not SQLite `rowid`, which can diverge after a rebuild).
+
+No `UPDATE` of `review_budget_baselines.b0`. This slice never `UPDATE`s the baselines index row except as a reindex upsert of the same record line. Slice 07 may append **decision** record lines for governing `B`; until then `b` stays equal to `b0`.
+
+`b0 > 0` enforces the empty-table ban at the index layer.
+
+SQL only in `src/control-plane/review-budget-index.ts`. Re-export facade + index helpers from `src/control-plane/index.ts`.
+
+```typescript
+export interface ReviewBudgetIndex {
+	upsertBaseline(baseline: ReviewBudgetBaseline, idempotencyKey: string): void;
+	upsertSnapshot(
+		snapshot: ReviewBudgetSnapshotRecord,
+		idempotencyKey: string,
+		recordSeq: number,
+	): void;
+	getBaseline(runId: string): ReviewBudgetBaseline | null;
+	latestSnapshot(runId: string): ReviewBudgetSnapshotRecord | null;
+	listSnapshots(runId: string): ReviewBudgetSnapshotRecord[];
+}
+
+export function reindexReviewBudget(
+	recordStore: RecordStore,
+	index: ReviewBudgetIndex,
+	runId: string,
+): void;
+```
+
+`reindexReviewBudget` walks budget lines in insertion order and upserts by `record_idempotency_key`. It never invents a baseline or snapshot that has no record line. Slice 10’s later `5x records index` should call this helper; this slice does not add that CLI.
+
+- [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`).
 - [ ] Update version assertions from 7 → 8.
-- [ ] SQLite + memory implementations.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts` run against both impls: capture once; second capture is no-op on `b0`; append snapshots ordered; **same-`created_at` pair returns in insertion order** (`latestSnapshot` is the second insert); missing run FK fails on SQLite; **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same.
-- [ ] Do not import `bun:sqlite` from the interface file or from command handlers (handlers land in Phase 6–8).
+- [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once; second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same.
+- [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments; derived cache may be recomputed; **no index row appears for a run with zero budget lines**.
+- [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
+- [ ] Do not add a SQLite-backed `RecordStore` implementation in this slice.
 
 ---
 
@@ -910,7 +1021,7 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ## Phase 6: Validate, derive, persist, decorate
 
-**Completion gate:** Recording a plan-review verdict on an `active` run writes **exactly one** snapshot **in the same transaction** as the unique `steps` insert, and a `budget` object on `result_json` / validate envelope. A failed or duplicate record writes no snapshot. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten. Direct `--record` capture in `mode=enforced` emits the reserved-mode warning.
+**Completion gate:** Recording a plan-review verdict on an `active` run writes **exactly one** budget snapshot **line** in the same `RecordStore.atomicAppend` as the unique reviewer step line, projects both into the SQLite index, and a `budget` object on `result_json` / validate envelope. A failed or duplicate record writes no snapshot line. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten. Direct `--record` capture in `mode=enforced` emits the reserved-mode warning.
 
 ### 6.1 Shared apply function — `src/review-budget/apply.ts` (new)
 
@@ -919,6 +1030,7 @@ This is the only place handlers call for budget **computation** and baseline saf
 ```typescript
 export interface PendingBudgetSnapshot {
 	runId: string;
+	stepName: string; // reviewer step_name used in snapshotIdempotencyKey
 	phase: string | undefined;
 	iteration: number | undefined;
 	currentLedger: ParsedDeliveryBudget;
@@ -929,6 +1041,7 @@ export interface PendingBudgetSnapshot {
 
 export interface ApplyPlanReviewBudgetInput {
 	runId: string;
+	stepName: string; // reviewer step_name; stamped onto pendingSnapshot for the snapshot idempotency key
 	phase: string | undefined;
 	iteration: number | undefined;
 	planMarkdown: string;
@@ -956,7 +1069,7 @@ Algorithm:
 2. If `config.mode === "off"` → `skipped: off`.
 3. `baseline = store.getBaseline(runId)`.
 4. If no baseline and `hasPriorPlanReviewerStep` and not `optInBaseline` → `skipped: v1_compat`.
-5. If no baseline and (no prior steps or opt-in): call `ensurePlanReviewBaseline` (Phase 7) with the same `warn` callback — **do not** capture inline. That helper parses, CAS-inserts, and emits the reserved-mode warning on every first capture including this safety-net path. On ensure error, return the parse/capture code. Do not invent `B0 = 0`.
+5. If no baseline and (no prior steps or opt-in): call `ensurePlanReviewBaseline` (Phase 7) with the same `warn` callback — **do not** capture inline. That helper parses, CAS-appends the baseline **record line**, and emits the reserved-mode warning on every first capture including this safety-net path. On ensure error, return the parse/capture code. Do not invent `B0 = 0`.
 6. If baseline exists: parse **current** plan (fail closed — do not keep a stale `W` from a broken table). Parser already required complete `debtClaim` evidence on every negative row; if a stored/injected ledger nevertheless has `architectureDelta < 0` without `isCompleteDebtClaimEvidence(item.debtClaim)`, fail `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED` (do not derive provisional `N` from id+coupling alone).
 7. If this is the first snapshot for the run (`latestSnapshot == null`): require `verdict.baselineAssessment`; map `I`. If later snapshots: if `baselineAssessment` present → error `BASELINE_ASSESSMENT_UNEXPECTED`.
 8. For `active` runs, every `items[]` entry must include integer `effortDelta >= 0` and `architectureDelta` in the allowed set; `architectureDelta < 0` requires `coupling`. Missing fields → `BUDGET_ITEM_FIELDS_REQUIRED` with item id. Present `creditClaim` must include non-empty `targetPhase`, non-empty `before`/`after`, and valid minimal deltas (same sets as the parser). `creditClaim.creditClaimId` must not equal any current-ledger author `debtClaim.debtClaimId` (`CREDIT_CLAIM_ID_COLLISION`). Map each present `item.creditClaim` onto `FindingDelta.creditClaim`: `debtClaimId` = `creditClaim.creditClaimId`, `coupling` = item `coupling`, plus `targetPhase`, minimal deltas, `before`, and `after`.
@@ -970,26 +1083,34 @@ Algorithm:
    - Reviewer-item `creditClaim` does not need a duplicate `--credit-assessment`.
    - Persist this merged set on `pendingSnapshot.assessments`.
 11. `deriveBudget({ ..., assessments: effectiveAssessments })` — never the raw verdict array alone. Author `N` comes from complete persisted `debtClaim` + eligible intrinsic assessment.
-12. **Do not** `appendSnapshot` here.
-13. Return `{ status: "applied", verdict: decorated, pendingSnapshot }`. Do not mutate `readiness` or `items`.
+12. **Do not** append a snapshot record line here (no `appendSnapshot` / `atomicAppend`).
+13. Return `{ status: "applied", verdict: decorated, pendingSnapshot }` with `stepName` from the input. Do not mutate `readiness` or `items`.
 
 `hasPriorPlanReviewerStep`: injected boolean. Callers compute it from `getStepsByPhase(db, runId, "plan")` filtering `step_name` starting with `reviewer:` (`src/db/operations-v1.ts:250–254`). Do not pass `Database` into `apply.ts`.
 
 ### 6.2 Atomic snapshot + step persist
 
-`recordStepInternal` already accepts an optional `dbContext` (`src/commands/run-v1.handler.ts:1193–1201`). Budget-recording handlers **must not** let it re-resolve a second Database.
+`recordStepInternal` already accepts an optional `dbContext` (`src/commands/run-v1.handler.ts:1193–1201`). Budget-recording handlers **must not** let it re-resolve a second Database **or** a second `RecordStore`.
 
-**Context factory** (same seam as `PromptCommandContext` / `src/commands/prompt-context.ts`): `src/commands/review-budget-context.ts` runs **one** `resolveDbContext`, constructs `ReviewBudgetStore` from that Database, and returns `{ db, config, controlPlane, store }`. Protocol/invoke handlers call the factory (or accept an injected one in tests). They do **not** import `bun:sqlite`.
+**Context factory** (same seam as `PromptCommandContext` / `src/commands/prompt-context.ts`): `src/commands/review-budget-context.ts` resolves **one** `RecordStore` from slice 10’s factory, **one** `resolveDbContext` Database for the v8 index and v1 `steps` projection, constructs `createReviewBudgetStore(recordStore, index)`, and returns `{ db, config, controlPlane, recordStore, store }`. Protocol/invoke handlers call the factory (or accept an injected one in tests). They do **not** import `bun:sqlite` and do **not** construct a SQLite-only budget store.
 
-Extend `recordStepInternal` with optional `onUniqueInsert?: () => void`. After pre-checks, wrap `recordStep` + the hook in `db.transaction(() => { ... })()` on the **same** Database:
+**Unique insert path** — `recordPlanReviewerStepWithSnapshot` (beside the context factory) is the production hook. It:
 
-- Unique insert (`recorded: true`): run `onUniqueInsert` inside the transaction (production: `store.appendSnapshot(pendingSnapshot)`). The SQLite store **must** use this same `Database` instance — do not open a second connection inside `appendSnapshot`.
-- Duplicate (`recorded: false`): skip the hook.
-- If `recordStep` or `onUniqueInsert` throws, the transaction aborts — neither row remains.
+1. Builds the pending snapshot’s RecordStore op with `snapshotIdempotencyKey(runId, { stepName, phase, iteration })` matching the step’s idempotency tuple.
+2. Calls `recordStore.atomicAppend([stepAppend, budgetSnapshotAppend])` on that **same** `RecordStore`.
+3. Unique success (`created: true`): project the step into SQLite `steps` (existing `recordStep` row shape, including decorated `result_json`) and upsert the budget snapshot into the v8 index (including optional `derived` cache). Do not open a second RecordStore or Database inside the append.
+4. Duplicate (`created: false`): skip projection; return the existing step (`recorded: false`). No second budget line, no second index row.
+5. Throw: neither record line is durable; SQLite index and `steps` are unchanged.
 
-Optional thin wrapper `recordPlanReviewerStepWithSnapshot` beside the context factory is sugar that passes that hook. Prefer the hook on `recordStepInternal` so `src/review-budget/` stays free of `bun:sqlite`.
+If slice 10 has not yet switched the generic `recordStepInternal` body to RecordStore, this wrapper **still** uses `atomicAppend` as the uniqueness decision and treats SQLite `recordStep` as a projection of the successful batch. Do **not** restore P1.1 as a SQLite-only `db.transaction` around `steps` + budget tables — that would re-introduce SQLite-only authority.
 
-Failed record leaves no snapshot. A retry of a failed unique insert may snapshot once, when the step actually lands. A retry of a successful unique insert snapshots zero additional times. Exactly one snapshot exists per successfully recorded unique reviewer step.
+Optional: keep `onUniqueInsert` on `recordStepInternal` only as a compatibility shim that **must not** be the budget-authority write. Prefer the wrapper so `src/review-budget/` stays free of `bun:sqlite` and of RecordStore layout.
+
+Failed unique append leaves no snapshot line. A retry of a failed unique append may snapshot once, when the step actually lands. A retry of a successful unique append snapshots zero additional times. Exactly one snapshot line exists per successfully recorded unique reviewer step.
+
+Index write after a successful `atomicAppend`: if the index upsert throws, the record lines remain; the command may fail the process, but `reindexReviewBudget` + `records index` (slice 10) repair the cache. Never delete a successful budget line because the index failed.
+
+**Baseline CAS** uses `captureBaseline` (single budget-line append, not `atomicAppend` with a step). Safety-net capture in apply still goes through `ensurePlanReviewBaseline` → facade → RecordStore.
 
 ### 6.3 Protocol validate — `src/commands/protocol.handler.ts`
 
@@ -1000,11 +1121,11 @@ After `protocolValidateCore` and before `outputSuccess` (`:378–483`):
 - On `applied`, replace `validated` with the decorated verdict so the envelope includes `budget`.
 - On `skipped`, leave `validated` unchanged.
 
-`--record` persist path (`:492–515`): when `applied` and `pendingSnapshot` is set, call `recordStepInternal` with the context factory’s `dbContext` and `onUniqueInsert: () => store.appendSnapshot(pendingSnapshot)`. Keep the existing stderr-on-record-failure contract (no second stdout envelope). When not `applied`, keep today’s `recordStepInternal` call (no hook).
+`--record` persist path (`:492–515`): when `applied` and `pendingSnapshot` is set, call `recordPlanReviewerStepWithSnapshot` with the context factory’s `{ recordStore, store, dbContext }` (atomicAppend of step + snapshot, then index projection). Keep the existing stderr-on-record-failure contract (no second stdout envelope). When not `applied`, keep today’s `recordStepInternal` call (no budget line).
 
 New params on `ProtocolValidateParams` (`:37–50`): `optInBudgetBaseline?: boolean`. Wire `--opt-in-budget-baseline` on `validate reviewer` only (`protocol.ts:102–137`).
 
-`--record` is not required to compute (validate-only can still decorate the envelope) but snapshots append **only** with `--record`, inside the step transaction. Validate-without-record still **computes and returns** `budget` in the envelope when a baseline exists. Capture-on-validate-without-record would create baselines during dry runs — **do not**. If no baseline and no `--record`, skip capture; if extra fields are missing, do not fail v1 dry-validate unless `--record` or an existing baseline makes the run `active`.
+`--record` is not required to compute (validate-only can still decorate the envelope) but snapshot **lines** append **only** with `--record`, via `atomicAppend` with the unique step line. Validate-without-record still **computes and returns** `budget` in the envelope when a baseline exists. Capture-on-validate-without-record would create baselines during dry runs — **do not**. If no baseline and no `--record`, skip capture; if extra fields are missing, do not fail v1 dry-validate unless `--record` or an existing baseline makes the run `active`.
 
 Tighten:
 
@@ -1015,7 +1136,7 @@ Direct `protocol validate --record` with no prior template render is a first-cap
 
 ### 6.4 Invoke record path — `src/commands/invoke.handler.ts`
 
-After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (decorate output). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply, then `recordStepInternal` with the same context-factory `dbContext` and `onUniqueInsert` snapshot hook in the existing post-envelope record block (`:648–684`).
+After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (decorate output). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply, then `recordPlanReviewerStepWithSnapshot` with the same context-factory `{ recordStore, store, dbContext }` in the existing post-envelope record block (`:648–684`).
 
 Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module already has a parallel option surface; if that is noisy, document opt-in via `protocol validate --record --opt-in-budget-baseline` only and skip the invoke flag. Prefer **one** opt-in flag on both commands for skill simplicity.
 
@@ -1024,15 +1145,15 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
 ### 6.5 Tests
 
 - [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged) **when evidence fields are unchanged**; **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins; **`--credit-assessment` for an unknown `DCn` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`**; **changed `before`/`targetPhase` on an existing `DCn` requires a current assessment**; **author `N` uses persisted `debtClaim` architecture, not a reviewer `creditClaim` on a different id**; **reviewer `creditClaim` colliding with author `DC0` fails `CREDIT_CLAIM_ID_COLLISION`**; injected ledger with negative row and only id+coupling (no evidence) fails `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED`.
-- [ ] `test/unit/review-budget/persist-record.test.ts` (or store + handler): step-insert failure (terminal run / `MAX_STEPS_EXCEEDED` / thrown `RecordError`) leaves **zero** snapshots; unique success leaves **exactly one**; idempotent retry (`recorded: false`) leaves still **one**; injected `appendSnapshot` throw rolls back the step row (SQLite).
-- [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot.
+- [ ] `test/unit/review-budget/persist-record.test.ts` (facade + `MemoryRecordStore`, and SQLite index projection): unique-append failure (injected `atomicAppend` throw / terminal run / `MAX_STEPS_EXCEEDED`) leaves **zero** snapshot lines and **zero** index snapshot rows; unique success leaves **exactly one** line and matching index row; idempotent retry (`created: false`) leaves still **one**; **SQLite `steps` projection failure after successful atomicAppend does not append a second budget line on retry**; wiping the index and reindexing still shows one snapshot.
+- [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot **line**.
 - [ ] Do not assert any prompt/choose routing.
 
 ---
 
 ## Phase 7: Baseline capture, preflight, mid-review opt-in
 
-**Completion gate:** Rendering `reviewer-plan` (not continued) on a new run with a valid table captures `B0` before the reviewer runs. Missing table returns `BUDGET_SECTION_MISSING` with a preflight message. A run that already has a plan-reviewer step and no baseline does not capture. `--opt-in-budget-baseline` captures `capture_kind = opt_in` from the current table.
+**Completion gate:** Rendering `reviewer-plan` (not continued) on a new run with a valid table appends a baseline **record line** (`B0`) before the reviewer runs. Missing table returns `BUDGET_SECTION_MISSING` with a preflight message. A run that already has a plan-reviewer step and no baseline line does not capture. `--opt-in-budget-baseline` captures `capture_kind = opt_in` from the current table.
 
 ### 7.1 Ensure helper — `src/review-budget/ensure-baseline.ts` (new)
 
@@ -1057,7 +1178,7 @@ Error message for missing section must tell the orchestrator to run an author pr
 
 ### 7.2 Template render hook — `src/commands/template.handler.ts`
 
-After run context is resolved and the template is selected (`template.handler.ts:75+`, using `resolveAndRenderTemplate` in `template-vars.ts`): if `loadTemplate` selected name base is `reviewer-plan` **without** `-continued`, and a `run_id` is present, load plan markdown from the effective plan path, open `ReviewBudgetStore`, call `ensurePlanReviewBaseline` with `optIn: false`. On error, `outputError` (fail closed) so the reviewer is not invoked against an unbudgeted new run.
+After run context is resolved and the template is selected (`template.handler.ts:75+`, using `resolveAndRenderTemplate` in `template-vars.ts`): if `loadTemplate` selected name base is `reviewer-plan` **without** `-continued`, and a `run_id` is present, load plan markdown from the effective plan path, open the review-budget context (`RecordStore` + facade), call `ensurePlanReviewBaseline` with `optIn: false`. On error, `outputError` (fail closed) so the reviewer is not invoked against an unbudgeted new run.
 
 Do **not** hook `reviewer-plan-continued` (baseline must already exist or the run is v1_compat).
 
@@ -1120,7 +1241,7 @@ review_budget?: {
 
 If `mode === "enforced"`, still `enforcement_implemented: false`.
 
-Prefer latest snapshot’s `derived` over live recompute for the header so `run state` matches the last recorded review. If the plan file changed since the last snapshot, still show snapshot numbers and add `stale_plan: true` when `sumEffort(currentParse) !== snapshot.W` so operators see drift without silently mixing sources.
+Prefer latest snapshot’s cached `derived` over live recompute for the header so `run state` matches the last recorded review. If `derived` is missing on the index, recompute from the snapshot’s ledger + findings + assessments via `deriveBudget` (must match the pure module). If the plan file changed since the last snapshot, still show snapshot numbers and add `stale_plan: true` when `sumEffort(currentParse) !== snapshot.W` so operators see drift without silently mixing sources. If the index is empty but RecordStore has budget lines, reconstruct via `reindexReviewBudget` or a read-through from the facade — never report `uninitialized` when a baseline line exists.
 
 ### 8.2 Text — `formatStateText` (`:635–675`)
 
@@ -1134,7 +1255,7 @@ Keep it one or two lines. Do not dump the ledger.
 
 ### 8.3 Tests
 
-- [ ] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture DB with baseline + snapshot; omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`.
+- [ ] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture **RecordStore** with baseline + snapshot lines (index may be empty — facade must reconstruct); omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`.
 
 ---
 
@@ -1237,7 +1358,7 @@ Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented unti
 
 ### 10.1 Public API — `src/index.ts`
 
-Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), `ReviewBudgetStore` types, `createMemoryReviewBudgetStore`, `createSqliteReviewBudgetStore`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers.
+Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), budget record-line types, `ReviewBudgetStore` types, `createReviewBudgetStore`, `reindexReviewBudget`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers. Do not export a SQLite-only budget store or a 06-defined `RecordStore`.
 
 ### 10.2 Compatibility matrix
 
@@ -1245,14 +1366,14 @@ Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), `ReviewBudg
 |------|----------|
 | v1 `protocol emit reviewer --ready` | unchanged JSON |
 | v1 `protocol validate reviewer` without run | unchanged |
-| `mode=off`, new plan, full plan-review loop | no baseline row; no `budget` on steps |
-| `advisory`, new plan with table | `B0` captured at `reviewer-plan` render; first record has `I` + `budget` |
-| `advisory`, new plan without table | `BUDGET_SECTION_MISSING` at render; no baseline |
-| `advisory`, negative row without Debt Claims evidence | parse/capture fails (`BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`); no baseline |
+| `mode=off`, new plan, full plan-review loop | no baseline **line**; no `budget` on steps |
+| `advisory`, new plan with table | `B0` **record line** at `reviewer-plan` render; first record has `I` + `budget` |
+| `advisory`, new plan without table | `BUDGET_SECTION_MISSING` at render; no baseline line |
+| `advisory`, negative row without Debt Claims evidence | parse/capture fails (`BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`); no baseline line |
 | Mid-review run (reviewer steps exist, no baseline) | v1_compat; v1 verdict records; no capture |
 | Opt-in flag + table on mid-review run | `capture_kind=opt_in`; subsequent records decorate |
 | Reviewer JSON with `"budgetBand":"within_standard"` | `INVALID_STRUCTURED_OUTPUT` |
-| Malformed table after baseline exists | record fails; `B0` row untouched |
+| Malformed table after baseline exists | record fails; `B0` **line** untouched |
 | `enforced` mode | warning on **every** first capture (render **and** direct `--record`); same as advisory routing |
 | Implementation-review `protocol validate reviewer --phase phase-1` | no plan-budget apply; v1 item contract |
 
@@ -1260,7 +1381,7 @@ Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), `ReviewBudg
 
 New `review-budget.test.ts` (spawn CLI, `cleanGitEnv()`, `stdin: "ignore"`, `timeout: 15000`+):
 
-- Temp repo + `5x init` + plan with budget table + `run init` + `template render reviewer-plan` creates baseline (query via `run state` JSON).
+- Temp repo + `5x init` + plan with budget table + `run init` + `template render reviewer-plan` creates baseline (query via `run state` JSON **and** RecordStore/facade — not SQLite-only). Process-durable CLI tests require a process-durable `RecordStore` impl (slice 10 working-tree). Until that impl merges, cover the same path with `MemoryRecordStore` in unit/integration-harness tests; do not green the matrix by writing SQLite-only baselines.
 - `protocol emit` + `protocol validate --record --phase plan` decorates and persists.
 - Existing plan without section: render fails with `BUDGET_SECTION_MISSING`.
 - Plan with negative row and no Debt Claims subsection: render/capture fails with `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`.
@@ -1284,26 +1405,26 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/review-budget/arithmetic.ts` | **New.** Pure derivation; `eligibleN` requires complete persisted evidence. |
 | `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; bind assessments to persisted claims; returns `pendingSnapshot`; no snapshot write. |
 | `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture. |
-| `src/commands/review-budget-context.ts` | **New.** One `resolveDbContext` + store factory for protocol/invoke (handlers do not import `bun:sqlite`). |
+| `src/review-budget/record-lines.ts` | **New.** Budget-line payloads, idempotency keys, encode/decode. Consumes slice-10 `RecordStore` types. |
+| `src/commands/review-budget-context.ts` | **New.** One `RecordStore` + one `resolveDbContext` + facade/index factory (handlers do not import `bun:sqlite`). |
 | `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser including `### Debt Claims` evidence. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
 | `src/config.ts` | `ReviewBudgetConfigSchema`; `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
-| `src/db/schema.ts` | Migration v8; max version 8; snapshot index `(run_id, created_at)` plus `rowid` order. |
+| `src/db/schema.ts` | Migration v8 **index** tables; max version 8; `record_idempotency_key` + `record_seq` order. |
 | `src/control-plane/ids.ts` | `createReviewBudgetId`. |
-| `src/control-plane/review-budget-store.ts` | **New.** Store interface. |
-| `src/control-plane/review-budget-sqlite.ts` | **New.** SQLite impl; `listSnapshots`/`latestSnapshot` order by `(created_at, rowid)`. |
-| `src/control-plane/review-budget-memory.ts` | **New.** Memory impl; insertion-seq tie-breaker. |
-| `src/control-plane/index.ts` | Re-exports. |
+| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. |
+| `src/control-plane/review-budget-index.ts` | **New.** Rebuildable SQLite index + `reindexReviewBudget`. |
+| `src/control-plane/index.ts` | Re-exports. Do **not** add `record-store.ts` in this slice. |
 | `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; `CreditClaim` evidence fields remain reviewer-introduced only. |
 | `src/protocol-normalize.ts` | Pass through new fields. |
 | `src/commands/protocol.ts` | Emit/validate flags. |
 | `src/commands/protocol-emit.handler.ts` | Parse assessment flags and item extras. |
-| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate; atomic snapshot+step persist on `--record`; pass `warn` into apply/ensure. |
+| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate; `atomicAppend` step+snapshot on `--record`; pass `warn` into apply/ensure. |
 | `src/commands/protocol-helpers.ts` | Only if reject helper is called from shared validate. |
-| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; atomic snapshot+step persist on `--record`; optional opt-in flag. |
-| `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render. |
-| `src/commands/run-v1.handler.ts` | `review_budget` on state JSON/text; optional `onUniqueInsert` inside the `recordStep` transaction. |
+| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; `atomicAppend` step+snapshot on `--record`; optional opt-in flag. |
+| `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render via RecordStore facade. |
+| `src/commands/run-v1.handler.ts` | `review_budget` on state JSON/text (facade/index; reconstruct from record lines if index empty). |
 | `src/templates/default-artifacts.ts` | Delivery Budget section plus Debt Claims subsection. |
 | `src/templates/author-generate-plan.md` | Require scored table and complete debt-claim evidence. |
 | `src/templates/author-process-plan-review.md` | Stable IDs + Addresses + keep `#### DCn` evidence in sync. |
@@ -1319,7 +1440,8 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `test/unit/review-budget/*.test.ts` | **New** (apply, arithmetic, persist-record, ensure-baseline). |
 | `test/unit/parsers/delivery-budget.test.ts` | **New.** |
 | `test/unit/parsers/plan.test.ts` | Placement regressions. |
-| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** |
+| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index. |
+| `test/unit/control-plane/review-budget-index.test.ts` | **New.** Reindex from record lines. |
 | `test/unit/config.test.ts`, `config-v1.test.ts`, `config-registry.test.ts` | Defaults and layering. |
 | `test/unit/protocol.test.ts`, `protocol-emit.test.ts`, `protocol-validate.test.ts`, `protocol-helpers.test.ts` | New fields; v1 compat. |
 | `test/unit/harnesses/opencode-skills.test.ts`, `cursor-skills.test.ts` | Skill string updates. |
@@ -1335,11 +1457,12 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | Unit | `parsers/delivery-budget.test.ts` | Canonical table (W2 effort `5` + complete `#### DC0` evidence); every `DeliveryBudgetParseCode`; empty ≠ zero; effort `4` rejected; negative row without evidence rejected |
 | Unit | `parsers/plan.test.ts` | Budget section does not break phase/checklist parse |
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
-| Unit | `schema-v8.test.ts` | v8 tables, v7→v8, CHECKs, unique `run_id` |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS on SQLite **and** memory; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence** |
+| Unit | `schema-v8.test.ts` | v8 **index** tables, v7→v8, CHECKs, unique `run_id` + `record_idempotency_key` |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; no SQLite-only authority |
+| Unit | `review-budget-index.test.ts` | Wipe index, `reindexReviewBudget` restores baselines/ledgers/assessments from record lines |
 | Unit | `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys |
 | Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots; assessments bind to persisted claims; incomplete author evidence fails closed |
-| Unit | `persist-record.test.ts` | Failed/idempotent step record leaves no extra snapshot; unique success is 1:1; SQLite rollback if snapshot insert throws |
+| Unit | `persist-record.test.ts` | Failed/idempotent `atomicAppend` leaves no extra snapshot **line**; unique success is 1:1 with the step line; index projection failure does not duplicate the record on retry |
 | Unit | `ensure-baseline` + template/invoke unit if injectable | Capture before invoke; missing section; **enforced warn on every first-capture path including direct `--record`** |
 | Unit | run-state handler | `review_budget` shapes; text line |
 | Unit | harness skill tests | Mentions of emit flags / preflight / new-or-changed credit assessments |
@@ -1364,9 +1487,11 @@ Edge cases (must appear in unit tests):
 - Reviewer-emitted `budget` object.
 - `b0 > 0` CHECK: cannot insert 0 even if a test bypasses the parser.
 - Store round-trip: `originalLedger` / `currentLedger` retain `targetPhase`, minimal deltas, `before`, `after`.
-- Step record failure after apply: zero snapshots.
-- Duplicate step re-record: still exactly one snapshot.
-- Two snapshots in the same `created_at` second: `latestSnapshot` is the later insert.
+- Record line is present after capture even if the SQLite index is wiped and rebuilt.
+- No baseline index row when RecordStore has no baseline line.
+- Step/`atomicAppend` failure after apply: zero snapshot lines.
+- Duplicate step re-record: still exactly one snapshot line.
+- Two snapshots in the same `createdAt` second: `latestSnapshot` is the later append (record insertion order).
 - Direct `protocol validate --record` with `mode=enforced` and no prior render: reserved-mode warning emitted.
 
 ---
@@ -1377,7 +1502,8 @@ Edge cases (must appear in unit tests):
 - **Deferred findings, accepted-risk ledger, continued-review hunk validation, `lateDiscovery`** — slice 07.
 - **Implementation-review four-class `scopeClass`, `planImpact`, `--credit-realization`, quality-gated shortcut** — `08-implementation-review-governance.plan-input.md`.
 - **Dashboard / browser budget UI** — `04-control-plane-dashboard.plan-input.md`.
-- **`RecordStore` / git-native JSONL records** — slice 10. Do not invent that interface here.
+- **`RecordStore` implementation, working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, progress resolution, doctor `records` check** — slice 10. This slice consumes the frozen Phase-1 interface (including budget-stream append/read and `atomicAppend`) and defines budget-line payloads/keys plus the SQLite index projection. Do not fork or re-declare `RecordStore` here. Do not ship a SQLite-backed `RecordStore`.
+- **SQLite-only `ReviewBudgetStore` as the system of record, or a later migration off SQLite-authored budget rows.** Forbidden by `207` §2.6.
 - **Changing default percentages after calibration** — open question in `206` §10.
 - **Rewriting `maxReviewIterations` or step-count `maxStepsPerRun`** — unchanged backstops.
 - **Auto-overwriting existing project `implementation-plan-template.md` on upgrade.**
@@ -1392,7 +1518,7 @@ Edge cases (must appear in unit tests):
 | 1 | Types + pure arithmetic + `B=4` fixtures | 1 day |
 | 2 | Delivery Budget parser + plan-parse regressions | 1–2 days |
 | 3 | `reviewBudget` config, registry, default TOML | 0.5–1 day |
-| 4 | Schema v8 + ReviewBudgetStore (SQLite + memory) | 1–2 days |
+| 4 | Budget record lines + RecordStore facade + v8 index | 1–2 days |
 | 5 | Protocol types, emit flags, normalize, reject aggregates | 1 day |
 | 6 | apply() + validate/invoke decorate/record | 2 days |
 | 7 | ensureBaseline, template/invoke hooks, opt-in | 1–2 days |
@@ -1401,11 +1527,17 @@ Edge cases (must appear in unit tests):
 | 10 | Integration matrix, exports, `bun test` | 1–2 days |
 | **Total** | | **10.5–16 days** |
 
-Phase 1 is a hard prerequisite to 2 and 6. Phase 4 is a hard prerequisite to 6–8. Phase 5 can overlap 4. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. If slice 10’s `RecordStore` appears mid-implementation, do **not** retarget persistence in this slice; keep `ReviewBudgetStore` and file a follow-up to dual-write.
+Phases 1–3 (types, parser, config) may proceed without slice 10. **Phase 4 and every later persistence/record path are blocked on slice 10 Phase 1** (frozen `RecordStore` + in-memory impl, including budget-stream append/read and atomic multi-append). Phase 4 is a hard prerequisite to 6–8. Phase 5 can overlap 4 once the freeze exists. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. Process-durable CLI integration tests wait for slice 10’s working-tree `RecordStore` impl; until then, persist tests use `MemoryRecordStore`. Do **not** retarget authority back to SQLite if the working-tree impl lags.
 
 ---
 
 ## Revision History
+
+### 1.3 — August 29, 2026
+
+Addresses **P0** in the **Addendum (2026-08-29) — Revision 1.2 final re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md`](../reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md). Prior P1.1–P1.4 and P2 items remain in force, with P1.1 atomicity remapped onto the shared `RecordStore` contract.
+
+1. **P0 — Canonical record-tier persistence.** Slice 10 Phase 1 (`RecordStore` interface + in-memory implementation, including budget-stream append/read and `atomicAppend`) is an explicit prerequisite before this slice’s persistence work. Authoritative `B0`, governing `B`, ledgers, assessments, and claims persist as RecordStore budget lines this slice defines (payloads and idempotency keys only). SQLite v8 tables are a rebuildable derived index/cache of those lines plus CLI-computed forecasts. `ReviewBudgetStore` is a facade over `RecordStore`, not a SQLite-only authority. This slice does not implement `RecordStore`, working-tree JSONL, or `records index`. P1.1 1:1 snapshot↔step is `atomicAppend` of the step line and a snapshot line keyed to the same idempotency tuple; idempotent retries add neither line; SQLite `steps`/budget rows are projections.
 
 ### 1.2 — August 29, 2026
 
@@ -1431,4 +1563,4 @@ Initial draft.
 
 ## Provenance
 
-v2 area 6 (`docs/v2/206-review-budget-governance.md`) addresses unbounded plan-review growth described in `docs/v2/200-overview.md` §1.4. This plan implements the **advisory** rollout step (`206` §8.2.1) from `docs/v2/plan-inputs/06-review-budget-advisory.plan-input.md`. Persistence follows the slice-3 control-plane store boundary (`205-prompt-queue-foundation-plan.md`). Enforcement, convergence routing, and human tradeoff gates are explicitly left to `07-plan-review-governance.plan-input.md`. Implementation-review budget inheritance is left to `08-implementation-review-governance.plan-input.md`.
+v2 area 6 (`docs/v2/206-review-budget-governance.md`) addresses unbounded plan-review growth described in `docs/v2/200-overview.md` §1.4. This plan implements the **advisory** rollout step (`206` §8.2.1) from `docs/v2/plan-inputs/06-review-budget-advisory.plan-input.md`. Persistence follows `207-state-segmentation.md` §2.6: budget baselines/ledgers/claims are repository **Record** tier via slice 10’s frozen `RecordStore`; SQLite is a rebuildable index (`docs/v2/plan-inputs/10-git-native-run-records.plan-input.md`). The control-plane facade lives beside the slice-3 store boundary (`205-prompt-queue-foundation-plan.md`). Enforcement, convergence routing, and human tradeoff gates are explicitly left to `07-plan-review-governance.plan-input.md`. Implementation-review budget inheritance is left to `08-implementation-review-governance.plan-input.md`.
