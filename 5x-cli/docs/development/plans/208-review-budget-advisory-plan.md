@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** August 29, 2026
-**Status:** Draft — revision 1.1 addressing staff review
+**Status:** Draft — revision 1.2 addressing staff review addendum (P1.4)
 
 ---
 
@@ -16,7 +16,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 
 **In scope:**
 
-- Required `Delivery Budget` + surface-snapshot sections in newly generated plans, with a fail-closed parser for stable IDs, effort, architecture delta, debt-claim metadata, and `Addresses`.
+- Required `Delivery Budget` + surface-snapshot sections in newly generated plans, with a fail-closed parser for stable IDs, effort, architecture delta, complete plan-side debt-claim evidence (`targetPhase`, minimal-compliant comparison, non-empty before/after), and `Addresses`.
 - `[reviewBudget]` config (`off` | `advisory` | reserved `enforced`), default `advisory`, layered like the rest of `5x.toml`.
 - `ReviewBudgetStore` (SQLite + memory) with UUID ids: immutable `B0`, original/current ledgers, surface snapshot, assessments, claims, and derived results.
 - Plan-review protocol emit/validate extensions: per-item deltas, `baselineAssessment`, `creditAssessments`. CLI-owned aggregates are derived, never reviewer-authored.
@@ -37,7 +37,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | Decision | Rationale |
 |----------|-----------|
 | **Pure arithmetic in `src/review-budget/`, not handlers** | Area 206 risk: “budget arithmetic is spread across handlers.” One module, integer `Math.ceil` / `Math.floor` / `Math.max` / `Math.min`, exhaustive fixtures including the documented `B = 4` example. |
-| **Fail-closed plan parse; never silent `B0 = 0`** | Plan-input assumption. Missing/malformed tables error with line-numbered diagnostics. Empty tables are not a zero baseline. |
+| **Fail-closed plan parse; never silent `B0 = 0`** | Plan-input assumption. Missing/malformed tables **or incomplete debt-claim evidence** error with line-numbered diagnostics. Empty tables are not a zero baseline. Negative rows without `targetPhase` / comparison / before/after cannot establish a ledger claim. |
 | **`ReviewBudgetStore` behind `src/control-plane/`, not `operations-v1.ts`** | Same boundary as `PromptStore` / `InvocationStore`. Handlers never import `bun:sqlite`. UUID PKs (`200` §3a #2). |
 | **Append-only snapshots; `B0` INSERT-once** | Editing plan prose must not rewrite the baseline. `captureBaseline` is CAS on `run_id`. Governing `B` is initialized to `B0`; human `B` changes are slice 07. |
 | **SQLite materialization now; RecordStore later** | Slice 10’s `RecordStore` is not frozen in-tree. Plan input 06 depends on slice 3 and must touch DB/store. Rows are immutable events so they can become a RecordStore index without a rewrite. |
@@ -47,8 +47,9 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | **`Addresses` + still-listed items define `R`** | Incorporated finding IDs drop out of `R` unless they still appear in the current verdict `items` (incomplete author claim). Explicit `addressed` / `still_open` enums are slice 07. |
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
 | **Snapshot + reviewer step are one SQLite transaction** | Appending a snapshot before `recordStepInternal` orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the same transaction as the unique `steps` insert on the same resolved Database. Failed or idempotent records insert no snapshot. |
-| **Carry forward unchanged debt-claim assessments** | First-seen (or changed) claims require a current `--credit-assessment`. Unchanged claims keep persisted eligibility so a later closure that omits them does not zero `N`/`D`/`E`. Current assessments overlay by `creditClaimId`. |
+| **Carry forward unchanged debt-claim assessments** | First-seen (or changed) claims require a current `--credit-assessment`. Unchanged includes evidence fields (`targetPhase`, minimal deltas, before/after), not only coupling and architectureDelta. Current assessments overlay by `creditClaimId` and must name a persisted claim. |
 | **Snapshot order is insertion-stable** | `datetime('now')` is second-resolution. `latestSnapshot` / `listSnapshots` order by `(created_at, rowid)` (memory: insertion sequence), not `created_at` alone. |
+| **Plan-side debt claims persist full §4.3 evidence** | A negative author row cannot earn `N`/`D` from `DCn` + coupling alone. The parser requires `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty before/after on every negative claim; ledger JSON is what later implementation review reconciles. `--credit-assessment` names that persisted id; reviewer-item `creditClaim` is only for claims the reviewer introduces. |
 
 ### References
 
@@ -101,7 +102,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **New behavior:**
 
-- New plans include `## Delivery Budget` and `### Surface Snapshot`. Parser failures are explicit.
+- New plans include `## Delivery Budget`, a `### Debt Claims` subsection for every negative architecture row, and `### Surface Snapshot`. Parser failures are explicit; incomplete debt evidence cannot become a baseline.
 - Before the first plan-reviewer invocation (when mode is not `off` and the run is not mid-review v1-compat), the CLI parses the table, sums effort into `B0`, and CAS-inserts an immutable baseline.
 - Reviewers may emit per-item deltas, first-review `baselineAssessment`, and per-claim `creditAssessments`. They must not emit totals or status.
 - On `protocol validate reviewer --phase plan --record` and `invoke reviewer --record` for plan phase, the CLI recomputes `W`/`R`/ceilings/bands, **atomically** persists a snapshot with the unique reviewer step, and decorates `result_json` with a `budget` object. Unchanged debt-claim assessments carry forward.
@@ -120,7 +121,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **All derivation lives in one pure module.** `src/review-budget/arithmetic.ts` takes parsed ledgers, verdict items, credit assessments, governing `B`/`B0`, and `ReviewBudgetConfig`, and returns `DerivedBudgetResult`. Handlers must not re-implement `S`/`E`/`A`/`D` or baseline direction. Tests of handlers mock or call this module; they do not duplicate formula strings.
 
-**Integer effort points; documented scales only.** Effort cells and `effortDelta` must be in `{1, 2, 3, 5, 8}` for plan rows and `effortDelta >= 0` integer for findings (0 allowed for findings that request no extra delivery work). Architecture cells and `architectureDelta` must be in `{0, ±1, ±2, ±3, ±5}`. Reject other integers with an actionable error naming the allowed set. Tests belong to the work item they validate and are not separate rows (`206` §3.1).
+**Integer effort points; documented scales only.** Effort cells and `effortDelta` must be in `{1, 2, 3, 5, 8}` for plan rows and `effortDelta >= 0` integer for findings (0 allowed for findings that request no extra delivery work). Architecture cells and `architectureDelta` must be in `{0, ±1, ±2, ±3, ±5}`. Reject other integers with an actionable error naming the allowed set. Tests belong to the work item they validate and are not separate rows (`206` §3.1). A debt claim’s **minimal-compliant effort delta** may be `0` (the cheaper alternative adds no delivery work); if `> 0` it must be in `{1, 2, 3, 5, 8}`. Minimal-compliant architecture delta uses the architecture set.
 
 **Missing Delivery Budget cannot become `B0 = 0`.** `parseDeliveryBudget` returns a `Result` (`ok` + value, or `ok: false` + `code` + `message` + `line`). Callers that would capture a baseline must not catch-and-default. `mode = "off"` skips parse entirely.
 
@@ -145,7 +146,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **`R` accounting.** Let `incorporated` = union of finding IDs in current `Addresses` cells (ignore `-` / empty). Let `pending` = current verdict items with `scopeClass !== "polish"` (missing `scopeClass` counts as required). `R` = sum of `effortDelta` (default 0 when v1-compat) for pending items whose `id` is **not** in `incorporated`, **plus** pending items that **are** in `incorporated` but still listed (author claimed Addresses while the reviewer still raised the id). Polish items never contribute to `R`. This implements `206` §6.1 without slice 07’s resolution enum.
 
-**Provisional `D` only from eligible intrinsic claims.** Author plan claims contribute to `N`/`D` only when the **effective** assessment set (current overlay ∪ persisted unchanged claims) has `eligibility: "eligible"` and `coupling: "intrinsic"` for that `debtClaimId`. Reviewer-item `creditClaim` is provisionally eligible by construction if `coupling === "intrinsic"` and the comparison fields are present; still validate evidence strings non-empty. `ineligible` / `adjacent` / `unrelated` add 0 to `N`. Do not realize credit; do not persist implementation-review realizations.
+**Provisional `D` only from eligible intrinsic claims with persisted evidence.** Author plan claims contribute to `N`/`D` only when (1) the current-ledger row has complete `DebtClaimEvidence` (`targetPhase`, minimal-compliant effort/architecture deltas, non-empty `before`/`after`) and (2) the **effective** assessment set (current overlay ∪ persisted unchanged claims) has `eligibility: "eligible"` and `coupling: "intrinsic"` for that `debtClaimId`. A `--credit-assessment` whose `creditClaimId` does not match a current-ledger author claim or a current-verdict reviewer `creditClaim` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`. Reviewer-item `creditClaim` is provisionally eligible by construction if `coupling === "intrinsic"` and the same comparison fields are present and non-empty; it cannot backfill evidence for an author `DCn` already on the ledger. `ineligible` / `adjacent` / `unrelated` add 0 to `N`. Incomplete author evidence is a parse/apply failure, not a zero-credit default. Do not realize credit; do not persist implementation-review realizations.
 
 **CLI-owned keys are rejected, not merged.** Reviewer JSON that includes a `budget` object or top-level `budgetBand` / `B0` / `W` / `projectedEffort` / `baselineDirection` / `requiresHuman` (boolean at verdict top-level — item `action: human_required` is fine) fails closed. Prevents an agent from impersonating CLI arithmetic.
 
@@ -165,9 +166,10 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 1. Load persisted assessments from `latestSnapshot.assessments` (empty on the first snapshot).
 2. Overlay any current-verdict assessments by `creditClaimId` (explicit re-assessment wins).
-3. For each author `debtClaimId` on the **current** ledger: if it is new or **changed** relative to the previous snapshot’s ledger, a current assessment is required (`CREDIT_ASSESSMENT_REQUIRED`). Unchanged claims reuse the persisted assessment and do not require re-emit.
-4. A claim is **unchanged** when the same `debtClaimId` is still on the current ledger with the same `coupling` and the same work-item `architectureDelta` as in the previous snapshot’s `currentLedger`. Removed claims drop out of `N`. Reviewer-item `creditClaim` stays provisionally eligible by construction (no duplicate `--credit-assessment`).
-5. Persist the **effective** (merged) set on the new snapshot so the next review can merge again. Call `deriveBudget` with that effective set, not the raw verdict array.
+3. For each author `debtClaimId` on the **current** ledger: if it is new or **changed** relative to the previous snapshot’s ledger, a current assessment is required (`CREDIT_ASSESSMENT_REQUIRED` listing missing ids). Unchanged claims reuse the persisted assessment and do not require re-emit.
+4. A claim is **unchanged** when the same `debtClaimId` is still on the current ledger with the same `coupling`, work-item `architectureDelta`, `targetPhase`, `minimalAlternativeEffortDelta`, `minimalAlternativeArchitectureDelta`, `before`, and `after` as in the previous snapshot’s `currentLedger`. Any evidence or score change is **changed**. Removed claims drop out of `N`. Reviewer-item `creditClaim` stays provisionally eligible by construction (no duplicate `--credit-assessment`); its id must not collide with an author `debtClaimId` (`CREDIT_CLAIM_ID_COLLISION`).
+5. Every current `--credit-assessment` `creditClaimId` must equal a current-ledger author `debtClaim.debtClaimId` or a current-item `creditClaim.creditClaimId`. Unknown ids fail `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`.
+6. Persist the **effective** (merged) set on the new snapshot so the next review can merge again. Call `deriveBudget` with that effective set, not the raw verdict array. `eligibleN` reads architecture reduction from the **persisted ledger claim** (and reviewer-item `creditClaim`), never from assessment-only metadata.
 
 Do **not** instruct continued-review skills to re-emit every assessment. That would conflict with the first-seen / changed-only validation rule.
 
@@ -183,9 +185,9 @@ Do **not** instruct continued-review skills to re-emit every assessment. That wo
   author-generate-plan / existing-plan preflight
            │
            ▼
-  plan.md  ## Delivery Budget table + ### Surface Snapshot
+  plan.md  ## Delivery Budget table + ### Debt Claims + ### Surface Snapshot
            │
-           │  parseDeliveryBudget(markdown)     // fail-closed
+           │  parseDeliveryBudget(markdown)     // fail-closed; negative rows need full §4.3 evidence
            │
   template render reviewer-plan  ──► ensureBaseline(run)
   invoke reviewer (same template)    CAS captureBaseline
@@ -204,7 +206,8 @@ Do **not** instruct continued-review skills to re-emit every assessment. That wo
            ├─ reject CLI-owned aggregate keys
            ├─ v1 schema (always)
            ├─ if baseline active: require item deltas + first-review I
-           ├─ parse current plan → W, Addresses
+           ├─ parse current plan → W, Addresses, debt-claim evidence
+           ├─ bind creditAssessments to persisted claims (unknown id fails)
            ├─ merge assessments (current overlay ∪ persisted unchanged)
            ├─ deriveBudget(effectiveAssessments) // pure
            ├─ decorate result.budget            // CLI output only
@@ -305,13 +308,22 @@ export const DEFAULT_REVIEW_BUDGET_CONFIG: Omit<ReviewBudgetConfig, "mode"> = {
 	singleArchitectureReviewPoints: 5,
 };
 
+export interface DebtClaimEvidence {
+	debtClaimId: string; // e.g. "DC0"; /^DC\d+$/
+	coupling: CouplingClass;
+	targetPhase: string; // numeric phase ref: "phase-2", "Phase 2", "2"
+	minimalAlternativeEffortDelta: number; // integer >= 0; if > 0 must be in EFFORT_POINTS
+	minimalAlternativeArchitectureDelta: ArchitectureDelta;
+	before: string; // trimmed non-empty concrete pre-state
+	after: string; // trimmed non-empty concrete post-state
+}
+
 export interface ParsedWorkItem {
 	id: string;
 	title: string;
 	effort: EffortPoints;
 	architectureDelta: ArchitectureDelta;
-	debtClaimId: string | null; // e.g. "DC0"
-	coupling: CouplingClass | null; // required when architectureDelta < 0
+	debtClaim: DebtClaimEvidence | null; // required when architectureDelta < 0; null otherwise
 	addresses: string[]; // finding ids; empty if "-"
 	rationale: string;
 	line: number;
@@ -337,12 +349,12 @@ export interface FindingDelta {
 	architectureDelta: number;
 	scopeClass: PlanScopeClass | undefined;
 	coupling: CouplingClass | undefined;
-	creditClaimId?: string;
+	creditClaim?: DebtClaimEvidence; // reviewer-introduced claim; debtClaimId is the creditClaimId
 	creditNContribution?: number; // abs(architectureDelta) when eligible intrinsic
 }
 
 export interface CreditAssessmentInput {
-	creditClaimId: string;
+	creditClaimId: string; // must name a ledger debtClaim.debtClaimId or a finding creditClaim.debtClaimId
 	eligibility: CreditEligibility;
 	coupling: CouplingClass;
 }
@@ -371,7 +383,7 @@ export interface DerivedBudgetResult {
 ```
 
 - [ ] Create `src/review-budget/types.ts` with the types above.
-- [ ] Export `isEffortPoints` / `isArchitectureDelta` type guards used by the parser and protocol layer.
+- [ ] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
 
 ### 1.2 Arithmetic — `src/review-budget/arithmetic.ts`
 
@@ -435,7 +447,12 @@ export function eligibleN(
 	findings: readonly FindingDelta[],
 	assessments: readonly CreditAssessmentInput[],
 ): number;
-// abs(negative architecture) for claims that are eligible + intrinsic
+// Author items: abs(architectureDelta) when debtClaim is complete AND the
+// assessment for debtClaim.debtClaimId is eligible + intrinsic.
+// Findings: abs(architectureDelta) when item creditClaim is complete and
+// coupling is intrinsic (provisionally eligible; no separate assessment).
+// Incomplete evidence contributes 0 (defensive; parser/apply fail closed first).
+// Assessments cannot invent N for a claim that is missing ledger evidence.
 
 export function deriveBudget(input: {
 	B0: number;
@@ -465,19 +482,19 @@ export function deriveBudget(input: {
 `requiresHuman`: true if band is `over_effective` or `over_absolute`, or alerts include `baseline_disputed` or `positive_architecture_exceeded`, or `semanticHumanRequired`. Advisory callers record this and do not route.
 
 - [ ] Implement `arithmetic.ts` with no I/O.
-- [ ] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; `D` capped by percent and by `floor(N * ratio)`.
+- [ ] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; **incomplete `debtClaim` (missing before/after or targetPhase) excluded from `N` even if an assessment says eligible**; `D` capped by percent and by `floor(N * ratio)`.
 
 ---
 
 ## Phase 2: Delivery Budget parser
 
-**Completion gate:** Fixture tests cover happy path, every diagnostic code, and `parsePlan` phase extraction unchanged when the budget section sits before Phase 1 or after the last phase.
+**Completion gate:** Fixture tests cover happy path (including complete debt-claim evidence), every diagnostic code, and `parsePlan` phase extraction unchanged when the budget section sits before Phase 1 or after the last phase.
 
 ### 2.1 Parser — `src/parsers/delivery-budget.ts` (new)
 
 Do **not** fold this into `parsePlan`. Phase checklist parsing must stay independent (`src/parsers/plan.ts:26–27`, `34–167`). A `## Delivery Budget` heading already closes an open phase (`plan.ts:132–137`); document placement **before Phase 1 or after all phases**.
 
-Canonical table (allowed effort scores only; `206` §6.1’s published `W2` effort `4` is **not** in `{1, 2, 3, 5, 8}` — this fixture uses `5`. Keep `4` exclusively as the invalid-effort test value):
+Canonical table (allowed effort scores only; `206` §6.1’s published `W2` effort `4` is **not** in `{1, 2, 3, 5, 8}` — this fixture uses `5`. Keep `4` exclusively as the invalid-effort test value). Negative architecture rows require a `### Debt Claims` subsection with the full `206` §4.3 comparison — the seven-column work-item table still holds `DCn (\`coupling\`)` only:
 
 ```markdown
 ## Delivery Budget
@@ -488,6 +505,16 @@ Canonical table (allowed effort scores only; `206` §6.1’s published `W2` effo
 |---|---|---:|---:|---|---|---|
 | W1 | ... | 3 | 0 | - | - | ... |
 | W2 | Consolidate ... | 5 | -3 | DC0 (`intrinsic`) | - | ... |
+
+### Debt Claims
+
+#### DC0
+
+- Target phase: phase-2
+- Minimal-compliant effort delta: 2
+- Minimal-compliant architecture delta: 0
+- Before: five independent proposal construction paths
+- After: one invariant-enforcing proposal constructor
 
 ### Surface Snapshot
 
@@ -508,6 +535,12 @@ export type DeliveryBudgetParseCode =
 	| "BUDGET_INVALID_ARCHITECTURE"
 	| "BUDGET_DEBT_CLAIM_REQUIRED"
 	| "BUDGET_INVALID_DEBT_CLAIM"
+	| "BUDGET_DEBT_CLAIM_EVIDENCE_MISSING"
+	| "BUDGET_DEBT_CLAIM_ORPHAN"
+	| "BUDGET_DUPLICATE_DEBT_CLAIM"
+	| "BUDGET_INVALID_TARGET_PHASE"
+	| "BUDGET_INVALID_MINIMAL_ALTERNATIVE"
+	| "BUDGET_DEBT_EVIDENCE_EMPTY"
 	| "BUDGET_INVALID_CONFIDENCE"
 	| "BUDGET_SNAPSHOT_MISSING"
 	| "BUDGET_SNAPSHOT_INVALID";
@@ -531,7 +564,15 @@ Rules:
 - GFM table: header row must contain the seven columns in order (allow minor whitespace / case-insensitive headers). Separator row required. One work-item per subsequent row until a blank line or next heading.
 - Work-item ID: `/^W\d+$/` (stable, unique within the table). Duplicate → `BUDGET_DUPLICATE_ID`.
 - Effort / architecture: type guards from Phase 1.
-- `Debt claim`: `-` when `architectureDelta >= 0`; when negative, require `DC<digits> (\`<coupling>\`)` (example `DC0 (\`intrinsic\`)`). Coupling required. `adjacent` / `unrelated` are parseable (credit eligibility is a reviewer assessment, not a parse failure).
+- `Debt claim` (table cell): `-` when `architectureDelta >= 0`; when negative, require `DC<digits> (\`<coupling>\`)` (example `DC0 (\`intrinsic\`)`). Coupling required. `adjacent` / `unrelated` are parseable (credit eligibility is a reviewer assessment, not a parse failure). Duplicate `DCn` across rows → `BUDGET_DUPLICATE_DEBT_CLAIM`. A positive row with a non-`-` claim → `BUDGET_INVALID_DEBT_CLAIM`.
+- `### Debt Claims` subsection: **required** when any work-item row has `architectureDelta < 0`; omit when every row is non-negative. Place it after the work-item table and **before** `### Surface Snapshot`. Heading: `/^###\s+Debt Claims\s*$/m`. Missing heading or missing `#### DCn` block for a table id → `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING` (include the id).
+- Each claim block: `/^####\s+(DC\d+)\s*$/m` with required bullets (case-insensitive labels, colon-separated values):
+  - `Target phase:` non-empty numeric phase ref in the same family as `isNumericPhaseRef` (`phase-2`, `Phase 2`, `2`, `2.1`). Empty or non-phase-ref → `BUDGET_INVALID_TARGET_PHASE`. The parser does **not** require a matching `## Phase` heading in `parsePlan` (independent parser); slice 08 consumes the persisted string.
+  - `Minimal-compliant effort delta:` integer `>= 0`; if `> 0` must be in `{1, 2, 3, 5, 8}` (0 means the minimal alternative adds no delivery work). Invalid → `BUDGET_INVALID_MINIMAL_ALTERNATIVE`.
+  - `Minimal-compliant architecture delta:` must be in `{0, ±1, ±2, ±3, ±5}`. Invalid → `BUDGET_INVALID_MINIMAL_ALTERNATIVE`.
+  - `Before:` and `After:` trimmed non-empty concrete evidence (not “cleaner” / empty / `-`). Empty → `BUDGET_DEBT_EVIDENCE_EMPTY`.
+- Join is 1:1: every table `DCn` has exactly one `#### DCn` block; every `#### DCn` is referenced by exactly one negative work-item row. Orphan block → `BUDGET_DEBT_CLAIM_ORPHAN`. Duplicate `####` ids → `BUDGET_DUPLICATE_DEBT_CLAIM`.
+- Populate `ParsedWorkItem.debtClaim` with the joined evidence object. Do **not** accept a negative row that only has `debtClaimId` + `coupling` in the table cell.
 - `Addresses`: `-` → `[]`; otherwise split on commas, trim, reject empty tokens. Finding IDs are non-empty strings (`/^[A-Za-z0-9._-]+$/`).
 - Surface snapshot: require `### Surface Snapshot` under the budget section (before the next `##`). Require integer bullets for `Subsystems`, `Production files`, and `Persistent/external boundaries` (aliases: `Persistent schemas or migrations` + `External/platform boundaries` may sum into the third counter if both present; prefer the single combined bullet from §6.1). Optional bullets: `New shared abstractions or public contracts`. Missing required bullets → `BUDGET_SNAPSHOT_MISSING`. Non-integer → `BUDGET_SNAPSHOT_INVALID`.
 - Zero work-item rows → `BUDGET_TABLE_EMPTY` (not `B0 = 0`).
@@ -547,10 +588,11 @@ export function incorporatedFindingIds(
 export function rawDeliveryBudgetSection(markdown: string): string | null;
 ```
 
-`rawDeliveryBudgetSection` returns the exact substring from `## Delivery Budget` through the last snapshot bullet (exclusive of the next `##`). Slice 08 will byte-compare this for `text_only`; this slice only needs it for tests and for storing `original_section` on the baseline if cheap. Store the parsed ledger JSON as source of truth; optionally also store `original_section` text on capture for audit.
+`rawDeliveryBudgetSection` returns the exact substring from `## Delivery Budget` through the last snapshot bullet (exclusive of the next `##`), **including** `### Debt Claims` when present. Slice 08 will byte-compare this for `text_only`; this slice only needs it for tests and for storing `original_section` on the baseline if cheap. Store the parsed ledger JSON (**including `debtClaim` evidence on each work item**) as source of truth; optionally also store `original_section` text on capture for audit.
 
 - [ ] Implement parser + helpers.
-- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5`); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
+- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5` **and** complete `### Debt Claims` / `#### DC0` evidence); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; negative arch with table `DCn` but **no** Debt Claims subsection; negative arch with empty `Before`; invalid `targetPhase` (`review`); orphan `#### DC9`; duplicate `DC0`; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
+- [ ] Round-trip: `parseDeliveryBudget(canonical).value.workItems[1].debtClaim` equals `{ debtClaimId: "DC0", coupling: "intrinsic", targetPhase: "phase-2", minimalAlternativeEffortDelta: 2, minimalAlternativeArchitectureDelta: 0, before: "five independent proposal construction paths", after: "one invariant-enforcing proposal constructor" }`.
 - [ ] Re-export parse types from `src/index.ts` in Phase 10 (not required to compile Phase 2).
 
 ---
@@ -643,7 +685,7 @@ CREATE TABLE review_budget_baselines (
   capture_kind TEXT NOT NULL CHECK (capture_kind IN ('initial', 'opt_in')),
   b0 INTEGER NOT NULL CHECK (b0 > 0),
   b INTEGER NOT NULL CHECK (b > 0),
-  original_ledger_json TEXT NOT NULL,
+  original_ledger_json TEXT NOT NULL, -- ParsedDeliveryBudget JSON including debtClaim evidence
   surface_snapshot_json TEXT NOT NULL,
   original_section TEXT,
   config_snapshot_json TEXT NOT NULL,
@@ -656,7 +698,7 @@ CREATE TABLE review_budget_snapshots (
   run_id TEXT NOT NULL REFERENCES runs(id),
   phase TEXT,
   iteration INTEGER,
-  current_ledger_json TEXT NOT NULL,
+  current_ledger_json TEXT NOT NULL, -- ParsedDeliveryBudget JSON including debtClaim evidence
   findings_json TEXT NOT NULL,
   assessments_json TEXT NOT NULL, -- effective merged set (current overlay ∪ persisted unchanged)
   derived_json TEXT NOT NULL,
@@ -683,7 +725,7 @@ export interface ReviewBudgetBaseline {
 	captureKind: CaptureKind;
 	b0: number;
 	b: number;
-	originalLedger: ParsedDeliveryBudget;
+	originalLedger: ParsedDeliveryBudget; // full work items including debtClaim evidence
 	surface: SurfaceSnapshot;
 	originalSection: string | null;
 	configSnapshot: Omit<ReviewBudgetConfig, "mode">;
@@ -695,7 +737,7 @@ export interface ReviewBudgetSnapshotRecord {
 	runId: string;
 	phase: string | null;
 	iteration: number | null;
-	currentLedger: ParsedDeliveryBudget;
+	currentLedger: ParsedDeliveryBudget; // full work items including debtClaim evidence
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[]; // effective merged set persisted for the next apply
 	derived: DerivedBudgetResult;
@@ -741,7 +783,7 @@ SQL only in `src/control-plane/review-budget-sqlite.ts`. Memory in `src/control-
 - [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, `b0 > 0` CHECK, FK to `runs`).
 - [ ] Update version assertions from 7 → 8.
 - [ ] SQLite + memory implementations.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts` run against both impls: capture once; second capture is no-op on `b0`; append snapshots ordered; **same-`created_at` pair returns in insertion order** (`latestSnapshot` is the second insert); missing run FK fails on SQLite.
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts` run against both impls: capture once; second capture is no-op on `b0`; append snapshots ordered; **same-`created_at` pair returns in insertion order** (`latestSnapshot` is the second insert); missing run FK fails on SQLite; **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same.
 - [ ] Do not import `bun:sqlite` from the interface file or from command handlers (handlers land in Phase 6–8).
 
 ---
@@ -768,6 +810,8 @@ export interface CreditClaim {
 	before: string;
 	after: string;
 }
+// Reviewer-introduced claims only. Author DCn evidence lives on the plan ledger
+// (ParsedWorkItem.debtClaim); do not use creditClaim to backfill an author row.
 
 export interface VerdictItem {
 	id: string;
@@ -807,7 +851,7 @@ export interface ReviewerVerdict {
 
 Extend `ReviewerVerdictSchema` (`:56–100`) with optional properties matching the above (for `invoke` structured output). Item `required` stays `["id", "title", "action", "reason"]`.
 
-`assertReviewerVerdict` (`:157–180`): when fields **are** present, validate types and conditional coupling (`architectureDelta < 0` ⇒ `coupling` required; `creditClaim` requires non-empty `before`/`after` and integer deltas; `independentEffortEstimate >= 0` integer). Do **not** require the new fields here — that is context-sensitive (Phase 6).
+`assertReviewerVerdict` (`:157–180`): when fields **are** present, validate types and conditional coupling (`architectureDelta < 0` ⇒ `coupling` required; `creditClaim` requires non-empty `targetPhase`, non-empty `before`/`after`, and integer minimal deltas in the allowed sets; `independentEffortEstimate >= 0` integer). Do **not** require the new fields here — that is context-sensitive (Phase 6). A present `creditClaim` is the reviewer-introduced claim contract (`206` §4.3), not a substitute for author-ledger evidence.
 
 Add `CLI_OWNED_VERDICT_KEYS` and `rejectCliOwnedBudgetFields(value)` used by emit and validate:
 
@@ -857,8 +901,8 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ### 5.4 Tests
 
-- [ ] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
-- [ ] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
+- [ ] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
+- [ ] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
 - [ ] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
 - [ ] Do not add `--credit-realization` or implementation `scopeClass` enums.
 
@@ -913,18 +957,21 @@ Algorithm:
 3. `baseline = store.getBaseline(runId)`.
 4. If no baseline and `hasPriorPlanReviewerStep` and not `optInBaseline` → `skipped: v1_compat`.
 5. If no baseline and (no prior steps or opt-in): call `ensurePlanReviewBaseline` (Phase 7) with the same `warn` callback — **do not** capture inline. That helper parses, CAS-inserts, and emits the reserved-mode warning on every first capture including this safety-net path. On ensure error, return the parse/capture code. Do not invent `B0 = 0`.
-6. If baseline exists: parse **current** plan (fail closed — do not keep a stale `W` from a broken table).
+6. If baseline exists: parse **current** plan (fail closed — do not keep a stale `W` from a broken table). Parser already required complete `debtClaim` evidence on every negative row; if a stored/injected ledger nevertheless has `architectureDelta < 0` without `isCompleteDebtClaimEvidence(item.debtClaim)`, fail `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED` (do not derive provisional `N` from id+coupling alone).
 7. If this is the first snapshot for the run (`latestSnapshot == null`): require `verdict.baselineAssessment`; map `I`. If later snapshots: if `baselineAssessment` present → error `BASELINE_ASSESSMENT_UNEXPECTED`.
-8. For `active` runs, every `items[]` entry must include integer `effortDelta >= 0` and `architectureDelta` in the allowed set; `architectureDelta < 0` requires `coupling`. Missing fields → `BUDGET_ITEM_FIELDS_REQUIRED` with item id.
-9. Build the **effective** assessment set (Design Decisions):
+8. For `active` runs, every `items[]` entry must include integer `effortDelta >= 0` and `architectureDelta` in the allowed set; `architectureDelta < 0` requires `coupling`. Missing fields → `BUDGET_ITEM_FIELDS_REQUIRED` with item id. Present `creditClaim` must include non-empty `targetPhase`, non-empty `before`/`after`, and valid minimal deltas (same sets as the parser). `creditClaim.creditClaimId` must not equal any current-ledger author `debtClaim.debtClaimId` (`CREDIT_CLAIM_ID_COLLISION`). Map each present `item.creditClaim` onto `FindingDelta.creditClaim`: `debtClaimId` = `creditClaim.creditClaimId`, `coupling` = item `coupling`, plus `targetPhase`, minimal deltas, `before`, and `after`.
+9. Bind credit assessments to persisted claims:
+   - Every `verdict.creditAssessments[].creditClaimId` must equal a current-ledger author `debtClaim.debtClaimId` **or** a current-item `creditClaim.creditClaimId`. Else `CREDIT_ASSESSMENT_UNKNOWN_CLAIM` listing the unknown ids.
+   - Assessments do not carry evidence; `eligibleN` uses the ledger/`creditClaim` comparison fields.
+10. Build the **effective** assessment set (Design Decisions):
    - `persisted` = `latestSnapshot?.assessments ?? []`.
    - Overlay current `verdict.creditAssessments` by `creditClaimId`.
-   - For each author `debtClaimId` on the current ledger: if the claim is **new or changed** vs the previous snapshot’s `currentLedger` (different `coupling` or work-item `architectureDelta`, or absent from persisted), require a **current** assessment (`CREDIT_ASSESSMENT_REQUIRED` listing missing ids). Unchanged claims reuse the persisted assessment and do not require re-emit.
+   - For each author `debtClaim.debtClaimId` on the current ledger: if the claim is **new or changed** vs the previous snapshot’s `currentLedger` (different `coupling`, work-item `architectureDelta`, `targetPhase`, minimal deltas, `before`, or `after`, or absent from persisted), require a **current** assessment (`CREDIT_ASSESSMENT_REQUIRED` listing missing ids). Unchanged claims reuse the persisted assessment and do not require re-emit.
    - Reviewer-item `creditClaim` does not need a duplicate `--credit-assessment`.
    - Persist this merged set on `pendingSnapshot.assessments`.
-10. `deriveBudget({ ..., assessments: effectiveAssessments })` — never the raw verdict array alone.
-11. **Do not** `appendSnapshot` here.
-12. Return `{ status: "applied", verdict: decorated, pendingSnapshot }`. Do not mutate `readiness` or `items`.
+11. `deriveBudget({ ..., assessments: effectiveAssessments })` — never the raw verdict array alone. Author `N` comes from complete persisted `debtClaim` + eligible intrinsic assessment.
+12. **Do not** `appendSnapshot` here.
+13. Return `{ status: "applied", verdict: decorated, pendingSnapshot }`. Do not mutate `readiness` or `items`.
 
 `hasPriorPlanReviewerStep`: injected boolean. Callers compute it from `getStepsByPhase(db, runId, "plan")` filtering `step_name` starting with `reviewer:` (`src/db/operations-v1.ts:250–254`). Do not pass `Database` into `apply.ts`.
 
@@ -976,7 +1023,7 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
 
 ### 6.5 Tests
 
-- [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged); **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins.
+- [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged) **when evidence fields are unchanged**; **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins; **`--credit-assessment` for an unknown `DCn` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`**; **changed `before`/`targetPhase` on an existing `DCn` requires a current assessment**; **author `N` uses persisted `debtClaim` architecture, not a reviewer `creditClaim` on a different id**; **reviewer `creditClaim` colliding with author `DC0` fails `CREDIT_CLAIM_ID_COLLISION`**; injected ledger with negative row and only id+coupling (no evidence) fails `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED`.
 - [ ] `test/unit/review-budget/persist-record.test.ts` (or store + handler): step-insert failure (terminal run / `MAX_STEPS_EXCEEDED` / thrown `RecordError`) leaves **zero** snapshots; unique success leaves **exactly one**; idempotent retry (`recorded: false`) leaves still **one**; injected `appendSnapshot` throw rolls back the step row (SQLite).
 - [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot.
 - [ ] Do not assert any prompt/choose routing.
@@ -1022,13 +1069,13 @@ Do **not** hook `author-generate-plan` (plan may not exist yet).
 
 ### 7.4 Preflight skill behavior (docs in Phase 9; this phase is CLI)
 
-CLI is the source of truth: skills cannot silently skip a missing section on a new run. Existing plans without a section fail at first `reviewer-plan` render with `BUDGET_SECTION_MISSING`. The skill (Phase 9) then delegates `author-process-plan-review` or a short author pass to add the table, then retries render.
+CLI is the source of truth: skills cannot silently skip a missing section on a new run. Existing plans without a section fail at first `reviewer-plan` render with `BUDGET_SECTION_MISSING`. Plans with a negative architecture row but incomplete `### Debt Claims` evidence fail with `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING` (or the more specific evidence codes). The skill (Phase 9) then delegates `author-process-plan-review` or a short author pass to add the table and evidence, then retries render.
 
 ### 7.5 Opt-in
 
 `--opt-in-budget-baseline` (Phase 6) is the only capture path for `v1_compat` runs. Template render must **not** treat continued reviews as opt-in.
 
-- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
+- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, **missing Debt Claims evidence**, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
 - [ ] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
 - [ ] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
 
@@ -1093,7 +1140,7 @@ Keep it one or two lines. Do not dump the ledger.
 
 ## Phase 9: Templates, skills, and docs
 
-**Completion gate:** Generated-plan template contains the budget table. Author/reviewer prompts explain stable IDs, `Addresses`, “do not emit totals,” and first-review `I`. Plan-review skill documents preflight and “do not route on `budget.requiresHuman`.” No implementation-review template (`reviewer-commit.md`) changes.
+**Completion gate:** Generated-plan template contains the budget table and Debt Claims subsection. Author/reviewer prompts explain stable IDs, `Addresses`, complete §4.3 evidence on author `DCn`, “do not emit totals,” and first-review `I`. Plan-review skill documents preflight and “do not route on `budget.requiresHuman`.” No implementation-review template (`reviewer-commit.md`) changes.
 
 ### 9.1 Plan template — `src/templates/default-artifacts.ts`
 
@@ -1108,9 +1155,21 @@ Insert after Design Decisions / before Phase 1 in `DEFAULT_IMPLEMENTATION_PLAN_T
 |---|---|---:|---:|---|---|---|
 | W1 | {Work item} | {1\|2\|3\|5\|8} | {0 or ±1/2/3/5} | - | - | {Why this score} |
 
-Scoring: effort 1 localized, 2 multi-file one subsystem, 3 cross-subsystem, 5 new abstraction/persistence/platform, 8 major migration/uncertainty. Tests belong to the item they validate. Architecture delta is maintenance burden (negative = simpler post-state). Negative architecture requires a debt claim `DCn (\`intrinsic\`|\`adjacent\`|\`unrelated\`)`. `Addresses` lists review-item IDs incorporated into this row (`-` if none). Do not write totals, ceilings, or budget status — the CLI derives them.
+Scoring: effort 1 localized, 2 multi-file one subsystem, 3 cross-subsystem, 5 new abstraction/persistence/platform, 8 major migration/uncertainty. Tests belong to the item they validate. Architecture delta is maintenance burden (negative = simpler post-state). Negative architecture requires a debt claim `DCn (\`intrinsic\`|\`adjacent\`|\`unrelated\`)` **and** a `### Debt Claims` / `#### DCn` block with target implementation phase, minimal-compliant effort/architecture deltas, and concrete before/after evidence (`206` §4.3). `Addresses` lists review-item IDs incorporated into this row (`-` if none). Do not write totals, ceilings, or budget status — the CLI derives them.
 
-Work-item IDs (`W1`, `W2`, …) are stable across revisions. Add rows or rescore with rationale; never reuse an ID for a different item.
+Work-item IDs (`W1`, `W2`, …) are stable across revisions. Add rows or rescore with rationale; never reuse an ID for a different item. Debt-claim IDs (`DC0`, `DC1`, …) are stable; changing evidence on an existing `DCn` is a changed claim the next reviewer must re-assess.
+
+### Debt Claims
+
+#### DC0
+
+- Target phase: {phase-N}
+- Minimal-compliant effort delta: {0 or 1\|2\|3\|5\|8}
+- Minimal-compliant architecture delta: {0 or ±1/2/3/5}
+- Before: {concrete pre-state}
+- After: {concrete simpler post-state}
+
+Omit this subsection when every work-item architecture delta is ≥ 0.
 
 ### Surface Snapshot
 
@@ -1123,16 +1182,16 @@ Also add the same section to repo `docs/_implementation_plan_template.md` (this 
 
 ### 9.2 Author prompts
 
-`src/templates/author-generate-plan.md` (`:26–36`): require the Delivery Budget section; stable IDs; no totals; tests not scored separately.
+`src/templates/author-generate-plan.md` (`:26–36`): require the Delivery Budget section; stable IDs; no totals; tests not scored separately; every negative architecture row must include a matching `### Debt Claims` / `#### DCn` block with target phase, minimal-compliant comparison, and non-empty before/after.
 
-`src/templates/author-process-plan-review.md` (`:34–43`): when revising, keep IDs stable; put finding IDs in `Addresses` on the affected or new row; rescore with rationale; do not edit a “baseline” number in prose (there is none); do not delete the section.
+`src/templates/author-process-plan-review.md` (`:34–43`): when revising, keep IDs stable; put finding IDs in `Addresses` on the affected or new row; rescore with rationale; keep `#### DCn` evidence in sync (changing before/after, target phase, or minimal deltas is a **changed** claim); do not edit a “baseline” number in prose (there is none); do not delete the section.
 
 ### 9.3 Reviewer prompts
 
 `src/templates/reviewer-plan.md`:
 
 - Add a **Delivery budget** dimension: independently estimate initial-scope effort `I` (do not copy a total from the plan — the plan has no total); emit `--baseline-assessment`.
-- Per item: `scopeClass`, `effortDelta`, `architectureDelta`, `coupling` when negative, optional `creditClaim` comparison (`206` §4.3 YAML fields as JSON).
+- Per item: `scopeClass`, `effortDelta`, `architectureDelta`, `coupling` when negative, optional `creditClaim` comparison (`206` §4.3 YAML fields as JSON) **only for claims this finding introduces**. Do **not** put author-ledger `DCn` evidence on `creditClaim`; assess those with `--credit-assessment` against the persisted claim.
 - **Forbidden:** totals, ceilings, `budgetBand`, `requiresHuman` as a computed flag, changing `B0`.
 - Keep v1 `action` semantics (`auto_fix` vs `human_required` as mechanical vs judgment — not budget routing).
 - Emit example including `--baseline-assessment` and richer `--item` JSON (`:105–114`).
@@ -1141,20 +1200,20 @@ Also add the same section to repo `docs/_implementation_plan_template.md` (this 
 
 - Do not emit `baselineAssessment`.
 - Re-check `Addresses` vs still-open items; emit deltas for remaining items.
-- Emit `--credit-assessment` **only** for author `DCn` that are **new or changed** since the last recorded review (same coupling and architectureDelta as the previous ledger → omit; CLI carries the persisted assessment). Do **not** re-emit every claim on every continued review.
+- Emit `--credit-assessment` **only** for author `DCn` that are **new or changed** since the last recorded review (same coupling, architectureDelta, targetPhase, minimal deltas, before, and after as the previous ledger → omit; CLI carries the persisted assessment). Do **not** re-emit every claim on every continued review. `creditClaimId` must match a persisted author `DCn` (or a reviewer-item `creditClaim` id this verdict introduces).
 - Do not restart exhaustive review **as a hard CLI rule** (that is slice 07). Advisory text may say “prefer closure of prior findings” without changing routing.
 
 Do **not** edit `reviewer-commit.md` / `reviewer-commit-continued.md`.
 
 ### 9.4 Skills
 
-`src/skills/base/5x-plan/SKILL.tmpl.md`: generated plan must include Delivery Budget.
+`src/skills/base/5x-plan/SKILL.tmpl.md`: generated plan must include Delivery Budget and, for every negative architecture row, a complete `### Debt Claims` block.
 
 `src/skills/base/5x-plan-review/SKILL.tmpl.md`:
 
-- After `run init`, if first reviewer render fails `BUDGET_SECTION_MISSING`, invoke author to add the table, commit, retry. Do not invent scores without reading the plan.
+- After `run init`, if first reviewer render fails `BUDGET_SECTION_MISSING` or `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING` (or other parse codes), invoke author to add the table and complete `#### DCn` evidence, commit, retry. Do not invent scores or before/after strings without reading the plan.
 - Pass `--baseline-assessment` on first `protocol emit reviewer`.
-- Pass `--credit-assessment` for each author `DCn` that is **new or changed** on the current table (first review: every current `DCn`; continued reviews: only new/changed ids). Unchanged claims are carried forward by the CLI — do not re-emit them as a required ritual, and do not treat omission of an unchanged claim as a protocol error.
+- Pass `--credit-assessment` for each author `DCn` that is **new or changed** on the current table (first review: every current `DCn`; continued reviews: only new/changed ids, including evidence-field changes). Unchanged claims are carried forward by the CLI — do not re-emit them as a required ritual, and do not treat omission of an unchanged claim as a protocol error. Each `--credit-assessment` `creditClaimId` must name a claim already on the plan ledger (or a reviewer-introduced `creditClaim` in this verdict). Do not invent plan-side evidence in the assessment JSON.
 - **Do not** treat `result.budget.requiresHuman` as a stop or human gate in this slice. Continue v1 routing (`readiness`, `human_required` items, `maxReviewIterations`).
 - Mid-review resume: if `run state` shows `review_budget.status = v1_compat`, stay on v1 unless the human confirms opt-in; only then `protocol validate --opt-in-budget-baseline` after the table exists.
 - `enforced` in `5x config show` does not change this skill yet.
@@ -1163,7 +1222,7 @@ Update `test/unit/harnesses/opencode-skills.test.ts` / `cursor-skills.test.ts` i
 
 ### 9.5 CLI docs
 
-`docs/v1/101-cli-primitives.md`: document `--baseline-assessment`, `--credit-assessment`, `--opt-in-budget-baseline`, and that `run state` may include `review_budget`. State clearly that advisory mode does not change command exit codes or readiness.
+`docs/v1/101-cli-primitives.md`: document `--baseline-assessment`, `--credit-assessment`, `--opt-in-budget-baseline`, and that `run state` may include `review_budget`. State clearly that advisory mode does not change command exit codes or readiness. Note that `--credit-assessment` names a persisted plan-side `DCn` (complete evidence already on the ledger) or a reviewer-introduced `creditClaim`.
 
 Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented until the slice ships; a one-line “advisory persistence: plan 208” note is optional.
 
@@ -1178,7 +1237,7 @@ Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented unti
 
 ### 10.1 Public API — `src/index.ts`
 
-Export parse function/types, `ReviewBudgetStore` types, `createMemoryReviewBudgetStore`, `createSqliteReviewBudgetStore`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers.
+Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), `ReviewBudgetStore` types, `createMemoryReviewBudgetStore`, `createSqliteReviewBudgetStore`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers.
 
 ### 10.2 Compatibility matrix
 
@@ -1189,6 +1248,7 @@ Export parse function/types, `ReviewBudgetStore` types, `createMemoryReviewBudge
 | `mode=off`, new plan, full plan-review loop | no baseline row; no `budget` on steps |
 | `advisory`, new plan with table | `B0` captured at `reviewer-plan` render; first record has `I` + `budget` |
 | `advisory`, new plan without table | `BUDGET_SECTION_MISSING` at render; no baseline |
+| `advisory`, negative row without Debt Claims evidence | parse/capture fails (`BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`); no baseline |
 | Mid-review run (reviewer steps exist, no baseline) | v1_compat; v1 verdict records; no capture |
 | Opt-in flag + table on mid-review run | `capture_kind=opt_in`; subsequent records decorate |
 | Reviewer JSON with `"budgetBand":"within_standard"` | `INVALID_STRUCTURED_OUTPUT` |
@@ -1203,6 +1263,7 @@ New `review-budget.test.ts` (spawn CLI, `cleanGitEnv()`, `stdin: "ignore"`, `tim
 - Temp repo + `5x init` + plan with budget table + `run init` + `template render reviewer-plan` creates baseline (query via `run state` JSON).
 - `protocol emit` + `protocol validate --record --phase plan` decorates and persists.
 - Existing plan without section: render fails with `BUDGET_SECTION_MISSING`.
+- Plan with negative row and no Debt Claims subsection: render/capture fails with `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`.
 - Seed a reviewer step then render: no baseline (`v1_compat`).
 - Opt-in path.
 
@@ -1219,12 +1280,12 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 
 | File | Change |
 |------|--------|
-| `src/review-budget/types.ts` | **New.** Domain types, defaults, guards. |
-| `src/review-budget/arithmetic.ts` | **New.** Pure derivation. |
-| `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; returns `pendingSnapshot`; no snapshot write. |
+| `src/review-budget/types.ts` | **New.** Domain types, defaults, guards (`DebtClaimEvidence`, `isCompleteDebtClaimEvidence`). |
+| `src/review-budget/arithmetic.ts` | **New.** Pure derivation; `eligibleN` requires complete persisted evidence. |
+| `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; bind assessments to persisted claims; returns `pendingSnapshot`; no snapshot write. |
 | `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture. |
 | `src/commands/review-budget-context.ts` | **New.** One `resolveDbContext` + store factory for protocol/invoke (handlers do not import `bun:sqlite`). |
-| `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser. |
+| `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser including `### Debt Claims` evidence. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
 | `src/config.ts` | `ReviewBudgetConfigSchema`; `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
@@ -1234,7 +1295,7 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/control-plane/review-budget-sqlite.ts` | **New.** SQLite impl; `listSnapshots`/`latestSnapshot` order by `(created_at, rowid)`. |
 | `src/control-plane/review-budget-memory.ts` | **New.** Memory impl; insertion-seq tie-breaker. |
 | `src/control-plane/index.ts` | Re-exports. |
-| `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper. |
+| `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; `CreditClaim` evidence fields remain reviewer-introduced only. |
 | `src/protocol-normalize.ts` | Pass through new fields. |
 | `src/commands/protocol.ts` | Emit/validate flags. |
 | `src/commands/protocol-emit.handler.ts` | Parse assessment flags and item extras. |
@@ -1243,15 +1304,15 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; atomic snapshot+step persist on `--record`; optional opt-in flag. |
 | `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render. |
 | `src/commands/run-v1.handler.ts` | `review_budget` on state JSON/text; optional `onUniqueInsert` inside the `recordStep` transaction. |
-| `src/templates/default-artifacts.ts` | Delivery Budget section. |
-| `src/templates/author-generate-plan.md` | Require scored table. |
-| `src/templates/author-process-plan-review.md` | Stable IDs + Addresses. |
-| `src/templates/reviewer-plan.md` | `I`, per-item deltas, no totals. |
-| `src/templates/reviewer-plan-continued.md` | No `I`; Addresses / remaining deltas; new-or-changed credit assessments only. |
-| `src/skills/base/5x-plan/SKILL.tmpl.md` | Budget section requirement. |
+| `src/templates/default-artifacts.ts` | Delivery Budget section plus Debt Claims subsection. |
+| `src/templates/author-generate-plan.md` | Require scored table and complete debt-claim evidence. |
+| `src/templates/author-process-plan-review.md` | Stable IDs + Addresses + keep `#### DCn` evidence in sync. |
+| `src/templates/reviewer-plan.md` | `I`, per-item deltas, no totals; assess persisted author claims. |
+| `src/templates/reviewer-plan-continued.md` | No `I`; Addresses / remaining deltas; new-or-changed credit assessments only (including evidence changes). |
+| `src/skills/base/5x-plan/SKILL.tmpl.md` | Budget section + Debt Claims requirement. |
 | `src/skills/base/5x-plan-review/SKILL.tmpl.md` | Preflight, flags, carried-forward assessments, v1 routing preserved. |
 | `src/index.ts` | Public exports. |
-| `docs/_implementation_plan_template.md` | Same budget section as shipped template. |
+| `docs/_implementation_plan_template.md` | Same budget section and Debt Claims subsection as shipped template. |
 | `docs/v1/101-cli-primitives.md` | New flags and `run state` field. |
 | `test/unit/db/schema.test.ts` and `schema-v6`/`v7` | Expect version 8. |
 | `test/unit/db/schema-v8.test.ts` | **New.** |
@@ -1270,32 +1331,39 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `review-budget/arithmetic.test.ts` | `B=4` ceilings; bands; both disagreement directions; `P` not netted; `R` dedup + re-entry; polish excluded; `D` caps; `requiresHuman` flags |
-| Unit | `parsers/delivery-budget.test.ts` | Canonical table (W2 effort `5`); every `DeliveryBudgetParseCode`; empty ≠ zero; effort `4` rejected |
+| Unit | `review-budget/arithmetic.test.ts` | `B=4` ceilings; bands; both disagreement directions; `P` not netted; `R` dedup + re-entry; polish excluded; `D` caps; `requiresHuman` flags; incomplete debt evidence excluded from `N` |
+| Unit | `parsers/delivery-budget.test.ts` | Canonical table (W2 effort `5` + complete `#### DC0` evidence); every `DeliveryBudgetParseCode`; empty ≠ zero; effort `4` rejected; negative row without evidence rejected |
 | Unit | `parsers/plan.test.ts` | Budget section does not break phase/checklist parse |
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
 | Unit | `schema-v8.test.ts` | v8 tables, v7→v8, CHECKs, unique `run_id` |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS on SQLite **and** memory; append order; **same-timestamp insertion-order tie-break** |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS on SQLite **and** memory; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence** |
 | Unit | `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys |
-| Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots |
+| Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots; assessments bind to persisted claims; incomplete author evidence fails closed |
 | Unit | `persist-record.test.ts` | Failed/idempotent step record leaves no extra snapshot; unique success is 1:1; SQLite rollback if snapshot insert throws |
 | Unit | `ensure-baseline` + template/invoke unit if injectable | Capture before invoke; missing section; **enforced warn on every first-capture path including direct `--record`** |
 | Unit | run-state handler | `review_budget` shapes; text line |
 | Unit | harness skill tests | Mentions of emit flags / preflight / new-or-changed credit assessments |
-| Integration | `review-budget.test.ts` | Init → plan → render capture → emit/validate record → `run state`; missing section; v1_compat; opt-in; `mode=off` overlay |
+| Integration | `review-budget.test.ts` | Init → plan → render capture → emit/validate record → `run state`; missing section; missing debt-claim evidence; v1_compat; opt-in; `mode=off` overlay |
 
 Edge cases (must appear in unit tests):
 
 - Duplicate `W1`.
 - Effort `4` rejected (canonical happy-path table uses `5` for W2).
 - Negative architecture without `DCn`.
+- Negative architecture with table `DCn` but missing `### Debt Claims` / empty `Before` / invalid `targetPhase`.
+- Orphan `#### DC` block with no matching work-item row.
 - Finding in `Addresses` and still in `items` counts in `R`.
 - First review missing `baselineAssessment`.
 - Second review including `baselineAssessment`.
 - Author adds `DC1` in revision without `--credit-assessment`.
-- Eligible `DC0` retained across a continued review with **no** current assessment for `DC0` (`N`/`D`/`E` do not drop to zero).
+- Eligible `DC0` retained across a continued review with **no** current assessment for `DC0` (`N`/`D`/`E` do not drop to zero) when evidence fields are unchanged.
+- Changed `before` (or `targetPhase` / minimal deltas) on existing `DC0` requires a current `--credit-assessment`.
+- `--credit-assessment` for a `DCn` not on the current ledger and not a reviewer `creditClaim` fails.
+- Reviewer `creditClaim` id colliding with an author `DCn` fails.
+- Author `N` is computed from persisted ledger evidence, not from a reviewer `creditClaim` attached to a different finding.
 - Reviewer-emitted `budget` object.
 - `b0 > 0` CHECK: cannot insert 0 even if a test bypasses the parser.
+- Store round-trip: `originalLedger` / `currentLedger` retain `targetPhase`, minimal deltas, `before`, `after`.
 - Step record failure after apply: zero snapshots.
 - Duplicate step re-record: still exactly one snapshot.
 - Two snapshots in the same `created_at` second: `latestSnapshot` is the later insert.
@@ -1338,6 +1406,12 @@ Phase 1 is a hard prerequisite to 2 and 6. Phase 4 is a hard prerequisite to 6�
 ---
 
 ## Revision History
+
+### 1.2 — August 29, 2026
+
+Addresses **P1.4** in the **Addendum (2026-08-29) — Revision 1.1 re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md`](../reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md). Prior P1.1–P1.3 and P2 items remain as in 1.1.
+
+1. **P1.4 — Persist and validate complete plan-side debt-credit evidence.** Negative author work items no longer parse with only `debtClaimId` + `coupling`. `ParsedWorkItem.debtClaim` is a `DebtClaimEvidence` object requiring `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty before/after. The parser joins the seven-column table to a required `### Debt Claims` / `#### DCn` subsection. Baseline and snapshot ledger JSON round-trip that object. `--credit-assessment` must name a persisted author claim or a reviewer-introduced `creditClaim`; unknown ids fail. `eligibleN` reads architecture reduction from that persisted claim, not from assessment-only metadata. Reviewer-item `creditClaim` cannot backfill author-ledger evidence or collide with an author `DCn`. Unchanged-claim detection includes the evidence fields. Parser, arithmetic, apply, store, template, and skill tests cover the contract.
 
 ### 1.1 — August 29, 2026
 
