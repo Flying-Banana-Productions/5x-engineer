@@ -134,3 +134,21 @@ None after the deterministic plan corrections below.
 ### Updated readiness
 - **Plan completion:** ⚠️ — the P0 architecture correction and explicit prerequisite are complete, but two mechanical record-to-projection/rebuild gaps remain.
 - **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 may begin now; Phase 4 and all later persistence work remain blocked by the explicit slice-10 Phase-1 freeze and should incorporate P1.5/P1.6 before implementation.
+
+---
+
+## Addendum (2026-08-29) — Revision 1.4 final staff re-review
+
+**Reviewed:** `bf54c4580112f17ad368369eebc1dcddf0c20604` | plan version 1.4
+
+### What's addressed (✅)
+- **P1.5 — Baseline-assessment reconstruction:** Resolved. The initial-only assessment now travels through the snapshot payload codec, facade type/input, nullable v8 index column, read-through, and reindex. The run-state reconstruction rule obtains `I` from the first snapshot record rather than `derived_json`, and the plan requires index-wipe coverage for identical `I` and `baselineDirection`.
+- **P1.6 — Idempotent projection repair:** Resolved. The `created: false` path now reloads the durable step and snapshot lines and idempotently upserts both SQLite projections without appending a record. The required failure/retry test proves both projections recover while the record remains single-copy.
+- **Prior findings:** The record-tier prerequisite, atomic record pairing, complete debt-claim evidence, carried-forward assessments, deterministic ordering, and advisory-only routing remain correctly specified.
+
+### Remaining directly derivable correction
+- **P1.7 — Make Phase 4 independently type-complete:** Phase 4 declares and tests `BudgetSnapshotPayload.baselineAssessment`, `ReviewBudgetSnapshotRecord.baselineAssessment`, and `appendSnapshot(...baselineAssessment)` (`208-review-budget-advisory-plan.md:734-823`), but `BaselineAssessment` is first declared only in Phase 5's `src/protocol.ts` changes (`:955-959`). The current repository has no such type (`src/protocol.ts:16-28`). Consequently, Phase 4 cannot meet its stated completion gate after its slice-10 prerequisite but before Phase 5 without either a missing import/type declaration or an unplanned out-of-phase protocol edit. **Action: `auto_fix`.** Define the shared structural `BaselineAssessment` type in Phase 1's review-budget domain types and have Phase 5's protocol contract import/re-export it (or move the protocol type declaration ahead of Phase 4). Update Phase 1/4 completion gates and type-level tests so the facade, record codec, and index rebuild compile and test at the end of Phase 4 without waiting for Phase 5.
+
+### Updated readiness
+- **Plan completion:** ⚠️ — P1.5 and P1.6 are fully resolved. P1.7 is a small phasing/type-ownership correction.
+- **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 may begin; Phase 4 remains subject to the explicit slice-10 Phase-1 freeze and must receive P1.7 before its completion gate can be satisfied.
