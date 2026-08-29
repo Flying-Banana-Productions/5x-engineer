@@ -98,3 +98,20 @@ None after the deterministic plan corrections below.
 ### Updated readiness
 - **Plan completion:** ⚠️ — the five prior P1/P2 corrections are fully specified, but the plan-side debt-credit contract remains incomplete.
 - **Ready for implementation:** ⚠️ — ready with the mechanical P1.4 correction above; no human policy or architecture decision is required.
+
+---
+
+## Addendum (2026-08-29) — Revision 1.2 final re-review
+
+**Reviewed:** `9ab43e5ecec363bb8f54860cf4a24355f810789f` | plan version 1.2
+
+### What's addressed (✅)
+- **P1.4 — Complete plan-side debt-credit evidence:** Resolved. Negative author rows now join to a required `### Debt Claims` / `#### DCn` block, and `DebtClaimEvidence` retains target phase, minimal-compliant effort/architecture deltas, and non-empty before/after evidence in both baseline and current ledgers. The plan binds assessments to those persisted claims, rejects unknown/colliding IDs, treats evidence changes as reassessment triggers, and specifies parser, arithmetic, apply, store round-trip, template, skill, and integration coverage. This closes the prior gap in which a reviewer-side claim could stand in for author-ledger evidence.
+- **Prior P1/P2 corrections:** Remain resolved. The plan still specifies atomic snapshot/step persistence, carried-forward effective assessments, an allowed canonical effort value, deterministic same-second snapshot ordering, and a warning on every enforced-mode first-capture path.
+
+### Remaining concerns
+- **P0 — Record-tier persistence conflicts with the canonical v2 state-segmentation contract:** The plan explicitly chooses SQLite-only `ReviewBudgetStore` materialization and says that defining `RecordStore` is out of scope (`208-review-budget-advisory-plan.md:33, 42-43, 128-130, 1379-1380`). Canonical `207-state-segmentation.md:85-86, 136-143` instead classifies the baseline, governing budget, ledgers, and decisions as repository **Record** tier and requires slice 06 to code against the frozen `RecordStore` interface. The slice-10 input makes that dependency explicit: its phase 1 freezes `RecordStore` and its in-memory implementation before slice 06 proceeds, and says slice 06 persistence must never target SQLite-only rows (`plan-inputs/10-git-native-run-records.plan-input.md:21-25, 70, 106-109`). Implementing this plan as written would strand authoritative budget history in `.5x/5x.db`, violate the rebuildability/audit requirement, and require a later migration/rewrite that the canonical design specifically avoids. **Action: `human_required`.** First publish/freeze the slice-10 `RecordStore` contract (including the needed budget-line append/read semantics), then revise this plan to depend on and persist its baseline/ledger/assessment record through that interface, with SQLite only as the rebuildable index/cache. Reconcile the snapshot/step atomicity requirement with record writes in that shared contract before implementation begins.
+
+### Updated readiness
+- **Plan completion:** ❌ — P1.4 and all earlier review corrections are complete, but the persistence architecture contradicts the newer canonical record-tier design and an unavailable cross-slice interface.
+- **Ready for implementation:** ❌ — not ready pending a human-coordinated slice-10 interface freeze and a corresponding persistence/phasing revision.
