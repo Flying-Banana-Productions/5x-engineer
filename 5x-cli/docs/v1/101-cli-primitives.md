@@ -84,7 +84,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | Group | Commands | Purpose |
 |---|---|---|
 | **Run lifecycle** | `run init`, `run state`, `run record`, `run list`, `run complete`, `run reopen` | Create runs, query state, record steps |
-| **Agent invocation** | `invoke author`, `invoke reviewer` | Invoke sub-agents via provider, return structured results |
+| **Agent invocation** | `invoke author`, `invoke reviewer`, `invoke status`, `invoke cancel` | Invoke sub-agents via provider; inspect or request cancellation of registry rows |
 | **Quality** | `quality run` | Execute quality gates |
 | **Phase composites** | `phase finish` | Sugar over quality + author protocol validate/record + checklist |
 | **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
@@ -440,6 +440,74 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
 ```
 
 Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author`.
+
+---
+
+### `5x invoke status`
+
+Report the client view of a registered invocation. `--run` is an **explicit** run id only — this command does not use ambient run identity (`FIVEX_RUN`, worktree mapping, `.5x/current-run`).
+
+```
+5x invoke status --id <uuid>
+5x invoke status --run <run_id>
+5x invoke status --id <uuid> --run <run_id>
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--id` | One of `--id` / `--run` | Invocation UUID |
+| `--run` | One of `--id` / `--run` | Explicit run id. Combined with `--id`, the invocation must belong to that run. |
+
+**`--id` only** returns a single `{ invocation }` envelope. **`--run` only** returns `{ invocations: [...] }`. Combined `--id` and `--run` **intersect**: the invocation must exist and its `run_id` must equal `--run`. A missing id or a run mismatch both return `INVOCATION_NOT_FOUND` (mismatch message names both ids) and **must not** return a row whose run differs from `--run`. Unknown `--run` is `RUN_NOT_FOUND`.
+
+CLI JSON keys are **snake_case** (`client_state`, `run_id`, `session_id`, `provider_name`, `template_name`, `created_at`, `updated_at`, `terminal_at`, `cancellation.requested_by`). Do not emit camelCase `clientState` / `runId`.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "invocation": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "run_id": "run_abc123def456",
+      "session_id": "sess_xyz",
+      "role": "author",
+      "provider_name": "sample",
+      "template_name": "author-next-phase",
+      "status": "completed",
+      "client_state": "completed",
+      "cancellation": {
+        "supported": false,
+        "requested": false,
+        "requested_by": null,
+        "outcome": "none"
+      },
+      "created_at": "2026-08-28 15:00:00",
+      "updated_at": "2026-08-28 15:01:00",
+      "terminal_at": "2026-08-28 15:01:00"
+    }
+  }
+}
+```
+
+`client_state` is a derived view of stored `status` plus cancellation columns: `running` | `cancellation-requested` | `cancelled` | `completed` | `failed` | `abandoned` | `unsupported`. Shipped providers report `cancellation.supported: false`, so a still-running row is `unsupported` until the invoke process observes a terminal outcome.
+
+### `5x invoke cancel`
+
+Request cancellation of a running invocation by UUID. Does not use ambient run identity.
+
+```
+5x invoke cancel <invocation-id>
+```
+
+| Arg | Required | Description |
+|---|---|---|
+| `invocation-id` | Yes | Invocation UUID |
+
+**Unsupported providers** (every shipped provider in this slice: OpenCode, sample, plugins) reject with `CANCELLATION_UNSUPPORTED` (exit 1). The request does **not** set `cancellation_requested_at`, does not call an adapter, does not abort the in-flight stream, and does **not** change `runs.status`. The invoke continues.
+
+Success JSON is the same snake_case envelope as status, plus `adapter_called`. Cancelling an already-terminal row is a no-op success (`adapter_called: false`). Missing id is `INVOCATION_NOT_FOUND`.
+
+The registry is **coordination metadata**, not a supervisor. `5x invoke cancel` does not promise OpenCode kill, SIGTERM/SIGKILL, or process-group reaping. OpenCode-specific cancellation is a **new post-v2 plan**.
 
 ---
 
@@ -848,6 +916,8 @@ The full provider interface, v1 provider implementations (OpenCode, Codex, Claud
 - Session state survives across invocations via provider-managed persistence (OpenCode: server sessions, Codex: thread IDs, Claude Agent: session files) — the `--session` flag passes the session ID
 - No background server or daemon management at the CLI level — providers handle their own lifecycle
 - Provider selection is per-role: author and reviewer can use different providers and models
+- After a successful session start, `5x invoke author|reviewer` writes a UUID row to the invocation registry (coordination metadata: opaque handle, capability flag, request/outcome/terminal timestamps — **no PID column**). `5x invoke status` / `cancel` inspect or request cancel against that row. The registry is a handle store, not a supervisor; it does not own or reap provider processes.
+- Shipped providers report `cancellationSupported: false`. `5x invoke cancel` rejects with `CANCELLATION_UNSUPPORTED` and does not change `runs.status`. OpenCode-specific cancellation (PID/SDK/SIGKILL) is a **new post-v2 plan**, not this contract. Do not revive `011-provider-process-lifecycle.md`.
 
 ---
 

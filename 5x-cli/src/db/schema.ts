@@ -447,6 +447,62 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 7,
+		description:
+			"UUID invocations table with opaque handle, cancellation columns, live index",
+		up(db) {
+			db.exec(`
+				CREATE TABLE invocations (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					session_id TEXT,
+					role TEXT NOT NULL CHECK (role IN ('author', 'reviewer')),
+					provider_name TEXT NOT NULL,
+					template_name TEXT,
+					handle_json TEXT NOT NULL,
+					cancellation_supported INTEGER NOT NULL CHECK (cancellation_supported IN (0, 1)),
+					status TEXT NOT NULL CHECK (
+						status IN ('running', 'completed', 'failed', 'cancelled', 'abandoned')
+					),
+					created_at TEXT NOT NULL DEFAULT (datetime('now')),
+					updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+					cancellation_requested_at TEXT,
+					cancellation_requested_by TEXT CHECK (
+						cancellation_requested_by IS NULL
+						OR cancellation_requested_by IN ('cli', 'control-plane')
+					),
+					cancellation_outcome TEXT CHECK (
+						cancellation_outcome IS NULL
+						OR cancellation_outcome IN ('succeeded', 'failed', 'unsupported')
+					),
+					cancellation_outcome_at TEXT,
+					terminal_at TEXT,
+					abandon_reason TEXT CHECK (
+						abandon_reason IS NULL OR abandon_reason IN ('stale-metadata')
+					),
+					CHECK (
+						(cancellation_requested_at IS NULL AND cancellation_requested_by IS NULL)
+						OR (cancellation_requested_at IS NOT NULL AND cancellation_requested_by IS NOT NULL)
+					),
+					CHECK (
+						(cancellation_outcome IS NULL AND cancellation_outcome_at IS NULL)
+						OR (cancellation_outcome IS NOT NULL AND cancellation_outcome_at IS NOT NULL)
+					),
+					CHECK (
+						(status = 'running' AND terminal_at IS NULL AND abandon_reason IS NULL)
+						OR (status IN ('completed', 'failed', 'cancelled')
+							AND terminal_at IS NOT NULL AND abandon_reason IS NULL)
+						OR (status = 'abandoned'
+							AND terminal_at IS NOT NULL AND abandon_reason IS NOT NULL)
+					)
+				);
+				CREATE INDEX idx_invocations_run ON invocations(run_id, created_at DESC);
+				CREATE INDEX idx_invocations_live
+					ON invocations(updated_at) WHERE status = 'running';
+			`);
+		},
+	},
 ];
 
 /**

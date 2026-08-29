@@ -6,10 +6,11 @@
 **Priority:** High — causes OOM during extended automated runs
 
 > Superseded August 13, 2026. The provider-neutral invocation registry and
-> cancellation-handle contract will be designed as part of the v2 foundation.
-> OpenCode-specific PID discovery, SDK patching, signal escalation, and orphan
-> reaping must be reassessed in a new follow-up plan after that contract lands;
-> this document is retained only as historical failure analysis.
+> cancellation-handle contract is `docs/development/plans/207-invocation-registry-plan.md`.
+> OpenCode process cleanup requires a **new** plan after v2 foundation, not a
+> resurrection of Phases 1–2 here. OpenCode-specific PID discovery, SDK
+> patching, signal escalation, and orphan reaping must not be revived from this
+> document; it is retained only as historical failure analysis.
 
 ## Problem
 

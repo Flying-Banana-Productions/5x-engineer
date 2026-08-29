@@ -158,6 +158,9 @@ describe("exitCodeForError", () => {
 		expect(exitCodeForError("DIRTY_WORKTREE")).toBe(5);
 		expect(exitCodeForError("MAX_STEPS_EXCEEDED")).toBe(6);
 		expect(exitCodeForError("INVALID_STRUCTURED_OUTPUT")).toBe(7);
+		expect(exitCodeForError("CANCELLATION_UNSUPPORTED")).toBe(1);
+		expect(exitCodeForError("INVOCATION_NOT_FOUND")).toBe(1);
+		expect(exitCodeForError("INVOCATION_INVALID_ACTOR")).toBe(1);
 	});
 
 	test("returns 1 for unknown codes", () => {

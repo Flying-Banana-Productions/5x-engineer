@@ -4,10 +4,61 @@
  * SQLite SQL stays in `sqlite-store.ts`. Do not re-export SQL helpers.
  */
 
-export { createPromptId } from "./ids.js";
+export type {
+	AdapterCancelResult,
+	CancellationAdapter,
+} from "./cancellation-adapter.js";
+export {
+	_resetCancellationAdaptersForTest,
+	getCancellationAdapter,
+	registerCancellationAdapter,
+} from "./cancellation-adapter.js";
+export { createInvocationId, createPromptId } from "./ids.js";
+export {
+	CANCELLATION_UNSUPPORTED,
+	getInvocationView,
+	INVOCATION_INVALID_ACTOR,
+	INVOCATION_NOT_FOUND,
+	listInvocationViews,
+	requestInvocationCancellation,
+} from "./invocation-actions.js";
+export {
+	INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
+	INVOCATION_STALE_MS,
+	withInvocationLifecycle,
+} from "./invocation-lifecycle.js";
+export type { MemoryInvocationStoreOptions } from "./invocation-memory.js";
+export { createMemoryInvocationStore } from "./invocation-memory.js";
+export { createSqliteInvocationStore } from "./invocation-sqlite.js";
+export type { InvocationStore } from "./invocation-store.js";
+export type {
+	CancellationActor,
+	CancellationOutcome,
+	ClientInvocationState,
+	InvocationAbandonReason,
+	InvocationCasResult,
+	InvocationClientView,
+	InvocationRecord,
+	InvocationStatus,
+	InvocationStatusEnvelope,
+	OpaqueCancellationHandle,
+	RegisterInvocationInput,
+} from "./invocation-types.js";
+export {
+	InvocationStoreError,
+	isCancellationActor,
+	parseOpaqueCancellationHandle,
+} from "./invocation-types.js";
+export {
+	toClientInvocationState,
+	toClientInvocationView,
+	toInvocationStatusEnvelope,
+} from "./invocation-view.js";
 export { createMemoryPromptStore } from "./memory-store.js";
 export { createSqlitePromptStore } from "./sqlite-store.js";
 export type { PromptStore } from "./store.js";
+export type { TestRemoteAdapter } from "./test-remote-adapter.js";
+export { createTestRemoteAdapter } from "./test-remote-adapter.js";
 export type {
 	AbandonReason,
 	AnsweredBy,

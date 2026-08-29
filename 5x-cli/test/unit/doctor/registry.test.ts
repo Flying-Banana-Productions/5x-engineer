@@ -25,7 +25,7 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("registers freshness, locks, worktrees, runs, db, and prompts in that order", () => {
+	test("registers freshness, locks, worktrees, runs, db, prompts, and invocations in that order", () => {
 		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
 			"harness-freshness",
 			"locks",
@@ -33,6 +33,7 @@ describe("builtinDoctorChecks", () => {
 			"runs",
 			"db",
 			"prompts",
+			"invocations",
 		]);
 	});
 });
@@ -217,6 +218,40 @@ describe("findingKey", () => {
 		expect(findingKey(a)).toBe("prompts:PROMPT_ORPHANED:prompt-a");
 		expect(findingKey(b)).toBe("prompts:PROMPT_ORPHANED:prompt-b");
 		expect(findingKey(a)).not.toBe(findingKey(b));
+	});
+
+	test("distinguishes two INVOCATION_STALE findings by detail.invocationId", () => {
+		const a = finding({
+			check: "invocations",
+			code: "INVOCATION_STALE",
+			status: "fail",
+			fixable: true,
+			detail: { invocationId: "inv-a", runId: "run_1" },
+		});
+		const b = finding({
+			check: "invocations",
+			code: "INVOCATION_STALE",
+			status: "fail",
+			fixable: true,
+			detail: { invocationId: "inv-b", runId: "run_1" },
+		});
+		expect(findingKey(a)).toBe("invocations:INVOCATION_STALE:inv-a");
+		expect(findingKey(b)).toBe("invocations:INVOCATION_STALE:inv-b");
+		expect(findingKey(a)).not.toBe(findingKey(b));
+	});
+
+	test("throws when fixable INVOCATION_STALE is missing invocationId", () => {
+		expect(() =>
+			findingKey(
+				finding({
+					check: "invocations",
+					code: "INVOCATION_STALE",
+					status: "fail",
+					fixable: true,
+					detail: { runId: "run_1" },
+				}),
+			),
+		).toThrow(/empty identity/);
 	});
 
 	test("throws when fixable PROMPT_ORPHANED is missing promptId", () => {

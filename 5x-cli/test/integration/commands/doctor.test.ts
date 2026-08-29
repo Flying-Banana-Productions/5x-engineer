@@ -9,6 +9,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createSqliteInvocationStore } from "../../../src/control-plane/index.js";
+import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { canonicalizePlanPath } from "../../../src/paths.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -126,7 +128,7 @@ function writeLock(
 
 describe("5x doctor (integration)", () => {
 	test(
-		"JSON envelope + six check classes on a healthy project, exit 0",
+		"JSON envelope + seven check classes on a healthy project, exit 0",
 		() => {
 			const dir = makeTmpDir();
 			try {
@@ -142,11 +144,75 @@ describe("5x doctor (integration)", () => {
 				expect(checks).toContain("runs");
 				expect(checks).toContain("db");
 				expect(checks).toContain("prompts");
+				expect(checks).toContain("invocations");
 				expect(report.checks.some((c) => c.code === "DB_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "LOCKS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "RUNS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "PROMPTS_OK")).toBe(true);
+				expect(report.checks.some((c) => c.code === "INVOCATIONS_OK")).toBe(
+					true,
+				);
 				expect(report.fixed).toEqual([]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--fix abandons a heartbeat-stale invocation without claiming a reap",
+		() => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const db = new Database(join(dir, ".5x", "5x.db"));
+				createRunV1(db, { id: "run_live", planPath: "/plan.md" });
+				const store = createSqliteInvocationStore(db);
+				const created = store.register({
+					runId: "run_live",
+					sessionId: "sess-1",
+					role: "author",
+					providerName: "sample",
+					templateName: "author",
+					handle: { adapter: "none", ref: "sess-1" },
+					cancellationSupported: false,
+				});
+				const stamp = new Date(Date.now() - 16 * 60 * 1000)
+					.toISOString()
+					.replace("T", " ")
+					.slice(0, 19);
+				db.query("UPDATE invocations SET updated_at = ?1 WHERE id = ?2").run(
+					stamp,
+					created.id,
+				);
+				db.close();
+
+				const result = run5x(dir, ["doctor", "--fix"]);
+				expect(result.exitCode).toBe(0);
+				const report = reportOf(result.stdout);
+				expect(report.ok).toBe(true);
+				expect(
+					report.fixed.some(
+						(f) => f.check === "invocations" && f.code === "INVOCATION_STALE",
+					),
+				).toBe(true);
+				expect(report.checks.some((c) => c.code === "INVOCATIONS_OK")).toBe(
+					true,
+				);
+
+				const verify = new Database(join(dir, ".5x", "5x.db"), {
+					readonly: true,
+				});
+				const row = verify
+					.query("SELECT status, abandon_reason FROM invocations WHERE id = ?1")
+					.get(created.id) as {
+					status: string;
+					abandon_reason: string | null;
+				};
+				verify.close();
+				expect(row.status).toBe("abandoned");
+				expect(row.abandon_reason).toBe("stale-metadata");
 			} finally {
 				cleanupDir(dir);
 			}
