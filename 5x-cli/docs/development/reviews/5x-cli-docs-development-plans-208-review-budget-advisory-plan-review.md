@@ -78,3 +78,23 @@ None after the deterministic plan corrections below.
 - [ ] Carry forward valid debt-claim assessments, or uniformly require current assessments, for continued derivation (`auto_fix`)
 - [ ] Make the canonical parser example use an allowed effort score (`auto_fix`)
 - [ ] Define deterministic same-timestamp snapshot ordering and cover the direct-record enforced warning path (`auto_fix`)
+
+---
+
+## Addendum (2026-08-29) — Revision 1.1 re-review
+
+**Reviewed:** `36ceada76b27e5647654cbf454c6127bd2463722` | plan version 1.1
+
+### What's addressed (✅)
+- **P1.1 — Atomic snapshot + reviewer step:** Resolved. `applyPlanReviewBudget` now returns an unpersisted pending snapshot, and Phase 6 requires `recordStepInternal` to run the unique step insert and `appendSnapshot` hook in one transaction on the same resolved database. The specified failure, duplicate, and rollback tests establish the required 1:1 durable relationship.
+- **P1.2 — Carry forward debt-claim assessments:** Resolved. The plan defines an effective assessment overlay from the prior snapshot, requires new or changed author claims to be assessed again, persists the merged set, and aligns the continued-review prompt and skill with that rule.
+- **P1.3 — Canonical effort scale:** Resolved. The canonical `W2` fixture now uses effort `5`; effort `4` is retained solely as the invalid-input case.
+- **P2 — Deterministic snapshot ordering:** Resolved. SQLite reads order by `(created_at, rowid)` and the memory store supplies an insertion sequence; the store contract test explicitly covers equal timestamps.
+- **P2 — Enforced-mode direct-record warning:** Resolved. `ensurePlanReviewBaseline` owns the warning for every successful first capture, including the validate/invoke safety-net path, with direct-record coverage required.
+
+### Remaining concerns
+- **P1.4 — Persist and validate complete plan-side debt-credit evidence:** The revised plan accepts a negative author work item with only `debtClaimId` and `coupling` (`208-review-budget-advisory-plan.md:308-317`, `527-536`). It does not parse or persist the required target implementation phase, minimal-compliant comparison, or concrete before/after evidence. Those fields exist only on an optional reviewer-item `creditClaim` (`753-806`) and therefore cannot establish eligibility for a negative architecture claim already present in the author ledger. This conflicts with the canonical debt-credit contract (`docs/v2/206-review-budget-governance.md:193-210`, `365-388`) and leaves provisional `N`/`D` based on an unverified claim that later implementation review cannot reconcile. **Action: `auto_fix`.** Extend the Delivery Budget debt-claim syntax/table (or a required structured subsection), `ParsedWorkItem`, baseline/current-ledger snapshots, and parser diagnostics to require and retain `targetPhase`, minimal-alternative effort/architecture deltas, and non-empty before/after evidence for every negative claim. Require the credit assessment to reference that persisted claim and add parser, apply, store, and round-trip tests.
+
+### Updated readiness
+- **Plan completion:** ⚠️ — the five prior P1/P2 corrections are fully specified, but the plan-side debt-credit contract remains incomplete.
+- **Ready for implementation:** ⚠️ — ready with the mechanical P1.4 correction above; no human policy or architecture decision is required.
