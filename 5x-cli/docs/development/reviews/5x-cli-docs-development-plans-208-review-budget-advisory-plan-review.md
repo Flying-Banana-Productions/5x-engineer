@@ -115,3 +115,22 @@ None after the deterministic plan corrections below.
 ### Updated readiness
 - **Plan completion:** ❌ — P1.4 and all earlier review corrections are complete, but the persistence architecture contradicts the newer canonical record-tier design and an unavailable cross-slice interface.
 - **Ready for implementation:** ❌ — not ready pending a human-coordinated slice-10 interface freeze and a corresponding persistence/phasing revision.
+
+---
+
+## Addendum (2026-08-29) — Revision 1.3 staff re-review
+
+**Reviewed:** `15849d3ffd26484609b99a6aedd9e3c5aa301d02` | plan version 1.3
+
+### What's addressed (✅)
+- **P0 — Record-tier persistence:** Resolved. Phase 4 is now explicitly blocked on slice 10 Phase 1 freezing the `RecordStore` interface and its in-memory implementation, including budget-stream read/write, insertion ordering, and atomic multi-append semantics. Baselines and snapshots are authoritative budget record lines; the v8 SQLite tables are expressly rebuildable projections/cache only. The plan neither implements nor forks slice 10's interface, working-tree layout, or records commands.
+- **P1.1 atomicity remapping:** Substantively resolved. The plan binds the budget-snapshot key to the reviewer-step tuple and requires a single `RecordStore.atomicAppend` for both lines. It correctly makes the record durable when a subsequent SQLite projection fails, with reindexing as cache repair.
+- **Prior P1/P2 corrections:** Remain specified: full debt-claim evidence, effective carried-forward assessments, valid effort fixtures, stable insertion ordering, and enforced-mode warnings on every capture path.
+
+### Remaining directly derivable corrections
+- **P1.5 — Preserve the first-review baseline assessment through the facade and index rebuild:** `BudgetSnapshotPayload` correctly records `baselineAssessment` (`208-review-budget-advisory-plan.md:731-742`), but `ReviewBudgetSnapshotRecord` omits it (`:769-780`) and the v8 snapshot index has no corresponding column (`:844-859`). Consequently, an index rebuild/read-through cannot expose the authoritative initial `I` or recompute `baselineDirection` from record data, despite Phase 8 requiring recomputation when the derived cache is absent (`:1244`). **Action: `auto_fix`.** Add the optional initial-only baseline assessment to the facade record type, index projection/schema, encode/decode/reindex path, and store/index/run-state tests; after an index wipe, assert that `I` and baseline direction recompute identically from the record line.
+- **P1.6 — Repair projections on an idempotent record retry:** The plan says a successful `atomicAppend` followed by a SQLite projection failure leaves the record authoritative (`:1109-1111`), but then directs every duplicate response to skip projection (`:1101-1103`). A normal retry therefore cannot restore the missing v1 `steps` row or budget index row; it requires a later, separately implemented slice-10 index command. **Action: `auto_fix`.** On `created: false`, load the existing step/snapshot record lines and perform idempotent SQLite projection/upsert (without appending any line); retain the record-first rule and add a retry test proving the original record is not duplicated while both projections are repaired.
+
+### Updated readiness
+- **Plan completion:** ⚠️ — the P0 architecture correction and explicit prerequisite are complete, but two mechanical record-to-projection/rebuild gaps remain.
+- **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 may begin now; Phase 4 and all later persistence work remain blocked by the explicit slice-10 Phase-1 freeze and should incorporate P1.5/P1.6 before implementation.
