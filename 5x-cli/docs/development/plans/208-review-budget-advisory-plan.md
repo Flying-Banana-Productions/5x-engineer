@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.4
+**Version:** 1.5
 **Created:** August 29, 2026
-**Status:** Draft — revision 1.4 addressing staff review addendum (P1.5 baseline assessment through facade/index rebuild; P1.6 idempotent projection repair)
+**Status:** Draft — revision 1.5 addressing staff review addendum (P1.7 Phase 4 independently type-complete via Phase 1 `BaselineAssessment` ownership)
 
 ---
 
@@ -48,6 +48,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
 | **Snapshot + reviewer step are one RecordStore atomic append** | Appending a budget snapshot before the unique step record orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the **same** `RecordStore.atomicAppend` as the unique step line, then project both into the SQLite index. Failed unique appends insert no budget line and no index row. Idempotent retries (`created: false`) append no second line, but load the existing step/snapshot lines and idempotently upsert both SQLite projections (repair after a projection failure). |
 | **First-review `baselineAssessment` is a record field, not cache-only** | `BudgetSnapshotPayload.baselineAssessment` is the authoritative initial `I`. The facade record, v8 snapshot index, encode/decode, and reindex all carry that optional field. After an index wipe, `deriveBudget` recomputes identical `I` and `baselineDirection` from the record line. Do not reconstruct `I` from `derived_json`. |
+| **`BaselineAssessment` is a Phase 1 domain type** | Snapshot payload, facade, codec, and index rebuild (Phase 4) must compile before protocol emit/validate (Phase 5). Declare the shared structural type in `src/review-budget/types.ts`. `src/protocol.ts` imports and re-exports it; it does not declare a second copy. |
 | **Carry forward unchanged debt-claim assessments** | First-seen (or changed) claims require a current `--credit-assessment`. Unchanged includes evidence fields (`targetPhase`, minimal deltas, before/after), not only coupling and architectureDelta. Current assessments overlay by `creditClaimId` and must name a persisted claim. |
 | **Snapshot order is insertion-stable** | Record lines are append-only; `latestSnapshot` / `listSnapshots` follow `RecordStore` insertion order (memory: sequence; working-tree JSONL: file order). The SQLite index stores that sequence and must not order by `created_at` alone (`datetime('now')` is second-resolution). |
 | **Plan-side debt claims persist full §4.3 evidence** | A negative author row cannot earn `N`/`D` from `DCn` + coupling alone. The parser requires `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty before/after on every negative claim; ledger JSON is what later implementation review reconciles. `--credit-assessment` names that persisted id; reviewer-item `creditClaim` is only for claims the reviewer introduces. |
@@ -162,7 +163,7 @@ Do **not** treat derived forecasts as record payload. Snapshot lines may omit `d
 | No baseline, no prior plan-reviewer step, plan has valid table | capture then `active` | required on the first recorded plan-review verdict | yes, before first reviewer when possible |
 | Baseline row exists | `active` | required for plan-review items | no (idempotent get) |
 
-**First-review `baselineAssessment` is required only on the first `active` plan-review record** (the iteration that creates or immediately follows `B0`). Continued reviews must omit it; if present, fail `INVALID_STRUCTURED_OUTPUT` (“baselineAssessment is initial-review only”).
+**First-review `baselineAssessment` is required only on the first `active` plan-review record** (the iteration that creates or immediately follows `B0`). Continued reviews must omit it; if present, fail `INVALID_STRUCTURED_OUTPUT` (“baselineAssessment is initial-review only”). The structural type is declared once in `src/review-budget/types.ts` (Phase 1). Phase 4 record lines, facade, codec, and index import it so they compile before protocol emit exists. Phase 5 `src/protocol.ts` imports and re-exports that type for `ReviewerVerdict`; it does not declare a second `interface BaselineAssessment`.
 
 **`R` accounting.** Let `incorporated` = union of finding IDs in current `Addresses` cells (ignore `-` / empty). Let `pending` = current verdict items with `scopeClass !== "polish"` (missing `scopeClass` counts as required). `R` = sum of `effortDelta` (default 0 when v1-compat) for pending items whose `id` is **not** in `incorporated`, **plus** pending items that **are** in `incorporated` but still listed (author claimed Addresses while the reviewer still raised the id). Polish items never contribute to `R`. This implements `206` §6.1 without slice 07’s resolution enum.
 
@@ -268,7 +269,7 @@ State per run:
 
 ## Phase 1: Domain types and pure arithmetic
 
-**Completion gate:** `bun test test/unit/review-budget/` passes. The `B = 4` worked example from `206` §3.2 is a fixture: `S = 6`, `D <= 1`, `A = 8`, `E` may reach `7`. No handler or SQLite imports in this module.
+**Completion gate:** `bun test test/unit/review-budget/` passes. The `B = 4` worked example from `206` §3.2 is a fixture: `S = 6`, `D <= 1`, `A = 8`, `E` may reach `7`. No handler or SQLite imports in this module. `BaselineAssessment` is defined and type-tested in `src/review-budget/types.ts` so Phase 4 payload, facade, codec, and index rebuild are independently type-complete without Phase 5 or `src/protocol.ts` extensions.
 
 ### 1.1 Types — `src/review-budget/types.ts`
 
@@ -297,6 +298,12 @@ export type BudgetAlert =
 	| "credit_unrealized"; // recorded for forward-compat; this slice never emits it
 
 export type EstimateConfidence = "low" | "medium" | "high";
+
+export interface BaselineAssessment {
+	independentEffortEstimate: number; // integer >= 0
+	confidence: EstimateConfidence;
+	reason: string;
+}
 
 export type PlanScopeClass =
 	| "acceptance_required"
@@ -408,8 +415,9 @@ export interface DerivedBudgetResult {
 }
 ```
 
-- [ ] Create `src/review-budget/types.ts` with the types above.
+- [ ] Create `src/review-budget/types.ts` with the types above, including shared structural `BaselineAssessment`. Do **not** declare this type in `src/protocol.ts` in this phase (or any later persistence phase).
 - [ ] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
+- [ ] Type-level test `test/unit/review-budget/types.test.ts`: a value satisfying `{ independentEffortEstimate, confidence, reason }` is assignable to `BaselineAssessment` exported from `src/review-budget/types.ts`. This test (and all Phase 1 tests) must not import `src/protocol.ts`.
 
 ### 1.2 Arithmetic — `src/review-budget/arithmetic.ts`
 
@@ -696,7 +704,7 @@ Layering: existing `deepMerge` (`src/config.ts:695`) already merges nested table
 
 **Prerequisite:** Slice 10 Phase 1 is merged: frozen `RecordStore` (no working-tree path assumption) + in-memory implementation + contract tests. That freeze must include budget-stream append/get/list, insertion-ordered reads, and `atomicAppend` (or equivalent all-or-nothing multi-append) as specified in Design Decisions. This phase does **not** add `src/control-plane/record-store.ts` or a working-tree JSONL writer.
 
-**Completion gate:** `captureBaseline` appends one `baseline` budget line (INSERT-once; second call returns existing, does not change `b0`). Snapshots append as budget lines keyed to a step tuple. Fresh DB migrates to v8 **index** tables. v7 → v8 keeps `invocations`. Facade tests against `MemoryRecordStore` (with and without a SQLite index) pass the same contract. Wiping the index and calling `reindexReviewBudget` restores baseline + snapshots from record lines, including first-snapshot `baselineAssessment`, so `I` and `baselineDirection` recompute identically from the record. Handlers are not wired yet. No test treats a SQLite row as authoritative when the corresponding record line is absent.
+**Completion gate:** `captureBaseline` appends one `baseline` budget line (INSERT-once; second call returns existing, does not change `b0`). Snapshots append as budget lines keyed to a step tuple. Fresh DB migrates to v8 **index** tables. v7 → v8 keeps `invocations`. Facade tests against `MemoryRecordStore` (with and without a SQLite index) pass the same contract. Wiping the index and calling `reindexReviewBudget` restores baseline + snapshots from record lines, including first-snapshot `baselineAssessment`, so `I` and `baselineDirection` recompute identically from the record. Facade, snapshot payload codec (`encodeBudgetSnapshotPayload` / `decodeBudgetSnapshotPayload`), and index rebuild compile and pass using `BaselineAssessment` imported from `src/review-budget/types.ts` — Phase 4 tests must not import that type from `src/protocol.ts`. This phase is independently type-complete before Phase 5. Handlers are not wired yet. No test treats a SQLite row as authoritative when the corresponding record line is absent.
 
 ### 4.1 IDs — `src/control-plane/ids.ts`
 
@@ -704,9 +712,18 @@ Add `createReviewBudgetId(): string` (`randomUUID`), same file as `createPromptI
 
 ### 4.2 Budget line types — `src/review-budget/record-lines.ts` (new)
 
-This slice owns payloads. Encode/decode helpers live here; they import `RecordStore` **types** from slice 10, not a 06 copy of the interface.
+This slice owns payloads. Encode/decode helpers live here; they import `RecordStore` **types** from slice 10, not a 06 copy of the interface. They import `BaselineAssessment` (and ledger/finding/assessment types) from `./types.js` — **not** from `src/protocol.ts`. Phase 4 must type-check before Phase 5 protocol extensions exist.
 
 ```typescript
+import type {
+	BaselineAssessment,
+	CreditAssessmentInput,
+	FindingDelta,
+	ParsedDeliveryBudget,
+	ReviewBudgetConfig,
+	SurfaceSnapshot,
+} from "./types.js";
+
 export type BudgetRecordKind = "baseline" | "snapshot";
 
 export type CaptureKind = "initial" | "opt_in";
@@ -762,6 +779,8 @@ Encode/decode **must** round-trip `baselineAssessment` when present and omit the
 `appendSnapshot` on the facade may still accept a `derived` object to write into the **index cache** after a successful record append; that object is not required on the record payload. `derived` is never the authority for `I`.
 
 ### 4.3 Facade — `src/control-plane/review-budget-store.ts` (new)
+
+Import `BaselineAssessment` from `src/review-budget/types.ts` (same Phase 1 export used by `record-lines.ts`). Do **not** import it from `src/protocol.ts`.
 
 ```typescript
 export interface ReviewBudgetBaseline {
@@ -906,22 +925,27 @@ export function reindexReviewBudget(
 - [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`, nullable `baseline_assessment_json`).
 - [ ] Update version assertions from 7 → 8.
 - [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once; second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**.
-- [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**.
+- [ ] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once; second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`).
+- [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
 - [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
+- [ ] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
 - [ ] Do not add a SQLite-backed `RecordStore` implementation in this slice.
 
 ---
 
 ## Phase 5: Protocol types, emit, and normalize
 
-**Completion gate:** v1 emit/validate fixtures still pass. New flags round-trip. Aggregate keys on emit stdin/flags are rejected. Implementation-review fields are **not** added.
+**Completion gate:** v1 emit/validate fixtures still pass. New flags round-trip. Aggregate keys on emit stdin/flags are rejected. Implementation-review fields are **not** added. `BaselineAssessment` on `ReviewerVerdict` is the Phase 1 domain type, imported and re-exported — not a second declaration.
 
 ### 5.1 Types and JSON schema — `src/protocol.ts`
 
-Extend `VerdictItem` (`:16–22`) and `ReviewerVerdict` (`:24–28`):
+Extend `VerdictItem` (`:16–22`) and `ReviewerVerdict` (`:24–28`). Import and re-export `BaselineAssessment` from `src/review-budget/types.ts`; do **not** declare a second copy here. Phase 4 already compiled against that type.
 
 ```typescript
+import type { BaselineAssessment } from "./review-budget/types.js";
+export type { BaselineAssessment };
+
 export type PlanReviewScopeClass =
 	| "acceptance_required"
 	| "risk_reduction"
@@ -950,12 +974,6 @@ export interface VerdictItem {
 	coupling?: "intrinsic" | "adjacent" | "unrelated";
 	estimateConfidence?: "low" | "medium" | "high";
 	creditClaim?: CreditClaim;
-}
-
-export interface BaselineAssessment {
-	independentEffortEstimate: number;
-	confidence: "low" | "medium" | "high";
-	reason: string;
 }
 
 export interface CreditAssessment {
@@ -1027,6 +1045,7 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 ### 5.4 Tests
 
 - [ ] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
+- [ ] Type-level: `BaselineAssessment` re-exported from `src/protocol.ts` is the same type as `src/review-budget/types.ts` (import/re-export, not a second `interface` declaration). A Phase 1 `BaselineAssessment` value is assignable to `ReviewerVerdict["baselineAssessment"]`.
 - [ ] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
 - [ ] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
 - [ ] Do not add `--credit-realization` or implementation `scopeClass` enums.
@@ -1039,7 +1058,7 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ### 6.1 Shared apply function — `src/review-budget/apply.ts` (new)
 
-This is the only place handlers call for budget **computation** and baseline safety-net capture. It does **not** persist a snapshot (see 6.2).
+This is the only place handlers call for budget **computation** and baseline safety-net capture. It does **not** persist a snapshot (see 6.2). `PendingBudgetSnapshot.baselineAssessment` uses the Phase 1 domain type (`src/review-budget/types.ts`); the same type Phase 5 re-exports on `ReviewerVerdict`.
 
 ```typescript
 export interface PendingBudgetSnapshot {
@@ -1373,7 +1392,7 @@ Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented unti
 
 ### 10.1 Public API — `src/index.ts`
 
-Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`), budget record-line types, `ReviewBudgetStore` types, `createReviewBudgetStore`, `reindexReviewBudget`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers. Do not export a SQLite-only budget store or a 06-defined `RecordStore`.
+Export parse function/types (`ParsedWorkItem`, `DebtClaimEvidence`, `BaselineAssessment` from review-budget domain types), budget record-line types, `ReviewBudgetStore` types, `createReviewBudgetStore`, `reindexReviewBudget`, `createReviewBudgetId`, arithmetic `deriveBudget` if useful for plugins. Do not export SQL helpers. Do not export a SQLite-only budget store or a 06-defined `RecordStore`. Protocol’s `BaselineAssessment` re-export may remain for existing protocol consumers; it must be the same type.
 
 ### 10.2 Compatibility matrix
 
@@ -1416,11 +1435,11 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 
 | File | Change |
 |------|--------|
-| `src/review-budget/types.ts` | **New.** Domain types, defaults, guards (`DebtClaimEvidence`, `isCompleteDebtClaimEvidence`). |
+| `src/review-budget/types.ts` | **New.** Domain types, defaults, guards (`DebtClaimEvidence`, `isCompleteDebtClaimEvidence`). Owns shared structural `BaselineAssessment` used by Phase 4 payload/facade/index and re-exported by Phase 5 protocol. |
 | `src/review-budget/arithmetic.ts` | **New.** Pure derivation; `eligibleN` requires complete persisted evidence. |
 | `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; bind assessments to persisted claims; returns `pendingSnapshot` (includes first-review `baselineAssessment`); no snapshot write. |
 | `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture. |
-| `src/review-budget/record-lines.ts` | **New.** Budget-line payloads, idempotency keys, encode/decode (snapshot decode round-trips `baselineAssessment`). Consumes slice-10 `RecordStore` types. |
+| `src/review-budget/record-lines.ts` | **New.** Budget-line payloads, idempotency keys, encode/decode (snapshot decode round-trips `baselineAssessment` from Phase 1 domain types). Consumes slice-10 `RecordStore` types. Does not import `src/protocol.ts`. |
 | `src/commands/review-budget-context.ts` | **New.** One `RecordStore` + one `resolveDbContext` + facade/index factory (handlers do not import `bun:sqlite`). |
 | `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser including `### Debt Claims` evidence. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
@@ -1428,10 +1447,10 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
 | `src/db/schema.ts` | Migration v8 **index** tables; max version 8; `record_idempotency_key` + `record_seq` order; `baseline_assessment_json` on snapshots. |
 | `src/control-plane/ids.ts` | `createReviewBudgetId`. |
-| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. |
+| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. `appendSnapshot` / snapshot record type use Phase 1 `BaselineAssessment`. |
 | `src/control-plane/review-budget-index.ts` | **New.** Rebuildable SQLite index + `reindexReviewBudget`. |
 | `src/control-plane/index.ts` | Re-exports. Do **not** add `record-store.ts` in this slice. |
-| `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; `CreditClaim` evidence fields remain reviewer-introduced only. |
+| `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; import and re-export `BaselineAssessment` from review-budget domain types (do not redeclare); `CreditClaim` evidence fields remain reviewer-introduced only. |
 | `src/protocol-normalize.ts` | Pass through new fields. |
 | `src/commands/protocol.ts` | Emit/validate flags. |
 | `src/commands/protocol-emit.handler.ts` | Parse assessment flags and item extras. |
@@ -1452,11 +1471,11 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `docs/v1/101-cli-primitives.md` | New flags and `run state` field. |
 | `test/unit/db/schema.test.ts` and `schema-v6`/`v7` | Expect version 8. |
 | `test/unit/db/schema-v8.test.ts` | **New.** |
-| `test/unit/review-budget/*.test.ts` | **New** (apply, arithmetic, persist-record, ensure-baseline). |
+| `test/unit/review-budget/*.test.ts` | **New** (types, record-lines codec, apply, arithmetic, persist-record, ensure-baseline). |
 | `test/unit/parsers/delivery-budget.test.ts` | **New.** |
 | `test/unit/parsers/plan.test.ts` | Placement regressions. |
-| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index. |
-| `test/unit/control-plane/review-budget-index.test.ts` | **New.** Reindex from record lines. |
+| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index; imports `BaselineAssessment` from domain types, not protocol. |
+| `test/unit/control-plane/review-budget-index.test.ts` | **New.** Reindex from record lines using Phase 1 `BaselineAssessment`. |
 | `test/unit/config.test.ts`, `config-v1.test.ts`, `config-registry.test.ts` | Defaults and layering. |
 | `test/unit/protocol.test.ts`, `protocol-emit.test.ts`, `protocol-validate.test.ts`, `protocol-helpers.test.ts` | New fields; v1 compat. |
 | `test/unit/harnesses/opencode-skills.test.ts`, `cursor-skills.test.ts` | Skill string updates. |
@@ -1468,14 +1487,16 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 
 | Type | Scope | Validates |
 |------|-------|-----------|
+| Unit | `review-budget/types.test.ts` | Structural `BaselineAssessment` is exported from domain types; Phase 1–4 consumers type-check against it without `src/protocol.ts` |
 | Unit | `review-budget/arithmetic.test.ts` | `B=4` ceilings; bands; both disagreement directions; `P` not netted; `R` dedup + re-entry; polish excluded; `D` caps; `requiresHuman` flags; incomplete debt evidence excluded from `N` |
 | Unit | `parsers/delivery-budget.test.ts` | Canonical table (W2 effort `5` + complete `#### DC0` evidence); every `DeliveryBudgetParseCode`; empty ≠ zero; effort `4` rejected; negative row without evidence rejected |
 | Unit | `parsers/plan.test.ts` | Budget section does not break phase/checklist parse |
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
 | Unit | `schema-v8.test.ts` | v8 **index** tables, v7→v8, CHECKs, unique `run_id` + `record_idempotency_key`, nullable `baseline_assessment_json` |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip**; no SQLite-only authority |
-| Unit | `review-budget-index.test.ts` | Wipe index, `reindexReviewBudget` restores baselines/ledgers/assessments **and first-snapshot `baselineAssessment`**; **`I` / `baselineDirection` recompute identically from the record line** |
-| Unit | `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys |
+| Unit | `review-budget/record-lines.test.ts` | Snapshot codec round-trips `baselineAssessment` from Phase 1 domain types; omit-when-absent; no `src/protocol.ts` import |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip** (domain type, not protocol); no SQLite-only authority |
+| Unit | `review-budget-index.test.ts` | Wipe index, `reindexReviewBudget` restores baselines/ledgers/assessments **and first-snapshot `baselineAssessment`** (domain type); **`I` / `baselineDirection` recompute identically from the record line** |
+| Unit | `protocol.test.ts` / `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys; `BaselineAssessment` is a re-export of the Phase 1 domain type (not a second declaration) |
 | Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots; assessments bind to persisted claims; incomplete author evidence fails closed |
 | Unit | `persist-record.test.ts` | Failed `atomicAppend` leaves no snapshot **line**; unique success is 1:1 with the step line; **`created: false` retry after projection failure does not duplicate the record and repairs both SQLite projections**; first-snapshot `baselineAssessment` survives index wipe |
 | Unit | `ensure-baseline` + template/invoke unit if injectable | Capture before invoke; missing section; **enforced warn on every first-capture path including direct `--record`** |
@@ -1504,6 +1525,7 @@ Edge cases (must appear in unit tests):
 - Store round-trip: `originalLedger` / `currentLedger` retain `targetPhase`, minimal deltas, `before`, `after`.
 - Record line is present after capture even if the SQLite index is wiped and rebuilt.
 - First-snapshot `baselineAssessment` is present on the facade record and index after reindex; `I` and `baselineDirection` recompute identically from the record line (not from `derived_json`).
+- Phase 4 codec, facade, and index tests import `BaselineAssessment` from `src/review-budget/types.ts` and compile without `src/protocol.ts` (Phase 4 is independently type-complete before Phase 5).
 - No baseline index row when RecordStore has no baseline line.
 - Step/`atomicAppend` failure after apply: zero snapshot lines.
 - Duplicate step re-record: still exactly one snapshot line.
@@ -1532,7 +1554,7 @@ Edge cases (must appear in unit tests):
 
 | Phase | Description | Time |
 |-------|-------------|------|
-| 1 | Types + pure arithmetic + `B=4` fixtures | 1 day |
+| 1 | Types (incl. `BaselineAssessment`) + pure arithmetic + `B=4` fixtures | 1 day |
 | 2 | Delivery Budget parser + plan-parse regressions | 1–2 days |
 | 3 | `reviewBudget` config, registry, default TOML | 0.5–1 day |
 | 4 | Budget record lines + RecordStore facade + v8 index | 1–2 days |
@@ -1544,11 +1566,17 @@ Edge cases (must appear in unit tests):
 | 10 | Integration matrix, exports, `bun test` | 1–2 days |
 | **Total** | | **10.5–16 days** |
 
-Phases 1–3 (types, parser, config) may proceed without slice 10. **Phase 4 and every later persistence/record path are blocked on slice 10 Phase 1** (frozen `RecordStore` + in-memory impl, including budget-stream append/read and atomic multi-append). Phase 4 is a hard prerequisite to 6–8. Phase 5 can overlap 4 once the freeze exists. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. Process-durable CLI integration tests wait for slice 10’s working-tree `RecordStore` impl; until then, persist tests use `MemoryRecordStore`. Do **not** retarget authority back to SQLite if the working-tree impl lags.
+Phases 1–3 (types, parser, config) may proceed without slice 10. **Phase 4 and every later persistence/record path are blocked on slice 10 Phase 1** (frozen `RecordStore` + in-memory impl, including budget-stream append/read and atomic multi-append). Phase 4 is independently type-complete: `BaselineAssessment` lives in Phase 1 domain types, so facade, codec, and index rebuild compile and test before Phase 5. Phase 4 is a hard prerequisite to 6–8. Phase 5 imports/re-exports that type and can overlap 4 once the freeze exists; it is not a type prerequisite for Phase 4. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. Process-durable CLI integration tests wait for slice 10’s working-tree `RecordStore` impl; until then, persist tests use `MemoryRecordStore`. Do **not** retarget authority back to SQLite if the working-tree impl lags.
 
 ---
 
 ## Revision History
+
+### 1.5 — August 29, 2026
+
+Addresses **P1.7** in the **Addendum (2026-08-29) — Revision 1.4 final staff re-review** of [`docs/development/reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md`](../reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md). Prior P0/P1.1–P1.6 and P2 items remain in force.
+
+1. **P1.7 — Make Phase 4 independently type-complete.** Shared structural `BaselineAssessment` (`independentEffortEstimate`, `confidence`, `reason`) is declared in Phase 1 `src/review-budget/types.ts`, not in Phase 5 `src/protocol.ts`. Phase 4 payload codec, facade, and index rebuild import that type and type-test against it (no `src/protocol.ts` import). Phase 5 protocol changes import and re-export the same type; they do not declare a second copy. Phase 1 and Phase 4 completion gates require facade, codec, and reindex to compile and pass before Phase 5.
 
 ### 1.4 — August 29, 2026
 
