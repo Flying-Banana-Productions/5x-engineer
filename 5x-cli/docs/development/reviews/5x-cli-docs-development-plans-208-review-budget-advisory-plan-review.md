@@ -169,3 +169,23 @@ None after the deterministic plan corrections below.
 ### Updated readiness
 - **Plan completion:** ⚠️ — P1.7 is fully resolved, but P1.8 is required to prevent the new record-authoritative path from bypassing v1 recording invariants.
 - **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 can begin under the existing slice-10 prerequisite; Phase 6 record wiring must incorporate P1.8 before implementation proceeds.
+
+---
+
+## Addendum (2026-08-29) — Revision 1.6 final staff re-review
+
+**Reviewed:** `925f127dcdc2f72371773421917ae40c3242a1d0` | plan version 1.6
+
+### What's addressed (✅)
+- **P1.8 — Pre-append record admission:** Resolved. Phase 6 now defines one exported `prepareRecordStepAppend` seam in `run-v1.handler.ts` and requires both generic `recordStepInternal` and the applied reviewer snapshot wrapper to call it before any `RecordStore.atomicAppend`, SQLite step write, or budget-index upsert (`208-review-budget-advisory-plan.md:1135-1213`). Its ordered algorithm retains the current active-run and fail-closed worktree checks, best-effort `head_commit` capture, live-config max-step enforcement, JSON validation, and full record-step metadata assembly.
+- **Idempotency and ceiling behavior:** Resolved. The prepare contract preserves the current rule that omitted iteration or null phase is a new record, gives a complete tuple a RecordStore-first lookup (with SQLite fallback), rejects a new record at the limit, and returns an admission duplicate at the limit for projection repair rather than appending (`:1180-1188`). The snapshot key is derived from the prepared, resolved tuple, avoiding a mismatch when iteration was omitted (`:1207-1210`).
+- **No-write rejection and repair coverage:** Resolved. The wrapper explicitly performs no record append or projection mutation for terminal runs, missing worktrees, invalid JSON, unknown runs, or new-at-limit requests; it repairs projections from existing durable step/snapshot lines only for duplicate outcomes (`:1203-1211`). Focused tests require an `atomicAppend` spy and unchanged step stream, budget stream, and both projections for every rejected condition, plus both SQLite-first and RecordStore-first duplicate-at-limit cases (`:1255-1263`, `:1612-1616`).
+- **Earlier findings:** P0 and P1.1–P1.7/P2 remain addressed: record-tier authority under the explicit slice-10 freeze, atomic step/snapshot persistence, projection repair, durable first-review assessment reconstruction, type ownership, complete debt evidence, carried-forward assessments, deterministic order, advisory-only routing, canonical fixtures, and enforced-mode warnings are all retained and internally consistent.
+
+### Final assessment
+
+No new blocking correctness, architecture, phasing, testability, risk, or scope issue was found. The plan is implementation-ready subject to its explicit prerequisite: slice 10 Phase 1 must first merge and freeze the `RecordStore` interface plus in-memory implementation with budget-stream get/list/append, insertion ordering, and all-or-nothing multi-append semantics. Phases 1–3 may start independently; Phase 4 and later remain blocked until that prerequisite is satisfied.
+
+### Updated readiness
+- **Plan completion:** ✅ — all previously raised directly derivable corrections are specified and testable.
+- **Ready for implementation:** ✅ — `ready`, subject to the documented slice-10 Phase-1 prerequisite for persistence phases.
