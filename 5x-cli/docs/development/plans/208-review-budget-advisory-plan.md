@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 29, 2026
-**Status:** Draft — pending staff engineer review
+**Status:** Draft — revision 1.1 addressing staff review
 
 ---
 
@@ -46,6 +46,9 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | **Reject reviewer-authored aggregates** | If input contains `budget`, `budgetBand`, `B0`, `W`, `R`, `S`, `E`, `A`, `P`, `baselineDirection`, or similar CLI-owned keys, fail `INVALID_STRUCTURED_OUTPUT`. Do not strip-and-continue. |
 | **`Addresses` + still-listed items define `R`** | Incorporated finding IDs drop out of `R` unless they still appear in the current verdict `items` (incomplete author claim). Explicit `addressed` / `still_open` enums are slice 07. |
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
+| **Snapshot + reviewer step are one SQLite transaction** | Appending a snapshot before `recordStepInternal` orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the same transaction as the unique `steps` insert on the same resolved Database. Failed or idempotent records insert no snapshot. |
+| **Carry forward unchanged debt-claim assessments** | First-seen (or changed) claims require a current `--credit-assessment`. Unchanged claims keep persisted eligibility so a later closure that omits them does not zero `N`/`D`/`E`. Current assessments overlay by `creditClaimId`. |
+| **Snapshot order is insertion-stable** | `datetime('now')` is second-resolution. `latestSnapshot` / `listSnapshots` order by `(created_at, rowid)` (memory: insertion sequence), not `created_at` alone. |
 
 ### References
 
@@ -79,7 +82,8 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 15. [Tests](#tests)
 16. [Not In Scope](#not-in-scope)
 17. [Estimated Timeline](#estimated-timeline)
-18. [Provenance](#provenance)
+18. [Revision History](#revision-history)
+19. [Provenance](#provenance)
 
 ---
 
@@ -100,7 +104,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 - New plans include `## Delivery Budget` and `### Surface Snapshot`. Parser failures are explicit.
 - Before the first plan-reviewer invocation (when mode is not `off` and the run is not mid-review v1-compat), the CLI parses the table, sums effort into `B0`, and CAS-inserts an immutable baseline.
 - Reviewers may emit per-item deltas, first-review `baselineAssessment`, and per-claim `creditAssessments`. They must not emit totals or status.
-- On `protocol validate reviewer --phase plan --record` and `invoke reviewer --record` for plan phase, the CLI recomputes `W`/`R`/ceilings/bands, appends a snapshot, and decorates `result_json` with a `budget` object.
+- On `protocol validate reviewer --phase plan --record` and `invoke reviewer --record` for plan phase, the CLI recomputes `W`/`R`/ceilings/bands, **atomically** persists a snapshot with the unique reviewer step, and decorates `result_json` with a `budget` object. Unchanged debt-claim assessments carry forward.
 - `5x run state` includes `review_budget` when a baseline exists.
 - Workflow routing, `maxReviewIterations`, and `human_required` semantics are unchanged.
 
@@ -141,13 +145,35 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 **`R` accounting.** Let `incorporated` = union of finding IDs in current `Addresses` cells (ignore `-` / empty). Let `pending` = current verdict items with `scopeClass !== "polish"` (missing `scopeClass` counts as required). `R` = sum of `effortDelta` (default 0 when v1-compat) for pending items whose `id` is **not** in `incorporated`, **plus** pending items that **are** in `incorporated` but still listed (author claimed Addresses while the reviewer still raised the id). Polish items never contribute to `R`. This implements `206` §6.1 without slice 07’s resolution enum.
 
-**Provisional `D` only from eligible intrinsic claims.** Author plan claims contribute to `N`/`D` only when a matching `--credit-assessment` has `eligibility: "eligible"` and `coupling: "intrinsic"`. Reviewer-item `creditClaim` is provisionally eligible by construction if `coupling === "intrinsic"` and the comparison fields are present; still validate evidence strings non-empty. `ineligible` / `adjacent` / `unrelated` add 0 to `N`. Do not realize credit; do not persist implementation-review realizations.
+**Provisional `D` only from eligible intrinsic claims.** Author plan claims contribute to `N`/`D` only when the **effective** assessment set (current overlay ∪ persisted unchanged claims) has `eligibility: "eligible"` and `coupling: "intrinsic"` for that `debtClaimId`. Reviewer-item `creditClaim` is provisionally eligible by construction if `coupling === "intrinsic"` and the comparison fields are present; still validate evidence strings non-empty. `ineligible` / `adjacent` / `unrelated` add 0 to `N`. Do not realize credit; do not persist implementation-review realizations.
 
 **CLI-owned keys are rejected, not merged.** Reviewer JSON that includes a `budget` object or top-level `budgetBand` / `B0` / `W` / `projectedEffort` / `baselineDirection` / `requiresHuman` (boolean at verdict top-level — item `action: human_required` is fine) fails closed. Prevents an agent from impersonating CLI arithmetic.
 
 **Baseline capture hooks at template render *and* record.** `206` §3.3: capture before the first reviewer invocation. Primary hook: `template render` / `invoke` template resolution when the selected template base name is `reviewer-plan` (not `-continued`), mode ≠ `off`, run is not `v1_compat`. Safety net: `applyPlanReviewBudget` at validate/invoke record time captures if still missing and the run is eligible. Capture is CAS; a race cannot double-write `B0`.
 
 **Opt-in is explicit.** `--opt-in-budget-baseline` on `protocol validate reviewer` (and the same flag on `invoke reviewer` if flags are plumbed; otherwise document that opt-in goes through `protocol validate --record`). It is valid only when a baseline is absent and prior plan-reviewer steps exist. It captures `B0` from the **current** plan (human-approved, possibly already expanded) and sets `captureKind: "opt_in"`. Skills must not pass this flag without a human `human:gate` / prompt confirmation. This slice does not add a new prompt kind.
+
+**Snapshot persistence is atomic with the decorated reviewer step.** `protocolValidate` and `invokeAgent` emit the success envelope and call `recordStepInternal` afterward (`src/commands/protocol.handler.ts:479–515`, `src/commands/invoke.handler.ts:642–684`). If `apply` appended a snapshot first, a failed record (terminal run, step limit, DB error, or retry race) would leave telemetry without a journal row, and a retry could append a second snapshot for the same verdict. Therefore:
+
+- `applyPlanReviewBudget` **computes** (and may CAS-capture a baseline) but **does not** `appendSnapshot`.
+- Handlers resolve **one** `resolveDbContext` Database, construct `ReviewBudgetStore` from it, and pass that same `{ db, config, controlPlane }` into `recordStepInternal`.
+- Snapshot insert and the unique `steps` insert run in **one** `db.transaction(...)`. If the step insert throws or is a duplicate (`recorded: false`), the transaction inserts no new snapshot. If `appendSnapshot` throws, the step insert rolls back.
+- Envelope-before-record stays the v1 contract (record failure is stderr + exit 1). The invariant is journal ↔ snapshot, not envelope ↔ journal.
+- Exactly one snapshot exists per successfully recorded unique reviewer step. Idempotent re-records do not add another.
+
+**Effective assessments = current overlay ∪ persisted unchanged claims.** `deriveBudget` must not receive only the current verdict’s `creditAssessments`. A continued review that correctly omits an already-assessed unchanged claim would otherwise drop `N`/`D`/`E` to zero. Apply builds an **effective** assessment set:
+
+1. Load persisted assessments from `latestSnapshot.assessments` (empty on the first snapshot).
+2. Overlay any current-verdict assessments by `creditClaimId` (explicit re-assessment wins).
+3. For each author `debtClaimId` on the **current** ledger: if it is new or **changed** relative to the previous snapshot’s ledger, a current assessment is required (`CREDIT_ASSESSMENT_REQUIRED`). Unchanged claims reuse the persisted assessment and do not require re-emit.
+4. A claim is **unchanged** when the same `debtClaimId` is still on the current ledger with the same `coupling` and the same work-item `architectureDelta` as in the previous snapshot’s `currentLedger`. Removed claims drop out of `N`. Reviewer-item `creditClaim` stays provisionally eligible by construction (no duplicate `--credit-assessment`).
+5. Persist the **effective** (merged) set on the new snapshot so the next review can merge again. Call `deriveBudget` with that effective set, not the raw verdict array.
+
+Do **not** instruct continued-review skills to re-emit every assessment. That would conflict with the first-seen / changed-only validation rule.
+
+**Snapshot listing is deterministic at equal timestamps.** Schema `created_at` uses SQLite `datetime('now')` (second resolution). `listSnapshots` orders `ORDER BY created_at ASC, rowid ASC`. `latestSnapshot` uses `ORDER BY created_at DESC, rowid DESC LIMIT 1`. The memory store keeps a monotonic insertion sequence and uses it as the `rowid` tie-breaker. Contract tests insert two snapshots with the same `created_at` and assert insertion order.
+
+**Enforced-mode warning is on every first-capture path.** `ensurePlanReviewBaseline` owns the reserved-mode warning and runs on template-render, invoke-before-stream, **and** apply’s safety-net capture (direct `protocol validate --record` with no prior render). Apply takes the same `warn` callback. Do not rely on Phase 7/8 having already warned.
 
 ---
 
@@ -179,9 +205,11 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
            ├─ v1 schema (always)
            ├─ if baseline active: require item deltas + first-review I
            ├─ parse current plan → W, Addresses
-           ├─ deriveBudget(...)                 // pure
-           ├─ appendSnapshot                    // store
-           └─ decorate result.budget            // CLI output only
+           ├─ merge assessments (current overlay ∪ persisted unchanged)
+           ├─ deriveBudget(effectiveAssessments) // pure
+           ├─ decorate result.budget            // CLI output only
+           └─ --record: appendSnapshot + steps insert in one transaction
+              (no snapshot if the step insert fails or is a duplicate)
            │
            ▼
   steps.result_json + ReviewBudgetStore
@@ -205,7 +233,7 @@ State per run:
                                                  (preflight; no B0)
 ```
 
-`B0` row is immutable. Snapshots append. Derived numbers on a snapshot are a point-in-time record; `run state` prefers the latest snapshot and may recompute from current plan + latest verdict for display (recompute must match the pure module; if they disagree, that is a bug).
+`B0` row is immutable. Snapshots append, each 1:1 with a successfully recorded unique reviewer step. Derived numbers on a snapshot are a point-in-time record; `run state` prefers the latest snapshot (insertion-order tie-break at equal `created_at`) and may recompute from current plan + latest verdict for display (recompute must match the pure module; if they disagree, that is a bug).
 
 ---
 
@@ -415,7 +443,7 @@ export function deriveBudget(input: {
 	I: number | null;
 	workItems: readonly ParsedWorkItem[];
 	findings: readonly FindingDelta[];
-	assessments: readonly CreditAssessmentInput[];
+	assessments: readonly CreditAssessmentInput[]; // effective set from apply (merged), not raw verdict-only
 	config: Omit<ReviewBudgetConfig, "mode">;
 	semanticHumanRequired: boolean; // any item.action === "human_required"
 }): DerivedBudgetResult;
@@ -449,7 +477,7 @@ export function deriveBudget(input: {
 
 Do **not** fold this into `parsePlan`. Phase checklist parsing must stay independent (`src/parsers/plan.ts:26–27`, `34–167`). A `## Delivery Budget` heading already closes an open phase (`plan.ts:132–137`); document placement **before Phase 1 or after all phases**.
 
-Canonical table (`206` §6.1):
+Canonical table (allowed effort scores only; `206` §6.1’s published `W2` effort `4` is **not** in `{1, 2, 3, 5, 8}` — this fixture uses `5`. Keep `4` exclusively as the invalid-effort test value):
 
 ```markdown
 ## Delivery Budget
@@ -459,7 +487,7 @@ Canonical table (`206` §6.1):
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
 | W1 | ... | 3 | 0 | - | - | ... |
-| W2 | Consolidate ... | 4 | -3 | DC0 (`intrinsic`) | - | ... |
+| W2 | Consolidate ... | 5 | -3 | DC0 (`intrinsic`) | - | ... |
 
 ### Surface Snapshot
 
@@ -522,7 +550,7 @@ export function rawDeliveryBudgetSection(markdown: string): string | null;
 `rawDeliveryBudgetSection` returns the exact substring from `## Delivery Budget` through the last snapshot bullet (exclusive of the next `##`). Slice 08 will byte-compare this for `text_only`; this slice only needs it for tests and for storing `original_section` on the baseline if cheap. Store the parsed ledger JSON as source of truth; optionally also store `original_section` text on capture for audit.
 
 - [ ] Implement parser + helpers.
-- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table; missing section; empty table; bad effort `4`; duplicate `W1`; negative arch without claim; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
+- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5`); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
 - [ ] Re-export parse types from `src/index.ts` in Phase 10 (not required to compile Phase 2).
 
 ---
@@ -630,13 +658,15 @@ CREATE TABLE review_budget_snapshots (
   iteration INTEGER,
   current_ledger_json TEXT NOT NULL,
   findings_json TEXT NOT NULL,
-  assessments_json TEXT NOT NULL,
+  assessments_json TEXT NOT NULL, -- effective merged set (current overlay ∪ persisted unchanged)
   derived_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_review_budget_snapshots_run
   ON review_budget_snapshots(run_id, created_at);
 ```
+
+`created_at` is SQLite `datetime('now')` (second resolution). Do **not** order snapshots by `created_at` alone. `listSnapshots` uses `ORDER BY created_at ASC, rowid ASC`. `latestSnapshot` uses `ORDER BY created_at DESC, rowid DESC LIMIT 1`. The implicit `rowid` is the insertion-order tie-breaker (UUID `id` is the PK, so `rowid` remains available). The memory store assigns a monotonic `seq` per insert and sorts `(createdAt, seq)` the same way.
 
 No `UPDATE` of `review_budget_baselines.b0`. This slice never `UPDATE`s the baselines row. Slice 07 may add a decisions table for governing `B`; until then `b` stays equal to `b0`.
 
@@ -667,7 +697,7 @@ export interface ReviewBudgetSnapshotRecord {
 	iteration: number | null;
 	currentLedger: ParsedDeliveryBudget;
 	findings: FindingDelta[];
-	assessments: CreditAssessmentInput[];
+	assessments: CreditAssessmentInput[]; // effective merged set persisted for the next apply
 	derived: DerivedBudgetResult;
 	createdAt: string;
 }
@@ -694,13 +724,15 @@ export interface ReviewBudgetStore {
 		iteration?: number;
 		currentLedger: ParsedDeliveryBudget;
 		findings: FindingDelta[];
-		assessments: CreditAssessmentInput[];
+		assessments: CreditAssessmentInput[]; // effective merged set
 		derived: DerivedBudgetResult;
 	}): ReviewBudgetSnapshotRecord;
 	latestSnapshot(runId: string): ReviewBudgetSnapshotRecord | null;
 	listSnapshots(runId: string): ReviewBudgetSnapshotRecord[];
 }
 ```
+
+`latestSnapshot` / `listSnapshots` **must** use the insertion-order tie-breaker above. Do not `ORDER BY created_at` without `rowid` (SQLite) or insertion `seq` (memory).
 
 SQL only in `src/control-plane/review-budget-sqlite.ts`. Memory in `src/control-plane/review-budget-memory.ts`. Re-export from `src/control-plane/index.ts`.
 
@@ -709,7 +741,7 @@ SQL only in `src/control-plane/review-budget-sqlite.ts`. Memory in `src/control-
 - [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, `b0 > 0` CHECK, FK to `runs`).
 - [ ] Update version assertions from 7 → 8.
 - [ ] SQLite + memory implementations.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts` run against both impls: capture once; second capture is no-op on `b0`; append snapshots ordered; missing run FK fails on SQLite.
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts` run against both impls: capture once; second capture is no-op on `b0`; append snapshots ordered; **same-`created_at` pair returns in insertion order** (`latestSnapshot` is the second insert); missing run FK fails on SQLite.
 - [ ] Do not import `bun:sqlite` from the interface file or from command handlers (handlers land in Phase 6–8).
 
 ---
@@ -834,13 +866,23 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ## Phase 6: Validate, derive, persist, decorate
 
-**Completion gate:** Recording a plan-review verdict on an `active` run writes a snapshot and a `budget` object on `result_json` / validate envelope. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten.
+**Completion gate:** Recording a plan-review verdict on an `active` run writes **exactly one** snapshot **in the same transaction** as the unique `steps` insert, and a `budget` object on `result_json` / validate envelope. A failed or duplicate record writes no snapshot. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten. Direct `--record` capture in `mode=enforced` emits the reserved-mode warning.
 
 ### 6.1 Shared apply function — `src/review-budget/apply.ts` (new)
 
-This is the only place handlers call for budget side effects.
+This is the only place handlers call for budget **computation** and baseline safety-net capture. It does **not** persist a snapshot (see 6.2).
 
 ```typescript
+export interface PendingBudgetSnapshot {
+	runId: string;
+	phase: string | undefined;
+	iteration: number | undefined;
+	currentLedger: ParsedDeliveryBudget;
+	findings: FindingDelta[];
+	assessments: CreditAssessmentInput[]; // effective merged set
+	derived: DerivedBudgetResult;
+}
+
 export interface ApplyPlanReviewBudgetInput {
 	runId: string;
 	phase: string | undefined;
@@ -851,11 +893,16 @@ export interface ApplyPlanReviewBudgetInput {
 	store: ReviewBudgetStore;
 	hasPriorPlanReviewerStep: boolean;
 	optInBaseline: boolean;
+	warn: (message: string) => void; // required; used on enforced first-capture
 }
 
 export type ApplyPlanReviewBudgetResult =
 	| { status: "skipped"; reason: "off" | "v1_compat" }
-	| { status: "applied"; verdict: ReviewerVerdict & { budget: DerivedBudgetResult } }
+	| {
+			status: "applied";
+			verdict: ReviewerVerdict & { budget: DerivedBudgetResult };
+			pendingSnapshot: PendingBudgetSnapshot;
+	  }
 	| { status: "error"; code: string; message: string };
 ```
 
@@ -865,47 +912,73 @@ Algorithm:
 2. If `config.mode === "off"` → `skipped: off`.
 3. `baseline = store.getBaseline(runId)`.
 4. If no baseline and `hasPriorPlanReviewerStep` and not `optInBaseline` → `skipped: v1_compat`.
-5. If no baseline and (no prior steps or opt-in): `parseDeliveryBudget`; on failure return parse code; `captureBaseline` with `captureKind: optInBaseline ? "opt_in" : "initial"`. If `mode === "enforced"`, the caller should already have a warning channel (Phase 7/8).
+5. If no baseline and (no prior steps or opt-in): call `ensurePlanReviewBaseline` (Phase 7) with the same `warn` callback — **do not** capture inline. That helper parses, CAS-inserts, and emits the reserved-mode warning on every first capture including this safety-net path. On ensure error, return the parse/capture code. Do not invent `B0 = 0`.
 6. If baseline exists: parse **current** plan (fail closed — do not keep a stale `W` from a broken table).
 7. If this is the first snapshot for the run (`latestSnapshot == null`): require `verdict.baselineAssessment`; map `I`. If later snapshots: if `baselineAssessment` present → error `BASELINE_ASSESSMENT_UNEXPECTED`.
 8. For `active` runs, every `items[]` entry must include integer `effortDelta >= 0` and `architectureDelta` in the allowed set; `architectureDelta < 0` requires `coupling`. Missing fields → `BUDGET_ITEM_FIELDS_REQUIRED` with item id.
-9. Map credit assessments; every author `debtClaimId` on the current ledger must have an assessment on the **first** review that sees that claim. A new claim introduced in a later author revision requires assessment on the next recorded review (error `CREDIT_ASSESSMENT_REQUIRED` listing missing ids). Reviewer-item `creditClaim` does not need a duplicate `--credit-assessment`.
-10. `deriveBudget(...)`.
-11. `appendSnapshot`.
-12. Return verdict with `budget: derived` (includes `requiresHuman`, bands, alerts, `I`, ceilings). Do not mutate `readiness` or `items`.
+9. Build the **effective** assessment set (Design Decisions):
+   - `persisted` = `latestSnapshot?.assessments ?? []`.
+   - Overlay current `verdict.creditAssessments` by `creditClaimId`.
+   - For each author `debtClaimId` on the current ledger: if the claim is **new or changed** vs the previous snapshot’s `currentLedger` (different `coupling` or work-item `architectureDelta`, or absent from persisted), require a **current** assessment (`CREDIT_ASSESSMENT_REQUIRED` listing missing ids). Unchanged claims reuse the persisted assessment and do not require re-emit.
+   - Reviewer-item `creditClaim` does not need a duplicate `--credit-assessment`.
+   - Persist this merged set on `pendingSnapshot.assessments`.
+10. `deriveBudget({ ..., assessments: effectiveAssessments })` — never the raw verdict array alone.
+11. **Do not** `appendSnapshot` here.
+12. Return `{ status: "applied", verdict: decorated, pendingSnapshot }`. Do not mutate `readiness` or `items`.
 
 `hasPriorPlanReviewerStep`: injected boolean. Callers compute it from `getStepsByPhase(db, runId, "plan")` filtering `step_name` starting with `reviewer:` (`src/db/operations-v1.ts:250–254`). Do not pass `Database` into `apply.ts`.
 
-### 6.2 Protocol validate — `src/commands/protocol.handler.ts`
+### 6.2 Atomic snapshot + step persist
+
+`recordStepInternal` already accepts an optional `dbContext` (`src/commands/run-v1.handler.ts:1193–1201`). Budget-recording handlers **must not** let it re-resolve a second Database.
+
+**Context factory** (same seam as `PromptCommandContext` / `src/commands/prompt-context.ts`): `src/commands/review-budget-context.ts` runs **one** `resolveDbContext`, constructs `ReviewBudgetStore` from that Database, and returns `{ db, config, controlPlane, store }`. Protocol/invoke handlers call the factory (or accept an injected one in tests). They do **not** import `bun:sqlite`.
+
+Extend `recordStepInternal` with optional `onUniqueInsert?: () => void`. After pre-checks, wrap `recordStep` + the hook in `db.transaction(() => { ... })()` on the **same** Database:
+
+- Unique insert (`recorded: true`): run `onUniqueInsert` inside the transaction (production: `store.appendSnapshot(pendingSnapshot)`). The SQLite store **must** use this same `Database` instance — do not open a second connection inside `appendSnapshot`.
+- Duplicate (`recorded: false`): skip the hook.
+- If `recordStep` or `onUniqueInsert` throws, the transaction aborts — neither row remains.
+
+Optional thin wrapper `recordPlanReviewerStepWithSnapshot` beside the context factory is sugar that passes that hook. Prefer the hook on `recordStepInternal` so `src/review-budget/` stays free of `bun:sqlite`.
+
+Failed record leaves no snapshot. A retry of a failed unique insert may snapshot once, when the step actually lands. A retry of a successful unique insert snapshots zero additional times. Exactly one snapshot exists per successfully recorded unique reviewer step.
+
+### 6.3 Protocol validate — `src/commands/protocol.handler.ts`
 
 After `protocolValidateCore` and before `outputSuccess` (`:378–483`):
 
-- When `role === "reviewer"` and resolved phase is `plan` (string `plan`, not numeric phase refs — `isNumericPhaseRef` is false for `"plan"`, `:131–140`): resolve DB + store, load plan markdown from `resolveRunExecutionContext` effective plan path, compute `hasPriorPlanReviewerStep`, read `optInBaseline` from new param, `loadConfig` `reviewBudget`, call `applyPlanReviewBudget`.
+- When `role === "reviewer"` and resolved phase is `plan` (string `plan`, not numeric phase refs — `isNumericPhaseRef` is false for `"plan"`, `:131–140`): resolve **one** review-budget context (factory above), load plan markdown from `resolveRunExecutionContext` effective plan path, compute `hasPriorPlanReviewerStep`, read `optInBaseline` from new param, `loadConfig` `reviewBudget`, pass `warn` (stderr / injected sink — do not monkey-patch `console.warn`), call `applyPlanReviewBudget`.
 - On `status === "error"`, `outputError(code, message)` **before** `outputSuccess` (same fail-closed rule as `--record` prerequisites, `:426–432`).
-- On `applied`, replace `validated` with the decorated verdict so both the envelope and `recordStepInternal` persist `budget`.
+- On `applied`, replace `validated` with the decorated verdict so the envelope includes `budget`.
 - On `skipped`, leave `validated` unchanged.
+
+`--record` persist path (`:492–515`): when `applied` and `pendingSnapshot` is set, call `recordStepInternal` with the context factory’s `dbContext` and `onUniqueInsert: () => store.appendSnapshot(pendingSnapshot)`. Keep the existing stderr-on-record-failure contract (no second stdout envelope). When not `applied`, keep today’s `recordStepInternal` call (no hook).
 
 New params on `ProtocolValidateParams` (`:37–50`): `optInBudgetBaseline?: boolean`. Wire `--opt-in-budget-baseline` on `validate reviewer` only (`protocol.ts:102–137`).
 
-`--record` is not required to compute (validate-only can still decorate the envelope) but snapshots should only append when `--record` is set **or** always append on successful validate-with-run? Prefer: **append only with `--record`**, matching “persist … behind store operations” on the durable path. Validate-without-record still **computes and returns** `budget` in the envelope when a baseline exists (or captures only on `--record`). Capture-on-validate-without-record would create baselines during dry runs — **do not**. If no baseline and no `--record`, skip capture; if extra fields are missing, do not fail v1 dry-validate unless `--record` or an existing baseline makes the run `active`.
+`--record` is not required to compute (validate-only can still decorate the envelope) but snapshots append **only** with `--record`, inside the step transaction. Validate-without-record still **computes and returns** `budget` in the envelope when a baseline exists. Capture-on-validate-without-record would create baselines during dry runs — **do not**. If no baseline and no `--record`, skip capture; if extra fields are missing, do not fail v1 dry-validate unless `--record` or an existing baseline makes the run `active`.
 
 Tighten:
 
 - Dry validate (no `--record`, no baseline): v1 rules only (optional new fields).
-- `--record` or existing baseline: full apply (may capture, may require fields).
+- `--record` or existing baseline: full apply (may capture via ensure, may require fields). Snapshot write still only with `--record`.
 
-### 6.3 Invoke record path — `src/commands/invoke.handler.ts`
+Direct `protocol validate --record` with no prior template render is a first-capture path: `ensurePlanReviewBaseline` must emit the enforced-mode warning here too.
 
-After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (with `--record` equivalent: invoke always has a run; decorate output and the later `recordStepInternal` body). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply.
+### 6.4 Invoke record path — `src/commands/invoke.handler.ts`
+
+After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (decorate output). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply, then `recordStepInternal` with the same context-factory `dbContext` and `onUniqueInsert` snapshot hook in the existing post-envelope record block (`:648–684`).
 
 Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module already has a parallel option surface; if that is noisy, document opt-in via `protocol validate --record --opt-in-budget-baseline` only and skip the invoke flag. Prefer **one** opt-in flag on both commands for skill simplicity.
 
 `ReviewerVerdictSchema` extra optional properties (Phase 5) allow providers to emit new fields.
 
-### 6.4 Tests
+### 6.5 Tests
 
-- [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive; Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness.
-- [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`.
+- [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged); **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins.
+- [ ] `test/unit/review-budget/persist-record.test.ts` (or store + handler): step-insert failure (terminal run / `MAX_STEPS_EXCEEDED` / thrown `RecordError`) leaves **zero** snapshots; unique success leaves **exactly one**; idempotent retry (`recorded: false`) leaves still **one**; injected `appendSnapshot` throw rolls back the step row (SQLite).
+- [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot.
 - [ ] Do not assert any prompt/choose routing.
 
 ---
@@ -931,7 +1004,7 @@ export function ensurePlanReviewBaseline(input: {
 	| { status: "error"; code: string; message: string };
 ```
 
-If `mode === "enforced"`, `warn("reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only")` once per capture.
+If `mode === "enforced"` **and this call creates a baseline** (`status: "captured"`), `warn("reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only")`. Emit once per successful first capture, not on `already` / skip. Apply’s safety-net (direct `protocol validate --record` / invoke `--record` with no prior render) **must** call this helper so the warning is not render-hook-only.
 
 Error message for missing section must tell the orchestrator to run an author preflight that adds `## Delivery Budget` **before** the first reviewer, and must not mention inventing `B0 = 0`.
 
@@ -955,9 +1028,9 @@ CLI is the source of truth: skills cannot silently skip a missing section on a n
 
 `--opt-in-budget-baseline` (Phase 6) is the only capture path for `v1_compat` runs. Template render must **not** treat continued reviews as opt-in.
 
-- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, happy capture, opt_in).
+- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
 - [ ] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
-- [ ] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`).
+- [ ] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
 
 ---
 
@@ -1068,6 +1141,7 @@ Also add the same section to repo `docs/_implementation_plan_template.md` (this 
 
 - Do not emit `baselineAssessment`.
 - Re-check `Addresses` vs still-open items; emit deltas for remaining items.
+- Emit `--credit-assessment` **only** for author `DCn` that are **new or changed** since the last recorded review (same coupling and architectureDelta as the previous ledger → omit; CLI carries the persisted assessment). Do **not** re-emit every claim on every continued review.
 - Do not restart exhaustive review **as a hard CLI rule** (that is slice 07). Advisory text may say “prefer closure of prior findings” without changing routing.
 
 Do **not** edit `reviewer-commit.md` / `reviewer-commit-continued.md`.
@@ -1080,7 +1154,7 @@ Do **not** edit `reviewer-commit.md` / `reviewer-commit-continued.md`.
 
 - After `run init`, if first reviewer render fails `BUDGET_SECTION_MISSING`, invoke author to add the table, commit, retry. Do not invent scores without reading the plan.
 - Pass `--baseline-assessment` on first `protocol emit reviewer`.
-- Pass `--credit-assessment` for each author `DCn` on the current table.
+- Pass `--credit-assessment` for each author `DCn` that is **new or changed** on the current table (first review: every current `DCn`; continued reviews: only new/changed ids). Unchanged claims are carried forward by the CLI — do not re-emit them as a required ritual, and do not treat omission of an unchanged claim as a protocol error.
 - **Do not** treat `result.budget.requiresHuman` as a stop or human gate in this slice. Continue v1 routing (`readiness`, `human_required` items, `maxReviewIterations`).
 - Mid-review resume: if `run state` shows `review_budget.status = v1_compat`, stay on v1 unless the human confirms opt-in; only then `protocol validate --opt-in-budget-baseline` after the table exists.
 - `enforced` in `5x config show` does not change this skill yet.
@@ -1119,7 +1193,7 @@ Export parse function/types, `ReviewBudgetStore` types, `createMemoryReviewBudge
 | Opt-in flag + table on mid-review run | `capture_kind=opt_in`; subsequent records decorate |
 | Reviewer JSON with `"budgetBand":"within_standard"` | `INVALID_STRUCTURED_OUTPUT` |
 | Malformed table after baseline exists | record fails; `B0` row untouched |
-| `enforced` mode | warning; same as advisory routing |
+| `enforced` mode | warning on **every** first capture (render **and** direct `--record`); same as advisory routing |
 | Implementation-review `protocol validate reviewer --phase phase-1` | no plan-budget apply; v1 item contract |
 
 ### 10.3 Integration tests — `test/integration/commands/`
@@ -1147,40 +1221,41 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 |------|--------|
 | `src/review-budget/types.ts` | **New.** Domain types, defaults, guards. |
 | `src/review-budget/arithmetic.ts` | **New.** Pure derivation. |
-| `src/review-budget/apply.ts` | **New.** Validate/record orchestration. |
-| `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight. |
+| `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; returns `pendingSnapshot`; no snapshot write. |
+| `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture. |
+| `src/commands/review-budget-context.ts` | **New.** One `resolveDbContext` + store factory for protocol/invoke (handlers do not import `bun:sqlite`). |
 | `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
 | `src/config.ts` | `ReviewBudgetConfigSchema`; `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
-| `src/db/schema.ts` | Migration v8; max version 8. |
+| `src/db/schema.ts` | Migration v8; max version 8; snapshot index `(run_id, created_at)` plus `rowid` order. |
 | `src/control-plane/ids.ts` | `createReviewBudgetId`. |
 | `src/control-plane/review-budget-store.ts` | **New.** Store interface. |
-| `src/control-plane/review-budget-sqlite.ts` | **New.** SQLite impl. |
-| `src/control-plane/review-budget-memory.ts` | **New.** Memory impl. |
+| `src/control-plane/review-budget-sqlite.ts` | **New.** SQLite impl; `listSnapshots`/`latestSnapshot` order by `(created_at, rowid)`. |
+| `src/control-plane/review-budget-memory.ts` | **New.** Memory impl; insertion-seq tie-breaker. |
 | `src/control-plane/index.ts` | Re-exports. |
 | `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper. |
 | `src/protocol-normalize.ts` | Pass through new fields. |
 | `src/commands/protocol.ts` | Emit/validate flags. |
 | `src/commands/protocol-emit.handler.ts` | Parse assessment flags and item extras. |
-| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate/record. |
+| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate; atomic snapshot+step persist on `--record`; pass `warn` into apply/ensure. |
 | `src/commands/protocol-helpers.ts` | Only if reject helper is called from shared validate. |
-| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review record; optional opt-in flag. |
+| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; atomic snapshot+step persist on `--record`; optional opt-in flag. |
 | `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render. |
-| `src/commands/run-v1.handler.ts` | `review_budget` on state JSON/text. |
+| `src/commands/run-v1.handler.ts` | `review_budget` on state JSON/text; optional `onUniqueInsert` inside the `recordStep` transaction. |
 | `src/templates/default-artifacts.ts` | Delivery Budget section. |
 | `src/templates/author-generate-plan.md` | Require scored table. |
 | `src/templates/author-process-plan-review.md` | Stable IDs + Addresses. |
 | `src/templates/reviewer-plan.md` | `I`, per-item deltas, no totals. |
-| `src/templates/reviewer-plan-continued.md` | No `I`; Addresses / remaining deltas. |
+| `src/templates/reviewer-plan-continued.md` | No `I`; Addresses / remaining deltas; new-or-changed credit assessments only. |
 | `src/skills/base/5x-plan/SKILL.tmpl.md` | Budget section requirement. |
-| `src/skills/base/5x-plan-review/SKILL.tmpl.md` | Preflight, flags, v1 routing preserved. |
+| `src/skills/base/5x-plan-review/SKILL.tmpl.md` | Preflight, flags, carried-forward assessments, v1 routing preserved. |
 | `src/index.ts` | Public exports. |
 | `docs/_implementation_plan_template.md` | Same budget section as shipped template. |
 | `docs/v1/101-cli-primitives.md` | New flags and `run state` field. |
 | `test/unit/db/schema.test.ts` and `schema-v6`/`v7` | Expect version 8. |
 | `test/unit/db/schema-v8.test.ts` | **New.** |
-| `test/unit/review-budget/*.test.ts` | **New.** |
+| `test/unit/review-budget/*.test.ts` | **New** (apply, arithmetic, persist-record, ensure-baseline). |
 | `test/unit/parsers/delivery-budget.test.ts` | **New.** |
 | `test/unit/parsers/plan.test.ts` | Placement regressions. |
 | `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** |
@@ -1196,29 +1271,35 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `review-budget/arithmetic.test.ts` | `B=4` ceilings; bands; both disagreement directions; `P` not netted; `R` dedup + re-entry; polish excluded; `D` caps; `requiresHuman` flags |
-| Unit | `parsers/delivery-budget.test.ts` | Canonical table; every `DeliveryBudgetParseCode`; empty ≠ zero |
+| Unit | `parsers/delivery-budget.test.ts` | Canonical table (W2 effort `5`); every `DeliveryBudgetParseCode`; empty ≠ zero; effort `4` rejected |
 | Unit | `parsers/plan.test.ts` | Budget section does not break phase/checklist parse |
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
 | Unit | `schema-v8.test.ts` | v8 tables, v7→v8, CHECKs, unique `run_id` |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS on SQLite **and** memory; append order |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS on SQLite **and** memory; append order; **same-timestamp insertion-order tie-break** |
 | Unit | `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys |
-| Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0` |
-| Unit | `ensure-baseline` + template/invoke unit if injectable | Capture before invoke; missing section |
+| Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots |
+| Unit | `persist-record.test.ts` | Failed/idempotent step record leaves no extra snapshot; unique success is 1:1; SQLite rollback if snapshot insert throws |
+| Unit | `ensure-baseline` + template/invoke unit if injectable | Capture before invoke; missing section; **enforced warn on every first-capture path including direct `--record`** |
 | Unit | run-state handler | `review_budget` shapes; text line |
-| Unit | harness skill tests | Mentions of emit flags / preflight |
+| Unit | harness skill tests | Mentions of emit flags / preflight / new-or-changed credit assessments |
 | Integration | `review-budget.test.ts` | Init → plan → render capture → emit/validate record → `run state`; missing section; v1_compat; opt-in; `mode=off` overlay |
 
 Edge cases (must appear in unit tests):
 
 - Duplicate `W1`.
-- Effort `4` rejected.
+- Effort `4` rejected (canonical happy-path table uses `5` for W2).
 - Negative architecture without `DCn`.
 - Finding in `Addresses` and still in `items` counts in `R`.
 - First review missing `baselineAssessment`.
 - Second review including `baselineAssessment`.
 - Author adds `DC1` in revision without `--credit-assessment`.
+- Eligible `DC0` retained across a continued review with **no** current assessment for `DC0` (`N`/`D`/`E` do not drop to zero).
 - Reviewer-emitted `budget` object.
 - `b0 > 0` CHECK: cannot insert 0 even if a test bypasses the parser.
+- Step record failure after apply: zero snapshots.
+- Duplicate step re-record: still exactly one snapshot.
+- Two snapshots in the same `created_at` second: `latestSnapshot` is the later insert.
+- Direct `protocol validate --record` with `mode=enforced` and no prior render: reserved-mode warning emitted.
 
 ---
 
@@ -1253,6 +1334,24 @@ Edge cases (must appear in unit tests):
 | **Total** | | **10.5–16 days** |
 
 Phase 1 is a hard prerequisite to 2 and 6. Phase 4 is a hard prerequisite to 6–8. Phase 5 can overlap 4. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. If slice 10’s `RecordStore` appears mid-implementation, do **not** retarget persistence in this slice; keep `ReviewBudgetStore` and file a follow-up to dual-write.
+
+---
+
+## Revision History
+
+### 1.1 — August 29, 2026
+
+Addresses all **P1** and **P2** items in [`docs/development/reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md`](../reviews/5x-cli-docs-development-plans-208-review-budget-advisory-plan-review.md) (no addendum; original review).
+
+1. **P1.1 — Atomic snapshot + reviewer step.** `applyPlanReviewBudget` no longer `appendSnapshot`s. A review-budget context factory shares one `resolveDbContext` Database with the store. `recordStepInternal` gains `onUniqueInsert` inside `db.transaction` with the `steps` insert; failed records and idempotent retries (`recorded: false`) insert no snapshot. Tests require exactly one snapshot per successfully recorded unique reviewer step.
+2. **P1.2 — Carry forward unchanged debt-claim assessments.** Apply merges current `creditAssessments` over persisted snapshot assessments. Unchanged claims (same `debtClaimId`, `coupling`, and work-item `architectureDelta`) do not require re-emit and still contribute to `N`/`D`/`E`. New or changed claims still require a current assessment. Phase 9 continued-review prompts and the plan-review skill match this rule (no “re-emit every assessment”).
+3. **P1.3 — Canonical effort example.** Parser fixture `W2` uses allowed effort `5`. Effort `4` remains the invalid-input test only (`206` §6.1’s published `4` is noted as out of scale).
+4. **P2 — Deterministic snapshot order.** `listSnapshots` / `latestSnapshot` order by `(created_at, rowid)` (memory: insertion seq). Same-timestamp contract tests required.
+5. **P2 — Enforced-mode warning on every first capture.** `ensurePlanReviewBaseline` owns the warning and is the capture path for template render, invoke, **and** apply’s safety-net (direct `protocol validate --record`). Apply takes `warn`. Direct-record test required.
+
+### 1.0 — August 29, 2026
+
+Initial draft.
 
 ---
 
