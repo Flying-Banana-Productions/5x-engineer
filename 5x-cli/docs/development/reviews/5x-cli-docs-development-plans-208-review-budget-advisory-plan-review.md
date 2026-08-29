@@ -152,3 +152,20 @@ None after the deterministic plan corrections below.
 ### Updated readiness
 - **Plan completion:** ⚠️ — P1.5 and P1.6 are fully resolved. P1.7 is a small phasing/type-ownership correction.
 - **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 may begin; Phase 4 remains subject to the explicit slice-10 Phase-1 freeze and must receive P1.7 before its completion gate can be satisfied.
+
+---
+
+## Addendum (2026-08-29) — Revision 1.5 post-limit staff re-review
+
+**Reviewed:** `dc659fd` | plan version 1.5
+
+### What's addressed (✅)
+- **P1.7 — Phase 4 independent type completeness:** Resolved. `BaselineAssessment` is now declared once in Phase 1's `src/review-budget/types.ts` (`208-review-budget-advisory-plan.md:300-306`). Phase 4 explicitly imports that domain type for its record payload, facade, codec, index, and tests (`:713-932`), and its completion gate requires those units to compile without `src/protocol.ts` (`:703-707`). Phase 5 imports and re-exports the same type rather than declaring another protocol-local shape (`:937-948`). The dependency/overlap statement and type-level coverage are consistent with that ownership (`:1569`, `:1575-1579`).
+- **Earlier P0/P1.1–P1.6/P2 findings:** Remain resolved in the current plan: record-tier authority and the slice-10 prerequisite, atomic snapshot/step records, projection repair after retries, complete debt evidence, carried-forward assessments, deterministic ordering, cache reconstruction, and advisory-only routing are all retained with explicit tests.
+
+### Remaining directly derivable correction
+- **P1.8 — Preserve existing record admission checks before the RecordStore atomic append:** The Phase 6 wrapper makes `RecordStore.atomicAppend([stepAppend, budgetSnapshotAppend])` the unique write (`:1131-1139`) and then treats SQLite `recordStep` as a projection. It does not specify how the current `recordStepInternal` admission checks—active-run validation, fail-closed execution-context validation, JSON validation, max-step enforcement with duplicate-at-limit behavior, and capture of record-step metadata—run before constructing that record append (`src/commands/run-v1.handler.ts:1201-1299`). Without an explicit shared prepare/admission path, an implementation can atomically append a durable reviewer step and budget snapshot for a terminal run or a new step beyond `maxStepsPerRun`; projecting it afterward cannot undo the record. The stated failure tests (`:1181-1183`, `:1530-1532`) identify the desired result but do not make the required admission ordering or reuse seam executable. **Action: `auto_fix`.** Factor/specify a shared pre-append record-admission/preparation operation used by both `recordStepInternal` and `recordPlanReviewerStepWithSnapshot`. It must perform the existing run/context/JSON/max-step/idempotency checks and assemble the complete step record before `atomicAppend`; it must preserve duplicate-at-limit as a no-op/repair path; and terminal-run, missing-worktree, invalid-result, and new-at-limit failures must call no RecordStore append and leave both record streams/index projections unchanged. Add focused wrapper tests for each condition.
+
+### Updated readiness
+- **Plan completion:** ⚠️ — P1.7 is fully resolved, but P1.8 is required to prevent the new record-authoritative path from bypassing v1 recording invariants.
+- **Ready for implementation:** ⚠️ — `ready_with_corrections`. Phases 1–3 can begin under the existing slice-10 prerequisite; Phase 6 record wiring must incorporate P1.8 before implementation proceeds.
