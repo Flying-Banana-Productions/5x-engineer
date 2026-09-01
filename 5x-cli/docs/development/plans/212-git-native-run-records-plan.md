@@ -1,9 +1,9 @@
 # Git-Native Run Records and Progress Resolution
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** August 31, 2026
 **Last updated:** August 31, 2026
-**Status:** Draft — pending staff engineer review
+**Status:** Draft — pending staff engineer re-review (P0.3)
 
 ---
 
@@ -44,10 +44,10 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 | **Freeze `RecordStore` + memory impl first** | Slice 06 cannot fork the contract. Budget-stream get/list/append, insertion order, and `atomicAppend` must exist before 06 Phase 4. |
 | **Working-tree JSONL, not `refs/5x/*`** | Visible in PRs and hosting UIs; `merge=union` handles rare parallel-iteration merges. Interface stays path-agnostic so a ref-namespace impl remains possible. |
 | **SQLite is a rebuildable index** | Fast path for idempotency and `run state`; a fresh clone rebuilds it from git. Record wins for completed work. |
-| **`atomicAppend` is all-or-nothing** | Slice 06 appends a reviewer step and a budget snapshot in one batch. A throw or crash must leave none of the ops durable (working-tree: per-run journal). |
+| **`atomicAppend` is all-or-nothing** | Slice 06 appends a reviewer step and a budget snapshot in one batch. A throw, crash, or power loss must leave none of the ops durable, or fail closed on corrupt txn metadata — never a mixed-stream half-write (working-tree: Phase 3.2 journal). |
 | **Dirty-tree exemption is path-scoped** | Uncommitted record files are expected between `run record` and `5x commit`. Any other dirty path still blocks `run init`. |
 | **Re-root records to the run's effective worktree** | `config.paths.records` is control-plane-absolute. Writers, seal, and `5x commit` join the canonical repo-relative path under `effectiveWorkingDirectory` so a `--worktree` run commits records with the code. Git pathspecs and `git show` keep the repo-relative path. |
-| **`atomicAppend` uses a durable per-run journal** | Independent `renameSync` per stream is not crash-safe. A commit-marker journal plus recovery on every open/read/append restores the pre-batch state or finishes the batch; never a mixed-stream half-write. |
+| **`atomicAppend` uses a power-loss-durable per-run journal** | Independent `renameSync` per stream is not crash-safe, and file `fsyncSync` alone does not persist directory entries. An immutable prepared journal plus a separately durable checksummed commit marker, with `fsyncDir` after every create/rename/unlink, restores the pre-batch state or finishes the batch. Corrupt or incomplete recovery metadata fails closed (`RECORD_TXN_CORRUPT`); never assume `prepared` and delete artifacts. |
 | **`paths.records` must be inside the repository** | Staging, `git show`, ref resolution, and backfill all need a git path. An outside root is a configuration error, not a warning that silently disables git-native behavior. |
 | **JSONL decode takes `runId` from the caller** | On-disk lines omit `run_id` (directory-implied). `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. |
 | **No implicit network** | `--fetch` is the only fetch. Remote-tracking refs are as fresh as the last fetch. |
@@ -173,7 +173,7 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
 
 **JSONL decode reconstructs `RecordLine.runId` from the caller.** On-disk objects omit `run_id` (implied by `<slug>/<run-id>/`). `encodeJsonlLine` must not write `run_id`. `decodeJsonlFile(text, runId)` sets `runId` on every returned `RecordLine`. If an object contains `run_id` and it differs from the caller value, throw `INVALID_JSONL`. Contract coverage includes decisions and budget lines, not only steps.
 
-**`atomicAppend` durability is a per-run journal, not in-process rollback.** A thrown JS exception still rolls back (memory: clone-then-swap; FS: abort before the commit marker). A process kill, power loss, or failed rename between `steps.jsonl` and `budget.jsonl` cannot leave slice 06 with an orphaned reviewer step or budget snapshot. See Phase 3.2. Recovery runs on every store open/read/append. Journal artifacts (`.txn.*`) are gitignored under the records root and are never staged.
+**`atomicAppend` durability is a per-run journal, not in-process rollback.** A thrown JS exception still rolls back (memory: clone-then-swap; FS: abort before the commit marker is directory-durable). A process kill, power loss, or failed rename between `steps.jsonl` and `budget.jsonl` cannot leave slice 06 with an orphaned reviewer step or budget snapshot. File `fsyncSync` of `.new` / journal bytes is not enough: every create, rename, and unlink must be followed by `fsync` of the **run directory** so the directory entry survives power loss. Prepared metadata is immutable; the commit decision is a separate checksummed marker. If that metadata is corrupt or incomplete, recovery **fails closed** (`RECORD_TXN_CORRUPT`) and leaves artifacts for doctor — it must not assume `prepared` and delete them. See Phase 3.2. Recovery runs on every store open/read/append. Journal artifacts (`.txn.*`) are gitignored under the records root and are never staged.
 
 **Post-commit steps get a dedicated seal commit.** `run complete` writes the terminal step + sealed `run.json`, then if the records root is dirty, `commitFiles` with message `5x: seal run <id>`. Do not wait for a later `5x commit` that may never come (`207` open question 1, resolved: seal commit). If there is nothing to commit, skip (no empty commit).
 
@@ -205,7 +205,9 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
            steps.jsonl       // append-only; merge=union
            decisions.jsonl   // answered prompts + human:*
            budget.jsonl      // opaque; slice 06 owns payloads
-           .txn.*            // crash journal; gitignored; never staged
+           .txn.journal.json // immutable prepared record; gitignored
+           .txn.commit       // checksummed commit marker; gitignored
+           .txn.<stream>.*   // .new / .old staging; gitignored; never staged
 
   plan list / plan phases / run state --plan
            │
@@ -218,7 +220,8 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
   5x records index     → walk resolution, upsert runs/steps; keep newer local-only rows
   5x records backfill  → export DB → record files + commit (target auto|<branch>)
   doctor records       → missing lines, missing rows, unreachable head_commit;
-                         uncommitted records older than lingering-run threshold
+                         uncommitted records older than lingering-run threshold;
+                         corrupt/torn record-transaction journal (not auto-fixed)
                          --fix = index only
 ```
 
@@ -315,7 +318,7 @@ export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 ```
 
 - [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
-- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`. Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code.
+- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`. Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL` and `RECORD_TXN_CORRUPT`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code.
 
 #### 1.2 Interface — `src/control-plane/record-store.ts` (new)
 
@@ -351,7 +354,7 @@ export interface RecordStore {
 3. Duplicate `idempotencyKey` on the same `(runId, stream)`: return the **original** line, `created: false`. Do not overwrite payload.
 4. `listLines` returns the insertion sequence, not `createdAt` sort. Contract test: two budget lines with identical `createdAt`; order matches append order.
 5. `atomicAppend([])` returns `[]` and writes nothing.
-6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists. Working-tree crash recovery (Phase 3.2) extends this to process kill; memory has no disk journal.
+6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists. Working-tree crash recovery (Phase 3.2) extends this to process kill and power loss (directory fsync); corrupt txn metadata fails closed. Memory has no disk journal.
 7. Methods take `runId` + stream + key. **No path parameters.**
 
 - [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
@@ -472,7 +475,7 @@ export function ensureGitattributes(
 
 ## Phase 3: Working-tree JSONL implementation
 
-**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. `atomicAppend` of mixed streams is crash-safe: a durable per-run journal plus recovery on every open/read/append restores the pre-batch state or finishes the entire batch; no visible partial mixed-stream write remains. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
+**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. `atomicAppend` of mixed streams is power-loss durable: an immutable prepared journal, a separately durable checksummed commit marker, and `fsyncDir` after every create/rename/unlink. Recovery on every open/read/append restores the pre-batch state or finishes the entire batch; corrupt or incomplete txn metadata throws `RECORD_TXN_CORRUPT` and does not delete artifacts. No visible partial mixed-stream write remains. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
 
 #### 3.1 Layout and codecs — `src/control-plane/record-layout.ts` (new)
 
@@ -512,18 +515,26 @@ JSONL on-disk object:
 #### 3.2 Working-tree store — `src/control-plane/record-fs.ts` (new)
 
 ```typescript
+export type TxnEvent =
+	| "after-new"
+	| "after-dirsync:staging"
+	| "after-prepared"
+	| "after-dirsync:prepared"
+	| "after-commit-marker"
+	| "after-dirsync:commit"
+	| `after-rename:${RecordStream}`
+	| `after-dirsync:rename:${RecordStream}`
+	| "after-dirsync:cleanup"
+	| "during-recovery";
+
 export interface WorkingTreeRecordStoreOptions {
 	recordsRoot: string; // absolute (already worktree-re-rooted by the caller)
 	now?: () => string;
+	/** Test-only; not re-exported from the public barrel. Default: real file/dir fsync. */
+	fsyncFile?: (path: string) => void;
+	fsyncDir?: (dir: string) => void;
 	/** Test-only; not re-exported from the public barrel. Throw to simulate a crash. */
-	onTxnEvent?: (
-		event:
-			| "after-new"
-			| "after-prepared"
-			| "after-commit-marker"
-			| `after-rename:${RecordStream}`
-			| "during-recovery",
-	) => void;
+	onTxnEvent?: (event: TxnEvent) => void;
 }
 
 export function createWorkingTreeRecordStore(
@@ -531,53 +542,70 @@ export function createWorkingTreeRecordStore(
 ): RecordStore;
 ```
 
-**Write algorithm for `atomicAppend` (durable journal):**
+**Write algorithm for `atomicAppend` (power-loss-durable journal):**
 
-In-process try/catch around independent `renameSync` per stream is **not** sufficient: a process kill between `steps.jsonl` and `budget.jsonl` replacements leaves exactly the mixed-stream orphan slice 06's `atomicAppend` is intended to prevent. SQLite reindex cannot infer or repair the missing counterpart. Every `atomicAppend` (including single-op `append`) uses a per-run journal. `putRun` remains single-file tmp+rename (`run.json` is not a mixed-stream batch).
+In-process try/catch around independent `renameSync` per stream is **not** sufficient: a process kill between `steps.jsonl` and `budget.jsonl` replacements leaves exactly the mixed-stream orphan slice 06's `atomicAppend` is intended to prevent. SQLite reindex cannot infer or repair the missing counterpart. File `fsyncSync` of journal bytes is also **not** sufficient: create/rename/unlink only persist across power loss after the **parent directory** is fsynced. Rewriting one journal file from `prepared` → `commit` is unsafe: a torn rewrite after some stream replacements can look like a corrupt `prepared` journal, and deleting artifacts then leaves a partial batch.
+
+Every `atomicAppend` (including single-op `append`) uses a per-run journal. `putRun` remains single-file tmp+rename (`run.json` is not a mixed-stream batch) but still fsyncs the file and the run directory after rename.
+
+**Durability helpers** (implement once in `record-fs.ts`; inject `fsyncFile` / `fsyncDir` in tests):
+
+- `fsyncFile(path)`: open the file, `fsyncSync(fd)`, close. After tmp+rename, the renamed inode was already fsynced as the tmp file; still fsync the dest path if the implementation writes in place.
+- `fsyncDir(dir)`: `openSync(dir, "r")` (or `O_RDONLY`), `fsyncSync(fd)`, close. Required on macOS and Linux after every create, `renameSync`, or `unlinkSync` in `dir`. Do not skip this on Darwin.
+- `durableWriteFile(path, bytes)`: write to `path.tmp`, `fsyncFile(tmp)`, `renameSync(tmp, path)`, `fsyncDir(dirname(path))`.
 
 Reserved files in `<runDir>/` (gitignored; never staged):
 
 | File | Role |
 |------|------|
-| `.txn.journal.json` | Durable state: `prepared` then `commit`, plus the list of affected streams and whether each file was created vs replaced. |
+| `.txn.journal.json` | **Immutable prepared record.** Written once; never rewritten. `{ version: 1, streams, created, new_sha256, old_sha256 }`. `new_sha256` / `old_sha256` are hex SHA-256 of the corresponding staging bytes (`old_sha256` omits streams that were creates). |
+| `.txn.commit` | **Separately durable commit marker.** Created only after the prepared journal and all staging files are directory-durable. `{ version: 1, journal_sha256 }` where `journal_sha256` is SHA-256 of the exact `.txn.journal.json` bytes. Never written by rewriting the journal. |
 | `.txn.<stream>.new` | Staged replacement bytes for that stream (`steps` / `decisions` / `budget`). |
 | `.txn.<stream>.old` | Before-image of an existing stream file (absent if the file did not exist). |
 
-`ensureGitignore` (Phase 3, called from init/upgrade alongside `ensureGitattributes`) idempotently appends `${recordsRelPath}/**/.txn.*` so `git add -A` / `5x commit` never stages journals. Custom `paths.records` gets a matching ignore line.
+There is **no** `state` field on the journal. Commit vs prepare is the presence of a **valid, checksum-matching** `.txn.commit`. Do not encode commit by mutating `.txn.journal.json`.
 
-**Commit protocol** (crash after any step is recoverable):
+`ensureGitignore` (Phase 3, called from init/upgrade alongside `ensureGitattributes`) idempotently appends `${recordsRelPath}/**/.txn.*` so `git add -A` / `5x commit` never stages journals (covers `.txn.journal.json`, `.txn.commit`, and `.txn.<stream>.*`). Custom `paths.records` gets a matching ignore line.
+
+**Commit protocol** (each numbered step names its durability boundary; crash after any step is recoverable or fail-closed):
 
 1. `recoverRunDir(runDir)` (see below). Resolve `<recordsRoot>/<slug>/<runId>/` from `getRun` (slug from `plan_path`). Missing run → `RUN_NOT_FOUND`.
 2. Read current bytes of each affected stream file (missing file = empty). Decode with `decodeJsonlFile(text, runId)`, apply ops in memory (duplicate keys → `created: false`). If no stream file would change, return without a journal.
-3. Write `.txn.<stream>.old` (copy of existing bytes) for each mutated file that already exists. Write `.txn.<stream>.new` for each mutated stream. `fsyncSync` each of those files.
-4. Write `.txn.journal.json` via tmp+rename with `{ version: 1, state: "prepared", streams: [...], created: [...] }` and fsync. Originals are still untouched.
-5. Rewrite the journal via tmp+rename to `{ ..., state: "commit" }` and fsync. **This is the commit marker.** After this point recovery rolls *forward*; before it, recovery rolls *back*.
-6. For each affected stream, `renameSync(.txn.<stream>.new, <stream>.jsonl)`.
-7. Delete `.txn.<stream>.old` files and `.txn.journal.json`. Cleanup after a successful commit is best-effort; leftover `.txn.*` with `state: "commit"` and no remaining `.new` files is a no-op roll-forward.
+3. Write `.txn.<stream>.old` (copy of existing bytes) for each mutated file that already exists. Write `.txn.<stream>.new` for each mutated stream. `fsyncFile` each of those files. Then `fsyncDir(runDir)` (directory entries for staging are durable). Fire `after-new` after each file fsync and `after-dirsync:staging` after the directory fsync. Originals are still untouched.
+4. `durableWriteFile` `.txn.journal.json` with the immutable prepared record (streams, created vs replaced, `new_sha256`, `old_sha256`). `fsyncFile` the journal (if not already covered by `durableWriteFile`), then `fsyncDir(runDir)`. Fire `after-prepared` then `after-dirsync:prepared`. **Never rewrite this file.** Originals are still untouched.
+5. `durableWriteFile` `.txn.commit` with `{ version: 1, journal_sha256 }` of the prepared journal bytes. `fsyncFile` the marker, then `fsyncDir(runDir)`. Fire `after-commit-marker` then `after-dirsync:commit`. **This is the commit point.** After this directory fsync, recovery rolls *forward*. Before it, recovery rolls *back* only if the proof below holds. Do not replace any original until this directory fsync returns.
+6. For each affected stream, `renameSync(.txn.<stream>.new, <stream>.jsonl)`, then `fsyncDir(runDir)`. Fire `after-rename:<stream>` then `after-dirsync:rename:<stream>`.
+7. `unlinkSync` `.txn.<stream>.old` files, then `fsyncDir(runDir)`. Then `unlinkSync` `.txn.journal.json` and `.txn.commit` (either order; leftover pair with no remaining `.new` is a no-op roll-forward). Then `fsyncDir(runDir)`. Fire `after-dirsync:cleanup`. Do not unlink journal/commit until all stream replacements have been directory-fsynced.
 
-**`recoverRunDir(runDir)`** — call at the start of `getRun`, `getLine`, `listLines`, `append`, `atomicAppend`, `putRun` (for that run), and once per run directory visited by `listRuns`:
+Do not create `.txn.commit` until every `.new` / `.old` file and `.txn.journal.json` is file- and directory-durable. Do not replace any original until `.txn.commit` is directory-durable. Cleanup of `.txn.*` only after all stream replacements are directory-durable.
 
-1. If `.txn.journal.json` is missing: delete any orphan `.txn.*.new` / `.txn.*.old` (crash during prepare before the journal) and return. Visible stream files are unchanged.
-2. Parse the journal. Corrupt / unreadable journal with originals intact: treat as `prepared` (rollback).
-3. `state === "prepared"` (commit marker not durable): **rollback**. Originals were never replaced. Delete `.txn.*.new`, `.txn.*.old`, and the journal. Store content equals the pre-batch state.
-4. `state === "commit"`: **roll forward**. For each listed stream, if `.txn.<stream>.new` still exists, `renameSync` it over `<stream>.jsonl`. Then delete `.old` files and the journal. Store content equals the full batch. Idempotent if some renames already completed.
-5. Never leave a visible mix where one stream in the batch is updated and another is not. `getLine` / `listLines` after recovery (or during a later open) must observe all-or-nothing.
+**`recoverRunDir(runDir)`** — call at the start of `getRun`, `getLine`, `listLines`, `append`, `atomicAppend`, `putRun` (for that run), and once per run directory visited by `listRuns`. Fire `during-recovery` at the start of a recovery that finds any `.txn.*`. **Never assume `prepared` and delete artifacts when metadata is corrupt or incomplete.**
 
-Do not fsync the journal to `commit` until every `.new` file is durable. Do not replace any original until the `commit` marker is durable. Cleanup of `.txn.*` only after all stream replacements are durable (step 7, or roll-forward's final delete).
+Let `journalOk` mean `.txn.journal.json` parses as version 1, has the required fields, and every present `.new` / `.old` file matches the recorded SHA-256. Let `commitOk` mean `.txn.commit` parses as version 1 and `journal_sha256` equals SHA-256 of the current journal file bytes. Let `commitExists` mean the `.txn.commit` path exists (even if unreadable).
 
-**Fault-injection tests** (working-tree FS suite, not required of memory): install a test hook `onTxnEvent?: (event: "after-new" | "after-prepared" | "after-commit-marker" | "after-rename:<stream>" | "during-recovery") => void` on `createWorkingTreeRecordStore` that may throw (simulating kill). Cases:
+1. If neither `.txn.journal.json` nor `.txn.commit` exists: delete any orphan `.txn.*.new` / `.txn.*.old` / `*.tmp` leftover from `durableWriteFile` (crash during prepare before the journal), `fsyncDir(runDir)`, return. Visible stream files are unchanged. A leftover `.txn.journal.json.tmp` is not a journal.
+2. If `!journalOk` (journal missing while `.txn.commit` exists; journal unreadable, JSON/schema invalid, or a present `.new`/`.old` checksum mismatch) **or** `commitExists && !commitOk` (torn, truncated, or checksum-mismatch commit marker): throw `RecordStoreError("RECORD_TXN_CORRUPT", ...)`. Leave every `.txn.*` file in place. Do **not** roll back, roll forward, or delete artifacts. Doctor reports `RECORD_TXN_CORRUPT` (Phase 6); `--fix` does not repair this.
+3. If `journalOk && commitOk`: **roll forward**. For each listed stream, if `.txn.<stream>.new` still exists, verify SHA-256 then `renameSync` it over `<stream>.jsonl` and `fsyncDir(runDir)`. Then unlink `.old` files, journal, and commit marker; `fsyncDir(runDir)`. Store content equals the full batch. Idempotent if some renames already completed (missing `.new` for a listed stream is OK on this path).
+4. If `journalOk && !commitExists`: **rollback only when replacements are proven not to have started.** Proof (all must hold): every listed stream still has `.txn.<stream>.new` whose SHA-256 matches `new_sha256`; for replaced streams, `.old` exists and the live `<stream>.jsonl` SHA-256 matches `old_sha256` (or the live file is absent iff it was a create and `.old` is absent). Then unlink `.new`, `.old`, and the journal; `fsyncDir(runDir)`. Store content equals the pre-batch state.
+5. If `journalOk && !commitExists` but the rollback proof fails: **do not roll back.** If every listed `.new` is absent **and** every live stream file SHA-256 matches `new_sha256` (the batch was fully applied and the commit marker was lost during cleanup): unlink leftover `.old` / journal, `fsyncDir(runDir)`, return (already all-or-nothing). Otherwise throw `RECORD_TXN_CORRUPT` and leave artifacts. This is the "lost commit marker after a partial rename" case — deleting `.old` would destroy the only before-image.
+6. Never leave a visible mix where one stream in the batch is updated and another is not. `getLine` / `listLines` after successful recovery must observe all-or-nothing. After `RECORD_TXN_CORRUPT`, those methods throw rather than returning a mixed view; `listRuns` that hits a corrupt run dir throws the same error (doctor walks directories itself and catches it).
 
-- [ ] Interrupt after each `.new` write and after `state: "prepared"`: reopen the store; neither stream from a mixed `[step, budget]` batch is visible; no leftover partial line.
-- [ ] Interrupt after `state: "commit"` and after 0, 1, … n−1 stream replacements: reopen; **both** (all) streams from the batch are visible; no journal remains after recovery.
-- [ ] Interrupt **during recovery** of a `commit` journal (hook on the first roll-forward rename): second open finishes the batch; still all-or-nothing.
-- [ ] `atomicAppend` JS throw before the commit marker: same as rollback (in-process catch still deletes staging if the process lives).
-- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
+**Fault-injection tests** (working-tree FS suite, not required of memory): `onTxnEvent` / `fsyncDir` may throw (simulating kill or directory-sync failure). Cases:
+
+- [ ] Interrupt after each `.new` write, after `after-dirsync:staging`, and after `after-dirsync:prepared`: reopen the store; neither stream from a mixed `[step, budget]` batch is visible; no leftover partial line.
+- [ ] Interrupt after `after-dirsync:commit` and after 0, 1, … n−1 stream replacements (including after each `after-dirsync:rename:<stream>`): reopen; **both** (all) streams from the batch are visible; no journal remains after recovery.
+- [ ] Interrupt **during recovery** of a committed txn (hook on the first roll-forward rename): second open finishes the batch; still all-or-nothing.
+- [ ] Interrupt `fsyncDir` (injected `fsyncDir` throws) after staging, after prepared journal, after commit marker, after a stream rename, and during cleanup: reopen is either all-or-nothing or `RECORD_TXN_CORRUPT`; never a silent mixed-stream view.
+- [ ] **Torn / corrupt commit marker:** after a durable prepared journal, write truncated or garbage `.txn.commit` (and a variant that also completes 0 or 1 stream replacement, then corrupts the marker). Reopen throws `RECORD_TXN_CORRUPT`; `.txn.*` artifacts remain on disk (not deleted); `getLine` / `listLines` throw rather than returning a partial batch.
+- [ ] **Corrupt journal after commit:** durable commit marker + one stream replacement, then truncate/garbage `.txn.journal.json`. Reopen throws `RECORD_TXN_CORRUPT`; does **not** treat as prepared and delete `.old` / `.new`.
+- [ ] `atomicAppend` JS throw before the commit marker is directory-durable: same as rollback (in-process catch still deletes staging if the process lives).
+- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
 
 Single-op `append` is `atomicAppend([op])` (same journal path; one stream).
 
-**`putRun`:** `mkdirSync(..., { recursive: true })`, write `run.json` via tmp+rename (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line). Call `recoverRunDir` first so a pending stream txn is not hidden behind a summary rewrite.
+**`putRun`:** `mkdirSync(..., { recursive: true })`, write `run.json` via `durableWriteFile` (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line). Call `recoverRunDir` first so a pending stream txn is not hidden behind a summary rewrite. If recovery throws `RECORD_TXN_CORRUPT`, do not rewrite `run.json`.
 
-**`listRuns`:** recover each run dir, then walk `recordsRoot/*/*/run.json`. Ignore unreadable files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
+**`listRuns`:** recover each run dir, then walk `recordsRoot/*/*/run.json`. A `RECORD_TXN_CORRUPT` from any run dir propagates (fail closed). Ignore *other* unreadable `run.json` files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
 
 - [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
 
@@ -989,7 +1017,7 @@ Timeout 30s. `cleanGitEnv()`, `stdin: "ignore"`. Scripted repo:
 
 ## Phase 6: Records index and doctor check
 
-**Completion gate:** `5x records index` on a fresh clone (DB empty, records on the fetched `5x/<slug>` branch) materializes `runs` / `steps` identical modulo autoincrement ids and local-only columns (`session_id`, `log_path`, `updated_at`). Newer local-only SQLite steps are not deleted. `doctor` reports missing lines, missing rows, unreachable `head_commit` (warn), and stale uncommitted record files; `--fix` only runs index.
+**Completion gate:** `5x records index` on a fresh clone (DB empty, records on the fetched `5x/<slug>` branch) materializes `runs` / `steps` identical modulo autoincrement ids and local-only columns (`session_id`, `log_path`, `updated_at`). Newer local-only SQLite steps are not deleted. `doctor` reports missing lines, missing rows, unreachable `head_commit` (warn), stale uncommitted record files, and `RECORD_TXN_CORRUPT` (fail, not fixable); `--fix` only runs index.
 
 #### 6.1 Index rebuild — `src/records/index-rebuild.ts` (new)
 
@@ -1050,14 +1078,17 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 | `RECORD_INDEX_EXTRA_ROW` | warn | SQLite step with no record line | false | n/a |
 | `RECORD_HEAD_UNREACHABLE` | warn | `head_commit` not in any known ref | false | n/a |
 | `RECORD_UNCOMMITTED_STALE` | warn | dirty files under the **re-rooted** records root older than `LINGERING_RUN_AGE_MS` (`runs.ts:23`) | false | n/a |
+| `RECORD_TXN_CORRUPT` | fail | corrupt, torn, or incomplete `.txn.*` journal / commit marker so mixed-stream recovery cannot proceed | false | `detail.runId` |
 | `RECORD_INDEX_OK` | ok | summary | false | n/a |
 
-`--fix`: `fixable` findings call `rebuildRecordsIndex` once per unique `(check, runId or planSlug)` — not per step. Re-detect must drop `MISSING_ROW` / `MISSING_RUN`. **Do not** commit files, do not delete extras, do not rewrite JSONL.
+`--fix`: `fixable` findings call `rebuildRecordsIndex` once per unique `(check, runId or planSlug)` — not per step. Re-detect must drop `MISSING_ROW` / `MISSING_RUN`. **Do not** commit files, do not delete extras, do not rewrite JSONL, **do not** delete or rewrite `.txn.*` on `RECORD_TXN_CORRUPT` (not fixable; operator inspects leftover `.old` / `.new` or restores from git).
 
 `RECORD_UNCOMMITTED_STALE` inspects `git status` in each mapped plan worktree (and the control-plane checkout when a plan has no mapping), using `resolveRecordsRoot` with that checkout as `effectiveWorkdir`. Do not only `git status` the main checkout — a `--worktree` run's dirty records live in the linked worktree.
 
-- [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`) and `RECORD_INDEX_MISSING_RUN` (`runId`). Empty identity on fixable must throw (existing invariant).
-- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes.
+`RECORD_TXN_CORRUPT` walks `recordsAbsPath` in each of those checkouts for `.txn.journal.json` / `.txn.commit` that fail `recoverRunDir` (catch `RECORD_TXN_CORRUPT`). Include `runId` and the run directory path in the finding detail. Leave artifacts on disk.
+
+- [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
+- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files.
 - [ ] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
 
 ---
@@ -1160,7 +1191,7 @@ Default `--target auto`.
 | `src/control-plane/record-types.ts` | **New.** Stream/payload/summary types, `RecordStoreError`, `stepIdempotencyKey`. |
 | `src/control-plane/record-store.ts` | **New.** `RecordStore` interface. |
 | `src/control-plane/record-memory.ts` | **New.** In-memory impl (Phase 1 freeze). |
-| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl; durable `.txn.*` journal + `recoverRunDir`. |
+| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl; immutable `.txn.journal.json` + checksummed `.txn.commit` + `fsyncDir` + fail-closed `recoverRunDir`. |
 | `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode (`decodeJsonlFile(text, runId)`), first-key-wins. |
 | `src/control-plane/record-redact.ts` | **New.** `redactStepPayload`. |
 | `src/control-plane/index.ts` | Re-export RecordStore types and factories. |
@@ -1199,7 +1230,7 @@ Default `--target auto`.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream. |
-| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget; directory layout. |
+| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; `fsyncDir` after create/rename/unlink; torn commit marker / corrupt journal fail closed (`RECORD_TXN_CORRUPT`, artifacts kept); JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget; directory layout. |
 | Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys. |
 | Unit | `test/unit/git.test.ts` | Safety exemption scope; porcelain `-z`; patch-id/numstat/show/log mocks. |
 | Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact` defaults; absolute-inside accepted; absolute-outside and escaping relative rejected. |
@@ -1211,7 +1242,7 @@ Default `--target auto`.
 | Unit | `test/unit/records/resolve.test.ts` | Ancestor prune, diverged, missing ref (mocked git). |
 | Unit | `test/unit/records/index-rebuild.test.ts` | Upsert; skip newer local-only; idempotent. |
 | Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`. |
-| Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted; `--fix` identity. |
+| Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted, `RECORD_TXN_CORRUPT`; `--fix` identity; `--fix` does not delete `.txn.*`. |
 | Unit | `test/unit/doctor/registry.test.ts` | `records` registered; `findingKey` for fixable codes. |
 | Integration | `test/integration/commands/run-v1.test.ts` | Record files after `run record`; dirty records do not `DIRTY_WORKTREE`; other dirty still does. |
 | Integration | `test/integration/commands/commit.test.ts` | Phase commit contains `steps.jsonl` lines. |
@@ -1223,7 +1254,7 @@ Default `--target auto`.
 | Integration | `test/integration/records/index.test.ts` | Fresh clone + `records index` matches origin steps modulo ids/local columns. |
 | Integration | `test/integration/records/merge-union.test.ts` | Two branches append distinct JSONL lines; merge has no conflict markers and both keys. |
 | Integration | `test/integration/records/worktree-records.test.ts` | `run init --worktree`: `run.json` + step line in the linked worktree; `5x commit` from that worktree includes them. |
-| Integration | `test/integration/records/atomic-append-crash.test.ts` | Fault-injection after each stream replacement and during recovery; no visible partial mixed-stream batch. |
+| Integration | `test/integration/records/atomic-append-crash.test.ts` | Fault-injection after each stream replacement, each directory-sync point, and during recovery; torn/corrupt commit marker; no visible partial mixed-stream batch. |
 | Integration | `test/integration/commands/text-output.test.ts` | Source column / source line. |
 | Integration | `test/integration/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` on disk. |
 
@@ -1234,7 +1265,7 @@ Edge cases (must appear in the suites above):
 - Unreachable `head_commit` after simulated squash: doctor warn, `plan list` still works.
 - `--files` with missing records dir: no extra `git add` pathspec, commit still succeeds.
 - Linked worktree: records written and committed in the worktree, not the control-plane checkout.
-- Mixed-stream `atomicAppend` interrupted after each file replacement and during recovery: no visible partial batch.
+- Mixed-stream `atomicAppend` interrupted after each file replacement, each directory-sync, and during recovery: no visible partial batch. Torn or corrupt commit marker / journal throws `RECORD_TXN_CORRUPT` and leaves artifacts.
 - Absolute `paths.records` inside the repo is accepted; absolute or relative path outside is `RECORDS_ROOT_OUTSIDE_REPO`.
 - `decodeJsonlFile` reconstructs `runId` for steps, decisions, and budget lines.
 
@@ -1264,13 +1295,13 @@ Edge cases (must appear in the suites above):
 |-------|-------------|------|
 | 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06) | 1–2 days |
 | 2 | `paths.records` / `records.redact` + inside-repo validation + `.gitattributes` via init/upgrade | 0.5–1 day |
-| 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`), durable journal, patch-id helpers, contract on FS backend | 2–2.5 days |
+| 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`), power-loss-durable journal (`fsyncDir`, checksummed commit marker, fail-closed recovery), patch-id helpers, contract on FS backend | 2.5–3 days |
 | 4 | Dual-write, worktree re-root helper, `prepareRecordStepAppend`, safety exemption, commit staging, seal, decisions | 2–3 days |
 | 5 | Resolution spike + algorithm + plan list/phases/run state `--plan` + git fixture | 2–3 days |
 | 6 | `records index` + doctor `records` check | 1.5–2 days |
 | 7 | `records backfill` (auto target, dry-run, disagreements, two-DB union) | 2–3 days |
 | 8 | Docs, exports, text-output, full `bun test` | 1 day |
-| **Total** | | **12.5–17.5 days** |
+| **Total** | | **13–18 days** |
 
 Phase 1 is a schedule gate for slice 06 Phase 4; land and tag it before 06 persistence work. Phase 5's ancestor-fan-out spike happens at the start of that phase, not as its own numbered phase. Phase 7 can start after Phase 3 (needs FS store) in parallel with Phase 5 if staffing allows, but it should not merge before Phase 4's `putRun`/redact helpers exist.
 
@@ -1283,6 +1314,12 @@ This plan implements slice `v2-git-native-run-records` from [`docs/v2/plan-input
 ---
 
 ## Revision History
+
+### 1.2 — August 31, 2026
+
+Addresses **P0.3** in the August 31 addendum of [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (Revision 1.1 re-review). Prior P0.1 / P1.1 / P1.2 remain as specified in 1.1.
+
+1. **P0.3 — Power-loss-durable journal commit/recovery.** Directory `fsync` after every create, rename, and unlink in the run directory (staging, prepared journal, commit marker, each stream replacement, cleanup). Prepared metadata is an **immutable** `.txn.journal.json` (checksums of `.new` / `.old`); the commit decision is a **separate** checksummed `.txn.commit` (`journal_sha256`). Recovery never treats a corrupt or unreadable journal as `prepared`. Torn/mismatched commit marker, corrupt journal, or incomplete metadata throws `RECORD_TXN_CORRUPT` and leaves artifacts; doctor reports it and `--fix` does not delete `.txn.*`. Fault-injection covers directory-sync interrupt points and a corrupt/torn commit marker.
 
 ### 1.1 — August 31, 2026
 
