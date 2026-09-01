@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.7
+**Version:** 1.8
 **Created:** August 29, 2026
-**Status:** Draft — revision 1.7 coordinating origin-writer contract with slice 10 (`212` 1.5 / P0.8)
+**Status:** Draft — revision 1.8 sequencing `createRecordContext` behind slice 10 Phase 4 (`212` P1.5)
 
 ---
 
@@ -30,7 +30,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 - Implementation-review `scopeClass` enum, `--credit-realization`, `planImpact`, or quality-gated final corrections (`08-implementation-review-governance.plan-input.md`).
 - Dashboard / browser visualization.
 - Calibration of default percentages.
-- Implementing `RecordStore`, its working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, or progress resolution (owned by slice 10). This slice **consumes** the frozen Phase-1 interface and defines only budget-line payloads, idempotency keys, and the SQLite index projection.
+- Implementing `RecordStore`, its working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, or progress resolution (owned by slice 10). This slice **consumes** the frozen Phase-1 interface for facade/index work and slice 10 Phase 4’s `createRecordContext` for production writer wiring. It defines only budget-line payloads, idempotency keys, and the SQLite index projection.
 
 ### Key Design Decisions
 
@@ -40,14 +40,15 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | **Fail-closed plan parse; never silent `B0 = 0`** | Plan-input assumption. Missing/malformed tables **or incomplete debt-claim evidence** error with line-numbered diagnostics. Empty tables are not a zero baseline. Negative rows without `targetPhase` / comparison / before/after cannot establish a ledger claim. |
 | **`ReviewBudgetStore` is a RecordStore facade, not a SQLite authority** | Same `src/control-plane/` boundary as `PromptStore`. Handlers never import `bun:sqlite`. UUID ids on record payloads (`200` §3a #2). The facade appends/reads budget lines through frozen `RecordStore`; SQLite is a rebuildable index of those lines plus derived forecasts (`207` §2.5–2.6). |
 | **Append-only snapshots; `B0` INSERT-once** | Editing plan prose must not rewrite the baseline. `captureBaseline` is CAS on the baseline budget-line idempotency key (`budget:baseline:<runId>`). Governing `B` is initialized to `B0`; human `B` changes are slice 07. |
-| **Slice 10 Phase 1 is a hard prerequisite to persistence** | Canonical `207` §2.6 and plan-input 10 require slice 06 to code against the frozen `RecordStore` + in-memory impl, never SQLite-only rows. This slice does **not** define or fork `RecordStore`. Persistence phases wait for that freeze (including budget-stream append/read and atomic multi-append). |
+| **Slice 10 Phase 1 is a hard prerequisite to persistence types** | Canonical `207` §2.6 and plan-input 10 require slice 06 to code against the frozen `RecordStore` + in-memory impl, never SQLite-only rows. This slice does **not** define or fork `RecordStore`. Phases 4–5 wait for that freeze (including budget-stream append/read and atomic multi-append) and may use fixture origins. |
+| **Slice 10 Phase 4 is a hard prerequisite to production origin wiring** | `createRecordContext` / live `originFor` / `prepareRecordStepAppend` land in slice 10 Phase 4, not Phase 1. Phase 6+ (`createReviewBudgetContext`, persist wrapper, baseline capture hooks) waits for that merge. Calling the factory *shape* part of the Phase-1 freeze does not make the factory callable. |
 | **Advisory never changes routing** | `budget.requiresHuman` is telemetry. Do not rewrite `readiness`, skip author cycles, or call `5x prompt`. `enforced` is accepted in config and recorded, then treated as advisory with a warning. |
 | **v1 verdicts remain valid** | New item fields are optional at the protocol schema layer. They become required only when the run has an active baseline (`status = active`). Mid-review runs without a baseline stay `v1_compat`. |
 | **Reject reviewer-authored aggregates** | If input contains `budget`, `budgetBand`, `B0`, `W`, `R`, `S`, `E`, `A`, `P`, `baselineDirection`, or similar CLI-owned keys, fail `INVALID_STRUCTURED_OUTPUT`. Do not strip-and-continue. |
 | **`Addresses` + still-listed items define `R`** | Incorporated finding IDs drop out of `R` unless they still appear in the current verdict `items` (incomplete author claim). Explicit `addressed` / `still_open` enums are slice 07. |
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
 | **Shared pre-append admission before any RecordStore write** | `RecordStore.atomicAppend` cannot un-append a terminal-run or over-limit step. Extract `prepareRecordStepAppend` from today’s `recordStepInternal` body (`src/commands/run-v1.handler.ts:1201–1299`) and call it from **both** `recordStepInternal` and `recordPlanReviewerStepWithSnapshot` **before** constructing or sending an append. Admission preserves active-run, fail-closed execution-context/worktree, JSON, `maxStepsPerRun`, idempotency, complete metadata assembly, and duplicate-at-limit as a no-op/repair. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures call no `atomicAppend` and leave both record streams and index projections unchanged. The admit result is slice 10’s `PreparedRecordStep` **including `performer`** — do not redeclare a local `{ stepInput, maxSteps }` shape that drops it. |
-| **Budget writers consume slice 10’s origin factory** | `review-budget-context.ts` embeds `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`). Paired step+snapshot ops stamp `recordedEnvelope(ctx.originFor(prepared.performer))`. Baseline-only `captureBaseline` requires `origin` from `ctx.originFor(performer)`. This slice does not construct `RecordOrigin` inline (`212` §1.5). |
+| **Budget writers consume slice 10’s origin factory** | `review-budget-context.ts` (Phase 6) embeds `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`). Paired step+snapshot ops stamp `recordedEnvelope(ctx.originFor(prepared.performer))`. Baseline-only `captureBaseline` requires `origin` from `ctx.originFor(performer)`. This slice does not construct `RecordOrigin` inline (`212` §1.5). Phase 4 facade tests pass a fixture `origin` and **must not** import `createRecordContext`. |
 | **Snapshot + reviewer step are one RecordStore atomic append** | Appending a budget snapshot before the unique step record orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the **same** `RecordStore.atomicAppend` as the unique step line **only after** `prepareRecordStepAppend` admits the step, then project both into the SQLite index. Failed unique appends insert no budget line and no index row. Idempotent retries (`created: false`) append no second line, but load the existing step/snapshot lines and idempotently upsert both SQLite projections (repair after a projection failure). Duplicate-at-limit is the same repair path: admission returns duplicate, so the wrapper never appends. |
 | **First-review `baselineAssessment` is a record field, not cache-only** | `BudgetSnapshotPayload.baselineAssessment` is the authoritative initial `I`. The facade record, v8 snapshot index, encode/decode, and reindex all carry that optional field. After an index wipe, `deriveBudget` recomputes identical `I` and `baselineDirection` from the record line. Do not reconstruct `I` from `derived_json`. |
 | **`BaselineAssessment` is a Phase 1 domain type** | Snapshot payload, facade, codec, and index rebuild (Phase 4) must compile before protocol emit/validate (Phase 5). Declare the shared structural type in `src/review-budget/types.ts`. `src/protocol.ts` imports and re-exports it; it does not declare a second copy. |
@@ -64,7 +65,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 - [`docs/v1/100-architecture.md`](../../v1/100-architecture.md) — CLI as toolbelt; protocol validate/record.
 - [`docs/v1/101-cli-primitives.md`](../../v1/101-cli-primitives.md) — `run state`, `protocol emit` / `validate`.
 - Plan input: [`docs/v2/plan-inputs/06-review-budget-advisory.plan-input.md`](../../v2/plan-inputs/06-review-budget-advisory.plan-input.md).
-- [`212-git-native-run-records-plan.md`](./212-git-native-run-records-plan.md) — Phase 1 freezes `RecordStore` + in-memory impl **and** the origin-writer context (`RecordCommandContext.originFor`, `PreparedRecordStep.performer`). This slice consumes that freeze; it does not fork origin construction.
+- [`212-git-native-run-records-plan.md`](./212-git-native-run-records-plan.md) — Phase 1 freezes `RecordStore` + in-memory impl **and** the origin-writer **shape** (`RecordCommandContext.originFor`, `PreparedRecordStep.performer`). Phase 4 implements `createRecordContext`. This slice consumes that freeze; it does not fork origin construction. Phases 4–5 wait on 212 Phase 1; Phase 6+ production wiring waits on 212 Phase 4.
 - Predecessor store pattern: [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md).
 - Follow-on: [`docs/v2/plan-inputs/07-plan-review-governance.plan-input.md`](../../v2/plan-inputs/07-plan-review-governance.plan-input.md).
 
@@ -103,7 +104,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 - Generated plans follow `DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE` (`src/templates/default-artifacts.ts:1–51`) with no scored work items.
 - Reviewer prompts (`src/templates/reviewer-plan.md`, `reviewer-plan-continued.md`) ask for exhaustive findings with no effort/architecture fields and no independent baseline estimate.
 - Schema max is v7 (`src/db/schema.ts:450–505`; `test/unit/db/schema.test.ts` asserts version `7`).
-- Control-plane stores exist for prompts and invocations only (`src/control-plane/store.ts`, `invocation-store.ts`). Slice 10 Phase 1 will add `RecordStore`; this slice’s persistence work (Phase 4+) must not start until that freeze is in-tree.
+- Control-plane stores exist for prompts and invocations only (`src/control-plane/store.ts`, `invocation-store.ts`). Slice 10 Phase 1 will add `RecordStore`; this slice’s facade/index work (Phase 4) must not start until that freeze is in-tree. Slice 10 Phase 4 will add `createRecordContext`; this slice’s production handler wiring (Phase 6+) must not start until that factory is in-tree.
 - Config has no `[reviewBudget]` table (`src/config.ts:166–237`, `src/templates/5x.default.toml`).
 
 **New behavior:**
@@ -119,7 +120,8 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 - [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md) — `src/control-plane/` store boundary, UUID ids, SQLite vs memory split. **Merged** (schema v6).
 - [`207-invocation-registry-plan.md`](./207-invocation-registry-plan.md) — schema currently v7; this slice adds v8 **index** tables. **Merged**.
-- **Slice 10 Phase 1 (`RecordStore` interface + in-memory implementation) must be merged and frozen before this slice’s persistence work (Phase 4 and every later phase that writes baselines or snapshots).** Arithmetic, parser, and config (Phases 1–3) may proceed in parallel. This slice does not implement `RecordStore`, working-tree JSONL, or `records index`. If the freeze lacks budget-stream append/read or atomic multi-append, those are a coordinated slice-10 contract revision — not a 06 fork. See Design Decisions.
+- **Slice 10 Phase 1 (`RecordStore` interface + in-memory implementation) must be merged and frozen before this slice’s facade/index work (Phase 4) and protocol-type work that imports those types (Phase 5 may overlap).** Arithmetic, parser, and config (Phases 1–3) may proceed in parallel. This slice does not implement `RecordStore`, working-tree JSONL, or `records index`. If the freeze lacks budget-stream append/read or atomic multi-append, those are a coordinated slice-10 contract revision — not a 06 fork. See Design Decisions.
+- **Slice 10 Phase 4 (`createRecordContext`, `originFor` / `redactedRecorder`, `prepareRecordStepAppend`) must be merged before this slice’s production record wiring (Phase 6 and every later phase that calls `createReviewBudgetContext`, live `originFor`, or baseline capture hooks).** Phase 4 facade tests use fixture origins and must not import `createRecordContext`. See `212` §1.5.
 
 ---
 
@@ -151,7 +153,7 @@ v1 plan review classifies items as `auto_fix` or `human_required` and routes sol
 
 Do **not** treat derived forecasts as record payload. Snapshot lines may omit `derived` or carry a denormalized copy marked non-authoritative; `run state` and the index recompute or cache it. Slice 07/08 may add decision / realization line kinds; this slice does not.
 
-**Why not a SQLite-only `ReviewBudgetStore` now?** `207` §2.6 and plan-input 10 forbid stranding budget history in `.5x/5x.db` and then migrating. Plan-input 06’s older “must touch DB/store” constraint is satisfied by the **index** (schema v8 + write-through + `reindexReviewBudget`), not by making SQLite the system of record. Forking `RecordStore` here would steal slice 10’s opening phase. Waiting until slice 10’s **working-tree** impl merges is allowed for process-durable CLI integration tests; the **interface + memory impl** must be in-tree before Phase 4 code is written. This slice never implements a competing store.
+**Why not a SQLite-only `ReviewBudgetStore` now?** `207` §2.6 and plan-input 10 forbid stranding budget history in `.5x/5x.db` and then migrating. Plan-input 06’s older “must touch DB/store” constraint is satisfied by the **index** (schema v8 + write-through + `reindexReviewBudget`), not by making SQLite the system of record. Forking `RecordStore` here would steal slice 10’s opening phase. Waiting until slice 10’s **working-tree** impl merges is allowed for process-durable CLI integration tests; the **interface + memory impl** must be in-tree before Phase 4 code is written. Waiting until slice 10’s **`createRecordContext`** merges is required before Phase 6 production wiring. This slice never implements a competing store or a local substitute for `createRecordContext`.
 
 **Advisory `requiresHuman` is telemetry.** Compute it exactly as `206` §6.3 (`over_effective`, `over_absolute`, `baseline_disputed`, `positive_architecture_exceeded`, or any item `action === "human_required"`). Write it on the decorated record. Do **not** change `readiness`, skip re-review, or open a prompt. Slice 07 reads the same field and starts routing.
 
@@ -708,9 +710,9 @@ Layering: existing `deepMerge` (`src/config.ts:695`) already merges nested table
 
 ## Phase 4: Budget record lines, RecordStore facade, and rebuildable index
 
-**Prerequisite:** Slice 10 Phase 1 is merged: frozen `RecordStore` (no working-tree path assumption) + in-memory implementation + contract tests. That freeze must include budget-stream append/get/list, insertion-ordered reads, and `atomicAppend` (or equivalent all-or-nothing multi-append) as specified in Design Decisions. This phase does **not** add `src/control-plane/record-store.ts` or a working-tree JSONL writer.
+**Prerequisite:** Slice 10 **Phase 1** is merged: frozen `RecordStore` (no working-tree path assumption) + in-memory implementation + contract tests. That freeze must include budget-stream append/get/list, insertion-ordered reads, and `atomicAppend` (or equivalent all-or-nothing multi-append) as specified in Design Decisions. This phase does **not** add `src/control-plane/record-store.ts` or a working-tree JSONL writer. This phase does **not** require slice 10 Phase 4: facade tests inject a fixture `origin` and **must not** import `createRecordContext` / `src/commands/record-context.ts`. Production `createReviewBudgetContext` is Phase 6, blocked on slice 10 Phase 4.
 
-**Completion gate:** `captureBaseline` appends one `baseline` budget line (INSERT-once; second call returns existing, does not change `b0`). Snapshots append as budget lines keyed to a step tuple. Fresh DB migrates to v8 **index** tables. v7 → v8 keeps `invocations`. Facade tests against `MemoryRecordStore` (with and without a SQLite index) pass the same contract. Wiping the index and calling `reindexReviewBudget` restores baseline + snapshots from record lines, including first-snapshot `baselineAssessment`, so `I` and `baselineDirection` recompute identically from the record. Facade, snapshot payload codec (`encodeBudgetSnapshotPayload` / `decodeBudgetSnapshotPayload`), and index rebuild compile and pass using `BaselineAssessment` imported from `src/review-budget/types.ts` — Phase 4 tests must not import that type from `src/protocol.ts`. This phase is independently type-complete before Phase 5. Handlers are not wired yet. No test treats a SQLite row as authoritative when the corresponding record line is absent.
+**Completion gate:** `captureBaseline` appends one `baseline` budget line (INSERT-once; second call returns existing, does not change `b0`). Snapshots append as budget lines keyed to a step tuple. Fresh DB migrates to v8 **index** tables. v7 → v8 keeps `invocations`. Facade tests against `MemoryRecordStore` (with and without a SQLite index) pass the same contract. Wiping the index and calling `reindexReviewBudget` restores baseline + snapshots from record lines, including first-snapshot `baselineAssessment`, so `I` and `baselineDirection` recompute identically from the record. Facade, snapshot payload codec (`encodeBudgetSnapshotPayload` / `decodeBudgetSnapshotPayload`), and index rebuild compile and pass using `BaselineAssessment` imported from `src/review-budget/types.ts` — Phase 4 tests must not import that type from `src/protocol.ts`. This phase is independently type-complete before Phase 5. Handlers are not wired yet. No test treats a SQLite row as authoritative when the corresponding record line is absent. `slice-10-phase-boundary.test.ts` proves Phase 4 facade files and tests import no `createRecordContext`.
 
 ### 4.1 IDs — `src/control-plane/ids.ts`
 
@@ -937,7 +939,8 @@ export function reindexReviewBudget(
 - [ ] Update version assertions from 7 → 8.
 - [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
 - [ ] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`.
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`. **This file must not import `createRecordContext`.**
+- [ ] `test/unit/review-budget/slice-10-phase-boundary.test.ts` (**new**): read Phase 4 production files (`src/control-plane/review-budget-store.ts`, `src/review-budget/record-lines.ts`, `src/control-plane/review-budget-index.ts`) and Phase 4 tests (`review-budget-store-contract.test.ts`, `review-budget-index.test.ts`, `record-lines.test.ts`) as text; assert none contain the identifier `createRecordContext` or an import of `record-context`. Phase 6 extends this file to assert `src/commands/review-budget-context.ts` **does** import and call `createRecordContext`. Until Phase 6 exists, the Phase 4 half still passes.
 - [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
 - [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
 - [ ] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
@@ -946,6 +949,8 @@ export function reindexReviewBudget(
 ---
 
 ## Phase 5: Protocol types, emit, and normalize
+
+**Prerequisite:** Slice 10 Phase 1 types may be imported if emit/validate tests construct `RecordOrigin` fixtures; this phase does **not** require slice 10 Phase 4 or `createRecordContext`.
 
 **Completion gate:** v1 emit/validate fixtures still pass. New flags round-trip. Aggregate keys on emit stdin/flags are rejected. Implementation-review fields are **not** added. `BaselineAssessment` on `ReviewerVerdict` is the Phase 1 domain type, imported and re-exported — not a second declaration.
 
@@ -1065,7 +1070,9 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ## Phase 6: Validate, derive, persist, decorate
 
-**Completion gate:** Recording a plan-review verdict on an `active` run writes **exactly one** budget snapshot **line** in the same `RecordStore.atomicAppend` as the unique reviewer step line, projects both into the SQLite index (including first-snapshot `baselineAssessment`), and a `budget` object on `result_json` / validate envelope. Shared `prepareRecordStepAppend` runs before that append on both `recordStepInternal` and `recordPlanReviewerStepWithSnapshot`. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures call **no** `atomicAppend` and leave both record streams and SQLite projections unchanged. A failed unique append writes no snapshot line. A duplicate (`created: false` or admission `outcome: "duplicate"`, including duplicate-at-limit) writes no second snapshot line but idempotently repairs SQLite `steps` and budget-index projections from the existing record lines. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten. Direct `--record` capture in `mode=enforced` emits the reserved-mode warning.
+**Prerequisite:** Slice 10 **Phase 4** is merged: `createRecordContext`, `originFor` / `redactedRecorder`, and `prepareRecordStepAppend` exist in-tree. This phase must **not** start after only slice 10 Phase 1 — the factory is specified but not implemented until Phase 4. Do not add a 06-local `createRecordContext` substitute.
+
+**Completion gate:** Recording a plan-review verdict on an `active` run writes **exactly one** budget snapshot **line** in the same `RecordStore.atomicAppend` as the unique reviewer step line, projects both into the SQLite index (including first-snapshot `baselineAssessment`), and a `budget` object on `result_json` / validate envelope. Shared `prepareRecordStepAppend` runs before that append on both `recordStepInternal` and `recordPlanReviewerStepWithSnapshot`. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures call **no** `atomicAppend` and leave both record streams and SQLite projections unchanged. A failed unique append writes no snapshot line. A duplicate (`created: false` or admission `outcome: "duplicate"`, including duplicate-at-limit) writes no second snapshot line but idempotently repairs SQLite `steps` and budget-index projections from the existing record lines. Recording the same v1 verdict on a `v1_compat` or `mode=off` run is byte-compatible aside from existing fields. Readiness is never rewritten. Direct `--record` capture in `mode=enforced` emits the reserved-mode warning. `createReviewBudgetContext` calls slice 10’s `createRecordContext` (no local origin factory). The Phase 6 half of `slice-10-phase-boundary.test.ts` asserts that import.
 
 ### 6.1 Shared apply function — `src/review-budget/apply.ts` (new)
 
@@ -1155,7 +1162,9 @@ export function createReviewBudgetContext(
 }
 ```
 
-Do **not** return `{ db, config, controlPlane, recordStore, store }` without `originFor`. Protocol/invoke handlers call this factory (or accept an injected `ReviewBudgetCommandContext` in tests). They do **not** import `bun:sqlite`, do **not** construct a SQLite-only budget store, and do **not** assemble `RecordOrigin` inline.
+Do **not** return `{ db, config, controlPlane, recordStore, store }` without `originFor`. Protocol/invoke handlers call this factory (or accept an injected `ReviewBudgetCommandContext` in tests). They do **not** import `bun:sqlite`, do **not** construct a SQLite-only budget store, and do **not** assemble `RecordOrigin` inline. **Do not** implement `createRecordContext` in this slice if slice 10 Phase 4 has not merged — wait.
+
+- [ ] Extend `test/unit/review-budget/slice-10-phase-boundary.test.ts`: `src/commands/review-budget-context.ts` source contains an import of `createRecordContext` and a call to it. Phase 4 facade files still must not.
 
 #### 6.2.1 Shared pre-append admission — `prepareRecordStepAppend`
 
@@ -1306,6 +1315,8 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
 
 ## Phase 7: Baseline capture, preflight, mid-review opt-in
 
+**Prerequisite:** Same as Phase 6 — slice 10 Phase 4 (`createRecordContext` / `originFor`) is merged. Template-render and invoke hooks call `createReviewBudgetContext`; they must not invent a local origin factory.
+
 **Completion gate:** Rendering `reviewer-plan` (not continued) on a new run with a valid table appends a baseline **record line** (`B0`) before the reviewer runs. Missing table returns `BUDGET_SECTION_MISSING` with a preflight message. A run that already has a plan-reviewer step and no baseline line does not capture. `--opt-in-budget-baseline` captures `capture_kind = opt_in` from the current table.
 
 ### 7.1 Ensure helper — `src/review-budget/ensure-baseline.ts` (new)
@@ -1360,6 +1371,8 @@ CLI is the source of truth: skills cannot silently skip a missing section on a n
 ---
 
 ## Phase 8: Run-state output
+
+**Prerequisite:** Slice 10 Phase 1 (`RecordStore` + memory) is sufficient for unit tests that inject a facade/store. If `runV1State` constructs `createReviewBudgetContext` (rather than an injected facade), that handler path waits for slice 10 Phase 4 — same gate as Phase 6.
 
 **Completion gate:** `5x run state` JSON includes `review_budget` when a baseline exists; omitted when not. Text mode prints a short forecast block. Step `result_json` already contains `budget` from Phase 6; do not duplicate per-step in the header. After an index wipe, `I` and `baseline_direction` match the first snapshot’s persisted `baselineAssessment`.
 
@@ -1511,6 +1524,8 @@ Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented unti
 
 ## Phase 10: Integration, compatibility, and exports
 
+**Prerequisite:** CLI persist/capture integration cases that go through `createReviewBudgetContext` wait for slice 10 Phase 4 (and process-durable JSONL cases wait for slice 10’s working-tree impl). Facade-only unit coverage remains valid after slice 10 Phase 1.
+
 **Completion gate:** `bun test` green. Public exports updated. Compatibility matrix below covered by tests.
 
 ### 10.1 Public API — `src/index.ts`
@@ -1563,14 +1578,14 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; bind assessments to persisted claims; returns `pendingSnapshot` (includes first-review `baselineAssessment`); no snapshot write. |
 | `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture; passes `origin` from `ctx.originFor` into `captureBaseline`. |
 | `src/review-budget/record-lines.ts` | **New.** Budget-line payloads, idempotency keys, encode/decode (snapshot decode round-trips `baselineAssessment` from Phase 1 domain types). Consumes slice-10 `RecordStore` types. Does not import `src/protocol.ts`. |
-| `src/commands/review-budget-context.ts` | **New.** Embeds slice 10 `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`) + facade/index factory (handlers do not import `bun:sqlite`). Returns `ReviewBudgetCommandContext`. `recordPlanReviewerStepWithSnapshot` calls `prepareRecordStepAppend` (retains `prepared.performer`) then `originFor` on both ops then `atomicAppend` only on admit. |
+| `src/commands/review-budget-context.ts` | **New (Phase 6).** Embeds slice 10 `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`) + facade/index factory (handlers do not import `bun:sqlite`). Returns `ReviewBudgetCommandContext`. `recordPlanReviewerStepWithSnapshot` calls `prepareRecordStepAppend` (retains `prepared.performer`) then `originFor` on both ops then `atomicAppend` only on admit. **Blocked on slice 10 Phase 4.** |
 | `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser including `### Debt Claims` evidence. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
 | `src/config.ts` | `ReviewBudgetConfigSchema`; `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
 | `src/db/schema.ts` | Migration v8 **index** tables; max version 8; `record_idempotency_key` + `record_seq` order; `baseline_assessment_json` on snapshots. |
 | `src/control-plane/ids.ts` | `createReviewBudgetId`. |
-| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. `appendSnapshot` / snapshot record type use Phase 1 `BaselineAssessment`. `captureBaseline` requires `origin` from `originFor`. |
+| `src/control-plane/review-budget-store.ts` | **New (Phase 4).** Facade over `RecordStore`; optional SQLite index. `appendSnapshot` / snapshot record type use Phase 1 `BaselineAssessment`. `captureBaseline` requires `origin` from `originFor`. **Must not import `createRecordContext`.** |
 | `src/control-plane/review-budget-index.ts` | **New.** Rebuildable SQLite index + `reindexReviewBudget`. |
 | `src/control-plane/index.ts` | Re-exports. Do **not** add `record-store.ts` in this slice. |
 | `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; import and re-export `BaselineAssessment` from review-budget domain types (do not redeclare); `CreditClaim` evidence fields remain reviewer-introduced only. |
@@ -1598,7 +1613,8 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `test/unit/commands/record-plan-reviewer-step.test.ts` | **New.** Focused wrapper admission tests (terminal run, missing worktree, invalid result, new-at-limit, duplicate-at-limit repair) plus origin equality / `originFor` spy / actor redaction. |
 | `test/unit/parsers/delivery-budget.test.ts` | **New.** |
 | `test/unit/parsers/plan.test.ts` | Placement regressions. |
-| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index; imports `BaselineAssessment` from domain types, not protocol. |
+| `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index; imports `BaselineAssessment` from domain types, not protocol. Fixture origin; **no `createRecordContext` import**. |
+| `test/unit/review-budget/slice-10-phase-boundary.test.ts` | **New.** Phase-4 facade files/tests must not import `createRecordContext`; Phase-6 `review-budget-context.ts` must. |
 | `test/unit/control-plane/review-budget-index.test.ts` | **New.** Reindex from record lines using Phase 1 `BaselineAssessment`. |
 | `test/unit/config.test.ts`, `config-v1.test.ts`, `config-registry.test.ts` | Defaults and layering. |
 | `test/unit/protocol.test.ts`, `protocol-emit.test.ts`, `protocol-validate.test.ts`, `protocol-helpers.test.ts` | New fields; v1 compat. |
@@ -1618,7 +1634,8 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
 | Unit | `schema-v8.test.ts` | v8 **index** tables, v7→v8, CHECKs, unique `run_id` + `record_idempotency_key`, nullable `baseline_assessment_json` |
 | Unit | `review-budget/record-lines.test.ts` | Snapshot codec round-trips `baselineAssessment` from Phase 1 domain types; omit-when-absent; no `src/protocol.ts` import |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index **with fixture origin**; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip** (domain type, not protocol); no SQLite-only authority |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index **with fixture origin**; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip** (domain type, not protocol); no SQLite-only authority; **no `createRecordContext` import** |
+| Unit | `slice-10-phase-boundary.test.ts` | Phase-4 facade files/tests contain no `createRecordContext`; Phase-6 `review-budget-context.ts` imports and calls it |
 | Unit | `review-budget-index.test.ts` | Wipe index, `reindexReviewBudget` restores baselines/ledgers/assessments **and first-snapshot `baselineAssessment`** (domain type); **`I` / `baselineDirection` recompute identically from the record line** |
 | Unit | `protocol.test.ts` / `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys; `BaselineAssessment` is a re-export of the Phase 1 domain type (not a second declaration) |
 | Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots; assessments bind to persisted claims; incomplete author evidence fails closed |
@@ -1650,7 +1667,8 @@ Edge cases (must appear in unit tests):
 - Store round-trip: `originalLedger` / `currentLedger` retain `targetPhase`, minimal deltas, `before`, `after`.
 - Record line is present after capture even if the SQLite index is wiped and rebuilt.
 - First-snapshot `baselineAssessment` is present on the facade record and index after reindex; `I` and `baselineDirection` recompute identically from the record line (not from `derived_json`).
-- Phase 4 codec, facade, and index tests import `BaselineAssessment` from `src/review-budget/types.ts` and compile without `src/protocol.ts` (Phase 4 is independently type-complete before Phase 5).
+- Phase 4 codec, facade, and index tests import `BaselineAssessment` from `src/review-budget/types.ts` and compile without `src/protocol.ts` (Phase 4 is independently type-complete before Phase 5). They also compile without `createRecordContext` / `src/commands/record-context.ts` (Phase 4 is independently implementable after slice 10 Phase 1).
+- Phase 6 `review-budget-context.ts` imports and calls slice 10 `createRecordContext`; a 06-local substitute is forbidden (`slice-10-phase-boundary.test.ts`).
 - No baseline index row when RecordStore has no baseline line.
 - Step/`atomicAppend` failure after apply: zero snapshot lines.
 - Admission failure **before** append: terminal run (`RUN_NOT_ACTIVE`), missing worktree (`WORKTREE_MISSING`), invalid result (`INVALID_JSON`), new step at `maxStepsPerRun` (`MAX_STEPS_EXCEEDED`) — `atomicAppend` not called; step stream, budget stream, SQLite `steps`, and budget index unchanged.
@@ -1668,7 +1686,7 @@ Edge cases (must appear in unit tests):
 - **Deferred findings, accepted-risk ledger, continued-review hunk validation, `lateDiscovery`** — slice 07.
 - **Implementation-review four-class `scopeClass`, `planImpact`, `--credit-realization`, quality-gated shortcut** — `08-implementation-review-governance.plan-input.md`.
 - **Dashboard / browser budget UI** — `04-control-plane-dashboard.plan-input.md`.
-- **`RecordStore` implementation, working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, progress resolution, doctor `records` check** — slice 10. This slice consumes the frozen Phase-1 interface (including budget-stream append/read and `atomicAppend`) and defines budget-line payloads/keys plus the SQLite index projection. Do not fork or re-declare `RecordStore` here. Do not ship a SQLite-backed `RecordStore`.
+- **`RecordStore` implementation, working-tree JSONL layout, `records index` / `records backfill` CLI, `.gitattributes`, progress resolution, doctor `records` check** — slice 10. This slice consumes the frozen Phase-1 interface (including budget-stream append/read and `atomicAppend`) for facade/index work and slice 10 Phase 4’s `createRecordContext` for production writer wiring. It defines budget-line payloads/keys plus the SQLite index projection. Do not fork or re-declare `RecordStore` here. Do not ship a SQLite-backed `RecordStore`. Do not implement a local `createRecordContext`.
 - **SQLite-only `ReviewBudgetStore` as the system of record, or a later migration off SQLite-authored budget rows.** Forbidden by `207` §2.6.
 - **Changing default percentages after calibration** — open question in `206` §10.
 - **Rewriting `maxReviewIterations` or step-count `maxStepsPerRun`** — unchanged backstops.
@@ -1684,20 +1702,26 @@ Edge cases (must appear in unit tests):
 | 1 | Types (incl. `BaselineAssessment`) + pure arithmetic + `B=4` fixtures | 1 day |
 | 2 | Delivery Budget parser + plan-parse regressions | 1–2 days |
 | 3 | `reviewBudget` config, registry, default TOML | 0.5–1 day |
-| 4 | Budget record lines + RecordStore facade + v8 index | 1–2 days |
+| 4 | Budget record lines + RecordStore facade + v8 index (fixture origins; **no `createRecordContext`**) | 1–2 days |
 | 5 | Protocol types, emit flags, normalize, reject aggregates | 1 day |
-| 6 | apply() + shared `prepareRecordStepAppend` + validate/invoke decorate/record | 2 days |
+| 6 | apply() + shared `prepareRecordStepAppend` + validate/invoke decorate/record (**blocked on slice 10 Phase 4**) | 2 days |
 | 7 | ensureBaseline, template/invoke hooks, opt-in | 1–2 days |
 | 8 | `run state` JSON/text | 0.5–1 day |
 | 9 | Templates, skills, 101 docs | 1–2 days |
 | 10 | Integration matrix, exports, `bun test` | 1–2 days |
 | **Total** | | **10.5–16 days** |
 
-Phases 1–3 (types, parser, config) may proceed without slice 10. **Phase 4 and every later persistence/record path are blocked on slice 10 Phase 1** (frozen `RecordStore` + in-memory impl, including budget-stream append/read and atomic multi-append). Phase 4 is independently type-complete: `BaselineAssessment` lives in Phase 1 domain types, so facade, codec, and index rebuild compile and test before Phase 5. Phase 4 is a hard prerequisite to 6–8. Phase 6 record wiring includes P1.8 (`prepareRecordStepAppend` before `atomicAppend`). Phase 5 imports/re-exports that type and can overlap 4 once the freeze exists; it is not a type prerequisite for Phase 4. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. Process-durable CLI integration tests wait for slice 10’s working-tree `RecordStore` impl; until then, persist tests use `MemoryRecordStore`. Do **not** retarget authority back to SQLite if the working-tree impl lags.
+Phases 1–3 (types, parser, config) may proceed without slice 10. **Phases 4–5 are blocked on slice 10 Phase 1** (frozen `RecordStore` + in-memory impl, including budget-stream append/read and atomic multi-append). Phase 4 facade tests use fixture origins and must not import `createRecordContext`. **Phase 6 and every later production record path (`createReviewBudgetContext`, live `originFor`, baseline capture hooks) are blocked on slice 10 Phase 4.** Phase 4 is independently type-complete: `BaselineAssessment` lives in Phase 1 domain types, so facade, codec, and index rebuild compile and test before Phase 5. Phase 4 is a hard prerequisite to 6–8 **within this slice**, but 6 cannot start until 212 Phase 4 has also merged. Phase 6 record wiring includes P1.8 (`prepareRecordStepAppend` before `atomicAppend`). Phase 5 imports/re-exports that type and can overlap 4 once the freeze exists; it is not a type prerequisite for Phase 4. Phase 9 can overlap 6–8 once flag names are frozen in Phase 5. Process-durable CLI integration tests wait for slice 10’s working-tree `RecordStore` impl **and** Phase 4 `createRecordContext`; until then, persist tests use `MemoryRecordStore`. Do **not** retarget authority back to SQLite if the working-tree impl lags. Do **not** invent a 06-local `createRecordContext` if Phase 4 of 212 lags.
 
 ---
 
 ## Revision History
+
+### 1.8 — September 1, 2026
+
+Addresses **P1.5** in the September 1 addendum of [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (Revision 1.7 cross-slice origin re-review of slice 10). Coordinated with [`212-git-native-run-records-plan.md`](./212-git-native-run-records-plan.md) §1.5. Prior 208 P0/P1.1–P1.8 and 212 P0.8 remain in force.
+
+1. **P1.5 — Phase graph matches the `createRecordContext` implementation dependency.** Slice 10 Phase 1 still freezes `RecordStore` and the origin-writer *shape*. This slice’s Phases 4–5 may proceed after that freeze using fixture origins and **must not** import `createRecordContext`. Phase 6+ production wiring (`createReviewBudgetContext`, live `originFor`, baseline capture hooks) waits for slice 10 Phase 4 to merge. `test/unit/review-budget/slice-10-phase-boundary.test.ts` encodes the split: Phase-4 facade tests require no `createRecordContext`; Phase-6 wiring does.
 
 ### 1.7 — September 1, 2026
 
