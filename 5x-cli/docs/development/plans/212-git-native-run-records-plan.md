@@ -1,7 +1,8 @@
 # Git-Native Run Records and Progress Resolution
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** August 31, 2026
+**Last updated:** August 31, 2026
 **Status:** Draft — pending staff engineer review
 
 ---
@@ -43,8 +44,12 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 | **Freeze `RecordStore` + memory impl first** | Slice 06 cannot fork the contract. Budget-stream get/list/append, insertion order, and `atomicAppend` must exist before 06 Phase 4. |
 | **Working-tree JSONL, not `refs/5x/*`** | Visible in PRs and hosting UIs; `merge=union` handles rare parallel-iteration merges. Interface stays path-agnostic so a ref-namespace impl remains possible. |
 | **SQLite is a rebuildable index** | Fast path for idempotency and `run state`; a fresh clone rebuilds it from git. Record wins for completed work. |
-| **`atomicAppend` is all-or-nothing** | Slice 06 appends a reviewer step and a budget snapshot in one batch. A throw must leave none of the ops durable. |
+| **`atomicAppend` is all-or-nothing** | Slice 06 appends a reviewer step and a budget snapshot in one batch. A throw or crash must leave none of the ops durable (working-tree: per-run journal). |
 | **Dirty-tree exemption is path-scoped** | Uncommitted record files are expected between `run record` and `5x commit`. Any other dirty path still blocks `run init`. |
+| **Re-root records to the run's effective worktree** | `config.paths.records` is control-plane-absolute. Writers, seal, and `5x commit` join the canonical repo-relative path under `effectiveWorkingDirectory` so a `--worktree` run commits records with the code. Git pathspecs and `git show` keep the repo-relative path. |
+| **`atomicAppend` uses a durable per-run journal** | Independent `renameSync` per stream is not crash-safe. A commit-marker journal plus recovery on every open/read/append restores the pre-batch state or finishes the batch; never a mixed-stream half-write. |
+| **`paths.records` must be inside the repository** | Staging, `git show`, ref resolution, and backfill all need a git path. An outside root is a configuration error, not a warning that silently disables git-native behavior. |
+| **JSONL decode takes `runId` from the caller** | On-disk lines omit `run_id` (directory-implied). `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. |
 | **No implicit network** | `--fetch` is the only fetch. Remote-tracking refs are as fresh as the last fetch. |
 | **Diverged refs are reported, never picked** | Silent resolution would hide split history. Completion is monotonic, so display max checklist progress and flag `source: diverged`. |
 
@@ -81,6 +86,7 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 14. [Not In Scope](#not-in-scope)
 15. [Estimated Timeline](#estimated-timeline)
 16. [Provenance](#provenance)
+17. [Revision History](#revision-history)
 
 ---
 
@@ -101,7 +107,7 @@ v1 made SQLite the persistence layer. v2 (`200` §3a #4) said the control plane 
 
 **New behavior:**
 
-- Every admitted step is appended to the run record first, then projected into SQLite. Re-recording an existing key appends no JSONL line and returns the existing step.
+- Every admitted step is appended to the run record first (in the run's **effective worktree**), then projected into SQLite. Re-recording an existing key appends no JSONL line and returns the existing step.
 - `run init` writes `run.json` (unsealed). `run complete` seals it, records the terminal step through the same path (with `head_commit`), and creates a `5x: seal run <id>` commit if record files remain uncommitted.
 - `plan list` / `plan phases` / `run state --plan` resolve the plan file and records from the most advanced candidate ref, surface `source` (and ref age for remotes), and report `diverged` rather than picking.
 - `5x records index` rebuilds `runs` / `steps` from the resolved record without clobbering newer local-only rows. `doctor` reports drift; `--fix` only re-indexes.
@@ -117,14 +123,14 @@ v1 made SQLite the persistence layer. v2 (`200` §3a #4) said the control plane 
 
 ## Design Decisions
 
-**`RecordStore` is a sibling of `PromptStore`, not a SQLite table and not a git wrapper.** Command logic never imports `bun:sqlite` and never takes a working-tree path as a store method argument. The working-tree JSONL impl closes over `paths.records` in its factory, matching `createSqlitePromptStore(db)`. A future `refs/5x/*` impl swaps the factory. Slice 06 imports types from `src/control-plane/`, not a forked copy.
+**`RecordStore` is a sibling of `PromptStore`, not a SQLite table and not a git wrapper.** Command logic never imports `bun:sqlite` and never takes a working-tree path as a store method argument. The working-tree JSONL impl closes over an **absolute** `recordsRoot` in its factory (the worktree-re-rooted path from `resolveRecordsRoot`, not the raw control-plane `config.paths.records`), matching `createSqlitePromptStore(db)`. A future `refs/5x/*` impl swaps the factory. Slice 06 imports types from `src/control-plane/`, not a forked copy.
 
 **The Phase 1 freeze includes everything 06's consumed surface requires.** `208` Design Decisions (consumed `RecordStore` surface) are binding on this freeze:
 
 - Step append / get / list keyed by `(run_id, step_name, phase, iteration)`. Duplicate appends return `created: false` and keep the original payload.
 - Opaque **budget** stream append / get / list. Slice 06 supplies `idempotencyKey` + JSON payload; this slice does not interpret budget fields.
 - Insertion-ordered `listLines`. Equal `createdAt` must not reorder (memory: sequence counter; working-tree: file order).
-- `atomicAppend(ops)`: all-or-nothing across mixed streams. Duplicate keys in the batch return `created: false` for those ops and add no line. A throw rolls back the entire batch.
+- `atomicAppend(ops)`: all-or-nothing across mixed streams. Duplicate keys in the batch return `created: false` for those ops and add no line. A throw **or a crash** leaves none of the ops durable (memory: clone-then-swap; working-tree: Phase 3.2 journal).
 
 This slice also freezes a **decisions** stream (answered prompts + `human:*`) and `putRun` / `getRun` / `listRuns` for `run.json`. Those are not 06's concern but must not be retrofitted incompatibly.
 
@@ -140,9 +146,34 @@ This slice also freezes a **decisions** stream (answered prompts + `human:*`) an
 
 **`.gitattributes` uses `merge=union` on `*.jsonl` under the configured records root.** Parallel iterations that actually merge (rare) concatenate lines instead of conflicting. Readers **dedupe by idempotency key, first line wins**, matching `INSERT OR IGNORE`. Tests must merge two branches with distinct keys and assert a valid JSONL file with no conflict markers, then merge two files that share a key and assert first-line-wins on read.
 
-**Dirty-tree exemption is canonical-path scoped.** `checkGitSafety(workdir, { exemptRoots?: string[] })` parses `git status --porcelain=v1 -z` (NUL-safe; handles quotes, renames). A path is exempt iff `isPathUnder(absPath, canonicalExemptRoot)` (`paths.ts:65–67`). Exempt paths are omitted from `untrackedFiles` and do not set `isDirty`. A dirty file **outside** the root still yields `safe: false`. `runV1Init` passes `config.paths.records`. Do not exempt via string prefix on porcelain lines (breaks worktrees, monorepos, and quoted paths).
+**Dirty-tree exemption is canonical-path scoped.** `checkGitSafety(workdir, { exemptRoots?: string[] })` parses `git status --porcelain=v1 -z` (NUL-safe; handles quotes, renames). A path is exempt iff `isPathUnder(absPath, canonicalExemptRoot)` (`paths.ts:65–67`). Exempt paths are omitted from `untrackedFiles` and do not set `isDirty`. A dirty file **outside** the root still yields `safe: false`. `runV1Init` passes the **worktree-re-rooted absolute** records path from `resolveRecordsRoot` (equal to `config.paths.records` when there is no linked worktree). Do not pass control-plane `config.paths.records` when `workdir` is a linked worktree — porcelain paths are relative to that worktree. Do not exempt via string prefix on porcelain lines (breaks worktrees, monorepos, and quoted paths).
 
-**`5x commit` always stages the records root in addition to `--files` / `--all-files`.** `--all-files` (`git add -A`) already includes it when the directory exists. `--files` must also `git add -- <recordsRelPath>` when that directory exists. Dry-run includes the same extra pathspec. Staging a missing directory is skipped, not an error.
+**`5x commit` always stages the records root in addition to `--files` / `--all-files`.** `--all-files` (`git add -A`) already includes it when the directory exists in the effective worktree. `--files` must also `git add -- <recordsRelPath>` when `existsSync(recordsAbsPath)` in the **effective worktree** (not the control-plane checkout). Dry-run includes the same extra pathspec. Staging a missing directory is skipped, not an error. Pathspec is always the canonical repo-relative POSIX path; existence check is always the re-rooted absolute path.
+
+**Records I/O is re-rooted to the run's effective worktree.** `resolveConfigPaths` resolves `paths.records` against the control-plane root, like other `paths.*`. That absolute path is **not** the write target for a `run init --worktree` run: `resolveRunExecutionContext` executes commits in the linked worktree, so record files written under the main checkout are invisible to that worktree's `git add` / `5x commit` (or stage an unrelated path). One helper, `resolveRecordsRoot` (`src/records/paths.ts`):
+
+```typescript
+export interface ResolvedRecordsRoot {
+	/** Canonical repo-relative POSIX path for git pathspecs, `git show`, resolution, `.gitattributes`. */
+	recordsRelPath: string;
+	/** Absolute path in `effectiveWorkdir` (linked worktree or control-plane root). Store write target. */
+	recordsAbsPath: string;
+}
+
+export function resolveRecordsRoot(opts: {
+	recordsConfigAbs: string; // config.paths.records after resolveConfigPaths
+	controlPlaneRoot: string;
+	effectiveWorkdir: string;
+}): ResolvedRecordsRoot;
+```
+
+Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoot)` (fail with `RECORDS_ROOT_OUTSIDE_REPO` if null); `recordsAbsPath = join(effectiveWorkdir, recordsRelPath)`. Callers: `run init` `putRun`, every record writer (`recordStepInternal`, prompt decisions, seal), `checkGitSafety` exempt root, seal dirty check / `commitFiles`, `5x commit` existence + pathspec, backfill target worktree, doctor uncommitted-stale. Do not construct `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`. Preserve `recordsRelPath` separately; never derive git pathspecs from the worktree-absolute path.
+
+**`paths.records` outside the repository is a configuration error.** Git-native records require a path that can be staged, shown, and resolved from refs. After `resolveConfigPaths`, if `!isPathUnder(config.paths.records, baseDir)` (control-plane / project root), throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Do **not** warn and skip `.gitattributes` / disable git-native behavior. Cover relative default, absolute-inside (e.g. `resolve(projectRoot, "custom/runs")` as the configured value), and absolute-outside (`/tmp/5x-records`) plus a relative path that escapes (`../../tmp/records`).
+
+**JSONL decode reconstructs `RecordLine.runId` from the caller.** On-disk objects omit `run_id` (implied by `<slug>/<run-id>/`). `encodeJsonlLine` must not write `run_id`. `decodeJsonlFile(text, runId)` sets `runId` on every returned `RecordLine`. If an object contains `run_id` and it differs from the caller value, throw `INVALID_JSONL`. Contract coverage includes decisions and budget lines, not only steps.
+
+**`atomicAppend` durability is a per-run journal, not in-process rollback.** A thrown JS exception still rolls back (memory: clone-then-swap; FS: abort before the commit marker). A process kill, power loss, or failed rename between `steps.jsonl` and `budget.jsonl` cannot leave slice 06 with an orphaned reviewer step or budget snapshot. See Phase 3.2. Recovery runs on every store open/read/append. Journal artifacts (`.txn.*`) are gitignored under the records root and are never staged.
 
 **Post-commit steps get a dedicated seal commit.** `run complete` writes the terminal step + sealed `run.json`, then if the records root is dirty, `commitFiles` with message `5x: seal run <id>`. Do not wait for a later `5x commit` that may never come (`207` open question 1, resolved: seal commit). If there is nothing to commit, skip (no empty commit).
 
@@ -169,11 +200,12 @@ This slice also freezes a **decisions** stream (answered prompts + `human:*`) an
            ├─ RecordStore.atomicAppend    // authoritative (memory or working-tree JSONL)
            └─ SQLite recordStep           // rebuildable index projection
 
-  <paths.records>/<plan-slug>/<run-id>/
+  <recordsAbsPath>/<plan-slug>/<run-id>/   // re-rooted into effective worktree
            run.json          // putRun at init and seal
            steps.jsonl       // append-only; merge=union
            decisions.jsonl   // answered prompts + human:*
            budget.jsonl      // opaque; slice 06 owns payloads
+           .txn.*            // crash journal; gitignored; never staged
 
   plan list / plan phases / run state --plan
            │
@@ -283,7 +315,7 @@ export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 ```
 
 - [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
-- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`. Do not invent CAS codes — duplicates are `created: false`, not errors.
+- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`. Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code.
 
 #### 1.2 Interface — `src/control-plane/record-store.ts` (new)
 
@@ -319,7 +351,7 @@ export interface RecordStore {
 3. Duplicate `idempotencyKey` on the same `(runId, stream)`: return the **original** line, `created: false`. Do not overwrite payload.
 4. `listLines` returns the insertion sequence, not `createdAt` sort. Contract test: two budget lines with identical `createdAt`; order matches append order.
 5. `atomicAppend([])` returns `[]` and writes nothing.
-6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists.
+6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists. Working-tree crash recovery (Phase 3.2) extends this to process kill; memory has no disk journal.
 7. Methods take `runId` + stream + key. **No path parameters.**
 
 - [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
@@ -372,7 +404,7 @@ Required cases:
 
 ## Phase 2: Config keys and `.gitattributes`
 
-**Completion gate:** `paths.records` defaults to `docs/development/runs` (resolved absolute like other `paths.*`). `records.redact` defaults to `[]`. `5x config show` / registry lists both keys. `5x init` and `5x upgrade` idempotently write a `.gitattributes` `merge=union` rule for `*.jsonl` under the configured records path. No RecordStore wiring yet.
+**Completion gate:** `paths.records` defaults to `docs/development/runs` (resolved absolute like other `paths.*`). A resolved `paths.records` outside the repository (`!isPathUnder(abs, baseDir)`) is a configuration error — git-native record behavior is not silently disabled. `records.redact` defaults to `[]`. `5x config show` / registry lists both keys. `5x init` and `5x upgrade` idempotently write a `.gitattributes` `merge=union` rule for `*.jsonl` under the configured records path. No RecordStore wiring yet.
 
 #### 2.1 Config schema — `src/config.ts`
 
@@ -402,10 +434,10 @@ const RecordsSchema = z.object({
 
 Mount as `records: RecordsSchema.default({})`.
 
-- [ ] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`.
+- [ ] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`. Immediately after resolve, if `!isPathUnder(config.paths.records, baseDir)`, throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Use error code `RECORDS_ROOT_OUTSIDE_REPO` when the load path has an envelope (otherwise a thrown `Error` whose message includes that code/phrase). This is fail-closed for every command that loads config.
 - [ ] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
 - [ ] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []`.
-- [ ] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, absolute resolution, unknown-key warning does not fire for `[records]`.
+- [ ] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, relative resolution, **absolute path inside the repo accepted** (configured value `resolve(projectRoot, "custom/runs")` → stored abs equals that path), **absolute path outside the repo rejected** (`/tmp/5x-records` → `RECORDS_ROOT_OUTSIDE_REPO`), **relative path that escapes** (`../../tmp/records` → same error), unknown-key warning does not fire for `[records]`.
 
 `config-registry.ts` walks Zod automatically; no hand-maintained key list.
 
@@ -430,9 +462,9 @@ export function ensureGitattributes(
 - [ ] If `.gitattributes` is missing, create it with the comment + one rule.
 - [ ] If present and the exact rule line exists, no-op.
 - [ ] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
-- [ ] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` when the path is inside the repo; if `paths.records` is outside the repo, skip and log a warning (union merge only applies inside the tree).
-- [ ] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records`.
-- [ ] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records`.
+- [ ] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` — config load has already rejected an outside root, so this relative path is always inside the repo. If `relativePathUnder` would still return null (defense in depth), throw `RECORDS_ROOT_OUTSIDE_REPO`; **do not** skip `.gitattributes` or log a warning.
+- [ ] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records` (same inside-repo relative path).
+- [ ] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records` inside the repo (relative and absolute-inside). An outside `paths.records` fails at config load before attributes are written.
 
 - [ ] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
 
@@ -440,7 +472,7 @@ export function ensureGitattributes(
 
 ## Phase 3: Working-tree JSONL implementation
 
-**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
+**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. `atomicAppend` of mixed streams is crash-safe: a durable per-run journal plus recovery on every open/read/append restores the pre-batch state or finishes the entire batch; no visible partial mixed-stream write remains. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
 
 #### 3.1 Layout and codecs — `src/control-plane/record-layout.ts` (new)
 
@@ -460,8 +492,8 @@ export const STREAM_FILES: Record<RecordStream, string> = {
 	budget: "budget.jsonl",
 };
 
-export function encodeJsonlLine(line: RecordLine): string; // single JSON object, no pretty-print
-export function decodeJsonlFile(text: string): RecordLine[]; // skip blank lines; first-key-wins dedupe
+export function encodeJsonlLine(line: RecordLine): string; // single JSON object, no pretty-print; omits runId
+export function decodeJsonlFile(text: string, runId: string): RecordLine[]; // skip blank lines; first-key-wins dedupe; set runId on every line
 export function parseRunJson(text: string): RunRecordSummary;
 ```
 
@@ -471,17 +503,27 @@ JSONL on-disk object:
 {"stream":"steps","idempotency_key":"step:run_ab:author:impl:1:1","payload":{...},"created_at":"2026-08-31 12:00:00"}
 ```
 
-`runId` is implied by the directory (do not rely on a `run_id` field in every line, but include it in `payload` for steps so a concatenated merge remains self-describing). Each JSONL object **must** include `idempotency_key` so merge=union readers can dedupe without the directory.
+`runId` is implied by the directory. `encodeJsonlLine` **must not** write `run_id`. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` from the caller argument — the decoder cannot recover it from the file body alone. If an object contains `run_id` and it differs from `runId`, throw `RecordStoreError("INVALID_JSONL")`. Each JSONL object **must** include `idempotency_key` so merge=union readers can dedupe without the directory. Step `payload` still includes identifying fields so a concatenated merge remains self-describing.
 
 - [ ] `decodeJsonlFile` drops conflict-marker lines if present (treat as corrupt: throw `RecordStoreError("INVALID_JSONL")` rather than silently parsing half a merge). After a correct `merge=union` there are no markers — the throw is a doctor-facing signal.
 - [ ] First occurrence of an `idempotency_key` wins; later duplicates in the same file are ignored on read (union merge of two backfills).
+- [ ] Codec unit tests: `decodeJsonlFile` of a steps line, a decisions line, and a budget line each return `RecordLine.runId ===` the caller-supplied id; encode round-trip does not emit `run_id`; mismatched on-disk `run_id` throws `INVALID_JSONL`.
 
 #### 3.2 Working-tree store — `src/control-plane/record-fs.ts` (new)
 
 ```typescript
 export interface WorkingTreeRecordStoreOptions {
-	recordsRoot: string; // absolute
+	recordsRoot: string; // absolute (already worktree-re-rooted by the caller)
 	now?: () => string;
+	/** Test-only; not re-exported from the public barrel. Throw to simulate a crash. */
+	onTxnEvent?: (
+		event:
+			| "after-new"
+			| "after-prepared"
+			| "after-commit-marker"
+			| `after-rename:${RecordStream}`
+			| "during-recovery",
+	) => void;
 }
 
 export function createWorkingTreeRecordStore(
@@ -489,20 +531,55 @@ export function createWorkingTreeRecordStore(
 ): RecordStore;
 ```
 
-**Write algorithm for `atomicAppend`:**
+**Write algorithm for `atomicAppend` (durable journal):**
 
-1. Resolve `<recordsRoot>/<slug>/<runId>/` from `getRun` (slug from `plan_path`). Missing run → `RUN_NOT_FOUND`.
-2. Read current bytes of each affected stream file (missing file = empty).
-3. Decode, apply ops in memory (duplicate keys → `created: false`).
-4. Write each mutated file to `<file>.tmp` then `renameSync` over the original. If any write throws, restore the snapshot bytes (or delete a newly created tmp) **before** rethrowing.
-5. Single-op `append` is `atomicAppend([op])`.
+In-process try/catch around independent `renameSync` per stream is **not** sufficient: a process kill between `steps.jsonl` and `budget.jsonl` replacements leaves exactly the mixed-stream orphan slice 06's `atomicAppend` is intended to prevent. SQLite reindex cannot infer or repair the missing counterpart. Every `atomicAppend` (including single-op `append`) uses a per-run journal. `putRun` remains single-file tmp+rename (`run.json` is not a mixed-stream batch).
 
-**`putRun`:** `mkdirSync(..., { recursive: true })`, write `run.json` via tmp+rename (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line).
+Reserved files in `<runDir>/` (gitignored; never staged):
 
-**`listRuns`:** walk `recordsRoot/*/*/run.json`. Ignore unreadable files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
+| File | Role |
+|------|------|
+| `.txn.journal.json` | Durable state: `prepared` then `commit`, plus the list of affected streams and whether each file was created vs replaced. |
+| `.txn.<stream>.new` | Staged replacement bytes for that stream (`steps` / `decisions` / `budget`). |
+| `.txn.<stream>.old` | Before-image of an existing stream file (absent if the file did not exist). |
 
-- [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON).
-- [ ] Extra FS tests (not required of memory): `atomicAppend` throw restores previous `steps.jsonl` bytes; `putRun` creates nested dirs; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
+`ensureGitignore` (Phase 3, called from init/upgrade alongside `ensureGitattributes`) idempotently appends `${recordsRelPath}/**/.txn.*` so `git add -A` / `5x commit` never stages journals. Custom `paths.records` gets a matching ignore line.
+
+**Commit protocol** (crash after any step is recoverable):
+
+1. `recoverRunDir(runDir)` (see below). Resolve `<recordsRoot>/<slug>/<runId>/` from `getRun` (slug from `plan_path`). Missing run → `RUN_NOT_FOUND`.
+2. Read current bytes of each affected stream file (missing file = empty). Decode with `decodeJsonlFile(text, runId)`, apply ops in memory (duplicate keys → `created: false`). If no stream file would change, return without a journal.
+3. Write `.txn.<stream>.old` (copy of existing bytes) for each mutated file that already exists. Write `.txn.<stream>.new` for each mutated stream. `fsyncSync` each of those files.
+4. Write `.txn.journal.json` via tmp+rename with `{ version: 1, state: "prepared", streams: [...], created: [...] }` and fsync. Originals are still untouched.
+5. Rewrite the journal via tmp+rename to `{ ..., state: "commit" }` and fsync. **This is the commit marker.** After this point recovery rolls *forward*; before it, recovery rolls *back*.
+6. For each affected stream, `renameSync(.txn.<stream>.new, <stream>.jsonl)`.
+7. Delete `.txn.<stream>.old` files and `.txn.journal.json`. Cleanup after a successful commit is best-effort; leftover `.txn.*` with `state: "commit"` and no remaining `.new` files is a no-op roll-forward.
+
+**`recoverRunDir(runDir)`** — call at the start of `getRun`, `getLine`, `listLines`, `append`, `atomicAppend`, `putRun` (for that run), and once per run directory visited by `listRuns`:
+
+1. If `.txn.journal.json` is missing: delete any orphan `.txn.*.new` / `.txn.*.old` (crash during prepare before the journal) and return. Visible stream files are unchanged.
+2. Parse the journal. Corrupt / unreadable journal with originals intact: treat as `prepared` (rollback).
+3. `state === "prepared"` (commit marker not durable): **rollback**. Originals were never replaced. Delete `.txn.*.new`, `.txn.*.old`, and the journal. Store content equals the pre-batch state.
+4. `state === "commit"`: **roll forward**. For each listed stream, if `.txn.<stream>.new` still exists, `renameSync` it over `<stream>.jsonl`. Then delete `.old` files and the journal. Store content equals the full batch. Idempotent if some renames already completed.
+5. Never leave a visible mix where one stream in the batch is updated and another is not. `getLine` / `listLines` after recovery (or during a later open) must observe all-or-nothing.
+
+Do not fsync the journal to `commit` until every `.new` file is durable. Do not replace any original until the `commit` marker is durable. Cleanup of `.txn.*` only after all stream replacements are durable (step 7, or roll-forward's final delete).
+
+**Fault-injection tests** (working-tree FS suite, not required of memory): install a test hook `onTxnEvent?: (event: "after-new" | "after-prepared" | "after-commit-marker" | "after-rename:<stream>" | "during-recovery") => void` on `createWorkingTreeRecordStore` that may throw (simulating kill). Cases:
+
+- [ ] Interrupt after each `.new` write and after `state: "prepared"`: reopen the store; neither stream from a mixed `[step, budget]` batch is visible; no leftover partial line.
+- [ ] Interrupt after `state: "commit"` and after 0, 1, … n−1 stream replacements: reopen; **both** (all) streams from the batch are visible; no journal remains after recovery.
+- [ ] Interrupt **during recovery** of a `commit` journal (hook on the first roll-forward rename): second open finishes the batch; still all-or-nothing.
+- [ ] `atomicAppend` JS throw before the commit marker: same as rollback (in-process catch still deletes staging if the process lives).
+- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
+
+Single-op `append` is `atomicAppend([op])` (same journal path; one stream).
+
+**`putRun`:** `mkdirSync(..., { recursive: true })`, write `run.json` via tmp+rename (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line). Call `recoverRunDir` first so a pending stream txn is not hidden behind a summary rewrite.
+
+**`listRuns`:** recover each run dir, then walk `recordsRoot/*/*/run.json`. Ignore unreadable files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
+
+- [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
 
 #### 3.3 Git helpers for patch-id and show — `src/git.ts`
 
@@ -575,7 +652,24 @@ export function redactStepPayload(
 
 ## Phase 4: Dual-write, safety exemption, commit staging, seal
 
-**Completion gate:** Recording a unique step writes one `steps.jsonl` line and one SQLite `steps` row. Re-recording returns `recorded: false`, appends no line, and leaves SQLite unchanged (or repairs a missing row from the line). `run init` creates `run.json`. `run complete` seals, records the terminal step **with** `head_commit`, and creates a seal commit when record files are dirty. `5x commit --files` also stages the records root. `checkGitSafety` with exempt root ignores record dirt and still fails on any other dirty file. Answered run-scoped prompts and `human:*` steps append `decisions.jsonl`. `phase finish` / `protocol validate --record` / `invoke --record` need **no composite changes** — they already call `recordStepInternal`.
+**Completion gate:** Recording a unique step writes one `steps.jsonl` line and one SQLite `steps` row **in the run's effective worktree**. Re-recording returns `recorded: false`, appends no line, and leaves SQLite unchanged (or repairs a missing row from the line). `run init` creates `run.json` at the re-rooted records path. `run complete` seals, records the terminal step **with** `head_commit`, and creates a seal commit when record files are dirty in that worktree. `5x commit --files` also stages the canonical `recordsRelPath` when `recordsAbsPath` exists in the effective worktree. `checkGitSafety` with the re-rooted exempt root ignores record dirt and still fails on any other dirty file. Answered run-scoped prompts and `human:*` steps append `decisions.jsonl`. An integration test with `run init --worktree` proves `run.json` and a recorded step are written in the linked worktree and included in that worktree's `5x commit`. `phase finish` / `protocol validate --record` / `invoke --record` need **no composite changes** — they already call `recordStepInternal`.
+
+#### 4.0 `resolveRecordsRoot` — `src/records/paths.ts` (new)
+
+Phase 4 creates `src/records/` (Phase 5 adds `resolve.ts` beside it). The helper is the only conversion from control-plane `config.paths.records` to a write/stage target.
+
+```typescript
+export function resolveRecordsRoot(opts: {
+	recordsConfigAbs: string;
+	controlPlaneRoot: string;
+	effectiveWorkdir: string;
+}): ResolvedRecordsRoot;
+```
+
+- [ ] Same checkout (`effectiveWorkdir === controlPlaneRoot`): `recordsAbsPath` equals `recordsConfigAbs`; `recordsRelPath` is the POSIX relative (default `docs/development/runs`).
+- [ ] Linked worktree: `recordsAbsPath === join(worktree, recordsRelPath)` and is **not** equal to `recordsConfigAbs`; `recordsRelPath` is unchanged.
+- [ ] `relativePathUnder` null → throw `RECORDS_ROOT_OUTSIDE_REPO` (defense in depth; config load already rejected this).
+- [ ] Unit: `test/unit/records/paths.test.ts`.
 
 #### 4.1 `checkGitSafety` exemption — `src/git.ts:52–94`
 
@@ -589,7 +683,7 @@ export async function checkGitSafety(
 - [ ] Switch status to `["status", "--porcelain=v1", "-z"]`. Parse NUL-delimited records. Handle rename (`R100\0old\0new`) by testing **both** paths; if either is non-exempt, the repo is dirty. Untracked (`??`) same as today but skip exempt paths.
 - [ ] Canonicalize: `resolve(repoRoot, porcelainPath)` then `isPathUnder(abs, realpathExisting(exemptRoot))`.
 - [ ] Existing `checkGitSafety` tests (`test/unit/git.test.ts:79+`) still pass with no `exemptRoots` (treat as today). New tests: only records dirty → `safe: true`, `untrackedFiles` empty; records + `README.md` dirty → `safe: false`, `untrackedFiles` contains `README.md` only; rename out of records root is dirty.
-- [ ] `runV1Init` (`run-v1.handler.ts:1003`) passes `{ exemptRoots: [config.paths.records] }`.
+- [ ] `runV1Init` (`run-v1.handler.ts:1003`) passes `{ exemptRoots: [resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot: projectRoot, effectiveWorkdir: projectRoot }).recordsAbsPath] }` for the non-`--worktree` safety check (`--worktree` still skips `checkGitSafety` today because worktrees are isolated). Do not pass raw `config.paths.records` when a later caller uses a linked-worktree `workdir`.
 
 #### 4.2 `prepareRecordStepAppend` — `src/commands/run-v1.handler.ts`
 
@@ -659,7 +753,8 @@ On `duplicate` or `created: false`:
 8. Do not append. `recordStep` / upsert from the existing line so a missing SQLite row is repaired. Return `recorded: false`.
 
 - [ ] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` to that object.
-- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`, return `{ db, config, controlPlane, recordStore }`. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted.
+- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, then `resolveRunExecutionContext` for the run, then `resolveRecordsRoot` with that context's `effectiveWorkingDirectory`, then `createWorkingTreeRecordStore({ recordsRoot: recordsAbsPath })`. Return `{ db, config, controlPlane, recordStore, recordsRelPath, recordsAbsPath, executionContext }`. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted. **Never** `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`.
+- [ ] For `run init`, after `ensureRunWorktree` / `createRunV1`, `effectiveWorkdir` is the mapped worktree path when `--worktree`, else `projectRoot`. `putRun` uses the store rooted there.
 - [ ] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content.
 
 #### 4.4 `run init` writes `run.json`
@@ -679,17 +774,19 @@ recordStore.putRun({
 });
 ```
 
-Resume path (`:1034–1052`): if `getRun` is null (index-only row from before this slice), `putRun` an unsealed summary from the SQLite row. Do not overwrite a sealed summary.
+The `recordStore` here is the factory result rooted at `resolveRecordsRoot(..., effectiveWorkdir).recordsAbsPath` for this run (linked worktree after `--worktree`, otherwise `projectRoot`). `run.json` must appear under that worktree, not only under the control-plane checkout.
+
+Resume path (`:1034–1052`): if `getRun` is null (index-only row from before this slice), `putRun` an unsealed summary from the SQLite row. Do not overwrite a sealed summary. Resume of a worktree-mapped run uses that mapping's `effectiveWorkingDirectory`.
 
 #### 4.5 `run complete` seal + commit
 
 Replace the raw `recordStep` at `:1493–1502` with `recordStepInternal` (or prepare+append) so the terminal step gets `head_commit`, JSONL, and projection. Then `completeRun`, then `putRun` with `sealed_at = now`, `status`, `final_head_commit`.
 
-Then, in the run's `effectiveWorkingDirectory`:
+Then, in the run's `effectiveWorkingDirectory`, using `resolveRecordsRoot` for that workdir:
 
-- If records root has changes (`listChangedFiles` filtered by `isPathUnder(..., recordsRoot)` non-empty, **or** `git status` scoped), `commitFiles(workdir, [recordsRel], `5x: seal run ${runId}`)`.
+- If the re-rooted records root has changes (`listChangedFiles` filtered by `isPathUnder(..., recordsAbsPath)` non-empty, **or** `git status` scoped to `recordsRelPath`), `commitFiles(workdir, [recordsRelPath], `5x: seal run ${runId}`)`. Existence and dirty checks use `recordsAbsPath`; the git pathspec is `recordsRelPath`.
 - Skip if nothing to commit.
-- Do not add non-record files to the seal commit.
+- Do not add non-record files to the seal commit. Do not stage `.txn.*` (gitignored).
 
 Release lock and clear pointer **after** the seal commit (keep today's order of lock release at `:1507–1516`, but move it to after the commit so a crash mid-seal still holds the lease). If the seal commit fails, do not release the lock; surface `COMMIT_FAILED`. SQLite may already show `completed` — doctor `records` will flag uncommitted files. **Safer alternative (implement this):** perform the seal commit **before** `completeRun`, while the run is still `active` and the lock is held; if commit fails, the run stays `active` and the operator retries `run complete` (idempotent terminal step). Prefer this.
 
@@ -697,10 +794,11 @@ Release lock and clear pointer **after** the seal commit (keep today's order of 
 
 #### 4.6 `5x commit` stages records — `commit.handler.ts:192–207`
 
-When `params.files` is set (not `--all-files`), append the repo-relative records path to the `git add` pathspec if `existsSync(recordsAbs)`. Dry-run (`:151–157`) uses the same pathspec.
+When `params.files` is set (not `--all-files`), append `recordsRelPath` to the `git add` pathspec if `existsSync(recordsAbsPath)` in the **effective worktree** (`resolveRunExecutionContext` + `resolveRecordsRoot`). Dry-run (`:151–157`) uses the same pathspec. Do not `existsSync(config.paths.records)` — that is the control-plane checkout and is wrong for `--worktree` runs.
 
 - [ ] Integration: `test/integration/commands/commit.test.ts` — `--files src/foo.ts` with a dirty `docs/development/runs/.../steps.jsonl` includes the jsonl in `diff-tree`.
-- [ ] Unit: mock `execGit` and assert `add` args contain the records path.
+- [ ] Unit: mock `execGit` and assert `add` args contain the records **relative** path.
+- [ ] Linked-worktree integration (see 4.8): `run init --worktree`, record a step, `5x commit --files` from that run; `diff-tree` includes the worktree records files and the control-plane checkout does not hold the only copy.
 
 #### 4.7 Decision snapshots from prompts — `prompt.handler.ts`
 
@@ -722,14 +820,15 @@ After a successful or losing `answerPrompt` (`:245`) when `prompt.runId` is non-
 }
 ```
 
-Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore`. If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions.
+Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore`. When `prompt.runId` is set, resolve that run's execution context and pass a store rooted at `resolveRecordsRoot(..., effectiveWorkingDirectory).recordsAbsPath` (same factory as record-context, not control-plane `config.paths.records`). If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions.
 
 - [ ] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line; second CAS loser does not duplicate; `runId` null appends nothing.
 
 #### 4.8 Context wiring
 
-- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` via the shared context. Do not add a second `resolveDbContext`.
-- [ ] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line.
+- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` via the shared context (re-rooted per run). Do not add a second `resolveDbContext`.
+- [ ] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line in the effective worktree.
+- [ ] Integration: `test/integration/records/worktree-records.test.ts` (new). `cleanGitEnv()`, `stdin: "ignore"`, timeout 30s. `run init --worktree` on a temp repo; assert `run.json` exists at `join(worktree, recordsRelPath, slug, runId, "run.json")` and is **not** the only copy under the main checkout's `config.paths.records` (main checkout must not be the write target). Record a step; assert `steps.jsonl` is in the worktree. `5x commit --files` of a code path (cwd/startDir such that the run resolves to the worktree) includes both the code file and the record files in `diff-tree`. `.txn.*` files are absent from the commit.
 
 ---
 
@@ -950,10 +1049,12 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 | `RECORD_INDEX_MISSING_RUN` | fail | `run.json` with no `runs` row | true | `detail.runId` |
 | `RECORD_INDEX_EXTRA_ROW` | warn | SQLite step with no record line | false | n/a |
 | `RECORD_HEAD_UNREACHABLE` | warn | `head_commit` not in any known ref | false | n/a |
-| `RECORD_UNCOMMITTED_STALE` | warn | dirty files under records root older than `LINGERING_RUN_AGE_MS` (`runs.ts:23`) | false | n/a |
+| `RECORD_UNCOMMITTED_STALE` | warn | dirty files under the **re-rooted** records root older than `LINGERING_RUN_AGE_MS` (`runs.ts:23`) | false | n/a |
 | `RECORD_INDEX_OK` | ok | summary | false | n/a |
 
 `--fix`: `fixable` findings call `rebuildRecordsIndex` once per unique `(check, runId or planSlug)` — not per step. Re-detect must drop `MISSING_ROW` / `MISSING_RUN`. **Do not** commit files, do not delete extras, do not rewrite JSONL.
+
+`RECORD_UNCOMMITTED_STALE` inspects `git status` in each mapped plan worktree (and the control-plane checkout when a plan has no mapping), using `resolveRecordsRoot` with that checkout as `effectiveWorkdir`. Do not only `git status` the main checkout — a `--worktree` run's dirty records live in the linked worktree.
 
 - [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`) and `RECORD_INDEX_MISSING_RUN` (`runId`). Empty identity on fixable must throw (existing invariant).
 - [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes.
@@ -1001,12 +1102,12 @@ Export algorithm:
 4. For each step, apply field policy + redact. `provenance: "backfilled"`. `patch_id` only when `computePatchId` succeeds.
 5. `human:*` steps also become decision lines.
 6. Answered prompts for that `run_id` (`list` via PromptStore or SQL in `backfill.ts` through a small helper that uses `operations`/prompt store — **not** from the records handler importing sqlite) → decision lines. If adding a `listAnsweredPrompts(runId)` on PromptStore is too much scope, a dedicated `src/records/backfill-prompts.ts` that uses `createSqlitePromptStore(db).` — PromptStore has `getPrompt` / `listOpenPrompts` only. **Add** `listPrompts(filter: { runId: string; answered?: true })` to PromptStore? That would change the frozen prompt contract. **Do not.** Query via a new function in `src/control-plane/sqlite-store.ts` exported as a non-interface helper, or a one-off SQL in `backfill-prompts.ts` colocated with the index layer. Prefer: `createSqlitePromptStore` gains `listPromptsByRun(runId)` **on the impl class but not the interface** — messy. Clean: add optional `listAnsweredPrompts(runId)` to `PromptStore` as a documented additive method (Phase 7 only, not Phase 1 freeze). Tests on both prompt impls. This is additive and backward compatible for 06.
-7. Write via `WorkingTreeRecordStore` in the target worktree. Existing lines: skip if keys match **and** payloads equal (deep equal of canonical JSON); if keys match and payloads **differ**, push a disagreement and **do not overwrite**.
+7. Write via `WorkingTreeRecordStore` in the target worktree: `createWorkingTreeRecordStore({ recordsRoot: resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot, effectiveWorkdir: targetWorktree }).recordsAbsPath })`. Existing lines: skip if keys match **and** payloads equal (deep equal of canonical JSON); if keys match and payloads **differ**, push a disagreement and **do not overwrite**.
 8. Commit unless `dryRun`.
 
 - [ ] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
 - [ ] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
-- [ ] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile` contains all keys.
+- [ ] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile(text, runId)` contains all keys.
 - [ ] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
 
 #### 7.2 CLI — `records.handler.ts`
@@ -1059,22 +1160,23 @@ Default `--target auto`.
 | `src/control-plane/record-types.ts` | **New.** Stream/payload/summary types, `RecordStoreError`, `stepIdempotencyKey`. |
 | `src/control-plane/record-store.ts` | **New.** `RecordStore` interface. |
 | `src/control-plane/record-memory.ts` | **New.** In-memory impl (Phase 1 freeze). |
-| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl. |
-| `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode, first-key-wins. |
+| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl; durable `.txn.*` journal + `recoverRunDir`. |
+| `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode (`decodeJsonlFile(text, runId)`), first-key-wins. |
 | `src/control-plane/record-redact.ts` | **New.** `redactStepPayload`. |
 | `src/control-plane/index.ts` | Re-export RecordStore types and factories. |
 | `src/index.ts` | Public API re-exports. |
-| `src/config.ts` | `paths.records`, `RecordsSchema`, `resolveConfigPaths`, `KNOWN_ROOT_CONFIG_KEYS`. |
+| `src/config.ts` | `paths.records`, `RecordsSchema`, `resolveConfigPaths` (inside-repo validation), `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | Default `paths.records`; commented `[records]`. |
 | `src/git.ts` | `checkGitSafety` exempt roots + porcelain `-z`; `computePatchId`, `computeDiffSummary`, `gitShowFile`, `gitLogLastTouching`, `listFiveXRefs`, `isAncestor`, `fetchFiveXBranches`, `listRemotes`. |
 | `src/utils/subprocess.ts` | `execGitStdin` for `git patch-id`. |
-| `src/commands/init.handler.ts` | `ensureGitattributes`; call from `initScaffold`. |
-| `src/commands/upgrade.handler.ts` | Call `ensureGitattributes` during upgrade. |
-| `src/commands/run-v1.handler.ts` | `prepareRecordStepAppend`; dual-write; `putRun` on init/complete; seal commit; `checkGitSafety` opts; `run state --plan` source. |
-| `src/commands/commit.handler.ts` | Always stage records root with `--files`. |
-| `src/commands/record-context.ts` | **New.** Factory: one `resolveDbContext` + working-tree `RecordStore`. |
+| `src/commands/init.handler.ts` | `ensureGitattributes`; `${recordsRelPath}/**/.txn.*` gitignore; call from `initScaffold`. |
+| `src/commands/upgrade.handler.ts` | Call `ensureGitattributes` / txn gitignore during upgrade. |
+| `src/commands/run-v1.handler.ts` | `prepareRecordStepAppend`; dual-write; `putRun` on init/complete; seal commit; `checkGitSafety` opts; `run state --plan` source; worktree-re-rooted store. |
+| `src/commands/commit.handler.ts` | Always stage `recordsRelPath` with `--files` when `recordsAbsPath` exists in the effective worktree. |
+| `src/commands/record-context.ts` | **New.** Factory: `resolveDbContext` + `resolveRecordsRoot` + working-tree `RecordStore`. |
+| `src/records/paths.ts` | **New (Phase 4).** `resolveRecordsRoot` — canonical rel path + worktree-absolute path. |
 | `src/commands/prompt.handler.ts` | Decision snapshot on answered run-scoped prompts. |
-| `src/commands/prompt-context.ts` | Pass `recordStore` on context. |
+| `src/commands/prompt-context.ts` | Pass a worktree-re-rooted `recordStore` on context. |
 | `src/commands/plan-v1.handler.ts` | Resolution, skip records subtree, `source` fields, `--fetch`/`--all-refs`, branch-only discovery. |
 | `src/commands/plan-v1.ts` | Flags `--fetch`, `--all-refs`. |
 | `src/commands/run-v1.ts` | `--fetch` / `--all-refs` on `run state` if they apply when `--plan` is set. |
@@ -1097,14 +1199,15 @@ Default `--target auto`.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream. |
-| Unit | `test/unit/control-plane/record-fs.test.ts` | tmp+rename rollback; JSONL first-key-wins; directory layout. |
+| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget; directory layout. |
 | Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys. |
 | Unit | `test/unit/git.test.ts` | Safety exemption scope; porcelain `-z`; patch-id/numstat/show/log mocks. |
-| Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact` defaults and resolution. |
-| Unit | `test/unit/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` create/append/idempotent/custom root. |
+| Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact` defaults; absolute-inside accepted; absolute-outside and escaping relative rejected. |
+| Unit | `test/unit/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` create/append/idempotent/custom inside-repo root; `.txn.*` gitignore line. |
 | Unit | `test/unit/commands/run-v1.handler.test.ts` | `prepareRecordStepAppend` no-write failures; dual-write admit/duplicate; init `putRun`; complete seal-before-completeRun. |
-| Unit | `test/unit/commands/commit.test.ts` | `--files` add pathspec includes records root. |
+| Unit | `test/unit/commands/commit.test.ts` | `--files` add pathspec includes `recordsRelPath`. |
 | Unit | `test/unit/commands/prompt-store.test.ts` | Decision line on answer; skip without `runId`; no duplicate on CAS loser. |
+| Unit | `test/unit/records/paths.test.ts` | `resolveRecordsRoot` same-checkout vs linked worktree; outside-repo throws. |
 | Unit | `test/unit/records/resolve.test.ts` | Ancestor prune, diverged, missing ref (mocked git). |
 | Unit | `test/unit/records/index-rebuild.test.ts` | Upsert; skip newer local-only; idempotent. |
 | Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`. |
@@ -1119,6 +1222,8 @@ Default `--target auto`.
 | Integration | `test/integration/records/backfill.test.ts` | Dry-run mapping; real commit; second run no-op; two-DB partial history + union; disagreements. |
 | Integration | `test/integration/records/index.test.ts` | Fresh clone + `records index` matches origin steps modulo ids/local columns. |
 | Integration | `test/integration/records/merge-union.test.ts` | Two branches append distinct JSONL lines; merge has no conflict markers and both keys. |
+| Integration | `test/integration/records/worktree-records.test.ts` | `run init --worktree`: `run.json` + step line in the linked worktree; `5x commit` from that worktree includes them. |
+| Integration | `test/integration/records/atomic-append-crash.test.ts` | Fault-injection after each stream replacement and during recovery; no visible partial mixed-stream batch. |
 | Integration | `test/integration/commands/text-output.test.ts` | Source column / source line. |
 | Integration | `test/integration/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` on disk. |
 
@@ -1128,6 +1233,10 @@ Edge cases (must appear in the suites above):
 - `records.redact = ["cost_usd"]`: line has `cost_usd: null`; SQLite row may still have the number (index is local). **Decision:** project redacted values into SQLite too so index matches the record (rebuildable). Implement: `recordStep` input uses redacted cost fields.
 - Unreachable `head_commit` after simulated squash: doctor warn, `plan list` still works.
 - `--files` with missing records dir: no extra `git add` pathspec, commit still succeeds.
+- Linked worktree: records written and committed in the worktree, not the control-plane checkout.
+- Mixed-stream `atomicAppend` interrupted after each file replacement and during recovery: no visible partial batch.
+- Absolute `paths.records` inside the repo is accepted; absolute or relative path outside is `RECORDS_ROOT_OUTSIDE_REPO`.
+- `decodeJsonlFile` reconstructs `runId` for steps, decisions, and budget lines.
 
 ---
 
@@ -1154,14 +1263,14 @@ Edge cases (must appear in the suites above):
 | Phase | Description | Time |
 |-------|-------------|------|
 | 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06) | 1–2 days |
-| 2 | `paths.records` / `records.redact` + `.gitattributes` via init/upgrade | 0.5–1 day |
-| 3 | Working-tree JSONL, codecs, patch-id helpers, contract on FS backend | 1.5–2 days |
-| 4 | Dual-write, `prepareRecordStepAppend`, safety exemption, commit staging, seal, decisions | 2–3 days |
+| 2 | `paths.records` / `records.redact` + inside-repo validation + `.gitattributes` via init/upgrade | 0.5–1 day |
+| 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`), durable journal, patch-id helpers, contract on FS backend | 2–2.5 days |
+| 4 | Dual-write, worktree re-root helper, `prepareRecordStepAppend`, safety exemption, commit staging, seal, decisions | 2–3 days |
 | 5 | Resolution spike + algorithm + plan list/phases/run state `--plan` + git fixture | 2–3 days |
 | 6 | `records index` + doctor `records` check | 1.5–2 days |
 | 7 | `records backfill` (auto target, dry-run, disagreements, two-DB union) | 2–3 days |
 | 8 | Docs, exports, text-output, full `bun test` | 1 day |
-| **Total** | | **12–17 days** |
+| **Total** | | **12.5–17.5 days** |
 
 Phase 1 is a schedule gate for slice 06 Phase 4; land and tag it before 06 persistence work. Phase 5's ancestor-fan-out spike happens at the start of that phase, not as its own numbered phase. Phase 7 can start after Phase 3 (needs FS store) in parallel with Phase 5 if staffing allows, but it should not merge before Phase 4's `putRun`/redact helpers exist.
 
@@ -1170,3 +1279,20 @@ Phase 1 is a schedule gate for slice 06 Phase 4; land and tag it before 06 persi
 ## Provenance
 
 This plan implements slice `v2-git-native-run-records` from [`docs/v2/plan-inputs/10-git-native-run-records.plan-input.md`](../../v2/plan-inputs/10-git-native-run-records.plan-input.md), which is the implementation vehicle for [`docs/v2/207-state-segmentation.md`](../../v2/207-state-segmentation.md). It refines `200` §3a constraint #4 (repository is source of truth for the completed-work **record**; control plane remains source of truth for **coordination**; SQLite materializes both) and follows the `src/control-plane/` store-interface pattern established by [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md). Slice 06 ([`208-review-budget-advisory-plan.md`](./208-review-budget-advisory-plan.md)) consumes Phase 1 in parallel and must not fork `RecordStore`.
+
+---
+
+## Revision History
+
+### 1.1 — August 31, 2026
+
+Addresses all **P0** and **P1** items in [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (no addendum; original review).
+
+1. **P0.1 — Re-root records to the effective worktree.** `resolveRecordsRoot` converts control-plane `config.paths.records` into `{ recordsRelPath, recordsAbsPath }` under the run's `effectiveWorkingDirectory`. `run init`, record writers, seal dirty checks/commits, `5x commit` staging, prompt decisions, backfill, and doctor uncommitted-stale use the helper. Git pathspecs and `git show` keep the canonical repo-relative path. Integration test: `run init --worktree` writes `run.json` and a step line in the linked worktree and includes them in that worktree's `5x commit`.
+2. **P0.2 — Durable mixed-stream `atomicAppend`.** Per-run `.txn.journal.json` with `prepared` then `commit` marker, staged `.new` / before-image `.old` files, fsync before advancing the marker, recovery on every open/read/append. `prepared` rolls back to pre-batch; `commit` rolls forward to the full batch. `.txn.*` is gitignored. Fault-injection tests interrupt after each replacement and during recovery; no visible partial mixed-stream batch remains.
+3. **P1.1 — Reject records roots outside the repository.** After `resolveConfigPaths`, `!isPathUnder(paths.records, baseDir)` is `RECORDS_ROOT_OUTSIDE_REPO`. No warn-and-skip `.gitattributes` path. Tests cover relative default, absolute-inside, absolute-outside, and escaping relative.
+4. **P1.2 — JSONL decode takes `runId`.** `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId`. Encode omits `run_id`; a mismatched on-disk `run_id` throws `INVALID_JSONL`. Coverage includes decisions and budget lines, not only steps.
+
+### 1.0 — August 31, 2026
+
+Initial draft.
