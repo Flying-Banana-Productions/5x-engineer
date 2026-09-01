@@ -283,3 +283,22 @@ The line-level envelope, user-scope installation identity, crash-safe record sto
 
 - **Plan completion:** ⚠️ — P0.8 and P0.9 are fully addressed; the new shared context introduces an unrecorded cross-slice implementation dependency.
 - **Ready for implementation:** ⚠️ — after P1.5 phases the `createRecordContext` dependency explicitly.
+
+---
+
+## Addendum (September 1, 2026) — Revision 1.8 final origin-attribution re-review
+
+**Reviewed:** `a11d491f429d1a012c30053a8f18f3c71aae61f1`
+
+### Prior-issue disposition
+
+- **P1.5 — Phase-1 freeze versus Phase-4 `createRecordContext` implementation dependency: Addressed.** Both plans now make the boundary explicit and consistent: 208 Phases 4–5 consume only the frozen `RecordStore` contract with fixture origins and are forbidden from importing the unavailable factory; 208 Phase 6+ production wiring waits for 212 Phase 4. The phase gates, timelines, files/tests tables, not-in-scope language, and the `slice-10-phase-boundary.test.ts` build boundary all encode the same rule.
+
+### Final assessment
+
+No new blockers identified. The origin envelope now has a coherent cross-slice implementation path: the Phase-1 contract remains independently deliverable, live writer identity is supplied only after the Phase-4 record context exists, and the planned tests cover the import boundary as well as live attribution, redaction, summary/backfill honesty, and fail-closed future-format completion.
+
+### Updated readiness
+
+- **Plan completion:** ✅ — all P0.1–P0.9 and P1.1–P1.5 findings are addressed.
+- **Ready for implementation:** ✅ — ready to proceed with the stated phase gates.
