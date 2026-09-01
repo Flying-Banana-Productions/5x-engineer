@@ -221,3 +221,39 @@ The line-level envelope, user-scope installation identity, crash-safe record sto
 
 - **Plan completion:** ⚠️ — earlier durability and worktree blockers remain resolved, but origin attribution is incomplete for invoked agents and backfilled summaries, with actor redaction and run-summary compatibility gaps.
 - **Ready for implementation:** ⚠️ — after P0.6 and P0.7 are specified; P1.3 and P1.4 should be resolved in the same revision because they affect the newly frozen attribution/schema contract.
+
+---
+
+## Addendum (September 1, 2026) — Revision 1.6 origin-attribution re-review
+
+**Reviewed:** `d76eca30c949978c74113aa31f6e9e0c940a6c67`
+
+### Prior-issue disposition
+
+- **P0.6 — Unknown creator/sealer versus exporter materializer: Addressed.** `RunRecordSummary` now represents unknown `creator`/`sealer` as `null`, retains a separate summary `materializer`, and specifies backfill, decode, index, and output coverage. Live sealing preserves a known or null creator rather than replacing it with the exporter.
+- **P0.7 — Typed invoke performer path: Partially addressed.** The revised shared plan adds `RunRecordParams.performer`, carries it through preparation, defines producer values for direct, protocol, invoke, quality, commit, terminal, and prompt paths, and requires paired live step/budget origins. However, the parallel consumer plan (`208` §6.2) still defines its review-budget context without `originFor` and its independently shown prepared-result shape has no performer. The slice-06 production wrapper therefore has no compatible specified way to meet this plan's required agent-origin wiring.
+- **P1.3 — Redaction across streams and summaries: Addressed.** `originFor`/`redactedRecorder` are now explicit sole constructors, cover lines, baseline-only budget writes, and summaries, and are backed by actor-source and forbidden-key test cases.
+- **P1.4 — Safe newer `run.json` handling: Partially addressed.** The read-only compatible view plus `UNSUPPORTED_FORMAT_VERSION` prevents a v1 `putRun` rewrite from erasing future fields. The terminal completion sequence still performs its terminal-step write before checking the summary format, so a rejected completion can mutate `steps.jsonl` while leaving the newer summary and SQLite run active.
+
+### Production readiness blockers
+
+#### P0.8 — Slice-06 budget writer contract is not coordinated with the new origin API
+
+**Action:** `auto_fix`
+
+**Risk:** Revision 1.6 makes `ctx.originFor(performer)` mandatory for every slice-06 snapshot and baseline append, but `208-review-budget-advisory-plan.md` still specifies a context containing only `{ db, config, controlPlane, recordStore, store }` and a prepared admission result containing only `stepInput`/`maxSteps`. It neither receives `originFor` nor retains the caller's performer. Implementing each approved plan literally either leaves budget records without the required envelope or causes slice 06 to fork/construct origin despite the Phase 1 freeze.
+
+**Requirement:** Make a coordinated update to the slice-06 plan before the Phase 1 interface is tagged: its shared context must consume the same record context/origin factory, its prepared result must retain the resolved performer (or receive it as an explicit wrapper input), and baseline-only plus paired step/snapshot writes must use that value. Add cross-slice contract coverage for invoke reviewer step + budget snapshot and baseline-only appends, including origin equality and actor redaction.
+
+#### P0.9 — Unsupported future summaries can receive a terminal step before completion fails
+
+**Action:** `auto_fix`
+
+**Risk:** Phase 4.5 directs `run complete` to call `recordStepInternal` for `run:complete`/`run:abort` and only then discusses rejecting `getRun().format_version > 1`. The proposed failure preserves `run.json` bytes but can leave a new terminal step line (and possibly dirty records) beside an active SQLite run. This violates the stated read-only/fail-closed policy and makes a retry ambiguous.
+
+**Requirement:** Read and version-check the run summary before any terminal record append, SQLite mutation, seal commit, pointer clear, or lock release. On `UNSUPPORTED_FORMAT_VERSION`, leave both `run.json` and every stream byte-identical, keep the run active, and surface a deterministic remediation. Extend the planted-v2 integration test to assert no `run:complete`/`run:abort` line, no SQLite status change, and no seal commit.
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — P0.6 and P1.3 are resolved; the generic P0.7 and P1.4 remedies are sound but need the slice-06 coordination and pre-append future-version guard above.
+- **Ready for implementation:** ⚠️ — after P0.8 and P0.9 are addressed.
