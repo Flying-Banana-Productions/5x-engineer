@@ -1,0 +1,1172 @@
+# Git-Native Run Records and Progress Resolution
+
+**Version:** 1.0
+**Created:** August 31, 2026
+**Status:** Draft — pending staff engineer review
+
+---
+
+## Executive Summary
+
+Completed-work history today lives in two per-machine places: the checked-out plan markdown and `.5x/5x.db`. A fresh clone, a teammate, or a deleted `.5x/` cannot answer "what is the status of plan X." This slice commits that history to the repository as append-only run records (`run.json`, `steps.jsonl`, `decisions.jsonl`) on the plan branch, makes `plan list` / `plan phases` / `run state --plan` resolve progress from the most advanced git ref rather than the checked-out file, and demotes SQLite `runs` / `steps` to a rebuildable index of that record.
+
+Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208-review-budget-advisory-plan.md`) can persist budget lines through the same contract without ever targeting SQLite-only rows. Later phases add the working-tree JSONL materialization, dual-write from existing primitives, progress resolution, `records index` / `records backfill`, and a doctor `records` check.
+
+### Scope
+
+**In scope:**
+
+- `RecordStore` interface in `src/control-plane/` (sibling of `PromptStore`) with a working-tree JSONL implementation and an in-memory test implementation. The interface must not assume a working-tree path. **Phase 1 freezes the interface + memory impl** before any persistence work here or in slice 06.
+- Record layout under configurable `paths.records` (default `docs/development/runs/<plan-slug>/<run-id>/`): `run.json`, append-only `steps.jsonl`, append-only `decisions.jsonl`, plus `budget.jsonl` for slice 06's opaque budget stream. `.gitattributes` `merge=union` for `*.jsonl` under that root, written by `init` / `upgrade`.
+- Record writes from existing primitives: `run init`, `run record` / `protocol validate --record` / `phase finish` / `invoke --record` / `quality run --record` / `5x commit` (via `recordStepInternal`), `run complete` (seal + dedicated seal commit), answered prompts and `human:*` steps (decision lines).
+- `5x commit` always stages the records root; `checkGitSafety` exempts uncommitted changes under that root only.
+- Field policy, `records.redact`, `patch_id` / `diff_summary` at record time.
+- Progress resolution for `plan list` / `plan phases` / `run state --plan` with `--fetch` and `--all-refs`.
+- `5x records index` / `5x records backfill`, doctor `records` check.
+- Docs: `207` status; `101-cli-primitives.md` for new commands/flags/`source`; config reference for new keys.
+
+**Out of scope:**
+
+- Remote control plane, leases, event stream, telemetry/blob store (`207` §2.8).
+- Git-based coordination (claim files, push-as-CAS) — rejected in `207` §3.
+- `refs/5x/*` storage — reserved behind the interface seam only.
+- Moving coordination tables (`prompts`, locks, invocation registry, `.5x/current-run`).
+- Review-budget line payloads (`206` §6.4) — slice 06 owns those; this slice only provides the opaque `budget` stream.
+- Dashboard reads from git — dashboard continues to read the SQLite index.
+- Dropping SQLite.
+- `plan.autoFetch` / `coordination.allowOffline` (deferred; see Not In Scope).
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Freeze `RecordStore` + memory impl first** | Slice 06 cannot fork the contract. Budget-stream get/list/append, insertion order, and `atomicAppend` must exist before 06 Phase 4. |
+| **Working-tree JSONL, not `refs/5x/*`** | Visible in PRs and hosting UIs; `merge=union` handles rare parallel-iteration merges. Interface stays path-agnostic so a ref-namespace impl remains possible. |
+| **SQLite is a rebuildable index** | Fast path for idempotency and `run state`; a fresh clone rebuilds it from git. Record wins for completed work. |
+| **`atomicAppend` is all-or-nothing** | Slice 06 appends a reviewer step and a budget snapshot in one batch. A throw must leave none of the ops durable. |
+| **Dirty-tree exemption is path-scoped** | Uncommitted record files are expected between `run record` and `5x commit`. Any other dirty path still blocks `run init`. |
+| **No implicit network** | `--fetch` is the only fetch. Remote-tracking refs are as fresh as the last fetch. |
+| **Diverged refs are reported, never picked** | Silent resolution would hide split history. Completion is monotonic, so display max checklist progress and flag `source: diverged`. |
+
+### References
+
+- [`docs/v2/207-state-segmentation.md`](../../v2/207-state-segmentation.md) — segmentation rule, record layout, resolution algorithm, backfill.
+- [`docs/v2/200-overview.md`](../../v2/200-overview.md) — §3a store / UUID / control-plane vs SQLite constraints; `207` refines #4.
+- [`docs/v2/202-control-plane.md`](../../v2/202-control-plane.md) — §3.1 store-interface mandate; `src/control-plane/` placement.
+- [`docs/v2/203-recovery-and-doctor.md`](../../v2/203-recovery-and-doctor.md) — §2.4 doctor check registry the `records` check joins.
+- [`docs/v2/204-run-context-ergonomics.md`](../../v2/204-run-context-ergonomics.md) — §2.1, §3 local pointer / worktree mapping stay unsynced.
+- [`docs/v1/100-architecture.md`](../../v1/100-architecture.md) — §2.3, §3 idempotent steps; this slice must not change keys.
+- [`docs/v1/101-cli-primitives.md`](../../v1/101-cli-primitives.md) — primitives to document (`records index`/`backfill`, `--fetch`, `--all-refs`, `source`).
+- Plan input: [`docs/v2/plan-inputs/10-git-native-run-records.plan-input.md`](../../v2/plan-inputs/10-git-native-run-records.plan-input.md).
+- Predecessor store pattern: [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md).
+- Parallel consumer: [`208-review-budget-advisory-plan.md`](./208-review-budget-advisory-plan.md) (consumes Phase 1 freeze).
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Design Decisions](#design-decisions)
+3. [Architecture Overview](#architecture-overview)
+4. [Phase 1: Freeze RecordStore and in-memory implementation](#phase-1-freeze-recordstore-and-in-memory-implementation)
+5. [Phase 2: Config keys and `.gitattributes`](#phase-2-config-keys-and-gitattributes)
+6. [Phase 3: Working-tree JSONL implementation](#phase-3-working-tree-jsonl-implementation)
+7. [Phase 4: Dual-write, safety exemption, commit staging, seal](#phase-4-dual-write-safety-exemption-commit-staging-seal)
+8. [Phase 5: Progress resolution](#phase-5-progress-resolution)
+9. [Phase 6: Records index and doctor check](#phase-6-records-index-and-doctor-check)
+10. [Phase 7: Records backfill](#phase-7-records-backfill)
+11. [Phase 8: Docs, exports, and compatibility](#phase-8-docs-exports-and-compatibility)
+12. [Files Touched](#files-touched)
+13. [Tests](#tests)
+14. [Not In Scope](#not-in-scope)
+15. [Estimated Timeline](#estimated-timeline)
+16. [Provenance](#provenance)
+
+---
+
+## Overview
+
+v1 made SQLite the persistence layer. v2 (`200` §3a #4) said the control plane is the source of truth and SQLite is one materialization — correct for **coordination**, wrong for **completed-work history**. That history must travel with the code.
+
+**Current behavior:**
+
+- `plan list` (`src/commands/plan-v1.handler.ts:270–377`) scans `paths.plans` for `.md` files, prefers a mapped worktree copy (`effectivePlanReadPath`, `:258–268`), and derives `completion_pct` from `parsePlan` phase completion (`src/parsers/plan.ts:140–157`). Run counts come from local `listRuns`.
+- `plan phases` (`plan-v1.handler.ts:181–212`) reads the worktree or checkout file via `readFileSync`. No git-ref walk.
+- `run record` writes only SQLite through `recordStepInternal` (`run-v1.handler.ts:1193–1311`), capturing `head_commit` via `getLatestCommit` (`git.ts:121–127`). Idempotency is `UNIQUE(run_id, step_name, phase, iteration)` (`schema.ts:345–364`, `operations-v1.ts:140–202`).
+- `run complete` (`run-v1.handler.ts:1421–1523`) inserts `run:complete` / `run:abort` via `recordStep` **directly**, skipping `head_commit`.
+- `5x commit` (`commit.handler.ts:192–207`) stages `--files` or `-A` and records `git:commit` via `recordStepInternal`. It does not guarantee records are in the commit.
+- `checkGitSafety` (`git.ts:52–94`) treats **any** porcelain line, including untracked, as dirty. `runV1Init` (`run-v1.handler.ts:1001–1018`) calls it before the resume/create fork, so uncommitted record files would block the next `run init`.
+- No `.gitattributes` writer exists. `ensureGitignore` (`init.handler.ts:257–293`) is the idempotent-append pattern to copy.
+- Control-plane stores exist for prompts and invocations only (`src/control-plane/store.ts`, `invocation-store.ts`). Schema max is v7 (`schema.ts:450–505`).
+
+**New behavior:**
+
+- Every admitted step is appended to the run record first, then projected into SQLite. Re-recording an existing key appends no JSONL line and returns the existing step.
+- `run init` writes `run.json` (unsealed). `run complete` seals it, records the terminal step through the same path (with `head_commit`), and creates a `5x: seal run <id>` commit if record files remain uncommitted.
+- `plan list` / `plan phases` / `run state --plan` resolve the plan file and records from the most advanced candidate ref, surface `source` (and ref age for remotes), and report `diverged` rather than picking.
+- `5x records index` rebuilds `runs` / `steps` from the resolved record without clobbering newer local-only rows. `doctor` reports drift; `--fix` only re-indexes.
+- `5x records backfill` exports existing DB history into the record format with `provenance: "backfilled"`.
+
+**Prerequisites:**
+
+- [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md) — **merged**. Establishes `src/control-plane/` and answered-prompt events this slice snapshots into `decisions.jsonl`.
+- [`204-run-context-ergonomics-plan.md`](./204-run-context-ergonomics-plan.md) — **merged**. `phase finish` is the composite that must append records by wrapping primitives; this slice does not change the composite.
+- Slice 06 is a **parallel consumer**, not a prerequisite. This slice's Phase 1 must land first so 06 Phase 4+ can compile against `RecordStore`.
+
+---
+
+## Design Decisions
+
+**`RecordStore` is a sibling of `PromptStore`, not a SQLite table and not a git wrapper.** Command logic never imports `bun:sqlite` and never takes a working-tree path as a store method argument. The working-tree JSONL impl closes over `paths.records` in its factory, matching `createSqlitePromptStore(db)`. A future `refs/5x/*` impl swaps the factory. Slice 06 imports types from `src/control-plane/`, not a forked copy.
+
+**The Phase 1 freeze includes everything 06's consumed surface requires.** `208` Design Decisions (consumed `RecordStore` surface) are binding on this freeze:
+
+- Step append / get / list keyed by `(run_id, step_name, phase, iteration)`. Duplicate appends return `created: false` and keep the original payload.
+- Opaque **budget** stream append / get / list. Slice 06 supplies `idempotencyKey` + JSON payload; this slice does not interpret budget fields.
+- Insertion-ordered `listLines`. Equal `createdAt` must not reorder (memory: sequence counter; working-tree: file order).
+- `atomicAppend(ops)`: all-or-nothing across mixed streams. Duplicate keys in the batch return `created: false` for those ops and add no line. A throw rolls back the entire batch.
+
+This slice also freezes a **decisions** stream (answered prompts + `human:*`) and `putRun` / `getRun` / `listRuns` for `run.json`. Those are not 06's concern but must not be retrofitted incompatibly.
+
+**Generic opaque lines plus typed step helpers.** Store methods operate on `RecordStream = "steps" | "decisions" | "budget"` and `RecordLine { runId, stream, idempotencyKey, payload, createdAt }`. Step payloads are encoded/decoded by helpers this slice owns (`encodeStepPayload` / `decodeStepPayload`). Budget and decision payloads are opaque `unknown` JSON. Do not put working-tree filenames on the interface.
+
+**Idempotency key is unchanged.** `(run_id, step_name, phase, iteration)` remains the step identity (`100` §2.3, `operations-v1.ts` UNIQUE). The JSONL key is `step:${runId}:${stepName}:${phase ?? ""}:${iteration}`. NULL-phase behavior matches SQLite: omitted/null phase is a new record (no collision). Do not add a second identity.
+
+**Record is the write authority; SQLite is a projection.** `prepareRecordStepAppend` (extracted from `recordStepInternal` `:1201–1299`) runs **before** any `atomicAppend`. Admission failure writes nothing. After a unique append, project into `recordStep`. After `created: false` or admission-duplicate, project from the existing record line (repair a missing SQLite row) and append nothing. Index failure after a successful append does not roll back the record — `records index` / retry repairs the index.
+
+**`records.redact` is applied by the writer, not the store.** The store persists whatever payload it is given. `redactStepPayload(payload, config.records.redact)` runs in the dual-write path before `atomicAppend`. `session_id`, `log_path`, and transcript content are dropped unconditionally and are not valid redact-list members (they are never present). Redact may drop `cost_usd`, `tokens_in`, `tokens_out`, `model`, `diff_summary`, etc.
+
+**`patch_id` and `diff_summary` are computed at record time.** `git patch-id --stable` of `git diff <previousStep.head_commit> <current.head_commit>` while both SHAs exist. `diff_summary` is `{ files_changed, insertions, deletions }` from `git diff --numstat`. If the previous step has no `head_commit`, or either SHA is unreachable, both fields are `null`. Unreachable `head_commit` later (squash merge) is informational, not an error — that is why these fields exist (`207` §2.3).
+
+**`.gitattributes` uses `merge=union` on `*.jsonl` under the configured records root.** Parallel iterations that actually merge (rare) concatenate lines instead of conflicting. Readers **dedupe by idempotency key, first line wins**, matching `INSERT OR IGNORE`. Tests must merge two branches with distinct keys and assert a valid JSONL file with no conflict markers, then merge two files that share a key and assert first-line-wins on read.
+
+**Dirty-tree exemption is canonical-path scoped.** `checkGitSafety(workdir, { exemptRoots?: string[] })` parses `git status --porcelain=v1 -z` (NUL-safe; handles quotes, renames). A path is exempt iff `isPathUnder(absPath, canonicalExemptRoot)` (`paths.ts:65–67`). Exempt paths are omitted from `untrackedFiles` and do not set `isDirty`. A dirty file **outside** the root still yields `safe: false`. `runV1Init` passes `config.paths.records`. Do not exempt via string prefix on porcelain lines (breaks worktrees, monorepos, and quoted paths).
+
+**`5x commit` always stages the records root in addition to `--files` / `--all-files`.** `--all-files` (`git add -A`) already includes it when the directory exists. `--files` must also `git add -- <recordsRelPath>` when that directory exists. Dry-run includes the same extra pathspec. Staging a missing directory is skipped, not an error.
+
+**Post-commit steps get a dedicated seal commit.** `run complete` writes the terminal step + sealed `run.json`, then if the records root is dirty, `commitFiles` with message `5x: seal run <id>`. Do not wait for a later `5x commit` that may never come (`207` open question 1, resolved: seal commit). If there is nothing to commit, skip (no empty commit).
+
+**Progress resolution never checks out.** Candidate refs in order: mapped worktree working copy → local `5x/<slug>` → each remote's `5x/<slug>` → `plans.branch` if set → `HEAD`. Per candidate, last commit touching the plan file **or** that slug's records directory (`git log -1 --format=%H <ref> -- <plan-path> <records-path>`). Dedupe by commit. Prune ancestors via `merge-base --is-ancestor`. One survivor → `git show <sha>:<path>`. Multiple survivors → `source: "diverged"`, report all sources, display max checklist progress. `--fetch` runs `git fetch <remote> 'refs/heads/5x/*'` per remote first. `--all-refs` opts into `git log --all -- <path>` discovery. Branch-only plans (not on `HEAD`) are listed with their source.
+
+**No schema migration.** v7 `runs` / `steps` already hold the index columns. Do not add `provenance` columns; provenance lives on the record line. Slice 06 owns schema v8 budget **index** tables.
+
+**Answered prompts snapshot into `decisions.jsonl` only when `run_id` is set.** Standalone `5x prompt` (nullable `run_id`, `202` §3.2) has no run directory. CAS-success and CAS-loser both ensure the decision line exists (idempotent key `decision:prompt:<promptId>`). `human:*` steps go to **both** `steps.jsonl` and `decisions.jsonl` in one `atomicAppend`.
+
+**`plan list` skips the records subtree** the same way it skips reviews (`plan-v1.handler.ts:218–234`). Default `paths.records` (`docs/development/runs`) sits under default `paths.plans` (`docs/development`); the config **key** is a sibling of `paths.plans`, not a nested `paths.plans.records`. JSONL files are not `.md`, but a `README.md` under runs must not appear as a plan.
+
+---
+
+## Architecture Overview
+
+```
+  run init / record / complete / commit / protocol validate --record
+  invoke --record / quality --record / phase finish (composite)
+  prompt answer (run-scoped) / human:* steps
+           │
+           ├─ prepareRecordStepAppend     // admission only; no writes
+           │     active run, worktree, JSON, maxSteps, idempotency, head_commit
+           ├─ redact + patch_id/diff_summary
+           ├─ RecordStore.atomicAppend    // authoritative (memory or working-tree JSONL)
+           └─ SQLite recordStep           // rebuildable index projection
+
+  <paths.records>/<plan-slug>/<run-id>/
+           run.json          // putRun at init and seal
+           steps.jsonl       // append-only; merge=union
+           decisions.jsonl   // answered prompts + human:*
+           budget.jsonl      // opaque; slice 06 owns payloads
+
+  plan list / plan phases / run state --plan
+           │
+           └─ resolvePlanProgress
+                 candidates: worktree → local 5x/<slug> → remotes → plans.branch → HEAD
+                 last-touching commit per ref → ancestor prune → git show
+                 1 survivor: source = that ref
+                 2+ survivors: source = diverged (max progress, all sources listed)
+
+  5x records index     → walk resolution, upsert runs/steps; keep newer local-only rows
+  5x records backfill  → export DB → record files + commit (target auto|<branch>)
+  doctor records       → missing lines, missing rows, unreachable head_commit;
+                         uncommitted records older than lingering-run threshold
+                         --fix = index only
+```
+
+SQLite coordination tables (`prompts`, locks, invocations, `.5x/current-run`) are never written to git.
+
+---
+
+## Phase 1: Freeze RecordStore and in-memory implementation
+
+**Completion gate:** `RecordStore` is exported from `src/control-plane/index.ts` and `src/index.ts`. `createMemoryRecordStore()` passes the shared contract suite, including budget-stream get/list/append, insertion order at equal timestamps, duplicate-key first-writer-wins, and `atomicAppend` all-or-nothing (including a thrown op that leaves no lines). Slice 06 can import these types and the memory factory. No working-tree files, no CLI commands, no handler wiring.
+
+This phase is the hard prerequisite for `208` Phase 4. If 06 later needs a contract change, it is a coordinated revision **here**, not a 06 fork.
+
+#### 1.1 Types — `src/control-plane/record-types.ts` (new)
+
+```typescript
+export type RecordStream = "steps" | "decisions" | "budget";
+export type RecordProvenance = "recorded" | "backfilled";
+
+export interface StepIdempotencyKey {
+	runId: string;
+	stepName: string;
+	phase: string | null;
+	iteration: number;
+}
+
+export interface DiffSummary {
+	files_changed: number;
+	insertions: number;
+	deletions: number;
+}
+
+/** Payload stored on stream "steps". Never includes session_id, log_path, or transcript. */
+export interface StepRecordPayload {
+	step_name: string;
+	phase: string | null;
+	iteration: number;
+	result_json: unknown; // parsed JSON object/array/value, not a double-encoded string
+	head_commit: string | null;
+	patch_id: string | null;
+	diff_summary: DiffSummary | null;
+	provenance: RecordProvenance;
+	duration_ms: number | null;
+	tokens_in: number | null;
+	tokens_out: number | null;
+	cost_usd: number | null;
+	model: string | null;
+}
+
+export interface RunRecordSummary {
+	id: string;
+	plan_path: string;
+	config_json: unknown | null;
+	created_at: string;
+	sealed_at: string | null;
+	status: "active" | "completed" | "aborted";
+	final_head_commit: string | null;
+	cli_version: string;
+	/** Present on backfilled unsealed exports (`207` §2.7). */
+	backfilled?: boolean;
+}
+
+export interface RecordLine {
+	runId: string;
+	stream: RecordStream;
+	idempotencyKey: string;
+	payload: unknown;
+	createdAt: string;
+}
+
+export type AppendOp = Omit<RecordLine, "createdAt"> & { createdAt?: string };
+
+export interface AppendResult {
+	created: boolean;
+	line: RecordLine;
+}
+
+export class RecordStoreError extends Error {
+	readonly code: string;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "RecordStoreError";
+		this.code = code;
+	}
+}
+```
+
+Helpers in the same file (or `record-keys.ts`):
+
+```typescript
+export function stepIdempotencyKey(k: StepIdempotencyKey): string {
+	return `step:${k.runId}:${k.stepName}:${k.phase ?? ""}:${k.iteration}`;
+}
+```
+
+- [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
+- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`. Do not invent CAS codes — duplicates are `created: false`, not errors.
+
+#### 1.2 Interface — `src/control-plane/record-store.ts` (new)
+
+Mirror `PromptStore` (`store.ts:14–21`) and `InvocationStore` (`invocation-store.ts:16–78`): handlers depend on this, never on files or SQLite.
+
+```typescript
+export interface RecordStore {
+	putRun(summary: RunRecordSummary): void;
+	getRun(runId: string): RunRecordSummary | null;
+	listRuns(filter?: { planSlug?: string }): RunRecordSummary[];
+
+	getLine(
+		runId: string,
+		stream: RecordStream,
+		idempotencyKey: string,
+	): RecordLine | null;
+	/** Insertion order. Equal createdAt must not reorder. */
+	listLines(runId: string, stream: RecordStream): RecordLine[];
+
+	append(op: AppendOp): AppendResult;
+	/**
+	 * All-or-nothing. Per-op duplicates return created: false and add no line.
+	 * A throw leaves the store identical to before the call.
+	 */
+	atomicAppend(ops: AppendOp[]): AppendResult[];
+}
+```
+
+**Semantic rules (contract tests encode these; do not weaken):**
+
+1. `putRun` is last-write-wins on the summary document (init then seal). It does not touch streams.
+2. `append` / `atomicAppend` require a prior `putRun` for that `runId` or throw `RUN_NOT_FOUND`.
+3. Duplicate `idempotencyKey` on the same `(runId, stream)`: return the **original** line, `created: false`. Do not overwrite payload.
+4. `listLines` returns the insertion sequence, not `createdAt` sort. Contract test: two budget lines with identical `createdAt`; order matches append order.
+5. `atomicAppend([])` returns `[]` and writes nothing.
+6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists.
+7. Methods take `runId` + stream + key. **No path parameters.**
+
+- [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
+- [ ] Do not add `gitShow` / `commit` / `fetch` to this interface.
+
+#### 1.3 Memory implementation — `src/control-plane/record-memory.ts` (new)
+
+Pattern: `memory-store.ts` (clone-on-read, injected clock).
+
+```typescript
+export interface MemoryRecordStoreOptions {
+	now?: () => string; // default: UTC `YYYY-MM-DD HH:MM:SS` like PromptStore
+}
+
+export function createMemoryRecordStore(
+	opts?: MemoryRecordStoreOptions,
+): RecordStore;
+```
+
+Internal structure: `Map<runId, { summary: RunRecordSummary; streams: Record<RecordStream, Map<string, RecordLine> & { order: string[] }> }>`. `atomicAppend` clones the affected run maps, applies ops, then swaps. A throw during apply leaves the original maps in place.
+
+- [ ] `listRuns({ planSlug })` filters by `planSlugFromPath(summary.plan_path)` (`paths.ts:171–175`).
+- [ ] Returned objects are cloned (mutating a `getLine` result must not change the store).
+
+#### 1.4 Shared contract tests — `test/unit/control-plane/record-store-contract.test.ts` (new)
+
+Pattern: `test/unit/control-plane/store-contract.test.ts` and `invocation-store-contract.test.ts` — a `backends` array of `{ name, setup }`. Phase 1 registers **memory only**. Phase 3 adds a working-tree harness to the **same** `describe` factory so both impls stay honest.
+
+```typescript
+export function runRecordStoreContract(setup: () => RecordStore): void;
+```
+
+Required cases:
+
+- [ ] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals.
+- [ ] `listRuns` / `listRuns({ planSlug })`.
+- [ ] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json`.
+- [ ] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
+- [ ] Budget stream: append `{ idempotencyKey: "budget:baseline:run_1", payload: { b0: 4 } }`; get/list; duplicate CAS.
+- [ ] Decisions stream: same shape, opaque payload.
+- [ ] `atomicAppend([step, budget])` both `created: true`; `getLine` both streams.
+- [ ] `atomicAppend([step, budget])` when step key already exists: step `created: false`, budget still appended (caller/06 decides whether to include budget; the store does not infer pairing).
+- [ ] `atomicAppend` throw: spy/hook the memory store **or** pass an op that the test double throws on after the first write in the in-memory apply; assert store unchanged. For memory, implement by wrapping `append` internals: if any op's `stream` is the sentinel `"__throw__"` as a test-only… **Do not** add a test stream. Instead: `atomicAppend` of two valid ops where the test subclasses/spies `put` of the second stream map and throws. Simplest: export a test-only `createMemoryRecordStore({ now, onBeforeCommit?: () => void })` that `onBeforeCommit` throws after mutating the clone but before swap — the swap is skipped, original intact.
+- [ ] `append` without `putRun` throws `RUN_NOT_FOUND`.
+- [ ] Missing `getLine` / `getRun` return `null`.
+
+- [ ] Re-export `RecordStore`, types, `createMemoryRecordStore`, `stepIdempotencyKey`, `RecordStoreError` from `src/control-plane/index.ts` and `src/index.ts`.
+
+---
+
+## Phase 2: Config keys and `.gitattributes`
+
+**Completion gate:** `paths.records` defaults to `docs/development/runs` (resolved absolute like other `paths.*`). `records.redact` defaults to `[]`. `5x config show` / registry lists both keys. `5x init` and `5x upgrade` idempotently write a `.gitattributes` `merge=union` rule for `*.jsonl` under the configured records path. No RecordStore wiring yet.
+
+#### 2.1 Config schema — `src/config.ts`
+
+Add to `PathsSchema` (`:69–115`):
+
+```typescript
+records: z
+	.string()
+	.default("docs/development/runs")
+	.describe(
+		"Directory for git-tracked run records (relative to config; resolved to absolute at load).",
+	),
+```
+
+Add top-level `RecordsSchema` on `FiveXConfigSchema` (`:166–197`):
+
+```typescript
+const RecordsSchema = z.object({
+	redact: z
+		.array(z.string())
+		.default([])
+		.describe(
+			"Additional step-record field names to drop before writing (e.g. cost_usd, model).",
+		),
+});
+```
+
+Mount as `records: RecordsSchema.default({})`.
+
+- [ ] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`.
+- [ ] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
+- [ ] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []`.
+- [ ] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, absolute resolution, unknown-key warning does not fire for `[records]`.
+
+`config-registry.ts` walks Zod automatically; no hand-maintained key list.
+
+#### 2.2 `ensureGitattributes` — `src/commands/init.handler.ts`
+
+Copy the idempotent-append pattern of `ensureGitignore` (`:257–293`). Export it next to `ensureGitignore` (`:400–406`) so upgrade can call it.
+
+```typescript
+const GITATTRIBUTES_COMMENT = "# 5x run records";
+
+export function recordsGitattributesLine(recordsRelPath: string): string {
+	const rel = recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+	return `${rel}/**/*.jsonl merge=union`;
+}
+
+export function ensureGitattributes(
+	projectRoot: string,
+	recordsRelPath: string,
+): { created: boolean; appended: boolean };
+```
+
+- [ ] If `.gitattributes` is missing, create it with the comment + one rule.
+- [ ] If present and the exact rule line exists, no-op.
+- [ ] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
+- [ ] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` when the path is inside the repo; if `paths.records` is outside the repo, skip and log a warning (union merge only applies inside the tree).
+- [ ] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records`.
+- [ ] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records`.
+
+- [ ] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
+
+---
+
+## Phase 3: Working-tree JSONL implementation
+
+**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
+
+#### 3.1 Layout and codecs — `src/control-plane/record-layout.ts` (new)
+
+```
+<recordsRoot>/<plan-slug>/<run-id>/run.json
+<recordsRoot>/<plan-slug>/<run-id>/steps.jsonl
+<recordsRoot>/<plan-slug>/<run-id>/decisions.jsonl
+<recordsRoot>/<plan-slug>/<run-id>/budget.jsonl
+```
+
+`plan-slug` = `planSlugFromPath(summary.plan_path)`.
+
+```typescript
+export const STREAM_FILES: Record<RecordStream, string> = {
+	steps: "steps.jsonl",
+	decisions: "decisions.jsonl",
+	budget: "budget.jsonl",
+};
+
+export function encodeJsonlLine(line: RecordLine): string; // single JSON object, no pretty-print
+export function decodeJsonlFile(text: string): RecordLine[]; // skip blank lines; first-key-wins dedupe
+export function parseRunJson(text: string): RunRecordSummary;
+```
+
+JSONL on-disk object:
+
+```json
+{"stream":"steps","idempotency_key":"step:run_ab:author:impl:1:1","payload":{...},"created_at":"2026-08-31 12:00:00"}
+```
+
+`runId` is implied by the directory (do not rely on a `run_id` field in every line, but include it in `payload` for steps so a concatenated merge remains self-describing). Each JSONL object **must** include `idempotency_key` so merge=union readers can dedupe without the directory.
+
+- [ ] `decodeJsonlFile` drops conflict-marker lines if present (treat as corrupt: throw `RecordStoreError("INVALID_JSONL")` rather than silently parsing half a merge). After a correct `merge=union` there are no markers — the throw is a doctor-facing signal.
+- [ ] First occurrence of an `idempotency_key` wins; later duplicates in the same file are ignored on read (union merge of two backfills).
+
+#### 3.2 Working-tree store — `src/control-plane/record-fs.ts` (new)
+
+```typescript
+export interface WorkingTreeRecordStoreOptions {
+	recordsRoot: string; // absolute
+	now?: () => string;
+}
+
+export function createWorkingTreeRecordStore(
+	opts: WorkingTreeRecordStoreOptions,
+): RecordStore;
+```
+
+**Write algorithm for `atomicAppend`:**
+
+1. Resolve `<recordsRoot>/<slug>/<runId>/` from `getRun` (slug from `plan_path`). Missing run → `RUN_NOT_FOUND`.
+2. Read current bytes of each affected stream file (missing file = empty).
+3. Decode, apply ops in memory (duplicate keys → `created: false`).
+4. Write each mutated file to `<file>.tmp` then `renameSync` over the original. If any write throws, restore the snapshot bytes (or delete a newly created tmp) **before** rethrowing.
+5. Single-op `append` is `atomicAppend([op])`.
+
+**`putRun`:** `mkdirSync(..., { recursive: true })`, write `run.json` via tmp+rename (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line).
+
+**`listRuns`:** walk `recordsRoot/*/*/run.json`. Ignore unreadable files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
+
+- [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON).
+- [ ] Extra FS tests (not required of memory): `atomicAppend` throw restores previous `steps.jsonl` bytes; `putRun` creates nested dirs; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
+
+#### 3.3 Git helpers for patch-id and show — `src/git.ts`
+
+`subprocess.execGit` (`subprocess.ts:52–66`) sets `stdin: "ignore"`. Add a spyable sibling:
+
+```typescript
+// on subprocess object
+async execGitStdin(
+	args: string[],
+	workdir: string,
+	stdin: string,
+): Promise<ExecResult>;
+```
+
+New exports on `git.ts`:
+
+```typescript
+export async function computePatchId(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<string | null>;
+// git diff from to | git patch-id --stable; null on any failure
+
+export interface NumstatSummary {
+	files_changed: number;
+	insertions: number;
+	deletions: number;
+}
+
+export async function computeDiffSummary(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<NumstatSummary | null>;
+// git diff --numstat from to
+
+export async function gitShowFile(
+	workdir: string,
+	commit: string,
+	path: string,
+): Promise<string | null>;
+// git show commit:path ; null if missing
+
+export async function gitLogLastTouching(
+	workdir: string,
+	ref: string,
+	paths: string[],
+): Promise<string | null>;
+// git log -1 --format=%H ref -- paths
+```
+
+- [ ] Unit tests in `test/unit/git.test.ts` with the existing `mockGit` helper (`:50–73`). Do not spawn real git in unit tests.
+- [ ] `computePatchId` returns `null` when `execGit` diff or patch-id is non-zero (squash-safe; do not throw at record time).
+
+#### 3.4 Redaction helper — `src/control-plane/record-redact.ts` (new)
+
+```typescript
+export function redactStepPayload(
+	payload: StepRecordPayload,
+	redact: string[],
+): StepRecordPayload;
+```
+
+- [ ] Always omit `session_id` / `log_path` if a caller smuggles them on a widened object (delete those keys).
+- [ ] For each name in `redact` that exists on the payload, set the field to `null` (keep the key so schema stays stable) **except** `result_json` / `step_name` / `phase` / `iteration` / `provenance` / `head_commit` which are **not redactable** — ignore them in the list.
+- [ ] Unit tests: drop `cost_usd`; ignore unknown names; refuse to strip `result_json`.
+
+---
+
+## Phase 4: Dual-write, safety exemption, commit staging, seal
+
+**Completion gate:** Recording a unique step writes one `steps.jsonl` line and one SQLite `steps` row. Re-recording returns `recorded: false`, appends no line, and leaves SQLite unchanged (or repairs a missing row from the line). `run init` creates `run.json`. `run complete` seals, records the terminal step **with** `head_commit`, and creates a seal commit when record files are dirty. `5x commit --files` also stages the records root. `checkGitSafety` with exempt root ignores record dirt and still fails on any other dirty file. Answered run-scoped prompts and `human:*` steps append `decisions.jsonl`. `phase finish` / `protocol validate --record` / `invoke --record` need **no composite changes** — they already call `recordStepInternal`.
+
+#### 4.1 `checkGitSafety` exemption — `src/git.ts:52–94`
+
+```typescript
+export async function checkGitSafety(
+	workdir: string,
+	opts?: { exemptRoots?: string[] },
+): Promise<GitSafetyReport>;
+```
+
+- [ ] Switch status to `["status", "--porcelain=v1", "-z"]`. Parse NUL-delimited records. Handle rename (`R100\0old\0new`) by testing **both** paths; if either is non-exempt, the repo is dirty. Untracked (`??`) same as today but skip exempt paths.
+- [ ] Canonicalize: `resolve(repoRoot, porcelainPath)` then `isPathUnder(abs, realpathExisting(exemptRoot))`.
+- [ ] Existing `checkGitSafety` tests (`test/unit/git.test.ts:79+`) still pass with no `exemptRoots` (treat as today). New tests: only records dirty → `safe: true`, `untrackedFiles` empty; records + `README.md` dirty → `safe: false`, `untrackedFiles` contains `README.md` only; rename out of records root is dirty.
+- [ ] `runV1Init` (`run-v1.handler.ts:1003`) passes `{ exemptRoots: [config.paths.records] }`.
+
+#### 4.2 `prepareRecordStepAppend` — `src/commands/run-v1.handler.ts`
+
+Extract the admission body currently at `:1201–1299` so Phase 6 of slice 06 and this dual-write share one seam (`208` P1.8).
+
+```typescript
+export type PrepareRecordStepOutcome =
+	| { outcome: "admit"; prepared: PreparedRecordStep }
+	| { outcome: "duplicate"; prepared: PreparedRecordStep };
+
+export interface PreparedRecordStep {
+	runId: string;
+	stepName: string;
+	phase: string | undefined;
+	iteration: number | undefined; // still optional if caller omitted; resolved before append
+	resultJson: string;
+	headCommit: string | undefined;
+	sessionId?: string;
+	model?: string;
+	tokensIn?: number;
+	tokensOut?: number;
+	costUsd?: number;
+	durationMs?: number;
+	logPath?: string;
+	effectiveWorkdir: string | undefined;
+	maxSteps: number;
+}
+
+export async function prepareRecordStepAppend(
+	params: RunRecordParams & { run: string; stepName: string; result: string },
+	ctx: {
+		db: Database;
+		config: FiveXConfig;
+		controlPlane?: ControlPlaneResult;
+		recordStore: RecordStore;
+	},
+): Promise<PrepareRecordStepOutcome>;
+```
+
+Algorithm (preserve today's order):
+
+1. `getRunV1`; missing → `RecordError("RUN_NOT_FOUND")`; not active → `RUN_NOT_ACTIVE`.
+2. Fail-closed `resolveRunExecutionContext` when `controlPlaneRoot` is set.
+3. Best-effort `getLatestCommit`.
+4. `maxStepsPerRun` from live config; if at ceiling, duplicate detection **prefers `recordStore.getLine`** then falls back to `findExistingStep` (so a fresh clone whose index is behind still no-ops). New unique at ceiling → `MAX_STEPS_EXCEEDED`. Duplicate at ceiling → `{ outcome: "duplicate" }`.
+5. `JSON.parse(params.result)` or `INVALID_JSON`.
+6. If a complete key exists in RecordStore (and iteration was provided) → `{ outcome: "duplicate" }`. If iteration omitted, do not treat as duplicate (same as `findExistingStep` returning null when iteration omitted, `operations-v1.ts:111–113`).
+7. Otherwise `{ outcome: "admit" }`.
+
+- [ ] `recordStepInternal` calls `prepareRecordStepAppend` then the persist sequence below. Slice 06's wrapper will call the same prepare **before** `atomicAppend([step, budget])`.
+- [ ] Unit tests with `MemoryRecordStore`: terminal run, missing worktree, invalid JSON, new-at-limit throw with **zero** store lines; duplicate-at-limit is `duplicate` with zero new lines.
+
+#### 4.3 Persist sequence — `recordStepInternal`
+
+On `admit`:
+
+1. Resolve iteration (if omitted, `nextIteration` from SQLite **or** `max(iteration)+1` from `listLines("steps")` for that `(stepName, phase)` — prefer RecordStore so the index being behind cannot allocate a colliding iteration). Document: if both exist and disagree, RecordStore wins.
+2. Previous step with `head_commit`: last `listLines("steps")` entry whose payload has a non-null `head_commit`.
+3. `patch_id` / `diff_summary` via Phase 3 helpers when both SHAs exist; else null.
+4. Build `StepRecordPayload` with `provenance: "recorded"`; `redactStepPayload(..., config.records.redact)`; drop session/log (never copy `sessionId` / `logPath` onto the payload).
+5. `ops: AppendOp[] = [{ stream: "steps", ... }]`. If `stepName.startsWith("human:")`, also push a decisions line keyed `decision:human:${stepIdempotencyKey}`.
+6. `atomicAppend(ops)`.
+7. `recordStep(db, { ... prepared, head_commit })` projection. SQLite still stores `session_id` / `log_path` (local/telemetry); the record does not.
+
+On `duplicate` or `created: false`:
+
+8. Do not append. `recordStep` / upsert from the existing line so a missing SQLite row is repaired. Return `recorded: false`.
+
+- [ ] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` to that object.
+- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`, return `{ db, config, controlPlane, recordStore }`. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted.
+- [ ] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content.
+
+#### 4.4 `run init` writes `run.json`
+
+After `createRunV1` (`run-v1.handler.ts:1055–1065`):
+
+```typescript
+recordStore.putRun({
+	id: runId,
+	plan_path: planPath,
+	config_json: { maxStepsPerRun: getMaxStepsPerRun(...) },
+	created_at: /* from getRunV1 after insert */,
+	sealed_at: null,
+	status: "active",
+	final_head_commit: null,
+	cli_version: version, // src/version.ts
+});
+```
+
+Resume path (`:1034–1052`): if `getRun` is null (index-only row from before this slice), `putRun` an unsealed summary from the SQLite row. Do not overwrite a sealed summary.
+
+#### 4.5 `run complete` seal + commit
+
+Replace the raw `recordStep` at `:1493–1502` with `recordStepInternal` (or prepare+append) so the terminal step gets `head_commit`, JSONL, and projection. Then `completeRun`, then `putRun` with `sealed_at = now`, `status`, `final_head_commit`.
+
+Then, in the run's `effectiveWorkingDirectory`:
+
+- If records root has changes (`listChangedFiles` filtered by `isPathUnder(..., recordsRoot)` non-empty, **or** `git status` scoped), `commitFiles(workdir, [recordsRel], `5x: seal run ${runId}`)`.
+- Skip if nothing to commit.
+- Do not add non-record files to the seal commit.
+
+Release lock and clear pointer **after** the seal commit (keep today's order of lock release at `:1507–1516`, but move it to after the commit so a crash mid-seal still holds the lease). If the seal commit fails, do not release the lock; surface `COMMIT_FAILED`. SQLite may already show `completed` — doctor `records` will flag uncommitted files. **Safer alternative (implement this):** perform the seal commit **before** `completeRun`, while the run is still `active` and the lock is held; if commit fails, the run stays `active` and the operator retries `run complete` (idempotent terminal step). Prefer this.
+
+- [ ] Tests: complete with dirty records → one commit whose `diff-tree` is only under records; complete with already-committed records → no extra commit; abort status seals as `aborted`.
+
+#### 4.6 `5x commit` stages records — `commit.handler.ts:192–207`
+
+When `params.files` is set (not `--all-files`), append the repo-relative records path to the `git add` pathspec if `existsSync(recordsAbs)`. Dry-run (`:151–157`) uses the same pathspec.
+
+- [ ] Integration: `test/integration/commands/commit.test.ts` — `--files src/foo.ts` with a dirty `docs/development/runs/.../steps.jsonl` includes the jsonl in `diff-tree`.
+- [ ] Unit: mock `execGit` and assert `add` args contain the records path.
+
+#### 4.7 Decision snapshots from prompts — `prompt.handler.ts`
+
+After a successful or losing `answerPrompt` (`:245`) when `prompt.runId` is non-null, `recordStore.append` a decisions line:
+
+```typescript
+{
+	runId: prompt.runId,
+	stream: "decisions",
+	idempotencyKey: `decision:prompt:${prompt.id}`,
+	payload: {
+		kind: "answered-prompt",
+		prompt_id: prompt.id,
+		kind_prompt: prompt.kind,
+		message: prompt.message,
+		answer: prompt.answer,
+		answered_by: prompt.answeredBy,
+	},
+}
+```
+
+Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore`. If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions.
+
+- [ ] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line; second CAS loser does not duplicate; `runId` null appends nothing.
+
+#### 4.8 Context wiring
+
+- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` via the shared context. Do not add a second `resolveDbContext`.
+- [ ] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line.
+
+---
+
+## Phase 5: Progress resolution
+
+**Completion gate:** Against a scripted temp git fixture (real git, `cleanGitEnv()`), `plan list` / `plan phases` / `run state --plan` report progress from the winning ref with additive `source` / `source_ref` / `source_age_seconds` / `diverged_sources`. Merged, stacked, diverged, branch-only, remote-only, and worktree cases pass. `--fetch` is the only network; `--all-refs` discovers non-conventional branches. No existing envelope field is renamed.
+
+Start this phase with a **short spike** (half day, same checkout): measure `merge-base --is-ancestor` fan-out for N plans × remotes. If a 20-plan / 3-remote fixture exceeds ~500ms, implement the batched `for-each-ref` + single `rev-list` topology query **before** wiring handlers. If it is fast, ship the naive loop and leave a comment with the measured number. Do not skip the measurement.
+
+#### 5.1 Resolution module — `src/records/resolve.ts` (new)
+
+Keep git I/O out of `RecordStore`. This module uses Phase 3 `gitShowFile` / `gitLogLastTouching` plus new helpers:
+
+```typescript
+export type ProgressSourceKind =
+	| "worktree"
+	| "branch"      // local 5x/<slug> or plans.branch
+	| "remote"      // origin/5x/<slug>
+	| "HEAD"
+	| "diverged"
+	| "local-index" // no record on any ref; SQLite only
+	| "backfilled"; // record present but provenance is backfilled-only / no branch
+
+export interface ProgressSource {
+	kind: ProgressSourceKind;
+	label: string; // "worktree" | "5x/<slug>" | "origin/5x/<slug>" | "HEAD" | "diverged"
+	ref?: string;
+	commit?: string;
+	age_seconds?: number; // remote-tracking tip vs now
+}
+
+export interface ResolvedPlanProgress {
+	source: ProgressSource;
+	diverged_sources?: ProgressSource[];
+	markdown: string | null;
+	planPath: string;
+	commit: string | null;
+}
+
+export async function resolvePlanProgress(opts: {
+	workdir: string;
+	planPath: string; // canonical repo-relative or absolute; convert to relative for git
+	planSlug: string;
+	recordsRelPath: string; // repo-relative records root
+	worktreePath?: string | null;
+	plansBranch?: string | null; // plans.branch override
+	allRefs?: boolean;
+	nowMs?: number;
+}): Promise<ResolvedPlanProgress>;
+```
+
+Algorithm (`207` §2.4), implemented literally:
+
+1. Build candidate refs in order. Skip missing refs (`rev-parse --verify`).
+2. For each, `gitLogLastTouching(ref, [relPlanPath, join(recordsRel, slug)])`. Drop null (ref never touched either path).
+3. Dedupe by commit SHA.
+4. For every pair, `git merge-base --is-ancestor A B`; drop A if ancestor of B.
+5. 0 survivors: fall back to reading the worktree/checkout file if it exists (`source.kind = "worktree"` or `"HEAD"`); else `markdown: null`.
+6. 1 survivor: `gitShowFile` for the plan path at that commit unless the survivor is the mapped worktree (read the file from disk, `kind: "worktree"`).
+7. 2+ survivors: `kind: "diverged"`, `diverged_sources` listed, `markdown` from the survivor with the **maximum** `parsePlan` phase-completion percentage (monotonic). Tie-break: lexicographic `label`.
+
+`--fetch` is **not** inside `resolvePlanProgress`. The command handler fetches first.
+
+Additional git helpers (`git.ts`):
+
+```typescript
+export async function listFiveXRefs(workdir: string): Promise<{
+	local: string[];          // 5x/<slug>
+	remote: Array<{ remote: string; ref: string }>; // origin/5x/<slug>
+}>;
+// git for-each-ref refs/heads/5x/* refs/remotes/*/5x/*
+
+export async function isAncestor(
+	workdir: string,
+	maybeAncestor: string,
+	commit: string,
+): Promise<boolean>;
+
+export async function fetchFiveXBranches(
+	workdir: string,
+	remote: string,
+): Promise<void>;
+// git fetch remote refs/heads/5x/* — only called when --fetch
+
+export async function listRemotes(workdir: string): Promise<string[]>;
+```
+
+- [ ] Unit tests with `mockGit` covering ancestor prune, diverged pair, missing ref.
+- [ ] Cache `(refSha, path) → lastTouching` in-process for a single `plan list` invocation (the handler passes a shared `Map` or the resolve module holds a per-call cache object). Do not persist the cache in SQLite in this slice unless the spike shows it is necessary.
+
+#### 5.2 `plan phases` — `plan-v1.handler.ts:181–212` and `plan-v1.ts:21–42`
+
+- [ ] Add `--fetch` and `--all-refs` flags (boolean).
+- [ ] Replace `readFileSync(effectivePath)` with `resolvePlanProgress`. `PLAN_NOT_FOUND` only when markdown is null and no checkout file exists.
+- [ ] Envelope **additive** fields on the existing result (`:198–209`):
+
+```typescript
+{
+	phases: [...], // unchanged shape
+	filePaths: { root, worktree? },
+	source: string,            // ProgressSource.label
+	source_ref?: string,
+	source_commit?: string,
+	source_age_seconds?: number,
+	diverged_sources?: Array<{ source: string; ref?: string; age_seconds?: number }>,
+}
+```
+
+- [ ] `formatPhasesText`: when `source` is not the checked-out worktree/HEAD file, print a line `source: origin/5x/<slug> (fetched 2h ago)` so users do not distrust unchecked local boxes (`207` §2.4.5).
+- [ ] Unreachable `head_commit` on verbose output is **not** required on `plan phases` today (no `--verbose`). If adding a verbose note later, it is informational. Do not fail the command.
+
+#### 5.3 `plan list` — `plan-v1.handler.ts:270–377` and `plan-v1.ts:44–68`
+
+- [ ] Add `--fetch` / `--all-refs`.
+- [ ] Include `config.paths.records` in `planListSkipSubtrees` (`:222–234`).
+- [ ] After scanning checkout `.md` files, **union** plan paths discovered from `listFiveXRefs` (`git ls-tree -r --name-only <ref> -- <plansRel>` filtered to `.md`, minus reviews/records skip roots). Branch-only plans appear with their source.
+- [ ] Per plan, call `resolvePlanProgress` (shared cache). Derive `completion_pct` from the resolved markdown the same way as today (`:312–323`).
+- [ ] Extend `PlanListEntry` (`:90–101`):
+
+```typescript
+source: string;
+source_ref?: string;
+source_age_seconds?: number;
+diverged?: boolean;
+```
+
+Do not remove `active_run` / `runs_total` — those remain local-index coordination. If the index is empty on a fresh clone, `runs_total` is 0 until `records index`; progress still comes from git.
+
+- [ ] `formatPlanListText`: add a `Source` column.
+- [ ] `--fetch`: `listRemotes` then `fetchFiveXBranches` each. Fetch failure is a **warning** on stderr, not a hard fail (offline clone still lists local refs).
+
+#### 5.4 `run state --plan` — `run-v1.handler.ts:1092–1181`
+
+When `params.plan` is set (`:1100–1104`), resolve progress and add the same additive `source*` fields on the **top-level** success payload (`:1163–1178`). Still select the local active run for step listing (coordination). If no local run:
+
+- [ ] If the resolved records at the winning commit contain a `run.json`, surface that summary (`status` from the record, `steps` from decoding `steps.jsonl` via `gitShowFile`) **without** requiring SQLite rows. Auto-increment `steps.id` in the formatted output may be missing; use `null` or omit `id` — **do not change** `formatStep` keys for the SQLite path. Prefer: when SQLite has the run, keep today's step objects; when only git has it, emit steps without `id` (additive omission). Document in 101.
+- [ ] `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
+
+Existing `--run` path is unchanged (no resolution).
+
+#### 5.5 Integration fixture — `test/integration/records/progress-resolution.test.ts` (new)
+
+Timeout 30s. `cleanGitEnv()`, `stdin: "ignore"`. Scripted repo:
+
+| Case | Setup | Expect |
+|------|--------|--------|
+| merged | `5x/slug` squash-merged to `main`, branch deleted, records on `main` | `source: HEAD` (or `main`), progress from merged checklists |
+| stacked | branch A based on B; plan B never touched on A | plan B's candidate from A dedupes to B's base; not diverged |
+| diverged | two branches both edit the same plan file | `source: diverged`, both labels listed, `completion_pct` = max |
+| branch-only | plan exists only on `5x/slug`, not `main` | listed with `source: 5x/slug` |
+| remote-only | only `origin/5x/slug` (local branch deleted); without `--fetch` uses stale remote-tracking; with `--fetch` updates | `source: origin/5x/slug`, `source_age_seconds` present |
+| worktree | mapped worktree has newer checklist than `main` | `source: worktree` |
+| no implicit fetch | remote updated but no `--fetch` | still shows old remote-tracking SHA |
+
+- [ ] Envelope `source` field present in JSON mode; text mode mentions source when not checkout.
+
+---
+
+## Phase 6: Records index and doctor check
+
+**Completion gate:** `5x records index` on a fresh clone (DB empty, records on the fetched `5x/<slug>` branch) materializes `runs` / `steps` identical modulo autoincrement ids and local-only columns (`session_id`, `log_path`, `updated_at`). Newer local-only SQLite steps are not deleted. `doctor` reports missing lines, missing rows, unreachable `head_commit` (warn), and stale uncommitted record files; `--fix` only runs index.
+
+#### 6.1 Index rebuild — `src/records/index-rebuild.ts` (new)
+
+```typescript
+export interface IndexRebuildResult {
+	runs_upserted: number;
+	steps_upserted: number;
+	steps_skipped_newer_local: number;
+	plans: string[];
+}
+
+export async function rebuildRecordsIndex(opts: {
+	db: Database;
+	recordStore?: RecordStore; // unused for git-at-commit reads
+	workdir: string;
+	config: FiveXConfig;
+	planSlug?: string;
+	resolve: typeof resolvePlanProgress;
+}): Promise<IndexRebuildResult>;
+```
+
+For each plan (or `--plan` slug):
+
+1. `resolvePlanProgress`.
+2. `gitShowFile` `run.json` + `steps.jsonl` (+ decisions are **not** indexed into SQLite; prompts stay coordination).
+3. Upsert `runs` by `id` (`createRunV1` if missing; `completeRun` if sealed; do not force `active` over a local `completed` unless the record is sealed-completed — record wins for **terminal** status; local `active` + record `active` keep local `updated_at`).
+4. For each step line, `findExistingStep` / `recordStep`. If SQLite has a row for that key, **do not overwrite** `result_json`. If SQLite has a step whose key is **absent** from the record and whose `created_at` is newer than the newest record line (in-flight local work), keep it (`steps_skipped_newer_local++`). If SQLite has a key absent from the record and **older** than lingering-run threshold, still keep it (do not delete user data); doctor reports `RECORD_INDEX_EXTRA_ROW`.
+5. Never delete rows in this slice (safer). Doctor `--fix` does not delete extras.
+
+- [ ] Idempotent: second `records index` is a no-op on counts.
+- [ ] `session_id` / `log_path` stay null on rebuilt rows.
+
+#### 6.2 Command — `src/commands/records.ts` + `records.handler.ts` (new)
+
+Commander nested group, pattern `plan-v1.ts` / `lock.ts`:
+
+```typescript
+export function registerRecords(parent: Command): void;
+// 5x records index [--plan <slug>]
+// 5x records backfill  (Phase 7)
+```
+
+Register in `bin.ts` (`:88–104`) next to `registerDoctor`.
+
+Handler uses `resolveDbContext` (allowed: this **is** the index command) + `rebuildRecordsIndex`. No `bun:sqlite` import in the handler file — pass `db` from context into `index-rebuild.ts` which may import `operations-v1`.
+
+- [ ] Success envelope: `{ runs_upserted, steps_upserted, steps_skipped_newer_local, plans }`.
+- [ ] `--plan` limits to one slug (`planSlugFromPath` / exact directory name).
+
+#### 6.3 Doctor check — `src/doctor/checks/records.ts` (new)
+
+Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
+
+| Code | Status | Meaning | `fixable` | Identity (`findingKey`) |
+|------|--------|---------|-----------|-------------------------|
+| `RECORD_INDEX_MISSING_ROW` | fail | JSONL line with no SQLite step | true | `detail.stepKey` |
+| `RECORD_INDEX_MISSING_RUN` | fail | `run.json` with no `runs` row | true | `detail.runId` |
+| `RECORD_INDEX_EXTRA_ROW` | warn | SQLite step with no record line | false | n/a |
+| `RECORD_HEAD_UNREACHABLE` | warn | `head_commit` not in any known ref | false | n/a |
+| `RECORD_UNCOMMITTED_STALE` | warn | dirty files under records root older than `LINGERING_RUN_AGE_MS` (`runs.ts:23`) | false | n/a |
+| `RECORD_INDEX_OK` | ok | summary | false | n/a |
+
+`--fix`: `fixable` findings call `rebuildRecordsIndex` once per unique `(check, runId or planSlug)` — not per step. Re-detect must drop `MISSING_ROW` / `MISSING_RUN`. **Do not** commit files, do not delete extras, do not rewrite JSONL.
+
+- [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`) and `RECORD_INDEX_MISSING_RUN` (`runId`). Empty identity on fixable must throw (existing invariant).
+- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes.
+- [ ] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
+
+---
+
+## Phase 7: Records backfill
+
+**Completion gate:** `records backfill --dry-run` on a DB with historical runs prints a deterministic run → target mapping and file list without writing. A real run writes records with `provenance: "backfilled"`, commits to the correct branch, is idempotent on a second run, reports disagreements without overwriting, and leaves active runs unsealed (`status: active`, `backfilled: true`). `patch_id` is null unless both SHAs are reachable.
+
+#### 7.1 Target-branch rule — `src/records/backfill.ts` (new)
+
+`--target auto` (`207` §2.7):
+
+1. If `refs/heads/5x/<slug>` exists **or** any `refs/remotes/*/5x/<slug>` exists → records go to `5x/<slug>`. Prefer the mapped worktree (`plans.worktree_path`) if it is that branch; otherwise `git worktree add` a temporary worktree (remove in `finally`).
+2. If the branch is gone (merged and deleted, no remote-tracking) → current branch, aggregate commit message `5x: backfill records` (multiple runs in one commit when several share this fallback).
+3. `--target <branch>` overrides auto (must exist).
+
+Commit message for the branch-exists case: `5x: backfill records for <run-id>` (one commit per run) **or** one commit per target branch per invocation listing all run ids — pick **one commit per target branch per command invocation** (fewer commits, still bisectable). Dry-run prints the mapping either way.
+
+```typescript
+export interface BackfillParams {
+	planSlug?: string;
+	target: "auto" | string;
+	dryRun: boolean;
+	startDir?: string;
+}
+
+export interface BackfillMapping {
+	run_id: string;
+	plan_path: string;
+	target_branch: string;
+	worktree: string | null;
+	files: string[];
+	disagreements: Array<{ key: string; reason: string }>;
+}
+```
+
+Export algorithm:
+
+1. `listRuns` (no 50 cap — pass a high limit or add `listRuns(db, { limit: 0 })` meaning unlimited; do not silently truncate).
+2. Filter `--plan` by slug.
+3. For each run, `getSteps`. Build `RunRecordSummary` (`provenance` N/A on summary; `backfilled: true` if `status === "active"`; if already terminal, `sealed_at = updated_at`, `final_head_commit` from last step with `head_commit`).
+4. For each step, apply field policy + redact. `provenance: "backfilled"`. `patch_id` only when `computePatchId` succeeds.
+5. `human:*` steps also become decision lines.
+6. Answered prompts for that `run_id` (`list` via PromptStore or SQL in `backfill.ts` through a small helper that uses `operations`/prompt store — **not** from the records handler importing sqlite) → decision lines. If adding a `listAnsweredPrompts(runId)` on PromptStore is too much scope, a dedicated `src/records/backfill-prompts.ts` that uses `createSqlitePromptStore(db).` — PromptStore has `getPrompt` / `listOpenPrompts` only. **Add** `listPrompts(filter: { runId: string; answered?: true })` to PromptStore? That would change the frozen prompt contract. **Do not.** Query via a new function in `src/control-plane/sqlite-store.ts` exported as a non-interface helper, or a one-off SQL in `backfill-prompts.ts` colocated with the index layer. Prefer: `createSqlitePromptStore` gains `listPromptsByRun(runId)` **on the impl class but not the interface** — messy. Clean: add optional `listAnsweredPrompts(runId)` to `PromptStore` as a documented additive method (Phase 7 only, not Phase 1 freeze). Tests on both prompt impls. This is additive and backward compatible for 06.
+7. Write via `WorkingTreeRecordStore` in the target worktree. Existing lines: skip if keys match **and** payloads equal (deep equal of canonical JSON); if keys match and payloads **differ**, push a disagreement and **do not overwrite**.
+8. Commit unless `dryRun`.
+
+- [ ] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
+- [ ] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
+- [ ] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile` contains all keys.
+- [ ] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
+
+#### 7.2 CLI — `records.handler.ts`
+
+```
+5x records backfill [--plan <slug>] [--target auto|<branch>] [--dry-run]
+```
+
+Default `--target auto`.
+
+- [ ] Integration tests as listed in the Tests table. Use two temp clones for the partial-history case.
+- [ ] Never push. Never fetch unless we need to see remote `5x/<slug>` for the auto rule — use already-present remote-tracking refs; document that `--target auto` does not fetch (operator fetches first, or we accept missing remote as "branch gone"). **Do not** implicit-fetch here (forbidden without `--fetch`; backfill has no `--fetch`). Remote-tracking existence is enough.
+
+---
+
+## Phase 8: Docs, exports, and compatibility
+
+**Completion gate:** `207` status is "Implemented" (or "Implemented — local working-tree records; remote plane still deferred") with this plan linked. `101-cli-primitives.md` documents `records index`, `records backfill`, `--fetch`, `--all-refs`, and `source`. Config reference includes `paths.records` and `records.redact`. Public exports include `RecordStore` / factories. Full `bun test` green. No skill/template hot-loop changes (composites already wrap primitives) — confirm `5x-phase-execution` still only calls `phase finish` / `run record` / `commit`.
+
+#### 8.1 Docs
+
+- [ ] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred.
+- [ ] `docs/v1/101-cli-primitives.md`:
+  - §2 taxonomy (`:82–92`): add **Records** group (`records index`, `records backfill`).
+  - §3 `run init` / `run record` / `run complete`: dual-write + seal commit.
+  - §6 `plan phases` (`:589`) / `plan list` (`:614`): `--fetch`, `--all-refs`, `source` fields; branch-only discovery.
+  - New §6b (or under Inspection): `5x records index` / `backfill` flags, dry-run, target rule, doctor `--fix`.
+  - §10 idempotency: JSONL first-line-wins ≡ `INSERT OR IGNORE`; no key change.
+  - §13 (`:1193`): `paths.records`, `records.redact` example.
+- [ ] Do not rewrite skills unless a command name in the hot loop changed (none expected).
+
+#### 8.2 Exports
+
+- [ ] `src/control-plane/index.ts` and `src/index.ts`: `RecordStore`, `createMemoryRecordStore`, `createWorkingTreeRecordStore`, `stepIdempotencyKey`, record types, `RecordStoreError`.
+- [ ] Do not export SQL or filesystem helpers from the public control-plane barrel except the two factories.
+
+#### 8.3 Compatibility sweep
+
+- [ ] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
+- [ ] Integration `text-output.test.ts` updated for new columns/lines.
+- [ ] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
+- [ ] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
+
+---
+
+## Files Touched
+
+| File | Change |
+|------|--------|
+| `src/control-plane/record-types.ts` | **New.** Stream/payload/summary types, `RecordStoreError`, `stepIdempotencyKey`. |
+| `src/control-plane/record-store.ts` | **New.** `RecordStore` interface. |
+| `src/control-plane/record-memory.ts` | **New.** In-memory impl (Phase 1 freeze). |
+| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl. |
+| `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode, first-key-wins. |
+| `src/control-plane/record-redact.ts` | **New.** `redactStepPayload`. |
+| `src/control-plane/index.ts` | Re-export RecordStore types and factories. |
+| `src/index.ts` | Public API re-exports. |
+| `src/config.ts` | `paths.records`, `RecordsSchema`, `resolveConfigPaths`, `KNOWN_ROOT_CONFIG_KEYS`. |
+| `src/templates/5x.default.toml` | Default `paths.records`; commented `[records]`. |
+| `src/git.ts` | `checkGitSafety` exempt roots + porcelain `-z`; `computePatchId`, `computeDiffSummary`, `gitShowFile`, `gitLogLastTouching`, `listFiveXRefs`, `isAncestor`, `fetchFiveXBranches`, `listRemotes`. |
+| `src/utils/subprocess.ts` | `execGitStdin` for `git patch-id`. |
+| `src/commands/init.handler.ts` | `ensureGitattributes`; call from `initScaffold`. |
+| `src/commands/upgrade.handler.ts` | Call `ensureGitattributes` during upgrade. |
+| `src/commands/run-v1.handler.ts` | `prepareRecordStepAppend`; dual-write; `putRun` on init/complete; seal commit; `checkGitSafety` opts; `run state --plan` source. |
+| `src/commands/commit.handler.ts` | Always stage records root with `--files`. |
+| `src/commands/record-context.ts` | **New.** Factory: one `resolveDbContext` + working-tree `RecordStore`. |
+| `src/commands/prompt.handler.ts` | Decision snapshot on answered run-scoped prompts. |
+| `src/commands/prompt-context.ts` | Pass `recordStore` on context. |
+| `src/commands/plan-v1.handler.ts` | Resolution, skip records subtree, `source` fields, `--fetch`/`--all-refs`, branch-only discovery. |
+| `src/commands/plan-v1.ts` | Flags `--fetch`, `--all-refs`. |
+| `src/commands/run-v1.ts` | `--fetch` / `--all-refs` on `run state` if they apply when `--plan` is set. |
+| `src/commands/records.ts` | **New.** Commander `records index` / `records backfill`. |
+| `src/commands/records.handler.ts` | **New.** Handlers. |
+| `src/records/resolve.ts` | **New.** Progress resolution algorithm. |
+| `src/records/index-rebuild.ts` | **New.** Index upsert. |
+| `src/records/backfill.ts` | **New.** Export + target rule. |
+| `src/bin.ts` | `registerRecords`. |
+| `src/doctor/checks/records.ts` | **New.** Doctor `records` check. |
+| `src/doctor/registry.ts` | Register check; `findingKey` cases. |
+| `src/control-plane/store.ts` / `memory-store.ts` / `sqlite-store.ts` | Additive `listAnsweredPrompts(runId)` for backfill (Phase 7 only). |
+| `docs/v2/207-state-segmentation.md` | Status, plan link, resolved open questions. |
+| `docs/v1/101-cli-primitives.md` | Commands, flags, `source`, config keys. |
+
+---
+
+## Tests
+
+| Type | Scope | Validates |
+|------|-------|-----------|
+| Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream. |
+| Unit | `test/unit/control-plane/record-fs.test.ts` | tmp+rename rollback; JSONL first-key-wins; directory layout. |
+| Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys. |
+| Unit | `test/unit/git.test.ts` | Safety exemption scope; porcelain `-z`; patch-id/numstat/show/log mocks. |
+| Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact` defaults and resolution. |
+| Unit | `test/unit/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` create/append/idempotent/custom root. |
+| Unit | `test/unit/commands/run-v1.handler.test.ts` | `prepareRecordStepAppend` no-write failures; dual-write admit/duplicate; init `putRun`; complete seal-before-completeRun. |
+| Unit | `test/unit/commands/commit.test.ts` | `--files` add pathspec includes records root. |
+| Unit | `test/unit/commands/prompt-store.test.ts` | Decision line on answer; skip without `runId`; no duplicate on CAS loser. |
+| Unit | `test/unit/records/resolve.test.ts` | Ancestor prune, diverged, missing ref (mocked git). |
+| Unit | `test/unit/records/index-rebuild.test.ts` | Upsert; skip newer local-only; idempotent. |
+| Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`. |
+| Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted; `--fix` identity. |
+| Unit | `test/unit/doctor/registry.test.ts` | `records` registered; `findingKey` for fixable codes. |
+| Integration | `test/integration/commands/run-v1.test.ts` | Record files after `run record`; dirty records do not `DIRTY_WORKTREE`; other dirty still does. |
+| Integration | `test/integration/commands/commit.test.ts` | Phase commit contains `steps.jsonl` lines. |
+| Integration | `test/integration/commands/phase.test.ts` (or existing phase test) | `phase finish` appends a record line. |
+| Integration | `test/integration/records/progress-resolution.test.ts` | Merged, stacked, diverged, branch-only, remote-only, worktree, no implicit fetch. |
+| Integration | `test/integration/commands/plan-v1.test.ts` | Envelope `source`; `--fetch` / `--all-refs`; skip records subtree. |
+| Integration | `test/integration/commands/doctor.test.ts` | `records` check in sweep; `--fix` re-index only. |
+| Integration | `test/integration/records/backfill.test.ts` | Dry-run mapping; real commit; second run no-op; two-DB partial history + union; disagreements. |
+| Integration | `test/integration/records/index.test.ts` | Fresh clone + `records index` matches origin steps modulo ids/local columns. |
+| Integration | `test/integration/records/merge-union.test.ts` | Two branches append distinct JSONL lines; merge has no conflict markers and both keys. |
+| Integration | `test/integration/commands/text-output.test.ts` | Source column / source line. |
+| Integration | `test/integration/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` on disk. |
+
+Edge cases (must appear in the suites above):
+
+- Duplicate step key after `merge=union` concatenation: first line wins.
+- `records.redact = ["cost_usd"]`: line has `cost_usd: null`; SQLite row may still have the number (index is local). **Decision:** project redacted values into SQLite too so index matches the record (rebuildable). Implement: `recordStep` input uses redacted cost fields.
+- Unreachable `head_commit` after simulated squash: doctor warn, `plan list` still works.
+- `--files` with missing records dir: no extra `git add` pathspec, commit still succeeds.
+
+---
+
+## Not In Scope
+
+- **Remote control plane** (leases, run registry, prompt queue remote impl, invocation remote impl, event stream, blob store) — `207` §2.8; new design doc, not this slice.
+- **Git-as-lock / claim files / push-as-CAS** — rejected in `207` §3.
+- **`refs/5x/*` record storage** — reserved; only the path-agnostic interface is required.
+- **Coordination tables in git** — `prompts` (open), locks, invocation registry, `.5x/current-run` stay local (`204` §3, `207` §2.2).
+- **Budget line payloads and v8 index tables** — slice 06 (`208-review-budget-advisory-plan.md`) against this Phase 1 freeze. This slice only provides stream `"budget"`.
+- **Dashboard reading git** — `04-control-plane-dashboard` keeps reading the SQLite index.
+- **Dropping SQLite** — remains the index (`207` open question 2).
+- **`plan.autoFetch`** — `207` open question 3; teams that want implicit fetch wait.
+- **`coordination.allowOffline`** — tagged in `207` §3/§4 for a future remote plane; not wired here.
+- **Changing step idempotency keys or existing envelope field names.**
+- **Network without `--fetch`.**
+- **Skill/template rewrites** unless a primitive invocation in the hot loop changes (none expected).
+- **Direct `bun:sqlite` in command handlers.**
+
+---
+
+## Estimated Timeline
+
+| Phase | Description | Time |
+|-------|-------------|------|
+| 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06) | 1–2 days |
+| 2 | `paths.records` / `records.redact` + `.gitattributes` via init/upgrade | 0.5–1 day |
+| 3 | Working-tree JSONL, codecs, patch-id helpers, contract on FS backend | 1.5–2 days |
+| 4 | Dual-write, `prepareRecordStepAppend`, safety exemption, commit staging, seal, decisions | 2–3 days |
+| 5 | Resolution spike + algorithm + plan list/phases/run state `--plan` + git fixture | 2–3 days |
+| 6 | `records index` + doctor `records` check | 1.5–2 days |
+| 7 | `records backfill` (auto target, dry-run, disagreements, two-DB union) | 2–3 days |
+| 8 | Docs, exports, text-output, full `bun test` | 1 day |
+| **Total** | | **12–17 days** |
+
+Phase 1 is a schedule gate for slice 06 Phase 4; land and tag it before 06 persistence work. Phase 5's ancestor-fan-out spike happens at the start of that phase, not as its own numbered phase. Phase 7 can start after Phase 3 (needs FS store) in parallel with Phase 5 if staffing allows, but it should not merge before Phase 4's `putRun`/redact helpers exist.
+
+---
+
+## Provenance
+
+This plan implements slice `v2-git-native-run-records` from [`docs/v2/plan-inputs/10-git-native-run-records.plan-input.md`](../../v2/plan-inputs/10-git-native-run-records.plan-input.md), which is the implementation vehicle for [`docs/v2/207-state-segmentation.md`](../../v2/207-state-segmentation.md). It refines `200` §3a constraint #4 (repository is source of truth for the completed-work **record**; control plane remains source of truth for **coordination**; SQLite materializes both) and follows the `src/control-plane/` store-interface pattern established by [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md). Slice 06 ([`208-review-budget-advisory-plan.md`](./208-review-budget-advisory-plan.md)) consumes Phase 1 in parallel and must not fork `RecordStore`.
