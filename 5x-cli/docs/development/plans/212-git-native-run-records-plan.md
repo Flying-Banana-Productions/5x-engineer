@@ -1,9 +1,9 @@
 # Git-Native Run Records and Progress Resolution
 
-**Version:** 1.5
+**Version:** 1.6
 **Created:** August 31, 2026
 **Last updated:** September 1, 2026
-**Status:** Draft — pending re-review (line-level origin envelope)
+**Status:** Draft — pending re-review (origin attribution contract)
 
 ---
 
@@ -11,7 +11,7 @@
 
 Completed-work history today lives in two per-machine places: the checked-out plan markdown and `.5x/5x.db`. A fresh clone, a teammate, or a deleted `.5x/` cannot answer "what is the status of plan X." This slice commits that history to the repository as append-only run records (`run.json`, `steps.jsonl`, `decisions.jsonl`) on the plan branch, makes `plan list` / `plan phases` / `run state --plan` resolve progress from the most advanced git ref rather than the checked-out file, and demotes SQLite `runs` / `steps` to a rebuildable index of that record.
 
-Every JSONL line carries a versioned **origin envelope** so reconstructed history answers "who recorded this, and who performed it" without relying on Git commit author/committer (which squash-merges rewrite and which can belong to a different machine than the writer). Provenance stays `recorded` | `backfilled`. Origin distinguishes the **recorder** (a random installation UUID persisted outside the repo, plus an optional configured actor label) from the **performer** (`human` | `agent` | `system`, with role/provider where known). Lines are self-contained because runs move between users and machines; `run.json` creator/format metadata is summary-only. Backfill does not invent original origin: unknown stays unknown, and the exporter is a separate materializer.
+Every JSONL line carries a versioned **origin envelope** so reconstructed history answers "who recorded this, and who performed it" without relying on Git commit author/committer (which squash-merges rewrite and which can belong to a different machine than the writer). Provenance stays `recorded` | `backfilled`. Origin distinguishes the **recorder** (a random installation UUID persisted outside the repo, plus an optional configured actor label) from the **performer** (`human` | `agent` | `system`, with role/provider where known). Lines are self-contained because runs move between users and machines; `run.json` `format_version` / `creator` / `sealer` are summary-only and may be unknown (`null`) for historical exports. Backfill does not invent original origin or original summary attribution: unknown stays unknown, and the exporter is a separate materializer on both lines and summaries.
 
 Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208-review-budget-advisory-plan.md`) can persist budget lines through the same contract without ever targeting SQLite-only rows. Later phases add the working-tree JSONL materialization, dual-write from existing primitives, progress resolution, `records index` / `records backfill`, and a doctor `records` check.
 
@@ -24,7 +24,7 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 - Record writes from existing primitives: `run init`, `run record` / `protocol validate --record` / `phase finish` / `invoke --record` / `quality run --record` / `5x commit` (via `recordStepInternal`), `run complete` (seal + dedicated seal commit), answered prompts and `human:*` steps (decision lines).
 - `5x commit` always stages the records root; `checkGitSafety` exempts uncommitted changes under that root only.
 - Field policy, `records.redact`, `patch_id` / `diff_summary` at record time.
-- Versioned line-level origin envelope on every JSONL stream (`steps`, `decisions`, `budget`): recorder (`installation_id` + optional `actor`) vs performer (`human` | `agent` | `system`, optional `role` / `provider`). `run.json` `format_version` + `creator` / `sealer` are summary-only. User-scope identity file outside the repository. Honest backfill (`origin: null` + separate `materializer`).
+- Versioned line-level origin envelope on every JSONL stream (`steps`, `decisions`, `budget`): recorder (`installation_id` + optional `actor`) vs performer (`human` | `agent` | `system`, optional `role` / `provider`). Typed performer input on `RunRecordParams` / `PreparedRecordStep` so `invoke --record` can stamp agent role/provider. `originFor` is the sole already-redacted origin/recorder factory (steps, decisions, budget, `run.json` creator/sealer). `run.json` `format_version` + nullable `creator` / `sealer` are summary-only; newer `format_version` is read-only for this slice's writers. User-scope identity file outside the repository. Honest backfill (`origin: null`, `creator`/`sealer` null when unknown, separate `materializer`).
 - Progress resolution for `plan list` / `plan phases` / `run state --plan` with `--fetch` and `--all-refs`.
 - `5x records index` / `5x records backfill`, doctor `records` check.
 - Docs: `207` status; `101-cli-primitives.md` for new commands/flags/`source`/origin; config reference for new keys.
@@ -55,8 +55,11 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 | **`atomicAppend` serializes writers with a per-run lock** | Fixed `.txn.*` names are not mutually exclusive. Two CLI processes (a step writer and a run-scoped prompt snapshot) can otherwise recover each other's prepared txn or last-writer-wins a stream replacement. A store-internal lock is acquired before recovery/read/stage and held through directory-synced cleanup. Lock metadata is published atomically (unique temp + `fsync` + `linkSync` to `.txn.lock`); never `openSync(".txn.lock", "wx")`, which exposes an empty pathname a contender can steal. Only an abandoned lock (dead PID, or a lock that stays malformed for `lockTimeoutMs`) may be stolen; a live owner is never recovered over. |
 | **`paths.records` must be inside the repository** | Staging, `git show`, ref resolution, and backfill all need a git path. An outside root is a configuration error, not a warning that silently disables git-native behavior. |
 | **JSONL decode takes `runId` from the caller** | On-disk lines omit `run_id` (directory-implied). `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. |
-| **Line-level origin, not Git commit attribution** | Squash-merges and later `5x commit` / seal rewrite Git author. Every JSONL line carries a versioned origin envelope (recorder vs performer). `run.json` creator/sealer is summary-only; lines stay self-contained when a run directory moves. |
-| **Provenance stays `recorded` \| `backfilled`** | Provenance is how the line entered the record. It is not origin. Backfill never copies the exporter into `origin`. |
+| **Line-level origin, not Git commit attribution** | Squash-merges and later `5x commit` / seal rewrite Git author. Every JSONL line carries a versioned origin envelope (recorder vs performer). `run.json` creator/sealer is summary-only and nullable when unknown; lines stay self-contained when a run directory moves. |
+| **Provenance stays `recorded` \| `backfilled`** | Provenance is how the line entered the record. It is not origin. Backfill never copies the exporter into `origin`, `creator`, or `sealer`. |
+| **Unknown summary attribution is representable** | `RunRecordSummary.creator` / `sealer` are `RecordRecorder \| null`. Backfill and pre-slice materialization leave them `null` and record the exporter on summary `materializer`. Live init sets creator; live seal preserves it (including `null`) and sets sealer to this installation. |
+| **`originFor` is the only live origin constructor** | Performer flows through `RunRecordParams.performer` → `PreparedRecordStep.performer` → `originFor`. Prompt, budget, and summary writers use the same factory. `originFor` / `redactedRecorder` return already-redacted values (forbidden keys stripped; `origin.actor` omitted when configured). |
+| **Newer `run.json` is read-only for older writers** | `format_version > 1` parses for display/index when v1 required fields are present. `putRun` / seal refuse mutation (`UNSUPPORTED_FORMAT_VERSION`) so additive fields are not erased. |
 | **Installation identity lives outside the repo** | Recorder `installation_id` is a random UUID in a user-scope identity file (not `.5x/`, not `paths.records`). Optional `actor` is an operator-chosen label, never inferred from the OS. |
 | **No implicit network** | `--fetch` is the only fetch. Remote-tracking refs are as fresh as the last fetch. |
 | **Diverged refs are reported, never picked** | Silent resolution would hide split history. Completion is monotonic, so display max checklist progress and flag `source: diverged`. |
@@ -119,8 +122,8 @@ v1 made SQLite the persistence layer. v2 (`200` §3a #4) said the control plane 
 - `run init` writes `run.json` (unsealed). `run complete` seals it, records the terminal step through the same path (with `head_commit`), and creates a `5x: seal run <id>` commit if record files remain uncommitted.
 - `plan list` / `plan phases` / `run state --plan` resolve the plan file and records from the most advanced candidate ref, surface `source` (and ref age for remotes), and report `diverged` rather than picking.
 - `5x records index` rebuilds `runs` / `steps` from the resolved record without clobbering newer local-only rows. `doctor` reports drift; `--fix` only re-indexes.
-- `5x records backfill` exports existing DB history into the record format with `provenance: "backfilled"`, `origin: null` (original recorder/performer unknown), and a separate `materializer` for the exporter — never misattributed as the original origin.
-- Every JSONL line includes `schema_version`, envelope `provenance`, and origin (or `null` when unknown). `run.json` carries `format_version` plus `creator` (init) and `sealer` (complete) as summary-only metadata.
+- `5x records backfill` exports existing DB history into the record format with `provenance: "backfilled"`, `origin: null` (original recorder/performer unknown), `run.json` `creator`/`sealer` `null` when those facts are unknown, and a separate `materializer` for the exporter on both lines and the summary — never misattributed as the original origin or as the run's creator/sealer.
+- Every JSONL line includes `schema_version`, envelope `provenance`, and origin (or `null` when unknown). `run.json` carries `format_version` plus nullable `creator` (init) and `sealer` (complete) as summary-only metadata, plus optional summary `materializer` when the exporter is not the original creator.
 
 **Prerequisites:**
 
@@ -141,7 +144,7 @@ v1 made SQLite the persistence layer. v2 (`200` §3a #4) said the control plane 
 - Insertion-ordered `listLines`. Equal `createdAt` must not reorder (memory: sequence counter; working-tree: file order).
 - `atomicAppend(ops)`: all-or-nothing across mixed streams. Duplicate keys in the batch return `created: false` for those ops and add no line. A throw **or a crash** leaves none of the ops durable (memory: clone-then-swap; working-tree: Phase 3.2 journal).
 
-This slice also freezes a **decisions** stream (answered prompts + `human:*`) and `putRun` / `getRun` / `listRuns` for `run.json`. Those are not 06's concern but must not be retrofitted incompatibly. Envelope fields on `RecordLine` / `AppendOp` (`schemaVersion`, `provenance`, `origin`, optional `materializer`) are part of this freeze: 06's budget ops must stamp the same origin as the paired step (use `recordedEnvelope(origin)` / the shared record-context factory; do not omit origin on live budget lines).
+This slice also freezes a **decisions** stream (answered prompts + `human:*`) and `putRun` / `getRun` / `listRuns` for `run.json`. Those are not 06's concern but must not be retrofitted incompatibly. Envelope fields on `RecordLine` / `AppendOp` (`schemaVersion`, `provenance`, `origin`, optional `materializer`) are part of this freeze: 06's budget ops must stamp the same origin as the paired step (use `recordedEnvelope(ctx.originFor(performer))`; do not omit origin on live budget lines; do not construct `RecordOrigin` inline).
 
 **Generic opaque lines plus typed step helpers.** Store methods operate on `RecordStream = "steps" | "decisions" | "budget"` and `RecordLine { runId, stream, idempotencyKey, payload, createdAt, schemaVersion, provenance, origin, materializer? }`. Step payloads are encoded/decoded by helpers this slice owns (`encodeStepPayload` / `decodeStepPayload`). Budget and decision payloads are opaque `unknown` JSON. Envelope origin/provenance are **not** opaque — every stream uses the same fields. Do not put working-tree filenames on the interface.
 
@@ -149,7 +152,7 @@ This slice also freezes a **decisions** stream (answered prompts + `human:*`) an
 
 **Record is the write authority; SQLite is a projection.** `prepareRecordStepAppend` (extracted from `recordStepInternal` `:1201–1299`) runs **before** any `atomicAppend`. Admission failure writes nothing. After a unique append, project into `recordStep`. After `created: false` or admission-duplicate, project from the existing record line (repair a missing SQLite row) and append nothing. Index failure after a successful append does not roll back the record — `records index` / retry repairs the index.
 
-**`records.redact` is applied by the writer, not the store.** The store persists whatever payload it is given. `redactStepPayload(payload, config.records.redact)` and `redactOrigin(origin, config.records.redact)` run in the dual-write path before `atomicAppend`. `session_id`, `log_path`, and transcript content are dropped unconditionally and are not valid redact-list members (they are never present). Origin never records hostname, hardware ID, OS username, Git `user.name` / `user.email`, session id, log path, or transcripts — those keys are stripped if a caller smuggles them. Redact may drop `cost_usd`, `tokens_in`, `tokens_out`, `model`, `diff_summary`, and `origin.actor` (omits the optional label). `installation_id`, `performer.kind`, envelope `provenance`, and step identity fields are **not** redactable.
+**`records.redact` is applied by the sole attribution factory, not the store and not ad hoc at some writers.** The store persists whatever payload it is given. `redactStepPayload(payload, config.records.redact)` runs in the dual-write path before `atomicAppend`. **`originFor` / `redactedRecorder`** (Phase 4 context) are the only constructors for persisted `RecordOrigin` / `RecordRecorder`: they apply `redactOrigin` / `redactRecorder` (forbidden-key stripping; `origin.actor` omitted when `records.redact` includes `origin.actor` or `actor`) before returning. Callers — `recordStepInternal`, prompt snapshots, slice 06 budget/baseline ops, `run.json` `creator`/`sealer`, backfill `materializer` — must not call `resolveRecorder` or build `{ recorder, performer }` themselves. `recordedEnvelope` only stamps `schemaVersion` / `provenance`; it does not redact and must receive an origin from `originFor`. `session_id`, `log_path`, and transcript content are dropped unconditionally and are not valid redact-list members (they are never present). Origin never records hostname, hardware ID, OS username, Git `user.name` / `user.email`, session id, log path, or transcripts — those keys are stripped if a caller smuggles them. Redact may drop `cost_usd`, `tokens_in`, `tokens_out`, `model`, `diff_summary`, and `origin.actor` (omits the optional label). `installation_id`, `performer.kind`, envelope `provenance`, and step identity fields are **not** redactable.
 
 **`patch_id` and `diff_summary` are computed at record time.** `git patch-id --stable` of `git diff <previousStep.head_commit> <current.head_commit>` while both SHAs exist. `diff_summary` is `{ files_changed, insertions, deletions }` from `git diff --numstat`. If the previous step has no `head_commit`, or either SHA is unreachable, both fields are `null`. Unreachable `head_commit` later (squash merge) is informational, not an error — that is why these fields exist (`207` §2.3).
 
@@ -182,13 +185,13 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
 
 **JSONL decode reconstructs `RecordLine.runId` from the caller.** On-disk objects omit `run_id` (implied by `<slug>/<run-id>/`). `encodeJsonlLine` must not write `run_id`. `decodeJsonlFile(text, runId)` sets `runId` on every returned `RecordLine` and parses the origin envelope (`schema_version`, `provenance`, `origin`, optional `materializer`). If an object contains `run_id` and it differs from the caller value, throw `INVALID_JSONL`. Contract coverage includes decisions and budget lines, not only steps.
 
-**Origin is a line-level envelope, distinct from provenance and from Git attribution.** Provenance remains `recorded` | `backfilled` (how the line entered the record). Origin answers who **recorded** the line (installation UUID + optional actor label) and who **performed** the work (`human` | `agent` | `system`, with `role` / `provider` when known). Git commit author/committer is not origin: `5x commit` / seal / squash-merge can rewrite it, and the committer may not be the writer. `run.json` `creator` / `sealer` / `format_version` summarize the run document only; each JSONL line must remain self-contained because a run directory can be copied, merged, or continued on another machine. Slice 06 budget ops use the same envelope — they must not invent a second attribution scheme. See Phase 1 types, Phase 2 identity, and Phase 4 writer wiring.
+**Origin is a line-level envelope, distinct from provenance and from Git attribution.** Provenance remains `recorded` | `backfilled` (how the line entered the record). Origin answers who **recorded** the line (installation UUID + optional actor label) and who **performed** the work (`human` | `agent` | `system`, with `role` / `provider` when known). Git commit author/committer is not origin: `5x commit` / seal / squash-merge can rewrite it, and the committer may not be the writer. `run.json` `creator` / `sealer` / `format_version` summarize the run document only; `creator`/`sealer` are `null` when those facts are unknown. Each JSONL line must remain self-contained because a run directory can be copied, merged, or continued on another machine. Slice 06 budget ops use the same envelope via `originFor` — they must not invent a second attribution scheme. Performer is a typed input on the record params, not inferred after the fact from a step name alone (see Phase 4.2 / 4.8). See Phase 1 types, Phase 2 identity, and Phase 4 writer wiring.
 
-**Backfill is honest about unknown origin.** Pre-slice SQLite rows have no recorder/performer. Exporting them with this machine's installation id as `origin` would misattribute historical work. Backfilled lines set `provenance: "backfilled"`, `origin: null`, and `materializer` to the exporter (`performer.kind: "system"`, `role: "exporter"`). Index rebuild does not invent origin either and does not write a materializer onto existing recorded lines. Do not copy `materializer` into `origin`. Do not fill origin from Git `user.name`, OS username, or hostname.
+**Backfill is honest about unknown origin and unknown summary attribution.** Pre-slice SQLite rows have no recorder/performer and no init/seal installation. Exporting them with this machine's installation id as `origin`, `creator`, or `sealer` would misattribute historical work. Backfilled lines set `provenance: "backfilled"`, `origin: null`, and `materializer` to the exporter (`performer.kind: "system"`, `role: "exporter"`). Backfilled summaries set `creator: null`, `sealer: null` when the run is already terminal (omit `sealer` when still unsealed), and summary `materializer` to the same exporter. Index rebuild does not invent origin either and does not write a materializer onto existing recorded lines. Do not copy `materializer` into `origin`, `creator`, or `sealer`. Do not fill origin or summary attribution from Git `user.name`, OS username, or hostname. Live seal of a run whose `creator` is already known **preserves** that creator and sets `sealer` to this installation.
 
 **Installation identity is user-scope, outside the repository.** Recorder `installation_id` is a UUID v4 persisted in a user-scope identity file (XDG/APPDATA `5x/identity.json`, overridable via `FIVEX_CONFIG_HOME`), never under `paths.records` (would be committed) and never under project `.5x/` (deleted with the workspace; not shared across clones on the same machine). Optional `actor` is an operator-chosen human-readable label from env / config / identity file — never inferred. See Phase 2.3.
 
-**JSONL `schema_version` is parsed with explicit compatibility rules.** Writers emit `RECORD_LINE_SCHEMA_VERSION = 1`. `run.json` uses `format_version: 1` (separate name so summary and streams cannot be confused). Decode: missing/non-integer/`< 1` `schema_version` → `INVALID_JSONL`; `1` → parse v1 required fields; `> 1` with all v1 required fields present and well-typed → accept and ignore unknown keys (additive forward-compat); `> 1` missing a v1 required field → `INVALID_JSONL`. Do not default missing origin on a v1 recorded line. See Phase 3.1.
+**JSONL `schema_version` is parsed with explicit compatibility rules.** Writers emit `RECORD_LINE_SCHEMA_VERSION = 1`. `run.json` uses `format_version: 1` (separate name so summary and streams cannot be confused). Decode: missing/non-integer/`< 1` `schema_version` → `INVALID_JSONL`; `1` → parse v1 required fields; `> 1` with all v1 required fields present and well-typed → accept and ignore unknown keys (additive forward-compat **read**); `> 1` missing a v1 required field → `INVALID_JSONL`. Do not default missing origin on a v1 recorded line. **`run.json` mutation is fail-closed on newer versions:** `getRun` / `parseRunJson` may return a `format_version > 1` document for display and index, but `putRun` (init rewrite, seal, any summary write) throws `UNSUPPORTED_FORMAT_VERSION` without changing the file. Do not last-write-wins a typed v1 object over additive future fields. See Phase 3.1.
 
 **`atomicAppend` durability is a per-run journal, not in-process rollback.** A thrown JS exception still rolls back (memory: clone-then-swap; FS: abort before the commit marker is directory-durable). A process kill, power loss, or failed rename between `steps.jsonl` and `budget.jsonl` cannot leave slice 06 with an orphaned reviewer step or budget snapshot. File `fsyncSync` of `.new` / journal bytes is not enough: every create, rename, and unlink must be followed by `fsync` of the **run directory** so the directory entry survives power loss. Prepared metadata is immutable; the commit decision is a separate checksummed marker. If that metadata is corrupt or incomplete, recovery **fails closed** (`RECORD_TXN_CORRUPT`) and leaves artifacts for doctor — it must not assume `prepared` and delete them. See Phase 3.2. Recovery runs on every store open/read/append **only while holding the per-run writer lock**. Journal artifacts (`.txn.*`, including `.txn.lock`) are gitignored under the records root and are never staged.
 
@@ -220,7 +223,7 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
            └─ SQLite recordStep           // rebuildable index projection
 
   <recordsAbsPath>/<plan-slug>/<run-id>/   // re-rooted into effective worktree
-           run.json          // putRun at init and seal (format_version, creator, sealer)
+           run.json          // putRun at init and seal (format_version, nullable creator/sealer, optional materializer)
            steps.jsonl       // append-only; merge=union; each line self-contained origin
            decisions.jsonl   // answered prompts + human:*
            budget.jsonl      // opaque; slice 06 owns payloads; same origin envelope
@@ -253,7 +256,7 @@ SQLite coordination tables (`prompts`, locks, invocations, `.5x/current-run`) ar
 
 ## Phase 1: Freeze RecordStore and in-memory implementation
 
-**Completion gate:** `RecordStore` is exported from `src/control-plane/index.ts` and `src/index.ts`. `createMemoryRecordStore()` passes the shared contract suite, including budget-stream get/list/append, insertion order at equal timestamps, duplicate-key first-writer-wins, `atomicAppend` all-or-nothing (including a thrown op that leaves no lines), origin/provenance round-trip on every stream, recorded-without-origin rejected, and backfilled `origin: null` + `materializer` preserved. Slice 06 can import these types and the memory factory. No working-tree files, no CLI commands, no handler wiring, no identity-file I/O (fixtures construct `RecordOrigin` in tests).
+**Completion gate:** `RecordStore` is exported from `src/control-plane/index.ts` and `src/index.ts`. `createMemoryRecordStore()` passes the shared contract suite, including budget-stream get/list/append, insertion order at equal timestamps, duplicate-key first-writer-wins, `atomicAppend` all-or-nothing (including a thrown op that leaves no lines), origin/provenance round-trip on every stream, recorded-without-origin rejected, backfilled `origin: null` + `materializer` preserved, `creator: null` preserved across seal, and `putRun` of `format_version > 1` rejected with `UNSUPPORTED_FORMAT_VERSION`. Slice 06 can import these types and the memory factory. No working-tree files, no CLI commands, no handler wiring, no identity-file I/O (fixtures construct `RecordOrigin` in tests).
 
 This phase is the hard prerequisite for `208` Phase 4. If 06 later needs a contract change, it is a coordinated revision **here**, not a 06 fork.
 
@@ -327,12 +330,29 @@ export interface RunRecordSummary {
 	status: "active" | "completed" | "aborted";
 	final_head_commit: string | null;
 	cli_version: string;
-	format_version: typeof RUN_RECORD_FORMAT_VERSION;
-	/** Recorder at init `putRun`. Seal must preserve this; do not overwrite with the sealer. */
-	creator: RecordRecorder;
-	/** Recorder at seal `putRun`. Absent while unsealed. */
-	sealer?: RecordRecorder;
-	/** Present on backfilled unsealed exports (`207` §2.7). */
+	/**
+	 * Writers emit `RUN_RECORD_FORMAT_VERSION` (1). Decode accepts integer >= 1
+	 * (read-only compatible view). `putRun` refuses `format_version > 1` mutation.
+	 */
+	format_version: number;
+	/**
+	 * Recorder at live init `putRun`.
+	 * `null` when the original creator is unknown (backfill / pre-slice materialization).
+	 * Seal must preserve this value, including `null`; never overwrite with the sealer or exporter.
+	 */
+	creator: RecordRecorder | null;
+	/**
+	 * Recorder at live seal `putRun`.
+	 * Omit while unsealed.
+	 * `null` when the run is terminal but the original sealer is unknown (backfilled terminal).
+	 */
+	sealer?: RecordRecorder | null;
+	/**
+	 * Who exported/materialized this summary when original attribution is unknown.
+	 * Never copied into `creator` or `sealer`. Omit on live init/seal of a known-creator run.
+	 */
+	materializer?: RecordOrigin;
+	/** Present on backfilled *unsealed* exports (`207` §2.7). Terminal backfills use `materializer` instead of this flag. */
 	backfilled?: boolean;
 }
 
@@ -388,8 +408,8 @@ export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 ```
 
 - [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
-- [ ] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface). Tests and 06 construct `RecordOrigin` as a value; identity-file I/O is Phase 2.
-- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
+- [ ] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface), and `origin` must come from `originFor` (Phase 4) — `recordedEnvelope` does not construct or redact origin. Tests and 06 may construct `RecordOrigin` as a **fixture value** in Phase 1 contract tests; production writers never assemble origin by hand. Identity-file I/O is Phase 2.
+- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line), `UNSUPPORTED_FORMAT_VERSION` (`putRun` against an existing summary whose `format_version` is greater than `RUN_RECORD_FORMAT_VERSION`). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
 
 #### 1.2 Interface — `src/control-plane/record-store.ts` (new)
 
@@ -420,7 +440,7 @@ export interface RecordStore {
 
 **Semantic rules (contract tests encode these; do not weaken):**
 
-1. `putRun` is last-write-wins on the summary document (init then seal). It does not touch streams. Seal **must** copy `creator` from the existing summary (or the init value) and set `sealer`; it must not replace `creator` with the sealing installation.
+1. `putRun` is last-write-wins on a **v1** summary document (init then seal) and does not touch streams. **Fail-closed on newer documents:** if `getRun(id)` already exists and `existing.format_version > RUN_RECORD_FORMAT_VERSION`, throw `UNSUPPORTED_FORMAT_VERSION` and write nothing. Seal **must** copy `creator` from the existing summary (including `null`) and set `sealer`; it must not replace a known live `creator` with the sealing installation, and it must not fill a `null` creator from the sealer or exporter.
 2. `append` / `atomicAppend` require a prior `putRun` for that `runId` or throw `RUN_NOT_FOUND`.
 3. Duplicate `idempotencyKey` on the same `(runId, stream)`: return the **original** line, `created: false`. Do not overwrite payload, origin, or provenance.
 4. `listLines` returns the insertion sequence, not `createdAt` sort. Contract test: two budget lines with identical `createdAt`; order matches append order.
@@ -461,7 +481,8 @@ export function runRecordStoreContract(setup: () => RecordStore): void;
 
 Required cases:
 
-- [ ] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set).
+- [ ] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set). Include a variant whose first `putRun` has `creator: null` and `materializer` set: seal copies `creator: null`, sets `sealer`, and does not copy `materializer` into `creator` or `sealer`.
+- [ ] `putRun` of a v1 summary succeeds; a subsequent `putRun` after planting `format_version: 2` (and, on the FS backend, an extra `future_field`) throws `UNSUPPORTED_FORMAT_VERSION`; `getRun` still returns `format_version === 2`; the on-disk file (FS) still contains `future_field`.
 - [ ] `listRuns` / `listRuns({ planSlug })`.
 - [ ] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json` **and** original `origin`.
 - [ ] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
@@ -596,7 +617,7 @@ export function resolveRecorder(opts: {
 
 ## Phase 3: Working-tree JSONL implementation
 
-**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget, and parses `schema_version` / provenance / origin / materializer per the compatibility rules below. `atomicAppend` of mixed streams is power-loss durable: an immutable prepared journal, a separately durable checksummed commit marker, and `fsyncDir` after every create/rename/unlink. A per-run writer lock is acquired before recovery/read/stage and held through directory-synced cleanup; owner metadata is published atomically (`linkSync` of a fsynced temp, never empty `wx` on `.txn.lock`); only abandoned transactions are recovered. Recovery on every open/read/append restores the pre-batch state or finishes the entire batch; corrupt or incomplete txn metadata throws `RECORD_TXN_CORRUPT` and does not delete artifacts. No visible partial mixed-stream write remains. Two concurrent processes appending distinct ops to one run both persist. A contender paused against an empty or in-publication lock does not obtain it or reach journal recovery. Redaction is **not** inside the store (writer-side; tested in Phase 4) except shared `redactStepPayload` / `redactOrigin` helpers can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
+**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget, and parses `schema_version` / provenance / origin / materializer per the compatibility rules below. `parseRunJson` accepts `creator: null` / `sealer: null` and a summary `materializer`; `putRun` of `format_version > 1` throws `UNSUPPORTED_FORMAT_VERSION` without rewriting the file. `atomicAppend` of mixed streams is power-loss durable: an immutable prepared journal, a separately durable checksummed commit marker, and `fsyncDir` after every create/rename/unlink. A per-run writer lock is acquired before recovery/read/stage and held through directory-synced cleanup; owner metadata is published atomically (`linkSync` of a fsynced temp, never empty `wx` on `.txn.lock`); only abandoned transactions are recovered. Recovery on every open/read/append restores the pre-batch state or finishes the entire batch; corrupt or incomplete txn metadata throws `RECORD_TXN_CORRUPT` and does not delete artifacts. No visible partial mixed-stream write remains. Two concurrent processes appending distinct ops to one run both persist. A contender paused against an empty or in-publication lock does not obtain it or reach journal recovery. Redaction is **not** inside the store (writer-side; tested in Phase 4) except shared `redactStepPayload` / `redactOrigin` / `redactRecorder` helpers can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
 
 #### 3.1 Layout and codecs — `src/control-plane/record-layout.ts` (new)
 
@@ -633,6 +654,12 @@ Backfilled on-disk object (original origin unknown):
 {"schema_version":1,"stream":"steps","idempotency_key":"...","created_at":"...","provenance":"backfilled","origin":null,"materializer":{"recorder":{"installation_id":"..."},"performer":{"kind":"system","role":"exporter"}},"payload":{...}}
 ```
 
+Backfilled `run.json` (original creator/sealer unknown; exporter is summary `materializer` only). Terminal export shown; an active export also sets `"backfilled": true` and omits `sealer`:
+
+```json
+{"id":"run_ab","plan_path":"docs/development/plans/foo.md","created_at":"...","sealed_at":"...","status":"completed","format_version":1,"creator":null,"sealer":null,"materializer":{"recorder":{"installation_id":"..."},"performer":{"kind":"system","role":"exporter"}},...}
+```
+
 `runId` is implied by the directory. `encodeJsonlLine` **must not** write `run_id`. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` from the caller argument — the decoder cannot recover it from the file body alone. If an object contains `run_id` and it differs from `runId`, throw `RecordStoreError("INVALID_JSONL")`. Each JSONL object **must** include `idempotency_key` so merge=union readers can dedupe without the directory. Step `payload` still includes identifying fields so a concatenated merge remains self-describing. Envelope fields (`schema_version`, `provenance`, `origin`, optional `materializer`) travel with the line so a merge or a copied run directory stays attributable without consulting `run.json`.
 
 **Schema-version compatibility** (`decodeJsonlFile` / `parseRunJson`):
@@ -649,15 +676,17 @@ Backfilled on-disk object (original origin unknown):
 | `performer.kind` not `human` \| `agent` \| `system` | `INVALID_JSONL` |
 | `provenance` not `recorded` \| `backfilled` | `INVALID_JSONL` |
 
-`parseRunJson`: require `format_version === 1` or integer `> 1` with v1 summary fields present (same additive rule). Missing `format_version` → `INVALID_JSONL` (this slice is the first on-disk format; do not treat absence as v0). Preserve unknown keys on rewrite only if `putRun` last-write-wins replaces the whole document — writers emit the typed summary, they do not need to round-trip unknown keys.
+`parseRunJson`: require `format_version === 1` or integer `> 1` with v1 summary fields present (same additive **read** rule). Missing `format_version` → `INVALID_JSONL` (this slice is the first on-disk format; do not treat absence as v0). v1 required summary fields: `id`, `plan_path`, `created_at`, `sealed_at` (JSON `null` allowed), `status`, `format_version`, `creator` (object **or** JSON `null`). `sealer` may be absent (unsealed), an object (known), or JSON `null` (terminal, original sealer unknown). Summary `materializer` is optional. **Do not preserve unknown keys through rewrite.** `putRun` last-write-wins replaces the whole document **only when** the existing `format_version` is `<= RUN_RECORD_FORMAT_VERSION`. If the existing document's `format_version > RUN_RECORD_FORMAT_VERSION`, throw `UNSUPPORTED_FORMAT_VERSION` and leave the file bytes unchanged (including unknown future fields). This slice's writers always emit `format_version: 1`. Index / `plan list` / `getRun` may still return a newer-version summary for a read-only compatible view.
 
-Forbidden origin keys (`hostname`, `hardware_id`, `os_username`, `username`, `session_id`, `log_path`, `transcript`, `git_user`, `user_email`): `encodeJsonlLine` / `redactOrigin` delete them if present on a widened object. Do not persist them.
+Forbidden origin keys (`hostname`, `hardware_id`, `os_username`, `username`, `session_id`, `log_path`, `transcript`, `git_user`, `user_email`): `encodeJsonlLine` / `redactOrigin` / `redactRecorder` delete them if present on a widened object. Do not persist them.
 
 - [ ] `decodeJsonlFile` drops conflict-marker lines if present (treat as corrupt: throw `RecordStoreError("INVALID_JSONL")` rather than silently parsing half a merge). After a correct `merge=union` there are no markers — the throw is a doctor-facing signal.
 - [ ] First occurrence of an `idempotency_key` wins; later duplicates in the same file are ignored on read (union merge of two backfills). Origin/provenance of the **first** line win with the key.
 - [ ] Codec unit tests: `decodeJsonlFile` of a steps line, a decisions line, and a budget line each return `RecordLine.runId ===` the caller-supplied id **and** round-trip `origin` / `provenance` / `schemaVersion`; encode round-trip does not emit `run_id`; mismatched on-disk `run_id` throws `INVALID_JSONL`.
 - [ ] Codec: missing `schema_version`, `schema_version: 0`, recorded + `origin: null`, recorded + `materializer`, unknown `performer.kind` each throw `INVALID_JSONL`. `schema_version: 2` with all v1 fields present succeeds and ignores an extra `future_field`.
 - [ ] Codec: backfilled line with `origin: null` + `materializer` decodes; `line.origin` is `null`; `line.materializer` is the exporter.
+- [ ] `parseRunJson`: `creator: null` and omitted `sealer` round-trip; terminal summary with `creator: null`, `sealer: null`, and `materializer` round-trips; `getRun` does not promote `materializer` into `creator` or `sealer`.
+- [ ] `parseRunJson`: `format_version: 2` with all v1 summary fields plus `future_field` succeeds (`format_version === 2`; typed object need not retain `future_field`). `putRun` over that file throws `UNSUPPORTED_FORMAT_VERSION`; on-disk bytes still contain `future_field` and `format_version: 2`.
 
 #### 3.2 Working-tree store — `src/control-plane/record-fs.ts` (new)
 
@@ -803,13 +832,13 @@ Let `journalOk` mean `.txn.journal.json` parses as version 1, has the required f
 - [ ] **`after-lock-linked` is already complete:** pause A at `after-lock-linked` (before `after-lock-acquired` / temp unlink). `.txn.lock` is a valid live-PID record. Contender B waits or throws `RECORD_TXN_LOCKED`; B must **not** unlink `.txn.lock`, must **not** obtain the lock, must **not** reach `recoverRunDir`.
 - [ ] **Creation-window race (P0.5):** deterministic multi-process (or child + parent) coverage. Process A performs the exclusive creation of the lock pathname and pauses **before** owner metadata would have been readable under the old `wx` protocol: child `openSync(".txn.lock", "wx")` then sleeps without writing `{ pid, owner }` (empty/unreadable visible lock, PID alive), **or** equivalent planted empty `.txn.lock` while a sibling process is live. Process B constructs `createWorkingTreeRecordStore` and calls `atomicAppend` / `getLine` with `lockTimeoutMs` longer than the pause. During the pause B must **not** obtain `.txn.lock` and must **not** reach journal recovery (no unlink of the empty file on the first observation; no delete of a prepared `.txn.journal.json` / `.new` planted beside it). After A writes+fsyncs complete metadata and `fsyncDir`, or after A exits, B either waits on the live owner or steals a dead-PID lock — never two concurrent owners.
 - [ ] **Malformed lock is not immediately stolen:** write empty or garbage `.txn.lock` (no valid pid). An acquire with `lockTimeoutMs` well above several `lockPollMs` intervals must still see that file on the second poll (not unlinked after the first observation). After a continuous `lockTimeoutMs` of malformed observations, a later acquire may steal (abandoned garbage) and proceed.
-- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename (`format_version` + `creator` present); reading a union-concatenated file with two keys returns both in file order with each line's own origin; concatenated file with duplicate key returns first payload **and** first origin.
+- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename (`format_version` + `creator` present, including `creator: null`); reading a union-concatenated file with two keys returns both in file order with each line's own origin; concatenated file with duplicate key returns first payload **and** first origin. Plant `run.json` with `format_version: 2` and `future_field: true`; `getRun` succeeds; `putRun` throws `UNSUPPORTED_FORMAT_VERSION`; file bytes still contain `future_field`.
 - [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
 - [ ] **Multi-process integration** (`test/integration/records/concurrent-append.test.ts`): temp `recordsRoot` with one `putRun`. Two `Bun.spawn` workers (`cleanGitEnv()`, `stdin: "ignore"`, timeout 30s) each construct `createWorkingTreeRecordStore` on that root and `atomicAppend` a **distinct** op (worker A: a step line; worker B: a decision or budget line). Both exit 0. Reopen: both keys exist with original payloads; no `.txn.lock` / `.txn.journal.json` / `.txn.commit` / `.new` / `.old` remain; `getLine` does not throw `RECORD_TXN_CORRUPT`. Repeat the pair enough times (or with a barrier file) that the appends overlap, not merely run sequentially. Include a variant that pauses the first worker after exclusive lock-path creation and before metadata publication (empty `wx` stand-in or `after-lock-temp-written` / planted empty lock as above) and asserts the second worker does not recover or append until the window closes.
 
 Single-op `append` is `atomicAppend([op])` (same lock + journal path; one stream).
 
-**`putRun`:** `mkdirSync(..., { recursive: true })`, **acquire the writer lock**, then `recoverRunDir` so a pending stream txn is not hidden behind a summary rewrite, then write `run.json` via `durableWriteFile` (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line), then release in `finally`. If recovery throws `RECORD_TXN_CORRUPT`, do not rewrite `run.json` (still release the lock).
+**`putRun`:** `mkdirSync(..., { recursive: true })`, **acquire the writer lock**, then `recoverRunDir` so a pending stream txn is not hidden behind a summary rewrite. Then: if `run.json` already exists, `parseRunJson` it; if `format_version > RUN_RECORD_FORMAT_VERSION`, throw `UNSUPPORTED_FORMAT_VERSION` **without writing** (release the lock in `finally`). Otherwise write `run.json` via `durableWriteFile` (pretty-print 2-space JSON is acceptable for the summary file; JSONL stays one compact object per line), then release in `finally`. If recovery throws `RECORD_TXN_CORRUPT`, do not rewrite `run.json` (still release the lock). Memory `putRun` applies the same version check against the in-memory summary.
 
 **`listRuns`:** for each `recordsRoot/*/*/run.json` directory, acquire that run's lock, recover, read, release, then move on. A `RECORD_TXN_CORRUPT` from any run dir propagates (fail closed). `RECORD_TXN_LOCKED` from a live writer also propagates (caller retries or surfaces). Ignore *other* unreadable `run.json` files (warn via injected optional `onWarn`, default `console.warn` is **forbidden in unit tests** — inject a sink or swallow). Filter by `planSlug` using directory name (must match `planSlugFromPath`).
 
@@ -891,18 +920,24 @@ export function redactOrigin(
 	origin: RecordOrigin | null,
 	redact: string[],
 ): RecordOrigin | null;
+
+export function redactRecorder(
+	recorder: RecordRecorder,
+	redact: string[],
+): RecordRecorder;
 ```
 
 - [ ] Always omit `session_id` / `log_path` if a caller smuggles them on a widened step payload (delete those keys).
 - [ ] For each name in `redact` that exists on the payload, set the field to `null` (keep the key so schema stays stable) **except** `result_json` / `step_name` / `phase` / `iteration` / `head_commit` which are **not redactable** — ignore them in the list.
 - [ ] `redactOrigin`: if `redact` includes `origin.actor` or `actor`, omit `recorder.actor`. Never null out `installation_id` or `performer.kind`. Strip `FORBIDDEN_ORIGIN_KEYS` from recorder, performer, and the origin object itself if a widened object smuggles them.
-- [ ] Unit tests: drop `cost_usd`; ignore unknown names; refuse to strip `result_json`; `origin.actor` redacted; hostname smuggled on origin is deleted; `null` origin stays `null`.
+- [ ] `redactRecorder`: same actor-omit and forbidden-key stripping for `run.json` `creator`/`sealer` and for `materializer.recorder`. `redactOrigin` must call `redactRecorder` for the recorder half (one implementation).
+- [ ] Unit tests: drop `cost_usd`; ignore unknown names; refuse to strip `result_json`; `origin.actor` redacted; hostname smuggled on origin is deleted; `null` origin stays `null`; `redactRecorder` omits `actor` and strips forbidden keys without touching `installation_id`.
 
 ---
 
 ## Phase 4: Dual-write, safety exemption, commit staging, seal
 
-**Completion gate:** Recording a unique step writes one `steps.jsonl` line and one SQLite `steps` row **in the run's effective worktree**, with a non-null origin envelope (`provenance: "recorded"`). Re-recording returns `recorded: false`, appends no line, and leaves SQLite unchanged (or repairs a missing row from the line). `run init` creates `run.json` at the re-rooted records path with `format_version`, `creator`, and no `sealer`. `run complete` seals (preserving `creator`, setting `sealer`), records the terminal step **with** `head_commit` and origin, and creates a seal commit when record files are dirty in that worktree. `5x commit --files` also stages the canonical `recordsRelPath` when `recordsAbsPath` exists in the effective worktree. `checkGitSafety` with the re-rooted exempt root ignores record dirt and still fails on any other dirty file. Answered run-scoped prompts and `human:*` steps append `decisions.jsonl` with origin. Slice 06-style mixed `[step, budget]` appends (when present) stamp the **same** origin via `recordedEnvelope`. An integration test with `run init --worktree` proves `run.json` and a recorded step are written in the linked worktree and included in that worktree's `5x commit`. `phase finish` / `protocol validate --record` / `invoke --record` need **no composite changes** — they already call `recordStepInternal`.
+**Completion gate:** Recording a unique step writes one `steps.jsonl` line and one SQLite `steps` row **in the run's effective worktree**, with a non-null origin envelope (`provenance: "recorded"`) produced **only** by `originFor`. Re-recording returns `recorded: false`, appends no line, and leaves SQLite unchanged (or repairs a missing row from the line). `run init` creates `run.json` at the re-rooted records path with `format_version: 1`, `creator` from `redactedRecorder()`, and no `sealer`. `run complete` seals (preserving `creator` including `null`, setting `sealer` from `redactedRecorder()`), records the terminal step **with** `head_commit` and origin, and creates a seal commit when record files are dirty in that worktree. Seal of `format_version > 1` fails without rewriting `run.json`. `5x commit --files` also stages the canonical `recordsRelPath` when `recordsAbsPath` exists in the effective worktree. `checkGitSafety` with the re-rooted exempt root ignores record dirt and still fails on any other dirty file. Answered run-scoped prompts and `human:*` steps append `decisions.jsonl` via `originFor`. Slice 06-style mixed `[step, budget]` appends (when present) stamp the **same** origin via `recordedEnvelope(ctx.originFor(performer))`. `invoke --record` (author and reviewer) retains configured `provider`/`role` on the line. An integration test with `run init --worktree` proves `run.json` and a recorded step are written in the linked worktree and included in that worktree's `5x commit`. `phase finish` / `protocol validate --record` / `invoke --record` need **no composite changes** — they already call `recordStepInternal` and must pass `performer` as specified in 4.8.
 
 #### 4.0 `resolveRecordsRoot` — `src/records/paths.ts` (new)
 
@@ -960,6 +995,8 @@ export interface PreparedRecordStep {
 	logPath?: string;
 	effectiveWorkdir: string | undefined;
 	maxSteps: number;
+	/** Resolved performer. Never omitted after prepare; used by `originFor` only. */
+	performer: RecordPerformer;
 }
 
 export async function prepareRecordStepAppend(
@@ -973,6 +1010,21 @@ export async function prepareRecordStepAppend(
 ): Promise<PrepareRecordStepOutcome>;
 ```
 
+Extend `RunRecordParams` (`run-v1.handler.ts:128`) with a typed performer input — this is the **only** data path from invoke/protocol/quality/commit/record into the origin envelope:
+
+```typescript
+export interface RunRecordParams {
+	// existing fields (stepName, run, result, phase, iteration, sessionId, …)
+	/**
+	 * Who performed this step. Callers that know (invoke, protocol with role)
+	 * MUST pass this. Omitted → `resolveRecordPerformer` default
+	 * `{ kind: "system", role: "cli" }` except `human:*` steps.
+	 * Never inferred from Git, OS username, or hostname.
+	 */
+	performer?: RecordPerformer;
+}
+```
+
 Algorithm (preserve today's order):
 
 1. `getRunV1`; missing → `RecordError("RUN_NOT_FOUND")`; not active → `RUN_NOT_ACTIVE`.
@@ -981,10 +1033,11 @@ Algorithm (preserve today's order):
 4. `maxStepsPerRun` from live config; if at ceiling, duplicate detection **prefers `recordStore.getLine`** then falls back to `findExistingStep` (so a fresh clone whose index is behind still no-ops). New unique at ceiling → `MAX_STEPS_EXCEEDED`. Duplicate at ceiling → `{ outcome: "duplicate" }`.
 5. `JSON.parse(params.result)` or `INVALID_JSON`.
 6. If a complete key exists in RecordStore (and iteration was provided) → `{ outcome: "duplicate" }`. If iteration omitted, do not treat as duplicate (same as `findExistingStep` returning null when iteration omitted, `operations-v1.ts:111–113`).
-7. Otherwise `{ outcome: "admit" }`.
+7. Resolve `performer`: if `params.performer` is present, copy it (validate `kind` is `human` \| `agent` \| `system`; do not invent `provider`/`role` when absent). Else `resolveRecordPerformer({ stepName: params.stepName })`. Store the result on `prepared.performer`.
+8. `{ outcome: "admit" }` (duplicate cases already returned in steps 4 and 6). `prepared.performer` is set on both admit and duplicate outcomes.
 
-- [ ] `recordStepInternal` calls `prepareRecordStepAppend` then the persist sequence below. Slice 06's wrapper will call the same prepare **before** `atomicAppend([step, budget])`.
-- [ ] Unit tests with `MemoryRecordStore`: terminal run, missing worktree, invalid JSON, new-at-limit throw with **zero** store lines; duplicate-at-limit is `duplicate` with zero new lines.
+- [ ] `recordStepInternal` calls `prepareRecordStepAppend` then the persist sequence below. Slice 06's wrapper will call the same prepare **before** `atomicAppend([step, budget])`, then `originFor(prepared.performer)` for **every** op in the batch.
+- [ ] Unit tests with `MemoryRecordStore`: terminal run, missing worktree, invalid JSON, new-at-limit throw with **zero** store lines; duplicate-at-limit is `duplicate` with zero new lines; `params.performer` round-trips onto `prepared.performer`; omitted performer on a `human:*` step becomes `{ kind: "human", role: "operator" }`; omitted performer on `git:commit` becomes `{ kind: "system", role: "cli" }`.
 
 #### 4.3 Persist sequence — `recordStepInternal`
 
@@ -994,7 +1047,7 @@ On `admit`:
 2. Previous step with `head_commit`: last `listLines("steps")` entry whose payload has a non-null `head_commit`.
 3. `patch_id` / `diff_summary` via Phase 3 helpers when both SHAs exist; else null.
 4. Build `StepRecordPayload` (**no** `provenance` on the payload); `redactStepPayload(..., config.records.redact)`; drop session/log (never copy `sessionId` / `logPath` onto the payload).
-5. Resolve origin: `resolveRecordOrigin({ homeDir, config, env, performer: resolveRecordPerformer(prepared) })` then `redactOrigin`. `recordedEnvelope(origin)` supplies `schemaVersion` / `provenance: "recorded"` / `origin`.
+5. Resolve origin **only** via the context factory: `origin = ctx.originFor(prepared.performer)`. Do **not** call `resolveRecordOrigin` / `redactOrigin` / `resolveRecorder` here — `originFor` already returns a redacted `RecordOrigin` (forbidden keys stripped; `actor` omitted when configured). `recordedEnvelope(origin)` supplies `schemaVersion` / `provenance: "recorded"` / `origin`.
 6. `ops: AppendOp[] = [{ stream: "steps", ...envelope, payload }]`. If `stepName.startsWith("human:")`, also push a decisions line keyed `decision:human:${stepIdempotencyKey}` with the **same** envelope (performer already `human`).
 7. `atomicAppend(ops)` (store-internal lock serializes this against a concurrent prompt snapshot on the same run).
 8. `recordStep(db, { ... prepared, head_commit })` projection. SQLite still stores `session_id` / `log_path` (local/telemetry); the record does not. SQLite does **not** store origin.
@@ -1003,15 +1056,15 @@ On `duplicate` or `created: false`:
 
 9. Do not append. `recordStep` / upsert from the existing line so a missing SQLite row is repaired. Return `recorded: false`. Do not rewrite origin.
 
-- [ ] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` to that object.
-- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, then `resolveRunExecutionContext` for the run, then `resolveRecordsRoot` with that context's `effectiveWorkingDirectory`, then `createWorkingTreeRecordStore({ recordsRoot: recordsAbsPath })`, then `loadOrCreateInstallationIdentity` + `resolveRecorder` + optional performer. Return `{ db, config, controlPlane, recordStore, recordsRelPath, recordsAbsPath, executionContext, recorder, originFor(performer: RecordPerformer): RecordOrigin }`. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted. **Never** `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`. **Never** construct origin without going through this helper (or `recordedEnvelope` + `originFor` in slice 06).
-- [ ] `resolveRecordPerformer(prepared | invocation | prompt)` (same file or `src/records/origin.ts`):
-  - `human:*` step or prompt answer → `{ kind: "human", role: "operator" }` (map `answered_by` into `role` only when it is already a non-identifying role string; do not copy an OS username).
-  - `invoke --record` / known agent step with provider → `{ kind: "agent", role: author|reviewer when known, provider: invocation/config provider when known }`.
-  - `git:commit`, `run:complete`, `run:abort`, quality-gate CLI steps, seal → `{ kind: "system", role: "cli" }`.
-  - Unknown → `{ kind: "system", role: "cli" }`. Do **not** guess `agent` or fill `provider` from `os.hostname()`.
+- [ ] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` **and** `originFor` / `redactedRecorder` to that object.
+- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, then `resolveRunExecutionContext` for the run, then `resolveRecordsRoot` with that context's `effectiveWorkingDirectory`, then `createWorkingTreeRecordStore({ recordsRoot: recordsAbsPath })`, then `loadOrCreateInstallationIdentity` + `resolveRecorder`. Return `{ db, config, controlPlane, recordStore, recordsRelPath, recordsAbsPath, executionContext, originFor(performer: RecordPerformer): RecordOrigin, redactedRecorder(): RecordRecorder }`. **`originFor` is the sole origin constructor** (and `redactedRecorder` is the sole `RecordRecorder` constructor for summaries): both apply `redactOrigin` / `redactRecorder` including forbidden-key stripping before returning. `originFor(p)` is `{ recorder: redactedRecorder(), performer }` after stripping `FORBIDDEN_ORIGIN_KEYS` from the performer object — never return unredacted actor. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted. **Never** `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`. **Never** construct `RecordOrigin` or persist `creator`/`sealer`/`materializer.recorder` without these helpers. Slice 06 uses `recordedEnvelope(ctx.originFor(performer))` only.
+- [ ] `resolveRecordPerformer(input: { stepName?: string; performer?: RecordPerformer })` (same file or `src/records/origin.ts`) is a **fallback** when `RunRecordParams.performer` is omitted. It does not read invocation state (that is the caller's job — see 4.8). Rules:
+  - explicit `performer` argument wins (copy; do not fill missing `provider` from config).
+  - `human:*` step → `{ kind: "human", role: "operator" }` (do not copy `answered_by` if it looks like an OS username).
+  - `git:commit`, `run:complete`, `run:abort`, `quality:*` → `{ kind: "system", role: "cli" }`.
+  - Unknown / omitted → `{ kind: "system", role: "cli" }`. Do **not** guess `agent` or fill `provider` from `os.hostname()`, step name heuristics beyond the prefixes above, or Git config. **Invoke and protocol must pass `params.performer` explicitly** so agent role/provider is not lost on this fallback.
 - [ ] For `run init`, after `ensureRunWorktree` / `createRunV1`, `effectiveWorkdir` is the mapped worktree path when `--worktree`, else `projectRoot`. `putRun` uses the store rooted there.
-- [ ] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content **including** `schema_version`, `provenance: "recorded"`, and `origin.recorder.installation_id` matching the test identity file. Assert the line JSON does not contain hostname, OS username, `session_id`, or `log_path`.
+- [ ] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content **including** `schema_version`, `provenance: "recorded"`, and `origin.recorder.installation_id` matching the test identity file. Assert the line JSON does not contain hostname, OS username, `session_id`, or `log_path`. Assert `records.redact = ["origin.actor"]` omits `actor` on the step line **and** on `run.json` `creator` for env, config, and identity-file actor sources, while `installation_id` and `performer.kind` remain.
 
 #### 4.4 `run init` writes `run.json`
 
@@ -1028,17 +1081,17 @@ recordStore.putRun({
 	final_head_commit: null,
 	cli_version: version, // src/version.ts
 	format_version: RUN_RECORD_FORMAT_VERSION,
-	creator: recorder, // resolveRecorder from identity; not Git author
+	creator: redactedRecorder(), // never Git author; already redacted (actor omitted when configured)
 });
 ```
 
-The `recordStore` here is the factory result rooted at `resolveRecordsRoot(..., effectiveWorkdir).recordsAbsPath` for this run (linked worktree after `--worktree`, otherwise `projectRoot`). `run.json` must appear under that worktree, not only under the control-plane checkout. `creator` is summary-only: JSONL lines still carry their own origin because a later machine may append to the same run directory.
+The `recordStore` here is the factory result rooted at `resolveRecordsRoot(..., effectiveWorkdir).recordsAbsPath` for this run (linked worktree after `--worktree`, otherwise `projectRoot`). `run.json` must appear under that worktree, not only under the control-plane checkout. `creator` is summary-only: JSONL lines still carry their own origin because a later machine may append to the same run directory. `creator` must go through `redactedRecorder()`, not raw `resolveRecorder()`.
 
-Resume path (`:1034–1052`): if `getRun` is null (index-only row from before this slice), `putRun` an unsealed summary from the SQLite row with `creator` = **this** installation's recorder (honest: this machine materialized the summary; original init recorder is unknown — do not invent one from Git or OS). Do not overwrite a sealed summary. If `getRun` exists, do not replace `creator`. Resume of a worktree-mapped run uses that mapping's `effectiveWorkingDirectory`.
+Resume path (`:1034–1052`): if `getRun` is null (index-only row from before this slice), `putRun` an unsealed summary from the SQLite row with `creator: null` and `materializer: originFor({ kind: "system", role: "exporter" })` (honest: original init recorder is unknown; this machine only materialized the summary). Do **not** set `creator` to this installation. Do not overwrite a sealed summary. If `getRun` exists, do not replace `creator`. Resume of a worktree-mapped run uses that mapping's `effectiveWorkingDirectory`. If existing `format_version > 1`, do not `putRun` (leave the summary; resume the SQLite run).
 
 #### 4.5 `run complete` seal + commit
 
-Replace the raw `recordStep` at `:1493–1502` with `recordStepInternal` (or prepare+append) so the terminal step gets `head_commit`, JSONL, origin, and projection. Then `completeRun`, then `putRun` with `sealed_at = now`, `status`, `final_head_commit`, **`creator` copied from `getRun()`**, `sealer: recorder` (this installation). If `getRun()` is null (should not happen after init), set both `creator` and `sealer` to this recorder rather than leaving creator empty.
+Replace the raw `recordStep` at `:1493–1502` with `recordStepInternal` (or prepare+append) so the terminal step gets `head_commit`, JSONL, origin (`performer: { kind: "system", role: "cli" }`), and projection. Then `completeRun`, then `putRun` with `sealed_at = now`, `status`, `final_head_commit`, **`creator` copied from `getRun()` (including `null`)**, `sealer: redactedRecorder()` (this installation). If `getRun()` is null (should not happen after init), set `creator: null` (unknown) and `sealer` to this redacted recorder — do **not** fill `creator` from the sealer. If `getRun().format_version > RUN_RECORD_FORMAT_VERSION`, throw `UNSUPPORTED_FORMAT_VERSION` (surfaced as a record error), do not rewrite `run.json`, do not `completeRun` if using the safer ordering below.
 
 Then, in the run's `effectiveWorkingDirectory`, using `resolveRecordsRoot` for that workdir:
 
@@ -1048,7 +1101,7 @@ Then, in the run's `effectiveWorkingDirectory`, using `resolveRecordsRoot` for t
 
 Release lock and clear pointer **after** the seal commit (keep today's order of lock release at `:1507–1516`, but move it to after the commit so a crash mid-seal still holds the lease). If the seal commit fails, do not release the lock; surface `COMMIT_FAILED`. SQLite may already show `completed` — doctor `records` will flag uncommitted files. **Safer alternative (implement this):** perform the seal commit **before** `completeRun`, while the run is still `active` and the lock is held; if commit fails, the run stays `active` and the operator retries `run complete` (idempotent terminal step). Prefer this.
 
-- [ ] Tests: complete with dirty records → one commit whose `diff-tree` is only under records; complete with already-committed records → no extra commit; abort status seals as `aborted`.
+- [ ] Tests: complete with dirty records → one commit whose `diff-tree` is only under records; complete with already-committed records → no extra commit; abort status seals as `aborted`. Complete preserves a live `creator` and sets `sealer`. Complete of a summary with `creator: null` keeps `creator: null` and sets `sealer`. Plant `format_version: 2` + `future_field`; `run complete` fails; `run.json` bytes unchanged.
 
 #### 4.6 `5x commit` stages records — `commit.handler.ts:192–207`
 
@@ -1079,16 +1132,31 @@ After a successful or losing `answerPrompt` (`:245`) when `prompt.runId` is non-
 }
 ```
 
-Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore`. When `prompt.runId` is set, resolve that run's execution context and pass a store rooted at `resolveRecordsRoot(..., effectiveWorkingDirectory).recordsAbsPath` (same factory as record-context, not control-plane `config.paths.records`). If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions. The snapshot **must** use `recordStore.append` (store-internal writer lock + journal). Do not `writeFileSync` / append to `decisions.jsonl` from the handler — a concurrent `recordStepInternal` `atomicAppend` on the same run would otherwise clobber or recover the in-flight txn.
+Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore` **and** `originFor` from the same record-context factory (already-redacted). When `prompt.runId` is set, resolve that run's execution context and pass a store rooted at `resolveRecordsRoot(..., effectiveWorkingDirectory).recordsAbsPath` (same factory as record-context, not control-plane `config.paths.records`). If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions. The snapshot **must** use `recordStore.append` (store-internal writer lock + journal) and **must** stamp origin via `originFor({ kind: "human", role: "operator" })` — do not assemble `RecordOrigin` inline, and do not call `recordedEnvelope` with an unredacted origin. Do not `writeFileSync` / append to `decisions.jsonl` from the handler — a concurrent `recordStepInternal` `atomicAppend` on the same run would otherwise clobber or recover the in-flight txn.
 
-- [ ] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line with origin; second CAS loser does not duplicate; `runId` null appends nothing.
+- [ ] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line with origin; second CAS loser does not duplicate; `runId` null appends nothing. With `records.redact = ["origin.actor"]` and an identity-file / env / config actor, the decision line has no `recorder.actor` while `installation_id` and `performer.kind` remain.
 
 #### 4.8 Context wiring
 
-- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` **and** origin helpers via the shared context (re-rooted per run). Do not add a second `resolveDbContext`. Invoke `--record` must pass performer `{ kind: "agent", role, provider }` when those are known on the invocation; quality/commit use `resolveRecordPerformer`.
-- [ ] Slice 06 `recordPlanReviewerStepWithSnapshot` / budget `captureBaseline` (when this freeze is consumed) must call `recordedEnvelope(ctx.originFor(performer))` on **every** op in the `atomicAppend` batch, including the opaque budget line. Baseline-only appends use `{ kind: "system", role: "cli" }` unless an agent invocation is the caller. Do not leave budget lines without origin.
+Every production origin is `ctx.originFor(performer)`. Every production `run.json` recorder is `ctx.redactedRecorder()`. The table is binding: a caller that knows agent metadata **must** pass `RunRecordParams.performer`; the generic fallback must not swallow it.
+
+| Writer | `performer` supplied by | Value |
+|--------|-------------------------|--------|
+| Direct `run record` / `runV1Record` | omit (fallback) unless flags later add one | `{ kind: "system", role: "cli" }`; `human:*` → `{ kind: "human", role: "operator" }` |
+| `protocol validate --record` | `protocol.handler.ts` both record calls | `{ kind: "agent", role }` where `role` is the protocol role (`author` \| `reviewer`). Omit `provider` unless the protocol payload already carries a non-identifying provider id; do not invent one. |
+| `invoke --record` (success **and** failure record) | `invoke.handler.ts` (`:580+`, `:657+`) | `{ kind: "agent", role, provider: providerName }` — `role` is the invoke role (`author` \| `reviewer`); `providerName` is the configured provider already resolved in that handler. |
+| `quality run --record` | omit or explicit | `{ kind: "system", role: "cli" }` |
+| `5x commit` (`git:commit`) | omit or explicit | `{ kind: "system", role: "cli" }` |
+| Terminal `run complete` / `run:abort` | `recordStepInternal` params | `{ kind: "system", role: "cli" }` |
+| Prompt decision snapshot | `originFor` at the append site (not `RunRecordParams`) | `{ kind: "human", role: "operator" }` |
+| Slice 06 reviewer step + budget snapshot | `originFor` on **every** op in the batch | `{ kind: "agent", role: "reviewer", provider }` when the caller is an invoke; both ops share that origin |
+| Slice 06 baseline-only budget append | `originFor` | `{ kind: "system", role: "cli" }` unless an agent invocation is the caller |
+
+- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:580+` and `:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` **and** `originFor` / `redactedRecorder` via the shared context (re-rooted per run). Do not add a second `resolveDbContext`. Invoke and protocol **must** set `params.performer` as in the table (do not rely on `resolveRecordPerformer` to recover agent/provider). Quality/commit/direct record may omit it.
+- [ ] Slice 06 `recordPlanReviewerStepWithSnapshot` / budget `captureBaseline` (when this freeze is consumed) must call `recordedEnvelope(ctx.originFor(performer))` on **every** op in the `atomicAppend` batch, including the opaque budget line **and** a baseline-only append. Do not leave budget lines without origin. Do not construct origin without `originFor`.
 - [ ] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line in the effective worktree with origin.
 - [ ] Integration: `test/integration/records/worktree-records.test.ts` (new). `cleanGitEnv()`, `stdin: "ignore"`, timeout 30s. `run init --worktree` on a temp repo; assert `run.json` exists at `join(worktree, recordsRelPath, slug, runId, "run.json")` and is **not** the only copy under the main checkout's `config.paths.records` (main checkout must not be the write target). Assert `format_version` and `creator.installation_id`. Record a step; assert `steps.jsonl` is in the worktree and the line's `origin.recorder.installation_id` matches the test identity file (not the Git committer). `5x commit --files` of a code path (cwd/startDir such that the run resolves to the worktree) includes both the code file and the record files in `diff-tree`. `.txn.*` files are absent from the commit. Identity file is **not** in the commit or under the records root.
+- [ ] Integration: `test/integration/records/origin-attribution.test.ts` (new). Author `invoke --record` and reviewer `invoke --record` each write a step whose `origin.performer` is `{ kind: "agent", role: "author"|"reviewer", provider }` matching the configured provider. Direct `run record` / `5x commit` lines are `{ kind: "system", role: "cli" }`. A `human:*` step (or prompt answer) is `{ kind: "human", role: "operator" }`. Memory-level `[step, budget]` `atomicAppend` via `originFor` has identical origin on both ops. `records.redact = ["origin.actor"]` with actor from **config**, **env** (`FIVEX_RECORDS_ACTOR`), and **identity file** (three cases) omits `actor` on the step line, a prompt decision, a baseline-only budget append fixture, and `run.json` `creator`/`sealer`; `installation_id` and `performer.kind` remain; no `FORBIDDEN_ORIGIN_KEYS` appear on any surface.
 
 ---
 
@@ -1278,11 +1346,12 @@ For each plan (or `--plan` slug):
 3. Upsert `runs` by `id` (`createRunV1` if missing; `completeRun` if sealed; do not force `active` over a local `completed` unless the record is sealed-completed — record wins for **terminal** status; local `active` + record `active` keep local `updated_at`).
 4. For each step line, `findExistingStep` / `recordStep`. If SQLite has a row for that key, **do not overwrite** `result_json`. If SQLite has a step whose key is **absent** from the record and whose `created_at` is newer than the newest record line (in-flight local work), keep it (`steps_skipped_newer_local++`). If SQLite has a key absent from the record and **older** than lingering-run threshold, still keep it (do not delete user data); doctor reports `RECORD_INDEX_EXTRA_ROW`.
 5. Never delete rows in this slice (safer). Doctor `--fix` does not delete extras.
-6. Do **not** write origin/provenance into SQLite. Do **not** stamp a materializer onto existing recorded JSONL lines (index is a projection, not a rewrite of the record). `creator` on `run.json` is stored only in the record file; the `runs` row has no origin column.
+6. Do **not** write origin/provenance into SQLite. Do **not** stamp a materializer onto existing recorded JSONL lines (index is a projection, not a rewrite of the record). `creator` / `sealer` / summary `materializer` on `run.json` are stored only in the record file; the `runs` row has no origin column. A backfilled summary with `creator: null` must not be projected as if this installation created the run.
 
 - [ ] Idempotent: second `records index` is a no-op on counts.
 - [ ] `session_id` / `log_path` stay null on rebuilt rows.
 - [ ] Rebuilt rows from a backfilled line still have no origin in SQLite; the JSONL `origin: null` / `materializer` is unchanged.
+- [ ] Index of a backfilled `run.json` with `creator: null` / `sealer: null` / `materializer` present does not invent a creator; decode of the on-disk summary still has `creator === null` and a distinct `materializer`.
 
 #### 6.2 Command — `src/commands/records.ts` + `records.handler.ts` (new)
 
@@ -1329,7 +1398,7 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 
 ## Phase 7: Records backfill
 
-**Completion gate:** `records backfill --dry-run` on a DB with historical runs prints a deterministic run → target mapping and file list without writing. A real run writes records with `provenance: "backfilled"`, `origin: null`, and `materializer` set to this installation's exporter (`performer.kind: "system"`, `role: "exporter"`) — never the original origin. It commits to the correct branch, is idempotent on a second run, reports disagreements without overwriting, and leaves active runs unsealed (`status: active`, `backfilled: true`). `patch_id` is null unless both SHAs are reachable. `run.json` `creator` is this exporter (original init recorder unknown); do not copy Git author.
+**Completion gate:** `records backfill --dry-run` on a DB with historical runs prints a deterministic run → target mapping and file list without writing. A real run writes records with `provenance: "backfilled"`, `origin: null`, and `materializer` set to this installation's exporter (`performer.kind: "system"`, `role: "exporter"`) — never the original origin. `run.json` `creator` is `null` (original init recorder unknown); terminal runs set `sealer: null` (original sealer unknown) and still set `sealed_at` / `status` from the SQLite row. Summary `materializer` is the exporter and is **not** copied into `creator` or `sealer`. It commits to the correct branch, is idempotent on a second run, reports disagreements without overwriting, and leaves active runs unsealed (`status: active`, `backfilled: true`, no `sealer`). `patch_id` is null unless both SHAs are reachable. Do not copy Git author into any attribution field. Text and JSON output identify the exporter separately from unknown creator/sealer.
 
 #### 7.1 Target-branch rule — `src/records/backfill.ts` (new)
 
@@ -1363,8 +1432,8 @@ Export algorithm:
 
 1. `listRuns` (no 50 cap — pass a high limit or add `listRuns(db, { limit: 0 })` meaning unlimited; do not silently truncate).
 2. Filter `--plan` by slug.
-3. For each run, `getSteps`. Build `RunRecordSummary` (`format_version: 1`; `creator` = this installation's recorder — the exporter, **not** a reconstructed original; `sealer` = same recorder if already terminal, else omit; `backfilled: true` if `status === "active"`; if already terminal, `sealed_at = updated_at`, `final_head_commit` from last step with `head_commit`). Original init/seal recorders are unknown; do not fill `creator` from Git or OS.
-4. For each step, apply field policy + redact. Envelope: `schemaVersion: 1`, `provenance: "backfilled"`, `origin: null`, `materializer: { recorder, performer: { kind: "system", role: "exporter" } }` after `redactOrigin` on the materializer. `patch_id` only when `computePatchId` succeeds. Do **not** set `origin` to the exporter.
+3. For each run, `getSteps`. Build `RunRecordSummary` (`format_version: 1`; `creator: null` — original init recorder unknown; `sealer: null` if already terminal, else omit; `materializer: originFor({ kind: "system", role: "exporter" })`; `backfilled: true` if `status === "active"` (unsealed export still needs a human/doctor seal — `207` §2.7); if already terminal, `sealed_at = updated_at`, `final_head_commit` from last step with `head_commit`). Never set `creator` or `sealer` to the exporter. Do not fill them from Git or OS. Terminal backfills are still identifiable via summary `materializer` and line `provenance: "backfilled"`; they do not need `backfilled: true`.
+4. For each step, apply field policy + redact. Envelope: `schemaVersion: 1`, `provenance: "backfilled"`, `origin: null`, `materializer` from `originFor({ kind: "system", role: "exporter" })` (already redacted). `patch_id` only when `computePatchId` succeeds. Do **not** set `origin` to the exporter.
 5. `human:*` steps also become decision lines with the same backfill envelope.
 6. Answered prompts for that `run_id` (`list` via PromptStore or SQL in `backfill.ts` through a small helper that uses `operations`/prompt store — **not** from the records handler importing sqlite) → decision lines with the same backfill envelope. If adding a `listAnsweredPrompts(runId)` on PromptStore is too much scope, a dedicated `src/records/backfill-prompts.ts` that uses `createSqlitePromptStore(db).` — PromptStore has `getPrompt` / `listOpenPrompts` only. **Add** `listPrompts(filter: { runId: string; answered?: true })` to PromptStore? That would change the frozen prompt contract. **Do not.** Query via a new function in `src/control-plane/sqlite-store.ts` exported as a non-interface helper, or a one-off SQL in `backfill-prompts.ts` colocated with the index layer. Prefer: `createSqlitePromptStore` gains `listPromptsByRun(runId)` **on the impl class but not the interface** — messy. Clean: add optional `listAnsweredPrompts(runId)` to `PromptStore` as a documented additive method (Phase 7 only, not Phase 1 freeze). Tests on both prompt impls. This is additive and backward compatible for 06.
 7. Write via `WorkingTreeRecordStore` in the target worktree: `createWorkingTreeRecordStore({ recordsRoot: resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot, effectiveWorkdir: targetWorktree }).recordsAbsPath })`. Existing lines by idempotency key: if `provenance === "recorded"`, push disagreement `recorded-vs-backfill` and **do not overwrite** (live origin must not become `null`). If payloads differ, push a disagreement and **do not overwrite**. If payloads equal and existing provenance is `backfilled`, skip (`created: false`). Do not treat `materializer` differences as payload disagreement when both sides are backfilled with equal payloads.
@@ -1376,6 +1445,8 @@ Export algorithm:
 - [ ] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
 - [ ] Exported JSONL must not contain hostname, OS username, Git user, `session_id`, or `log_path`. `origin` is JSON `null`, not omitted in a way that decode treats as recorded.
 - [ ] Unit: backfill of a DB step does **not** put `materializer.recorder.installation_id` into `origin`.
+- [ ] Unit: backfill of a historical run writes `run.json` with `creator: null`; terminal runs also have `sealer: null`; `materializer.performer.role === "exporter"`; decode/index leave creator/sealer unknown.
+- [ ] Integration + text/JSON output: `5x records backfill` then `run state` / `plan list` (JSON and text) show unknown creator/sealer (null/omitted), while the exporter is identifiable only via `materializer` (or an explicit `exported_by` output field derived from it). The exporter installation id must **not** appear as creator or sealer.
 
 #### 7.2 CLI — `records.handler.ts`
 
@@ -1392,16 +1463,16 @@ Default `--target auto`.
 
 ## Phase 8: Docs, exports, and compatibility
 
-**Completion gate:** `207` status is "Implemented" (or "Implemented — local working-tree records; remote plane still deferred") with this plan linked. `101-cli-primitives.md` documents `records index`, `records backfill`, `--fetch`, `--all-refs`, `source`, origin/privacy, and identity. Config reference includes `paths.records`, `records.redact`, `records.actor`. Public exports include `RecordStore` / factories / `recordedEnvelope`. Full `bun test` green. No skill/template hot-loop changes (composites already wrap primitives) — confirm `5x-phase-execution` still only calls `phase finish` / `run record` / `commit`.
+**Completion gate:** `207` status is "Implemented" (or "Implemented — local working-tree records; remote plane still deferred") with this plan linked. `101-cli-primitives.md` documents `records index`, `records backfill`, `--fetch`, `--all-refs`, `source`, origin/privacy (nullable summary attribution, `originFor` redaction, fail-closed newer `format_version`), and identity. Config reference includes `paths.records`, `records.redact`, `records.actor`. Public exports include `RecordStore` / factories / `recordedEnvelope`. Full `bun test` green. No skill/template hot-loop changes (composites already wrap primitives) — confirm `5x-phase-execution` still only calls `phase finish` / `run record` / `commit`.
 
 #### 8.1 Docs
 
-- [ ] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor`.
+- [ ] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer; summary `creator`/`sealer` nullable when unknown + summary materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor` and applies to `run.json` creator/sealer via `redactedRecorder`. Note fail-closed mutation of `format_version > 1`.
 - [ ] `docs/v1/101-cli-primitives.md`:
   - §2 taxonomy (`:82–92`): add **Records** group (`records index`, `records backfill`).
   - §3 `run init` / `run record` / `run complete`: dual-write + seal commit + origin stamp.
   - §6 `plan phases` (`:589`) / `plan list` (`:614`): `--fetch`, `--all-refs`, `source` fields; branch-only discovery.
-  - New §6b (or under Inspection): `5x records index` / `backfill` flags, dry-run, target rule, doctor `--fix`, backfill origin honesty.
+  - New §6b (or under Inspection): `5x records index` / `backfill` flags, dry-run, target rule, doctor `--fix`, backfill origin honesty (line `origin: null`; summary `creator`/`sealer` null; exporter is `materializer` only).
   - §10 idempotency: JSONL first-line-wins ≡ `INSERT OR IGNORE`; no key change.
   - §13 (`:1193`): `paths.records`, `records.redact`, `records.actor` example; identity file location; `FIVEX_RECORDS_ACTOR`; public-repo guidance (`origin.actor` redact).
 - [ ] Do not rewrite skills unless a command name in the hot loop changed (none expected).
@@ -1414,7 +1485,7 @@ Default `--target auto`.
 #### 8.3 Compatibility sweep
 
 - [ ] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
-- [ ] Integration `text-output.test.ts` updated for new columns/lines.
+- [ ] Integration `text-output.test.ts` updated for new columns/lines. Backfilled-run JSON/text must not print the exporter as creator/sealer.
 - [ ] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
 - [ ] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
 
@@ -1424,28 +1495,31 @@ Default `--target auto`.
 
 | File | Change |
 |------|--------|
-| `src/control-plane/record-types.ts` | **New.** Stream/payload/summary types, origin envelope, `recordedEnvelope`, `RecordStoreError`, `stepIdempotencyKey`. |
+| `src/control-plane/record-types.ts` | **New.** Stream/payload/summary types (nullable `creator`/`sealer`, summary `materializer`, `format_version: number`), origin envelope, `recordedEnvelope`, `RecordStoreError` (incl. `UNSUPPORTED_FORMAT_VERSION`), `stepIdempotencyKey`. |
 | `src/control-plane/record-store.ts` | **New.** `RecordStore` interface. |
-| `src/control-plane/record-memory.ts` | **New.** In-memory impl (Phase 1 freeze); origin/provenance validation. |
-| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl; per-run `.txn.lock` + immutable `.txn.journal.json` + checksummed `.txn.commit` + `fsyncDir` + fail-closed `recoverRunDir`. |
-| `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode (`decodeJsonlFile(text, runId)`), schema-version compatibility, first-key-wins. |
-| `src/control-plane/record-redact.ts` | **New.** `redactStepPayload`, `redactOrigin`, forbidden origin keys. |
+| `src/control-plane/record-memory.ts` | **New.** In-memory impl (Phase 1 freeze); origin/provenance validation; `putRun` fail-closed on newer `format_version`. |
+| `src/control-plane/record-fs.ts` | **New.** Working-tree JSONL impl; per-run `.txn.lock` + immutable `.txn.journal.json` + checksummed `.txn.commit` + `fsyncDir` + fail-closed `recoverRunDir`; `putRun` refuses `format_version > 1` mutation. |
+| `src/control-plane/record-layout.ts` | **New.** Paths, JSONL encode/decode (`decodeJsonlFile(text, runId)`), schema-version compatibility, first-key-wins; `parseRunJson` allows null creator/sealer. |
+| `src/control-plane/record-redact.ts` | **New.** `redactStepPayload`, `redactOrigin`, `redactRecorder`, forbidden origin keys. |
 | `src/control-plane/index.ts` | Re-export RecordStore types, `recordedEnvelope`, factories. |
 | `src/index.ts` | Public API re-exports. |
 | `src/config.ts` | `paths.records`, `RecordsSchema` (`redact`, `actor`), `resolveConfigPaths` (inside-repo validation), `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | Default `paths.records`; commented `[records]` including `actor`. |
 | `src/records/identity.ts` | **New (Phase 2).** User-scope `identity.json`; `loadOrCreateInstallationIdentity`; `resolveRecorder`. |
-| `src/records/origin.ts` | **New (Phase 4, or colocate with identity).** `resolveRecordPerformer`. |
+| `src/records/origin.ts` | **New (Phase 4, or colocate with identity).** `resolveRecordPerformer` fallback only; invoke/protocol pass `RunRecordParams.performer`. |
 | `src/git.ts` | `checkGitSafety` exempt roots + porcelain `-z`; `computePatchId`, `computeDiffSummary`, `gitShowFile`, `gitLogLastTouching`, `listFiveXRefs`, `isAncestor`, `fetchFiveXBranches`, `listRemotes`. |
 | `src/utils/subprocess.ts` | `execGitStdin` for `git patch-id`. |
 | `src/commands/init.handler.ts` | `ensureGitattributes`; `${recordsRelPath}/**/.txn.*` gitignore; call from `initScaffold`. |
 | `src/commands/upgrade.handler.ts` | Call `ensureGitattributes` / txn gitignore during upgrade. |
-| `src/commands/run-v1.handler.ts` | `prepareRecordStepAppend`; dual-write with origin; `putRun` on init/complete (`creator`/`sealer`); seal commit; `checkGitSafety` opts; `run state --plan` source; worktree-re-rooted store. |
-| `src/commands/commit.handler.ts` | Always stage `recordsRelPath` with `--files` when `recordsAbsPath` exists in the effective worktree. |
-| `src/commands/record-context.ts` | **New.** Factory: `resolveDbContext` + `resolveRecordsRoot` + working-tree `RecordStore` + identity/`originFor`. |
+| `src/commands/run-v1.handler.ts` | `RunRecordParams.performer`; `prepareRecordStepAppend` (copies performer); dual-write with `originFor`; `putRun` on init/complete (nullable `creator`/`sealer`, `redactedRecorder`); seal commit; fail-closed newer `format_version`; `checkGitSafety` opts; `run state --plan` source; worktree-re-rooted store. |
+| `src/commands/commit.handler.ts` | Always stage `recordsRelPath` with `--files` when `recordsAbsPath` exists in the effective worktree; `performer` system/cli on `git:commit`. |
+| `src/commands/invoke.handler.ts` | Pass `performer: { kind: "agent", role, provider }` on both `--record` `recordStepInternal` calls. |
+| `src/commands/protocol.handler.ts` | Pass `performer: { kind: "agent", role }` on `--record`. |
+| `src/commands/quality-v1.handler.ts` | Pass or omit `performer` as `{ kind: "system", role: "cli" }`. |
+| `src/commands/record-context.ts` | **New.** Factory: `resolveDbContext` + `resolveRecordsRoot` + working-tree `RecordStore` + identity / **`originFor` / `redactedRecorder`** (sole already-redacted constructors). |
 | `src/records/paths.ts` | **New (Phase 4).** `resolveRecordsRoot` — canonical rel path + worktree-absolute path. |
-| `src/commands/prompt.handler.ts` | Decision snapshot on answered run-scoped prompts (origin envelope). |
-| `src/commands/prompt-context.ts` | Pass a worktree-re-rooted `recordStore` on context. |
+| `src/commands/prompt.handler.ts` | Decision snapshot on answered run-scoped prompts (`originFor`, not inline origin). |
+| `src/commands/prompt-context.ts` | Pass a worktree-re-rooted `recordStore` and `originFor` on context. |
 | `src/commands/plan-v1.handler.ts` | Resolution, skip records subtree, `source` fields, `--fetch`/`--all-refs`, branch-only discovery. |
 | `src/commands/plan-v1.ts` | Flags `--fetch`, `--all-refs`. |
 | `src/commands/run-v1.ts` | `--fetch` / `--all-refs` on `run state` if they apply when `--plan` is set. |
@@ -1453,7 +1527,7 @@ Default `--target auto`.
 | `src/commands/records.handler.ts` | **New.** Handlers. |
 | `src/records/resolve.ts` | **New.** Progress resolution algorithm. |
 | `src/records/index-rebuild.ts` | **New.** Index upsert (no origin columns). |
-| `src/records/backfill.ts` | **New.** Export + target rule; `origin: null` + `materializer`. |
+| `src/records/backfill.ts` | **New.** Export + target rule; line `origin: null` + `materializer`; summary `creator`/`sealer` null + summary `materializer`. |
 | `src/bin.ts` | `registerRecords`. |
 | `src/doctor/checks/records.ts` | **New.** Doctor `records` check. |
 | `src/doctor/registry.ts` | Register check; `findingKey` cases. |
@@ -1467,20 +1541,21 @@ Default `--target auto`.
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream/origin round-trip/`INVALID_ORIGIN`. |
-| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; `fsyncDir` after create/rename/unlink; torn commit marker / corrupt journal fail closed (`RECORD_TXN_CORRUPT`, artifacts kept); live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); stale lock is stolen then recovered; lock metadata published atomically (`linkSync`, never empty `wx`); empty/malformed lock is not immediately stolen (P0.5); JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget including origin/schema_version; directory layout. |
-| Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys; `origin.actor` redact; forbidden origin keys stripped. |
+| Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream/origin round-trip/`INVALID_ORIGIN`; `creator: null` preserved across seal; `UNSUPPORTED_FORMAT_VERSION` on newer `putRun`. |
+| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; `fsyncDir` after create/rename/unlink; torn commit marker / corrupt journal fail closed (`RECORD_TXN_CORRUPT`, artifacts kept); live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); stale lock is stolen then recovered; lock metadata published atomically (`linkSync`, never empty `wx`); empty/malformed lock is not immediately stolen (P0.5); JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget including origin/schema_version; `parseRunJson` null creator/sealer + summary materializer; planted `format_version: 2` + `future_field` is readable and not rewritten; directory layout. |
+| Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys; `origin.actor` redact; `redactRecorder`; forbidden origin keys stripped. |
 | Unit | `test/unit/records/identity.test.ts` | Identity file create/reload; corrupt throws; actor precedence; path outside repo. |
 | Unit | `test/unit/git.test.ts` | Safety exemption scope; porcelain `-z`; patch-id/numstat/show/log mocks. |
 | Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact`, `records.actor` defaults; absolute-inside accepted; absolute-outside and escaping relative rejected. |
 | Unit | `test/unit/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` create/append/idempotent/custom inside-repo root; `.txn.*` gitignore line. |
-| Unit | `test/unit/commands/run-v1.handler.test.ts` | `prepareRecordStepAppend` no-write failures; dual-write admit/duplicate; init `putRun` with `creator`; complete seal preserves `creator` and sets `sealer`; origin on admitted step. |
+| Unit | `test/unit/commands/run-v1.handler.test.ts` | `prepareRecordStepAppend` no-write failures; `params.performer` copied onto `prepared.performer`; dual-write admit/duplicate; init `putRun` with `creator` from `redactedRecorder`; complete seal preserves `creator` (including `null`) and sets `sealer`; seal of `format_version: 2` fails without rewrite; origin on admitted step via `originFor`. |
 | Unit | `test/unit/commands/commit.test.ts` | `--files` add pathspec includes `recordsRelPath`. |
-| Unit | `test/unit/commands/prompt-store.test.ts` | Decision line on answer with origin; skip without `runId`; no duplicate on CAS loser. |
+| Unit | `test/unit/commands/prompt-store.test.ts` | Decision line on answer via `originFor`; skip without `runId`; no duplicate on CAS loser; actor redaction. |
 | Unit | `test/unit/records/paths.test.ts` | `resolveRecordsRoot` same-checkout vs linked worktree; outside-repo throws. |
+| Unit | `test/unit/records/origin.test.ts` | `resolveRecordPerformer` fallback; explicit `performer` wins; never guesses agent/provider. |
 | Unit | `test/unit/records/resolve.test.ts` | Ancestor prune, diverged, missing ref (mocked git). |
 | Unit | `test/unit/records/index-rebuild.test.ts` | Upsert; skip newer local-only; idempotent. |
-| Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`; `origin: null`; materializer is exporter not origin; recorded-vs-backfill not overwritten. |
+| Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`; `origin: null`; materializer is exporter not origin; recorded-vs-backfill not overwritten; `creator`/`sealer` null; summary `materializer` present. |
 | Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted, `RECORD_TXN_CORRUPT`; live `.txn.lock` is not reported as corrupt; empty/unreadable `.txn.lock` is not immediately stolen or reported as corrupt; `--fix` identity; `--fix` does not delete `.txn.*`. |
 | Unit | `test/unit/doctor/registry.test.ts` | `records` registered; `findingKey` for fixable codes. |
 | Integration | `test/integration/commands/run-v1.test.ts` | Record files after `run record`; dirty records do not `DIRTY_WORKTREE`; other dirty still does. |
@@ -1489,10 +1564,11 @@ Default `--target auto`.
 | Integration | `test/integration/records/progress-resolution.test.ts` | Merged, stacked, diverged, branch-only, remote-only, worktree, no implicit fetch. |
 | Integration | `test/integration/commands/plan-v1.test.ts` | Envelope `source`; `--fetch` / `--all-refs`; skip records subtree. |
 | Integration | `test/integration/commands/doctor.test.ts` | `records` check in sweep; `--fix` re-index only. |
-| Integration | `test/integration/records/backfill.test.ts` | Dry-run mapping; real commit; second run no-op; two-DB partial history + union; disagreements; exported lines have `origin: null` + `materializer`. |
-| Integration | `test/integration/records/index.test.ts` | Fresh clone + `records index` matches origin steps modulo ids/local columns. |
+| Integration | `test/integration/records/backfill.test.ts` | Dry-run mapping; real commit; second run no-op; two-DB partial history + union; disagreements; exported lines have `origin: null` + `materializer`; `run.json` `creator`/`sealer` null; JSON/text output does not show exporter as creator. |
+| Integration | `test/integration/records/index.test.ts` | Fresh clone + `records index` matches origin steps modulo ids/local columns; backfilled `creator: null` stays unknown. |
 | Integration | `test/integration/records/merge-union.test.ts` | Two branches append distinct JSONL lines; merge has no conflict markers and both keys. |
 | Integration | `test/integration/records/worktree-records.test.ts` | `run init --worktree`: `run.json` + step line in the linked worktree; `5x commit` from that worktree includes them; origin `installation_id` matches identity file; identity file not committed. |
+| Integration | `test/integration/records/origin-attribution.test.ts` | Author and reviewer `invoke --record` retain configured provider/role; system and human cases; paired step/budget origin equality; `origin.actor` redaction on steps, decisions, budget (incl. baseline-only), and `run.json` creator/sealer for config/env/identity-file actor sources. |
 | Integration | `test/integration/records/atomic-append-crash.test.ts` | Fault-injection after each stream replacement, each directory-sync point, and during recovery; torn/corrupt commit marker; stale-lock recovery; no visible partial mixed-stream batch. |
 | Integration | `test/integration/records/concurrent-append.test.ts` | Two OS processes concurrently `atomicAppend` distinct step vs decision (or step vs budget) ops to one run; both lines persist; no leftover `.txn.*`; no `RECORD_TXN_CORRUPT`. Creation-window variant: first process pauses after exclusive lock-path creation and before metadata publication; contender does not obtain the lock or recover. |
 | Integration | `test/integration/commands/text-output.test.ts` | Source column / source line. |
@@ -1510,9 +1586,11 @@ Edge cases (must appear in the suites above):
 - Absolute `paths.records` inside the repo is accepted; absolute or relative path outside is `RECORDS_ROOT_OUTSIDE_REPO`.
 - `decodeJsonlFile` reconstructs `runId` for steps, decisions, and budget lines; origin/provenance/schema_version round-trip; recorded+null origin is `INVALID_JSONL`.
 - Identity file lives outside the repo; second load keeps the same UUID; OS username/hostname never appear on origin.
-- Backfill lines have `origin: null` and a separate `materializer`; exporter installation id is not copied into `origin`.
-- `run.json` seal preserves `creator` and sets `sealer`.
-- Slice 06-shaped `[step, budget]` appends share one origin (contract + Phase 4 wiring).
+- Backfill lines have `origin: null` and a separate `materializer`; exporter installation id is not copied into `origin`. Backfilled `run.json` has `creator: null` and (if terminal) `sealer: null`; exporter is summary `materializer` only. Index and text/JSON output keep creator/sealer unknown.
+- Live `run.json` seal preserves a known `creator` and sets `sealer`. Seal of a `creator: null` summary keeps `creator: null`. Seal of `format_version > 1` fails without rewriting the file (future fields retained).
+- Slice 06-shaped `[step, budget]` appends share one origin from `originFor` (contract + Phase 4 wiring), including baseline-only budget appends.
+- `invoke --record` author and reviewer lines retain configured `provider` and `role`; direct record / commit / quality default to `{ kind: "system", role: "cli" }`; prompt/`human:*` are `{ kind: "human", role: "operator" }`.
+- `records.redact = ["origin.actor"]` omits actor on steps, decisions, budget (including baseline-only), and `run.json` creator/sealer for config, env, and identity-file actor sources; `installation_id` and `performer.kind` remain; forbidden identity keys never persist.
 
 ---
 
@@ -1543,13 +1621,13 @@ Edge cases (must appear in the suites above):
 
 | Phase | Description | Time |
 |-------|-------------|------|
-| 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06; origin envelope on `AppendOp`) | 1.5–2 days |
+| 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06; origin envelope on `AppendOp`; nullable summary attribution; `UNSUPPORTED_FORMAT_VERSION`) | 1.5–2 days |
 | 2 | `paths.records` / `records.redact` / `records.actor` + inside-repo validation + identity file + `.gitattributes` via init/upgrade | 1 day |
 | 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`, schema-version rules, origin envelope), power-loss-durable journal (`fsyncDir`, checksummed commit marker, fail-closed recovery), per-run writer lock (atomic lock publish), patch-id helpers, contract on FS backend | 3–3.5 days |
-| 4 | Dual-write, worktree re-root helper, origin context wiring for all writers, `prepareRecordStepAppend`, safety exemption, commit staging, seal (`creator`/`sealer`), decisions | 2.5–3.5 days |
+| 4 | Dual-write, worktree re-root helper, typed `performer` on `RunRecordParams`, `originFor`/`redactedRecorder` for all writers, `prepareRecordStepAppend`, safety exemption, commit staging, seal (nullable `creator`/`sealer`, fail-closed newer format), decisions | 2.5–3.5 days |
 | 5 | Resolution spike + algorithm + plan list/phases/run state `--plan` + git fixture | 2–3 days |
 | 6 | `records index` + doctor `records` check (no origin columns) | 1.5–2 days |
-| 7 | `records backfill` (auto target, dry-run, disagreements, two-DB union, honest `origin: null` + materializer) | 2–3 days |
+| 7 | `records backfill` (auto target, dry-run, disagreements, two-DB union, honest `origin: null` + line/summary materializer, null creator/sealer) | 2–3 days |
 | 8 | Docs (origin/privacy/identity), exports, text-output, full `bun test` | 1 day |
 | **Total** | | **15–20.5 days** |
 
@@ -1564,6 +1642,15 @@ This plan implements slice `v2-git-native-run-records` from [`docs/v2/plan-input
 ---
 
 ## Revision History
+
+### 1.6 — September 1, 2026
+
+Addresses **P0.6**, **P0.7**, **P1.3**, and **P1.4** in the September 1 addendum of [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (Revision 1.5 origin-attribution re-review). Prior P0.1–P0.5 and P1.1–P1.2 remain as specified in 1.1–1.4. Eight-phase order unchanged.
+
+1. **P0.6 — Unknown historical summary attribution.** `RunRecordSummary.creator` and `sealer` are `RecordRecorder | null`. Backfill (and pre-slice resume materialization) leave them `null` and record the exporter on summary `materializer` — never as creator or sealer. Live init still sets creator; live seal copies creator (including `null`) and sets sealer to this installation. Backfill, decode, index, and text/JSON-output tests prove legacy summaries stay unknown while the exporter is separately identifiable.
+2. **P0.7 — Typed performer path into append.** `RunRecordParams.performer` flows through `prepareRecordStepAppend` onto `PreparedRecordStep.performer`. `recordStepInternal` calls `originFor(prepared.performer)` only. Invoke (author and reviewer, success and failure) and protocol `--record` pass `{ kind: "agent", role, provider? }`; quality/commit/terminal/direct record use system/cli; prompts use `originFor({ kind: "human", role: "operator" })`; slice 06 stamps every budget op (including baseline-only) via `originFor`. Integration tests retain configured provider/role on invoke records and equal origins on paired step/budget ops.
+3. **P1.3 — Redaction on every attribution surface.** `originFor` / `redactedRecorder` are the sole, already-redacted constructors (forbidden-key stripping + `origin.actor`). They cover steps, decisions, all budget operations, and `run.json` creator/sealer for config, env, and identity-file actor sources. `installation_id` and `performer.kind` are not redactable.
+4. **P1.4 — Fail-closed newer `run.json` mutation.** `format_version > 1` is a read-only compatible view when v1 required fields are present. `putRun` / seal throw `UNSUPPORTED_FORMAT_VERSION` without changing the file. Types use `format_version: number`; writers emit `1`. Tests plant a v2 summary with `future_field` and assert seal/rewrite neither succeeds nor drops the field.
 
 ### 1.5 — September 1, 2026
 
