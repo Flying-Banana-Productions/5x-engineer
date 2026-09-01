@@ -257,3 +257,29 @@ The line-level envelope, user-scope installation identity, crash-safe record sto
 
 - **Plan completion:** ⚠️ — P0.6 and P1.3 are resolved; the generic P0.7 and P1.4 remedies are sound but need the slice-06 coordination and pre-append future-version guard above.
 - **Ready for implementation:** ⚠️ — after P0.8 and P0.9 are addressed.
+
+---
+
+## Addendum (September 1, 2026) — Revision 1.7 cross-slice origin re-review
+
+**Reviewed:** `fdaa4d6a5b87a628e029f1734524b290663dd454`
+
+### Prior-issue disposition
+
+- **P0.8 — Slice-06 writers consume the shared origin factory and retain performer metadata: Addressed.** The coordinated 212 §1.5 / 208 §6.2 contract now embeds `createRecordContext`, preserves `PreparedRecordStep.performer`, requires an already-redacted origin on baseline capture, and uses one `originFor(prepared.performer)` result for both reviewer step and snapshot. The new cross-slice unit and integration cases cover provider/role, equality, baseline-only behavior, and redaction.
+- **P0.9 — Future `run.json` is rejected before terminal mutation: Addressed.** The binding order checks the record summary before preparing or appending a terminal step, changing SQLite state, committing, clearing the pointer, or releasing the lock. The planted-v2 cases now assert stream bytes, SQLite state, commit history, lock, and pointer are unchanged.
+
+### New blocker
+
+#### P1.5 — Slice-06 Phase 6 now depends on slice-10 Phase 4, but the phase graph still permits it after only Phase 1
+
+**Action:** `auto_fix`
+
+**Risk:** The new 208 `ReviewBudgetCommandContext` calls `createRecordContext`, which 212 does not create until Phase 4. Yet 208's dependency/timeline still says every persistence and record path from Phase 4 onward is blocked only on 212 Phase 1, and Phase 6 is described as runnable after 208 Phase 4. Consequently a team following the approved phase graph can start 208 Phase 6 against a non-existent context factory, or is forced to add a forbidden local substitute. Calling the Phase-4 factory shape part of the Phase-1 freeze does not make its implementation available.
+
+**Requirement:** Preserve the Phase-1 interface freeze while making the implementation dependency explicit in both plans: 208 Phases 4–5 may use `RecordStore`/fixture origins after 212 Phase 1, but 208 Phase 6+ production record wiring (including `createReviewBudgetContext`, `originFor`, and baseline capture hooks) must wait for 212 Phase 4 to merge. State this in each phase gate/timeline and add a sequencing test or build boundary showing Phase-4 facade tests require no `createRecordContext`, while Phase-6 wiring does.
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — P0.8 and P0.9 are fully addressed; the new shared context introduces an unrecorded cross-slice implementation dependency.
+- **Ready for implementation:** ⚠️ — after P1.5 phases the `createRecordContext` dependency explicitly.
