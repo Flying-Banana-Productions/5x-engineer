@@ -1,9 +1,9 @@
 # Git-Native Run Records and Progress Resolution
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** August 31, 2026
 **Last updated:** August 31, 2026
-**Status:** Draft — pending staff engineer re-review (P0.4)
+**Status:** Draft — pending staff engineer re-review (P0.5)
 
 ---
 
@@ -48,7 +48,7 @@ Phase 1 freezes `RecordStore` plus an in-memory implementation so slice 06 (`208
 | **Dirty-tree exemption is path-scoped** | Uncommitted record files are expected between `run record` and `5x commit`. Any other dirty path still blocks `run init`. |
 | **Re-root records to the run's effective worktree** | `config.paths.records` is control-plane-absolute. Writers, seal, and `5x commit` join the canonical repo-relative path under `effectiveWorkingDirectory` so a `--worktree` run commits records with the code. Git pathspecs and `git show` keep the repo-relative path. |
 | **`atomicAppend` uses a power-loss-durable per-run journal** | Independent `renameSync` per stream is not crash-safe, and file `fsyncSync` alone does not persist directory entries. An immutable prepared journal plus a separately durable checksummed commit marker, with `fsyncDir` after every create/rename/unlink, restores the pre-batch state or finishes the batch. Corrupt or incomplete recovery metadata fails closed (`RECORD_TXN_CORRUPT`); never assume `prepared` and delete artifacts. |
-| **`atomicAppend` serializes writers with a per-run lock** | Fixed `.txn.*` names are not mutually exclusive. Two CLI processes (a step writer and a run-scoped prompt snapshot) can otherwise recover each other's prepared txn or last-writer-wins a stream replacement. A store-internal lock is acquired before recovery/read/stage and held through directory-synced cleanup. Only an abandoned (dead-PID) lock may be stolen; a live owner is never recovered over. |
+| **`atomicAppend` serializes writers with a per-run lock** | Fixed `.txn.*` names are not mutually exclusive. Two CLI processes (a step writer and a run-scoped prompt snapshot) can otherwise recover each other's prepared txn or last-writer-wins a stream replacement. A store-internal lock is acquired before recovery/read/stage and held through directory-synced cleanup. Lock metadata is published atomically (unique temp + `fsync` + `linkSync` to `.txn.lock`); never `openSync(".txn.lock", "wx")`, which exposes an empty pathname a contender can steal. Only an abandoned lock (dead PID, or a lock that stays malformed for `lockTimeoutMs`) may be stolen; a live owner is never recovered over. |
 | **`paths.records` must be inside the repository** | Staging, `git show`, ref resolution, and backfill all need a git path. An outside root is a configuration error, not a warning that silently disables git-native behavior. |
 | **JSONL decode takes `runId` from the caller** | On-disk lines omit `run_id` (directory-implied). `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. |
 | **No implicit network** | `--fetch` is the only fetch. Remote-tracking refs are as fresh as the last fetch. |
@@ -176,7 +176,7 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
 
 **`atomicAppend` durability is a per-run journal, not in-process rollback.** A thrown JS exception still rolls back (memory: clone-then-swap; FS: abort before the commit marker is directory-durable). A process kill, power loss, or failed rename between `steps.jsonl` and `budget.jsonl` cannot leave slice 06 with an orphaned reviewer step or budget snapshot. File `fsyncSync` of `.new` / journal bytes is not enough: every create, rename, and unlink must be followed by `fsync` of the **run directory** so the directory entry survives power loss. Prepared metadata is immutable; the commit decision is a separate checksummed marker. If that metadata is corrupt or incomplete, recovery **fails closed** (`RECORD_TXN_CORRUPT`) and leaves artifacts for doctor — it must not assume `prepared` and delete them. See Phase 3.2. Recovery runs on every store open/read/append **only while holding the per-run writer lock**. Journal artifacts (`.txn.*`, including `.txn.lock`) are gitignored under the records root and are never staged.
 
-**Cross-process writers are serialized per run.** The working-tree store acquires an exclusive per-run lock (`.txn.lock`) before `recoverRunDir`, before reading stream bytes, and before staging; it holds that lock until cleanup has been directory-fsynced. A second process waits a bounded time or throws `RECORD_TXN_LOCKED`. Recovery runs only for the lock owner; a live owner's prepared transaction is never rolled back or deleted by a concurrent caller. Stale locks (dead PID) are stolen, then recovered. Memory has no lock (single-threaded clone-then-swap). All writer paths — `putRun`, `append` / `atomicAppend`, and prompt decision snapshots that call `recordStore.append` — go through this lock. Do not write JSONL files from handlers.
+**Cross-process writers are serialized per run.** The working-tree store acquires an exclusive per-run lock (`.txn.lock`) before `recoverRunDir`, before reading stream bytes, and before staging; it holds that lock until cleanup has been directory-fsynced. Publication is atomic: write a unique temp with `{ pid, owner }`, `fsyncFile`, `linkSync` onto `.txn.lock` (fails if the name exists), `fsyncDir`. A second process waits a bounded time or throws `RECORD_TXN_LOCKED`. An unreadable/empty `.txn.lock` is **not** immediately stolen — that is the creation-window race. Recovery runs only for the lock owner; a live owner's prepared transaction is never rolled back or deleted by a concurrent caller. Stale locks (dead PID, or malformed for a full `lockTimeoutMs`) are stolen, then recovered. Memory has no lock (single-threaded clone-then-swap). All writer paths — `putRun`, `append` / `atomicAppend`, and prompt decision snapshots that call `recordStore.append` — go through this lock. Do not write JSONL files from handlers.
 
 **Post-commit steps get a dedicated seal commit.** `run complete` writes the terminal step + sealed `run.json`, then if the records root is dirty, `commitFiles` with message `5x: seal run <id>`. Do not wait for a later `5x commit` that may never come (`207` open question 1, resolved: seal commit). If there is nothing to commit, skip (no empty commit).
 
@@ -226,7 +226,8 @@ Algorithm: `recordsRelPath = relativePathUnder(recordsConfigAbs, controlPlaneRoo
   doctor records       → missing lines, missing rows, unreachable head_commit;
                          uncommitted records older than lingering-run threshold;
                          corrupt/torn record-transaction journal (not auto-fixed);
-                         in-flight `.txn.lock` is not treated as corrupt
+                         in-flight `.txn.lock` (valid live PID **or** unreadable/empty)
+                         is not treated as corrupt and is not immediately stolen
                          --fix = index only
 ```
 
@@ -359,7 +360,7 @@ export interface RecordStore {
 3. Duplicate `idempotencyKey` on the same `(runId, stream)`: return the **original** line, `created: false`. Do not overwrite payload.
 4. `listLines` returns the insertion sequence, not `createdAt` sort. Contract test: two budget lines with identical `createdAt`; order matches append order.
 5. `atomicAppend([])` returns `[]` and writes nothing.
-6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists. Working-tree crash recovery (Phase 3.2) extends this to process kill and power loss (directory fsync); corrupt txn metadata fails closed. Concurrent working-tree writers for the same run are serialized by the per-run lock; a live owner's prepared txn is never recovered by another process. Memory has no disk journal or lock.
+6. `atomicAppend` of mixed streams is atomic. Test: `[step, budget]` where the second op's encoder/store hook throws → neither line exists. Working-tree crash recovery (Phase 3.2) extends this to process kill and power loss (directory fsync); corrupt txn metadata fails closed. Concurrent working-tree writers for the same run are serialized by the per-run lock (atomically published owner metadata); a live owner's prepared txn is never recovered by another process, including during lock publication. Memory has no disk journal or lock.
 7. Methods take `runId` + stream + key. **No path parameters.**
 
 - [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
@@ -480,7 +481,7 @@ export function ensureGitattributes(
 
 ## Phase 3: Working-tree JSONL implementation
 
-**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. `atomicAppend` of mixed streams is power-loss durable: an immutable prepared journal, a separately durable checksummed commit marker, and `fsyncDir` after every create/rename/unlink. A per-run writer lock is acquired before recovery/read/stage and held through directory-synced cleanup; only abandoned transactions are recovered. Recovery on every open/read/append restores the pre-batch state or finishes the entire batch; corrupt or incomplete txn metadata throws `RECORD_TXN_CORRUPT` and does not delete artifacts. No visible partial mixed-stream write remains. Two concurrent processes appending distinct ops to one run both persist. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
+**Completion gate:** `createWorkingTreeRecordStore({ recordsRoot, now? })` satisfies `runRecordStoreContract`. Layout matches `207` §2.3. `decodeJsonlFile(text, runId)` reconstructs `RecordLine.runId` for steps, decisions, and budget. `atomicAppend` of mixed streams is power-loss durable: an immutable prepared journal, a separately durable checksummed commit marker, and `fsyncDir` after every create/rename/unlink. A per-run writer lock is acquired before recovery/read/stage and held through directory-synced cleanup; owner metadata is published atomically (`linkSync` of a fsynced temp, never empty `wx` on `.txn.lock`); only abandoned transactions are recovered. Recovery on every open/read/append restores the pre-batch state or finishes the entire batch; corrupt or incomplete txn metadata throws `RECORD_TXN_CORRUPT` and does not delete artifacts. No visible partial mixed-stream write remains. Two concurrent processes appending distinct ops to one run both persist. A contender paused against an empty or in-publication lock does not obtain it or reach journal recovery. Redaction is **not** inside the store (writer-side; tested in Phase 4) except a shared `redactStepPayload` helper can live here for unit tests. `git patch-id` / `numstat` helpers exist and are unit-tested with mocked `subprocess.execGit`.
 
 #### 3.1 Layout and codecs — `src/control-plane/record-layout.ts` (new)
 
@@ -521,6 +522,8 @@ JSONL on-disk object:
 
 ```typescript
 export type TxnEvent =
+	| "after-lock-temp-written"
+	| "after-lock-linked"
 	| "after-lock-acquired"
 	| "after-lock-released"
 	| "after-new"
@@ -569,7 +572,8 @@ Reserved files in `<runDir>/` (gitignored; never staged):
 
 | File | Role |
 |------|------|
-| `.txn.lock` | **Per-run exclusive writer lock.** `{ version: 1, pid, owner, started_at }`. Created with `O_EXCL` (`openSync(..., "wx")`). `owner` is 16 random bytes hex, kept in a process-local map. Gitignored. |
+| `.txn.lock` | **Per-run exclusive writer lock.** `{ version: 1, pid, owner, started_at }`. Published atomically: unique temp + `fsyncFile` + `linkSync` onto this name (link fails if the destination exists). Never created with `openSync(".txn.lock", "wx")`. `owner` is 16 random bytes hex, kept in a process-local map. Gitignored. |
+| `.txn.lock.<hex>` | Unique prepare temp for lock publication. Not the lock. Gitignored via `.txn.*`. Unlinked after `linkSync` succeeds or fails. |
 | `.txn.journal.json` | **Immutable prepared record.** Written once; never rewritten. `{ version: 1, streams, created, new_sha256, old_sha256 }`. `new_sha256` / `old_sha256` are hex SHA-256 of the corresponding staging bytes (`old_sha256` omits streams that were creates). |
 | `.txn.commit` | **Separately durable commit marker.** Created only after the prepared journal and all staging files are directory-durable. `{ version: 1, journal_sha256 }` where `journal_sha256` is SHA-256 of the exact `.txn.journal.json` bytes. Never written by rewriting the journal. |
 | `.txn.<stream>.new` | Staged replacement bytes for that stream (`steps` / `decisions` / `budget`). |
@@ -577,28 +581,42 @@ Reserved files in `<runDir>/` (gitignored; never staged):
 
 There is **no** `state` field on the journal. Commit vs prepare is the presence of a **valid, checksum-matching** `.txn.commit`. Do not encode commit by mutating `.txn.journal.json`.
 
-`ensureGitignore` (Phase 3, called from init/upgrade alongside `ensureGitattributes`) idempotently appends `${recordsRelPath}/**/.txn.*` so `git add -A` / `5x commit` never stages journals (covers `.txn.lock`, `.txn.journal.json`, `.txn.commit`, and `.txn.<stream>.*`). Custom `paths.records` gets a matching ignore line.
+`ensureGitignore` (Phase 3, called from init/upgrade alongside `ensureGitattributes`) idempotently appends `${recordsRelPath}/**/.txn.*` so `git add -A` / `5x commit` never stages journals (covers `.txn.lock`, `.txn.lock.<hex>` temps, `.txn.journal.json`, `.txn.commit`, and `.txn.<stream>.*`). Custom `paths.records` gets a matching ignore line.
 
 **Per-run writer lock** — store-internal (not `src/lock.ts` plan locks). Memory impl is a no-op: JS is single-threaded and clone-then-swap is already atomic. Do not add lock methods to the `RecordStore` interface.
 
 Invariant: `recoverRunDir` runs **only** while this process holds `.txn.lock` for that `runDir`. A concurrent caller blocked on the lock never inspects, recovers, or deletes another process's `.txn.journal.json` / `.new` / `.old` / `.txn.commit`. Fixed `.txn.*` names are therefore exclusive.
 
-Liveness matches `src/lock.ts` `isPidAlive`: `process.kill(pid, 0)` returns alive; `EPERM` is alive (not stealable across users); `ESRCH` is dead. Do not add a native `flock` dependency. A reused PID belonging to a live unrelated process is treated as a live owner (wait / `RECORD_TXN_LOCKED`), not a steal.
+Liveness matches `src/lock.ts` `isPidAlive`: `process.kill(pid, 0)` returns alive; `EPERM` is alive (not stealable across users); `ESRCH` is dead. Do not add a native `flock` dependency. A reused PID belonging to a live unrelated process is treated as a live owner (wait / `RECORD_TXN_LOCKED`), not a steal. Records require a POSIX filesystem that supports hard links (APFS, ext4, and typical local disks); do **not** fall back to `wx` on `.txn.lock` if `linkSync` fails with `EXDEV` / `EPERM`.
 
 **`acquireRunWriterLock(runDir)`** (sync; `Bun.sleepSync` for the wait poll):
 
+Do **not** `openSync(join(runDir, ".txn.lock"), "wx")`. That makes an empty lock pathname visible before `{ pid, owner }` is written and fsynced. A contender that classifies unreadable/empty as abandoned unlinks it; the first process continues as owner — concurrent fixed-name journal writes and record loss (P0.5).
+
+Publish a fully written, fsynced lock record **atomically**:
+
 1. If `runDir` does not exist and the caller is not `putRun`: do not create it, do not lock; writers throw `RUN_NOT_FOUND`, readers return `null`.
 2. `putRun` may `mkdirSync(runDir, { recursive: true })` first, then acquire.
-3. Loop until `lockTimeoutMs` (default 5000) elapses:
-   - Try `openSync(join(runDir, ".txn.lock"), "wx")`. On success: write `{ version: 1, pid: process.pid, owner: randomBytes(16).toString("hex"), started_at }`, `fsyncFile`, `fsyncDir(runDir)`, store `owner` in a process-local map keyed by `runDir`, close the fd (the file remaining on disk **is** the lock; ownership is pid + in-memory owner token). Fire `after-lock-acquired`. Return.
-   - On `EEXIST`: if a subsequent read hits `ENOENT` (owner released), continue the loop and retry `wx`. Otherwise read `.txn.lock`.
-     - Unreadable, empty, or schema-invalid: treat as **abandoned** (crashed mid-create). `unlinkSync`, `fsyncDir(runDir)`, continue the loop. Do **not** delete journal/staging files.
-     - `pid === process.pid` **and** `owner` is in this process's map: re-entrant (nesting depth++). Return without rewriting the file. Same-pid with an **unknown** owner is **not** re-entrant (PID reuse); wait like any other live owner.
-     - `isPidAlive(pid)`: **live owner.** Sleep `lockPollMs` (default 25), continue. Do **not** recover, unlink, or read `.txn.journal.json`.
-     - PID dead: **abandoned.** `unlinkSync(".txn.lock")` only (leave journal/staging), `fsyncDir(runDir)`, continue the loop to create our lock. Recovery happens *after* we hold the lock.
-4. If the loop times out with a live owner: throw `RecordStoreError("RECORD_TXN_LOCKED", "run <id> record writer lock held by pid <n>")`. Store unchanged. Do not recover. Do not touch `.txn.*`.
+3. Generate `owner` once per successful acquire (16 random bytes hex). Loop until acquired, or until a **live** owner has been waited on for `lockTimeoutMs` (default 5000):
+   1. **Prepare.** Create unique temp `join(runDir, ".txn.lock." + randomBytes(16).toString("hex"))`. Write `{ version: 1, pid: process.pid, owner, started_at }`, `fsyncFile(temp)`. Fire `after-lock-temp-written`. The temp is not the lock; nobody may recover or treat a temp as `.txn.lock`. `wx` on the temp name is allowed (unique; not the published pathname).
+   2. **Publish.** `linkSync(temp, join(runDir, ".txn.lock"))` (hard-link; succeeds only if the destination does not exist).
+      - Success: `fsyncDir(runDir)` so the `.txn.lock` directory entry is durable. Fire `after-lock-linked`. At this point `.txn.lock` is a complete, readable lock record (same inode as the fsynced temp) — never empty. `unlinkSync(temp)`, `fsyncDir(runDir)`. Store `{ pid, owner }` in a process-local map keyed by `runDir`. Fire `after-lock-acquired`. Return (nesting depth = 1). Optionally unlink other leftover `.txn.lock.<hex>` temps **only while holding** `.txn.lock` (a waiter's deleted temp makes their `linkSync` `ENOENT`; they retry — safe).
+      - `EEXIST`: `unlinkSync(temp)` (ignore `ENOENT`). Inspect `.txn.lock` below. This is **not** ownership.
+      - `EXDEV` / `EPERM` (hard-link unsupported): throw; do **not** fall back to `openSync(".txn.lock", "wx")`.
+   3. **Inspect existing `.txn.lock`:**
+      - Subsequent read hits `ENOENT` (owner released): continue the loop and retry prepare+link.
+      - **Valid** `{ version: 1, pid, owner, started_at }`:
+        - `pid === process.pid` **and** `owner` is in this process's map: re-entrant (nesting depth++). Return without rewriting the file.
+        - Same-pid with an **unknown** owner is **not** re-entrant (PID reuse); treat as another owner.
+        - `isPidAlive(pid)`: **live owner.** Sleep `lockPollMs` (default 25), continue. Do **not** recover, unlink, or read `.txn.journal.json`.
+        - PID dead: **abandoned.** `unlinkSync(".txn.lock")` only (leave journal/staging), `fsyncDir(runDir)`, continue the loop to publish our lock. Recovery happens *after* we hold the lock.
+      - **Unreadable, empty, truncated, or schema-invalid:** **not** immediately abandoned. A live publisher using this protocol never exposes an empty `.txn.lock` (the pathname appears only as a hard-link of a fsynced complete record). Immediate steal is the P0.5 race. Protocol:
+        1. On the first consecutive malformed observation, record `malformedSince` (reset when the file is valid or absent).
+        2. Sleep `lockPollMs`, re-read. If it becomes valid, handle as valid. If it disappears, retry prepare+link.
+        3. If it remains malformed for a continuous `lockTimeoutMs`: **abandoned garbage** (crash leftover or external corruption — not a live metadata-write window). `unlinkSync(".txn.lock")`, `fsyncDir(runDir)`, reset `malformedSince`, continue to publish. Do **not** delete journal/staging files.
+4. If the loop times out with a live owner: throw `RecordStoreError("RECORD_TXN_LOCKED", "run <id> record writer lock held by pid <n>")`. Store unchanged. Do not recover. Do not touch `.txn.*` except our unlinked temp.
 
-**`releaseRunWriterLock(runDir)`:** decrement nesting depth. If depth reaches 0: unlink `.txn.lock` **only if** pid+owner still match this process's map entry; then `fsyncDir(runDir)`; drop the map entry. Fire `after-lock-released`. Call from `finally` on every path that acquired (including `RECORD_TXN_CORRUPT` and JS throws). Never unlink a lock we do not own. A leftover lock after crash is stolen by the next acquirer via the dead-PID path.
+**`releaseRunWriterLock(runDir)`:** decrement nesting depth. If depth reaches 0: unlink `.txn.lock` **only if** pid+owner still match this process's map entry; then `fsyncDir(runDir)`; drop the map entry. Fire `after-lock-released`. Call from `finally` on every path that acquired (including `RECORD_TXN_CORRUPT` and JS throws). Never unlink a lock we do not own. A leftover lock after crash is stolen by the next acquirer via the dead-PID path (or the malformed-grace path if the file is unreadable).
 
 **Who acquires:** every working-tree method that would call `recoverRunDir` — `getRun`, `getLine`, `listLines`, `append`, `atomicAppend`, `putRun`, and each run directory visited by `listRuns`. Readers take the same exclusive lock so they cannot roll back a live writer's prepared txn or observe a mixed mid-rename view. `listRuns` acquires/releases **per** run directory (never holds every run at once). `atomicAppend([])` returns `[]` without locking (no `runId`). Prompt decision snapshots (Phase 4.7) call `recordStore.append` and therefore take this lock; handlers must not write `decisions.jsonl` themselves.
 
@@ -621,7 +639,7 @@ Do not create `.txn.commit` until every `.new` / `.old` file and `.txn.journal.j
 
 Let `journalOk` mean `.txn.journal.json` parses as version 1, has the required fields, and every present `.new` / `.old` file matches the recorded SHA-256. Let `commitOk` mean `.txn.commit` parses as version 1 and `journal_sha256` equals SHA-256 of the current journal file bytes. Let `commitExists` mean the `.txn.commit` path exists (even if unreadable).
 
-1. If neither `.txn.journal.json` nor `.txn.commit` exists: delete any orphan `.txn.*.new` / `.txn.*.old` / `*.tmp` leftover from `durableWriteFile` (crash during prepare before the journal), `fsyncDir(runDir)`, return. Visible stream files are unchanged. A leftover `.txn.journal.json.tmp` is not a journal. **Never unlink `.txn.lock`** (the caller holds it).
+1. If neither `.txn.journal.json` nor `.txn.commit` exists: delete any orphan `.txn.*.new` / `.txn.*.old` / `*.tmp` leftover from `durableWriteFile` (crash during prepare before the journal), `fsyncDir(runDir)`, return. Visible stream files are unchanged. A leftover `.txn.journal.json.tmp` is not a journal. **Never unlink `.txn.lock` or `.txn.lock.<hex>` lock-prepare temps** (the caller holds `.txn.lock`; waiters own their temps).
 2. If `!journalOk` (journal missing while `.txn.commit` exists; journal unreadable, JSON/schema invalid, or a present `.new`/`.old` checksum mismatch) **or** `commitExists && !commitOk` (torn, truncated, or checksum-mismatch commit marker): throw `RecordStoreError("RECORD_TXN_CORRUPT", ...)`. Leave every `.txn.*` file in place **except** the caller still releases `.txn.lock` in `finally`. Do **not** roll back, roll forward, or delete artifacts. Doctor reports `RECORD_TXN_CORRUPT` (Phase 6); `--fix` does not repair this.
 3. If `journalOk && commitOk`: **roll forward**. For each listed stream, if `.txn.<stream>.new` still exists, verify SHA-256 then `renameSync` it over `<stream>.jsonl` and `fsyncDir(runDir)`. Then unlink `.old` files, journal, and commit marker; `fsyncDir(runDir)`. Store content equals the full batch. Idempotent if some renames already completed (missing `.new` for a listed stream is OK on this path).
 4. If `journalOk && !commitExists`: **rollback only when replacements are proven not to have started.** Proof (all must hold): every listed stream still has `.txn.<stream>.new` whose SHA-256 matches `new_sha256`; for replaced streams, `.old` exists and the live `<stream>.jsonl` SHA-256 matches `old_sha256` (or the live file is absent iff it was a create and `.old` is absent). Then unlink `.new`, `.old`, and the journal; `fsyncDir(runDir)`. Store content equals the pre-batch state.
@@ -639,9 +657,14 @@ Let `journalOk` mean `.txn.journal.json` parses as version 1, has the required f
 - [ ] `atomicAppend` JS throw before the commit marker is directory-durable: same as rollback (in-process catch still deletes staging if the process lives); lock is released in `finally`.
 - [ ] **Live lock is not recovered:** hold `.txn.lock` in a child process with a prepared `.txn.journal.json` + `.new` files (PID alive). A second store `atomicAppend` / `getLine` must **not** delete those staging files. With `lockTimeoutMs` shorter than the hold: throws `RECORD_TXN_LOCKED` and streams are unchanged. After the child exits (or releases): the waiter acquires, recovers the abandoned txn, then proceeds.
 - [ ] **Stale lock is stolen:** write `.txn.lock` with a dead PID plus a prepared uncommitted journal; reopen steals the lock, rolls back, then a subsequent append succeeds.
+- [ ] **Lock pathname is never empty:** after `after-lock-linked` and after `after-lock-acquired`, `.txn.lock` parses as version 1 with `pid` + `owner` (not an empty file). `acquireRunWriterLock` must not `openSync(".txn.lock", "wx")`.
+- [ ] **`after-lock-temp-written` mutual exclusion:** pause A at `after-lock-temp-written` (temp exists; `.txn.lock` does not). Contender B may win `linkSync`. Exactly one process becomes owner and may call `recoverRunDir`. The loser must not stage `.txn.journal.json` or recover. Resume A: `EEXIST` → wait or `RECORD_TXN_LOCKED`; A does not also own.
+- [ ] **`after-lock-linked` is already complete:** pause A at `after-lock-linked` (before `after-lock-acquired` / temp unlink). `.txn.lock` is a valid live-PID record. Contender B waits or throws `RECORD_TXN_LOCKED`; B must **not** unlink `.txn.lock`, must **not** obtain the lock, must **not** reach `recoverRunDir`.
+- [ ] **Creation-window race (P0.5):** deterministic multi-process (or child + parent) coverage. Process A performs the exclusive creation of the lock pathname and pauses **before** owner metadata would have been readable under the old `wx` protocol: child `openSync(".txn.lock", "wx")` then sleeps without writing `{ pid, owner }` (empty/unreadable visible lock, PID alive), **or** equivalent planted empty `.txn.lock` while a sibling process is live. Process B constructs `createWorkingTreeRecordStore` and calls `atomicAppend` / `getLine` with `lockTimeoutMs` longer than the pause. During the pause B must **not** obtain `.txn.lock` and must **not** reach journal recovery (no unlink of the empty file on the first observation; no delete of a prepared `.txn.journal.json` / `.new` planted beside it). After A writes+fsyncs complete metadata and `fsyncDir`, or after A exits, B either waits on the live owner or steals a dead-PID lock — never two concurrent owners.
+- [ ] **Malformed lock is not immediately stolen:** write empty or garbage `.txn.lock` (no valid pid). An acquire with `lockTimeoutMs` well above several `lockPollMs` intervals must still see that file on the second poll (not unlinked after the first observation). After a continuous `lockTimeoutMs` of malformed observations, a later acquire may steal (abandoned garbage) and proceed.
 - [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename; reading a union-concatenated file with two keys returns both in file order; concatenated file with duplicate key returns first payload.
 - [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
-- [ ] **Multi-process integration** (`test/integration/records/concurrent-append.test.ts`): temp `recordsRoot` with one `putRun`. Two `Bun.spawn` workers (`cleanGitEnv()`, `stdin: "ignore"`, timeout 30s) each construct `createWorkingTreeRecordStore` on that root and `atomicAppend` a **distinct** op (worker A: a step line; worker B: a decision or budget line). Both exit 0. Reopen: both keys exist with original payloads; no `.txn.lock` / `.txn.journal.json` / `.txn.commit` / `.new` / `.old` remain; `getLine` does not throw `RECORD_TXN_CORRUPT`. Repeat the pair enough times (or with a barrier file) that the appends overlap, not merely run sequentially.
+- [ ] **Multi-process integration** (`test/integration/records/concurrent-append.test.ts`): temp `recordsRoot` with one `putRun`. Two `Bun.spawn` workers (`cleanGitEnv()`, `stdin: "ignore"`, timeout 30s) each construct `createWorkingTreeRecordStore` on that root and `atomicAppend` a **distinct** op (worker A: a step line; worker B: a decision or budget line). Both exit 0. Reopen: both keys exist with original payloads; no `.txn.lock` / `.txn.journal.json` / `.txn.commit` / `.new` / `.old` remain; `getLine` does not throw `RECORD_TXN_CORRUPT`. Repeat the pair enough times (or with a barrier file) that the appends overlap, not merely run sequentially. Include a variant that pauses the first worker after exclusive lock-path creation and before metadata publication (empty `wx` stand-in or `after-lock-temp-written` / planted empty lock as above) and asserts the second worker does not recover or append until the window closes.
 
 Single-op `append` is `atomicAppend([op])` (same lock + journal path; one stream).
 
@@ -1125,10 +1148,10 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 
 `RECORD_UNCOMMITTED_STALE` inspects `git status` in each mapped plan worktree (and the control-plane checkout when a plan has no mapping), using `resolveRecordsRoot` with that checkout as `effectiveWorkdir`. Do not only `git status` the main checkout — a `--worktree` run's dirty records live in the linked worktree.
 
-`RECORD_TXN_CORRUPT` walks `recordsAbsPath` in each of those checkouts for `.txn.journal.json` / `.txn.commit` that fail `recoverRunDir` (catch `RECORD_TXN_CORRUPT`). Include `runId` and the run directory path in the finding detail. Leave artifacts on disk. If `.txn.lock` is held by a **live** PID, do **not** call `recoverRunDir` and do **not** emit `RECORD_TXN_CORRUPT` (transaction in flight). If the lock is stale (dead PID) or absent with leftover journal/commit files, acquire/steal the lock then recover; on `RECORD_TXN_CORRUPT`, report it and release the lock without deleting artifacts. `RECORD_TXN_LOCKED` is a store error, not a doctor finding.
+`RECORD_TXN_CORRUPT` walks `recordsAbsPath` in each of those checkouts for `.txn.journal.json` / `.txn.commit` that fail `recoverRunDir` (catch `RECORD_TXN_CORRUPT`). Include `runId` and the run directory path in the finding detail. Leave artifacts on disk. If `.txn.lock` is held by a **live** PID, do **not** call `recoverRunDir` and do **not** emit `RECORD_TXN_CORRUPT` (transaction in flight). If `.txn.lock` exists but is **unreadable/empty/malformed**, do **not** treat it as absent and do **not** immediately steal it — same P0.5 rule as acquire; skip recover for this pass (do not emit `RECORD_TXN_CORRUPT`). If the lock is stale (dead PID) or absent with leftover journal/commit files, acquire/steal the lock then recover; on `RECORD_TXN_CORRUPT`, report it and release the lock without deleting artifacts. `RECORD_TXN_LOCKED` is a store error, not a doctor finding.
 
 - [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
-- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging.
+- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging. Seed an empty/unreadable `.txn.lock` plus a prepared journal and assert doctor does **not** immediately recover or emit `RECORD_TXN_CORRUPT`.
 - [ ] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
 
 ---
@@ -1270,7 +1293,7 @@ Default `--target auto`.
 | Type | Scope | Validates |
 |------|-------|-----------|
 | Unit | `test/unit/control-plane/record-store-contract.test.ts` | Memory (Phase 1) and working-tree (Phase 3) share append/get/list/duplicate/`atomicAppend`/insertion-order/budget stream. |
-| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; `fsyncDir` after create/rename/unlink; torn commit marker / corrupt journal fail closed (`RECORD_TXN_CORRUPT`, artifacts kept); live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); stale lock is stolen then recovered; JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget; directory layout. |
+| Unit | `test/unit/control-plane/record-fs.test.ts` | Journal rollback/roll-forward; `fsyncDir` after create/rename/unlink; torn commit marker / corrupt journal fail closed (`RECORD_TXN_CORRUPT`, artifacts kept); live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); stale lock is stolen then recovered; lock metadata published atomically (`linkSync`, never empty `wx`); empty/malformed lock is not immediately stolen (P0.5); JSONL first-key-wins; `decodeJsonlFile(text, runId)` for steps/decisions/budget; directory layout. |
 | Unit | `test/unit/control-plane/record-redact.test.ts` | Field policy; non-redactable keys. |
 | Unit | `test/unit/git.test.ts` | Safety exemption scope; porcelain `-z`; patch-id/numstat/show/log mocks. |
 | Unit | `test/unit/config.test.ts` / `config-registry.test.ts` | `paths.records`, `records.redact` defaults; absolute-inside accepted; absolute-outside and escaping relative rejected. |
@@ -1282,7 +1305,7 @@ Default `--target auto`.
 | Unit | `test/unit/records/resolve.test.ts` | Ancestor prune, diverged, missing ref (mocked git). |
 | Unit | `test/unit/records/index-rebuild.test.ts` | Upsert; skip newer local-only; idempotent. |
 | Unit | `test/unit/records/backfill.test.ts` | Target auto (live branch vs deleted); disagreement; dry-run no writes; `provenance: backfilled`. |
-| Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted, `RECORD_TXN_CORRUPT`; live `.txn.lock` is not reported as corrupt; `--fix` identity; `--fix` does not delete `.txn.*`. |
+| Unit | `test/unit/doctor/records.test.ts` | Missing row/run, extra row, unreachable head, stale uncommitted, `RECORD_TXN_CORRUPT`; live `.txn.lock` is not reported as corrupt; empty/unreadable `.txn.lock` is not immediately stolen or reported as corrupt; `--fix` identity; `--fix` does not delete `.txn.*`. |
 | Unit | `test/unit/doctor/registry.test.ts` | `records` registered; `findingKey` for fixable codes. |
 | Integration | `test/integration/commands/run-v1.test.ts` | Record files after `run record`; dirty records do not `DIRTY_WORKTREE`; other dirty still does. |
 | Integration | `test/integration/commands/commit.test.ts` | Phase commit contains `steps.jsonl` lines. |
@@ -1295,7 +1318,7 @@ Default `--target auto`.
 | Integration | `test/integration/records/merge-union.test.ts` | Two branches append distinct JSONL lines; merge has no conflict markers and both keys. |
 | Integration | `test/integration/records/worktree-records.test.ts` | `run init --worktree`: `run.json` + step line in the linked worktree; `5x commit` from that worktree includes them. |
 | Integration | `test/integration/records/atomic-append-crash.test.ts` | Fault-injection after each stream replacement, each directory-sync point, and during recovery; torn/corrupt commit marker; stale-lock recovery; no visible partial mixed-stream batch. |
-| Integration | `test/integration/records/concurrent-append.test.ts` | Two OS processes concurrently `atomicAppend` distinct step vs decision (or step vs budget) ops to one run; both lines persist; no leftover `.txn.*`; no `RECORD_TXN_CORRUPT`. |
+| Integration | `test/integration/records/concurrent-append.test.ts` | Two OS processes concurrently `atomicAppend` distinct step vs decision (or step vs budget) ops to one run; both lines persist; no leftover `.txn.*`; no `RECORD_TXN_CORRUPT`. Creation-window variant: first process pauses after exclusive lock-path creation and before metadata publication; contender does not obtain the lock or recover. |
 | Integration | `test/integration/commands/text-output.test.ts` | Source column / source line. |
 | Integration | `test/integration/commands/init.test.ts` / `upgrade.test.ts` | `.gitattributes` on disk. |
 
@@ -1306,7 +1329,7 @@ Edge cases (must appear in the suites above):
 - Unreachable `head_commit` after simulated squash: doctor warn, `plan list` still works.
 - `--files` with missing records dir: no extra `git add` pathspec, commit still succeeds.
 - Linked worktree: records written and committed in the worktree, not the control-plane checkout.
-- Mixed-stream `atomicAppend` interrupted after each file replacement, each directory-sync, and during recovery: no visible partial batch. Torn or corrupt commit marker / journal throws `RECORD_TXN_CORRUPT` and leaves artifacts. A live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); a stale lock is stolen then recovered.
+- Mixed-stream `atomicAppend` interrupted after each file replacement, each directory-sync, and during recovery: no visible partial batch. Torn or corrupt commit marker / journal throws `RECORD_TXN_CORRUPT` and leaves artifacts. A live `.txn.lock` is not recovered (`RECORD_TXN_LOCKED`); a stale lock is stolen then recovered. An empty/unreadable `.txn.lock` is not immediately stolen; a contender in that window does not obtain the lock or reach journal recovery.
 - Two OS processes concurrently appending a step and a decision (or budget) to the same run: both records survive; no journal leftover.
 - Absolute `paths.records` inside the repo is accepted; absolute or relative path outside is `RECORDS_ROOT_OUTSIDE_REPO`.
 - `decodeJsonlFile` reconstructs `runId` for steps, decisions, and budget lines.
@@ -1337,7 +1360,7 @@ Edge cases (must appear in the suites above):
 |-------|-------------|------|
 | 1 | Freeze `RecordStore` + memory impl + contract tests (unblocks slice 06) | 1–2 days |
 | 2 | `paths.records` / `records.redact` + inside-repo validation + `.gitattributes` via init/upgrade | 0.5–1 day |
-| 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`), power-loss-durable journal (`fsyncDir`, checksummed commit marker, fail-closed recovery), per-run writer lock, patch-id helpers, contract on FS backend | 3–3.5 days |
+| 3 | Working-tree JSONL, codecs (`decodeJsonlFile(text, runId)`), power-loss-durable journal (`fsyncDir`, checksummed commit marker, fail-closed recovery), per-run writer lock (atomic lock publish), patch-id helpers, contract on FS backend | 3–3.5 days |
 | 4 | Dual-write, worktree re-root helper, `prepareRecordStepAppend`, safety exemption, commit staging, seal, decisions | 2–3 days |
 | 5 | Resolution spike + algorithm + plan list/phases/run state `--plan` + git fixture | 2–3 days |
 | 6 | `records index` + doctor `records` check | 1.5–2 days |
@@ -1356,6 +1379,12 @@ This plan implements slice `v2-git-native-run-records` from [`docs/v2/plan-input
 ---
 
 ## Revision History
+
+### 1.4 — August 31, 2026
+
+Addresses **P0.5** in the August 31 addendum of [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (Revision 1.3 re-review). Prior P0.1 / P0.2 / P0.3 / P0.4 / P1.1 / P1.2 remain as specified in 1.1–1.3.
+
+1. **P0.5 — Atomic lock publication.** `.txn.lock` is no longer created with `openSync(..., "wx")` (empty pathname visible before `{ pid, owner }` is fsynced). Acquire writes a unique temp with the full lock record, `fsyncFile`s it, `linkSync`s onto `.txn.lock` (fails if the name exists), then `fsyncDir`s the run directory and removes the temp. A malformed/empty visible lock is never stolen on first observation; abandonment requires a dead PID or a continuous `lockTimeoutMs` of still-malformed reads. Fault-injection/multi-process coverage pauses after exclusive path creation and before metadata publication; the contender must not obtain the lock or reach journal recovery.
 
 ### 1.3 — August 31, 2026
 
