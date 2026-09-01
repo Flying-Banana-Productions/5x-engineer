@@ -103,3 +103,28 @@ Phase 2 only warns and skips `.gitattributes` when `paths.records` is outside th
 
 - **Plan completion:** ⚠️ — prior worktree, configuration, and codec blockers are resolved; the journal requires one more durability revision.
 - **Ready for next phase:** ⚠️ — after P0.3 is specified and tested.
+
+---
+
+## Addendum (August 31, 2026) — Revision 1.2 re-review
+
+**Reviewed:** `79b47839c1a87d49062d02571d19e76da1ed01ba`
+
+### What's addressed (✅)
+
+- **P0.3 — Journal commit/recovery durability:** **Addressed.** The revision adds directory fsync boundaries for every metadata mutation, separates immutable prepared metadata from the checksummed commit marker, fails closed on corrupt metadata, preserves artifacts, and adds targeted fault-injection and doctor coverage. This fully resolves the prior directory-durability and unsafe-corrupt-journal findings.
+
+### Production readiness blocker
+
+### P0.4 — RecordStore has no cross-process writer exclusion
+
+**Action:** `auto_fix`
+
+**Risk:** `atomicAppend` uses fixed per-run `.txn.*` names but specifies no mutual exclusion. Two CLI processes can concurrently append different records for the same run (notably a run-scoped prompt answer and a normal step writer). The second process can recover/delete the first process's prepared transaction or overwrite its staging files; both can read the same old stream and last-writer-wins a replacement. This loses authoritative events and invalidates the atomicity claim.
+
+**Requirement:** Add a store-internal, cross-process per-run writer lock acquired before recovery/read/stage and held through directory-synced cleanup. It must distinguish a live owner from a crashed owner and recover only abandoned transactions; do not let a concurrent caller recover an active prepared transaction. Define bounded wait/error behavior, release/durability semantics, and ensure all writer paths (including prompt decision snapshots) use it. Add a multi-process integration test that concurrently appends distinct step/decision or step/budget operations to one run and proves both records survive without journal corruption or loss.
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — P0.3 is resolved, but the new writer-concurrency gap blocks the authoritative record design.
+- **Ready for next phase:** ⚠️ — after P0.4 specifies and tests per-run cross-process serialization.
