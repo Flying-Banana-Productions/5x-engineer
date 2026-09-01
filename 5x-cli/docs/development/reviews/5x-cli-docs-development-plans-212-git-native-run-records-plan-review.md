@@ -153,3 +153,22 @@ Phase 2 only warns and skips `.gitattributes` when `paths.records` is outside th
 
 - **Plan completion:** ⚠️ — writer serialization is substantially designed but lock publication remains racy.
 - **Ready for next phase:** ⚠️ — after P0.5 makes lock acquisition atomically publish owner metadata and proves the creation-window race is closed.
+
+---
+
+## Addendum (August 31, 2026) — Revision 1.4 re-review
+
+**Reviewed:** `223de9c45f69c1481df05f8c07331542dd6cc67b`
+
+### What's addressed (✅)
+
+- **P0.5 — Atomic lock publication:** **Addressed.** A complete owner record is written and fsynced to a unique temporary file before `linkSync` atomically publishes `.txn.lock`; the lock pathname is therefore never an empty in-progress file. The plan explicitly rejects a `wx` fallback, delays malformed-lock stealing for the full timeout, keeps recovery behind the acquired lock, and supplies deterministic creation-window plus multi-process coverage.
+
+### Remaining concerns
+
+- No new blocking issues identified in revision 1.4.
+
+### Updated readiness
+
+- **Plan completion:** ✅ — all prior P0/P1 findings are addressed with implementable algorithms and targeted tests.
+- **Ready for next phase:** ✅ — ready for implementation.
