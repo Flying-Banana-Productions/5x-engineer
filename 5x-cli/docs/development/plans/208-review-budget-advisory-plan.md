@@ -1,8 +1,8 @@
 # Review-Budget Advisory Foundation
 
-**Version:** 1.6
+**Version:** 1.7
 **Created:** August 29, 2026
-**Status:** Draft — revision 1.6 addressing staff review addendum (P1.8 shared pre-append record admission before `RecordStore.atomicAppend`)
+**Status:** Draft — revision 1.7 coordinating origin-writer contract with slice 10 (`212` 1.5 / P0.8)
 
 ---
 
@@ -46,7 +46,8 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 | **Reject reviewer-authored aggregates** | If input contains `budget`, `budgetBand`, `B0`, `W`, `R`, `S`, `E`, `A`, `P`, `baselineDirection`, or similar CLI-owned keys, fail `INVALID_STRUCTURED_OUTPUT`. Do not strip-and-continue. |
 | **`Addresses` + still-listed items define `R`** | Incorporated finding IDs drop out of `R` unless they still appear in the current verdict `items` (incomplete author claim). Explicit `addressed` / `still_open` enums are slice 07. |
 | **No implementation-review fields** | Do not add `--credit-realization`, four-class `scopeClass`, `planImpact`, or `priority` requirements. Plan-review `scopeClass` is `acceptance_required` \| `risk_reduction` \| `polish` only. |
-| **Shared pre-append admission before any RecordStore write** | `RecordStore.atomicAppend` cannot un-append a terminal-run or over-limit step. Extract `prepareRecordStepAppend` from today’s `recordStepInternal` body (`src/commands/run-v1.handler.ts:1201–1299`) and call it from **both** `recordStepInternal` and `recordPlanReviewerStepWithSnapshot` **before** constructing or sending an append. Admission preserves active-run, fail-closed execution-context/worktree, JSON, `maxStepsPerRun`, idempotency, complete metadata assembly, and duplicate-at-limit as a no-op/repair. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures call no `atomicAppend` and leave both record streams and index projections unchanged. |
+| **Shared pre-append admission before any RecordStore write** | `RecordStore.atomicAppend` cannot un-append a terminal-run or over-limit step. Extract `prepareRecordStepAppend` from today’s `recordStepInternal` body (`src/commands/run-v1.handler.ts:1201–1299`) and call it from **both** `recordStepInternal` and `recordPlanReviewerStepWithSnapshot` **before** constructing or sending an append. Admission preserves active-run, fail-closed execution-context/worktree, JSON, `maxStepsPerRun`, idempotency, complete metadata assembly, and duplicate-at-limit as a no-op/repair. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures call no `atomicAppend` and leave both record streams and index projections unchanged. The admit result is slice 10’s `PreparedRecordStep` **including `performer`** — do not redeclare a local `{ stepInput, maxSteps }` shape that drops it. |
+| **Budget writers consume slice 10’s origin factory** | `review-budget-context.ts` embeds `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`). Paired step+snapshot ops stamp `recordedEnvelope(ctx.originFor(prepared.performer))`. Baseline-only `captureBaseline` requires `origin` from `ctx.originFor(performer)`. This slice does not construct `RecordOrigin` inline (`212` §1.5). |
 | **Snapshot + reviewer step are one RecordStore atomic append** | Appending a budget snapshot before the unique step record orphans telemetry when the step insert fails or a retry races. `apply` returns a pending snapshot; persist it in the **same** `RecordStore.atomicAppend` as the unique step line **only after** `prepareRecordStepAppend` admits the step, then project both into the SQLite index. Failed unique appends insert no budget line and no index row. Idempotent retries (`created: false`) append no second line, but load the existing step/snapshot lines and idempotently upsert both SQLite projections (repair after a projection failure). Duplicate-at-limit is the same repair path: admission returns duplicate, so the wrapper never appends. |
 | **First-review `baselineAssessment` is a record field, not cache-only** | `BudgetSnapshotPayload.baselineAssessment` is the authoritative initial `I`. The facade record, v8 snapshot index, encode/decode, and reindex all carry that optional field. After an index wipe, `deriveBudget` recomputes identical `I` and `baselineDirection` from the record line. Do not reconstruct `I` from `derived_json`. |
 | **`BaselineAssessment` is a Phase 1 domain type** | Snapshot payload, facade, codec, and index rebuild (Phase 4) must compile before protocol emit/validate (Phase 5). Declare the shared structural type in `src/review-budget/types.ts`. `src/protocol.ts` imports and re-exports it; it does not declare a second copy. |
@@ -63,6 +64,7 @@ Advisory mode **does not change v1 routing**. `requiresHuman` is recorded, not a
 - [`docs/v1/100-architecture.md`](../../v1/100-architecture.md) — CLI as toolbelt; protocol validate/record.
 - [`docs/v1/101-cli-primitives.md`](../../v1/101-cli-primitives.md) — `run state`, `protocol emit` / `validate`.
 - Plan input: [`docs/v2/plan-inputs/06-review-budget-advisory.plan-input.md`](../../v2/plan-inputs/06-review-budget-advisory.plan-input.md).
+- [`212-git-native-run-records-plan.md`](./212-git-native-run-records-plan.md) — Phase 1 freezes `RecordStore` + in-memory impl **and** the origin-writer context (`RecordCommandContext.originFor`, `PreparedRecordStep.performer`). This slice consumes that freeze; it does not fork origin construction.
 - Predecessor store pattern: [`205-prompt-queue-foundation-plan.md`](./205-prompt-queue-foundation-plan.md).
 - Follow-on: [`docs/v2/plan-inputs/07-plan-review-governance.plan-input.md`](../../v2/plan-inputs/07-plan-review-governance.plan-input.md).
 
@@ -179,9 +181,9 @@ Do **not** treat derived forecasts as record payload. Snapshot lines may omit `d
 **Snapshot persistence is atomic with the decorated reviewer step.** `protocolValidate` and `invokeAgent` emit the success envelope and call `recordStepInternal` afterward (`src/commands/protocol.handler.ts:479–515`, `src/commands/invoke.handler.ts:642–684`). If `apply` appended a snapshot first, a failed record (terminal run, step limit, DB error, or retry race) would leave telemetry without a journal row, and a retry could append a second snapshot for the same verdict. Therefore:
 
 - `applyPlanReviewBudget` **computes** (and may CAS-capture a baseline via RecordStore) but **does not** append a snapshot line.
-- Handlers resolve **one** review-budget context: one `RecordStore`, one `ReviewBudgetStore` facade, and one `resolveDbContext` Database for the SQLite index and v1 `steps` projection. They do **not** import `bun:sqlite`.
-- Shared `prepareRecordStepAppend` runs **before** any `RecordStore.atomicAppend`. It performs the current `recordStepInternal` admission checks and assembles the complete step record. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures throw `RecordError` with **no** append. Duplicate-at-limit returns `outcome: "duplicate"` (no append; projection repair).
-- Unique reviewer-step persist uses `RecordStore.atomicAppend([stepOp, budgetSnapshotOp])` **only on** `outcome: "admit"`, with the snapshot’s idempotency key bound to the prepared step key. If the step is a duplicate (`created: false` from the store, or `outcome: "duplicate"` from admission), the batch adds no budget line. If either op throws, neither line is durable.
+- Handlers resolve **one** review-budget context: slice 10’s `createRecordContext` (`RecordStore`, `originFor`, `redactedRecorder`) plus one `ReviewBudgetStore` facade and one `resolveDbContext` Database for the SQLite index and v1 `steps` projection. They do **not** import `bun:sqlite` and do **not** construct a context without `originFor`.
+- Shared `prepareRecordStepAppend` runs **before** any `RecordStore.atomicAppend`. It performs the current `recordStepInternal` admission checks and assembles the complete step record **including `prepared.performer`**. Terminal-run, missing-worktree, invalid-result, and new-at-limit failures throw `RecordError` with **no** append. Duplicate-at-limit returns `outcome: "duplicate"` (no append; projection repair).
+- Unique reviewer-step persist uses `RecordStore.atomicAppend([stepOp, budgetSnapshotOp])` **only on** `outcome: "admit"`, with the snapshot’s idempotency key bound to the prepared step key and **both** ops stamped `recordedEnvelope(ctx.originFor(prepared.performer))`. If the step is a duplicate (`created: false` from the store, or `outcome: "duplicate"` from admission), the batch adds no budget line. If either op throws, neither line is durable.
 - After a successful unique append (`created: true`), project the step into SQLite `steps` (today’s `recordStep` row, so v1 readers keep working) and the budget snapshot into the v8 index. Index failure after a successful record append does **not** roll back the record — the record is source of truth.
 - On `created: false` **or** admission `outcome: "duplicate"` (true duplicate, duplicate-at-limit, or retry after a successful append whose SQLite projection failed), **do not skip projection**. Load the existing step line and matching budget snapshot line by the same idempotency keys and idempotently upsert both SQLite projections. Append no line. A retry must restore a missing `steps` row and missing budget index row without duplicating the record. `reindexReviewBudget` remains the bulk/offline repair; command retry must not wait for a later slice-10 `records index`.
 - Envelope-before-record stays the v1 contract (record failure is stderr + exit 1). The invariant is **record step line ↔ record budget snapshot line**, with the SQLite index as a projection.
@@ -820,6 +822,11 @@ export interface CaptureBaselineInput {
 	parsed: ParsedDeliveryBudget;
 	originalSection?: string;
 	configSnapshot: Omit<ReviewBudgetConfig, "mode">;
+	/**
+	 * Already-redacted origin from `ctx.originFor(performer)`. Required on live writes.
+	 * Tests may pass a fixture origin. The facade does not call `originFor` and must not omit origin.
+	 */
+	origin: RecordOrigin;
 }
 
 export type CaptureBaselineResult =
@@ -851,7 +858,7 @@ export function createReviewBudgetStore(
 ): ReviewBudgetStore;
 ```
 
-Reads prefer the index when present and complete; on miss they reconstruct from `recordStore.listLines(runId, "budget")` (or the frozen equivalent) in **insertion order**. Reconstruction **must** map `payload.baselineAssessment` onto `ReviewBudgetSnapshotRecord.baselineAssessment`. An index row is incomplete if the matching record line has `baselineAssessment` and the index column is null — prefer the record (or treat as a miss and read through). Writes always append the record line first (or `created: false`), then upsert the index. `captureBaseline` computes `b0 = sumEffort(parsed.workItems)` and rejects `b0 <= 0` before append.
+Reads prefer the index when present and complete; on miss they reconstruct from `recordStore.listLines(runId, "budget")` (or the frozen equivalent) in **insertion order**. Reconstruction **must** map `payload.baselineAssessment` onto `ReviewBudgetSnapshotRecord.baselineAssessment`. An index row is incomplete if the matching record line has `baselineAssessment` and the index column is null — prefer the record (or treat as a miss and read through). Writes always append the record line first (or `created: false`), then upsert the index. `captureBaseline` computes `b0 = sumEffort(parsed.workItems)` and rejects `b0 <= 0` before append. Live `captureBaseline` stamps `...recordedEnvelope(input.origin)` on the baseline `AppendOp`; callers pass `ctx.originFor(performer)` (`{ kind: "system", role: "cli" }` from template render; the same agent performer as the reviewer step when capture is an invoke/protocol `--record` safety-net). Missing `origin` on a production write is a programming error, not a silent unattributed line.
 
 `latestSnapshot` / `listSnapshots` follow record insertion order. Do not `ORDER BY created_at` without `record_seq`.
 
@@ -930,7 +937,7 @@ export function reindexReviewBudget(
 - [ ] Update version assertions from 7 → 8.
 - [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
 - [ ] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once; second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`).
+- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`.
 - [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
 - [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
 - [ ] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
@@ -1128,48 +1135,72 @@ Algorithm:
 
 ### 6.2 Shared record admission, then atomic snapshot + step persist
 
-`recordStepInternal` already accepts an optional `dbContext` (`src/commands/run-v1.handler.ts:1193–1201`). Budget-recording handlers **must not** let it re-resolve a second Database **or** a second `RecordStore`.
+`recordStepInternal` already accepts an optional `dbContext` (`src/commands/run-v1.handler.ts:1193–1201`). Budget-recording handlers **must not** let it re-resolve a second Database **or** a second `RecordStore` **or** a second origin factory.
 
-**Context factory** (same seam as `PromptCommandContext` / `src/commands/prompt-context.ts`): `src/commands/review-budget-context.ts` resolves **one** `RecordStore` from slice 10’s factory, **one** `resolveDbContext` Database for the v8 index and v1 `steps` projection, constructs `createReviewBudgetStore(recordStore, index)`, and returns `{ db, config, controlPlane, recordStore, store }`. Protocol/invoke handlers call the factory (or accept an injected one in tests). They do **not** import `bun:sqlite` and do **not** construct a SQLite-only budget store.
+**Context factory** (same seam as `PromptCommandContext` / `src/commands/prompt-context.ts`): `src/commands/review-budget-context.ts` calls slice 10’s `createRecordContext` (`212` Phase 4 / §1.5) so it receives **one** worktree-re-rooted `RecordStore`, **one** `resolveDbContext` Database, and the sole already-redacted **`originFor` / `redactedRecorder`**. It then constructs `createReviewBudgetStore(recordStore, index)` and returns:
+
+```typescript
+export interface ReviewBudgetCommandContext extends RecordCommandContext {
+	store: ReviewBudgetStore;
+}
+
+export function createReviewBudgetContext(
+	...args: Parameters<typeof createRecordContext>
+): ReviewBudgetCommandContext {
+	const record = createRecordContext(...args);
+	return {
+		...record,
+		store: createReviewBudgetStore(record.recordStore, createReviewBudgetIndex(record.db)),
+	};
+}
+```
+
+Do **not** return `{ db, config, controlPlane, recordStore, store }` without `originFor`. Protocol/invoke handlers call this factory (or accept an injected `ReviewBudgetCommandContext` in tests). They do **not** import `bun:sqlite`, do **not** construct a SQLite-only budget store, and do **not** assemble `RecordOrigin` inline.
 
 #### 6.2.1 Shared pre-append admission — `prepareRecordStepAppend`
 
-Factor the current `recordStepInternal` checks (`src/commands/run-v1.handler.ts:1201–1299`, everything **before** the `recordStep(...)` write) into an exported `prepareRecordStepAppend`. **Both** `recordStepInternal` and `recordPlanReviewerStepWithSnapshot` call this function **before** any `RecordStore.atomicAppend` and before any SQLite `recordStep` / budget-index upsert. The helper itself performs **no** RecordStore append and **no** SQLite mutation.
+Factor the current `recordStepInternal` checks (`src/commands/run-v1.handler.ts:1201–1299`, everything **before** the `recordStep(...)` write) into slice 10’s exported `prepareRecordStepAppend` (`212` §4.2). **Both** `recordStepInternal` and `recordPlanReviewerStepWithSnapshot` call this function **before** any `RecordStore.atomicAppend` and before any SQLite `recordStep` / budget-index upsert. The helper itself performs **no** RecordStore append and **no** SQLite mutation.
+
+**Do not redeclare a competing admit type.** This slice consumes slice 10’s `PrepareRecordStepOutcome` / `PreparedRecordStep`, which **includes `performer`**. A local shape of only `{ stepInput, maxSteps }` is forbidden — it has no compatible way to call `ctx.originFor`. Mapping `prepared` to a step-append op does not recapture metadata and does not drop `performer`.
 
 ```typescript
-export type PreparedRecordStep =
-	| {
-			outcome: "admit";
-			/** Complete `recordStep` input: all fields assembled, iteration resolved when omitted. */
-			stepInput: RecordStepInput;
-			maxSteps: number;
-	  }
-	| {
-			outcome: "duplicate";
-			existingKey: {
-				runId: string;
-				stepName: string;
-				phase: string;
-				iteration: number;
-			};
-			maxSteps: number;
-	  };
+// Owned by slice 10 (`212` §4.2). Shown here so 06 implementers do not invent a fork.
+export type PrepareRecordStepOutcome =
+	| { outcome: "admit"; prepared: PreparedRecordStep }
+	| { outcome: "duplicate"; prepared: PreparedRecordStep };
+
+export interface PreparedRecordStep {
+	runId: string;
+	stepName: string;
+	phase: string | undefined;
+	iteration: number | undefined;
+	resultJson: string;
+	headCommit: string | undefined;
+	sessionId?: string;
+	model?: string;
+	tokensIn?: number;
+	tokensOut?: number;
+	costUsd?: number;
+	durationMs?: number;
+	logPath?: string;
+	effectiveWorkdir: string | undefined;
+	maxSteps: number;
+	/** Resolved performer. Never omitted after prepare; used by `originFor` only. */
+	performer: RecordPerformer;
+}
 
 export async function prepareRecordStepAppend(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
-	opts?: {
-		dbContext?: {
-			db: Database;
-			config: FiveXConfig;
-			controlPlane?: ControlPlaneResult;
-		};
-		/** When present (the budget wrapper always passes it), duplicate lookup is RecordStore-first. */
-		recordStore?: RecordStore;
+	ctx: {
+		db: Database;
+		config: FiveXConfig;
+		controlPlane?: ControlPlaneResult;
+		recordStore: RecordStore;
 	},
-): Promise<PreparedRecordStep>;
+): Promise<PrepareRecordStepOutcome>;
 ```
 
-`prepareRecordStepAppend` lives next to `recordStepInternal` in `src/commands/run-v1.handler.ts` (extract, do not duplicate the checks). It may accept `recordStore` as an opaque get-by-step-key dependency so this file does not re-declare `RecordStore`. The admit result is the **complete assembled step record** (`stepInput`); callers map it to slice 10’s step-append op **without** capturing further metadata (`head_commit`, iteration, tokens, etc.) after admission. Do not invent a parallel step payload.
+`prepareRecordStepAppend` lives next to `recordStepInternal` in `src/commands/run-v1.handler.ts` (extract, do not duplicate the checks). Invoke/protocol **must** set `params.performer` (`{ kind: "agent", role: "reviewer", provider? }`) so it copies onto `prepared.performer`. The admit result is the **complete assembled step record**; callers map `prepared` to slice 10’s step-append op **without** capturing further metadata (`head_commit`, iteration, tokens, etc.) after admission. Do not invent a parallel step payload.
 
 **Algorithm** (preserve today’s order and fail-closed codes; do not reorder so that an over-limit or terminal run can reach `atomicAppend`):
 
@@ -1185,7 +1216,7 @@ export async function prepareRecordStepAppend(
    - If `summary.total_steps >= maxSteps` **and** the key is **not** a duplicate → `RecordError("MAX_STEPS_EXCEEDED", ...)` with today’s `current_steps` / `max_steps` / `remediation` detail. **New-at-limit. Stop. No append.**
    - If at the ceiling **and** duplicate → continue (duplicate-at-limit is a no-op/repair, not a failure).
 6. **JSON / invalid result.** `JSON.parse(params.result)`; on throw → `RecordError("INVALID_JSON", "--result must be valid JSON", { raw })`. Runs even on a would-be duplicate (today’s order). **Stop. No append.**
-7. **Complete metadata assembly (admit only).** If duplicate: return `{ outcome: "duplicate", existingKey, maxSteps }` — do not resolve a new iteration, do not build a new step append. If admit: resolve `iteration` via `nextIteration` only when omitted (after the max-step check, so omitted iteration at the ceiling stays **new-at-limit**, not a false duplicate of the last row). Assemble the full `recordStep` input: `run_id`, `step_name`, `phase`, resolved `iteration`, `result_json`, `session_id`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `duration_ms`, `log_path`, `head_commit`. Return `{ outcome: "admit", stepInput, maxSteps }`. Callers map `stepInput` to the RecordStore step-append op from this assembled record only.
+7. **Complete metadata assembly + performer.** If duplicate: return `{ outcome: "duplicate", prepared }` with `prepared.performer` set (copy `params.performer` or `resolveRecordPerformer` fallback per `212` §4.2) — do not resolve a new iteration, do not build a new step append. If admit: resolve `iteration` via `nextIteration` only when omitted (after the max-step check, so omitted iteration at the ceiling stays **new-at-limit**, not a false duplicate of the last row). Assemble the full prepared step (`runId`, `stepName`, `phase`, resolved `iteration`, `resultJson`, session/model/tokens/cost/duration/log, `headCommit`, `maxSteps`, **`performer`**). Return `{ outcome: "admit", prepared }`. Callers map `prepared` to the RecordStore step-append op from this assembled record only and pass `prepared.performer` to `ctx.originFor`.
 
 Admission failures (steps 2, 3, 5 new-at-limit, 6) **must not** call `RecordStore.atomicAppend`, `recordStep`, or any budget-index upsert. Both record streams (step and budget) and both SQLite projections (`steps` and v8 snapshot index) remain unchanged. Tests spy/inject `atomicAppend` and assert it was not invoked.
 
@@ -1194,7 +1225,7 @@ Admission failures (steps 2, 3, 5 new-at-limit, 6) **must not** call `RecordStor
 Refactor `recordStepInternal` to call `prepareRecordStepAppend(params, { dbContext })` (pass `recordStore` when the caller already has one; generic v1 callers may omit it).
 
 - `outcome: "duplicate"`: return today’s no-op `RecordStepResult` (`recorded: false`, current totals). Do not append. If a `recordStore` was supplied and SQLite `steps` is missing the row, idempotently project that existing step line (same repair idea as P1.6, without a budget snapshot).
-- `outcome: "admit"`: persist the **assembled** `stepInput`. If slice 10 has not yet switched the generic body to RecordStore, that persist remains today’s SQLite `recordStep(db, prepared.stepInput)` — **not** a second ad-hoc metadata capture after admission. If slice 10 already routes generic record through RecordStore, persist is `atomicAppend([stepAppendFrom(prepared.stepInput)])` then SQLite projection. Do not re-run admission inside the write.
+- `outcome: "admit"`: persist the **assembled** `prepared` record. If slice 10 has not yet switched the generic body to RecordStore, that persist remains today’s SQLite `recordStep` from `prepared` — **not** a second ad-hoc metadata capture after admission. If slice 10 already routes generic record through RecordStore, persist is `atomicAppend([stepAppendFrom(prepared)])` with `recordedEnvelope(ctx.originFor(prepared.performer))` then SQLite projection. Do not re-run admission inside the write.
 
 This slice does **not** retarget every v1 `recordStepInternal` caller onto budget snapshots. Non-applied validate/invoke keep calling `recordStepInternal` with no budget line.
 
@@ -1202,10 +1233,10 @@ This slice does **not** retarget every v1 `recordStepInternal` caller onto budge
 
 `recordPlanReviewerStepWithSnapshot` (beside the context factory) is the production hook for applied plan-review `--record`. It **must not** skip `prepareRecordStepAppend` and must **not** call `atomicAppend` first.
 
-1. Call `prepareRecordStepAppend(params, { dbContext, recordStore })` on the context factory’s **same** `{ recordStore, dbContext }`.
+1. Call `prepareRecordStepAppend(params, { db: ctx.db, config: ctx.config, controlPlane: ctx.controlPlane, recordStore: ctx.recordStore })` on the context factory’s **same** `ReviewBudgetCommandContext`. Invoke/protocol pass `params.performer` (`{ kind: "agent", role: "reviewer", provider? }`).
 2. On thrown `RecordError` (terminal run, missing worktree / other execution-context failure, `INVALID_JSON`, new-at-limit `MAX_STEPS_EXCEEDED`, `RUN_NOT_FOUND`): **do not** call `atomicAppend`. Do not upsert SQLite `steps` or the budget index. Return/throw to the existing stderr-on-record-failure contract. Both record streams and both projections are unchanged.
 3. On `outcome: "duplicate"` (including duplicate-at-limit): **do not** call `atomicAppend` and **do not** append any line. Load the existing step line and matching budget snapshot line by the same idempotency keys. Idempotently upsert SQLite `steps` (same row shape as `recordStep`, including decorated `result_json`) and the v8 snapshot index from those lines. Return the existing step (`recorded: false`). No second budget line, no second index row from a new append. This is P1.6 repair **and** the duplicate-at-limit no-op.
-4. On `outcome: "admit"`: map `prepared.stepInput` to the slice-10 step-append op (no further metadata capture). Build the pending snapshot’s RecordStore op with `snapshotIdempotencyKey(runId, { stepName, phase, iteration })` using the **prepared** step key (resolved iteration, not the possibly-omitted caller iteration). The snapshot payload includes `pendingSnapshot.baselineAssessment` when this is the first snapshot. Call `recordStore.atomicAppend([stepAppend, budgetSnapshotAppend])` on that **same** `RecordStore`.
+4. On `outcome: "admit"`: `origin = ctx.originFor(prepared.performer)` (sole constructor; already redacted). Map `prepared` to the slice-10 step-append op (no further metadata capture) with `...recordedEnvelope(origin)`. Build the pending snapshot’s RecordStore op with `snapshotIdempotencyKey(runId, { stepName, phase, iteration })` using the **prepared** step key (resolved iteration, not the possibly-omitted caller iteration), **the same `recordedEnvelope(origin)`**, and `pendingSnapshot.baselineAssessment` when this is the first snapshot. Call `ctx.recordStore.atomicAppend([stepAppend, budgetSnapshotAppend])` on that **same** `RecordStore`. Both lines **must** share that origin. Do not construct `RecordOrigin` inline. Do not stamp origin on the step and omit it on the budget line.
 5. Unique success (`created: true`): project the assembled step into SQLite `steps` (existing `recordStep` row shape, including decorated `result_json`) and upsert the budget snapshot into the v8 index (including optional `derived` cache **and** `baseline_assessment_json`). Do not open a second RecordStore or Database inside the append.
 6. Store-level duplicate (`created: false` after admit — race with another writer, or retry that admission treated as unique because SQLite count lagged): **do not skip projection and do not append any line.** Same load-and-upsert repair as step 3.
 7. Throw from `atomicAppend`: neither record line is durable; SQLite index and `steps` are unchanged.
@@ -1218,7 +1249,12 @@ Failed unique append leaves no snapshot line. A retry of a failed unique append 
 
 Index write after a successful `atomicAppend`: if the index upsert throws, the record lines remain; the command may fail the process. The **next command retry** repairs the cache via the duplicate / `created: false` upsert above. `reindexReviewBudget` (and slice 10 `records index`) remain bulk/offline repair. Never delete a successful budget line because the index failed. Never require a separately implemented slice-10 index command before a normal retry can restore v1 `steps` or the budget index.
 
-**Baseline CAS** uses `captureBaseline` (single budget-line append, not `atomicAppend` with a step). Safety-net capture in apply still goes through `ensurePlanReviewBaseline` → facade → RecordStore. Baseline capture is not a reviewer-step record and does not go through `prepareRecordStepAppend`.
+**Baseline CAS** uses `captureBaseline` (single budget-line append, not `atomicAppend` with a step). Safety-net capture in apply still goes through `ensurePlanReviewBaseline` → facade → RecordStore. Baseline capture is not a reviewer-step record and does not go through `prepareRecordStepAppend`. Callers **must** pass `origin: ctx.originFor(performer)`:
+
+- Template render / other non-agent callers: `performer = { kind: "system", role: "cli" }`.
+- Invoke/protocol `--record` safety-net (first capture in the same command as the reviewer step): the **same** agent `performer` as `params.performer` / `prepared.performer`.
+
+The facade does not call `originFor` itself. Missing origin is a programming error.
 
 ### 6.3 Protocol validate — `src/commands/protocol.handler.ts`
 
@@ -1229,7 +1265,7 @@ After `protocolValidateCore` and before `outputSuccess` (`:378–483`):
 - On `applied`, replace `validated` with the decorated verdict so the envelope includes `budget`.
 - On `skipped`, leave `validated` unchanged.
 
-`--record` persist path (`:492–515`): when `applied` and `pendingSnapshot` is set, call `recordPlanReviewerStepWithSnapshot` with the context factory’s `{ recordStore, store, dbContext }` (shared `prepareRecordStepAppend`, then atomicAppend of step + snapshot only if admitted, then index projection). Keep the existing stderr-on-record-failure contract (no second stdout envelope). When not `applied`, keep today’s `recordStepInternal` call (no budget line; still goes through the same prepare).
+`--record` persist path (`:492–515`): when `applied` and `pendingSnapshot` is set, call `recordPlanReviewerStepWithSnapshot` with the context factory’s `ReviewBudgetCommandContext` (shared `prepareRecordStepAppend`, then `originFor(prepared.performer)` on both ops, then atomicAppend of step + snapshot only if admitted, then index projection). Keep the existing stderr-on-record-failure contract (no second stdout envelope). When not `applied`, keep today’s `recordStepInternal` call (no budget line; still goes through the same prepare; still pass `params.performer`).
 
 New params on `ProtocolValidateParams` (`:37–50`): `optInBudgetBaseline?: boolean`. Wire `--opt-in-budget-baseline` on `validate reviewer` only (`protocol.ts:102–137`).
 
@@ -1244,7 +1280,7 @@ Direct `protocol validate --record` with no prior template render is a first-cap
 
 ### 6.4 Invoke record path — `src/commands/invoke.handler.ts`
 
-After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (decorate output). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply, then `recordPlanReviewerStepWithSnapshot` with the same context-factory `{ recordStore, store, dbContext }` in the existing post-envelope record block (`:648–684`) (prepare, then atomicAppend only if admitted).
+After successful `validateStructuredOutput` (`:552–615`) and before `outputSuccess` (`:642`): if `role === "reviewer"` and phase is `plan`, same apply (decorate output). Honor `params.record`: if invoke without `--record`, decorate stdout only if baseline already exists; do not capture. If `--record`, full apply, then `recordPlanReviewerStepWithSnapshot` with the same `ReviewBudgetCommandContext` in the existing post-envelope record block (`:648–684`) (prepare, `originFor(prepared.performer)` on both ops, then atomicAppend only if admitted). Invoke **must** set `params.performer = { kind: "agent", role: "reviewer", provider: providerName }`.
 
 Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module already has a parallel option surface; if that is noisy, document opt-in via `protocol validate --record --opt-in-budget-baseline` only and skip the invoke flag. Prefer **one** opt-in flag on both commands for skill simplicity.
 
@@ -1254,12 +1290,15 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
 
 - [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged) **when evidence fields are unchanged**; **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins; **`--credit-assessment` for an unknown `DCn` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`**; **changed `before`/`targetPhase` on an existing `DCn` requires a current assessment**; **author `N` uses persisted `debtClaim` architecture, not a reviewer `creditClaim` on a different id**; **reviewer `creditClaim` colliding with author `DC0` fails `CREDIT_CLAIM_ID_COLLISION`**; injected ledger with negative row and only id+coupling (no evidence) fails `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED`.
 - [ ] `test/unit/review-budget/persist-record.test.ts` (facade + `MemoryRecordStore`, and SQLite index projection): unique-append failure (injected `atomicAppend` throw) leaves **zero** snapshot lines and **zero** index snapshot rows; unique success leaves **exactly one** line and matching index row **with first-snapshot `baselineAssessment` on the record, facade, and index**; idempotent retry (`created: false`) leaves still **one** record line; **SQLite `steps` and/or budget-index projection failure after successful atomicAppend, then retry: `created: false`, still exactly one snapshot line, and both SQLite projections are present (repaired) after the retry**; wiping the index and reindexing still shows one snapshot **and the same `baselineAssessment`**. Admission failures are **not** covered only by this lump; they have focused wrapper tests below.
-- [ ] `test/unit/commands/record-plan-reviewer-step.test.ts` (wrapper + injected `RecordStore` spy): **focused tests, one condition each**, asserting `atomicAppend` was **not** called and that step stream, budget stream, SQLite `steps`, and v8 snapshot index are unchanged:
+- [ ] `test/unit/commands/record-plan-reviewer-step.test.ts` (wrapper + injected `ReviewBudgetCommandContext` with `originFor` spy): **focused tests, one condition each**, asserting `atomicAppend` was **not** called and that step stream, budget stream, SQLite `steps`, and v8 snapshot index are unchanged:
   - terminal run (`status !== "active"`) → `RUN_NOT_ACTIVE`
   - missing worktree (`resolveRunExecutionContext` → `WORKTREE_MISSING`) → `WORKTREE_MISSING`
   - invalid result (`params.result` is not JSON) → `INVALID_JSON`
   - new unique step at `maxStepsPerRun` (omitted iteration or a new tuple) → `MAX_STEPS_EXCEEDED`
   - **duplicate-at-limit** with a complete key: (a) SQLite already has the row → `recorded: false`, `atomicAppend` not called, counts unchanged; (b) RecordStore already has the step+snapshot lines and SQLite `steps` / budget index are missing → `atomicAppend` not called; both projections repaired; still exactly one step line and one snapshot line
+  - **admit with `params.performer = { kind: "agent", role: "reviewer", provider: "cursor" }`:** `atomicAppend` receives two ops whose `origin` is identical and equals `originFor`’s return value; `originFor` was called with that performer; neither op omits origin
+  - **`records.redact = ["origin.actor"]`:** both ops omit `recorder.actor` while `installation_id` and `performer.kind` remain
+- [ ] `test/unit/review-budget/ensure-baseline.test.ts` (or persist-record): baseline-only `captureBaseline` / `ensurePlanReviewBaseline` stamps `origin` from `originFor({ kind: "system", role: "cli" })`; safety-net path with an agent performer stamps that agent origin; missing origin is not a silent unattributed line
 - [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot **line**.
 - [ ] Do not assert any prompt/choose routing.
 
@@ -1280,11 +1319,15 @@ export function ensurePlanReviewBaseline(input: {
 	hasPriorPlanReviewerStep: boolean;
 	optIn: boolean;
 	warn: (message: string) => void;
+	/** Already-redacted origin from `ctx.originFor(performer)`. Required when this call captures. */
+	origin: RecordOrigin;
 }): 
 	| { status: "skipped"; reason: "off" | "v1_compat" | "already" }
 	| { status: "captured"; baseline: ReviewBudgetBaseline }
 	| { status: "error"; code: string; message: string };
 ```
+
+On capture, pass `origin` through to `store.captureBaseline({ ..., origin: input.origin })`. Do not construct origin here. Template render passes `ctx.originFor({ kind: "system", role: "cli" })`. Invoke/protocol `--record` safety-net passes `ctx.originFor(params.performer)` (agent reviewer).
 
 If `mode === "enforced"` **and this call creates a baseline** (`status: "captured"`), `warn("reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only")`. Emit once per successful first capture, not on `already` / skip. Apply’s safety-net (direct `protocol validate --record` / invoke `--record` with no prior render) **must** call this helper so the warning is not render-hook-only.
 
@@ -1292,7 +1335,7 @@ Error message for missing section must tell the orchestrator to run an author pr
 
 ### 7.2 Template render hook — `src/commands/template.handler.ts`
 
-After run context is resolved and the template is selected (`template.handler.ts:75+`, using `resolveAndRenderTemplate` in `template-vars.ts`): if `loadTemplate` selected name base is `reviewer-plan` **without** `-continued`, and a `run_id` is present, load plan markdown from the effective plan path, open the review-budget context (`RecordStore` + facade), call `ensurePlanReviewBaseline` with `optIn: false`. On error, `outputError` (fail closed) so the reviewer is not invoked against an unbudgeted new run.
+After run context is resolved and the template is selected (`template.handler.ts:75+`, using `resolveAndRenderTemplate` in `template-vars.ts`): if `loadTemplate` selected name base is `reviewer-plan` **without** `-continued`, and a `run_id` is present, load plan markdown from the effective plan path, open the review-budget context (`createReviewBudgetContext` — includes `originFor`), call `ensurePlanReviewBaseline` with `optIn: false` and `origin: ctx.originFor({ kind: "system", role: "cli" })`. On error, `outputError` (fail closed) so the reviewer is not invoked against an unbudgeted new run.
 
 Do **not** hook `reviewer-plan-continued` (baseline must already exist or the run is v1_compat).
 
@@ -1518,26 +1561,26 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `src/review-budget/types.ts` | **New.** Domain types, defaults, guards (`DebtClaimEvidence`, `isCompleteDebtClaimEvidence`). Owns shared structural `BaselineAssessment` used by Phase 4 payload/facade/index and re-exported by Phase 5 protocol. |
 | `src/review-budget/arithmetic.ts` | **New.** Pure derivation; `eligibleN` requires complete persisted evidence. |
 | `src/review-budget/apply.ts` | **New.** Validate/compute orchestration; bind assessments to persisted claims; returns `pendingSnapshot` (includes first-review `baselineAssessment`); no snapshot write. |
-| `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture. |
+| `src/review-budget/ensure-baseline.ts` | **New.** Capture / skip / preflight; enforced-mode warning on every first capture; passes `origin` from `ctx.originFor` into `captureBaseline`. |
 | `src/review-budget/record-lines.ts` | **New.** Budget-line payloads, idempotency keys, encode/decode (snapshot decode round-trips `baselineAssessment` from Phase 1 domain types). Consumes slice-10 `RecordStore` types. Does not import `src/protocol.ts`. |
-| `src/commands/review-budget-context.ts` | **New.** One `RecordStore` + one `resolveDbContext` + facade/index factory (handlers do not import `bun:sqlite`). `recordPlanReviewerStepWithSnapshot` calls `prepareRecordStepAppend` then `atomicAppend` only on admit. |
+| `src/commands/review-budget-context.ts` | **New.** Embeds slice 10 `createRecordContext` (`originFor` / `redactedRecorder` / `recordStore`) + facade/index factory (handlers do not import `bun:sqlite`). Returns `ReviewBudgetCommandContext`. `recordPlanReviewerStepWithSnapshot` calls `prepareRecordStepAppend` (retains `prepared.performer`) then `originFor` on both ops then `atomicAppend` only on admit. |
 | `src/parsers/delivery-budget.ts` | **New.** Fail-closed markdown parser including `### Debt Claims` evidence. |
 | `src/parsers/plan.ts` | No logic change; add regression tests only. |
 | `src/config.ts` | `ReviewBudgetConfigSchema`; `KNOWN_ROOT_CONFIG_KEYS`. |
 | `src/templates/5x.default.toml` | `[reviewBudget]` table. |
 | `src/db/schema.ts` | Migration v8 **index** tables; max version 8; `record_idempotency_key` + `record_seq` order; `baseline_assessment_json` on snapshots. |
 | `src/control-plane/ids.ts` | `createReviewBudgetId`. |
-| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. `appendSnapshot` / snapshot record type use Phase 1 `BaselineAssessment`. |
+| `src/control-plane/review-budget-store.ts` | **New.** Facade over `RecordStore`; optional SQLite index. `appendSnapshot` / snapshot record type use Phase 1 `BaselineAssessment`. `captureBaseline` requires `origin` from `originFor`. |
 | `src/control-plane/review-budget-index.ts` | **New.** Rebuildable SQLite index + `reindexReviewBudget`. |
 | `src/control-plane/index.ts` | Re-exports. Do **not** add `record-store.ts` in this slice. |
 | `src/protocol.ts` | Item/verdict extensions; schema; CLI-owned key reject helper; import and re-export `BaselineAssessment` from review-budget domain types (do not redeclare); `CreditClaim` evidence fields remain reviewer-introduced only. |
 | `src/protocol-normalize.ts` | Pass through new fields. |
 | `src/commands/protocol.ts` | Emit/validate flags. |
 | `src/commands/protocol-emit.handler.ts` | Parse assessment flags and item extras. |
-| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate; `prepareRecordStepAppend` then `atomicAppend` step+snapshot on `--record`; pass `warn` into apply/ensure. |
+| `src/commands/protocol.handler.ts` | Apply budget on plan-review validate; `prepareRecordStepAppend` then `originFor(prepared.performer)` then `atomicAppend` step+snapshot on `--record`; pass `warn` into apply/ensure; pass agent `params.performer`. |
 | `src/commands/protocol-helpers.ts` | Only if reject helper is called from shared validate. |
-| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; `prepareRecordStepAppend` then `atomicAppend` step+snapshot on `--record`; optional opt-in flag. |
-| `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render via RecordStore facade. |
+| `src/commands/invoke.ts` / `invoke.handler.ts` | Ensure baseline; apply on plan-review; `params.performer` agent/reviewer/provider; `prepareRecordStepAppend` then `originFor` then `atomicAppend` step+snapshot on `--record`; optional opt-in flag. |
+| `src/commands/template.handler.ts` | Ensure baseline on initial `reviewer-plan` render via RecordStore facade; `originFor({ kind: "system", role: "cli" })`. |
 | `src/commands/run-v1.handler.ts` | Extract `prepareRecordStepAppend`; `recordStepInternal` calls it before persist; `review_budget` on state JSON/text (facade/index; reconstruct from record lines if index empty). |
 | `src/templates/default-artifacts.ts` | Delivery Budget section plus Debt Claims subsection. |
 | `src/templates/author-generate-plan.md` | Require scored table and complete debt-claim evidence. |
@@ -1552,7 +1595,7 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | `test/unit/db/schema.test.ts` and `schema-v6`/`v7` | Expect version 8. |
 | `test/unit/db/schema-v8.test.ts` | **New.** |
 | `test/unit/review-budget/*.test.ts` | **New** (types, record-lines codec, apply, arithmetic, persist-record, ensure-baseline). |
-| `test/unit/commands/record-plan-reviewer-step.test.ts` | **New.** Focused wrapper admission tests (terminal run, missing worktree, invalid result, new-at-limit, duplicate-at-limit repair). |
+| `test/unit/commands/record-plan-reviewer-step.test.ts` | **New.** Focused wrapper admission tests (terminal run, missing worktree, invalid result, new-at-limit, duplicate-at-limit repair) plus origin equality / `originFor` spy / actor redaction. |
 | `test/unit/parsers/delivery-budget.test.ts` | **New.** |
 | `test/unit/parsers/plan.test.ts` | Placement regressions. |
 | `test/unit/control-plane/review-budget-store-contract.test.ts` | **New.** Facade over `MemoryRecordStore` ± SQLite index; imports `BaselineAssessment` from domain types, not protocol. |
@@ -1575,7 +1618,7 @@ Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the te
 | Unit | `config*.test.ts` | Defaults, overlay `off`, reject bad mode/percent, registry keys |
 | Unit | `schema-v8.test.ts` | v8 **index** tables, v7→v8, CHECKs, unique `run_id` + `record_idempotency_key`, nullable `baseline_assessment_json` |
 | Unit | `review-budget/record-lines.test.ts` | Snapshot codec round-trips `baselineAssessment` from Phase 1 domain types; omit-when-absent; no `src/protocol.ts` import |
-| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip** (domain type, not protocol); no SQLite-only authority |
+| Unit | `review-budget-store-contract.test.ts` | Capture CAS via `MemoryRecordStore` ± SQLite index **with fixture origin**; append order; **same-timestamp insertion-order tie-break**; **ledger round-trip of `debtClaim` evidence**; **first-snapshot `baselineAssessment` round-trip** (domain type, not protocol); no SQLite-only authority |
 | Unit | `review-budget-index.test.ts` | Wipe index, `reindexReviewBudget` restores baselines/ledgers/assessments **and first-snapshot `baselineAssessment`** (domain type); **`I` / `baselineDirection` recompute identically from the record line** |
 | Unit | `protocol.test.ts` / `protocol-emit.test.ts` | Flags round-trip; reject CLI-owned keys; `BaselineAssessment` is a re-export of the Phase 1 domain type (not a second declaration) |
 | Unit | `protocol-validate.test.ts` / `apply.test.ts` | Decorate on record; skip off/compat; fail malformed current table without mutating `B0`; apply does not write snapshots; assessments bind to persisted claims; incomplete author evidence fails closed |
@@ -1655,6 +1698,12 @@ Phases 1–3 (types, parser, config) may proceed without slice 10. **Phase 4 and
 ---
 
 ## Revision History
+
+### 1.7 — September 1, 2026
+
+Addresses **P0.8** in the September 1 addendum of [`docs/development/reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md`](../reviews/5x-cli-docs-development-plans-212-git-native-run-records-plan-review.md) (Revision 1.6 origin-attribution re-review of slice 10). Coordinated with [`212-git-native-run-records-plan.md`](./212-git-native-run-records-plan.md) §1.5. Prior 208 P0/P1.1–P1.8 remain in force.
+
+1. **P0.8 — Consume slice 10’s origin factory.** `review-budget-context.ts` embeds `createRecordContext` and returns `ReviewBudgetCommandContext` (`originFor` / `redactedRecorder` / `recordStore` + facade). The wrapper no longer returns `{ db, config, controlPlane, recordStore, store }` without `originFor`. `prepareRecordStepAppend` is slice 10’s type (`PreparedRecordStep.performer` retained); this slice does not redeclare `{ stepInput, maxSteps }`. `recordPlanReviewerStepWithSnapshot` stamps `ctx.originFor(prepared.performer)` on both the step and budget snapshot ops. `CaptureBaselineInput.origin` and `ensurePlanReviewBaseline.origin` are required from `originFor`. Tests cover invoke-reviewer origin equality, baseline-only `originFor`, and actor redaction.
 
 ### 1.6 — August 29, 2026
 
