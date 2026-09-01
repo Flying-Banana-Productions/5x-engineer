@@ -172,3 +172,52 @@ Phase 2 only warns and skips `.gitattributes` when `paths.records` is outside th
 
 - **Plan completion:** ✅ — all prior P0/P1 findings are addressed with implementable algorithms and targeted tests.
 - **Ready for next phase:** ✅ — ready for implementation.
+
+---
+
+## Addendum (September 1, 2026) — Revision 1.5 origin-attribution re-review
+
+**Reviewed:** `9acb8a04d88cafef8195c7dda87d56b821b9bd69`
+
+The line-level envelope, user-scope installation identity, crash-safe record store, and explicit slice-06 budget-stream intent are strong improvements. The revision does not yet provide a complete or privacy-safe attribution contract across all required writers and summary/backfill cases.
+
+### Production readiness blockers
+
+#### P0.6 — Backfill misattributes unknown run creators and sealers
+
+**Action:** `auto_fix`
+
+**Risk:** The plan correctly gives each backfilled JSONL line `origin: null` plus an exporter `materializer`, but `RunRecordSummary.creator` is non-nullable and Phase 7 sets both `creator` and (for terminal runs) `sealer` to the exporting installation. Those fields are defined as the recorder at init/seal, so this asserts that the exporter created and sealed historical runs even while the text acknowledges both facts are unknown. This defeats the stated honest-origin rule for the run-summary attribution that users will inspect.
+
+**Requirement:** Make unknown historical summary attribution representable (for example nullable/omitted `creator` and `sealer` plus a distinct summary materializer/exporter field, or explicitly versioned summary-attribution states). Preserve a known live creator across sealing; never substitute the exporter for an unknown historical creator/sealer. Add backfill, decode, index, and text/JSON-output tests proving legacy summaries remain unknown while the exporter is separately identifiable.
+
+#### P0.7 — Agent performer metadata has no defined data path into the record append
+
+**Action:** `auto_fix`
+
+**Risk:** Phase 4 requires `invoke --record` to emit `{ kind: "agent", role, provider }`, but the shown `RunRecordParams`, `PreparedRecordStep`, and `recordStepInternal` context carry no performer or invocation metadata. The proposed `originFor(performer)` factory cannot infer an invocation from the existing step parameters. The generic path will consequently default these lines to `{ kind: "system", role: "cli" }` or force an ad-hoc bypass, losing the principal new attribution guarantee.
+
+**Requirement:** Freeze a typed performer/origin input path through `RunRecordParams` or the record context and through `prepareRecordStepAppend`/`recordStepInternal`; specify who supplies it for direct `run record`, protocol validation, invoke, quality, commit, terminal, prompt, and slice-06 baseline/snapshot writes. The shared factory must be the only origin constructor. Add integration assertions for author and reviewer invoke records that retain the configured provider/role, alongside system and human cases and the paired step/budget origin equality case.
+
+### High priority
+
+#### P1.3 — `records.redact` is not guaranteed for every persisted attribution surface
+
+**Action:** `auto_fix`
+
+**Risk:** The normal step flow explicitly calls `redactOrigin`, but prompt snapshots and the slice-06 instructions call `recordedEnvelope(ctx.originFor(...))` without defining whether `originFor` redacts. `run.json` writes `creator`/`sealer` as `RecordRecorder`, outside `redactOrigin` entirely. A project opting into `records.redact = ["origin.actor"]` can therefore still commit its actor label through decisions, budget records, or run summaries.
+
+**Requirement:** Define `originFor` as the sole, already-redacted origin/recorder factory (including forbidden-key stripping), or explicitly apply a shared redactor at every writer and summary write. Cover steps, decisions, all budget operations (including baseline-only), and `run.json` creator/sealer for configured, environment, and identity-file actor sources. Assert that `installation_id` and performer kind remain intact and that no forbidden identity fields can survive on any surface.
+
+#### P1.4 — Forward-compatible `run.json` parsing silently loses newer fields on seal/rewrite
+
+**Action:** `auto_fix`
+
+**Risk:** Phase 3 accepts `format_version > 1` and ignores unknown fields, yet `RunRecordSummary.format_version` is typed as literal `1` and `putRun` is documented to replace the whole summary with the v1 typed object. An older CLI can therefore successfully open a newer summary and then erase its additive fields during `run complete` or any rewrite. This is neither safe forward compatibility nor a fail-closed downgrade policy.
+
+**Requirement:** Choose and specify one consistent policy: preserve the raw unknown fields/version through summary read-modify-write, or reject newer `format_version` summaries for mutation while allowing a read-only compatible view. Align the TypeScript types and tests with that choice; include a newer-version summary followed by a seal/rewrite and verify no future field is lost (or that mutation fails without changing the file).
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — earlier durability and worktree blockers remain resolved, but origin attribution is incomplete for invoked agents and backfilled summaries, with actor redaction and run-summary compatibility gaps.
+- **Ready for implementation:** ⚠️ — after P0.6 and P0.7 are specified; P1.3 and P1.4 should be resolved in the same revision because they affect the newly frozen attribution/schema contract.
