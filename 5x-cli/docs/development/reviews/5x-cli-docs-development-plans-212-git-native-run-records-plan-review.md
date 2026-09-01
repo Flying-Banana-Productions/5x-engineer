@@ -128,3 +128,28 @@ Phase 2 only warns and skips `.gitattributes` when `paths.records` is outside th
 
 - **Plan completion:** ⚠️ — P0.3 is resolved, but the new writer-concurrency gap blocks the authoritative record design.
 - **Ready for next phase:** ⚠️ — after P0.4 specifies and tests per-run cross-process serialization.
+
+---
+
+## Addendum (August 31, 2026) — Revision 1.3 re-review
+
+**Reviewed:** `76216de098a490b87b09986bf312d1b4beff46fb`
+
+### Partially addressed
+
+- **P0.4 — Cross-process writer exclusion: Partially addressed.** The revision correctly centralizes a per-run lock around recovery, read, write, cleanup, prompt snapshots, and adds liveness, stale-lock, and multi-process test coverage. However, the lock publication itself has a fatal acquisition race.
+
+### Production readiness blocker
+
+### P0.5 — A contender can steal a live lock while its metadata is being written
+
+**Action:** `auto_fix`
+
+**Risk:** `openSync(lock, "wx")` makes an empty lock pathname visible before the successful writer writes and fsyncs `{ pid, owner }`. A second process that observes this normal in-progress state is directed to classify the unreadable/empty lock as abandoned and unlink it. The first process then continues believing it owns the lock while the second acquires the pathname, allowing concurrent fixed-name journal writes and record loss.
+
+**Requirement:** Publish a fully written, fsynced lock record atomically rather than exposing an empty `wx` lock. For example, create a unique temporary lock record containing the owner metadata, fsync it, atomically hard-link it to `.txn.lock` (link succeeds only if the destination does not exist), fsync the run directory, then remove the temporary file. On a malformed visible lock, never immediately steal it merely because its metadata is unavailable; use a protocol that can establish abandonment safely. Add deterministic fault-injection/multi-process coverage that pauses the first acquirer after the exclusive creation attempt and before metadata publication; the contender must not obtain the lock or reach journal recovery.
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — writer serialization is substantially designed but lock publication remains racy.
+- **Ready for next phase:** ⚠️ — after P0.5 makes lock acquisition atomically publish owner metadata and proves the creation-window race is closed.
