@@ -72,3 +72,34 @@ Phase 2 only warns and skips `.gitattributes` when `paths.records` is outside th
 **P1 recommended**
 - [ ] Reject or explicitly disable unsupported records roots outside the repository.
 - [ ] Make the JSONL decode API capable of restoring `RecordLine.runId`.
+
+---
+
+## Addendum (August 31, 2026) — Revision 1.1 re-review
+
+**Reviewed:** `d7c02f4d368b16f6ab9e8745c14ca9e28d221626`
+
+### What's addressed (✅)
+
+- **P0.1 — Effective-worktree record placement:** **Addressed.** `resolveRecordsRoot` cleanly separates the canonical repository-relative path from the worktree-absolute write path, and the plan applies it to init, writers, staging, sealing, backfill, prompts, and doctor. The linked-worktree integration case directly verifies the prior failure mode.
+- **P1.1 — Outside records root:** **Addressed.** Configuration now rejects both absolute and escaping relative roots outside the repository, with explicit coverage.
+- **P1.2 — JSONL run identity:** **Addressed.** The decoder now accepts the directory-derived run id, validates mismatches, and has stream-wide coverage.
+
+### Partially addressed
+
+- **P0.2 — Crash-safe mixed-stream `atomicAppend`: Partially addressed.** The journal, staged before-images, commit marker, recovery paths, and fault injection are a substantial improvement. However, the stated power-loss guarantee is not durable as written: file `fsyncSync` alone does not persist the directory entries created, renamed, or removed by the transaction. In addition, treating a corrupt/unreadable journal as `prepared` is unsafe when replacements may already have occurred after the commit marker; it can silently expose or preserve a partial batch.
+
+### Production readiness blocker
+
+### P0.3 — Journal commit/recovery protocol is not power-loss durable
+
+**Action:** `auto_fix`
+
+**Risk:** After the commit marker or any `.new` replacement, a power loss can lose rename/create metadata unless the run directory is fsynced. Recovery can then see a committed journal with missing staged data. More critically, Phase 3.2 says a corrupt journal is treated as `prepared`, even though one or more original stream files may already have been replaced. Deleting journal artifacts in that state does not restore the pre-batch files and violates the promised all-or-nothing view.
+
+**Requirement:** Make the journal state transition and every create/rename/unlink durability boundary explicit: fsync the run directory after durable journal creation/commit-marker replacement, after each stream rename, and after cleanup. Preserve recoverable transaction metadata in an immutable prepared record plus a separately durable, checksummed commit marker (or equivalent redundant design). If recovery metadata is corrupt or incomplete, fail closed with a dedicated record-transaction corruption error and doctor finding; never assume `prepared` and delete artifacts. Add fault-injection coverage for a corrupt/torn commit marker and directory-sync failure/interrupt points.
+
+### Updated readiness
+
+- **Plan completion:** ⚠️ — prior worktree, configuration, and codec blockers are resolved; the journal requires one more durability revision.
+- **Ready for next phase:** ⚠️ — after P0.3 is specified and tested.
