@@ -52,3 +52,20 @@ The implementation establishes the intended record-first writer, re-roots record
 
 **P1 recommended**
 - [x] Targeted Phase 4 test suites pass.
+
+---
+
+## Addendum (2026-09-03) — Safety-exemption follow-up
+
+**Reviewed:** `e2102e6a08ef7105e06b83fcb66ad00e44f61fdd`
+
+### What's addressed (✅)
+- **P0.1 — Records dirty-tree exemption:** `checkGitSafety` now normalizes `git rev-parse --show-toplevel` output before using it as an absolute-path base. It also requests individual untracked files, preventing Git's collapsed untracked-directory entry from defeating a path-scoped exemption.
+- **Regression coverage:** A real temporary Git repository confirms the newline-bearing top-level output, records-only exemption, correct returned root, and rejection of a mixed non-record dirty path. The focused unit and integration tests pass (62 tests, 0 failures).
+
+### Remaining concerns
+- None in the follow-up diff.
+
+### Updated readiness
+- **Phase 4 safety exemption:** ✅ — the prior blocker is resolved without weakening non-record dirty-path detection.
+- **Ready for next phase:** ✅
