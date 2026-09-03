@@ -76,3 +76,21 @@ None.
 
 **P1 recommended**
 - [x] Focused contract, control-plane unit, typecheck, and whitespace checks pass.
+
+---
+
+## Addendum (2026-09-03) — Phase 1 correction review
+
+**Reviewed:** `83f2e664b3cccb479454ba6467cafb879eb216cb`
+
+### What's addressed (✅)
+- **P0.1 — `auto_fix`:** Added and re-exported declaration-only `RecordCommandContext`, `PreparedRecordStep`, and `PrepareRecordStepOutcome`. The shape matches plan §1.5/§4.2, retains `performer`, and adds a compile-oriented consumer test while confirming `record-context.ts` is still absent.
+- **P0.2 — `auto_fix`:** `putRun` now copies the existing creator into every subsequent v1 summary update. Regression tests cover attempted replacement of both known and `null` creators while allowing the sealer to be updated.
+
+### Remaining concerns
+- No correctness, security, architecture, performance, or operability regressions found in the follow-on diff.
+- `bun test` was attempted but exceeded the 120-second review timeout in unrelated interactive/unit suites; the changed contract suite (30 pass), all control-plane unit tests (138 pass), and typecheck passed.
+
+### Updated readiness
+- **Phase 1 completion:** ✅ — the frozen store and writer-shape contract now meet the Phase 1 gate.
+- **Ready for next phase:** ✅ — Slice 06 Phases 4–5 may consume the published types; Phase 6+ remains correctly gated on this slice's Phase 4 factory.
