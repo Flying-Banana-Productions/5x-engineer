@@ -80,6 +80,11 @@ export {
 	recordedEnvelope,
 	stepIdempotencyKey,
 } from "./record-types.js";
+export type {
+	PreparedRecordStep,
+	PrepareRecordStepOutcome,
+	RecordCommandContext,
+} from "./record-writer-types.js";
 export { createSqlitePromptStore } from "./sqlite-store.js";
 export type { PromptStore } from "./store.js";
 export type { TestRemoteAdapter } from "./test-remote-adapter.js";

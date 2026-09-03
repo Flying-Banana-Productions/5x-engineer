@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	createMemoryRecordStore,
+	type PreparedRecordStep,
+	type PrepareRecordStepOutcome,
 	RECORD_LINE_SCHEMA_VERSION,
+	type RecordCommandContext,
 	type RecordLine,
 	type RecordOrigin,
 	type RecordPerformer,
+	type RecordRecorder,
 	type RecordStore,
 	RecordStoreError,
 	RUN_RECORD_FORMAT_VERSION,
@@ -16,6 +20,11 @@ import {
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
 import type { MemoryRecordStoreOptions } from "../../../src/control-plane/record-memory.js";
+import type {
+	PreparedRecordStep as PublicPreparedRecordStep,
+	PrepareRecordStepOutcome as PublicPrepareRecordStepOutcome,
+	RecordCommandContext as PublicRecordCommandContext,
+} from "../../../src/index.js";
 
 const FIXED_NOW = "2026-09-03 12:00:00";
 const UUID_RE =
@@ -144,6 +153,59 @@ export function runRecordStoreContract(setup: () => RecordStore): void {
 		expect(sealed?.creator).toBeNull();
 		expect(sealed?.sealer).toEqual(sealer);
 		expect(sealed?.materializer).toBeUndefined();
+	});
+
+	test("putRun preserves a known creator when a later write tries to replace it", () => {
+		const store = setup();
+		const creator = {
+			installation_id: INSTALLATION_ID,
+			actor: "test-operator",
+		};
+		store.putRun(v1Summary("run_creator", { creator }));
+		const impostor = {
+			installation_id: randomUUID(),
+			actor: "impostor",
+		};
+		const sealer = { installation_id: randomUUID(), actor: "sealer" };
+		store.putRun(
+			v1Summary("run_creator", {
+				creator: impostor,
+				sealer,
+				sealed_at: "2026-09-03 13:00:00",
+				status: "completed",
+			}),
+		);
+		const sealed = store.getRun("run_creator");
+		expect(sealed?.creator).toEqual(creator);
+		expect(sealed?.creator).not.toEqual(impostor);
+		expect(sealed?.sealer).toEqual(sealer);
+	});
+
+	test("putRun preserves a null creator when a later write tries to replace it", () => {
+		const store = setup();
+		store.putRun(
+			v1Summary("run_null_creator", {
+				creator: null,
+				materializer: EXPORTER_ORIGIN,
+				backfilled: true,
+			}),
+		);
+		const impostor = {
+			installation_id: INSTALLATION_ID,
+			actor: "impostor",
+		};
+		const sealer = { installation_id: INSTALLATION_ID, actor: "sealer" };
+		store.putRun(
+			v1Summary("run_null_creator", {
+				creator: impostor,
+				sealer,
+				sealed_at: "2026-09-03 13:00:00",
+				status: "completed",
+			}),
+		);
+		const sealed = store.getRun("run_null_creator");
+		expect(sealed?.creator).toBeNull();
+		expect(sealed?.sealer).toEqual(sealer);
 	});
 
 	test("putRun of format_version > 1 is refused; getRun still returns the newer summary", () => {
@@ -701,6 +763,10 @@ describe("Phase 1 freeze boundary", () => {
 			join(import.meta.dir, "../../../src/control-plane/record-types.ts"),
 			join(import.meta.dir, "../../../src/control-plane/record-store.ts"),
 			join(import.meta.dir, "../../../src/control-plane/record-memory.ts"),
+			join(
+				import.meta.dir,
+				"../../../src/control-plane/record-writer-types.ts",
+			),
 			join(import.meta.dir, "../../../src/control-plane/index.ts"),
 			join(import.meta.dir, "record-store-contract.test.ts"),
 		];
@@ -710,6 +776,108 @@ describe("Phase 1 freeze boundary", () => {
 			const text = readFileSync(file, "utf8");
 			expect(text.includes(factoryName)).toBe(false);
 			expect(text.includes(modulePath)).toBe(false);
+		}
+		const factoryFile = join(
+			import.meta.dir,
+			"../../../src/commands",
+			`${modulePath}.ts`,
+		);
+		expect(existsSync(factoryFile)).toBe(false);
+	});
+});
+
+/**
+ * Compilation-oriented Slice 06 consumption: a review-budget wrapper can
+ * extend `RecordCommandContext`, keep `prepared.performer`, and stamp both
+ * ops via `originFor` without a later factory module.
+ */
+function stampPairedOps(
+	ctx: RecordCommandContext,
+	prepared: PreparedRecordStep,
+): ReturnType<typeof recordedEnvelope>[] {
+	const origin = ctx.originFor(prepared.performer);
+	return [recordedEnvelope(origin), recordedEnvelope(origin)];
+}
+
+function fixtureWriterContext(
+	originForImpl: (performer: RecordPerformer) => RecordOrigin,
+	recorder: RecordRecorder,
+): RecordCommandContext {
+	return {
+		db: {} as RecordCommandContext["db"],
+		config: {} as RecordCommandContext["config"],
+		recordStore: createMemoryRecordStore(),
+		recordsRelPath: "docs/development/runs",
+		recordsAbsPath: "/tmp/docs/development/runs",
+		executionContext: {
+			controlPlaneRoot: "/tmp",
+			run: {
+				id: "run_1",
+				plan_path: "docs/development/plans/p.md",
+				status: "active",
+			},
+			mappedWorktreePath: null,
+			effectiveWorkingDirectory: "/tmp",
+			effectivePlanPath: "/tmp/docs/development/plans/p.md",
+			planPathInWorktreeExists: true,
+		},
+		originFor: originForImpl,
+		redactedRecorder: () => recorder,
+	};
+}
+
+describe("Phase 1 writer-shape freeze", () => {
+	test("Slice 06 can consume RecordCommandContext.originFor and PreparedRecordStep.performer", () => {
+		const performer: RecordPerformer = {
+			kind: "agent",
+			role: "reviewer",
+			provider: "opencode",
+		};
+		const recorder: RecordRecorder = {
+			installation_id: INSTALLATION_ID,
+			actor: "test-operator",
+		};
+		const ctx = fixtureWriterContext(originFor, recorder);
+		const prepared: PreparedRecordStep = {
+			runId: "run_1",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 1,
+			resultJson: "{}",
+			headCommit: "abc123",
+			effectiveWorkdir: "/tmp",
+			maxSteps: 50,
+			performer,
+		};
+		const admit: PrepareRecordStepOutcome = { outcome: "admit", prepared };
+		const envelopes = stampPairedOps(ctx, admit.prepared);
+		expect(envelopes).toHaveLength(2);
+		expect(envelopes[0]).toEqual(envelopes[1]);
+		expect(envelopes[0]?.origin?.performer).toEqual(performer);
+		expect(ctx.redactedRecorder()).toEqual(recorder);
+
+		const publicCtx: PublicRecordCommandContext = ctx;
+		const publicPrepared: PublicPreparedRecordStep = prepared;
+		const publicOutcome: PublicPrepareRecordStepOutcome = admit;
+		expect(publicCtx.originFor(publicPrepared.performer).performer).toEqual(
+			performer,
+		);
+		expect(publicOutcome.prepared.performer).toEqual(performer);
+	});
+
+	test("public barrels re-export the writer-shape types", () => {
+		const controlPlaneIndex = readFileSync(
+			join(import.meta.dir, "../../../src/control-plane/index.ts"),
+			"utf8",
+		);
+		const publicIndex = readFileSync(
+			join(import.meta.dir, "../../../src/index.ts"),
+			"utf8",
+		);
+		for (const text of [controlPlaneIndex, publicIndex]) {
+			expect(text.includes("RecordCommandContext")).toBe(true);
+			expect(text.includes("PreparedRecordStep")).toBe(true);
+			expect(text.includes("PrepareRecordStepOutcome")).toBe(true);
 		}
 	});
 });

@@ -156,6 +156,7 @@ class MemoryRecordStore implements RecordStore {
 		}
 		const cloned = cloneSummary(summary);
 		if (existing) {
+			cloned.creator = structuredClone(existing.summary.creator);
 			existing.summary = cloned;
 			return;
 		}
