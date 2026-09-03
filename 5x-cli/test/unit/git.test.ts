@@ -9,11 +9,15 @@ import {
 	branchNameFromPlan,
 	checkGitSafety,
 	commitFiles,
+	computeDiffSummary,
+	computePatchId,
 	createBranch,
 	createWorktree,
 	getBranchCommits,
 	getCurrentBranch,
 	getLatestCommit,
+	gitLogLastTouching,
+	gitShowFile,
 	hasUncommittedChanges,
 	isBranchMerged,
 	isBranchRelevant,
@@ -36,10 +40,12 @@ const fail = (stderr: string, exitCode = 1) => ({
 });
 
 let execGitSpy: Mock<typeof subprocess.execGit>;
+let execGitStdinSpy: Mock<typeof subprocess.execGitStdin>;
 let execShellSpy: Mock<typeof subprocess.execShell>;
 
 afterEach(() => {
 	execGitSpy?.mockRestore();
+	execGitStdinSpy?.mockRestore();
 	execShellSpy?.mockRestore();
 });
 
@@ -606,5 +612,90 @@ describe("isBranchMerged", () => {
 	test("handles git failure gracefully", async () => {
 		mockGit([cmd("branch", "--merged", "HEAD"), fail("error")]);
 		expect(await isBranchMerged("any", "/r")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Record helpers (patch-id, numstat, show, log)
+// ---------------------------------------------------------------------------
+
+describe("computePatchId", () => {
+	test("returns the first field of git patch-id --stable", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), ok("diff --git a/f b/f")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () =>
+				ok("0123456789abcdef 0000000000000000000000000000000000000000"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBe(
+			"0123456789abcdef",
+		);
+		expect(execGitStdinSpy).toHaveBeenCalledWith(
+			["patch-id", "--stable"],
+			"/repo",
+			"diff --git a/f b/f",
+		);
+	});
+
+	test("returns null when diff is non-zero", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), fail("bad sha")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () => fail("not called"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBeNull();
+		expect(execGitStdinSpy).not.toHaveBeenCalled();
+	});
+
+	test("returns null when patch-id is non-zero", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), ok("diff")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () => fail("patch-id failed"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBeNull();
+	});
+});
+
+describe("computeDiffSummary", () => {
+	test("parses numstat including binary dashes", async () => {
+		mockGit([
+			cmd("diff", "--numstat", "aaa", "bbb"),
+			ok("3\t2\tsrc/foo.ts\n-\t-\timage.png\n1\t0\tbar.ts"),
+		]);
+		expect(await computeDiffSummary("/repo", "aaa", "bbb")).toEqual({
+			files_changed: 3,
+			insertions: 4,
+			deletions: 2,
+		});
+	});
+
+	test("returns null on git failure", async () => {
+		mockGit([cmd("diff", "--numstat", "aaa", "bbb"), fail("missing")]);
+		expect(await computeDiffSummary("/repo", "aaa", "bbb")).toBeNull();
+	});
+});
+
+describe("gitShowFile / gitLogLastTouching", () => {
+	test("gitShowFile returns stdout when present", async () => {
+		mockGit([cmd("show", "abc:docs/f.md"), ok("# hi")]);
+		expect(await gitShowFile("/repo", "abc", "docs/f.md")).toBe("# hi");
+	});
+
+	test("gitShowFile returns null if missing", async () => {
+		mockGit([cmd("show", "abc:missing.md"), fail("exists not")]);
+		expect(await gitShowFile("/repo", "abc", "missing.md")).toBeNull();
+	});
+
+	test("gitLogLastTouching returns the hash", async () => {
+		mockGit([
+			(args) => args[0] === "log" && args.includes("main"),
+			ok("def456"),
+		]);
+		expect(await gitLogLastTouching("/repo", "main", ["docs/f.md"])).toBe(
+			"def456",
+		);
+	});
+
+	test("gitLogLastTouching returns null when empty", async () => {
+		mockGit([(args) => args[0] === "log", ok("")]);
+		expect(await gitLogLastTouching("/repo", "main", ["docs/f.md"])).toBeNull();
 	});
 });

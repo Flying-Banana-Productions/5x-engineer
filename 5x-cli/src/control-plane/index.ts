@@ -55,8 +55,15 @@ export {
 	toInvocationStatusEnvelope,
 } from "./invocation-view.js";
 export { createMemoryPromptStore } from "./memory-store.js";
+export { createWorkingTreeRecordStore } from "./record-fs.js";
 export type { MemoryRecordStoreOptions } from "./record-memory.js";
 export { createMemoryRecordStore } from "./record-memory.js";
+export {
+	FORBIDDEN_ORIGIN_KEYS,
+	redactOrigin,
+	redactRecorder,
+	redactStepPayload,
+} from "./record-redact.js";
 export type { RecordStore } from "./record-store.js";
 export type {
 	AppendOp,

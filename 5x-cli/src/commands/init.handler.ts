@@ -259,28 +259,41 @@ function checkInstalledPromptTemplates(projectRoot: string): {
 	return { current, diverged };
 }
 
-/** Lines appended idempotently by {@link ensureGitignore}. */
+/** Lines appended idempotently by {@link ensureGitignore} (plus records txn ignore). */
 const GITIGNORE_ENTRIES = [".5x/", "5x.toml.local"] as const;
 
+export function recordsTxnGitignoreLine(recordsRelPath: string): string {
+	const rel = recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+	return `${rel}/**/.txn.*`;
+}
+
+function gitignoreEntries(recordsRelPath: string): string[] {
+	return [...GITIGNORE_ENTRIES, recordsTxnGitignoreLine(recordsRelPath)];
+}
+
 /**
- * Append `.5x/` and `5x.toml.local` to .gitignore if not already present.
- * Creates .gitignore if it doesn't exist.
+ * Append `.5x/`, `5x.toml.local`, and the records-root `.txn.*` glob to
+ * .gitignore if not already present. Creates .gitignore if it doesn't exist.
  */
-function ensureGitignore(projectRoot: string): {
+function ensureGitignore(
+	projectRoot: string,
+	recordsRelPath = "docs/development/runs",
+): {
 	created: boolean;
 	appended: boolean;
 } {
 	const gitignorePath = join(projectRoot, ".gitignore");
+	const entries = gitignoreEntries(recordsRelPath);
 
 	if (!existsSync(gitignorePath)) {
-		writeFileSync(gitignorePath, `${GITIGNORE_ENTRIES.join("\n")}\n`, "utf-8");
+		writeFileSync(gitignorePath, `${entries.join("\n")}\n`, "utf-8");
 		return { created: true, appended: false };
 	}
 
 	let content = readFileSync(gitignorePath, "utf-8");
 	let appended = false;
 
-	for (const entry of GITIGNORE_ENTRIES) {
+	for (const entry of entries) {
 		const lines = content.split("\n");
 		const alreadyPresent = lines.some((line) => line.trim() === entry);
 		if (alreadyPresent) continue;
@@ -444,10 +457,14 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		}
 	}
 
-	// 3. Update .gitignore
-	const gitignoreResult = ensureGitignore(projectRoot);
+	const recordsRelPath = await recordsRelPathForProject(projectRoot);
+
+	// 3. Update .gitignore (includes record journal `.txn.*` ignores)
+	const gitignoreResult = ensureGitignore(projectRoot, recordsRelPath);
 	if (gitignoreResult.created) {
-		console.log("  Created .gitignore with .5x/ and 5x.toml.local");
+		console.log(
+			"  Created .gitignore with .5x/, 5x.toml.local, and record journals",
+		);
 	} else if (gitignoreResult.appended) {
 		console.log("  Updated .gitignore (added missing entries)");
 	} else {
@@ -455,7 +472,6 @@ export async function initScaffold(params: InitParams): Promise<void> {
 	}
 
 	// 4. Update .gitattributes (merge=union for run-record JSONL)
-	const recordsRelPath = await recordsRelPathForProject(projectRoot);
 	const gitattributesResult = ensureGitattributes(projectRoot, recordsRelPath);
 	if (gitattributesResult.created) {
 		console.log("  Created .gitattributes with merge=union for run records");

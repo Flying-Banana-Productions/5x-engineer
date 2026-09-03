@@ -112,6 +112,9 @@ describe("runUpgrade — git attributes", () => {
 			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
 			expect(ga).toContain("docs/development/runs/**/*.jsonl merge=union");
 			expect(existsSync(join(tmp, "docs", "development", "runs"))).toBe(false);
+			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toContain(
+				"docs/development/runs/**/.txn.*",
+			);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -128,6 +131,9 @@ describe("runUpgrade — git attributes", () => {
 			await runUpgrade({ startDir: tmp });
 			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
 			expect(ga).toContain("custom/runs/**/*.jsonl merge=union");
+			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toContain(
+				"custom/runs/**/.txn.*",
+			);
 		} finally {
 			cleanupDir(tmp);
 		}

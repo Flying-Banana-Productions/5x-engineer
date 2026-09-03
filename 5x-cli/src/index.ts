@@ -87,6 +87,7 @@ export {
 	createSqliteInvocationStore,
 	createSqlitePromptStore,
 	createTestRemoteAdapter,
+	createWorkingTreeRecordStore,
 	getCancellationAdapter,
 	getInvocationView,
 	INVOCATION_HEARTBEAT_MIN_INTERVAL_MS,
@@ -161,18 +162,22 @@ export {
 export type { QualityCommandResult, QualityResult } from "./gates/quality.js";
 export { runQualityGates } from "./gates/quality.js";
 // Git
-export type { GitSafetyReport, WorktreeInfo } from "./git.js";
+export type { GitSafetyReport, NumstatSummary, WorktreeInfo } from "./git.js";
 export {
 	branchExists,
 	branchNameFromPlan,
 	checkGitSafety,
 	checkoutBranch,
+	computeDiffSummary,
+	computePatchId,
 	createBranch,
 	createWorktree,
 	deleteBranch,
 	getBranchCommits,
 	getCurrentBranch,
 	getLatestCommit,
+	gitLogLastTouching,
+	gitShowFile,
 	hasUncommittedChanges,
 	isBranchMerged,
 	isBranchRelevant,

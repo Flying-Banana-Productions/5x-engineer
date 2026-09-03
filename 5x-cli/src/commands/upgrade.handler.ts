@@ -28,6 +28,7 @@ import { harnessSyncCore } from "./harness.handler.js";
 import {
 	checkInstalledPromptTemplates,
 	ensureGitattributes,
+	ensureGitignore,
 	ensureTemplateFiles,
 	generateTomlConfig,
 	recordsRelPathForAttributes,
@@ -552,6 +553,16 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 		console.log("  Updated .gitattributes (added merge=union for run records)");
 	} else {
 		console.log("  Skipped .gitattributes (run records rule already present)");
+	}
+	const gi = ensureGitignore(projectRoot, recordsRel);
+	if (gi.created) {
+		console.log("  Created .gitignore including record journal ignores");
+	} else if (gi.appended) {
+		console.log("  Updated .gitignore (added record journal ignores)");
+	} else {
+		console.log(
+			"  Skipped .gitignore (record journal ignores already present)",
+		);
 	}
 	console.log();
 

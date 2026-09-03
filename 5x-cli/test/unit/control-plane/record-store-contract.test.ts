@@ -1,9 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	createMemoryRecordStore,
+	createWorkingTreeRecordStore,
 	type PreparedRecordStep,
 	type PrepareRecordStepOutcome,
 	RECORD_LINE_SCHEMA_VERSION,
@@ -685,6 +687,58 @@ describe("RecordStore contract (memory)", () => {
 	runRecordStoreContract(() =>
 		createMemoryRecordStore({ now: () => FIXED_NOW }),
 	);
+});
+
+describe("RecordStore contract (working-tree)", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	runRecordStoreContract(() => {
+		const dir = mkdtempSync(join(tmpdir(), "5x-rec-wt-"));
+		dirs.push(dir);
+		return createWorkingTreeRecordStore({
+			recordsRoot: dir,
+			now: () => FIXED_NOW,
+			fsyncFile: () => {},
+			fsyncDir: () => {},
+			onWarn: () => {},
+		});
+	});
+
+	test("append writes one JSONL line on disk and getLine returns directory runId", () => {
+		const dir = mkdtempSync(join(tmpdir(), "5x-rec-wt-disk-"));
+		dirs.push(dir);
+		const store = createWorkingTreeRecordStore({
+			recordsRoot: dir,
+			now: () => FIXED_NOW,
+			fsyncFile: () => {},
+			fsyncDir: () => {},
+			onWarn: () => {},
+		});
+		store.putRun(v1Summary("run_disk"));
+		const key = stepIdempotencyKey({
+			runId: "run_disk",
+			stepName: "x",
+			phase: null,
+			iteration: 1,
+		});
+		store.append({
+			runId: "run_disk",
+			stream: "steps",
+			idempotencyKey: key,
+			payload: stepPayload("x"),
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		});
+		const files = [join(dir, "sample-plan", "run_disk", "steps.jsonl")];
+		expect(existsSync(files[0] ?? "")).toBe(true);
+		const text = readFileSync(files[0] ?? "", "utf8");
+		expect(text.trim().split("\n")).toHaveLength(1);
+		expect(() => JSON.parse(text.trim())).not.toThrow();
+		expect(store.getLine("run_disk", "steps", key)?.runId).toBe("run_disk");
+	});
 });
 
 describe("createMemoryRecordStore onBeforeCommit", () => {

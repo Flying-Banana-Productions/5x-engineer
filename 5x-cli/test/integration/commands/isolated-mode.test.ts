@@ -57,7 +57,10 @@ function initRepo(dir: string): void {
 	git(["init"], dir);
 	git(["config", "user.email", "test@test.com"], dir);
 	git(["config", "user.name", "Test"], dir);
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
+	writeFileSync(
+		join(dir, ".gitignore"),
+		".5x/\n5x.toml.local\ndocs/development/runs/**/.txn.*\n",
+	);
 	writeFileSync(
 		join(dir, ".gitattributes"),
 		"# 5x run records\ndocs/development/runs/**/*.jsonl merge=union\n",

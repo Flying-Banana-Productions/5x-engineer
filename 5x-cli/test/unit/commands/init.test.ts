@@ -88,6 +88,7 @@ describe("initScaffold", () => {
 			const gitignoreContent = readFileSync(gitignorePath, "utf-8");
 			expect(gitignoreContent).toContain(".5x/");
 			expect(gitignoreContent).toContain("5x.toml.local");
+			expect(gitignoreContent).toContain("docs/development/runs/**/.txn.*");
 
 			const gaPath = join(tmp, ".gitattributes");
 			expect(existsSync(gaPath)).toBe(true);
@@ -342,7 +343,7 @@ describe("ensureGitignore", () => {
 			expect(result.created).toBe(true);
 			expect(result.appended).toBe(false);
 			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toBe(
-				".5x/\n5x.toml.local\n",
+				".5x/\n5x.toml.local\ndocs/development/runs/**/.txn.*\n",
 			);
 		} finally {
 			cleanupDir(tmp);
@@ -362,6 +363,7 @@ describe("ensureGitignore", () => {
 			const gi = readFileSync(join(tmp, ".gitignore"), "utf-8");
 			expect(gi).toContain(".5x/");
 			expect(gi).toContain("5x.toml.local");
+			expect(gi).toContain("docs/development/runs/**/.txn.*");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -375,7 +377,7 @@ describe("ensureGitignore", () => {
 		try {
 			writeFileSync(
 				join(tmp, ".gitignore"),
-				"node_modules/\n.5x/\n5x.toml.local\n",
+				"node_modules/\n.5x/\n5x.toml.local\ndocs/development/runs/**/.txn.*\n",
 				"utf-8",
 			);
 			const result = ensureGitignore(tmp);
@@ -498,6 +500,9 @@ describe("initScaffold gitattributes", () => {
 			expect(ga).toContain("custom/runs/**/*.jsonl merge=union");
 			expect(ga).not.toContain("docs/development/runs/**/*.jsonl");
 			expect(existsSync(join(tmp, "custom", "runs"))).toBe(false);
+			const gi = readFileSync(join(tmp, ".gitignore"), "utf-8");
+			expect(gi).toContain("custom/runs/**/.txn.*");
+			expect(gi).not.toContain("docs/development/runs/**/.txn.*");
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -516,6 +521,9 @@ describe("initScaffold gitattributes", () => {
 			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
 			expect(ga).toContain("inside/runs/**/*.jsonl merge=union");
 			expect(existsSync(inside)).toBe(false);
+			expect(readFileSync(join(tmp, ".gitignore"), "utf-8")).toContain(
+				"inside/runs/**/.txn.*",
+			);
 		} finally {
 			cleanupDir(tmp);
 		}

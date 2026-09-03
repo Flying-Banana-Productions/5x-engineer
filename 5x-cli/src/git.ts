@@ -464,3 +464,90 @@ export async function deleteBranch(
 		throw new Error(`Failed to delete branch "${branch}": ${result.stderr}`);
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Record helpers (patch-id, numstat, show, log)
+// ---------------------------------------------------------------------------
+
+/**
+ * `git patch-id --stable` of `git diff from to`. Returns null on any failure
+ * (squash-safe; do not throw at record time).
+ */
+export async function computePatchId(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<string | null> {
+	const diff = await run(["diff", fromCommit, toCommit], workdir);
+	if (diff.exitCode !== 0) return null;
+	const patchId = await subprocess.execGitStdin(
+		["patch-id", "--stable"],
+		workdir,
+		diff.stdout,
+	);
+	if (patchId.exitCode !== 0) return null;
+	const id = patchId.stdout.trim().split(/\s+/)[0];
+	return id ? id : null;
+}
+
+export interface NumstatSummary {
+	files_changed: number;
+	insertions: number;
+	deletions: number;
+}
+
+/**
+ * `git diff --numstat from to`. Returns null on any git failure.
+ */
+export async function computeDiffSummary(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<NumstatSummary | null> {
+	const result = await run(
+		["diff", "--numstat", fromCommit, toCommit],
+		workdir,
+	);
+	if (result.exitCode !== 0) return null;
+	let files_changed = 0;
+	let insertions = 0;
+	let deletions = 0;
+	if (result.stdout) {
+		for (const line of result.stdout.split("\n")) {
+			if (!line.trim()) continue;
+			const parts = line.split("\t");
+			const ins = parts[0];
+			const del = parts[1];
+			if (ins === undefined || del === undefined) continue;
+			files_changed += 1;
+			if (ins !== "-") insertions += Number.parseInt(ins, 10) || 0;
+			if (del !== "-") deletions += Number.parseInt(del, 10) || 0;
+		}
+	}
+	return { files_changed, insertions, deletions };
+}
+
+/** `git show commit:path`. Null if the path is missing at that commit. */
+export async function gitShowFile(
+	workdir: string,
+	commit: string,
+	path: string,
+): Promise<string | null> {
+	const result = await run(["show", `${commit}:${path}`], workdir);
+	if (result.exitCode !== 0) return null;
+	return result.stdout;
+}
+
+/** `git log -1 --format=%H ref -- paths`. Null if none / failure. */
+export async function gitLogLastTouching(
+	workdir: string,
+	ref: string,
+	paths: string[],
+): Promise<string | null> {
+	const result = await run(
+		["log", "-1", "--format=%H", ref, "--", ...paths],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return null;
+	return result.stdout;
+}
