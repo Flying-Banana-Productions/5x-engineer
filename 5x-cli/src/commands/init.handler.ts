@@ -6,9 +6,14 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+	RECORDS_ROOT_OUTSIDE_REPO,
+	recordsRootOutsideRepoMessage,
+	resolveLayeredConfig,
+} from "../config.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
-import { isPathUnder } from "../paths.js";
+import { isPathUnder, relativePathUnder } from "../paths.js";
 import defaultTomlConfig from "../templates/5x.default.toml" with {
 	type: "text",
 };
@@ -292,6 +297,69 @@ function ensureGitignore(projectRoot: string): {
 	return { created: false, appended };
 }
 
+/** Lines appended idempotently by {@link ensureGitattributes}. */
+const GITATTRIBUTES_COMMENT = "# 5x run records";
+
+export function recordsGitattributesLine(recordsRelPath: string): string {
+	const rel = recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+	return `${rel}/**/*.jsonl merge=union`;
+}
+
+/**
+ * Repo-relative POSIX records path for `.gitattributes`. Config load already
+ * rejects an outside root; this is defense in depth.
+ */
+export function recordsRelPathForAttributes(
+	projectRoot: string,
+	recordsAbsPath: string,
+): string {
+	const rel = relativePathUnder(recordsAbsPath, projectRoot);
+	if (rel === null) {
+		const err = new Error(recordsRootOutsideRepoMessage(recordsAbsPath));
+		(err as Error & { code?: string }).code = RECORDS_ROOT_OUTSIDE_REPO;
+		throw err;
+	}
+	return rel.replace(/\\/g, "/");
+}
+
+/**
+ * Append a `merge=union` rule for JSONL under the records path.
+ * Creates `.gitattributes` if it doesn't exist. Idempotent.
+ */
+function ensureGitattributes(
+	projectRoot: string,
+	recordsRelPath: string,
+): { created: boolean; appended: boolean } {
+	const gitattributesPath = join(projectRoot, ".gitattributes");
+	const rule = recordsGitattributesLine(recordsRelPath);
+
+	if (!existsSync(gitattributesPath)) {
+		writeFileSync(
+			gitattributesPath,
+			`${GITATTRIBUTES_COMMENT}\n${rule}\n`,
+			"utf-8",
+		);
+		return { created: true, appended: false };
+	}
+
+	const content = readFileSync(gitattributesPath, "utf-8");
+	const alreadyPresent = content
+		.split("\n")
+		.some((line) => line.trim() === rule);
+	if (alreadyPresent) {
+		return { created: false, appended: false };
+	}
+
+	const separator = content.endsWith("\n") ? "" : "\n";
+	writeFileSync(gitattributesPath, `${content}${separator}${rule}\n`, "utf-8");
+	return { created: false, appended: true };
+}
+
+async function recordsRelPathForProject(projectRoot: string): Promise<string> {
+	const layered = await resolveLayeredConfig(projectRoot, projectRoot);
+	return recordsRelPathForAttributes(projectRoot, layered.config.paths.records);
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -386,6 +454,17 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		console.log("  Skipped .gitignore (all entries already present)");
 	}
 
+	// 4. Update .gitattributes (merge=union for run-record JSONL)
+	const recordsRelPath = await recordsRelPathForProject(projectRoot);
+	const gitattributesResult = ensureGitattributes(projectRoot, recordsRelPath);
+	if (gitattributesResult.created) {
+		console.log("  Created .gitattributes with merge=union for run records");
+	} else if (gitattributesResult.appended) {
+		console.log("  Updated .gitattributes (added merge=union for run records)");
+	} else {
+		console.log("  Skipped .gitattributes (run records rule already present)");
+	}
+
 	console.log("  External TUI is opt-in: use --tui-listen");
 	console.log("  Interactive prompts always run in the CLI terminal");
 	console.log(
@@ -400,6 +479,7 @@ export async function initScaffold(params: InitParams): Promise<void> {
 // Export helpers for testing and for the upgrade command
 export {
 	checkInstalledPromptTemplates,
+	ensureGitattributes,
 	ensureGitignore,
 	ensurePromptTemplates,
 	ensureTemplateFiles,

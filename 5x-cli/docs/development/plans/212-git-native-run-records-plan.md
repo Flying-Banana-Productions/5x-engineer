@@ -601,10 +601,10 @@ const RecordsSchema = z.object({
 
 Mount as `records: RecordsSchema.default({})`.
 
-- [ ] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`. Immediately after resolve, if `!isPathUnder(config.paths.records, baseDir)`, throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Use error code `RECORDS_ROOT_OUTSIDE_REPO` when the load path has an envelope (otherwise a thrown `Error` whose message includes that code/phrase). This is fail-closed for every command that loads config.
-- [ ] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
-- [ ] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []` / `# actor = "your-label"`.
-- [ ] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, relative resolution, **absolute path inside the repo accepted** (configured value `resolve(projectRoot, "custom/runs")` → stored abs equals that path), **absolute path outside the repo rejected** (`/tmp/5x-records` → `RECORDS_ROOT_OUTSIDE_REPO`), **relative path that escapes** (`../../tmp/records` → same error), unknown-key warning does not fire for `[records]`, `records.actor` round-trips when set.
+- [x] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`. Immediately after resolve, if `!isPathUnder(config.paths.records, baseDir)`, throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Use error code `RECORDS_ROOT_OUTSIDE_REPO` when the load path has an envelope (otherwise a thrown `Error` whose message includes that code/phrase). This is fail-closed for every command that loads config.
+- [x] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
+- [x] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []` / `# actor = "your-label"`.
+- [x] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, relative resolution, **absolute path inside the repo accepted** (configured value `resolve(projectRoot, "custom/runs")` → stored abs equals that path), **absolute path outside the repo rejected** (`/tmp/5x-records` → `RECORDS_ROOT_OUTSIDE_REPO`), **relative path that escapes** (`../../tmp/records` → same error), unknown-key warning does not fire for `[records]`, `records.actor` round-trips when set.
 
 `config-registry.ts` walks Zod automatically; no hand-maintained key list.
 
@@ -626,14 +626,14 @@ export function ensureGitattributes(
 ): { created: boolean; appended: boolean };
 ```
 
-- [ ] If `.gitattributes` is missing, create it with the comment + one rule.
-- [ ] If present and the exact rule line exists, no-op.
-- [ ] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
-- [ ] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` — config load has already rejected an outside root, so this relative path is always inside the repo. If `relativePathUnder` would still return null (defense in depth), throw `RECORDS_ROOT_OUTSIDE_REPO`; **do not** skip `.gitattributes` or log a warning.
-- [ ] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records` (same inside-repo relative path).
-- [ ] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records` inside the repo (relative and absolute-inside). An outside `paths.records` fails at config load before attributes are written.
+- [x] If `.gitattributes` is missing, create it with the comment + one rule.
+- [x] If present and the exact rule line exists, no-op.
+- [x] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
+- [x] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` — config load has already rejected an outside root, so this relative path is always inside the repo. If `relativePathUnder` would still return null (defense in depth), throw `RECORDS_ROOT_OUTSIDE_REPO`; **do not** skip `.gitattributes` or log a warning.
+- [x] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records` (same inside-repo relative path).
+- [x] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records` inside the repo (relative and absolute-inside). An outside `paths.records` fails at config load before attributes are written.
 
-- [ ] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
+- [x] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
 
 #### 2.3 Installation identity — `src/records/identity.ts` (new)
 
@@ -663,12 +663,12 @@ export function resolveRecorder(opts: {
 }): RecordRecorder;
 ```
 
-- [ ] `identityDir` must **not** resolve under a project checkout, `paths.records`, or `.5x/`. Tests pass a temp `homeDir` / `FIVEX_CONFIG_HOME`; never write the real home directory in unit tests.
-- [ ] `loadOrCreateInstallationIdentity`: if `identity.json` is missing, create `{ version: 1, installation_id: <uuid-v4> }` with `mkdirSync` recursive, atomic tmp+rename, file mode `0o600` where the platform supports it. Second load returns the same `installation_id`.
-- [ ] Corrupt / unreadable / non-UUID `installation_id`: throw `IDENTITY_CORRUPT` (fail closed). Do **not** silently mint a new id (that would split attribution). Doctor may later report this; `--fix` does not rewrite identity in this slice.
-- [ ] `resolveRecorder` actor precedence (first non-empty wins): `FIVEX_RECORDS_ACTOR` → `config.records.actor` → `identity.actor`. If none, omit `actor`. Never use `os.userInfo()`, `os.hostname()`, `process.env.USER` / `USERNAME`, or Git `user.name` / `user.email`.
-- [ ] `FIVEX_INSTALLATION_ID` is **not** a production override (would make attribution spoofable in shared logs). Tests inject via the identity file / `configHome`.
-- [ ] Unit: `test/unit/records/identity.test.ts` — create, stable reload, corrupt throws, actor precedence, env/config do not change `installation_id`, identity path is outside a temp repo root.
+- [x] `identityDir` must **not** resolve under a project checkout, `paths.records`, or `.5x/`. Tests pass a temp `homeDir` / `FIVEX_CONFIG_HOME`; never write the real home directory in unit tests.
+- [x] `loadOrCreateInstallationIdentity`: if `identity.json` is missing, create `{ version: 1, installation_id: <uuid-v4> }` with `mkdirSync` recursive, atomic tmp+rename, file mode `0o600` where the platform supports it. Second load returns the same `installation_id`.
+- [x] Corrupt / unreadable / non-UUID `installation_id`: throw `IDENTITY_CORRUPT` (fail closed). Do **not** silently mint a new id (that would split attribution). Doctor may later report this; `--fix` does not rewrite identity in this slice.
+- [x] `resolveRecorder` actor precedence (first non-empty wins): `FIVEX_RECORDS_ACTOR` → `config.records.actor` → `identity.actor`. If none, omit `actor`. Never use `os.userInfo()`, `os.hostname()`, `process.env.USER` / `USERNAME`, or Git `user.name` / `user.email`.
+- [x] `FIVEX_INSTALLATION_ID` is **not** a production override (would make attribution spoofable in shared logs). Tests inject via the identity file / `configHome`.
+- [x] Unit: `test/unit/records/identity.test.ts` — create, stable reload, corrupt throws, actor precedence, env/config do not change `installation_id`, identity path is outside a temp repo root.
 
 **Privacy:** `installation_id` is a random correlator for one CLI installation, not a person. `actor` is optional and **will appear in git history / PRs** when set. Teams with public repositories should omit `actor` or add `origin.actor` to `records.redact`. Document this in Phase 8 / 101.
 

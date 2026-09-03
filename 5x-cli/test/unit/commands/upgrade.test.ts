@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "@commander-js/extra-typings";
@@ -91,6 +97,89 @@ describe("runUpgrade — prompt template handling", () => {
 				"utf-8",
 			);
 			expect(content).toBe(bundled);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+describe("runUpgrade — git attributes", () => {
+	test("creates .gitattributes with the default records rule", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+			await runUpgrade({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("docs/development/runs/**/*.jsonl merge=union");
+			expect(existsSync(join(tmp, "docs", "development", "runs"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("uses custom relative paths.records", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "custom/runs"\n`,
+				"utf-8",
+			);
+			await runUpgrade({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("custom/runs/**/*.jsonl merge=union");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("uses custom absolute paths.records inside the repo", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const inside = join(tmp, "inside", "runs");
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = ${JSON.stringify(inside)}\n`,
+				"utf-8",
+			);
+			await runUpgrade({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("inside/runs/**/*.jsonl merge=union");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("append is idempotent and preserves unrelated attributes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+			writeFileSync(join(tmp, ".gitattributes"), "*.png filter=lfs\n", "utf-8");
+			await runUpgrade({ startDir: tmp });
+			await runUpgrade({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("*.png filter=lfs");
+			expect(
+				ga.match(/docs\/development\/runs\/\*\*\/\*\.jsonl merge=union/g)
+					?.length,
+			).toBe(1);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("outside paths.records fails at config load before attributes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "/tmp/5x-records"\n`,
+				"utf-8",
+			);
+			await expect(runUpgrade({ startDir: tmp })).rejects.toThrow(
+				"RECORDS_ROOT_OUTSIDE_REPO",
+			);
+			expect(existsSync(join(tmp, ".gitattributes"))).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}

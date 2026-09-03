@@ -27,8 +27,10 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 import { harnessSyncCore } from "./harness.handler.js";
 import {
 	checkInstalledPromptTemplates,
+	ensureGitattributes,
 	ensureTemplateFiles,
 	generateTomlConfig,
+	recordsRelPathForAttributes,
 } from "./init.handler.js";
 
 // ---------------------------------------------------------------------------
@@ -536,7 +538,24 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 	for (const line of templateLog) console.log(line);
 	console.log();
 
-	// 4. Harness assets — report always; write only with permission + safety
+	// 4. Git attributes (merge=union for run-record JSONL)
+	console.log("Git attributes:");
+	const layered = await resolveLayeredConfig(projectRoot, projectRoot);
+	const recordsRel = recordsRelPathForAttributes(
+		projectRoot,
+		layered.config.paths.records,
+	);
+	const ga = ensureGitattributes(projectRoot, recordsRel);
+	if (ga.created) {
+		console.log("  Created .gitattributes with merge=union for run records");
+	} else if (ga.appended) {
+		console.log("  Updated .gitattributes (added merge=union for run records)");
+	} else {
+		console.log("  Skipped .gitattributes (run records rule already present)");
+	}
+	console.log();
+
+	// 5. Harness assets — report always; write only with permission + safety
 	console.log("Harness assets:");
 	const harnessLog = await upgradeHarnessAssets(projectRoot, {
 		sync: params.sync,

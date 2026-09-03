@@ -295,6 +295,10 @@ describe("5x quality run --run with sub-project config", () => {
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
 				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
+				writeFileSync(
+					join(dir, ".gitattributes"),
+					"# 5x run records\ndocs/development/runs/**/*.jsonl merge=union\n",
+				);
 
 				// Initial commit
 				Bun.spawnSync(["git", "add", "-A"], {

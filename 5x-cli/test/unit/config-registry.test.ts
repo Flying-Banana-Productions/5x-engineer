@@ -26,6 +26,9 @@ describe("config-registry", () => {
 		const keys = new Set(getConfigRegistry().map((e) => e.key));
 		expect(keys.has("author.provider")).toBe(true);
 		expect(keys.has("paths.templates.plan")).toBe(true);
+		expect(keys.has("paths.records")).toBe(true);
+		expect(keys.has("records.redact")).toBe(true);
+		expect(keys.has("records.actor")).toBe(true);
 		expect(keys.has("maxStepsPerRun")).toBe(true);
 		expect(keys.has("qualityGates")).toBe(true);
 	});
@@ -57,6 +60,7 @@ describe("config-registry", () => {
 		);
 		expectDefault("author.delegationMode", parsed.author.delegationMode);
 		expectDefault("paths.plans", parsed.paths.plans);
+		expectDefault("paths.records", parsed.paths.records);
 		expectDefault("paths.templates.plan", parsed.paths.templates.plan);
 		expectDefault("db.path", parsed.db.path);
 		expectDefault("qualityGates", parsed.qualityGates);
@@ -64,12 +68,14 @@ describe("config-registry", () => {
 		expectDefault("maxStepsPerRun", parsed.maxStepsPerRun);
 		expectDefault("maxQualityRetries", parsed.maxQualityRetries);
 		expectDefault("maxAutoRetries", parsed.maxAutoRetries);
+		expectDefault("records.redact", parsed.records.redact);
 	});
 
 	test("optional leaves have undefined default in registry", () => {
 		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
 		expect(byKey.get("author.model")?.default).toBeUndefined();
 		expect(byKey.get("opencode.url")?.default).toBeUndefined();
+		expect(byKey.get("records.actor")?.default).toBeUndefined();
 	});
 
 	test("deprecated keys are flagged", () => {
@@ -113,6 +119,25 @@ describe("config-registry", () => {
 		expect(
 			FiveXConfigSchema.parse({ author: { model: "m" } }).harness.autoSync,
 		).toBe(false);
+	});
+
+	test("records keys surface with type, default, and description", () => {
+		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
+
+		const recordsPath = byKey.get("paths.records");
+		expect(recordsPath?.type).toBe("string");
+		expect(recordsPath?.default).toBe("docs/development/runs");
+		expect(recordsPath?.description).toContain("git-tracked run records");
+
+		const redact = byKey.get("records.redact");
+		expect(redact?.type).toBe("string[]");
+		expect(redact?.default).toEqual([]);
+		expect(redact?.description).toContain("drop before writing");
+
+		const actor = byKey.get("records.actor");
+		expect(actor?.type).toBe("string");
+		expect(actor?.default).toBeUndefined();
+		expect(actor?.description).toContain("Never inferred");
 	});
 
 	test("qualityGates has type string[]", () => {

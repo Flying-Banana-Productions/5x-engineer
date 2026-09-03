@@ -88,6 +88,12 @@ describe("initScaffold", () => {
 			const gitignoreContent = readFileSync(gitignorePath, "utf-8");
 			expect(gitignoreContent).toContain(".5x/");
 			expect(gitignoreContent).toContain("5x.toml.local");
+
+			const gaPath = join(tmp, ".gitattributes");
+			expect(existsSync(gaPath)).toBe(true);
+			const ga = readFileSync(gaPath, "utf-8");
+			expect(ga).toContain("docs/development/runs/**/*.jsonl merge=union");
+			expect(existsSync(join(tmp, "docs", "development", "runs"))).toBe(false);
 		} finally {
 			cleanupDir(tmp);
 		}
@@ -398,6 +404,9 @@ describe("generateTomlConfig", () => {
 		expect(content).toContain("[worktree]");
 		expect(content).toContain("# postCreate");
 		expect(content).toContain("[paths]");
+		expect(content).toContain('records = "docs/development/runs"');
+		expect(content).toContain("# [records]");
+		expect(content).toContain('# actor = "your-label"');
 		expect(content).toContain(
 			'plan = ".5x/templates/implementation-plan-template.md"',
 		);
@@ -406,6 +415,142 @@ describe("generateTomlConfig", () => {
 		expect(content).toContain("maxAutoRetries");
 		expect(content).toContain("maxStepsPerRun");
 		expect(content).toContain("qualityGates");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ensureGitattributes
+// ---------------------------------------------------------------------------
+
+describe("ensureGitattributes", () => {
+	test("creates .gitattributes if missing", async () => {
+		const { ensureGitattributes, recordsGitattributesLine } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const result = ensureGitattributes(tmp, "docs/development/runs");
+			expect(result.created).toBe(true);
+			expect(result.appended).toBe(false);
+			const content = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(content).toContain("# 5x run records");
+			expect(content).toContain(
+				recordsGitattributesLine("docs/development/runs"),
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("appends if .gitattributes exists without the rule", async () => {
+		const { ensureGitattributes } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, ".gitattributes"), "*.md merge=union\n", "utf-8");
+			const result = ensureGitattributes(tmp, "docs/development/runs");
+			expect(result.created).toBe(false);
+			expect(result.appended).toBe(true);
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("*.md merge=union");
+			expect(ga).toContain("docs/development/runs/**/*.jsonl merge=union");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("no-ops if the exact rule already exists", async () => {
+		const { ensureGitattributes, recordsGitattributesLine } = await import(
+			"../../../src/commands/init.handler.js"
+		);
+		const tmp = makeTmpDir();
+		try {
+			const rule = recordsGitattributesLine("docs/development/runs");
+			writeFileSync(
+				join(tmp, ".gitattributes"),
+				`# 5x run records\n${rule}\n`,
+				"utf-8",
+			);
+			const result = ensureGitattributes(tmp, "docs/development/runs");
+			expect(result.created).toBe(false);
+			expect(result.appended).toBe(false);
+			expect(readFileSync(join(tmp, ".gitattributes"), "utf-8")).toBe(
+				`# 5x run records\n${rule}\n`,
+			);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});
+
+describe("initScaffold gitattributes", () => {
+	test("uses custom relative paths.records", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "custom/runs"\n`,
+				"utf-8",
+			);
+			await initScaffold({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("custom/runs/**/*.jsonl merge=union");
+			expect(ga).not.toContain("docs/development/runs/**/*.jsonl");
+			expect(existsSync(join(tmp, "custom", "runs"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("uses custom absolute paths.records inside the repo", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const inside = join(tmp, "inside", "runs");
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = ${JSON.stringify(inside)}\n`,
+				"utf-8",
+			);
+			await initScaffold({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(ga).toContain("inside/runs/**/*.jsonl merge=union");
+			expect(existsSync(inside)).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("outside paths.records fails at config load before attributes", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "/tmp/5x-records"\n`,
+				"utf-8",
+			);
+			await expect(initScaffold({ startDir: tmp })).rejects.toThrow(
+				"RECORDS_ROOT_OUTSIDE_REPO",
+			);
+			expect(existsSync(join(tmp, ".gitattributes"))).toBe(false);
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+
+	test("gitattributes write is idempotent across two inits", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await initScaffold({ startDir: tmp });
+			await initScaffold({ startDir: tmp });
+			const ga = readFileSync(join(tmp, ".gitattributes"), "utf-8");
+			expect(
+				ga.match(/docs\/development\/runs\/\*\*\/\*\.jsonl merge=union/g)
+					?.length,
+			).toBe(1);
+		} finally {
+			cleanupDir(tmp);
+		}
 	});
 });
 

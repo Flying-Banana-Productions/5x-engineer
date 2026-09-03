@@ -107,6 +107,10 @@ describe("5x run init with sub-project config", () => {
 				);
 
 				writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
+				writeFileSync(
+					join(dir, ".gitattributes"),
+					"# 5x run records\ndocs/development/runs/**/*.jsonl merge=union\n",
+				);
 
 				// Initial commit so worktree is clean
 				Bun.spawnSync(["git", "add", "-A"], {

@@ -58,6 +58,10 @@ function initRepo(dir: string): void {
 	git(["config", "user.email", "test@test.com"], dir);
 	git(["config", "user.name", "Test"], dir);
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
+	writeFileSync(
+		join(dir, ".gitattributes"),
+		"# 5x run records\ndocs/development/runs/**/*.jsonl merge=union\n",
+	);
 	writeFileSync(join(dir, "README.md"), "# Test\n");
 	git(["add", "."], dir);
 	git(["commit", "-m", "initial"], dir);
@@ -158,7 +162,7 @@ describe("isolated mode", () => {
 
 				// Init 5x in worktree (isolated mode)
 				await run5x(wtPath, ["init"]);
-				// No tracked files from init (.5x/ is gitignored; no root 5x.toml).
+				// .5x/ is gitignored; .gitattributes is already in the initial commit.
 				git(["commit", "--allow-empty", "-m", "init 5x"], wtPath);
 
 				// Create a run in isolated mode

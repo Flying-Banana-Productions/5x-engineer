@@ -99,6 +99,12 @@ const PathsSchema = z.object({
 		.describe(
 			"Archive directory for completed work (relative to config; resolved at load).",
 		),
+	records: z
+		.string()
+		.default("docs/development/runs")
+		.describe(
+			"Directory for git-tracked run records (relative to config; resolved to absolute at load).",
+		),
 	templates: z
 		.object({
 			plan: z
@@ -163,6 +169,22 @@ const OpenCodeConfigSchema = z.object({
 		.describe("OpenCode server URL; omit for local/managed OpenCode."),
 });
 
+const RecordsSchema = z.object({
+	redact: z
+		.array(z.string())
+		.default([])
+		.describe(
+			"Additional step-record field names to drop before writing (e.g. cost_usd, model, origin.actor).",
+		),
+	actor: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(
+			"Optional human-readable recorder label stamped on origin. Never inferred from OS username or hostname. Prefer user-scope identity.json or FIVEX_RECORDS_ACTOR; a committed 5x.toml value is shared by every clone.",
+		),
+});
+
 const FiveXConfigSchema = z
 	.object({
 		author: AgentConfigSchema.default({}).describe(
@@ -193,7 +215,10 @@ const FiveXConfigSchema = z
 			"Harness asset freshness warnings and automatic re-sync behavior.",
 		),
 		paths: PathsSchema.default({}).describe(
-			"Plans, reviews, archive, and template paths (resolved relative to each config file).",
+			"Plans, reviews, archive, records, and template paths (resolved relative to each config file).",
+		),
+		records: RecordsSchema.default({}).describe(
+			"Git-tracked run record options (field redaction and optional recorder actor label).",
 		),
 		db: DbSchema.default({}).describe(
 			"Local SQLite database location (effective only from root config).",
@@ -466,14 +491,30 @@ function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
 	return { ...raw, paths: resolvedPaths };
 }
 
+/** Thrown when resolved `paths.records` is not inside the repository. */
+export const RECORDS_ROOT_OUTSIDE_REPO = "RECORDS_ROOT_OUTSIDE_REPO";
+
+export function recordsRootOutsideRepoMessage(absPath: string): string {
+	return (
+		`${RECORDS_ROOT_OUTSIDE_REPO}: paths.records must be inside the repository ` +
+		`(resolved to ${absPath}). Git-tracked run records cannot live outside the work tree.`
+	);
+}
+
 /**
  * Resolve all `paths.*` values in a parsed FiveXConfig to absolute paths.
  *
  * Used after Zod parsing to ensure that default values (e.g., `"docs/development"`)
  * are resolved against the given `baseDir` (typically workspace root or projectRoot).
  * Already-absolute paths pass through unchanged.
+ * `paths.records` must resolve inside `baseDir` or this throws
+ * {@link RECORDS_ROOT_OUTSIDE_REPO}.
  */
 function resolveConfigPaths(config: FiveXConfig, baseDir: string): FiveXConfig {
+	const records = resolve(baseDir, config.paths.records);
+	if (!isPathUnder(records, baseDir)) {
+		throw new Error(recordsRootOutsideRepoMessage(records));
+	}
 	return {
 		...config,
 		paths: {
@@ -486,6 +527,7 @@ function resolveConfigPaths(config: FiveXConfig, baseDir: string): FiveXConfig {
 				? { runReviews: resolve(baseDir, config.paths.runReviews) }
 				: {}),
 			archive: resolve(baseDir, config.paths.archive),
+			records,
 			templates: {
 				plan: resolve(baseDir, config.paths.templates.plan),
 				review: resolve(baseDir, config.paths.templates.review),
@@ -503,6 +545,7 @@ const KNOWN_ROOT_CONFIG_KEYS = new Set([
 	"skipQualityGates",
 	"worktree",
 	"paths",
+	"records",
 	"db",
 	"maxStepsPerRun",
 	"maxReviewIterations",
@@ -561,10 +604,12 @@ function warnUnknownConfigKeys(
 		"planReviews",
 		"runReviews",
 		"archive",
+		"records",
 		"templates",
 	]);
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
+	const allowedRecords = new Set(["redact", "actor"]);
 
 	// Effective plugin keys: merged layers + CLI, plus providers declared in this file.
 	const providerNames = collectKnownPluginTopLevelKeys(
@@ -632,6 +677,8 @@ function warnUnknownConfigKeys(
 				}
 			} else if (key === "db") {
 				collect(value, allowedDb, nextPrefix);
+			} else if (key === "records") {
+				collect(value, allowedRecords, nextPrefix);
 			}
 		}
 	}
