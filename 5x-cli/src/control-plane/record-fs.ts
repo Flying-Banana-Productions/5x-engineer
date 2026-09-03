@@ -43,9 +43,9 @@ import {
 	type RecordLine,
 	RecordStoreError,
 	type RecordStream,
-	requireSingleRunAtomicAppend,
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
+	requireSingleRunAtomicAppend,
 } from "./record-types.js";
 
 export type TxnEvent =
