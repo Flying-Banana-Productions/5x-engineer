@@ -3,6 +3,7 @@ import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -248,6 +249,70 @@ describe("loadOrCreateInstallationIdentity", () => {
 			cleanupDir(configHome);
 		}
 	});
+
+	test(
+		"concurrent first loads converge on the persisted installation_id",
+		async () => {
+			const home = makeTmpDir("5x-id-race-home");
+			const configHome = makeTmpDir("5x-id-race-config");
+			try {
+				const identitySrc = join(
+					import.meta.dir,
+					"../../../src/records/identity.ts",
+				);
+				const script = `
+					import { loadOrCreateInstallationIdentity } from ${JSON.stringify(identitySrc)};
+					const identity = loadOrCreateInstallationIdentity({
+						homeDir: process.env.TEST_HOME_DIR ?? "",
+						configHome: process.env.TEST_CONFIG_HOME,
+					});
+					process.stdout.write(JSON.stringify(identity));
+				`;
+				const workerCount = 8;
+				const procs = Array.from({ length: workerCount }, () =>
+					Bun.spawn(["bun", "-e", script], {
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+						env: {
+							...process.env,
+							TEST_HOME_DIR: home,
+							TEST_CONFIG_HOME: configHome,
+						},
+					}),
+				);
+				const results = await Promise.all(
+					procs.map(async (proc) => {
+						const stdout = await new Response(proc.stdout).text();
+						const stderr = await new Response(proc.stderr).text();
+						const exitCode = await proc.exited;
+						if (exitCode !== 0) {
+							throw new Error(
+								`identity worker exited ${exitCode}: ${stderr || stdout}`,
+							);
+						}
+						return JSON.parse(stdout) as { installation_id: string };
+					}),
+				);
+				expect(results).toHaveLength(workerCount);
+				const ids = new Set(results.map((r) => r.installation_id));
+				expect(ids.size).toBe(1);
+				const filePath = join(configHome, IDENTITY_FILENAME);
+				const stored = JSON.parse(readFileSync(filePath, "utf-8")) as {
+					installation_id: string;
+				};
+				expect(results[0]?.installation_id).toBe(stored.installation_id);
+				expect(stored.installation_id).toMatch(UUID_V4_RE);
+				expect(
+					readdirSync(configHome).filter((name) => name.endsWith(".tmp")),
+				).toEqual([]);
+			} finally {
+				cleanupDir(home);
+				cleanupDir(configHome);
+			}
+		},
+		{ timeout: 15000 },
+	);
 });
 
 describe("resolveRecorder", () => {

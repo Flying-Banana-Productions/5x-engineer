@@ -9,11 +9,15 @@
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
 	existsSync,
+	fsyncSync,
+	linkSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
-	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -101,10 +105,77 @@ function parseIdentity(raw: unknown, path: string): InstallationIdentity {
 	return identity;
 }
 
-function writeIdentityAtomic(
+function isErrno(err: unknown, code: string): boolean {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		"code" in err &&
+		(err as { code: unknown }).code === code
+	);
+}
+
+function unlinkQuiet(path: string): void {
+	try {
+		unlinkSync(path);
+	} catch (err) {
+		if (!isErrno(err, "ENOENT")) throw err;
+	}
+}
+
+function fsyncPath(path: string): void {
+	const fd = openSync(path, "r");
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function chmodPrivate(path: string): void {
+	try {
+		chmodSync(path, 0o600);
+	} catch {
+		// POSIX modes are not supported on every platform.
+	}
+}
+
+function readExistingIdentity(filePath: string): InstallationIdentity {
+	let st: ReturnType<typeof statSync>;
+	try {
+		st = statSync(filePath);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw identityCorrupt(filePath, message);
+	}
+	if (!st.isFile()) {
+		throw identityCorrupt(filePath, "not a regular file");
+	}
+	let text: string;
+	try {
+		text = readFileSync(filePath, "utf-8");
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw identityCorrupt(filePath, message);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text) as unknown;
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw identityCorrupt(filePath, message);
+	}
+	return parseIdentity(parsed, filePath);
+}
+
+/**
+ * Publish `identity.json` with an exclusive hard link so the first writer
+ * wins. Returns true when this process created the file; false when another
+ * writer already published. Never replaces an existing identity.
+ */
+function publishIdentityExclusive(
 	filePath: string,
 	identity: InstallationIdentity,
-): void {
+): boolean {
 	const dir = dirname(filePath);
 	mkdirSync(dir, { recursive: true });
 	const tmpPath = join(
@@ -113,17 +184,32 @@ function writeIdentityAtomic(
 	);
 	const body = `${JSON.stringify(identity, null, 2)}\n`;
 	writeFileSync(tmpPath, body, { encoding: "utf-8", mode: 0o600 });
+	chmodPrivate(tmpPath);
 	try {
-		chmodSync(tmpPath, 0o600);
+		fsyncPath(tmpPath);
 	} catch {
-		// POSIX modes are not supported on every platform.
+		// fsync is best-effort; exclusive link is the race primitive.
 	}
-	renameSync(tmpPath, filePath);
 	try {
-		chmodSync(filePath, 0o600);
-	} catch {
-		// POSIX modes are not supported on every platform.
+		linkSync(tmpPath, filePath);
+	} catch (err) {
+		unlinkQuiet(tmpPath);
+		if (isErrno(err, "EEXIST")) return false;
+		throw err;
 	}
+	try {
+		fsyncPath(dir);
+	} catch {
+		// Directory fsync is best-effort on platforms that reject it.
+	}
+	unlinkQuiet(tmpPath);
+	chmodPrivate(filePath);
+	try {
+		fsyncPath(dir);
+	} catch {
+		// Directory fsync is best-effort on platforms that reject it.
+	}
+	return true;
 }
 
 export function loadOrCreateInstallationIdentity(opts: {
@@ -134,39 +220,17 @@ export function loadOrCreateInstallationIdentity(opts: {
 	const filePath = join(dir, IDENTITY_FILENAME);
 
 	if (existsSync(filePath)) {
-		let st: ReturnType<typeof statSync>;
-		try {
-			st = statSync(filePath);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			throw identityCorrupt(filePath, message);
-		}
-		if (!st.isFile()) {
-			throw identityCorrupt(filePath, "not a regular file");
-		}
-		let text: string;
-		try {
-			text = readFileSync(filePath, "utf-8");
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			throw identityCorrupt(filePath, message);
-		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(text) as unknown;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			throw identityCorrupt(filePath, message);
-		}
-		return parseIdentity(parsed, filePath);
+		return readExistingIdentity(filePath);
 	}
 
 	const created: InstallationIdentity = {
 		version: 1,
 		installation_id: randomUUID(),
 	};
-	writeIdentityAtomic(filePath, created);
-	return created;
+	if (publishIdentityExclusive(filePath, created)) {
+		return created;
+	}
+	return readExistingIdentity(filePath);
 }
 
 /**
