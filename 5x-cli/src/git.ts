@@ -122,12 +122,17 @@ export async function checkGitSafety(
 	if (rootResult.exitCode !== 0) {
 		throw new Error(`Not a git repository: ${workdir}. ${rootResult.stderr}`);
 	}
-	const repoRoot = rootResult.stdout;
+	const repoRoot = rootResult.stdout.trim();
 
 	// Get current branch
 	const branch = await getCurrentBranch(workdir);
 
-	const statusResult = await run(["status", "--porcelain=v1", "-z"], workdir);
+	// `--untracked-files=all` lists each untracked file. Without it, a brand-new
+	// records tree collapses to `?? docs/` and fails the path-scoped exemption.
+	const statusResult = await run(
+		["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+		workdir,
+	);
 	const entries = parsePorcelainZ(statusResult.stdout);
 	const exemptAbsRoots = (opts?.exemptRoots ?? []).map((root) =>
 		realpathExisting(root),

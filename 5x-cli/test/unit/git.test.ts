@@ -87,7 +87,7 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain=v1", "-z"), ok("")],
+			[cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"), ok("")],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(true);
@@ -101,7 +101,10 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain=v1", "-z"), ok(" M README.md\0")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok(" M README.md\0"),
+			],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(false);
@@ -112,7 +115,10 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain=v1", "-z"), ok("?? untracked.txt\0")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? untracked.txt\0"),
+			],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(false);
@@ -134,7 +140,7 @@ describe("checkGitSafety", () => {
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
 			[
-				cmd("status", "--porcelain=v1", "-z"),
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
 				ok("?? docs/development/runs/p/r/steps.jsonl\0"),
 			],
 		);
@@ -145,12 +151,30 @@ describe("checkGitSafety", () => {
 		expect(rpt.untrackedFiles).toEqual([]);
 	});
 
+	test("trims trailing newline from git toplevel before exempt matching", async () => {
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo\n")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main\n")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? docs/development/runs/p/r/steps.jsonl\0"),
+			],
+		);
+		const rpt = await checkGitSafety("/fake/repo", {
+			exemptRoots: ["/fake/repo/docs/development/runs"],
+		});
+		expect(rpt.safe).toBe(true);
+		expect(rpt.isDirty).toBe(false);
+		expect(rpt.repoRoot).toBe("/fake/repo");
+		expect(rpt.untrackedFiles).toEqual([]);
+	});
+
 	test("records plus README.md dirty reports README only", async () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
 			[
-				cmd("status", "--porcelain=v1", "-z"),
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
 				ok("?? docs/development/runs/p/r/steps.jsonl\0?? README.md\0"),
 			],
 		);
@@ -166,7 +190,7 @@ describe("checkGitSafety", () => {
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
 			[
-				cmd("status", "--porcelain=v1", "-z"),
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
 				ok("R100\0docs/development/runs/old.jsonl\0README.md\0"),
 			],
 		);
