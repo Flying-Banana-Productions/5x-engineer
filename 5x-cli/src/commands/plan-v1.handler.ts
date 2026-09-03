@@ -13,7 +13,6 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
-	readFileSync,
 	renameSync,
 	statSync,
 } from "node:fs";
@@ -38,6 +37,14 @@ import {
 	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
+import { resolveRecordsRoot } from "../records/paths.js";
+import {
+	envelopeFromProgress,
+	fetchFiveXWithWarnings,
+	formatProgressSourceLine,
+	prepareProgressSession,
+	resolvePlanProgress,
+} from "../records/resolve.js";
 import { resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
@@ -47,10 +54,14 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 
 export interface PlanPhasesParams {
 	path: string;
+	fetch?: boolean;
+	allRefs?: boolean;
 }
 
 export interface PlanListParams {
 	excludeFinished?: boolean;
+	fetch?: boolean;
+	allRefs?: boolean;
 	/** Working directory for config layering and cwd-relative resolution (default `.`). */
 	startDir?: string;
 }
@@ -65,6 +76,19 @@ export interface PlanListParams {
  * Renders a checklist with checkbox notation and progress counts.
  */
 function formatPhasesText(data: Record<string, unknown>): void {
+	const source = typeof data.source === "string" ? data.source : "";
+	if (source && source !== "worktree" && source !== "HEAD") {
+		const line = formatProgressSourceLine({
+			kind: source === "diverged" ? "diverged" : "remote",
+			label: source,
+			age_seconds:
+				typeof data.source_age_seconds === "number"
+					? data.source_age_seconds
+					: undefined,
+		});
+		if (line) console.log(line);
+	}
+
 	const phases = data.phases as Array<{
 		id: number;
 		title: string;
@@ -98,6 +122,10 @@ export interface PlanListEntry {
 	phases_total: number;
 	active_run: string | null;
 	runs_total: number;
+	source: string;
+	source_ref?: string;
+	source_age_seconds?: number;
+	diverged?: boolean;
 }
 
 /** Internal row with file mtime for sort (omitted from JSON output). */
@@ -148,6 +176,7 @@ export function formatPlanListText(data: {
 		phases: `${p.phases_done}/${p.phases_total}`,
 		runs: String(p.runs_total),
 		activeRun: p.active_run ?? "-",
+		source: p.source,
 	}));
 
 	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
@@ -158,6 +187,7 @@ export function formatPlanListText(data: {
 		{ header: "Phases", key: "phases", width: 6 },
 		{ header: "Runs", key: "runs", width: 4 },
 		{ header: "Active Run", key: "activeRun", width: 10 },
+		{ header: "Source", key: "source", width: 6 },
 	];
 
 	for (const col of cols) {
@@ -179,21 +209,47 @@ export function formatPlanListText(data: {
 // ---------------------------------------------------------------------------
 
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
-	const { config } = await resolveDbContext({ migrate: false });
+	const { config, projectRoot } = await resolveDbContext({ migrate: false });
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
+	const mapped = resolveMappedWorktree(planPath);
+	const worktreePlanPath = mapped?.worktreePlanPath ?? null;
 
-	// Try to resolve the plan through worktree mapping
-	const worktreePlanPath = resolveWorktreePlanPath(planPath);
-	const effectivePath = worktreePlanPath ?? planPath;
-	if (!existsSync(effectivePath)) {
+	if (params.fetch) {
+		await fetchFiveXWithWarnings(projectRoot);
+	}
+
+	const recordsRelPath = resolveRecordsRoot({
+		recordsConfigAbs: config.paths.records,
+		controlPlaneRoot: projectRoot,
+		effectiveWorkdir: projectRoot,
+	}).recordsRelPath;
+	const relPlanPath =
+		relativePathUnder(planPath, projectRoot)?.replace(/\\/g, "/") ??
+		params.path.replace(/\\/g, "/");
+	const slug = planSlugFromPath(relPlanPath);
+
+	const resolved = await resolvePlanProgress({
+		workdir: projectRoot,
+		planPath,
+		planSlug: slug,
+		recordsRelPath,
+		worktreePath: mapped?.worktreeRoot ?? null,
+		allRefs: params.allRefs,
+	});
+
+	const checkoutExists =
+		existsSync(planPath) ||
+		(worktreePlanPath != null && existsSync(worktreePlanPath));
+	if (resolved.markdown == null && !checkoutExists) {
 		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
 			plan_path: planPath,
 			...(worktreePlanPath ? { worktree_plan_path: worktreePlanPath } : {}),
 		});
 	}
 
-	const markdown = readFileSync(effectivePath, "utf-8");
+	const markdown = resolved.markdown ?? "";
 	const plan = parsePlan(markdown);
+	const progress = envelopeFromProgress(resolved);
 
 	const result: Record<string, unknown> = {
 		phases: plan.phases.map((p) => ({
@@ -206,6 +262,7 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 		filePaths: worktreePlanPath
 			? { root: planPath, worktree: worktreePlanPath }
 			: { root: planPath },
+		...progress,
 	};
 
 	outputSuccess(result, formatPhasesText);
@@ -225,7 +282,12 @@ function planListSkipSubtrees(
 ): string[] {
 	const roots: string[] = [];
 	const plansAbs = resolve(plansDir);
-	for (const p of [paths.reviews, paths.planReviews, paths.runReviews]) {
+	for (const p of [
+		paths.reviews,
+		paths.planReviews,
+		paths.runReviews,
+		paths.records,
+	]) {
 		if (!p) continue;
 		const abs = resolve(p);
 		if (abs === plansAbs || isPathUnder(abs, plansAbs)) roots.push(abs);
@@ -275,13 +337,57 @@ export async function planList(params: PlanListParams): Promise<void> {
 	const plansDir = config.paths.plans;
 	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
 
+	if (params.fetch) {
+		await fetchFiveXWithWarnings(projectRoot);
+	}
+
 	const mdAbsPaths = collectMarkdownFiles(plansDir, skipSubtrees);
+	const recordsRelPath = resolveRecordsRoot({
+		recordsConfigAbs: config.paths.records,
+		controlPlaneRoot: projectRoot,
+		effectiveWorkdir: projectRoot,
+	}).recordsRelPath;
+	const plansRel =
+		relativePathUnder(plansDir, projectRoot)?.replace(/\\/g, "/") ?? "";
+	const skipRelPrefixes = skipSubtrees
+		.map((abs) => relativePathUnder(abs, projectRoot)?.replace(/\\/g, "/"))
+		.filter((p): p is string => Boolean(p));
 
 	const planRows = db.query("SELECT * FROM plans").all() as PlanRow[];
 	const worktreeByPlanPath = new Map<string, string | null>();
 	for (const row of planRows) {
 		worktreeByPlanPath.set(row.plan_path, row.worktree_path);
 	}
+
+	const diskRels: string[] = [];
+	const absByRel = new Map<string, string>();
+	for (const absPath of mdAbsPaths) {
+		const canonical = canonicalizePlanPath(absPath);
+		const rel = relativePathUnder(canonical, projectRoot)?.replace(/\\/g, "/");
+		if (!rel) continue;
+		diskRels.push(rel);
+		absByRel.set(rel, canonical);
+	}
+
+	const worktreePaths = [
+		...new Set(
+			[...worktreeByPlanPath.values()].filter(
+				(p): p is string => typeof p === "string" && p.length > 0,
+			),
+		),
+	];
+
+	const session = await prepareProgressSession({
+		workdir: projectRoot,
+		recordsRelPath,
+		plansRelPath: plansRel || undefined,
+		skipRelPrefixes,
+		planRepoRels: diskRels,
+		allRefs: params.allRefs,
+		worktreePaths,
+	});
+
+	const allRels = new Set<string>([...diskRels, ...session.discoveredPlanRels]);
 
 	const allRuns = listRuns(db, { limit: 10000 });
 	const runsByPlanPath = new Map<string, typeof allRuns>();
@@ -293,39 +399,52 @@ export async function planList(params: PlanListParams): Promise<void> {
 
 	const entries: PlanListRow[] = [];
 
-	for (const absPath of mdAbsPaths) {
-		const canonical = canonicalizePlanPath(absPath);
+	for (const rel of allRels) {
+		const canonical = absByRel.get(rel) ?? join(projectRoot, ...rel.split("/"));
 		const plan_path = posixRelativeDir(plansDir, canonical);
 		const worktreePath = worktreeByPlanPath.get(canonical) ?? null;
-		const readPath = effectivePlanReadPath(
-			projectRoot,
-			canonical,
-			worktreePath,
-		);
 
 		let title = "";
 		let phases_total = 0;
 		let phases_done = 0;
 		let completion_pct = 0;
 		let status: "complete" | "incomplete" = "incomplete";
+		let source = "HEAD";
+		let source_ref: string | undefined;
+		let source_age_seconds: number | undefined;
+		let diverged = false;
 
 		try {
-			const markdown = readFileSync(readPath, "utf-8");
-			const parsed = parsePlan(markdown);
-			title = parsed.title;
-			phases_total = parsed.phases.length;
-			phases_done = parsed.phases.filter((p) => p.isComplete).length;
-			completion_pct =
-				phases_total > 0 ? Math.round((phases_done / phases_total) * 100) : 0;
-			status =
-				phases_total > 0 && phases_done === phases_total
-					? "complete"
-					: "incomplete";
-			if (!parsedPlanHasPhases(parsed)) {
-				process.stderr.write(
-					`Warning: ${plan_path} has no implementation-plan phases (expected "## Phase N:" headings). ` +
-						`It is still listed; move or edit the file if it is not a plan.\n`,
-				);
+			const resolved = await resolvePlanProgress({
+				workdir: projectRoot,
+				planPath: canonical,
+				planSlug: planSlugFromPath(rel),
+				recordsRelPath,
+				worktreePath,
+				allRefs: params.allRefs,
+				session,
+			});
+			source = resolved.source.label;
+			source_ref = resolved.source.ref;
+			source_age_seconds = resolved.source.age_seconds;
+			diverged = resolved.source.kind === "diverged";
+			if (resolved.markdown) {
+				const parsed = parsePlan(resolved.markdown);
+				title = parsed.title;
+				phases_total = parsed.phases.length;
+				phases_done = parsed.phases.filter((p) => p.isComplete).length;
+				completion_pct =
+					phases_total > 0 ? Math.round((phases_done / phases_total) * 100) : 0;
+				status =
+					phases_total > 0 && phases_done === phases_total
+						? "complete"
+						: "incomplete";
+				if (!parsedPlanHasPhases(parsed)) {
+					process.stderr.write(
+						`Warning: ${plan_path} has no implementation-plan phases (expected "## Phase N:" headings). ` +
+							`It is still listed; move or edit the file if it is not a plan.\n`,
+					);
+				}
 			}
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err);
@@ -345,8 +464,13 @@ export async function planList(params: PlanListParams): Promise<void> {
 
 		let mtime_ms = 0;
 		try {
+			const readPath = effectivePlanReadPath(
+				projectRoot,
+				canonical,
+				worktreePath,
+			);
 			const stPath = existsSync(readPath) ? readPath : canonical;
-			mtime_ms = Math.trunc(statSync(stPath).mtimeMs);
+			if (existsSync(stPath)) mtime_ms = Math.trunc(statSync(stPath).mtimeMs);
 		} catch {
 			mtime_ms = 0;
 		}
@@ -362,6 +486,10 @@ export async function planList(params: PlanListParams): Promise<void> {
 			phases_total,
 			active_run,
 			runs_total,
+			source,
+			...(source_ref ? { source_ref } : {}),
+			...(typeof source_age_seconds === "number" ? { source_age_seconds } : {}),
+			...(diverged ? { diverged: true } : {}),
 			mtime_ms,
 		});
 	}
@@ -555,11 +683,13 @@ export async function planArchive(params: PlanArchiveParams): Promise<void> {
 const DB_FILENAME = "5x.db";
 
 /**
- * If the plan has a mapped worktree, return the path to the plan file
- * in the worktree (if it exists there). Returns null if no mapping,
- * no DB, or the worktree copy doesn't exist.
+ * If the plan has a mapped worktree, return the worktree root and the
+ * plan file path in that worktree (when the file exists).
  */
-function resolveWorktreePlanPath(planPath: string): string | null {
+function resolveMappedWorktree(planPath: string): {
+	worktreeRoot: string;
+	worktreePlanPath: string;
+} | null {
 	try {
 		const cp = resolveControlPlaneRoot();
 		if (cp.mode === "none") return null;
@@ -574,20 +704,17 @@ function resolveWorktreePlanPath(planPath: string): string | null {
 			.query("SELECT worktree_path FROM plans WHERE plan_path = ?1")
 			.get(planPath) as { worktree_path: string | null } | null;
 
-		const worktreePath = plan?.worktree_path;
-		if (!worktreePath) return null;
+		const worktreeRoot = plan?.worktree_path;
+		if (!worktreeRoot) return null;
 
-		// Re-root the plan path into the worktree
 		const relPlanPath = relativePathUnder(planPath, cp.controlPlaneRoot);
 		if (relPlanPath === null) return null;
-		const worktreePlanPath = join(worktreePath, relPlanPath);
+		const worktreePlanPath = join(worktreeRoot, relPlanPath);
 
 		if (!existsSync(worktreePlanPath)) return null;
 
-		return worktreePlanPath;
+		return { worktreeRoot, worktreePlanPath };
 	} catch {
-		// Any failure in DB/control-plane resolution is non-fatal —
-		// fall back to reading the plan at the given path.
 		return null;
 	}
 }

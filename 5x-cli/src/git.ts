@@ -614,10 +614,184 @@ export async function gitLogLastTouching(
 	ref: string,
 	paths: string[],
 ): Promise<string | null> {
+	if (paths.length === 0) return null;
 	const result = await run(
 		["log", "-1", "--format=%H", ref, "--", ...paths],
 		workdir,
 	);
 	if (result.exitCode !== 0 || !result.stdout) return null;
 	return result.stdout;
+}
+
+export interface FiveXRemoteRef {
+	remote: string;
+	/** Short name, e.g. `origin/5x/<slug>`. */
+	ref: string;
+}
+
+/**
+ * Local `5x/<slug>` branches and remote-tracking `<remote>/5x/<slug>` refs.
+ * Uses `git for-each-ref` on `refs/heads/5x/*` and remote `5x/*` patterns.
+ */
+export async function listFiveXRefs(workdir: string): Promise<{
+	local: string[];
+	remote: FiveXRemoteRef[];
+}> {
+	const result = await run(
+		[
+			"for-each-ref",
+			"--format=%(refname)",
+			"refs/heads/5x/*",
+			"refs/remotes/*/5x/*",
+		],
+		workdir,
+	);
+	const local: string[] = [];
+	const remote: FiveXRemoteRef[] = [];
+	if (result.exitCode !== 0 || !result.stdout) return { local, remote };
+	for (const line of result.stdout.split("\n")) {
+		const refname = line.trim();
+		if (!refname) continue;
+		const head = refname.match(/^refs\/heads\/(5x\/.+)$/);
+		if (head?.[1]) {
+			local.push(head[1]);
+			continue;
+		}
+		const rem = refname.match(/^refs\/remotes\/([^/]+)\/(5x\/.+)$/);
+		if (rem?.[1] && rem[2]) {
+			remote.push({ remote: rem[1], ref: `${rem[1]}/${rem[2]}` });
+		}
+	}
+	return { local, remote };
+}
+
+/** `git merge-base --is-ancestor maybeAncestor commit`. */
+export async function isAncestor(
+	workdir: string,
+	maybeAncestor: string,
+	commit: string,
+): Promise<boolean> {
+	const result = await run(
+		["merge-base", "--is-ancestor", maybeAncestor, commit],
+		workdir,
+	);
+	return result.exitCode === 0;
+}
+
+/**
+ * Fetch `refs/heads/5x/*` into remote-tracking branches.
+ * Only called when `--fetch` is set.
+ */
+export async function fetchFiveXBranches(
+	workdir: string,
+	remote: string,
+): Promise<void> {
+	const result = await run(
+		["fetch", remote, `+refs/heads/5x/*:refs/remotes/${remote}/5x/*`],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		throw new Error(
+			result.stderr || `git fetch ${remote} refs/heads/5x/* failed`,
+		);
+	}
+}
+
+/** `git remote`. */
+export async function listRemotes(workdir: string): Promise<string[]> {
+	const result = await run(["remote"], workdir);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	return result.stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+}
+
+export interface GitRefTip {
+	sha: string;
+	refname: string;
+	committerUnix: number | null;
+}
+
+/** `git for-each-ref --format=sha\\trefname\\tcommitterdate:unix patterns`. */
+export async function listRefTips(
+	workdir: string,
+	patterns: string[],
+): Promise<GitRefTip[]> {
+	if (patterns.length === 0) return [];
+	const result = await run(
+		[
+			"for-each-ref",
+			"--format=%(objectname)%09%(refname)%09%(committerdate:unix)",
+			...patterns,
+		],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	const tips: GitRefTip[] = [];
+	for (const line of result.stdout.split("\n")) {
+		if (!line) continue;
+		const [sha, refname, unixRaw] = line.split("\t");
+		if (!sha || !refname) continue;
+		const unix = unixRaw ? Number.parseInt(unixRaw, 10) : Number.NaN;
+		tips.push({
+			sha,
+			refname,
+			committerUnix: Number.isFinite(unix) ? unix : null,
+		});
+	}
+	return tips;
+}
+
+/** `git rev-parse --verify --quiet ref^{commit}`. */
+export async function revParseCommit(
+	workdir: string,
+	ref: string,
+): Promise<string | null> {
+	const result = await run(
+		["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return null;
+	return result.stdout;
+}
+
+/** `git rev-list --parents tips...` for in-memory ancestor queries. */
+export async function gitRevListParents(
+	workdir: string,
+	tips: string[],
+): Promise<string> {
+	if (tips.length === 0) return "";
+	const result = await run(["rev-list", "--parents", ...tips], workdir);
+	if (result.exitCode !== 0) return "";
+	return result.stdout;
+}
+
+/** `git log --format=%H --name-only tips... -- paths`. */
+export async function gitLogNameOnly(
+	workdir: string,
+	tips: string[],
+	paths: string[],
+): Promise<string> {
+	if (tips.length === 0 || paths.length === 0) return "";
+	const result = await run(
+		["log", "--format=%H", "--name-only", ...tips, "--", ...paths],
+		workdir,
+	);
+	if (result.exitCode !== 0) return "";
+	return result.stdout;
+}
+
+/** `git ls-tree -r --name-only ref -- pathspec`. */
+export async function gitLsTreePaths(
+	workdir: string,
+	ref: string,
+	pathspec: string,
+): Promise<string[]> {
+	const result = await run(
+		["ls-tree", "-r", "--name-only", ref, "--", pathspec],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	return result.stdout.split("\n").filter(Boolean);
 }

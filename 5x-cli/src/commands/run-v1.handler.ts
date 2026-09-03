@@ -13,7 +13,13 @@
 
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type FiveXConfig,
@@ -34,6 +40,10 @@ import {
 	type StepRecordPayload,
 	stepIdempotencyKey,
 } from "../control-plane/index.js";
+import {
+	decodeJsonlFile,
+	parseRunJson,
+} from "../control-plane/record-layout.js";
 import type {
 	PreparedRecordStep,
 	PrepareRecordStepOutcome,
@@ -65,6 +75,8 @@ import {
 	computePatchId,
 	createWorktree,
 	getLatestCommit,
+	gitLsTreePaths,
+	gitShowFile,
 	isBranchRelevant,
 	listChangedFiles,
 	listWorktrees,
@@ -107,6 +119,12 @@ import { resolveProjectRoot } from "../project-root.js";
 import type { AgentEvent } from "../providers/types.js";
 import { resolveRecordPerformer } from "../records/origin.js";
 import { resolveRecordsRoot } from "../records/paths.js";
+import {
+	envelopeFromProgress,
+	fetchFiveXWithWarnings,
+	formatProgressSourceLine,
+	resolvePlanProgress,
+} from "../records/resolve.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -152,6 +170,8 @@ export interface RunStateParams {
 	sinceStep?: number;
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
+	fetch?: boolean;
+	allRefs?: boolean;
 }
 
 export interface RunRecordParams {
@@ -937,7 +957,7 @@ export function formatStateText(data: {
 		worktree_path?: string;
 	};
 	steps: Array<{
-		id: number;
+		id?: number | null;
 		step_name: string;
 		phase: string | null;
 		iteration: number | null;
@@ -957,8 +977,28 @@ export function formatStateText(data: {
 	steps_used: number;
 	max_steps: number;
 	steps_remaining: number;
+	source?: string;
+	source_ref?: string;
+	source_age_seconds?: number;
 }): void {
 	const { run, steps, summary } = data;
+
+	const sourceLine =
+		typeof data.source === "string"
+			? formatProgressSourceLine({
+					kind:
+						data.source === "worktree"
+							? "worktree"
+							: data.source === "HEAD"
+								? "HEAD"
+								: data.source === "diverged"
+									? "diverged"
+									: "remote",
+					label: data.source,
+					age_seconds: data.source_age_seconds,
+				})
+			: null;
+	if (sourceLine) console.log(sourceLine);
 
 	// Header
 	console.log(`Run:     ${run.id}`);
@@ -976,6 +1016,7 @@ export function formatStateText(data: {
 	}
 
 	// Determine which optional columns have data
+	const hasId = steps.some((s) => s.id != null);
 	const hasPhase = steps.some((s) => s.phase != null);
 	const hasIteration = steps.some((s) => s.iteration != null);
 	const hasDuration = steps.some((s) => s.duration_ms != null);
@@ -987,10 +1028,15 @@ export function formatStateText(data: {
 		width: number;
 		get: (s: (typeof steps)[0]) => string;
 	};
-	const cols: Col[] = [
-		{ header: "#", width: 1, get: (s) => String(s.id) },
-		{ header: "Step", width: 4, get: (s) => s.step_name },
-	];
+	const cols: Col[] = [];
+	if (hasId) {
+		cols.push({
+			header: "#",
+			width: 1,
+			get: (s) => (s.id != null ? String(s.id) : ""),
+		});
+	}
+	cols.push({ header: "Step", width: 4, get: (s) => s.step_name });
 	if (hasPhase)
 		cols.push({ header: "Phase", width: 5, get: (s) => s.phase ?? "" });
 	if (hasIteration)
@@ -1409,19 +1455,211 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	}
 }
 
+function stringifyResultJson(value: unknown): string {
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return "null";
+	}
+}
+
+function formatGitRecordStep(line: RecordLine) {
+	const payload = (line.payload ?? {}) as Partial<StepRecordPayload>;
+	return {
+		step_name: typeof payload.step_name === "string" ? payload.step_name : "",
+		phase: payload.phase ?? null,
+		iteration: payload.iteration ?? null,
+		result_json: stringifyResultJson(payload.result_json),
+		model: payload.model ?? null,
+		tokens_in: payload.tokens_in ?? null,
+		tokens_out: payload.tokens_out ?? null,
+		cost_usd: payload.cost_usd ?? null,
+		duration_ms: payload.duration_ms ?? null,
+		created_at: line.createdAt,
+	};
+}
+
+function summaryFromGitSteps(
+	steps: ReturnType<typeof formatGitRecordStep>[],
+): ReturnType<typeof computeRunSummary> {
+	const phases = [
+		...new Set(
+			steps
+				.filter((s) => s.step_name === "phase:complete" && s.phase)
+				.map((s) => s.phase as string),
+		),
+	];
+	return {
+		total_steps: steps.length,
+		phases_completed: phases,
+		total_tokens_in: steps.reduce((n, s) => n + (s.tokens_in ?? 0), 0),
+		total_tokens_out: steps.reduce((n, s) => n + (s.tokens_out ?? 0), 0),
+		total_cost_usd: steps.reduce((n, s) => n + (s.cost_usd ?? 0), 0),
+		total_duration_ms: steps.reduce((n, s) => n + (s.duration_ms ?? 0), 0),
+	};
+}
+
+async function loadGitRecordForPlan(opts: {
+	workdir: string;
+	commit: string | null;
+	recordsRelPath: string;
+	slug: string;
+	worktreePath?: string | null;
+}): Promise<{
+	summary: ReturnType<typeof parseRunJson>;
+	steps: ReturnType<typeof formatGitRecordStep>[];
+} | null> {
+	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
+	let runJsonRels: string[] = [];
+	if (opts.commit) {
+		runJsonRels = (
+			await gitLsTreePaths(opts.workdir, opts.commit, prefix)
+		).filter((p) => p.endsWith("/run.json"));
+	}
+
+	type Loaded = {
+		summary: ReturnType<typeof parseRunJson>;
+		stepsText: string | null;
+	};
+	const loaded: Loaded[] = [];
+
+	for (const rel of runJsonRels) {
+		if (!opts.commit) continue;
+		const text = await gitShowFile(opts.workdir, opts.commit, rel);
+		if (text == null) continue;
+		try {
+			const summary = parseRunJson(text);
+			const stepsRel = rel.replace(/run\.json$/, "steps.jsonl");
+			const stepsText = await gitShowFile(opts.workdir, opts.commit, stepsRel);
+			loaded.push({ summary, stepsText });
+		} catch {}
+	}
+
+	if (loaded.length === 0) {
+		const roots = [
+			opts.worktreePath ? join(opts.worktreePath, ...prefix.split("/")) : null,
+			join(opts.workdir, ...prefix.split("/")),
+		].filter((p): p is string => Boolean(p));
+		for (const root of roots) {
+			if (!existsSync(root)) continue;
+			try {
+				for (const ent of readdirSync(root, { withFileTypes: true })) {
+					if (!ent.isDirectory()) continue;
+					const runJsonPath = join(root, ent.name, "run.json");
+					if (!existsSync(runJsonPath)) continue;
+					try {
+						const summary = parseRunJson(readFileSync(runJsonPath, "utf-8"));
+						const stepsPath = join(root, ent.name, "steps.jsonl");
+						const stepsText = existsSync(stepsPath)
+							? readFileSync(stepsPath, "utf-8")
+							: null;
+						loaded.push({ summary, stepsText });
+					} catch {}
+				}
+			} catch {}
+		}
+	}
+
+	if (loaded.length === 0) return null;
+	loaded.sort((a, b) => {
+		const aActive = a.summary.status === "active" ? 1 : 0;
+		const bActive = b.summary.status === "active" ? 1 : 0;
+		if (aActive !== bActive) return bActive - aActive;
+		return b.summary.created_at.localeCompare(a.summary.created_at);
+	});
+	const win = loaded[0];
+	if (!win) return null;
+	let steps: ReturnType<typeof formatGitRecordStep>[] = [];
+	if (win.stepsText) {
+		try {
+			steps = decodeJsonlFile(win.stepsText, win.summary.id)
+				.filter((line) => line.stream === "steps")
+				.map(formatGitRecordStep);
+		} catch {
+			steps = [];
+		}
+	}
+	return { summary: win.summary, steps };
+}
+
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { config, db, controlPlane } = await resolveDbContext({
+	const { config, db, controlPlane, projectRoot } = await resolveDbContext({
 		startDir: params.startDir,
 	});
 
 	// `--plan` is an explicit selector: skip ambient identity (including FIVEX_RUN).
 	// `--run` wins when both are present (checked first today).
 	let run: RunRowV1 | null = null;
+	let progressFields: Record<string, unknown> = {};
 	if (params.plan && !params.run) {
 		const planPath = canonicalizePlanPath(
 			resolvePlanArg(params.plan, config.paths.plans),
 		);
 		run = getActiveRunV1(db, planPath);
+		if (params.fetch) {
+			await fetchFiveXWithWarnings(projectRoot);
+		}
+		const recordsRelPath = resolveRecordsRoot({
+			recordsConfigAbs: config.paths.records,
+			controlPlaneRoot: projectRoot,
+			effectiveWorkdir: projectRoot,
+		}).recordsRelPath;
+		const rel =
+			relativePathUnder(planPath, projectRoot)?.replace(/\\/g, "/") ??
+			params.plan.replace(/\\/g, "/");
+		const mapped = planPath ? getPlan(db, planPath) : null;
+		const resolved = await resolvePlanProgress({
+			workdir: projectRoot,
+			planPath,
+			planSlug: planSlugFromPath(rel),
+			recordsRelPath,
+			worktreePath: mapped?.worktree_path ?? null,
+			allRefs: params.allRefs,
+		});
+		progressFields = envelopeFromProgress(resolved);
+
+		if (!run) {
+			const gitRecord = await loadGitRecordForPlan({
+				workdir: projectRoot,
+				commit: resolved.commit,
+				recordsRelPath,
+				slug: planSlugFromPath(rel),
+				worktreePath: mapped?.worktree_path ?? null,
+			});
+			if (!gitRecord) {
+				outputError("RUN_NOT_FOUND", "Run not found");
+			}
+			let steps = gitRecord.steps;
+			if (params.tail !== undefined) {
+				steps = steps.slice(-params.tail);
+			}
+			const summary = summaryFromGitSteps(steps);
+			const maxSteps = getMaxStepsPerRun(
+				config as unknown as Record<string, unknown>,
+			);
+			const budget = computeStepBudget(summary.total_steps, maxSteps);
+			outputSuccess(
+				{
+					run: {
+						id: gitRecord.summary.id,
+						plan_path: gitRecord.summary.plan_path,
+						status: gitRecord.summary.status,
+						created_at: gitRecord.summary.created_at,
+						updated_at:
+							gitRecord.summary.sealed_at ?? gitRecord.summary.created_at,
+					},
+					steps,
+					summary,
+					steps_used: budget.used,
+					max_steps: budget.max,
+					steps_remaining: budget.remaining,
+					...progressFields,
+				},
+				formatStateText,
+			);
+			return;
+		}
 	} else {
 		if (!controlPlane) {
 			outputError(
@@ -1495,6 +1733,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			steps_used: budget.used,
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
+			...progressFields,
 		},
 		formatStateText,
 	);

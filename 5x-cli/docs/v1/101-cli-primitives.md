@@ -163,7 +163,7 @@ Query the current state of a run.
 
 ```
 5x run state [--run <id>]
-5x run state --plan <path>     # find active run for this plan (ignores FIVEX_RUN / pointer)
+5x run state --plan <path> [--fetch] [--all-refs]     # find active run for this plan (ignores FIVEX_RUN / pointer)
 ```
 
 **Returns:**
@@ -210,7 +210,8 @@ Query the current state of a run.
 
 - Returns ALL recorded steps for the run, ordered by creation time.
 - The `summary` field provides a computed snapshot so the orchestrating agent doesn't need to compute it from raw steps.
-- If `--plan` is used and no active run exists, returns `ok: true` with `data: null`.
+- `--plan` adds additive `source` / `source_ref` / `source_commit` / `source_age_seconds` / `diverged_sources` from git progress resolution (same algorithm as `plan phases`). Local SQLite still supplies the active run and step `id`s when present.
+- If `--plan` is used and no local run exists, a `run.json` at the winning git commit is surfaced (`status` from the record, steps decoded from `steps.jsonl`). Those git-only step objects omit `id` (SQLite autoincrement is local-only); other step keys match the SQLite path. `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
 ---
 
@@ -591,7 +592,7 @@ Success payload: `{ run_id, phase, iteration, steps }`. Non-complete author resu
 Parse a plan and return its phases.
 
 ```
-5x plan phases <path>
+5x plan phases <path> [--fetch] [--all-refs]
 ```
 
 **Returns:**
@@ -604,12 +605,21 @@ Parse a plan and return its phases.
       { "id": "1", "title": "Authentication Module", "done": true, "checklist_total": 5, "checklist_done": 5 },
       { "id": "2", "title": "Authorization Layer", "done": false, "checklist_total": 4, "checklist_done": 1 },
       { "id": "3", "title": "API Endpoints", "done": false, "checklist_total": 6, "checklist_done": 0 }
-    ]
+    ],
+    "filePaths": { "root": "/repo/docs/development/plan.md" },
+    "source": "origin/5x/plan",
+    "source_ref": "origin/5x/plan",
+    "source_commit": "abc123",
+    "source_age_seconds": 7200
   }
 }
 ```
 
 Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"`, `"2"`), matching the regex `\d+(\.\d+)?`. This matches the current v0 plan parser output. Phases are sorted numerically (`CAST(phase AS REAL)`).
+
+Progress is resolved from git refs (mapped worktree → local `5x/<slug>` → remote-tracking `*/5x/<slug>` → `HEAD`) without checking out. Additive `source*` fields name the winning ref. `--fetch` updates remote-tracking `5x/*` refs first (fetch failure is a warning). `--all-refs` includes non-conventional branches. When multiple tips have diverged edits, `source` is `"diverged"` and `diverged_sources` lists them; displayed completion is the maximum. `PLAN_NOT_FOUND` only when the plan is missing from git and from the checkout.
+
+Text mode prints `source: origin/5x/<slug> (fetched 2h ago)` when the winning source is not the checked-out worktree or HEAD file.
 
 ### `5x plan list`
 
@@ -618,12 +628,14 @@ List all markdown plans under `paths.plans` (recursive into subdirectories), wit
 **Config resolution:** Uses layered config with `contextDir` set to the current working directory (same idea as `5x config show` with a context directory). In a monorepo with a root `5x.toml` and a nested `5x.toml` (for example under `5x-cli/`), running `5x plan list` from that subdirectory merges root + nearest config and resolves `paths.plans` relative to the nearest config file—so package-local `docs/development` applies to that package, not the repository root.
 
 ```
-5x plan list [--exclude-finished]
+5x plan list [--exclude-finished] [--fetch] [--all-refs]
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--exclude-finished` | No | Omit plans that are 100% complete (all phases done). |
+| `--fetch` | No | Fetch remote `5x/*` branches before resolving progress. Never implicit. Fetch failure is a warning. |
+| `--all-refs` | No | Discover plans and progress from all heads/remotes, not only `5x/<slug>`. |
 
 **Returns:**
 
@@ -643,18 +655,19 @@ List all markdown plans under `paths.plans` (recursive into subdirectories), wit
         "phases_done": 3,
         "phases_total": 3,
         "active_run": null,
-        "runs_total": 2
+        "runs_total": 2,
+        "source": "HEAD"
       }
     ]
   }
 }
 ```
 
-Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery unions checkout `.md` files with plan files on `5x/*` refs (and all refs with `--all-refs`), so branch-only plans appear with their `source`. `active_run` / `runs_total` remain local-index coordination (0 on a fresh clone until `records index`). Additive `source`, `source_ref`, `source_age_seconds`, and `diverged` name the winning git ref for checklist progress.
 
-**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the same file used for parsing (worktree copy when mapped).
+**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the checkout file when present.
 
-**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). When there are no plans, prints `(no plans)` on the line after the directory (no table).
+**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`), Source. When there are no plans, prints `(no plans)` on the line after the directory (no table).
 
 ### `5x diff`
 

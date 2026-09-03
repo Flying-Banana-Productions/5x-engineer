@@ -319,6 +319,34 @@ reviews = "docs/development/reviews"
 	);
 
 	test(
+		"skips markdown under docs/development/runs",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				const runsDir = join(devDir, "runs", "slug", "run_x");
+				mkdirSync(runsDir, { recursive: true });
+				writeFileSync(join(runsDir, "notes.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "root.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+
+				const result = await run5x(dir, ["plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				const data = parseJson(result.stdout).data as {
+					plans: Array<{ plan_path: string; source?: string }>;
+				};
+				const paths = data.plans.map((p) => p.plan_path).sort();
+				expect(paths).toEqual(["root.md"]);
+				expect(data.plans[0]?.source).toBe("HEAD");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"discovers nested markdown plans recursively outside reviews",
 		async () => {
 			const dir = makeTmpDir();
@@ -458,6 +486,7 @@ reviews = "docs/development/reviews"
 				expect(result.stdout).toContain("Plan Path");
 				expect(result.stdout).toContain("Status");
 				expect(result.stdout).toContain("Active Run");
+				expect(result.stdout).toContain("Source");
 				expect(result.stdout).toContain("text-mode.md");
 				expect(result.stdout).not.toContain('"ok"');
 			} finally {
@@ -681,11 +710,13 @@ describe("5x plan phases (integration)", () => {
 				const payload = data.data as {
 					phases: Array<{ done: boolean; checklist_done: number }>;
 					filePaths: { root: string; worktree?: string };
+					source: string;
 				};
 
 				// Should read from worktree copy (fully checked)
 				expect(payload.phases[0]?.done).toBe(true);
 				expect(payload.phases[0]?.checklist_done).toBe(2);
+				expect(payload.source).toBe("worktree");
 
 				expect(payload.filePaths.root).toBe(planPath);
 				expect(payload.filePaths.worktree).toBe(join(wtPlanDir, "plan.md"));

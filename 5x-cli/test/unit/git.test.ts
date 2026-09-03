@@ -13,15 +13,23 @@ import {
 	computePatchId,
 	createBranch,
 	createWorktree,
+	fetchFiveXBranches,
 	getBranchCommits,
 	getCurrentBranch,
 	getLatestCommit,
 	gitLogLastTouching,
+	gitLogNameOnly,
+	gitLsTreePaths,
+	gitRevListParents,
 	gitShowFile,
 	hasUncommittedChanges,
+	isAncestor,
 	isBranchMerged,
 	isBranchRelevant,
 	listChangedFiles,
+	listFiveXRefs,
+	listRefTips,
+	listRemotes,
 	listWorktrees,
 	removeWorktree,
 	runWorktreeSetupCommand,
@@ -768,5 +776,82 @@ describe("gitShowFile / gitLogLastTouching", () => {
 	test("gitLogLastTouching returns null when empty", async () => {
 		mockGit([(args) => args[0] === "log", ok("")]);
 		expect(await gitLogLastTouching("/repo", "main", ["docs/f.md"])).toBeNull();
+	});
+});
+
+describe("listFiveXRefs / isAncestor / fetch / remotes", () => {
+	test("listFiveXRefs splits local and remote 5x refs", async () => {
+		mockGit([
+			cmd("for-each-ref"),
+			ok("refs/heads/5x/foo\nrefs/remotes/origin/5x/foo\n"),
+		]);
+		expect(await listFiveXRefs("/repo")).toEqual({
+			local: ["5x/foo"],
+			remote: [{ remote: "origin", ref: "origin/5x/foo" }],
+		});
+	});
+
+	test("listFiveXRefs is empty when no 5x refs exist", async () => {
+		mockGit([cmd("for-each-ref"), ok("")]);
+		expect(await listFiveXRefs("/repo")).toEqual({ local: [], remote: [] });
+	});
+
+	test("isAncestor is true on exit 0", async () => {
+		mockGit([cmd("merge-base", "--is-ancestor", "aaa", "bbb"), ok("")]);
+		expect(await isAncestor("/repo", "aaa", "bbb")).toBe(true);
+	});
+
+	test("isAncestor is false on exit 1", async () => {
+		mockGit([cmd("merge-base", "--is-ancestor", "aaa", "bbb"), fail("not")]);
+		expect(await isAncestor("/repo", "aaa", "bbb")).toBe(false);
+	});
+
+	test("fetchFiveXBranches uses a 5x/* refspec", async () => {
+		const spy = mockGit([
+			(args) =>
+				args[0] === "fetch" &&
+				args[1] === "origin" &&
+				args[2] === "+refs/heads/5x/*:refs/remotes/origin/5x/*",
+			ok(""),
+		]);
+		await fetchFiveXBranches("/repo", "origin");
+		expect(spy).toHaveBeenCalled();
+	});
+
+	test("listRemotes splits git remote output", async () => {
+		mockGit([cmd("remote"), ok("origin\nupstream")]);
+		expect(await listRemotes("/repo")).toEqual(["origin", "upstream"]);
+	});
+
+	test("listRefTips parses sha, refname, and committer unix", async () => {
+		mockGit([
+			cmd("for-each-ref"),
+			ok(
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/5x/foo\t1700000000\n",
+			),
+		]);
+		expect(await listRefTips("/repo", ["refs/heads/5x/*"])).toEqual([
+			{
+				sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				refname: "refs/heads/5x/foo",
+				committerUnix: 1700000000,
+			},
+		]);
+	});
+
+	test("gitRevListParents / gitLogNameOnly / gitLsTreePaths return stdout", async () => {
+		mockGit(
+			[cmd("rev-list", "--parents", "aaa"), ok("aaa bbb")],
+			[
+				(args) => args[0] === "log" && args.includes("--name-only"),
+				ok("aaa\ndocs/p.md\n"),
+			],
+			[cmd("ls-tree", "-r", "--name-only", "aaa"), ok("docs/p.md\n")],
+		);
+		expect(await gitRevListParents("/repo", ["aaa"])).toBe("aaa bbb");
+		expect(await gitLogNameOnly("/repo", ["aaa"], ["docs"])).toBe(
+			"aaa\ndocs/p.md\n",
+		);
+		expect(await gitLsTreePaths("/repo", "aaa", "docs")).toEqual(["docs/p.md"]);
 	});
 });

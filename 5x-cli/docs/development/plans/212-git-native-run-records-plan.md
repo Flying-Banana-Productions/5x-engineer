@@ -1234,6 +1234,8 @@ Every production origin is `ctx.originFor(performer)`. Every production `run.jso
 
 Start this phase with a **short spike** (half day, same checkout): measure `merge-base --is-ancestor` fan-out for N plans × remotes. If a 20-plan / 3-remote fixture exceeds ~500ms, implement the batched `for-each-ref` + single `rev-list` topology query **before** wiring handlers. If it is fast, ship the naive loop and leave a comment with the measured number. Do not skip the measurement.
 
+**Spike (2026-09-03):** a 20-plan × 3-remote fixture with the naive `git log -1` × `merge-base --is-ancestor` loop took 1551ms (last-touching 1120ms, pairwise ancestor 430ms / 40 calls). That exceeds the ~500ms budget, so this phase ships batched `for-each-ref` + one `rev-list --parents` topology query + one `git log --name-only`. In-process `(refSha, path) → lastTouching` cache is shared across a `plan list` invocation; it is not persisted in SQLite.
+
 #### 5.1 Resolution module — `src/records/resolve.ts` (new)
 
 Keep git I/O out of `RecordStore`. This module uses Phase 3 `gitShowFile` / `gitLogLastTouching` plus new helpers:
@@ -1312,14 +1314,14 @@ export async function fetchFiveXBranches(
 export async function listRemotes(workdir: string): Promise<string[]>;
 ```
 
-- [ ] Unit tests with `mockGit` covering ancestor prune, diverged pair, missing ref.
-- [ ] Cache `(refSha, path) → lastTouching` in-process for a single `plan list` invocation (the handler passes a shared `Map` or the resolve module holds a per-call cache object). Do not persist the cache in SQLite in this slice unless the spike shows it is necessary.
+- [x] Unit tests with `mockGit` covering ancestor prune, diverged pair, missing ref.
+- [x] Cache `(refSha, path) → lastTouching` in-process for a single `plan list` invocation (the handler passes a shared `Map` or the resolve module holds a per-call cache object). Do not persist the cache in SQLite in this slice unless the spike shows it is necessary.
 
 #### 5.2 `plan phases` — `plan-v1.handler.ts:181–212` and `plan-v1.ts:21–42`
 
-- [ ] Add `--fetch` and `--all-refs` flags (boolean).
-- [ ] Replace `readFileSync(effectivePath)` with `resolvePlanProgress`. `PLAN_NOT_FOUND` only when markdown is null and no checkout file exists.
-- [ ] Envelope **additive** fields on the existing result (`:198–209`):
+- [x] Add `--fetch` and `--all-refs` flags (boolean).
+- [x] Replace `readFileSync(effectivePath)` with `resolvePlanProgress`. `PLAN_NOT_FOUND` only when markdown is null and no checkout file exists.
+- [x] Envelope **additive** fields on the existing result (`:198–209`):
 
 ```typescript
 {
@@ -1333,16 +1335,16 @@ export async function listRemotes(workdir: string): Promise<string[]>;
 }
 ```
 
-- [ ] `formatPhasesText`: when `source` is not the checked-out worktree/HEAD file, print a line `source: origin/5x/<slug> (fetched 2h ago)` so users do not distrust unchecked local boxes (`207` §2.4.5).
-- [ ] Unreachable `head_commit` on verbose output is **not** required on `plan phases` today (no `--verbose`). If adding a verbose note later, it is informational. Do not fail the command.
+- [x] `formatPhasesText`: when `source` is not the checked-out worktree/HEAD file, print a line `source: origin/5x/<slug> (fetched 2h ago)` so users do not distrust unchecked local boxes (`207` §2.4.5).
+- [x] Unreachable `head_commit` on verbose output is **not** required on `plan phases` today (no `--verbose`). If adding a verbose note later, it is informational. Do not fail the command.
 
 #### 5.3 `plan list` — `plan-v1.handler.ts:270–377` and `plan-v1.ts:44–68`
 
-- [ ] Add `--fetch` / `--all-refs`.
-- [ ] Include `config.paths.records` in `planListSkipSubtrees` (`:222–234`).
-- [ ] After scanning checkout `.md` files, **union** plan paths discovered from `listFiveXRefs` (`git ls-tree -r --name-only <ref> -- <plansRel>` filtered to `.md`, minus reviews/records skip roots). Branch-only plans appear with their source.
-- [ ] Per plan, call `resolvePlanProgress` (shared cache). Derive `completion_pct` from the resolved markdown the same way as today (`:312–323`).
-- [ ] Extend `PlanListEntry` (`:90–101`):
+- [x] Add `--fetch` / `--all-refs`.
+- [x] Include `config.paths.records` in `planListSkipSubtrees` (`:222–234`).
+- [x] After scanning checkout `.md` files, **union** plan paths discovered from `listFiveXRefs` (`git ls-tree -r --name-only <ref> -- <plansRel>` filtered to `.md`, minus reviews/records skip roots). Branch-only plans appear with their source.
+- [x] Per plan, call `resolvePlanProgress` (shared cache). Derive `completion_pct` from the resolved markdown the same way as today (`:312–323`).
+- [x] Extend `PlanListEntry` (`:90–101`):
 
 ```typescript
 source: string;
@@ -1353,15 +1355,15 @@ diverged?: boolean;
 
 Do not remove `active_run` / `runs_total` — those remain local-index coordination. If the index is empty on a fresh clone, `runs_total` is 0 until `records index`; progress still comes from git.
 
-- [ ] `formatPlanListText`: add a `Source` column.
-- [ ] `--fetch`: `listRemotes` then `fetchFiveXBranches` each. Fetch failure is a **warning** on stderr, not a hard fail (offline clone still lists local refs).
+- [x] `formatPlanListText`: add a `Source` column.
+- [x] `--fetch`: `listRemotes` then `fetchFiveXBranches` each. Fetch failure is a **warning** on stderr, not a hard fail (offline clone still lists local refs).
 
 #### 5.4 `run state --plan` — `run-v1.handler.ts:1092–1181`
 
 When `params.plan` is set (`:1100–1104`), resolve progress and add the same additive `source*` fields on the **top-level** success payload (`:1163–1178`). Still select the local active run for step listing (coordination). If no local run:
 
-- [ ] If the resolved records at the winning commit contain a `run.json`, surface that summary (`status` from the record, `steps` from decoding `steps.jsonl` via `gitShowFile`) **without** requiring SQLite rows. Auto-increment `steps.id` in the formatted output may be missing; use `null` or omit `id` — **do not change** `formatStep` keys for the SQLite path. Prefer: when SQLite has the run, keep today's step objects; when only git has it, emit steps without `id` (additive omission). Document in 101.
-- [ ] `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
+- [x] If the resolved records at the winning commit contain a `run.json`, surface that summary (`status` from the record, `steps` from decoding `steps.jsonl` via `gitShowFile`) **without** requiring SQLite rows. Auto-increment `steps.id` in the formatted output may be missing; use `null` or omit `id` — **do not change** `formatStep` keys for the SQLite path. Prefer: when SQLite has the run, keep today's step objects; when only git has it, emit steps without `id` (additive omission). Document in 101.
+- [x] `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
 Existing `--run` path is unchanged (no resolution).
 
@@ -1379,7 +1381,7 @@ Timeout 30s. `cleanGitEnv()`, `stdin: "ignore"`. Scripted repo:
 | worktree | mapped worktree has newer checklist than `main` | `source: worktree` |
 | no implicit fetch | remote updated but no `--fetch` | still shows old remote-tracking SHA |
 
-- [ ] Envelope `source` field present in JSON mode; text mode mentions source when not checkout.
+- [x] Envelope `source` field present in JSON mode; text mode mentions source when not checkout.
 
 ---
 
