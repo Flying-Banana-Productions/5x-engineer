@@ -243,6 +243,7 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 		planSlug: slug,
 		recordsRelPath,
 		worktreePath: mapped?.worktreeRoot ?? null,
+		plansBranch: config.plans.branch ?? null,
 		allRefs: params.allRefs,
 	});
 
@@ -400,6 +401,7 @@ export async function planList(
 		plansRelPath: plansRel || undefined,
 		skipRelPrefixes,
 		planRepoRels: diskRels,
+		plansBranch: config.plans.branch ?? null,
 		allRefs: params.allRefs,
 		worktreePaths,
 	});
@@ -438,6 +440,7 @@ export async function planList(
 				planSlug: planSlugFromPath(rel),
 				recordsRelPath,
 				worktreePath,
+				plansBranch: config.plans.branch ?? null,
 				allRefs: params.allRefs,
 				session,
 			});

@@ -78,3 +78,8 @@ path = ".5x/5x.db"
 # [records]
 # redact = []
 # actor = "your-label"
+
+# Optional extra progress-resolution candidate after 5x/<slug> refs (before HEAD).
+# Use this when plans live on a non-conventional branch.
+# [plans]
+# branch = "release/plans"

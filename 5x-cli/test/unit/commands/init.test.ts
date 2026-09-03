@@ -409,6 +409,8 @@ describe("generateTomlConfig", () => {
 		expect(content).toContain('records = "docs/development/runs"');
 		expect(content).toContain("# [records]");
 		expect(content).toContain('# actor = "your-label"');
+		expect(content).toContain("# [plans]");
+		expect(content).toContain('# branch = "release/plans"');
 		expect(content).toContain(
 			'plan = ".5x/templates/implementation-plan-template.md"',
 		);

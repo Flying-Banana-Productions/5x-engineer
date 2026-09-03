@@ -575,6 +575,7 @@ describe("loadConfig path normalization", () => {
 			expect(config.paths.records).toBe(join(tmp, "docs/development/runs"));
 			expect(config.records.redact).toEqual([]);
 			expect(config.records.actor).toBeUndefined();
+			expect(config.plans.branch).toBeUndefined();
 			expect(config.paths.templates.plan).toBe(
 				join(tmp, "docs/_implementation_plan_template.md"),
 			);
@@ -647,6 +648,7 @@ describe("paths.records and records.*", () => {
 			expect(config.paths.records).toBe(join(tmp, "docs/development/runs"));
 			expect(config.records.redact).toEqual([]);
 			expect(config.records.actor).toBeUndefined();
+			expect(config.plans.branch).toBeUndefined();
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
@@ -736,6 +738,48 @@ describe("paths.records and records.*", () => {
 			);
 			const { config } = await loadConfig(tmp);
 			expect(config.records.actor).toBe("release-engineer");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("plans.branch", () => {
+	test("defaults to unset", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.plans.branch).toBeUndefined();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown-key warning does not fire for [plans]", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[plans]\nbranch = "release/plans"\n`,
+			);
+			const { config } = await loadConfig(tmp, undefined, warn);
+			expect(config.plans.branch).toBe("release/plans");
+			expect(warnings.join("\n")).not.toContain("plans");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("plans.branch round-trips when set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[plans]\nbranch = "docs-main"\n`);
+			const { config } = await loadConfig(tmp);
+			expect(config.plans.branch).toBe("docs-main");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

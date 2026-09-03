@@ -185,6 +185,16 @@ const RecordsSchema = z.object({
 		),
 });
 
+const PlansSchema = z.object({
+	branch: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(
+			"Override branch used as a progress-resolution candidate after local and remote 5x/<slug> refs (before HEAD). When unset, only conventional 5x/<slug> branches and HEAD are considered.",
+		),
+});
+
 const FiveXConfigSchema = z
 	.object({
 		author: AgentConfigSchema.default({}).describe(
@@ -216,6 +226,9 @@ const FiveXConfigSchema = z
 		),
 		paths: PathsSchema.default({}).describe(
 			"Plans, reviews, archive, records, and template paths (resolved relative to each config file).",
+		),
+		plans: PlansSchema.default({}).describe(
+			"Plan discovery and progress-resolution options (configured plans-branch override).",
 		),
 		records: RecordsSchema.default({}).describe(
 			"Git-tracked run record options (field redaction and optional recorder actor label).",
@@ -545,6 +558,7 @@ const KNOWN_ROOT_CONFIG_KEYS = new Set([
 	"skipQualityGates",
 	"worktree",
 	"paths",
+	"plans",
 	"records",
 	"db",
 	"maxStepsPerRun",
@@ -610,6 +624,7 @@ function warnUnknownConfigKeys(
 	const allowedTemplates = new Set(["plan", "review"]);
 	const allowedDb = new Set(["path"]);
 	const allowedRecords = new Set(["redact", "actor"]);
+	const allowedPlans = new Set(["branch"]);
 
 	// Effective plugin keys: merged layers + CLI, plus providers declared in this file.
 	const providerNames = collectKnownPluginTopLevelKeys(
@@ -679,6 +694,8 @@ function warnUnknownConfigKeys(
 				collect(value, allowedDb, nextPrefix);
 			} else if (key === "records") {
 				collect(value, allowedRecords, nextPrefix);
+			} else if (key === "plans") {
+				collect(value, allowedPlans, nextPrefix);
 			}
 		}
 	}

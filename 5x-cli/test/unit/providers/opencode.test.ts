@@ -982,6 +982,7 @@ describe("createProvider", () => {
 				},
 			},
 			records: { redact: [] },
+			plans: {},
 			db: { path: ".5x/5x.db" },
 			maxStepsPerRun: 250,
 			maxReviewIterations: 5,

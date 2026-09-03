@@ -552,4 +552,128 @@ describe("progress resolution", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"plans.branch: plan exists only on the configured plans branch",
+		async () => {
+			const dir = makeTmpDir("5x-prog-plans-branch");
+			try {
+				initRepo(dir);
+				git(["checkout", "-b", "release/plans"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [true]),
+					"plans-branch plan",
+				);
+				const runId = "run_plansbranch01";
+				const recDir = join(dir, "docs", "development", "runs", "alpha", runId);
+				mkdirSync(recDir, { recursive: true });
+				writeFileSync(
+					join(recDir, "run.json"),
+					`${JSON.stringify(
+						{
+							id: runId,
+							plan_path: PLAN_REL,
+							config_json: {},
+							created_at: "2026-01-01T00:00:00.000Z",
+							sealed_at: null,
+							status: "active",
+							final_head_commit: null,
+							cli_version: "1.0.0",
+							format_version: 1,
+							creator: {
+								installation_id: "00000000-0000-4000-8000-000000000001",
+							},
+						},
+						null,
+						2,
+					)}\n`,
+				);
+				writeFileSync(
+					join(recDir, "steps.jsonl"),
+					`${JSON.stringify({
+						schema_version: 1,
+						stream: "steps",
+						idempotency_key: `${runId}:run:init:null:1`,
+						created_at: "2026-01-01T00:00:01.000Z",
+						provenance: "recorded",
+						origin: {
+							recorder: {
+								installation_id: "00000000-0000-4000-8000-000000000001",
+							},
+							performer: { kind: "system", role: "cli" },
+						},
+						payload: {
+							step_name: "run:init",
+							phase: null,
+							iteration: 1,
+							result_json: { ok: true },
+							head_commit: null,
+							patch_id: null,
+							diff_summary: null,
+							duration_ms: null,
+							tokens_in: null,
+							tokens_out: null,
+							cost_usd: null,
+							model: null,
+						},
+					})}\n`,
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "records"], dir);
+				git(["checkout", "main"], dir);
+				expect(existsSync(join(dir, PLAN_REL))).toBe(false);
+
+				writeFileSync(
+					join(dir, "5x.toml"),
+					`[plans]\nbranch = "release/plans"\n`,
+				);
+
+				const list = await run5x(dir, ["plan", "list"]);
+				expect(list.exitCode).toBe(0);
+				const row = (
+					parseJson(list.stdout).data as {
+						plans: Array<{
+							plan_path: string;
+							source: string;
+							source_ref?: string;
+							completion_pct: number;
+						}>;
+					}
+				).plans.find((p) => p.plan_path === "alpha.md");
+				expect(row).toBeDefined();
+				expect(row?.source).toBe("release/plans");
+				expect(row?.source_ref).toBe("release/plans");
+				expect(row?.completion_pct).toBe(100);
+
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).toBe(0);
+				const pdata = parseJson(phases.stdout).data as {
+					source: string;
+					source_ref?: string;
+					source_commit?: string;
+					phases: Array<{ done: boolean }>;
+				};
+				expect(pdata.source).toBe("release/plans");
+				expect(pdata.source_ref).toBe("release/plans");
+				expect(typeof pdata.source_commit).toBe("string");
+				expect(pdata.phases[0]?.done).toBe(true);
+
+				const state = await run5x(dir, ["run", "state", "--plan", PLAN_REL]);
+				expect(state.exitCode).toBe(0);
+				const sdata = parseJson(state.stdout).data as {
+					source: string;
+					source_ref?: string;
+					run: { id: string };
+				};
+				expect(sdata.source).toBe("release/plans");
+				expect(sdata.source_ref).toBe("release/plans");
+				expect(sdata.run.id).toBe(runId);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });

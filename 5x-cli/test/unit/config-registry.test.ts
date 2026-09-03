@@ -29,6 +29,7 @@ describe("config-registry", () => {
 		expect(keys.has("paths.records")).toBe(true);
 		expect(keys.has("records.redact")).toBe(true);
 		expect(keys.has("records.actor")).toBe(true);
+		expect(keys.has("plans.branch")).toBe(true);
 		expect(keys.has("maxStepsPerRun")).toBe(true);
 		expect(keys.has("qualityGates")).toBe(true);
 	});
@@ -76,6 +77,7 @@ describe("config-registry", () => {
 		expect(byKey.get("author.model")?.default).toBeUndefined();
 		expect(byKey.get("opencode.url")?.default).toBeUndefined();
 		expect(byKey.get("records.actor")?.default).toBeUndefined();
+		expect(byKey.get("plans.branch")?.default).toBeUndefined();
 	});
 
 	test("deprecated keys are flagged", () => {
@@ -138,6 +140,14 @@ describe("config-registry", () => {
 		expect(actor?.type).toBe("string");
 		expect(actor?.default).toBeUndefined();
 		expect(actor?.description).toContain("Never inferred");
+	});
+
+	test("plans.branch surfaces with type, undefined default, and description", () => {
+		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
+		const branch = byKey.get("plans.branch");
+		expect(branch?.type).toBe("string");
+		expect(branch?.default).toBeUndefined();
+		expect(branch?.description).toContain("progress-resolution");
 	});
 
 	test("qualityGates has type string[]", () => {

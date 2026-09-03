@@ -284,6 +284,47 @@ describe("resolvePlanProgress", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("plans.branch is a candidate when the plan exists only on that ref", async () => {
+		mockGit(
+			[(args) => args[0] === "for-each-ref", ok("")],
+			[
+				(args) =>
+					args[0] === "rev-parse" && args.includes("release/plans^{commit}"),
+				ok(B),
+			],
+			[
+				(args) => args[0] === "rev-parse" && args.includes("HEAD^{commit}"),
+				ok(A),
+			],
+			[(args) => args[0] === "rev-parse", fail("missing")],
+			[(args) => args[0] === "rev-list", ok(`${B} ${A}\n${A}`)],
+			[
+				(args) =>
+					args[0] === "log" && args.includes("-1") && args.includes("HEAD"),
+				ok(""),
+			],
+			[(args) => args[0] === "log" && args.includes("-1"), ok(B)],
+			[(args) => args[0] === "log", ok(`${B}\n${PLAN}\n`)],
+			[
+				(args) => args[0] === "show" && args[1] === `${B}:${PLAN}`,
+				ok(PLAN_MD_B),
+			],
+			[(args) => args[0] === "show", fail("missing")],
+		);
+		const resolved = await resolvePlanProgress({
+			workdir: "/repo",
+			planPath: `/repo/${PLAN}`,
+			planSlug: "foo",
+			recordsRelPath: "docs/development/runs",
+			plansBranch: "release/plans",
+		});
+		expect(resolved.source.kind).toBe("branch");
+		expect(resolved.source.label).toBe("release/plans");
+		expect(resolved.source.ref).toBe("release/plans");
+		expect(resolved.commit).toBe(B);
+		expect(resolved.markdown).toContain("Phase 2");
+	});
 });
 
 describe("text provenance helpers", () => {

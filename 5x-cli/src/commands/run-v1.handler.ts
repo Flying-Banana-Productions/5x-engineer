@@ -1615,6 +1615,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			planSlug: planSlugFromPath(rel),
 			recordsRelPath,
 			worktreePath: mapped?.worktree_path ?? null,
+			plansBranch: config.plans.branch ?? null,
 			allRefs: params.allRefs,
 		});
 		progressFields = envelopeFromProgress(resolved);
