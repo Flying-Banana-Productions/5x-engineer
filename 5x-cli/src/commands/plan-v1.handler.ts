@@ -45,7 +45,7 @@ import {
 	prepareProgressSession,
 	resolvePlanProgress,
 } from "../records/resolve.js";
-import { resolveDbContext } from "./context.js";
+import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +64,15 @@ export interface PlanListParams {
 	allRefs?: boolean;
 	/** Working directory for config layering and cwd-relative resolution (default `.`). */
 	startDir?: string;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	dbContext?: DbContext;
+	/** Warning sink; defaults to `process.stderr.write` (inject in tests). */
+	warn?: (message: string) => void;
+}
+
+export interface PlanListResult {
+	plans_dir: string;
+	plans: PlanListEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -329,11 +338,19 @@ function effectivePlanReadPath(
 	return existsSync(candidate) ? candidate : canonicalPlanPath;
 }
 
-export async function planList(params: PlanListParams): Promise<void> {
-	const cwd = resolve(params.startDir ?? ".");
-	const { projectRoot, config, db } = await resolveDbContext({
-		startDir: cwd,
-	});
+export async function planList(
+	params: PlanListParams,
+): Promise<PlanListResult> {
+	const { projectRoot, config, db } =
+		params.dbContext ??
+		(await resolveDbContext({
+			startDir: resolve(params.startDir ?? "."),
+		}));
+	const warn =
+		params.warn ??
+		((message: string) => {
+			process.stderr.write(message);
+		});
 	const plansDir = config.paths.plans;
 	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
 
@@ -440,7 +457,7 @@ export async function planList(params: PlanListParams): Promise<void> {
 						? "complete"
 						: "incomplete";
 				if (!parsedPlanHasPhases(parsed)) {
-					process.stderr.write(
+					warn(
 						`Warning: ${plan_path} has no implementation-plan phases (expected "## Phase N:" headings). ` +
 							`It is still listed; move or edit the file if it is not a plan.\n`,
 					);
@@ -448,7 +465,7 @@ export async function planList(params: PlanListParams): Promise<void> {
 			}
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err);
-			process.stderr.write(
+			warn(
 				`Warning: could not read ${plan_path} for plan listing: ${detail}\n`,
 			);
 		}
@@ -500,8 +517,9 @@ export async function planList(params: PlanListParams): Promise<void> {
 	}
 
 	const ordered = [...plans].sort(sortPlanListRows).map(stripMtime);
-
-	outputSuccess({ plans_dir: plansDir, plans: ordered }, formatPlanListText);
+	const payload: PlanListResult = { plans_dir: plansDir, plans: ordered };
+	outputSuccess(payload, formatPlanListText);
+	return payload;
 }
 
 // ---------------------------------------------------------------------------
