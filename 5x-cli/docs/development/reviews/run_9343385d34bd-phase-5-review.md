@@ -26,3 +26,22 @@ Phase 5 requires candidates in this order: mapped worktree, local `5x/<slug>`, r
 ## Readiness
 
 Not ready pending P1. No other blocking correctness, security, performance, or operability findings in the reviewed commits.
+
+## Addendum — plans.branch follow-up (2026-09-03)
+
+**Reviewed:** `2f1ad3dee0438cb476446b8dda0d4fdc55e34e41`
+
+### P1 resolved
+
+`plans.branch` is now a validated, documented, registry-visible configuration option. `plan list`, `plan phases`, and `run state --plan` pass it into the shared progress session/resolver, preserving the required placement after conventional local/remote `5x/<slug>` candidates and before `HEAD`.
+
+The added real-Git fixture demonstrates a plan and record available only on the configured branch through all three commands, including source metadata and record-backed `run state`. Unit coverage verifies schema defaults, unknown-key behavior, registry exposure, and resolver selection.
+
+### Verification
+
+- Focused config/resolver/progress suites: 90 pass, 0 fail.
+- `bun run typecheck`, `bun run lint`, and `git diff --check` pass.
+
+### Updated readiness
+
+Ready for the next phase. No regressions or remaining Phase 5 blockers found.
