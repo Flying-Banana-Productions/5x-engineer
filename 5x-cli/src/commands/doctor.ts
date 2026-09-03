@@ -14,9 +14,10 @@ export function registerDoctor(parent: Command) {
 		.summary("Diagnose project health")
 		.description(
 			"Run built-in recovery checks (harness freshness, locks, worktrees, lingering\n" +
-				"runs, and database health). Warning findings do not fail the command; any\n" +
-				"fail finding exits nonzero. Use --fix to apply deterministic non-destructive\n" +
-				"repairs (stale/corrupt locks, dead worktree mappings, lossless harness sync).",
+				"runs, database health, and git-native run records). Warning findings do not fail\n" +
+				"the command; any fail finding exits nonzero. Use --fix to apply deterministic\n" +
+				"non-destructive repairs (stale/corrupt locks, dead worktree mappings, lossless\n" +
+				"harness sync, records index rebuild).",
 		)
 		.option("--fix", "Apply safe repairs for fixable findings")
 		.addHelpText(

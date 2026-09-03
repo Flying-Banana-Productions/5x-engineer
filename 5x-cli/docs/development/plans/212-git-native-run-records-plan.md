@@ -1418,10 +1418,10 @@ For each plan (or `--plan` slug):
 5. Never delete rows in this slice (safer). Doctor `--fix` does not delete extras.
 6. Do **not** write origin/provenance into SQLite. Do **not** stamp a materializer onto existing recorded JSONL lines (index is a projection, not a rewrite of the record). `creator` / `sealer` / summary `materializer` on `run.json` are stored only in the record file; the `runs` row has no origin column. A backfilled summary with `creator: null` must not be projected as if this installation created the run.
 
-- [ ] Idempotent: second `records index` is a no-op on counts.
-- [ ] `session_id` / `log_path` stay null on rebuilt rows.
-- [ ] Rebuilt rows from a backfilled line still have no origin in SQLite; the JSONL `origin: null` / `materializer` is unchanged.
-- [ ] Index of a backfilled `run.json` with `creator: null` / `sealer: null` / `materializer` present does not invent a creator; decode of the on-disk summary still has `creator === null` and a distinct `materializer`.
+- [x] Idempotent: second `records index` is a no-op on counts.
+- [x] `session_id` / `log_path` stay null on rebuilt rows.
+- [x] Rebuilt rows from a backfilled line still have no origin in SQLite; the JSONL `origin: null` / `materializer` is unchanged.
+- [x] Index of a backfilled `run.json` with `creator: null` / `sealer: null` / `materializer` present does not invent a creator; decode of the on-disk summary still has `creator === null` and a distinct `materializer`.
 
 #### 6.2 Command — `src/commands/records.ts` + `records.handler.ts` (new)
 
@@ -1437,8 +1437,8 @@ Register in `bin.ts` (`:88–104`) next to `registerDoctor`.
 
 Handler uses `resolveDbContext` (allowed: this **is** the index command) + `rebuildRecordsIndex`. No `bun:sqlite` import in the handler file — pass `db` from context into `index-rebuild.ts` which may import `operations-v1`.
 
-- [ ] Success envelope: `{ runs_upserted, steps_upserted, steps_skipped_newer_local, plans }`.
-- [ ] `--plan` limits to one slug (`planSlugFromPath` / exact directory name).
+- [x] Success envelope: `{ runs_upserted, steps_upserted, steps_skipped_newer_local, plans }`.
+- [x] `--plan` limits to one slug (`planSlugFromPath` / exact directory name).
 
 #### 6.3 Doctor check — `src/doctor/checks/records.ts` (new)
 
@@ -1460,9 +1460,9 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 
 `RECORD_TXN_CORRUPT` walks `recordsAbsPath` in each of those checkouts for `.txn.journal.json` / `.txn.commit` that fail `recoverRunDir` (catch `RECORD_TXN_CORRUPT`). Include `runId` and the run directory path in the finding detail. Leave artifacts on disk. If `.txn.lock` is held by a **live** PID, do **not** call `recoverRunDir` and do **not** emit `RECORD_TXN_CORRUPT` (transaction in flight). If `.txn.lock` exists but is **unreadable/empty/malformed**, do **not** treat it as absent and do **not** immediately steal it — same P0.5 rule as acquire; skip recover for this pass (do not emit `RECORD_TXN_CORRUPT`). If the lock is stale (dead PID) or absent with leftover journal/commit files, acquire/steal the lock then recover; on `RECORD_TXN_CORRUPT`, report it and release the lock without deleting artifacts. `RECORD_TXN_LOCKED` is a store error, not a doctor finding.
 
-- [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
-- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging. Seed an empty/unreadable `.txn.lock` plus a prepared journal and assert doctor does **not** immediately recover or emit `RECORD_TXN_CORRUPT`.
-- [ ] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
+- [x] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
+- [x] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging. Seed an empty/unreadable `.txn.lock` plus a prepared journal and assert doctor does **not** immediately recover or emit `RECORD_TXN_CORRUPT`.
+- [x] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
 
 ---
 

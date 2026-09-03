@@ -408,6 +408,167 @@ export function resetWorkingTreeLockOwnersForTest(): void {
 	LOCK_OWNERS.clear();
 }
 
+export type TxnLockState = "absent" | "live" | "stale" | "malformed";
+
+/**
+ * Classify `.txn.lock` without stealing or waiting.
+ *
+ * Doctor uses this to skip in-flight (live PID) and malformed locks
+ * (P0.5: do not treat empty/unreadable as absent, do not steal this pass).
+ */
+export function inspectTxnLock(runDir: string): TxnLockState {
+	const dest = lockPath(runDir);
+	if (!existsSync(dest)) return "absent";
+	let text: string;
+	try {
+		text = readFileSync(dest, "utf8");
+	} catch {
+		return "malformed";
+	}
+	if (text.trim() === "") return "malformed";
+	const parsed = parseLockDoc(text);
+	if (!parsed) return "malformed";
+	return isPidAlive(parsed.pid) ? "live" : "stale";
+}
+
+function journalChecksumsMatch(runDir: string, journal: JournalDoc): boolean {
+	for (const stream of journal.streams) {
+		const newBytes = readFileBuffer(stagingPath(runDir, stream, "new"));
+		if (newBytes && sha256(newBytes) !== journal.new_sha256[stream]) {
+			return false;
+		}
+		const oldBytes = readFileBuffer(stagingPath(runDir, stream, "old"));
+		const expectedOld = journal.old_sha256[stream];
+		if (oldBytes && (!expectedOld || sha256(oldBytes) !== expectedOld)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function noUnexpectedStaging(runDir: string, journal: JournalDoc): boolean {
+	const listed = new Set(journal.streams);
+	for (const stream of RECORD_STREAMS) {
+		const hasNew = existsSync(stagingPath(runDir, stream, "new"));
+		const hasOld = existsSync(stagingPath(runDir, stream, "old"));
+		if ((hasNew || hasOld) && !listed.has(stream)) return false;
+	}
+	return true;
+}
+
+function liveMatchesNewSha(
+	runDir: string,
+	journal: JournalDoc,
+	stream: RecordStream,
+): boolean {
+	const live = readFileBuffer(streamPath(runDir, stream));
+	const expected = journal.new_sha256[stream];
+	return Boolean(live && expected && sha256(live) === expected);
+}
+
+function rollbackProofHolds(runDir: string, journal: JournalDoc): boolean {
+	for (const stream of journal.streams) {
+		const newBytes = readFileBuffer(stagingPath(runDir, stream, "new"));
+		if (!newBytes || sha256(newBytes) !== journal.new_sha256[stream]) {
+			return false;
+		}
+		const created = journal.created[stream] === true;
+		const oldBytes = readFileBuffer(stagingPath(runDir, stream, "old"));
+		const live = readFileBuffer(streamPath(runDir, stream));
+		if (created) {
+			if (oldBytes !== null) return false;
+			if (live !== null) return false;
+		} else {
+			const expectedOld = journal.old_sha256[stream];
+			if (!oldBytes || !expectedOld || sha256(oldBytes) !== expectedOld) {
+				return false;
+			}
+			if (!live || sha256(live) !== expectedOld) return false;
+		}
+	}
+	return true;
+}
+
+function fullyAppliedWithoutCommit(
+	runDir: string,
+	journal: JournalDoc,
+): boolean {
+	for (const stream of journal.streams) {
+		if (existsSync(stagingPath(runDir, stream, "new"))) return false;
+		if (!liveMatchesNewSha(runDir, journal, stream)) return false;
+	}
+	return true;
+}
+
+function forwardWouldFail(runDir: string, journal: JournalDoc): boolean {
+	for (const stream of journal.streams) {
+		if (existsSync(stagingPath(runDir, stream, "new"))) {
+			const bytes = readFileBuffer(stagingPath(runDir, stream, "new"));
+			if (!bytes || sha256(bytes) !== journal.new_sha256[stream]) {
+				return true;
+			}
+			continue;
+		}
+		if (!liveMatchesNewSha(runDir, journal, stream)) return true;
+	}
+	return false;
+}
+
+/**
+ * True when leftover `.txn.journal.json` / `.txn.commit` would fail
+ * `recoverRunDir` with `RECORD_TXN_CORRUPT`. Does not mutate the run dir.
+ */
+export function isRunTxnCorrupt(runDir: string): boolean {
+	const journalBytes = readFileBuffer(journalPath(runDir));
+	const commitBytes = readFileBuffer(commitPath(runDir));
+	const commitExists = commitBytes !== null || existsSync(commitPath(runDir));
+
+	if (!journalBytes && !commitExists) return false;
+
+	const journal =
+		journalBytes !== null
+			? parseJournalDoc(journalBytes.toString("utf8"))
+			: null;
+	const journalOk =
+		journal !== null &&
+		journalChecksumsMatch(runDir, journal) &&
+		noUnexpectedStaging(runDir, journal);
+	const commit =
+		commitBytes !== null ? parseCommitDoc(commitBytes.toString("utf8")) : null;
+	const journalSha = journalBytes ? sha256(journalBytes) : null;
+	const commitOk =
+		commit !== null &&
+		journalSha !== null &&
+		commit.journal_sha256 === journalSha;
+
+	if (!journalOk || (commitExists && !commitOk)) return true;
+
+	if (journalOk && commitOk && journal) {
+		return forwardWouldFail(runDir, journal);
+	}
+
+	if (journalOk && !commitExists && journal) {
+		if (rollbackProofHolds(runDir, journal)) return false;
+		if (fullyAppliedWithoutCommit(runDir, journal)) return false;
+		return true;
+	}
+
+	return false;
+}
+
+/** True when a journal or commit marker is present (recoverable or corrupt). */
+export function runDirHasTxnArtifacts(runDir: string): boolean {
+	return (
+		existsSync(journalPath(runDir)) ||
+		existsSync(commitPath(runDir)) ||
+		RECORD_STREAMS.some(
+			(stream) =>
+				existsSync(stagingPath(runDir, stream, "new")) ||
+				existsSync(stagingPath(runDir, stream, "old")),
+		)
+	);
+}
+
 class WorkingTreeRecordStore implements RecordStore {
 	private readonly recordsRoot: string;
 	private readonly now: () => string;
@@ -1015,8 +1176,8 @@ class WorkingTreeRecordStore implements RecordStore {
 				: null;
 		const journalOk =
 			journal !== null &&
-			this.journalChecksumsMatch(runDir, journal) &&
-			this.noUnexpectedStaging(runDir, journal);
+			journalChecksumsMatch(runDir, journal) &&
+			noUnexpectedStaging(runDir, journal);
 		const commit =
 			commitBytes !== null
 				? parseCommitDoc(commitBytes.toString("utf8"))
@@ -1040,11 +1201,11 @@ class WorkingTreeRecordStore implements RecordStore {
 		}
 
 		if (journalOk && !commitExists && journal) {
-			if (this.rollbackProofHolds(runDir, journal)) {
+			if (rollbackProofHolds(runDir, journal)) {
 				this.rollBack(runDir, journal, fsyncDir);
 				return;
 			}
-			if (this.fullyAppliedWithoutCommit(runDir, journal)) {
+			if (fullyAppliedWithoutCommit(runDir, journal)) {
 				this.cleanupAfterForward(runDir, journal, fsyncDir);
 				return;
 			}
@@ -1055,75 +1216,6 @@ class WorkingTreeRecordStore implements RecordStore {
 		}
 	}
 
-	private journalChecksumsMatch(runDir: string, journal: JournalDoc): boolean {
-		for (const stream of journal.streams) {
-			const newBytes = readFileBuffer(stagingPath(runDir, stream, "new"));
-			if (newBytes && sha256(newBytes) !== journal.new_sha256[stream]) {
-				return false;
-			}
-			const oldBytes = readFileBuffer(stagingPath(runDir, stream, "old"));
-			const expectedOld = journal.old_sha256[stream];
-			if (oldBytes && (!expectedOld || sha256(oldBytes) !== expectedOld)) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private noUnexpectedStaging(runDir: string, journal: JournalDoc): boolean {
-		const listed = new Set(journal.streams);
-		for (const stream of RECORD_STREAMS) {
-			const hasNew = existsSync(stagingPath(runDir, stream, "new"));
-			const hasOld = existsSync(stagingPath(runDir, stream, "old"));
-			if ((hasNew || hasOld) && !listed.has(stream)) return false;
-		}
-		return true;
-	}
-
-	private rollbackProofHolds(runDir: string, journal: JournalDoc): boolean {
-		for (const stream of journal.streams) {
-			const newBytes = readFileBuffer(stagingPath(runDir, stream, "new"));
-			if (!newBytes || sha256(newBytes) !== journal.new_sha256[stream]) {
-				return false;
-			}
-			const created = journal.created[stream] === true;
-			const oldBytes = readFileBuffer(stagingPath(runDir, stream, "old"));
-			const live = readFileBuffer(streamPath(runDir, stream));
-			if (created) {
-				if (oldBytes !== null) return false;
-				if (live !== null) return false;
-			} else {
-				const expectedOld = journal.old_sha256[stream];
-				if (!oldBytes || !expectedOld || sha256(oldBytes) !== expectedOld) {
-					return false;
-				}
-				if (!live || sha256(live) !== expectedOld) return false;
-			}
-		}
-		return true;
-	}
-
-	private liveMatchesNewSha(
-		runDir: string,
-		journal: JournalDoc,
-		stream: RecordStream,
-	): boolean {
-		const live = readFileBuffer(streamPath(runDir, stream));
-		const expected = journal.new_sha256[stream];
-		return Boolean(live && expected && sha256(live) === expected);
-	}
-
-	private fullyAppliedWithoutCommit(
-		runDir: string,
-		journal: JournalDoc,
-	): boolean {
-		for (const stream of journal.streams) {
-			if (existsSync(stagingPath(runDir, stream, "new"))) return false;
-			if (!this.liveMatchesNewSha(runDir, journal, stream)) return false;
-		}
-		return true;
-	}
-
 	private rollForward(
 		runDir: string,
 		journal: JournalDoc,
@@ -1132,7 +1224,7 @@ class WorkingTreeRecordStore implements RecordStore {
 	): void {
 		for (const stream of journal.streams) {
 			if (existsSync(stagingPath(runDir, stream, "new"))) continue;
-			if (!this.liveMatchesNewSha(runDir, journal, stream)) {
+			if (!liveMatchesNewSha(runDir, journal, stream)) {
 				throw new RecordStoreError(
 					"RECORD_TXN_CORRUPT",
 					`committed stream ${stream} missing replacement in ${runDir}`,
