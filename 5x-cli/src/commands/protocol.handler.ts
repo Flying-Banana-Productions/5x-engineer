@@ -499,6 +499,7 @@ export async function protocolValidate(
 				result: JSON.stringify(validated),
 				phase: resolvedPhase,
 				iteration: params.iteration,
+				performer: { kind: "agent", role },
 			});
 		} catch (err) {
 			// Recording is a side effect — primary envelope already written.

@@ -878,7 +878,7 @@ describe("Phase 1 freeze boundary", () => {
 			"../../../src/commands",
 			`${modulePath}.ts`,
 		);
-		expect(existsSync(factoryFile)).toBe(false);
+		expect(existsSync(factoryFile)).toBe(true);
 	});
 });
 

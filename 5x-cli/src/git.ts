@@ -6,7 +6,8 @@
  * spawning real processes.
  */
 
-import { planSlugFromPath } from "./paths.js";
+import { resolve } from "node:path";
+import { isPathUnder, planSlugFromPath, realpathExisting } from "./paths.js";
 import { subprocess } from "./utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
@@ -45,12 +46,76 @@ async function run(
 // Safety checks
 // ---------------------------------------------------------------------------
 
+interface PorcelainEntry {
+	xy: string;
+	paths: string[];
+}
+
+/**
+ * Parse `git status --porcelain=v1 -z`.
+ *
+ * Ordinary entries: `XY PATH\0`.
+ * Renames/copies: `XY to\0from\0` (v1) or `R100\0old\0new` (score form).
+ */
+export function parsePorcelainZ(stdout: string): PorcelainEntry[] {
+	if (!stdout) return [];
+	const parts = stdout.split("\0");
+	const entries: PorcelainEntry[] = [];
+	let i = 0;
+	while (i < parts.length) {
+		const rec = parts[i];
+		if (rec === undefined || rec === "") {
+			i += 1;
+			continue;
+		}
+		const scoreMatch = rec.match(/^([RC])(\d{3})$/);
+		if (scoreMatch) {
+			const oldPath = parts[i + 1] ?? "";
+			const newPath = parts[i + 2] ?? "";
+			entries.push({
+				xy: `${scoreMatch[1]} `,
+				paths: [oldPath, newPath].filter(Boolean),
+			});
+			i += 3;
+			continue;
+		}
+		if (rec.length >= 2) {
+			const xy = rec.slice(0, 2);
+			const path = rec.length >= 3 ? rec.slice(3) : "";
+			const paths = path ? [path] : [];
+			const isRename = xy.includes("R") || xy.includes("C");
+			if (isRename) {
+				i += 1;
+				const other = parts[i];
+				if (other) paths.push(other);
+			}
+			entries.push({ xy, paths });
+		}
+		i += 1;
+	}
+	return entries;
+}
+
+function porcelainPathExempt(
+	repoRoot: string,
+	porcelainPath: string,
+	exemptAbsRoots: string[],
+): boolean {
+	if (exemptAbsRoots.length === 0) return false;
+	const abs = resolve(repoRoot, porcelainPath);
+	return exemptAbsRoots.some((root) => isPathUnder(abs, root));
+}
+
 /**
  * Check git repository safety before agent invocation.
  * Returns a report including dirty state and branch info.
+ *
+ * `exemptRoots` are absolute directories whose dirty/untracked files are
+ * ignored (used for the records root between `run record` and `5x commit`).
  */
 export async function checkGitSafety(
 	workdir: string,
+	opts?: { exemptRoots?: string[] },
 ): Promise<GitSafetyReport> {
 	// Get repo root
 	const rootResult = await run(["rev-parse", "--show-toplevel"], workdir);
@@ -62,26 +127,26 @@ export async function checkGitSafety(
 	// Get current branch
 	const branch = await getCurrentBranch(workdir);
 
-	// Check porcelain status
-	const statusResult = await run(["status", "--porcelain"], workdir);
-	const lines = statusResult.stdout
-		? statusResult.stdout.split("\n").filter(Boolean)
-		: [];
+	const statusResult = await run(["status", "--porcelain=v1", "-z"], workdir);
+	const entries = parsePorcelainZ(statusResult.stdout);
+	const exemptAbsRoots = (opts?.exemptRoots ?? []).map((root) =>
+		realpathExisting(root),
+	);
 
 	const untrackedFiles: string[] = [];
 	let isDirty = false;
 
-	for (const line of lines) {
-		if (line.startsWith("??")) {
-			untrackedFiles.push(line.slice(3));
+	for (const entry of entries) {
+		const nonExempt = entry.paths.filter(
+			(p) => !porcelainPathExempt(repoRoot, p, exemptAbsRoots),
+		);
+		if (nonExempt.length === 0) continue;
+		if (entry.xy === "??") {
+			untrackedFiles.push(...nonExempt);
+			isDirty = true;
 		} else {
 			isDirty = true;
 		}
-	}
-
-	// Also mark dirty if there are untracked files (conservative)
-	if (untrackedFiles.length > 0) {
-		isDirty = true;
 	}
 
 	return {

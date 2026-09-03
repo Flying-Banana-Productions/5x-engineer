@@ -18,6 +18,12 @@ import {
 	getCliAbortCause,
 	getCliAbortSignal,
 } from "../cli-lifecycle.js";
+import {
+	type RecordOrigin,
+	type RecordPerformer,
+	type RecordStore,
+	recordedEnvelope,
+} from "../control-plane/index.js";
 import type { PromptStore } from "../control-plane/store.js";
 import type {
 	AbandonReason,
@@ -66,11 +72,20 @@ export interface PromptCommandContext {
 	store: PromptStore;
 	/** True iff a `runs` row exists. Production closes over getRunV1(db). */
 	runExists: (runId: string) => boolean;
+	recordStore?: RecordStore;
+	originFor?: (performer: RecordPerformer) => RecordOrigin;
+	resolveRecordForRun?: (runId: string) => Promise<{
+		recordStore: RecordStore;
+		originFor: (performer: RecordPerformer) => RecordOrigin;
+	} | null>;
 }
 
 export interface PromptHandlerDeps {
 	store?: PromptStore;
 	runExists?: (runId: string) => boolean;
+	recordStore?: RecordStore;
+	originFor?: (performer: RecordPerformer) => RecordOrigin;
+	resolveRecordForRun?: PromptCommandContext["resolveRecordForRun"];
 	resolveContext?: () => Promise<PromptCommandContext>;
 	isTTY?: () => boolean;
 	readLine?: typeof defaultReadLine;
@@ -173,6 +188,9 @@ async function resolvePromptCommandContext(
 		return {
 			store: deps.store,
 			runExists: deps.runExists ?? (() => false),
+			recordStore: deps.recordStore,
+			originFor: deps.originFor,
+			resolveRecordForRun: deps.resolveRecordForRun,
 		};
 	}
 	if (!deps.resolveContext) {
@@ -202,6 +220,50 @@ function emitSuccess(kind: PromptKind, prompt: PromptRecord): void {
 		return;
 	}
 	outputSuccess({ input: answer });
+}
+
+async function snapshotDecision(
+	ctx: PromptCommandContext,
+	prompt: PromptRecord,
+): Promise<void> {
+	if (!prompt.runId) return;
+	try {
+		let recordStore = ctx.recordStore;
+		let originFor = ctx.originFor;
+		if (ctx.resolveRecordForRun) {
+			const resolved = await ctx.resolveRecordForRun(prompt.runId);
+			if (!resolved) return;
+			recordStore = resolved.recordStore;
+			originFor = resolved.originFor;
+		}
+		if (!recordStore || !originFor) return;
+		if (recordStore.getRun(prompt.runId) === null) return;
+		recordStore.append({
+			runId: prompt.runId,
+			stream: "decisions",
+			idempotencyKey: `decision:prompt:${prompt.id}`,
+			...recordedEnvelope(originFor({ kind: "human", role: "operator" })),
+			payload: {
+				kind: "answered-prompt",
+				prompt_id: prompt.id,
+				kind_prompt: prompt.kind,
+				message: prompt.message,
+				answer: prompt.answer,
+				answered_by: prompt.answeredBy,
+			},
+		});
+	} catch {
+		// Prompt UX must not fail if the decision snapshot cannot be written.
+	}
+}
+
+async function emitAnswered(
+	ctx: PromptCommandContext,
+	kind: PromptKind,
+	prompt: PromptRecord,
+): Promise<void> {
+	await snapshotDecision(ctx, prompt);
+	emitSuccess(kind, prompt);
 }
 
 function emitAbandoned(
@@ -234,17 +296,17 @@ function emitAbandoned(
 	}
 }
 
-function casAnswer(
-	store: PromptStore,
+async function casAnswer(
+	ctx: PromptCommandContext,
 	id: string,
 	answer: string,
 	answeredBy: "terminal" | "default",
 	kind: PromptKind,
 	getAbortCause: () => CliAbortCause | undefined,
-): void {
-	const result = store.answerPrompt(id, answer, answeredBy);
+): Promise<void> {
+	const result = ctx.store.answerPrompt(id, answer, answeredBy);
 	if (result.prompt.answeredAt !== null) {
-		emitSuccess(kind, result.prompt);
+		await emitAnswered(ctx, kind, result.prompt);
 		return;
 	}
 	if (result.prompt.abandonedAt !== null) {
@@ -328,6 +390,7 @@ async function settlePoll(
 }
 
 async function waitForPromptRace(args: {
+	ctx: PromptCommandContext;
 	store: PromptStore;
 	id: string;
 	kind: PromptKind;
@@ -336,7 +399,8 @@ async function waitForPromptRace(args: {
 	deps: PromptHandlerDeps;
 	readInput?: (signal: AbortSignal) => Promise<InputRace>;
 }): Promise<void> {
-	const { store, id, kind, defaultAnswer, timeoutMs, deps, readInput } = args;
+	const { ctx, store, id, kind, defaultAnswer, timeoutMs, deps, readInput } =
+		args;
 	const getAbortSignal = deps.getAbortSignal ?? getCliAbortSignal;
 	const getAbortCause = deps.getAbortCause ?? getCliAbortCause;
 	const lifecycle = getAbortSignal();
@@ -391,7 +455,7 @@ async function waitForPromptRace(args: {
 	const current = store.getPrompt(id);
 
 	if (current?.answeredAt) {
-		emitSuccess(kind, current);
+		await emitAnswered(ctx, kind, current);
 		return;
 	}
 
@@ -400,7 +464,7 @@ async function waitForPromptRace(args: {
 	if (winner.source === "poll") {
 		switch (winner.result.tag) {
 			case "answered":
-				emitSuccess(kind, winner.result.prompt);
+				await emitAnswered(ctx, kind, winner.result.prompt);
 				return;
 			case "timeout":
 				casAbandon(store, id, "timeout", kind, getAbortCause);
@@ -428,15 +492,15 @@ async function waitForPromptRace(args: {
 	const input = winner.result;
 	switch (input.tag) {
 		case "value":
-			casAnswer(store, id, input.value, "terminal", kind, getAbortCause);
+			await casAnswer(ctx, id, input.value, "terminal", kind, getAbortCause);
 			return;
 		case "eof":
 			if (kind === "input") {
-				casAnswer(store, id, "", "terminal", kind, getAbortCause);
+				await casAnswer(ctx, id, "", "terminal", kind, getAbortCause);
 				return;
 			}
 			if (defaultAnswer !== null) {
-				casAnswer(store, id, defaultAnswer, "default", kind, getAbortCause);
+				await casAnswer(ctx, id, defaultAnswer, "default", kind, getAbortCause);
 				return;
 			}
 			casAbandon(store, id, "eof", kind, getAbortCause);
@@ -501,7 +565,8 @@ export async function promptChoose(
 	}
 
 	const timeoutMs = resolveTimeoutMs(params.timeout);
-	const { store, runExists } = await resolvePromptCommandContext(deps);
+	const ctx = await resolvePromptCommandContext(deps);
+	const { store, runExists } = ctx;
 	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
@@ -526,8 +591,8 @@ export async function promptChoose(
 				})
 			) {
 				if (defaultVal) {
-					casAnswer(
-						store,
+					await casAnswer(
+						ctx,
 						prompt.id,
 						defaultVal,
 						"default",
@@ -559,6 +624,7 @@ export async function promptChoose(
 
 			const defaultHint = defaultVal ? ` [${defaultVal}]` : "";
 			await waitForPromptRace({
+				ctx,
 				store,
 				id: prompt.id,
 				kind: "choose",
@@ -617,7 +683,8 @@ export async function promptConfirm(
 		defaultBool === undefined ? null : defaultBool ? "true" : "false";
 
 	const timeoutMs = resolveTimeoutMs(params.timeout);
-	const { store, runExists } = await resolvePromptCommandContext(deps);
+	const ctx = await resolvePromptCommandContext(deps);
+	const { store, runExists } = ctx;
 	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
@@ -642,8 +709,8 @@ export async function promptConfirm(
 				})
 			) {
 				if (defaultAnswer !== null) {
-					casAnswer(
-						store,
+					await casAnswer(
+						ctx,
 						prompt.id,
 						defaultAnswer,
 						"default",
@@ -670,6 +737,7 @@ export async function promptConfirm(
 						: "[y/n]";
 
 			await waitForPromptRace({
+				ctx,
 				store,
 				id: prompt.id,
 				kind: "confirm",
@@ -717,7 +785,8 @@ export async function promptInput(
 	deps: PromptHandlerDeps = {},
 ): Promise<void> {
 	const timeoutMs = resolveTimeoutMs(params.timeout);
-	const { store, runExists } = await resolvePromptCommandContext(deps);
+	const ctx = await resolvePromptCommandContext(deps);
+	const { store, runExists } = ctx;
 	const runId = resolveAssociatedRunId(params.run, runExists);
 
 	const tty = (deps.isTTY ?? detectTTY)();
@@ -736,6 +805,7 @@ export async function promptInput(
 		},
 		async (prompt) => {
 			await waitForPromptRace({
+				ctx,
 				store,
 				id: prompt.id,
 				kind: "input",

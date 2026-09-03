@@ -20,6 +20,24 @@ import {
 	loadConfig,
 	resolveLayeredConfig,
 } from "../config.js";
+import {
+	type AppendOp,
+	type RecordLine,
+	type RecordOrigin,
+	type RecordPerformer,
+	type RecordRecorder,
+	type RecordStore,
+	RecordStoreError,
+	RUN_RECORD_FORMAT_VERSION,
+	recordedEnvelope,
+	redactStepPayload,
+	type StepRecordPayload,
+	stepIdempotencyKey,
+} from "../control-plane/index.js";
+import type {
+	PreparedRecordStep,
+	PrepareRecordStepOutcome,
+} from "../control-plane/record-writer-types.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import {
@@ -31,6 +49,7 @@ import {
 	getRunV1,
 	getSteps,
 	listRuns,
+	nextIteration,
 	type RunRowV1,
 	recordStep,
 	reopenRun,
@@ -41,9 +60,13 @@ import { runMigrations } from "../db/schema.js";
 import {
 	branchNameFromPlan,
 	checkGitSafety,
+	commitFiles,
+	computeDiffSummary,
+	computePatchId,
 	createWorktree,
 	getLatestCommit,
 	isBranchRelevant,
+	listChangedFiles,
 	listWorktrees,
 	runWorktreeSetupCommand,
 } from "../git.js";
@@ -82,9 +105,12 @@ import {
 } from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
 import type { AgentEvent } from "../providers/types.js";
+import { resolveRecordPerformer } from "../records/origin.js";
+import { resolveRecordsRoot } from "../records/paths.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
+import { version } from "../version.js";
 import { resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
@@ -92,6 +118,7 @@ import {
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import { createRecordContext, RecordContextError } from "./record-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import {
 	type AmbientRunResult,
@@ -104,6 +131,8 @@ import {
 	currentRunPath,
 	writePointer,
 } from "./run-pointer.js";
+
+export type { PreparedRecordStep, PrepareRecordStepOutcome };
 
 // ---------------------------------------------------------------------------
 // Param interfaces
@@ -140,6 +169,13 @@ export interface RunRecordParams {
 	logPath?: string;
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
+	/**
+	 * Who performed this step. Callers that know (invoke, protocol with role)
+	 * MUST pass this. Omitted → `resolveRecordPerformer` default
+	 * `{ kind: "system", role: "cli" }` except `human:*` steps.
+	 * Never inferred from Git, OS username, or hostname.
+	 */
+	performer?: RecordPerformer;
 }
 
 export interface RunCompleteParams {
@@ -244,6 +280,265 @@ export interface RecordStepResult {
 	recorded: boolean;
 	/** Post-insert step count (idempotent re-records report the true total). */
 	total_steps: number;
+}
+
+export interface RecordStepContext {
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore?: RecordStore;
+	originFor?: (performer: RecordPerformer) => RecordOrigin;
+	redactedRecorder?: () => RecordRecorder;
+}
+
+function storeGetLine(
+	recordStore: RecordStore,
+	runId: string,
+	stream: "steps" | "decisions" | "budget",
+	idempotencyKey: string,
+): RecordLine | null {
+	try {
+		return recordStore.getLine(runId, stream, idempotencyKey);
+	} catch (err) {
+		if (err instanceof RecordStoreError && err.code === "RUN_NOT_FOUND") {
+			return null;
+		}
+		throw err;
+	}
+}
+
+function storeListLines(
+	recordStore: RecordStore,
+	runId: string,
+	stream: "steps" | "decisions" | "budget",
+): RecordLine[] {
+	try {
+		return recordStore.listLines(runId, stream);
+	} catch (err) {
+		if (err instanceof RecordStoreError && err.code === "RUN_NOT_FOUND") {
+			return [];
+		}
+		throw err;
+	}
+}
+
+function maxStoreIteration(
+	lines: RecordLine[],
+	stepName: string,
+	phase: string | undefined,
+): number | null {
+	const phaseVal = phase ?? null;
+	let max: number | null = null;
+	for (const line of lines) {
+		const payload = line.payload as Partial<StepRecordPayload> | null;
+		if (!payload || typeof payload !== "object") continue;
+		if (payload.step_name !== stepName) continue;
+		if ((payload.phase ?? null) !== phaseVal) continue;
+		if (typeof payload.iteration === "number") {
+			if (max === null || payload.iteration > max) max = payload.iteration;
+		}
+	}
+	return max;
+}
+
+function lastHeadCommit(lines: RecordLine[]): string | undefined {
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const payload = lines[i]?.payload as Partial<StepRecordPayload> | undefined;
+		if (typeof payload?.head_commit === "string" && payload.head_commit) {
+			return payload.head_commit;
+		}
+	}
+	return undefined;
+}
+
+function parseConfigJson(raw: string | null): unknown {
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+function copyPerformer(performer: RecordPerformer): RecordPerformer {
+	const out: RecordPerformer = { kind: performer.kind };
+	if (performer.role !== undefined) out.role = performer.role;
+	if (performer.provider !== undefined) out.provider = performer.provider;
+	return out;
+}
+
+function parseStepPayload(payload: unknown): StepRecordPayload | null {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		return null;
+	}
+	const p = payload as Partial<StepRecordPayload>;
+	if (typeof p.step_name !== "string" || typeof p.iteration !== "number") {
+		return null;
+	}
+	return p as StepRecordPayload;
+}
+
+function rethrowAsRecordError(err: unknown): never {
+	if (err instanceof RecordError) throw err;
+	if (err instanceof RecordContextError) {
+		throw new RecordError(err.code, err.message, err.detail);
+	}
+	if (err instanceof RecordStoreError) {
+		throw new RecordError(err.code, err.message);
+	}
+	throw err;
+}
+
+function ensureRunRecord(
+	recordStore: RecordStore,
+	run: RunRowV1,
+	originFor: (performer: RecordPerformer) => RecordOrigin,
+): void {
+	if (recordStore.getRun(run.id) !== null) return;
+	recordStore.putRun({
+		id: run.id,
+		plan_path: run.plan_path,
+		config_json: parseConfigJson(run.config_json),
+		created_at: run.created_at,
+		sealed_at: null,
+		status: "active",
+		final_head_commit: null,
+		cli_version: version,
+		format_version: RUN_RECORD_FORMAT_VERSION,
+		creator: null,
+		materializer: originFor({ kind: "system", role: "exporter" }),
+	});
+}
+
+async function resolveRecordWriter(
+	params: { run: string; startDir?: string },
+	dbContext?: RecordStepContext,
+): Promise<{
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore: RecordStore;
+	originFor: (performer: RecordPerformer) => RecordOrigin;
+	redactedRecorder: () => RecordRecorder;
+}> {
+	if (
+		dbContext?.recordStore &&
+		dbContext.originFor &&
+		dbContext.redactedRecorder
+	) {
+		return {
+			db: dbContext.db,
+			config: dbContext.config,
+			controlPlane: dbContext.controlPlane,
+			recordStore: dbContext.recordStore,
+			originFor: dbContext.originFor,
+			redactedRecorder: dbContext.redactedRecorder,
+		};
+	}
+	if (dbContext?.recordStore && dbContext.originFor) {
+		const originFor = dbContext.originFor;
+		return {
+			db: dbContext.db,
+			config: dbContext.config,
+			controlPlane: dbContext.controlPlane,
+			recordStore: dbContext.recordStore,
+			originFor,
+			redactedRecorder: () =>
+				originFor({ kind: "system", role: "cli" }).recorder,
+		};
+	}
+	try {
+		const ctx = await createRecordContext({
+			runId: params.run,
+			startDir: params.startDir,
+			dbContext: dbContext
+				? {
+						projectRoot:
+							dbContext.controlPlane?.controlPlaneRoot ?? process.cwd(),
+						db: dbContext.db,
+						config: dbContext.config,
+						controlPlane: dbContext.controlPlane,
+					}
+				: undefined,
+		});
+		return {
+			db: dbContext?.db ?? ctx.db,
+			config: dbContext?.config ?? ctx.config,
+			controlPlane: dbContext?.controlPlane ?? ctx.controlPlane,
+			recordStore: ctx.recordStore,
+			originFor: ctx.originFor,
+			redactedRecorder: ctx.redactedRecorder,
+		};
+	} catch (err) {
+		rethrowAsRecordError(err);
+	}
+}
+
+async function writeRunRecordOnInit(opts: {
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	projectRoot: string;
+	run: RunRowV1;
+	resume: boolean;
+}): Promise<void> {
+	let ctx: Awaited<ReturnType<typeof createRecordContext>>;
+	try {
+		ctx = await createRecordContext({
+			runId: opts.run.id,
+			dbContext: {
+				projectRoot: opts.projectRoot,
+				db: opts.db,
+				config: opts.config,
+				controlPlane: opts.controlPlane,
+			},
+		});
+	} catch (err) {
+		if (err instanceof RecordContextError) {
+			outputError(err.code, err.message, err.detail);
+		}
+		throw err;
+	}
+
+	const existing = ctx.recordStore.getRun(opts.run.id);
+	if (opts.resume) {
+		if (existing && existing.format_version > RUN_RECORD_FORMAT_VERSION) {
+			return;
+		}
+		if (existing?.sealed_at) return;
+		if (existing) return;
+		ctx.recordStore.putRun({
+			id: opts.run.id,
+			plan_path: opts.run.plan_path,
+			config_json: parseConfigJson(opts.run.config_json),
+			created_at: opts.run.created_at,
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: version,
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: null,
+			materializer: ctx.originFor({ kind: "system", role: "exporter" }),
+		});
+		return;
+	}
+
+	ctx.recordStore.putRun({
+		id: opts.run.id,
+		plan_path: opts.run.plan_path,
+		config_json: {
+			maxStepsPerRun: getMaxStepsPerRun(
+				opts.config as unknown as Record<string, unknown>,
+			),
+		},
+		created_at: opts.run.created_at,
+		sealed_at: null,
+		status: "active",
+		final_head_commit: null,
+		cli_version: version,
+		format_version: RUN_RECORD_FORMAT_VERSION,
+		creator: ctx.redactedRecorder(),
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,7 +1295,14 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 2. Check git safety (skip when --worktree: worktrees are isolated)
 		if (!params.allowDirty && !params.worktree) {
 			try {
-				const safety = await checkGitSafety(projectRoot);
+				const recordsRoot = resolveRecordsRoot({
+					recordsConfigAbs: config.paths.records,
+					controlPlaneRoot: projectRoot,
+					effectiveWorkdir: projectRoot,
+				});
+				const safety = await checkGitSafety(projectRoot, {
+					exemptRoots: [recordsRoot.recordsAbsPath],
+				});
 				if (!safety.safe) {
 					outputError(
 						"DIRTY_WORKTREE",
@@ -1034,6 +1336,14 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		// 3. Idempotent: return existing active run if one exists
 		const existing = getActiveRunV1(db, planPath);
 		if (existing) {
+			await writeRunRecordOnInit({
+				db,
+				config,
+				controlPlane: controlPlane.mode !== "none" ? controlPlane : undefined,
+				projectRoot,
+				run: existing,
+				resume: true,
+			});
 			writeFocusPointer(projectRoot, stateDirForDb, existing.id);
 			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
@@ -1069,6 +1379,16 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		lockCleanupRegistered = true;
 
 		const run = getRunV1(db, runId);
+		if (run) {
+			await writeRunRecordOnInit({
+				db,
+				config,
+				controlPlane: controlPlane.mode !== "none" ? controlPlane : undefined,
+				projectRoot,
+				run,
+				resume: false,
+			});
+		}
 		outputSuccess({
 			run_id: runId,
 			plan_path: run?.plan_path ?? planPath,
@@ -1181,26 +1501,20 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 }
 
 /**
- * Record a step in the database. Pure persistence — no stdout, no CliError.
- * Throws RecordError on validation failures (caller decides how to surface).
- *
- * When `dbContext` is provided, the caller's already-resolved DB/control-plane
- * is used instead of re-resolving via `resolveDbContext()`. This ensures the
- * step is recorded against the same database that the caller used for run
- * context resolution — critical for `5x commit` where re-discovery from cwd
- * could target the wrong control-plane.
+ * Admit or detect a duplicate step before any JSONL/SQLite write.
+ * Slice 06's mixed `[step, budget]` wrapper calls this then `atomicAppend`.
  */
-export async function recordStepInternal(
+export async function prepareRecordStepAppend(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
-	dbContext?: {
+	ctx: {
 		db: Database;
 		config: FiveXConfig;
 		controlPlane?: ControlPlaneResult;
+		recordStore: RecordStore;
 	},
-): Promise<RecordStepResult & { max_steps: number }> {
-	const { config, db, controlPlane } = dbContext ?? (await resolveDbContext());
+): Promise<PrepareRecordStepOutcome> {
+	const { db, config, controlPlane, recordStore } = ctx;
 
-	// Verify run exists and is active
 	const run = getRunV1(db, params.run);
 	if (!run) {
 		throw new RecordError("RUN_NOT_FOUND", `Run ${params.run} not found`);
@@ -1212,9 +1526,6 @@ export async function recordStepInternal(
 		);
 	}
 
-	// Phase 3 fix: validate run-scoped context via shared resolver to honor
-	// the fail-closed worktree contract. Recording steps against a run with
-	// a missing worktree is a drift risk — fail with WORKTREE_MISSING.
 	let effectiveWorkdir: string | undefined;
 	const controlPlaneRoot = controlPlane?.controlPlaneRoot;
 	if (controlPlaneRoot) {
@@ -1231,8 +1542,6 @@ export async function recordStepInternal(
 		effectiveWorkdir = ctxResult.context.effectiveWorkingDirectory;
 	}
 
-	// Capture git HEAD at record time for review-delta context on subsequent
-	// continued reviews. Best-effort — non-git workdirs or git failures skip.
 	let headCommit: string | undefined;
 	if (effectiveWorkdir) {
 		try {
@@ -1242,24 +1551,32 @@ export async function recordStepInternal(
 		}
 	}
 
-	// Enforce maxStepsPerRun from live config (not the snapshot in config_json,
-	// so users can bump the limit in 5x.toml without editing the database)
 	const maxSteps = getMaxStepsPerRun(
 		config as unknown as Record<string, unknown>,
 	);
 
-	const summary = computeRunSummary(db, params.run);
-	if (summary.total_steps >= maxSteps) {
-		const existing = findExistingStep(db, {
-			run_id: params.run,
-			step_name: params.stepName,
-			phase: params.phase,
+	const lookupExisting = (): boolean => {
+		if (params.iteration === undefined) return false;
+		const key = stepIdempotencyKey({
+			runId: params.run,
+			stepName: params.stepName,
+			phase: params.phase ?? null,
 			iteration: params.iteration,
 		});
-		// Duplicate re-records are a no-op and must not fail at the ceiling.
-		// A new unique step (including omitted iteration, which auto-increments)
-		// is still rejected.
-		if (!existing) {
+		if (storeGetLine(recordStore, params.run, "steps", key)) return true;
+		return (
+			findExistingStep(db, {
+				run_id: params.run,
+				step_name: params.stepName,
+				phase: params.phase,
+				iteration: params.iteration,
+			}) !== null
+		);
+	};
+
+	const summary = computeRunSummary(db, params.run);
+	if (summary.total_steps >= maxSteps) {
+		if (!lookupExisting()) {
 			throw new RecordError(
 				"MAX_STEPS_EXCEEDED",
 				`Run has reached the maximum of ${maxSteps} steps`,
@@ -1273,7 +1590,6 @@ export async function recordStepInternal(
 		}
 	}
 
-	// Validate JSON
 	try {
 		JSON.parse(params.result);
 	} catch {
@@ -1282,32 +1598,304 @@ export async function recordStepInternal(
 		});
 	}
 
-	const dbResult = recordStep(db, {
-		run_id: params.run,
-		step_name: params.stepName,
+	let performer: RecordPerformer;
+	if (params.performer) {
+		if (
+			params.performer.kind !== "human" &&
+			params.performer.kind !== "agent" &&
+			params.performer.kind !== "system"
+		) {
+			throw new RecordError(
+				"INVALID_ARGS",
+				`invalid performer.kind: ${String(params.performer.kind)}`,
+			);
+		}
+		performer = copyPerformer(params.performer);
+	} else {
+		performer = resolveRecordPerformer({ stepName: params.stepName });
+	}
+
+	const prepared: PreparedRecordStep = {
+		runId: params.run,
+		stepName: params.stepName,
 		phase: params.phase,
 		iteration: params.iteration,
-		result_json: params.result,
-		session_id: params.sessionId,
+		resultJson: params.result,
+		headCommit,
+		sessionId: params.sessionId,
 		model: params.model,
-		tokens_in: params.tokensIn,
-		tokens_out: params.tokensOut,
-		cost_usd: params.costUsd,
-		duration_ms: params.durationMs,
-		log_path: params.logPath,
-		head_commit: headCommit,
-	});
-
-	const after = computeRunSummary(db, params.run);
-	return {
-		step_id: dbResult.step_id,
-		step_name: dbResult.step_name,
-		phase: dbResult.phase,
-		iteration: dbResult.iteration,
-		recorded: dbResult.recorded,
-		total_steps: after.total_steps,
-		max_steps: maxSteps,
+		tokensIn: params.tokensIn,
+		tokensOut: params.tokensOut,
+		costUsd: params.costUsd,
+		durationMs: params.durationMs,
+		logPath: params.logPath,
+		effectiveWorkdir,
+		maxSteps,
+		performer,
 	};
+
+	if (params.iteration !== undefined && lookupExisting()) {
+		return { outcome: "duplicate", prepared };
+	}
+	return { outcome: "admit", prepared };
+}
+
+function projectStepToSqlite(
+	db: Database,
+	prepared: PreparedRecordStep,
+	payload: StepRecordPayload,
+	iteration: number,
+): ReturnType<typeof recordStep> {
+	return recordStep(db, {
+		run_id: prepared.runId,
+		step_name: prepared.stepName,
+		phase: prepared.phase,
+		iteration,
+		result_json: prepared.resultJson,
+		session_id: prepared.sessionId,
+		model: payload.model ?? undefined,
+		tokens_in: payload.tokens_in ?? undefined,
+		tokens_out: payload.tokens_out ?? undefined,
+		cost_usd: payload.cost_usd ?? undefined,
+		duration_ms: payload.duration_ms ?? undefined,
+		log_path: prepared.logPath,
+		head_commit: payload.head_commit ?? prepared.headCommit,
+	});
+}
+
+/**
+ * Record a step in the database. Pure persistence — no stdout, no CliError.
+ * Throws RecordError on validation failures (caller decides how to surface).
+ *
+ * When `dbContext` is provided, the caller's already-resolved DB/control-plane
+ * is used instead of re-resolving via `resolveDbContext()`. This ensures the
+ * step is recorded against the same database that the caller used for run
+ * context resolution — critical for `5x commit` where re-discovery from cwd
+ * could target the wrong control-plane.
+ */
+export async function recordStepInternal(
+	params: RunRecordParams & { run: string; stepName: string; result: string },
+	dbContext?: RecordStepContext,
+): Promise<RecordStepResult & { max_steps: number }> {
+	const writer = await resolveRecordWriter(params, dbContext);
+	const { db, config, controlPlane, recordStore, originFor } = writer;
+
+	const preparedOutcome = await prepareRecordStepAppend(params, {
+		db,
+		config,
+		controlPlane,
+		recordStore,
+	});
+	const { prepared } = preparedOutcome;
+	const run = getRunV1(db, prepared.runId);
+	if (!run) {
+		throw new RecordError("RUN_NOT_FOUND", `Run ${prepared.runId} not found`);
+	}
+
+	const projectFromLine = (line: RecordLine): ReturnType<typeof recordStep> => {
+		const existingPayload = parseStepPayload(line.payload);
+		const iteration =
+			existingPayload?.iteration ??
+			prepared.iteration ??
+			nextIteration(db, prepared.runId, prepared.stepName, prepared.phase);
+		const payload: StepRecordPayload = existingPayload ?? {
+			step_name: prepared.stepName,
+			phase: prepared.phase ?? null,
+			iteration,
+			result_json: JSON.parse(prepared.resultJson) as unknown,
+			head_commit: prepared.headCommit ?? null,
+			patch_id: null,
+			diff_summary: null,
+			duration_ms: prepared.durationMs ?? null,
+			tokens_in: prepared.tokensIn ?? null,
+			tokens_out: prepared.tokensOut ?? null,
+			cost_usd: prepared.costUsd ?? null,
+			model: prepared.model ?? null,
+		};
+		return projectStepToSqlite(db, prepared, payload, iteration);
+	};
+
+	if (preparedOutcome.outcome === "duplicate") {
+		if (prepared.iteration !== undefined) {
+			const key = stepIdempotencyKey({
+				runId: prepared.runId,
+				stepName: prepared.stepName,
+				phase: prepared.phase ?? null,
+				iteration: prepared.iteration,
+			});
+			const existingLine = storeGetLine(
+				recordStore,
+				prepared.runId,
+				"steps",
+				key,
+			);
+			if (existingLine) {
+				const dbResult = projectFromLine(existingLine);
+				const after = computeRunSummary(db, prepared.runId);
+				return {
+					step_id: dbResult.step_id,
+					step_name: dbResult.step_name,
+					phase: dbResult.phase,
+					iteration: dbResult.iteration,
+					recorded: false,
+					total_steps: after.total_steps,
+					max_steps: prepared.maxSteps,
+				};
+			}
+		}
+		const dbResult = recordStep(db, {
+			run_id: prepared.runId,
+			step_name: prepared.stepName,
+			phase: prepared.phase,
+			iteration: prepared.iteration,
+			result_json: prepared.resultJson,
+			session_id: prepared.sessionId,
+			model: prepared.model,
+			tokens_in: prepared.tokensIn,
+			tokens_out: prepared.tokensOut,
+			cost_usd: prepared.costUsd,
+			duration_ms: prepared.durationMs,
+			log_path: prepared.logPath,
+			head_commit: prepared.headCommit,
+		});
+		const after = computeRunSummary(db, prepared.runId);
+		return {
+			step_id: dbResult.step_id,
+			step_name: dbResult.step_name,
+			phase: dbResult.phase,
+			iteration: dbResult.iteration,
+			recorded: false,
+			total_steps: after.total_steps,
+			max_steps: prepared.maxSteps,
+		};
+	}
+
+	const stepLines = storeListLines(recordStore, prepared.runId, "steps");
+	let iteration = prepared.iteration;
+	if (iteration === undefined) {
+		const storeMax = maxStoreIteration(
+			stepLines,
+			prepared.stepName,
+			prepared.phase,
+		);
+		iteration =
+			storeMax !== null
+				? storeMax + 1
+				: nextIteration(db, prepared.runId, prepared.stepName, prepared.phase);
+	}
+
+	let patchId: string | null = null;
+	let diffSummary: StepRecordPayload["diff_summary"] = null;
+	const previousHead = lastHeadCommit(stepLines);
+	if (previousHead && prepared.headCommit && prepared.effectiveWorkdir) {
+		try {
+			patchId = await computePatchId(
+				prepared.effectiveWorkdir,
+				previousHead,
+				prepared.headCommit,
+			);
+		} catch {
+			patchId = null;
+		}
+		try {
+			const summary = await computeDiffSummary(
+				prepared.effectiveWorkdir,
+				previousHead,
+				prepared.headCommit,
+			);
+			diffSummary = summary;
+		} catch {
+			diffSummary = null;
+		}
+	}
+
+	const payload = redactStepPayload(
+		{
+			step_name: prepared.stepName,
+			phase: prepared.phase ?? null,
+			iteration,
+			result_json: JSON.parse(prepared.resultJson) as unknown,
+			head_commit: prepared.headCommit ?? null,
+			patch_id: patchId,
+			diff_summary: diffSummary,
+			duration_ms: prepared.durationMs ?? null,
+			tokens_in: prepared.tokensIn ?? null,
+			tokens_out: prepared.tokensOut ?? null,
+			cost_usd: prepared.costUsd ?? null,
+			model: prepared.model ?? null,
+		},
+		config.records.redact,
+	);
+
+	const origin = originFor(prepared.performer);
+	const envelope = recordedEnvelope(origin);
+	const stepKey = stepIdempotencyKey({
+		runId: prepared.runId,
+		stepName: prepared.stepName,
+		phase: prepared.phase ?? null,
+		iteration,
+	});
+	const ops: AppendOp[] = [
+		{
+			runId: prepared.runId,
+			stream: "steps",
+			idempotencyKey: stepKey,
+			payload,
+			...envelope,
+		},
+	];
+	if (prepared.stepName.startsWith("human:")) {
+		ops.push({
+			runId: prepared.runId,
+			stream: "decisions",
+			idempotencyKey: `decision:human:${stepKey}`,
+			payload: {
+				kind: "human-step",
+				step_name: prepared.stepName,
+				phase: prepared.phase ?? null,
+				iteration,
+				result_json: JSON.parse(prepared.resultJson) as unknown,
+			},
+			...envelope,
+		});
+	}
+
+	try {
+		ensureRunRecord(recordStore, run, originFor);
+		const results = recordStore.atomicAppend(ops);
+		const stepResult = results[0];
+		if (!stepResult?.created) {
+			const existing =
+				stepResult?.line ??
+				storeGetLine(recordStore, prepared.runId, "steps", stepKey);
+			const dbResult = existing
+				? projectFromLine(existing)
+				: projectStepToSqlite(db, prepared, payload, iteration);
+			const after = computeRunSummary(db, prepared.runId);
+			return {
+				step_id: dbResult.step_id,
+				step_name: dbResult.step_name,
+				phase: dbResult.phase,
+				iteration: dbResult.iteration,
+				recorded: false,
+				total_steps: after.total_steps,
+				max_steps: prepared.maxSteps,
+			};
+		}
+		const dbResult = projectStepToSqlite(db, prepared, payload, iteration);
+		const after = computeRunSummary(db, prepared.runId);
+		return {
+			step_id: dbResult.step_id,
+			step_name: dbResult.step_name,
+			phase: dbResult.phase,
+			iteration: dbResult.iteration,
+			recorded: dbResult.recorded,
+			total_steps: after.total_steps,
+			max_steps: prepared.maxSteps,
+		};
+	} catch (err) {
+		rethrowAsRecordError(err);
+	}
 }
 
 export async function runV1Record(params: RunRecordParams): Promise<void> {
@@ -1419,7 +2007,7 @@ export async function runV1Record(params: RunRecordParams): Promise<void> {
 }
 
 export async function runV1Complete(params: RunCompleteParams): Promise<void> {
-	const { projectRoot, db, controlPlane } = await resolveDbContext({
+	const { projectRoot, db, config, controlPlane } = await resolveDbContext({
 		startDir: params.startDir,
 	});
 	const lockOpts: LockDirOpts = { stateDir: controlPlane?.stateDir };
@@ -1490,22 +2078,99 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		}
 	}
 
-	// Record terminal step
+	let recordCtx: Awaited<ReturnType<typeof createRecordContext>>;
+	try {
+		recordCtx = await createRecordContext({
+			runId,
+			dbContext: { projectRoot, db, config, controlPlane },
+		});
+	} catch (err) {
+		if (err instanceof RecordContextError) {
+			outputError(err.code, err.message, err.detail);
+		}
+		throw err;
+	}
+
+	const summary = recordCtx.recordStore.getRun(runId);
+	if (summary && summary.format_version > RUN_RECORD_FORMAT_VERSION) {
+		outputError(
+			"UNSUPPORTED_FORMAT_VERSION",
+			`This CLI writes run.json format_version ${RUN_RECORD_FORMAT_VERSION} and cannot complete a run whose summary is format_version ${summary.format_version}. Use a CLI that understands that format, or do not complete this run with this binary.`,
+		);
+	}
+
 	const stepName = status === "completed" ? "run:complete" : "run:abort";
-	recordStep(db, {
-		run_id: runId,
-		step_name: stepName,
-		result_json: JSON.stringify({
-			status,
-			reason: params.reason ?? null,
-		}),
+	try {
+		await recordStepInternal(
+			{
+				run: runId,
+				stepName,
+				result: JSON.stringify({
+					status,
+					reason: params.reason ?? null,
+				}),
+				performer: { kind: "system", role: "cli" },
+			},
+			{
+				db,
+				config,
+				controlPlane,
+				recordStore: recordCtx.recordStore,
+				originFor: recordCtx.originFor,
+				redactedRecorder: recordCtx.redactedRecorder,
+			},
+		);
+	} catch (err) {
+		if (err instanceof RecordError) {
+			outputError(err.code, err.message, err.detail);
+		}
+		throw err;
+	}
+
+	let finalHead: string | null = null;
+	try {
+		finalHead = await getLatestCommit(
+			recordCtx.executionContext.effectiveWorkingDirectory,
+		);
+	} catch {
+		finalHead = null;
+	}
+
+	recordCtx.recordStore.putRun({
+		id: runId,
+		plan_path: run.plan_path,
+		config_json: summary?.config_json ?? parseConfigJson(run.config_json),
+		created_at: summary?.created_at ?? run.created_at,
+		sealed_at: new Date().toISOString(),
+		status,
+		final_head_commit: finalHead,
+		cli_version: summary?.cli_version ?? version,
+		format_version: summary?.format_version ?? RUN_RECORD_FORMAT_VERSION,
+		creator: summary ? summary.creator : null,
+		sealer: recordCtx.redactedRecorder(),
+		...(summary?.materializer ? { materializer: summary.materializer } : {}),
 	});
 
-	// Update run status
+	const workdir = recordCtx.executionContext.effectiveWorkingDirectory;
+	try {
+		const changed = await listChangedFiles(workdir);
+		const recordChanges = changed.filter((file) =>
+			isPathUnder(resolve(workdir, file), recordCtx.recordsAbsPath),
+		);
+		if (recordChanges.length > 0) {
+			await commitFiles(
+				workdir,
+				[recordCtx.recordsRelPath],
+				`5x: seal run ${runId}`,
+			);
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		outputError("COMMIT_FAILED", message);
+	}
+
 	completeRun(db, runId, status);
 
-	// Release plan lock (ownership-safe: only releases if we own it or it's stale)
-	// Phase 3b: pass stateDir to releaseLock
 	if (run.plan_path) {
 		releaseLock(projectRoot, run.plan_path, lockOpts);
 	}
