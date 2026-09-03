@@ -15,9 +15,10 @@ import { resolve } from "node:path";
 import { type FiveXConfig, loadConfig } from "../../config.js";
 import {
 	inspectTxnLock,
-	isRunTxnCorrupt,
+	recoverAbandonedRunDir,
 	runDirHasTxnArtifacts,
 } from "../../control-plane/record-fs.js";
+import { RecordStoreError } from "../../control-plane/record-types.js";
 import { openDbReadOnly } from "../../db/connection.js";
 import { getRunV1, getSteps, type StepRow } from "../../db/operations-v1.js";
 import {
@@ -26,10 +27,11 @@ import {
 	parsePorcelainZ,
 	revParseCommit,
 } from "../../git.js";
-import { isPathUnder } from "../../paths.js";
+import { isPathUnder, planSlugFromPath } from "../../paths.js";
 import {
 	collectRecordIndexSnapshot,
 	listMappedWorktreePaths,
+	RECORD_PROGRESS_DIVERGED,
 	rebuildRecordsIndex,
 	sqliteStepKey,
 	walkRecordRunDirs,
@@ -231,18 +233,27 @@ export function createRecordsCheck(): DoctorCheck {
 				for (const { runId, runDir } of walkRecordRunDirs(recordsAbsPath)) {
 					const lock = inspectTxnLock(runDir);
 					if (lock === "live" || lock === "malformed") continue;
-					if (!runDirHasTxnArtifacts(runDir) && lock === "absent") continue;
-					if (!isRunTxnCorrupt(runDir)) continue;
-					findings.push({
-						check: RECORDS_CHECK_ID,
-						status: "fail",
-						code: "RECORD_TXN_CORRUPT",
-						message: `corrupt record transaction in ${runDir}`,
-						remediation:
-							"Inspect leftover .txn.journal.json / .txn.commit / .old / .new; restore from git. Doctor --fix will not delete them.",
-						fixable: false,
-						detail: { runId, runDir },
-					});
+					if (lock === "absent" && !runDirHasTxnArtifacts(runDir)) continue;
+					try {
+						recoverAbandonedRunDir(runDir);
+					} catch (err) {
+						if (
+							err instanceof RecordStoreError &&
+							err.code === "RECORD_TXN_LOCKED"
+						) {
+							continue;
+						}
+						findings.push({
+							check: RECORDS_CHECK_ID,
+							status: "fail",
+							code: "RECORD_TXN_CORRUPT",
+							message: `corrupt record transaction in ${runDir}`,
+							remediation:
+								"Inspect leftover .txn.journal.json / .txn.commit / .old / .new; restore from git. Doctor --fix will not delete them.",
+							fixable: false,
+							detail: { runId, runDir },
+						});
+					}
 				}
 
 				try {
@@ -276,6 +287,28 @@ export function createRecordsCheck(): DoctorCheck {
 				});
 				const tipCache: { tips?: string[] } = {};
 				const recordRunIds = new Set<string>();
+				const divergedSlugs = new Set(snapshot.diverged.map((d) => d.planSlug));
+
+				for (const d of snapshot.diverged) {
+					const labels =
+						d.sources.length > 0
+							? d.sources.map((s) => s.label).join(", ")
+							: "diverged";
+					findings.push({
+						check: RECORDS_CHECK_ID,
+						status: "fail",
+						code: RECORD_PROGRESS_DIVERGED,
+						message: `plan ${d.planSlug} has diverged record refs (${labels}); refusing to index until they converge`,
+						remediation:
+							"Merge or reset the surviving 5x/<slug> refs so a single history remains, then re-run 5x records index.",
+						fixable: false,
+						detail: {
+							planSlug: d.planSlug,
+							planPath: d.planPath,
+							sources: d.sources,
+						},
+					});
+				}
 
 				for (const rec of snapshot.runs) {
 					recordRunIds.add(rec.summary.id);
@@ -352,6 +385,13 @@ export function createRecordsCheck(): DoctorCheck {
 					id: string;
 				}>) {
 					if (recordRunIds.has(row.id)) continue;
+					const sqliteRun = getRunV1(db, row.id);
+					if (
+						sqliteRun &&
+						divergedSlugs.has(planSlugFromPath(sqliteRun.plan_path))
+					) {
+						continue;
+					}
 					for (const step of getSteps(db, row.id)) {
 						findings.push(extraRowFinding(step));
 					}

@@ -942,6 +942,15 @@ class WorkingTreeRecordStore implements RecordStore {
 		}
 	}
 
+	/**
+	 * Acquire/steal `.txn.lock`, run journal recovery, and release.
+	 * Doctor uses this for absent/stale locks; live and malformed
+	 * publication-window locks must be skipped by the caller.
+	 */
+	recoverAbandoned(runDir: string): void {
+		this.withLock(runDir, () => undefined);
+	}
+
 	private findRunDir(runId: string): string | null {
 		if (!existsSync(this.recordsRoot)) return null;
 		let slugs: string[];
@@ -1297,4 +1306,21 @@ export function createWorkingTreeRecordStore(
 	opts: WorkingTreeRecordStoreOptions,
 ): RecordStore {
 	return new WorkingTreeRecordStore(opts);
+}
+
+/**
+ * Lock-held recovery for an abandoned per-run transaction. Acquires or
+ * steals `.txn.lock`, runs the same recovery as store open/read/append,
+ * and releases in `finally`. `RECORD_TXN_CORRUPT` leaves artifacts in
+ * place. Callers must not invoke this for live or malformed locks.
+ */
+export function recoverAbandonedRunDir(
+	runDir: string,
+	opts: Omit<WorkingTreeRecordStoreOptions, "recordsRoot"> = {},
+): void {
+	const store = new WorkingTreeRecordStore({
+		recordsRoot: resolve(runDir),
+		...opts,
+	});
+	store.recoverAbandoned(runDir);
 }

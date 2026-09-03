@@ -35,10 +35,24 @@ import { isPathUnder, planSlugFromPath, relativePathUnder } from "../paths.js";
 import { resolveRecordsRoot } from "./paths.js";
 import {
 	type ProgressSession,
+	type ProgressSource,
 	prepareProgressSession,
 	type ResolvedPlanProgress,
 	resolvePlanProgress,
 } from "./resolve.js";
+
+export const RECORD_PROGRESS_DIVERGED = "RECORD_PROGRESS_DIVERGED";
+
+export class RecordsIndexError extends Error {
+	readonly code: string;
+	readonly detail: unknown;
+	constructor(code: string, message: string, detail?: unknown) {
+		super(message);
+		this.name = "RecordsIndexError";
+		this.code = code;
+		this.detail = detail;
+	}
+}
 
 export interface IndexRebuildResult {
 	runs_upserted: number;
@@ -55,9 +69,17 @@ export interface RecordIndexRun {
 	commit: string | null;
 }
 
+export interface DivergedIndexPlan {
+	planSlug: string;
+	planPath: string;
+	sources: ProgressSource[];
+}
+
 export interface RecordIndexSnapshot {
 	plans: string[];
 	runs: RecordIndexRun[];
+	/** Plans whose progress source is diverged; never projected from a selected side. */
+	diverged: DivergedIndexPlan[];
 }
 
 export interface IndexRebuildGit {
@@ -403,7 +425,9 @@ export async function collectRecordIndexSnapshot(opts: {
 
 	const runs: RecordIndexRun[] = [];
 	const plans: string[] = [];
+	const diverged: DivergedIndexPlan[] = [];
 	const seenSlug = new Set<string>();
+	const seenDiverged = new Set<string>();
 
 	for (const entry of entries) {
 		if (!seenSlug.has(entry.slug)) {
@@ -419,6 +443,17 @@ export async function collectRecordIndexSnapshot(opts: {
 			plansBranch: opts.config.plans.branch ?? null,
 			session,
 		});
+		if (resolved.source.kind === "diverged") {
+			if (!seenDiverged.has(entry.slug)) {
+				seenDiverged.add(entry.slug);
+				diverged.push({
+					planSlug: entry.slug,
+					planPath: entry.rel,
+					sources: resolved.diverged_sources ?? [],
+				});
+			}
+			continue;
+		}
 		const commit = resolved.commit;
 		if (!commit) continue;
 		const loaded = await loadRunsAtCommit({
@@ -433,7 +468,7 @@ export async function collectRecordIndexSnapshot(opts: {
 	}
 
 	plans.sort();
-	return { plans, runs };
+	return { plans, runs, diverged };
 }
 
 export async function rebuildRecordsIndex(opts: {
@@ -456,6 +491,23 @@ export async function rebuildRecordsIndex(opts: {
 		git: opts.git,
 		session: opts.session,
 	});
+
+	if (snapshot.diverged.length > 0) {
+		const labels = snapshot.diverged
+			.map((d) => {
+				const src =
+					d.sources.length > 0
+						? d.sources.map((s) => s.label).join(", ")
+						: "diverged";
+				return `${d.planSlug} (${src})`;
+			})
+			.join("; ");
+		throw new RecordsIndexError(
+			RECORD_PROGRESS_DIVERGED,
+			`refusing to index diverged record history until refs converge: ${labels}`,
+			{ plans: snapshot.diverged },
+		);
+	}
 
 	let runs_upserted = 0;
 	let steps_upserted = 0;

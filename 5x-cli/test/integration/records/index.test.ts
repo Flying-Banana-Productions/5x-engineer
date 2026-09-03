@@ -276,4 +276,114 @@ describe("5x records index (integration)", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	test(
+		"diverged record histories refuse indexing either side",
+		() => {
+			const dir = makeTmpDir("5x-idx-diverged");
+			try {
+				initRepo(dir);
+				mkdirSync(join(dir, "docs", "development"), { recursive: true });
+				writeFileSync(
+					join(dir, "docs", "development", "alpha.md"),
+					"# Alpha\n\n## Phase 1: P1\n\n- [ ] task\n",
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "plan"], dir);
+				git(["checkout", "-b", "5x/alpha"], dir);
+				seedCommittedRecords(dir);
+				git(["checkout", "-B", "right-tmp", "HEAD~1"], dir);
+				mkdirSync(join(dir, "docs", "development", "runs", "alpha", "run_b"), {
+					recursive: true,
+				});
+				writeFileSync(
+					join(dir, "docs", "development", "alpha.md"),
+					"# Alpha\n\n## Phase 1: P1\n\n- [x] task\n",
+				);
+				writeFileSync(
+					join(
+						dir,
+						"docs",
+						"development",
+						"runs",
+						"alpha",
+						"run_b",
+						"run.json",
+					),
+					`${JSON.stringify(
+						{
+							id: "run_b",
+							plan_path: "docs/development/alpha.md",
+							config_json: null,
+							created_at: "2026-09-01 12:00:00",
+							sealed_at: null,
+							status: "active",
+							final_head_commit: null,
+							cli_version: "1.3.0",
+							format_version: 1,
+							creator: {
+								installation_id: "11111111-1111-4111-8111-111111111111",
+							},
+						},
+						null,
+						2,
+					)}\n`,
+				);
+				writeFileSync(
+					join(
+						dir,
+						"docs",
+						"development",
+						"runs",
+						"alpha",
+						"run_b",
+						"steps.jsonl",
+					),
+					`${JSON.stringify({
+						schema_version: 1,
+						stream: "steps",
+						idempotency_key: "step:run_b:right:only:1:1",
+						created_at: "2026-09-01 12:00:00",
+						provenance: "recorded",
+						origin: {
+							recorder: {
+								installation_id: "11111111-1111-4111-8111-111111111111",
+							},
+							performer: { kind: "system", role: "cli" },
+						},
+						payload: {
+							step_name: "right:only",
+							phase: "1",
+							iteration: 1,
+							result_json: { ok: true },
+						},
+					})}\n`,
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "right records"], dir);
+				const rightSha = git(["rev-parse", "HEAD"], dir);
+				git(["update-ref", "refs/remotes/origin/5x/alpha", rightSha], dir);
+				git(["checkout", "5x/alpha"], dir);
+
+				const result = run5x(dir, ["records", "index"]);
+				expect(result.exitCode).not.toBe(0);
+				const envelope = JSON.parse(result.stdout) as {
+					ok: boolean;
+					error?: { code?: string };
+				};
+				expect(envelope.ok).toBe(false);
+				expect(envelope.error?.code).toBe("RECORD_PROGRESS_DIVERGED");
+
+				const db = new Database(join(dir, ".5x", "5x.db"), {
+					readonly: true,
+				});
+				expect(getRunV1(db, "run_a")).toBeNull();
+				expect(getRunV1(db, "run_b")).toBeNull();
+				db.close();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
 });

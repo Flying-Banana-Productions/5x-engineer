@@ -37,7 +37,12 @@ import {
 	recordStep,
 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
-import { rebuildRecordsIndex } from "../../../src/records/index-rebuild.js";
+import {
+	collectRecordIndexSnapshot,
+	RECORD_PROGRESS_DIVERGED,
+	RecordsIndexError,
+	rebuildRecordsIndex,
+} from "../../../src/records/index-rebuild.js";
 import { resolvePlanProgress } from "../../../src/records/resolve.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
@@ -166,6 +171,26 @@ function writeRecords(
 function commitAll(dir: string, message: string): void {
 	git(["add", "-A"], dir);
 	git(["commit", "-m", message], dir);
+}
+
+function plantDivergedRecordHistories(dir: string): void {
+	mkdirSync(join(dir, "docs", "development"), { recursive: true });
+	writeFileSync(
+		join(dir, "docs", "development", "alpha.md"),
+		"# Alpha\n\n## Phase 1: P1\n\n- [ ] task\n",
+	);
+	commitAll(dir, "plan");
+	git(["checkout", "-b", "5x/alpha"], dir);
+	writeRecords(dir, v1Summary("run_left"), [stepLine("run_left", "left:only")]);
+	commitAll(dir, "left records");
+	git(["checkout", "-B", "right-tmp", "HEAD~1"], dir);
+	writeRecords(dir, v1Summary("run_right"), [
+		stepLine("run_right", "right:only"),
+	]);
+	commitAll(dir, "right records");
+	const rightSha = git(["rev-parse", "HEAD"], dir);
+	git(["update-ref", "refs/remotes/origin/5x/alpha", rightSha], dir);
+	git(["checkout", "5x/alpha"], dir);
 }
 
 function openOwnedDb(dir: string): Database {
@@ -389,6 +414,50 @@ describe("rebuildRecordsIndex", () => {
 				expect(result.plans).toEqual(["alpha"]);
 				expect(getRunV1(db, "run_alpha")).not.toBeNull();
 				expect(getRunV1(db, "run_beta")).toBeNull();
+			} finally {
+				closeOwned(db);
+			}
+		});
+	});
+
+	test("diverged record dirs refuse indexing and do not materialize either side", async () => {
+		await withTmp(async (dir) => {
+			initRepo(dir);
+			plantDivergedRecordHistories(dir);
+			const db = openOwnedDb(dir);
+			try {
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				const snapshot = await collectRecordIndexSnapshot({
+					db,
+					workdir: dir,
+					config,
+					resolve: resolvePlanProgress,
+				});
+				expect(snapshot.diverged.map((d) => d.planSlug)).toEqual(["alpha"]);
+				expect(snapshot.runs).toEqual([]);
+				const labels = snapshot.diverged[0]?.sources.map((s) => s.label).sort();
+				expect(labels).toContain("5x/alpha");
+				expect(labels).toContain("origin/5x/alpha");
+
+				let caught: unknown;
+				try {
+					await rebuildRecordsIndex({
+						db,
+						workdir: dir,
+						config,
+						resolve: resolvePlanProgress,
+					});
+				} catch (err) {
+					caught = err;
+				}
+				expect(caught).toBeInstanceOf(RecordsIndexError);
+				expect((caught as RecordsIndexError).code).toBe(
+					RECORD_PROGRESS_DIVERGED,
+				);
+				expect(getRunV1(db, "run_left")).toBeNull();
+				expect(getRunV1(db, "run_right")).toBeNull();
+				expect(getSteps(db, "run_left")).toEqual([]);
+				expect(getSteps(db, "run_right")).toEqual([]);
 			} finally {
 				closeOwned(db);
 			}

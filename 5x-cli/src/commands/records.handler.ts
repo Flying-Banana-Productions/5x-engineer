@@ -6,9 +6,10 @@
  */
 
 import { resolve } from "node:path";
-import { outputSuccess } from "../output.js";
+import { outputError, outputSuccess } from "../output.js";
 import {
 	type IndexRebuildResult,
+	RecordsIndexError,
 	rebuildRecordsIndex,
 } from "../records/index-rebuild.js";
 import { resolvePlanProgress } from "../records/resolve.js";
@@ -33,12 +34,19 @@ export async function recordsIndex(
 	const { db, config, projectRoot } = await resolveDbContext({
 		startDir: resolve(params.startDir ?? "."),
 	});
-	const result = await rebuildRecordsIndex({
-		db,
-		workdir: projectRoot,
-		config,
-		planSlug: params.plan,
-		resolve: resolvePlanProgress,
-	});
-	outputSuccess(result, formatRecordsIndexText);
+	try {
+		const result = await rebuildRecordsIndex({
+			db,
+			workdir: projectRoot,
+			config,
+			planSlug: params.plan,
+			resolve: resolvePlanProgress,
+		});
+		outputSuccess(result, formatRecordsIndexText);
+	} catch (err) {
+		if (err instanceof RecordsIndexError) {
+			outputError(err.code, err.message, err.detail);
+		}
+		throw err;
+	}
 }

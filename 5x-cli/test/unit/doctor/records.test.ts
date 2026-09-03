@@ -13,12 +13,18 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
+	unlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+	createWorkingTreeRecordStore,
+	resetWorkingTreeLockOwnersForTest,
+} from "../../../src/control-plane/record-fs.js";
 import {
 	encodeJsonlFile,
 	encodeRunJson,
@@ -29,6 +35,7 @@ import {
 	type RecordOrigin,
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
+	recordedEnvelope,
 	stepIdempotencyKey,
 } from "../../../src/control-plane/record-types.js";
 import { runMigrations } from "../../../src/db/schema.js";
@@ -57,6 +64,7 @@ async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
 		seedDb(dir);
 		await fn(dir);
 	} finally {
+		resetWorkingTreeLockOwnersForTest();
 		try {
 			rmSync(dir, { recursive: true, force: true });
 		} catch {
@@ -205,6 +213,94 @@ function writeCommittedRecords(
 	git(["add", "-A"], dir);
 	git(["commit", "-m", "records"], dir);
 	return runDir;
+}
+
+const RECORDS_ROOT_SEGMENTS = ["docs", "development", "runs"] as const;
+
+function recordsRoot(dir: string): string {
+	return join(dir, ...RECORDS_ROOT_SEGMENTS);
+}
+
+function crashAppend(
+	dir: string,
+	runId: string,
+	event: "after-dirsync:prepared" | "after-dirsync:commit",
+): { stepKey: string } {
+	const stepKey = stepIdempotencyKey({
+		runId,
+		stepName: "reviewer:plan",
+		phase: "plan",
+		iteration: 1,
+	});
+	const store = createWorkingTreeRecordStore({
+		recordsRoot: recordsRoot(dir),
+		now: () => "2026-09-03 12:00:00",
+		fsyncFile: () => {},
+		fsyncDir: () => {},
+		onWarn: () => {},
+		onTxnEvent: (e) => {
+			if (e === event) throw new Error(`crash:${event}`);
+		},
+	});
+	expect(() =>
+		store.atomicAppend([
+			{
+				runId,
+				stream: "steps",
+				idempotencyKey: stepKey,
+				payload: {
+					step_name: "reviewer:plan",
+					phase: "plan",
+					iteration: 1,
+					result_json: { ok: true },
+				},
+				...recordedEnvelope(ORIGIN),
+			},
+			{
+				runId,
+				stream: "budget",
+				idempotencyKey: "budget:snapshot:reviewer:plan:1",
+				payload: { remaining: 3 },
+				...recordedEnvelope(ORIGIN),
+			},
+		]),
+	).toThrow(`crash:${event}`);
+	return { stepKey };
+}
+
+function plantStaleLock(runDir: string): void {
+	resetWorkingTreeLockOwnersForTest();
+	const lock = join(runDir, ".txn.lock");
+	let owner = "dead-owner";
+	let startedAt = new Date().toISOString();
+	if (existsSync(lock)) {
+		try {
+			const parsed = JSON.parse(readFileSync(lock, "utf8")) as {
+				owner?: unknown;
+				started_at?: unknown;
+			};
+			if (typeof parsed.owner === "string" && parsed.owner)
+				owner = parsed.owner;
+			if (typeof parsed.started_at === "string") startedAt = parsed.started_at;
+		} catch {
+			/* replace with a well-formed stale lock */
+		}
+	}
+	writeFileSync(
+		lock,
+		`${JSON.stringify({
+			version: 1,
+			pid: DEAD_PID,
+			owner,
+			started_at: startedAt,
+		})}\n`,
+	);
+}
+
+function dropLock(runDir: string): void {
+	resetWorkingTreeLockOwnersForTest();
+	const lock = join(runDir, ".txn.lock");
+	if (existsSync(lock)) unlinkSync(lock);
 }
 
 describe("doctor records check", () => {
@@ -419,6 +515,101 @@ describe("doctor records check", () => {
 			const findings = await createRecordsCheck().run(doctorCtx(dir));
 			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
 			expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
+		});
+	});
+
+	test("valid prepared txn with stale lock is rolled back before drift", async () => {
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			const { stepKey } = crashAppend(
+				dir,
+				"run_alpha",
+				"after-dirsync:prepared",
+			);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
+			plantStaleLock(runDir);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(false);
+			expect(existsSync(join(runDir, ".txn.commit"))).toBe(false);
+			expect(existsSync(join(runDir, ".txn.lock"))).toBe(false);
+			const stepsText = readFileSync(join(runDir, "steps.jsonl"), "utf8");
+			expect(stepsText).not.toContain(stepKey);
+			expect(stepsText).toContain("author:impl");
+		});
+	});
+
+	test("valid committed txn with absent lock is rolled forward before drift", async () => {
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			const { stepKey } = crashAppend(dir, "run_alpha", "after-dirsync:commit");
+			expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+			dropLock(runDir);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(false);
+			expect(existsSync(join(runDir, ".txn.commit"))).toBe(false);
+			const stepsText = readFileSync(join(runDir, "steps.jsonl"), "utf8");
+			expect(stepsText).toContain(stepKey);
+			expect(existsSync(join(runDir, "budget.jsonl"))).toBe(true);
+		});
+	});
+
+	test("stale lock on a prepared txn is stolen then recovered", async () => {
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			crashAppend(dir, "run_alpha", "after-dirsync:prepared");
+			plantStaleLock(runDir);
+			expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
+			expect(existsSync(join(runDir, ".txn.lock"))).toBe(false);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(false);
+		});
+	});
+
+	test("diverged record refs are reported and neither side is indexed", async () => {
+		await withRepo(async (dir) => {
+			mkdirSync(join(dir, "docs", "development"), { recursive: true });
+			writeFileSync(
+				join(dir, "docs", "development", "alpha.md"),
+				"# Alpha\n\n## Phase 1: P1\n\n- [ ] task\n",
+			);
+			git(["add", "-A"], dir);
+			git(["commit", "-m", "plan"], dir);
+			git(["checkout", "-b", "5x/alpha"], dir);
+			writeCommittedRecords(dir, v1Summary("run_left"), [
+				stepLine("run_left", "left:only"),
+			]);
+			git(["checkout", "-B", "right-tmp", "HEAD~1"], dir);
+			writeCommittedRecords(dir, v1Summary("run_right"), [
+				stepLine("run_right", "right:only"),
+			]);
+			const rightSha = git(["rev-parse", "HEAD"], dir);
+			git(["update-ref", "refs/remotes/origin/5x/alpha", rightSha], dir);
+			git(["checkout", "5x/alpha"], dir);
+
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_PROGRESS_DIVERGED")).toBe(
+				true,
+			);
+			expect(findings.some((f) => f.code === "RECORD_INDEX_MISSING_RUN")).toBe(
+				false,
+			);
+			expect(findings.some((f) => f.code === "RECORD_INDEX_MISSING_ROW")).toBe(
+				false,
+			);
+			const diverged = findings.find(
+				(f) => f.code === "RECORD_PROGRESS_DIVERGED",
+			);
+			expect(diverged?.fixable).toBe(false);
+			expect(diverged?.status).toBe("fail");
 		});
 	});
 });
