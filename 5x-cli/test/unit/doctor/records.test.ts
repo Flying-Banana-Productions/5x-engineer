@@ -1,11 +1,18 @@
 /**
  * Unit tests for the doctor records check.
+ *
+ * Each case owns a unique temp git checkout and SQLite file. Tests never
+ * touch the process-wide `getDb` singleton or a shared temp-dir list, so
+ * `--concurrent` cannot close another test's connection or delete its
+ * `.txn.*` artifacts / git objects.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -24,12 +31,8 @@ import {
 	type RunRecordSummary,
 	stepIdempotencyKey,
 } from "../../../src/control-plane/record-types.js";
-import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/schema.js";
-import {
-	createRecordsCheck,
-	recordsCheck,
-} from "../../../src/doctor/checks/records.js";
+import { createRecordsCheck } from "../../../src/doctor/checks/records.js";
 import { LINGERING_RUN_AGE_MS } from "../../../src/doctor/checks/runs.js";
 import { findingKey } from "../../../src/doctor/registry.js";
 import type {
@@ -40,7 +43,6 @@ import type {
 } from "../../../src/doctor/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
-const dirs: string[] = [];
 const INSTALLATION_ID = "11111111-1111-4111-8111-111111111111";
 const ORIGIN: RecordOrigin = {
 	recorder: { installation_id: INSTALLATION_ID },
@@ -48,27 +50,20 @@ const ORIGIN: RecordOrigin = {
 };
 const DEAD_PID = 1_000_000_007;
 
-function makeTmp(): string {
-	const dir = join(
-		tmpdir(),
-		`5x-doctor-records-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-	);
-	mkdirSync(dir, { recursive: true });
-	dirs.push(dir);
-	return dir;
-}
-
-afterEach(() => {
-	closeDb();
-	_resetForTest();
-	for (const dir of dirs.splice(0)) {
+async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
+	const dir = mkdtempSync(join(tmpdir(), "5x-doctor-records-"));
+	try {
+		initRepo(dir);
+		seedDb(dir);
+		await fn(dir);
+	} finally {
 		try {
 			rmSync(dir, { recursive: true, force: true });
 		} catch {
 			/* ignore */
 		}
 	}
-});
+}
 
 function git(args: string[], cwd: string): string {
 	const result = Bun.spawnSync(["git", ...args], {
@@ -118,10 +113,27 @@ async function applyFix(
 }
 
 function seedDb(dir: string): void {
-	const db = getDb(dir);
-	runMigrations(db);
-	closeDb();
-	_resetForTest();
+	mkdirSync(join(dir, ".5x"), { recursive: true });
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	try {
+		db.exec("PRAGMA foreign_keys=ON");
+		db.exec("PRAGMA busy_timeout=5000");
+		runMigrations(db);
+	} finally {
+		db.close();
+	}
+}
+
+function insertSqliteStep(dir: string, runId: string, stepName: string): void {
+	const db = new Database(join(dir, ".5x", "5x.db"));
+	try {
+		db.query(
+			`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)
+			 VALUES (?1, ?2, ?3, ?4, ?5)`,
+		).run(runId, stepName, "1", 1, "{}");
+	} finally {
+		db.close();
+	}
 }
 
 function v1Summary(id: string): RunRecordSummary {
@@ -197,229 +209,216 @@ function writeCommittedRecords(
 
 describe("doctor records check", () => {
 	test("healthy project reports RECORD_INDEX_OK", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const findings = await recordsCheck.run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_INDEX_OK")).toBe(true);
-		expect(findings.every((f) => f.status !== "fail")).toBe(true);
+		await withRepo(async (dir) => {
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_INDEX_OK")).toBe(true);
+			expect(findings.every((f) => f.status !== "fail")).toBe(true);
+		});
 	});
 
 	test("missing run and missing row are fixable; --fix re-indexes once", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		const check = createRecordsCheck();
-		const detected = await check.run(doctorCtx(dir));
-		expect(detected.some((f) => f.code === "RECORD_INDEX_MISSING_RUN")).toBe(
-			true,
-		);
-		expect(detected.some((f) => f.code === "RECORD_INDEX_MISSING_ROW")).toBe(
-			true,
-		);
-		const missingRun = detected.find(
-			(f) => f.code === "RECORD_INDEX_MISSING_RUN",
-		);
-		expect(missingRun).toBeDefined();
-		if (!missingRun) throw new Error("expected MISSING_RUN");
-		expect(findingKey(missingRun)).toContain("run_alpha");
-		const missingRow = detected.find(
-			(f) => f.code === "RECORD_INDEX_MISSING_ROW",
-		);
-		expect(missingRow).toBeDefined();
-		if (!missingRow) throw new Error("expected MISSING_ROW");
-		expect(findingKey(missingRow)).toContain("step:");
+		await withRepo(async (dir) => {
+			writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			const check = createRecordsCheck();
+			const detected = await check.run(doctorCtx(dir));
+			expect(detected.some((f) => f.code === "RECORD_INDEX_MISSING_RUN")).toBe(
+				true,
+			);
+			expect(detected.some((f) => f.code === "RECORD_INDEX_MISSING_ROW")).toBe(
+				true,
+			);
+			const missingRun = detected.find(
+				(f) => f.code === "RECORD_INDEX_MISSING_RUN",
+			);
+			expect(missingRun).toBeDefined();
+			if (!missingRun) throw new Error("expected MISSING_RUN");
+			expect(findingKey(missingRun)).toContain("run_alpha");
+			const missingRow = detected.find(
+				(f) => f.code === "RECORD_INDEX_MISSING_ROW",
+			);
+			expect(missingRow).toBeDefined();
+			if (!missingRow) throw new Error("expected MISSING_ROW");
+			expect(findingKey(missingRow)).toContain("step:");
 
-		const fixRun = await applyFix(check, missingRun, doctorCtx(dir));
-		expect(fixRun.attempted).toBe(true);
-		const fixRow = await applyFix(check, missingRow, doctorCtx(dir));
-		expect(fixRow.attempted).toBe(false);
+			const fixRun = await applyFix(check, missingRun, doctorCtx(dir));
+			expect(fixRun.attempted).toBe(true);
+			const fixRow = await applyFix(check, missingRow, doctorCtx(dir));
+			expect(fixRow.attempted).toBe(false);
 
-		const again = await check.run(doctorCtx(dir));
-		expect(again.some((f) => f.code === "RECORD_INDEX_MISSING_RUN")).toBe(
-			false,
-		);
-		expect(again.some((f) => f.code === "RECORD_INDEX_MISSING_ROW")).toBe(
-			false,
-		);
+			const again = await check.run(doctorCtx(dir));
+			expect(again.some((f) => f.code === "RECORD_INDEX_MISSING_RUN")).toBe(
+				false,
+			);
+			expect(again.some((f) => f.code === "RECORD_INDEX_MISSING_ROW")).toBe(
+				false,
+			);
+		});
 	});
 
 	test("extra sqlite step is RECORD_INDEX_EXTRA_ROW (not fixable)", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		const check = createRecordsCheck();
-		await applyFix(
-			check,
-			{
-				check: "records",
-				status: "fail",
-				code: "RECORD_INDEX_MISSING_RUN",
-				message: "index",
-				fixable: true,
-				detail: { runId: "run_alpha", planSlug: "alpha" },
-			},
-			doctorCtx(dir),
-		);
-		const db = getDb(dir);
-		db.query(
-			`INSERT INTO steps (run_id, step_name, phase, iteration, result_json)
-			 VALUES (?1, ?2, ?3, ?4, ?5)`,
-		).run("run_alpha", "local:only", "1", 1, "{}");
-		closeDb();
-		_resetForTest();
+		await withRepo(async (dir) => {
+			writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			const check = createRecordsCheck();
+			await applyFix(
+				check,
+				{
+					check: "records",
+					status: "fail",
+					code: "RECORD_INDEX_MISSING_RUN",
+					message: "index",
+					fixable: true,
+					detail: { runId: "run_alpha", planSlug: "alpha" },
+				},
+				doctorCtx(dir),
+			);
+			insertSqliteStep(dir, "run_alpha", "local:only");
 
-		const findings = await createRecordsCheck().run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_INDEX_EXTRA_ROW")).toBe(
-			true,
-		);
-		expect(
-			findings.find((f) => f.code === "RECORD_INDEX_EXTRA_ROW")?.fixable,
-		).toBe(false);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_INDEX_EXTRA_ROW")).toBe(
+				true,
+			);
+			expect(
+				findings.find((f) => f.code === "RECORD_INDEX_EXTRA_ROW")?.fixable,
+			).toBe(false);
+		});
 	});
 
 	test("unreachable head_commit is a warn", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine(
-				"run_alpha",
-				"author:impl",
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			),
-		]);
-		const findings = await createRecordsCheck().run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_HEAD_UNREACHABLE")).toBe(
-			true,
-		);
-		expect(
-			findings.find((f) => f.code === "RECORD_HEAD_UNREACHABLE")?.status,
-		).toBe("warn");
+		await withRepo(async (dir) => {
+			writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine(
+					"run_alpha",
+					"author:impl",
+					"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				),
+			]);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_HEAD_UNREACHABLE")).toBe(
+				true,
+			);
+			expect(
+				findings.find((f) => f.code === "RECORD_HEAD_UNREACHABLE")?.status,
+			).toBe("warn");
+		});
 	});
 
 	test("stale uncommitted record files warn RECORD_UNCOMMITTED_STALE", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const stalePath = join(
-			dir,
-			"docs",
-			"development",
-			"runs",
-			"alpha",
-			"run_stale",
-			"run.json",
-		);
-		mkdirSync(resolve(stalePath, ".."), { recursive: true });
-		writeFileSync(stalePath, "{}\n");
-		const past = (Date.now() - LINGERING_RUN_AGE_MS - 60_000) / 1000;
-		utimesSync(stalePath, past, past);
+		await withRepo(async (dir) => {
+			const stalePath = join(
+				dir,
+				"docs",
+				"development",
+				"runs",
+				"alpha",
+				"run_stale",
+				"run.json",
+			);
+			mkdirSync(resolve(stalePath, ".."), { recursive: true });
+			writeFileSync(stalePath, "{}\n");
+			const past = (Date.now() - LINGERING_RUN_AGE_MS - 60_000) / 1000;
+			utimesSync(stalePath, past, past);
 
-		const findings = await createRecordsCheck().run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_UNCOMMITTED_STALE")).toBe(
-			true,
-		);
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_UNCOMMITTED_STALE")).toBe(
+				true,
+			);
+		});
 	});
 
 	test("torn .txn.commit reports RECORD_TXN_CORRUPT; --fix does not delete it", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		writeFileSync(join(runDir, ".txn.journal.json"), "{not-json");
-		writeFileSync(join(runDir, ".txn.commit"), "{");
-		const check = createRecordsCheck();
-		const findings = await check.run(doctorCtx(dir));
-		const corrupt = findings.find((f) => f.code === "RECORD_TXN_CORRUPT");
-		expect(corrupt).toBeDefined();
-		expect(corrupt?.fixable).toBe(false);
-		expect(corrupt?.status).toBe("fail");
-		const detail =
-			corrupt?.detail && typeof corrupt.detail === "object"
-				? (corrupt.detail as { runId?: string })
-				: {};
-		expect(detail.runId).toBe("run_alpha");
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			writeFileSync(join(runDir, ".txn.journal.json"), "{not-json");
+			writeFileSync(join(runDir, ".txn.commit"), "{");
+			const check = createRecordsCheck();
+			const findings = await check.run(doctorCtx(dir));
+			const corrupt = findings.find((f) => f.code === "RECORD_TXN_CORRUPT");
+			expect(corrupt).toBeDefined();
+			expect(corrupt?.fixable).toBe(false);
+			expect(corrupt?.status).toBe("fail");
+			const detail =
+				corrupt?.detail && typeof corrupt.detail === "object"
+					? (corrupt.detail as { runId?: string })
+					: {};
+			expect(detail.runId).toBe("run_alpha");
 
-		const result = await applyFix(check, corrupt, doctorCtx(dir));
-		expect(result.attempted).toBe(false);
-		expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
-		expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+			const result = await applyFix(check, corrupt, doctorCtx(dir));
+			expect(result.attempted).toBe(false);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
+			expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+		});
 	});
 
 	test("live .txn.lock is not reported as corrupt and staging is kept", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		const child = Bun.spawn(["sleep", "60"], {
-			stdout: "ignore",
-			stderr: "ignore",
-			stdin: "ignore",
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			const child = Bun.spawn(["sleep", "60"], {
+				stdout: "ignore",
+				stderr: "ignore",
+				stdin: "ignore",
+			});
+			try {
+				writeFileSync(
+					join(runDir, ".txn.lock"),
+					`${JSON.stringify({
+						version: 1,
+						pid: child.pid,
+						owner: "live-owner",
+						started_at: new Date().toISOString(),
+					})}\n`,
+				);
+				writeFileSync(join(runDir, ".txn.journal.json"), "{}\n");
+				writeFileSync(join(runDir, ".txn.steps.new"), "x");
+				const findings = await createRecordsCheck().run(doctorCtx(dir));
+				expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(
+					false,
+				);
+				expect(existsSync(join(runDir, ".txn.steps.new"))).toBe(true);
+				expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
+			} finally {
+				child.kill();
+				await child.exited;
+			}
 		});
-		try {
-			writeFileSync(
-				join(runDir, ".txn.lock"),
-				`${JSON.stringify({
-					version: 1,
-					pid: child.pid,
-					owner: "live-owner",
-					started_at: new Date().toISOString(),
-				})}\n`,
-			);
-			writeFileSync(join(runDir, ".txn.journal.json"), "{}\n");
-			writeFileSync(join(runDir, ".txn.steps.new"), "x");
-			const findings = await createRecordsCheck().run(doctorCtx(dir));
-			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
-			expect(existsSync(join(runDir, ".txn.steps.new"))).toBe(true);
-			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
-		} finally {
-			child.kill();
-			await child.exited;
-		}
 	});
 
 	test("empty .txn.lock plus journal is not immediately stolen or reported corrupt", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		writeFileSync(join(runDir, ".txn.lock"), "");
-		writeFileSync(join(runDir, ".txn.journal.json"), "{not-valid");
-		writeFileSync(join(runDir, ".txn.commit"), "{");
-		const findings = await createRecordsCheck().run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
-		expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
-		expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
-		expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			writeFileSync(join(runDir, ".txn.lock"), "");
+			writeFileSync(join(runDir, ".txn.journal.json"), "{not-valid");
+			writeFileSync(join(runDir, ".txn.commit"), "{");
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
+			expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
+			expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
+			expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+		});
 	});
 
 	test("unreadable .txn.lock is treated like malformed (not stolen)", async () => {
-		const dir = makeTmp();
-		initRepo(dir);
-		seedDb(dir);
-		const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
-			stepLine("run_alpha", "author:impl"),
-		]);
-		writeFileSync(
-			join(runDir, ".txn.lock"),
-			`${JSON.stringify({ version: 1, pid: DEAD_PID })}\n`,
-		);
-		writeFileSync(join(runDir, ".txn.journal.json"), "{");
-		const findings = await createRecordsCheck().run(doctorCtx(dir));
-		expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
-		expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
+		await withRepo(async (dir) => {
+			const runDir = writeCommittedRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			writeFileSync(
+				join(runDir, ".txn.lock"),
+				`${JSON.stringify({ version: 1, pid: DEAD_PID })}\n`,
+			);
+			writeFileSync(join(runDir, ".txn.journal.json"), "{");
+			const findings = await createRecordsCheck().run(doctorCtx(dir));
+			expect(findings.some((f) => f.code === "RECORD_TXN_CORRUPT")).toBe(false);
+			expect(existsSync(join(runDir, ".txn.lock"))).toBe(true);
+		});
 	});
 });

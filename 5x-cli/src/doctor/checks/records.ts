@@ -4,9 +4,12 @@
  *
  * Detect opens the existing DB read-only when present. `--fix` re-indexes
  * once per plan slug (never deletes extras, never rewrites JSONL, never
- * deletes `.txn.*` on `RECORD_TXN_CORRUPT`).
+ * deletes `.txn.*` on `RECORD_TXN_CORRUPT`). Fix opens a dedicated writable
+ * connection rather than the process-wide `getDb` singleton so concurrent
+ * callers (and unit tests) cannot close each other's databases.
  */
 
+import { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { type FiveXConfig, loadConfig } from "../../config.js";
@@ -15,7 +18,7 @@ import {
 	isRunTxnCorrupt,
 	runDirHasTxnArtifacts,
 } from "../../control-plane/record-fs.js";
-import { closeDb, getDb, openDbReadOnly } from "../../db/connection.js";
+import { openDbReadOnly } from "../../db/connection.js";
 import { getRunV1, getSteps, type StepRow } from "../../db/operations-v1.js";
 import {
 	isAncestor,
@@ -404,8 +407,8 @@ export function createRecordsCheck(): DoctorCheck {
 		if (!config) {
 			return { attempted: false, message: "cannot load config" };
 		}
+		const db = new Database(ctx.dbPath);
 		try {
-			const db = getDb(ctx.projectRoot, ctx.dbRelPath);
 			await rebuildRecordsIndex({
 				db,
 				workdir: ctx.projectRoot,
@@ -425,7 +428,11 @@ export function createRecordsCheck(): DoctorCheck {
 			const message = err instanceof Error ? err.message : String(err);
 			return { attempted: false, message };
 		} finally {
-			closeDb();
+			try {
+				db.close();
+			} catch {
+				// already closed
+			}
 		}
 	}
 
