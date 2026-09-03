@@ -1,5 +1,5 @@
 /**
- * Control-plane prompt store factories and types.
+ * Control-plane store factories and types (prompts, invocations, records).
  *
  * SQLite SQL stays in `sqlite-store.ts`. Do not re-export SQL helpers.
  */
@@ -55,6 +55,31 @@ export {
 	toInvocationStatusEnvelope,
 } from "./invocation-view.js";
 export { createMemoryPromptStore } from "./memory-store.js";
+export type { MemoryRecordStoreOptions } from "./record-memory.js";
+export { createMemoryRecordStore } from "./record-memory.js";
+export type { RecordStore } from "./record-store.js";
+export type {
+	AppendOp,
+	AppendResult,
+	DiffSummary,
+	RecordLine,
+	RecordOrigin,
+	RecordPerformer,
+	RecordPerformerKind,
+	RecordProvenance,
+	RecordRecorder,
+	RecordStream,
+	RunRecordSummary,
+	StepIdempotencyKey,
+	StepRecordPayload,
+} from "./record-types.js";
+export {
+	RECORD_LINE_SCHEMA_VERSION,
+	RecordStoreError,
+	RUN_RECORD_FORMAT_VERSION,
+	recordedEnvelope,
+	stepIdempotencyKey,
+} from "./record-types.js";
 export { createSqlitePromptStore } from "./sqlite-store.js";
 export type { PromptStore } from "./store.js";
 export type { TestRemoteAdapter } from "./test-remote-adapter.js";

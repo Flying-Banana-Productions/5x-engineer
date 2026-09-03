@@ -410,9 +410,9 @@ export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 }
 ```
 
-- [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
-- [ ] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface), and `origin` must come from `ctx.originFor` on `ReviewBudgetCommandContext` (1.5 / Phase 4) — `recordedEnvelope` does not construct or redact origin. Tests and 06 may construct `RecordOrigin` as a **fixture value** in Phase 1 contract tests; production writers never assemble origin by hand. Identity-file I/O is Phase 2.
-- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line), `UNSUPPORTED_FORMAT_VERSION` (`putRun` against an existing summary whose `format_version` is greater than `RUN_RECORD_FORMAT_VERSION`). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
+- [x] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
+- [x] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface), and `origin` must come from `ctx.originFor` on `ReviewBudgetCommandContext` (1.5 / Phase 4) — `recordedEnvelope` does not construct or redact origin. Tests and 06 may construct `RecordOrigin` as a **fixture value** in Phase 1 contract tests; production writers never assemble origin by hand. Identity-file I/O is Phase 2.
+- [x] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line), `UNSUPPORTED_FORMAT_VERSION` (`putRun` against an existing summary whose `format_version` is greater than `RUN_RECORD_FORMAT_VERSION`). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
 
 #### 1.2 Interface — `src/control-plane/record-store.ts` (new)
 
@@ -452,8 +452,8 @@ export interface RecordStore {
 7. Methods take `runId` + stream + key. **No path parameters.**
 8. Envelope validation on append: `provenance === "recorded"` requires non-null `origin`; `materializer` is forbidden on recorded lines (`INVALID_ORIGIN`). `provenance === "backfilled"` allows `origin === null` (this slice's exporter always passes `null`) and should include `materializer`. Do not reject a backfilled line that somehow has a known original origin — but do not invent one. Default `schemaVersion` to `RECORD_LINE_SCHEMA_VERSION` only when the caller omitted it; do not invent origin. The store does not read the identity file.
 
-- [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
-- [ ] Do not add `gitShow` / `commit` / `fetch` to this interface.
+- [x] File-level comment states the interface must not assume a working-tree path (`207` §3).
+- [x] Do not add `gitShow` / `commit` / `fetch` to this interface.
 
 #### 1.3 Memory implementation — `src/control-plane/record-memory.ts` (new)
 
@@ -471,8 +471,8 @@ export function createMemoryRecordStore(
 
 Internal structure: `Map<runId, { summary: RunRecordSummary; streams: Record<RecordStream, Map<string, RecordLine> & { order: string[] }> }>`. `atomicAppend` clones the affected run maps, applies ops, then swaps. A throw during apply leaves the original maps in place.
 
-- [ ] `listRuns({ planSlug })` filters by `planSlugFromPath(summary.plan_path)` (`paths.ts:171–175`).
-- [ ] Returned objects are cloned (mutating a `getLine` result must not change the store).
+- [x] `listRuns({ planSlug })` filters by `planSlugFromPath(summary.plan_path)` (`paths.ts:171–175`).
+- [x] Returned objects are cloned (mutating a `getLine` result must not change the store).
 
 #### 1.4 Shared contract tests — `test/unit/control-plane/record-store-contract.test.ts` (new)
 
@@ -484,23 +484,23 @@ export function runRecordStoreContract(setup: () => RecordStore): void;
 
 Required cases:
 
-- [ ] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set). Include a variant whose first `putRun` has `creator: null` and `materializer` set: seal copies `creator: null`, sets `sealer`, and does not copy `materializer` into `creator` or `sealer`.
-- [ ] `putRun` of a v1 summary succeeds; a subsequent `putRun` after planting `format_version: 2` (and, on the FS backend, an extra `future_field`) throws `UNSUPPORTED_FORMAT_VERSION`; `getRun` still returns `format_version === 2`; the on-disk file (FS) still contains `future_field`.
-- [ ] `listRuns` / `listRuns({ planSlug })`.
-- [ ] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json` **and** original `origin`.
-- [ ] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
-- [ ] Budget stream: append `{ idempotencyKey: "budget:baseline:run_1", payload: { b0: 4 }, ...recordedEnvelope(origin) }`; get/list; duplicate CAS; origin round-trips.
-- [ ] Decisions stream: same shape, opaque payload, origin round-trips.
-- [ ] `atomicAppend([step, budget])` both `created: true`; `getLine` both streams; both lines share the same `origin` fixture.
-- [ ] `atomicAppend([step, budget])` when step key already exists: step `created: false`, budget still appended (caller/06 decides whether to include budget; the store does not infer pairing).
-- [ ] `atomicAppend` throw: spy/hook the memory store **or** pass an op that the test double throws on after the first write in the in-memory apply; assert store unchanged. For memory, implement by wrapping `append` internals: if any op's `stream` is the sentinel `"__throw__"` as a test-only… **Do not** add a test stream. Instead: `atomicAppend` of two valid ops where the test subclasses/spies `put` of the second stream map and throws. Simplest: export a test-only `createMemoryRecordStore({ now, onBeforeCommit?: () => void })` that `onBeforeCommit` throws after mutating the clone but before swap — the swap is skipped, original intact.
-- [ ] `append` without `putRun` throws `RUN_NOT_FOUND`.
-- [ ] Missing `getLine` / `getRun` return `null`.
-- [ ] Recorded append with `origin: null` throws `INVALID_ORIGIN`; recorded append with `materializer` throws `INVALID_ORIGIN`.
-- [ ] Backfilled append with `origin: null` and `materializer` round-trips; `getLine` does not promote `materializer` into `origin`.
-- [ ] Fixture origin uses a random UUID and optional `actor`; it must not include `hostname`, `username`, or `session_id` keys (types forbid them; a widened object is stripped only at the writer in Phase 3/4 — Phase 1 fixtures are well-typed).
+- [x] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set). Include a variant whose first `putRun` has `creator: null` and `materializer` set: seal copies `creator: null`, sets `sealer`, and does not copy `materializer` into `creator` or `sealer`.
+- [x] `putRun` of a v1 summary succeeds; a subsequent `putRun` after planting `format_version: 2` (and, on the FS backend, an extra `future_field`) throws `UNSUPPORTED_FORMAT_VERSION`; `getRun` still returns `format_version === 2`; the on-disk file (FS) still contains `future_field`.
+- [x] `listRuns` / `listRuns({ planSlug })`.
+- [x] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json` **and** original `origin`.
+- [x] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
+- [x] Budget stream: append `{ idempotencyKey: "budget:baseline:run_1", payload: { b0: 4 }, ...recordedEnvelope(origin) }`; get/list; duplicate CAS; origin round-trips.
+- [x] Decisions stream: same shape, opaque payload, origin round-trips.
+- [x] `atomicAppend([step, budget])` both `created: true`; `getLine` both streams; both lines share the same `origin` fixture.
+- [x] `atomicAppend([step, budget])` when step key already exists: step `created: false`, budget still appended (caller/06 decides whether to include budget; the store does not infer pairing).
+- [x] `atomicAppend` throw: spy/hook the memory store **or** pass an op that the test double throws on after the first write in the in-memory apply; assert store unchanged. For memory, implement by wrapping `append` internals: if any op's `stream` is the sentinel `"__throw__"` as a test-only… **Do not** add a test stream. Instead: `atomicAppend` of two valid ops where the test subclasses/spies `put` of the second stream map and throws. Simplest: export a test-only `createMemoryRecordStore({ now, onBeforeCommit?: () => void })` that `onBeforeCommit` throws after mutating the clone but before swap — the swap is skipped, original intact.
+- [x] `append` without `putRun` throws `RUN_NOT_FOUND`.
+- [x] Missing `getLine` / `getRun` return `null`.
+- [x] Recorded append with `origin: null` throws `INVALID_ORIGIN`; recorded append with `materializer` throws `INVALID_ORIGIN`.
+- [x] Backfilled append with `origin: null` and `materializer` round-trips; `getLine` does not promote `materializer` into `origin`.
+- [x] Fixture origin uses a random UUID and optional `actor`; it must not include `hostname`, `username`, or `session_id` keys (types forbid them; a widened object is stripped only at the writer in Phase 3/4 — Phase 1 fixtures are well-typed).
 
-- [ ] Re-export `RecordStore`, types, `createMemoryRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, `RecordStoreError` from `src/control-plane/index.ts` and `src/index.ts`.
+- [x] Re-export `RecordStore`, types, `createMemoryRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, `RecordStoreError` from `src/control-plane/index.ts` and `src/index.ts`.
 
 #### 1.5 Binding slice-06 origin-writer contract (consumed by `208` §6.2)
 
@@ -556,9 +556,9 @@ The facade's `CaptureBaselineInput` includes required `origin: RecordOrigin` (al
 
 **Cross-slice tests** (this slice owns attribution assertions; 06 owns payload assertions). Unit: wrapper with injected `RecordCommandContext.originFor` spy — invoke-reviewer admit stamps identical origin on step and budget ops; baseline-only append calls `originFor` once with the caller performer; `records.redact = ["origin.actor"]` omits actor on both. Integration (`origin-attribution.test.ts`): invoke reviewer `--record` retains configured provider/role on **both** the step line and the budget snapshot; a baseline-only capture (template-render path or direct `ensurePlanReviewBaseline`) is `{ kind: "system", role: "cli" }` unless an agent invocation is the caller.
 
-- [ ] `208` §6.2 context factory, `PreparedRecordStep` consumption, `recordPlanReviewerStepWithSnapshot` step 4, and `CaptureBaselineInput.origin` match this subsection; **`208` Phases 4–5 wait only on this slice's Phase 1; `208` Phase 6+ waits on this slice's Phase 4** (coordinated plan edit in the same revision as 1.8).
-- [ ] Contract tests may use a fixture `originFor`; production 06 code under test must still go through the injected factory, not an inline `RecordOrigin`.
-- [ ] Phase 1 files and 06 Phase 4 facade tests import no `createRecordContext`.
+- [x] `208` §6.2 context factory, `PreparedRecordStep` consumption, `recordPlanReviewerStepWithSnapshot` step 4, and `CaptureBaselineInput.origin` match this subsection; **`208` Phases 4–5 wait only on this slice's Phase 1; `208` Phase 6+ waits on this slice's Phase 4** (coordinated plan edit in the same revision as 1.8).
+- [x] Contract tests may use a fixture `originFor`; production 06 code under test must still go through the injected factory, not an inline `RecordOrigin`.
+- [x] Phase 1 files and 06 Phase 4 facade tests import no `createRecordContext`.
 
 ---
 
