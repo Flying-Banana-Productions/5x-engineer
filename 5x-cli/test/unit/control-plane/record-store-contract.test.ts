@@ -494,6 +494,48 @@ export function runRecordStoreContract(setup: () => RecordStore): void {
 		expect(store.listLines("run_1", "steps")).toEqual([]);
 	});
 
+	test("atomicAppend of mixed runIds throws INVALID_ATOMIC_APPEND and mutates nothing", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_a"));
+		store.putRun(v1Summary("run_b"));
+		const keyA = stepIdempotencyKey({
+			runId: "run_a",
+			stepName: "x",
+			phase: null,
+			iteration: 1,
+		});
+		const keyB = stepIdempotencyKey({
+			runId: "run_b",
+			stepName: "y",
+			phase: null,
+			iteration: 1,
+		});
+		expectCode(
+			() =>
+				store.atomicAppend([
+					{
+						runId: "run_a",
+						stream: "steps",
+						idempotencyKey: keyA,
+						payload: stepPayload("x"),
+						...recordedEnvelope(FIXTURE_ORIGIN),
+					},
+					{
+						runId: "run_b",
+						stream: "steps",
+						idempotencyKey: keyB,
+						payload: stepPayload("y"),
+						...recordedEnvelope(FIXTURE_ORIGIN),
+					},
+				]),
+			"INVALID_ATOMIC_APPEND",
+		);
+		expect(store.getLine("run_a", "steps", keyA)).toBeNull();
+		expect(store.getLine("run_b", "steps", keyB)).toBeNull();
+		expect(store.listLines("run_a", "steps")).toEqual([]);
+		expect(store.listLines("run_b", "steps")).toEqual([]);
+	});
+
 	test("append without putRun throws RUN_NOT_FOUND", () => {
 		const store = setup();
 		expectCode(

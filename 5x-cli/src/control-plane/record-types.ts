@@ -143,6 +143,20 @@ export class RecordStoreError extends Error {
 	}
 }
 
+/**
+ * `atomicAppend` is a per-run transaction (mixed streams, one `runId`).
+ * Call before mutation so both backends reject the same way.
+ */
+export function requireSingleRunAtomicAppend(ops: AppendOp[]): void {
+	const runIds = [...new Set(ops.map((op) => op.runId))];
+	if (runIds.length > 1) {
+		throw new RecordStoreError(
+			"INVALID_ATOMIC_APPEND",
+			`atomicAppend is a per-run transaction; received ${runIds.length} runIds (${runIds.join(", ")})`,
+		);
+	}
+}
+
 /** The only step-key encoder. Lookup via `getLine("steps", key)`. */
 export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 	return `step:${k.runId}:${k.stepName}:${k.phase ?? ""}:${k.iteration}`;

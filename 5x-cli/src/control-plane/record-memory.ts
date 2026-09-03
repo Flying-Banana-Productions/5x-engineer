@@ -1,7 +1,8 @@
 /**
- * In-memory RecordStore. Clone-on-read; `atomicAppend` clones then swaps so a
- * throw during apply or `onBeforeCommit` leaves the original maps in place.
- * Memory has no disk journal or lock.
+ * In-memory RecordStore. Clone-on-read; `atomicAppend` is a per-run
+ * transaction (mixed `runId`s throw `INVALID_ATOMIC_APPEND` before clone/swap)
+ * and clones then swaps so a throw during apply or `onBeforeCommit` leaves
+ * the original maps in place. Memory has no disk journal or lock.
  */
 
 import { planSlugFromPath } from "../paths.js";
@@ -13,6 +14,7 @@ import {
 	type RecordLine,
 	RecordStoreError,
 	type RecordStream,
+	requireSingleRunAtomicAppend,
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
 } from "./record-types.js";
@@ -214,6 +216,7 @@ class MemoryRecordStore implements RecordStore {
 
 	atomicAppend(ops: AppendOp[]): AppendResult[] {
 		if (ops.length === 0) return [];
+		requireSingleRunAtomicAppend(ops);
 
 		const now = this.now();
 		const clones = new Map<string, RunState>();

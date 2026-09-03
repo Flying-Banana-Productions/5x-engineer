@@ -1,9 +1,10 @@
 /**
  * Working-tree JSONL RecordStore.
  *
- * Mixed-stream `atomicAppend` uses a per-run exclusive writer lock, an immutable
- * prepared journal, a separately durable checksummed commit marker, and
- * `fsyncDir` after every create/rename/unlink. Recovery is fail-closed on
+ * Mixed-stream `atomicAppend` is a per-run transaction (multi-run batches
+ * throw `INVALID_ATOMIC_APPEND`). It uses a per-run exclusive writer lock, an
+ * immutable prepared journal, a separately durable checksummed commit marker,
+ * and `fsyncDir` after every create/rename/unlink. Recovery is fail-closed on
  * corrupt txn metadata (`RECORD_TXN_CORRUPT`).
  */
 
@@ -42,6 +43,7 @@ import {
 	type RecordLine,
 	RecordStoreError,
 	type RecordStream,
+	requireSingleRunAtomicAppend,
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
 } from "./record-types.js";
@@ -566,6 +568,7 @@ class WorkingTreeRecordStore implements RecordStore {
 
 	atomicAppend(ops: AppendOp[]): AppendResult[] {
 		if (ops.length === 0) return [];
+		requireSingleRunAtomicAppend(ops);
 
 		const runIds = [...new Set(ops.map((op) => op.runId))];
 		const runDirs: { runId: string; runDir: string }[] = [];
@@ -1100,15 +1103,23 @@ class WorkingTreeRecordStore implements RecordStore {
 		return true;
 	}
 
+	private liveMatchesNewSha(
+		runDir: string,
+		journal: JournalDoc,
+		stream: RecordStream,
+	): boolean {
+		const live = readFileBuffer(streamPath(runDir, stream));
+		const expected = journal.new_sha256[stream];
+		return Boolean(live && expected && sha256(live) === expected);
+	}
+
 	private fullyAppliedWithoutCommit(
 		runDir: string,
 		journal: JournalDoc,
 	): boolean {
 		for (const stream of journal.streams) {
 			if (existsSync(stagingPath(runDir, stream, "new"))) return false;
-			const live = readFileBuffer(streamPath(runDir, stream));
-			const expected = journal.new_sha256[stream];
-			if (!live || !expected || sha256(live) !== expected) return false;
+			if (!this.liveMatchesNewSha(runDir, journal, stream)) return false;
 		}
 		return true;
 	}
@@ -1119,6 +1130,15 @@ class WorkingTreeRecordStore implements RecordStore {
 		fire: (event: TxnEvent) => void,
 		fsyncDir: (dir: string) => void,
 	): void {
+		for (const stream of journal.streams) {
+			if (existsSync(stagingPath(runDir, stream, "new"))) continue;
+			if (!this.liveMatchesNewSha(runDir, journal, stream)) {
+				throw new RecordStoreError(
+					"RECORD_TXN_CORRUPT",
+					`committed stream ${stream} missing replacement in ${runDir}`,
+				);
+			}
+		}
 		for (const stream of journal.streams) {
 			const neu = stagingPath(runDir, stream, "new");
 			if (existsSync(neu)) {

@@ -29,8 +29,11 @@ export interface RecordStore {
 
 	append(op: AppendOp): AppendResult;
 	/**
-	 * All-or-nothing. Per-op duplicates return created: false and add no line.
-	 * A throw leaves the store identical to before the call.
+	 * All-or-nothing mixed-stream append for a **single run**. Per-op duplicates
+	 * return created: false and add no line. A throw leaves the store identical
+	 * to before the call. Batches that mention more than one `runId` throw
+	 * `INVALID_ATOMIC_APPEND` before any mutation — the durable journal is
+	 * per-run; there is no cross-run coordinator.
 	 */
 	atomicAppend(ops: AppendOp[]): AppendResult[];
 }

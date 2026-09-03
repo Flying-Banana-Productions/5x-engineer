@@ -5,6 +5,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -459,6 +460,86 @@ describe("atomicAppend crash recovery", () => {
 		expectCode(
 			() => reopened.listLines("run_1", "budget"),
 			"RECORD_TXN_CORRUPT",
+		);
+	});
+
+	test("committed batch with one .new removed while live stream is missing fails closed", () => {
+		const root = makeRoot();
+		const store = storeFor(root, {
+			onTxnEvent: (e) => {
+				if (e === "after-dirsync:commit") throw new Error("crash:commit");
+			},
+		});
+		store.putRun(v1Summary("run_1"));
+		const { stepKey, ops } = mixedOps("run_1");
+		expect(() => store.atomicAppend(ops)).toThrow("crash:commit");
+		const dir = runDir(root, "run_1");
+		expect(existsSync(join(dir, ".txn.budget.new"))).toBe(true);
+		unlinkSync(join(dir, ".txn.budget.new"));
+		expect(existsSync(join(dir, "budget.jsonl"))).toBe(false);
+		resetWorkingTreeLockOwnersForTest();
+		plantDeadLock(dir);
+		const reopened = storeFor(root);
+		expectCode(
+			() => reopened.getLine("run_1", "steps", stepKey),
+			"RECORD_TXN_CORRUPT",
+		);
+		expectCode(
+			() => reopened.listLines("run_1", "budget"),
+			"RECORD_TXN_CORRUPT",
+		);
+		expect(existsSync(join(dir, ".txn.journal.json"))).toBe(true);
+		expect(existsSync(join(dir, ".txn.commit"))).toBe(true);
+		expect(existsSync(join(dir, ".txn.steps.new"))).toBe(true);
+		expect(existsSync(join(dir, ".txn.budget.new"))).toBe(false);
+		expect(existsSync(join(dir, "steps.jsonl"))).toBe(false);
+		expect(existsSync(join(dir, "budget.jsonl"))).toBe(false);
+	});
+
+	test("committed batch with one .new removed while its live stream remains old fails closed", () => {
+		const root = makeRoot();
+		const seed = storeFor(root);
+		seed.putRun(v1Summary("run_1"));
+		const oldBudgetKey = "budget:snapshot:old";
+		seed.append({
+			runId: "run_1",
+			stream: "budget",
+			idempotencyKey: oldBudgetKey,
+			payload: { remaining: 9 },
+			...recordedEnvelope(ORIGIN),
+		});
+		const dir = runDir(root, "run_1");
+		const oldBudgetBytes = readFileSync(join(dir, "budget.jsonl"));
+		const crashing = storeFor(root, {
+			onTxnEvent: (e) => {
+				if (e === "after-rename:steps") throw new Error("crash:mid-rename");
+			},
+		});
+		const { stepKey, ops } = mixedOps("run_1");
+		expect(() => crashing.atomicAppend(ops)).toThrow("crash:mid-rename");
+		expect(existsSync(join(dir, ".txn.budget.new"))).toBe(true);
+		expect(existsSync(join(dir, "steps.jsonl"))).toBe(true);
+		unlinkSync(join(dir, ".txn.budget.new"));
+		expect(readFileSync(join(dir, "budget.jsonl")).equals(oldBudgetBytes)).toBe(
+			true,
+		);
+		resetWorkingTreeLockOwnersForTest();
+		plantDeadLock(dir);
+		const reopened = storeFor(root);
+		expectCode(
+			() => reopened.getLine("run_1", "steps", stepKey),
+			"RECORD_TXN_CORRUPT",
+		);
+		expectCode(
+			() => reopened.getLine("run_1", "budget", oldBudgetKey),
+			"RECORD_TXN_CORRUPT",
+		);
+		expect(existsSync(join(dir, ".txn.journal.json"))).toBe(true);
+		expect(existsSync(join(dir, ".txn.commit"))).toBe(true);
+		expect(existsSync(join(dir, ".txn.budget.new"))).toBe(false);
+		expect(existsSync(join(dir, "steps.jsonl"))).toBe(true);
+		expect(readFileSync(join(dir, "budget.jsonl")).equals(oldBudgetBytes)).toBe(
+			true,
 		);
 	});
 
