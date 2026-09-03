@@ -68,3 +68,19 @@ None.
 
 **P1 recommended**
 - [ ] P1.1: Make first-use identity publication race-safe and cover concurrent creation.
+
+---
+
+## Addendum (2026-09-03) — Race-safe identity publication
+
+**Reviewed:** `e4d5f824459bcab7c688b5a0bc18c07e37529b42`
+
+### What's addressed (✅)
+- **P1.1 — First-use identity creation is not concurrency-safe:** Addressed. Creation now publishes the fully written temporary file using an exclusive hard link; an `EEXIST` loser removes its temporary file and validates/reloads the persisted winner. This prevents replacement of an established identity and ensures every successful concurrent first-load caller returns the same stored UUID. The added eight-process regression test verifies convergence, stored-value equality, UUID validity, and temporary-file cleanup.
+
+### Remaining concerns
+- No Phase 2 regressions identified. `bun run typecheck` and the focused identity suite pass. A full concurrent run reported two failures in untouched integration suites (`worktree-guards` and `quality-record`); both passed when rerun individually, so they are not attributed to this identity-only change.
+
+### Updated readiness
+- **Phase 2 completion:** ✅ — all reviewed Phase 2 requirements and the prior auto-fix are satisfied.
+- **Ready for next phase:** ✅
