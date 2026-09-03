@@ -73,3 +73,20 @@ None.
 
 **P1 recommended**
 - [x] Preserve the existing focused codec, crash-recovery, and multi-process lock coverage while adding the missing integrity cases.
+
+---
+
+## Addendum (2026-09-03) — Transaction-integrity remediation
+
+**Reviewed:** `5c0723209a13d6d13f60ab1e648a6bec470f42f7` (including remediation commit `97774fc`)
+
+### What's addressed (✅)
+- **P0.1 — committed recovery validation:** ✅ Resolved. `rollForward` now checks every missing staged replacement against the journal's expected live SHA-256 and throws `RECORD_TXN_CORRUPT` before cleanup when it cannot prove the replacement was applied. New tests cover both a missing live target and a retained old target after deleting one committed `.new` file.
+- **P0.2 — multi-run atomic batches:** ✅ Resolved. The contract explicitly scopes `atomicAppend` to one run, and both memory and filesystem stores call the shared pre-mutation validator, returning `INVALID_ATOMIC_APPEND` for mixed-run batches. The shared contract verifies neither run mutates.
+
+### Remaining concerns
+- No regressions identified in the remediation diff. The focused record-store tests pass (80 tests) and `bunx tsc --noEmit` passes.
+
+### Updated readiness
+- **Phase 3 completion:** ✅ — prior transaction-integrity blockers are addressed with matching contract and fault-injection coverage.
+- **Ready for next phase:** ✅
