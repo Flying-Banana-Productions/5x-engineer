@@ -1537,27 +1537,27 @@ Default `--target auto`.
 
 #### 8.1 Docs
 
-- [ ] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer; summary `creator`/`sealer` nullable when unknown + summary materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor` and applies to `run.json` creator/sealer via `redactedRecorder`. Note fail-closed mutation of `format_version > 1`.
-- [ ] `docs/v1/101-cli-primitives.md`:
+- [x] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer; summary `creator`/`sealer` nullable when unknown + summary materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor` and applies to `run.json` creator/sealer via `redactedRecorder`. Note fail-closed mutation of `format_version > 1`.
+- [x] `docs/v1/101-cli-primitives.md`:
   - §2 taxonomy (`:82–92`): add **Records** group (`records index`, `records backfill`).
   - §3 `run init` / `run record` / `run complete`: dual-write + seal commit + origin stamp.
   - §6 `plan phases` (`:589`) / `plan list` (`:614`): `--fetch`, `--all-refs`, `source` fields; branch-only discovery.
   - New §6b (or under Inspection): `5x records index` / `backfill` flags, dry-run, target rule, doctor `--fix`, backfill origin honesty (line `origin: null`; summary `creator`/`sealer` null; exporter is `materializer` only).
   - §10 idempotency: JSONL first-line-wins ≡ `INSERT OR IGNORE`; no key change.
   - §13 (`:1193`): `paths.records`, `records.redact`, `records.actor` example; identity file location; `FIVEX_RECORDS_ACTOR`; public-repo guidance (`origin.actor` redact).
-- [ ] Do not rewrite skills unless a command name in the hot loop changed (none expected).
+- [x] Do not rewrite skills unless a command name in the hot loop changed (none expected).
 
 #### 8.2 Exports
 
-- [ ] `src/control-plane/index.ts` and `src/index.ts`: `RecordStore`, `createMemoryRecordStore`, `createWorkingTreeRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, record types, `RecordStoreError`.
-- [ ] Do not export SQL, identity-file I/O, or filesystem helpers from the public control-plane barrel except the two factories. `loadOrCreateInstallationIdentity` may be exported from `src/records/` or `src/index.ts` if tests/06 need it, not from the control-plane store barrel.
+- [x] `src/control-plane/index.ts` and `src/index.ts`: `RecordStore`, `createMemoryRecordStore`, `createWorkingTreeRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, record types, `RecordStoreError`.
+- [x] Do not export SQL, identity-file I/O, or filesystem helpers from the public control-plane barrel except the two factories. `loadOrCreateInstallationIdentity` may be exported from `src/records/` or `src/index.ts` if tests/06 need it, not from the control-plane store barrel.
 
 #### 8.3 Compatibility sweep
 
-- [ ] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
-- [ ] Integration `text-output.test.ts` updated for new columns/lines. Backfilled-run JSON/text must not print the exporter as creator/sealer.
-- [ ] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
-- [ ] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
+- [x] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
+- [x] Integration `text-output.test.ts` updated for new columns/lines. Backfilled-run JSON/text must not print the exporter as creator/sealer.
+- [x] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
+- [x] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
 
 ---
 

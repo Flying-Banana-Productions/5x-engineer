@@ -1,7 +1,9 @@
 /**
  * Control-plane store factories and types (prompts, invocations, records).
  *
- * SQLite SQL stays in `sqlite-store.ts`. Do not re-export SQL helpers.
+ * SQLite SQL stays in `sqlite-store.ts`. Do not re-export SQL helpers,
+ * identity-file I/O, or filesystem helpers except the two RecordStore
+ * factories (`createMemoryRecordStore`, `createWorkingTreeRecordStore`).
  */
 
 export type {
