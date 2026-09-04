@@ -309,18 +309,18 @@ describe("listChangedFiles", () => {
 });
 
 describe("commitFiles", () => {
-	test("stages files, commits, returns hash", async () => {
+	test("stages files, commits only those paths, returns hash", async () => {
 		const hash = "a1b2c3d4e5f6".repeat(4).slice(0, 40);
 		mockGit(
 			[cmd("add", "--"), ok("")],
-			[cmd("commit", "-m"), ok("")],
+			[cmd("commit", "--only", "-m"), ok("")],
 			[cmd("rev-parse", "HEAD"), ok(hash)],
 		);
 		const result = await commitFiles("/r", ["file.txt"], "test commit");
 		expect(result.commit).toBe(hash);
 		expect(execGitSpy).toHaveBeenCalledWith(["add", "--", "file.txt"], "/r");
 		expect(execGitSpy).toHaveBeenCalledWith(
-			["commit", "-m", "test commit"],
+			["commit", "--only", "-m", "test commit", "--", "file.txt"],
 			"/r",
 		);
 	});
@@ -341,7 +341,7 @@ describe("commitFiles", () => {
 	test("throws on commit failure", async () => {
 		mockGit(
 			[cmd("add", "--"), ok("")],
-			[cmd("commit", "-m"), fail("nothing to commit")],
+			[cmd("commit", "--only", "-m"), fail("nothing to commit")],
 		);
 		await expect(commitFiles("/r", ["f.txt"], "msg")).rejects.toThrow(
 			"Failed to create commit",

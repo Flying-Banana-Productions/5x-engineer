@@ -259,6 +259,7 @@ export async function listChangedFiles(workdir: string): Promise<string[]> {
 
 /**
  * Commit specific files (relative paths) with a fixed message.
+ * Uses `git commit --only` so pre-staged unrelated paths are not included.
  */
 export async function commitFiles(
 	workdir: string,
@@ -274,7 +275,12 @@ export async function commitFiles(
 		throw new Error(`Failed to stage files: ${addResult.stderr}`);
 	}
 
-	const commitResult = await run(["commit", "-m", message], workdir);
+	// `--only` commits the listed paths from a temporary index so
+	// caller-pre-staged unrelated files are not published.
+	const commitResult = await run(
+		["commit", "--only", "-m", message, "--", ...files],
+		workdir,
+	);
 	if (commitResult.exitCode !== 0) {
 		throw new Error(`Failed to create commit: ${commitResult.stderr}`);
 	}

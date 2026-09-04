@@ -50,6 +50,7 @@ import {
 	gitShowFile,
 	hasUncommittedChanges,
 	listFiveXRefs,
+	listRemotes,
 	listWorktrees,
 	removeWorktree,
 	revParseCommit,
@@ -209,6 +210,66 @@ async function checkoutOnBranch(
 	}
 }
 
+/**
+ * Map an explicit `--target` to a local branch plus optional start point.
+ * Remote-tracking refs (for example `origin/foo`, or a unique remote
+ * counterpart of `foo`) create or check out the local name from that ref —
+ * never from HEAD.
+ */
+async function resolveExplicitTarget(
+	workdir: string,
+	requested: string,
+): Promise<{ branch: string; startPoint?: string }> {
+	if (await branchExists(requested, workdir)) {
+		return { branch: requested };
+	}
+
+	const asRemoteTracking = await revParseCommit(
+		workdir,
+		`refs/remotes/${requested}`,
+	);
+	if (asRemoteTracking) {
+		const remotes = await listRemotes(workdir);
+		const remote = remotes
+			.filter((r) => requested === r || requested.startsWith(`${r}/`))
+			.sort((a, b) => b.length - a.length)[0];
+		const localBranch =
+			remote && requested.startsWith(`${remote}/`)
+				? requested.slice(remote.length + 1)
+				: requested;
+		if (!localBranch) {
+			return { branch: requested, startPoint: requested };
+		}
+		if (await branchExists(localBranch, workdir)) {
+			return { branch: localBranch };
+		}
+		return { branch: localBranch, startPoint: requested };
+	}
+
+	const remotes = await listRemotes(workdir);
+	const matches: string[] = [];
+	for (const remote of remotes) {
+		const ref = `${remote}/${requested}`;
+		if (await revParseCommit(workdir, `refs/remotes/${ref}`)) {
+			matches.push(ref);
+		}
+	}
+	if (matches.length === 1 && matches[0]) {
+		return { branch: requested, startPoint: matches[0] };
+	}
+
+	const parsed = await revParseCommit(workdir, requested);
+	if (parsed !== null) {
+		return { branch: requested, startPoint: requested };
+	}
+
+	throw new RecordsBackfillError(
+		"BACKFILL_TARGET_NOT_FOUND",
+		`Target branch "${requested}" does not exist locally or as a remote-tracking ref. Fetch first; backfill does not fetch.`,
+		{ branch: requested },
+	);
+}
+
 async function resolveTarget(opts: {
 	workdir: string;
 	slug: string;
@@ -254,21 +315,13 @@ async function resolveTarget(opts: {
 	};
 
 	if (opts.target !== "auto") {
-		const branch = opts.target;
-		const local = await branchExists(branch, opts.workdir);
-		const parsed = await revParseCommit(opts.workdir, branch);
-		if (!local && parsed === null) {
-			throw new RecordsBackfillError(
-				"BACKFILL_TARGET_NOT_FOUND",
-				`Target branch "${branch}" does not exist locally or as a remote-tracking ref. Fetch first; backfill does not fetch.`,
-				{ branch },
-			);
-		}
-		const existing = await useMappedIfOnBranch(branch);
+		const resolved = await resolveExplicitTarget(opts.workdir, opts.target);
+		const existing = await useMappedIfOnBranch(resolved.branch);
 		return {
-			branch,
+			branch: resolved.branch,
 			worktree: existing,
 			needsTempWorktree: existing === null,
+			startPoint: resolved.startPoint,
 			fallback: false,
 		};
 	}

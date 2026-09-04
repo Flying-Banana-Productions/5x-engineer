@@ -518,4 +518,142 @@ describe("backfillRecords", () => {
 			}
 		});
 	});
+
+	test("explicit remote-tracking --target creates the local branch from that ref, not HEAD", async () => {
+		await withTmp(async (dir) => {
+			const planPath = initRepo(dir);
+			git(["checkout", "-b", "5x/alpha"], dir);
+			writeFileSync(join(dir, "plan-only.txt"), "on plan branch\n");
+			git(["add", "plan-only.txt"], dir);
+			git(["commit", "-m", "plan unique"], dir);
+			const planTip = git(["rev-parse", "HEAD"], dir);
+			git(["checkout", "main"], dir);
+			writeFileSync(join(dir, "main-only.txt"), "on main only\n");
+			git(["add", "main-only.txt"], dir);
+			git(["commit", "-m", "main unique"], dir);
+			git(["remote", "add", "origin", "https://example.invalid/repo.git"], dir);
+			git(["update-ref", "refs/remotes/origin/5x/alpha", planTip], dir);
+			git(["branch", "-D", "5x/alpha"], dir);
+
+			const db = openOwnedDb(dir);
+			try {
+				seedRun(db, {
+					id: "run_remote_tgt",
+					planPath,
+					status: "completed",
+					steps: [{ name: "author:impl", phase: "1", iteration: 1 }],
+				});
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				const result = await backfillRecords({
+					db,
+					config,
+					workdir: dir,
+					target: "origin/5x/alpha",
+					dryRun: false,
+					originFor,
+				});
+				expect(result.mappings[0]?.target_branch).toBe("5x/alpha");
+				expect(result.commits[0]?.created).toBe(true);
+				const backfillTip = git(["rev-parse", "5x/alpha"], dir);
+				expect(
+					git(["merge-base", "--is-ancestor", planTip, backfillTip], dir),
+				).toBe("");
+				expect(() =>
+					git(["merge-base", "--is-ancestor", "main", backfillTip], dir),
+				).toThrow();
+				git(["show", "5x/alpha:plan-only.txt"], dir);
+				expect(() => git(["show", "5x/alpha:main-only.txt"], dir)).toThrow();
+				const show = git(
+					[
+						"show",
+						"5x/alpha:docs/development/runs/alpha/run_remote_tgt/run.json",
+					],
+					dir,
+				);
+				expect(parseRunJson(show).id).toBe("run_remote_tgt");
+			} finally {
+				db.close();
+			}
+		});
+	});
+
+	test("explicit --target 5x/<slug> uses the remote-tracking ref when the local branch is gone", async () => {
+		await withTmp(async (dir) => {
+			const planPath = initRepo(dir);
+			git(["checkout", "-b", "5x/alpha"], dir);
+			writeFileSync(join(dir, "plan-only.txt"), "on plan branch\n");
+			git(["add", "plan-only.txt"], dir);
+			git(["commit", "-m", "plan unique"], dir);
+			const planTip = git(["rev-parse", "HEAD"], dir);
+			git(["checkout", "main"], dir);
+			writeFileSync(join(dir, "main-only.txt"), "on main only\n");
+			git(["add", "main-only.txt"], dir);
+			git(["commit", "-m", "main unique"], dir);
+			git(["remote", "add", "origin", "https://example.invalid/repo.git"], dir);
+			git(["update-ref", "refs/remotes/origin/5x/alpha", planTip], dir);
+			git(["branch", "-D", "5x/alpha"], dir);
+
+			const db = openOwnedDb(dir);
+			try {
+				seedRun(db, {
+					id: "run_remote_short",
+					planPath,
+					status: "completed",
+					steps: [{ name: "author:impl", phase: "1", iteration: 1 }],
+				});
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				const result = await backfillRecords({
+					db,
+					config,
+					workdir: dir,
+					target: "5x/alpha",
+					dryRun: false,
+					originFor,
+				});
+				expect(result.mappings[0]?.target_branch).toBe("5x/alpha");
+				const backfillTip = git(["rev-parse", "5x/alpha"], dir);
+				expect(
+					git(["merge-base", "--is-ancestor", planTip, backfillTip], dir),
+				).toBe("");
+				expect(() => git(["show", "5x/alpha:main-only.txt"], dir)).toThrow();
+			} finally {
+				db.close();
+			}
+		});
+	});
+
+	test("backfill commit does not include pre-staged unrelated files", async () => {
+		await withTmp(async (dir) => {
+			const planPath = initRepo(dir);
+			writeFileSync(join(dir, "wip.txt"), "do not publish\n");
+			git(["add", "wip.txt"], dir);
+			const db = openOwnedDb(dir);
+			try {
+				seedRun(db, {
+					id: "run_staged",
+					planPath,
+					steps: [{ name: "author:impl", phase: "1", iteration: 1 }],
+				});
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				const result = await backfillRecords({
+					db,
+					config,
+					workdir: dir,
+					target: "auto",
+					dryRun: false,
+					originFor,
+				});
+				expect(result.commits[0]?.created).toBe(true);
+				expect(() => git(["show", "HEAD:wip.txt"], dir)).toThrow();
+				const staged = git(["diff", "--cached", "--name-only"], dir);
+				expect(staged.split("\n").includes("wip.txt")).toBe(true);
+				git(
+					["show", "HEAD:docs/development/runs/alpha/run_staged/run.json"],
+					dir,
+				);
+			} finally {
+				db.close();
+			}
+		});
+	});
 });
