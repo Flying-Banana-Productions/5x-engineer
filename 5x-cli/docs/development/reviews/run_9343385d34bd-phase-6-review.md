@@ -34,3 +34,26 @@ For an absent or stale lock, doctor only calls the non-mutating `isRunTxnCorrupt
 ## Readiness
 
 Not ready pending both P1 fixes.
+
+## Addendum — Phase 6 blocker fixes (2026-09-03)
+
+**Reviewed:** `138cfef8214aba9332c1bbc0ca93f7c2af5539f1`
+
+### P1 resolved — Diverged refs are not projected
+
+The index snapshot now records diverged plans and excludes their records. `rebuildRecordsIndex` fails with `RECORD_PROGRESS_DIVERGED` before any projection, and doctor reports the same non-fixable condition without producing misleading missing/extra-row drift findings. Unit and integration fixtures cover distinct runs on both divergent sides and verify neither is materialized.
+
+### P1 resolved — Doctor recovers abandoned transactions under the writer lock
+
+Doctor now skips live and malformed publication-window locks, while absent/stale locks go through the store's lock-held recovery path. Valid prepared journals roll back, valid committed journals roll forward, stale locks are released after recovery, and corrupt transactions remain fail-closed with their artifacts intact. The added tests cover each case.
+
+### Verification
+
+- Phase 6 unit/integration suites: 31 pass, 0 fail.
+- `bun run typecheck` passes.
+- `bun run lint` passes.
+- `git diff --check b3d640a..138cfef` passes.
+
+### Updated readiness
+
+Ready for the next phase. No remaining Phase 6 blockers or regressions found in the reviewed changes.
