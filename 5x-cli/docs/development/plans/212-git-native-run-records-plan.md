@@ -1509,14 +1509,14 @@ Export algorithm:
 7. Write via `WorkingTreeRecordStore` in the target worktree: `createWorkingTreeRecordStore({ recordsRoot: resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot, effectiveWorkdir: targetWorktree }).recordsAbsPath })`. Existing lines by idempotency key: if `provenance === "recorded"`, push disagreement `recorded-vs-backfill` and **do not overwrite** (live origin must not become `null`). If payloads differ, push a disagreement and **do not overwrite**. If payloads equal and existing provenance is `backfilled`, skip (`created: false`). Do not treat `materializer` differences as payload disagreement when both sides are backfilled with equal payloads.
 8. Commit unless `dryRun`.
 
-- [ ] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
-- [ ] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
-- [ ] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile(text, runId)` contains all keys; each backfilled line has `origin: null` and a `materializer`.
-- [ ] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
-- [ ] Exported JSONL must not contain hostname, OS username, Git user, `session_id`, or `log_path`. `origin` is JSON `null`, not omitted in a way that decode treats as recorded.
-- [ ] Unit: backfill of a DB step does **not** put `materializer.recorder.installation_id` into `origin`.
-- [ ] Unit: backfill of a historical run writes `run.json` with `creator: null`; terminal runs also have `sealer: null`; `materializer.performer.role === "exporter"`; decode/index leave creator/sealer unknown.
-- [ ] Integration + text/JSON output: `5x records backfill` then `run state` / `plan list` (JSON and text) show unknown creator/sealer (null/omitted), while the exporter is identifiable only via `materializer` (or an explicit `exported_by` output field derived from it). The exporter installation id must **not** appear as creator or sealer.
+- [x] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
+- [x] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
+- [x] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile(text, runId)` contains all keys; each backfilled line has `origin: null` and a `materializer`.
+- [x] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
+- [x] Exported JSONL must not contain hostname, OS username, Git user, `session_id`, or `log_path`. `origin` is JSON `null`, not omitted in a way that decode treats as recorded.
+- [x] Unit: backfill of a DB step does **not** put `materializer.recorder.installation_id` into `origin`.
+- [x] Unit: backfill of a historical run writes `run.json` with `creator: null`; terminal runs also have `sealer: null`; `materializer.performer.role === "exporter"`; decode/index leave creator/sealer unknown.
+- [x] Integration + text/JSON output: `5x records backfill` then `run state` / `plan list` (JSON and text) show unknown creator/sealer (null/omitted), while the exporter is identifiable only via `materializer` (or an explicit `exported_by` output field derived from it). The exporter installation id must **not** appear as creator or sealer.
 
 #### 7.2 CLI — `records.handler.ts`
 
@@ -1526,8 +1526,8 @@ Export algorithm:
 
 Default `--target auto`.
 
-- [ ] Integration tests as listed in the Tests table. Use two temp clones for the partial-history case.
-- [ ] Never push. Never fetch unless we need to see remote `5x/<slug>` for the auto rule — use already-present remote-tracking refs; document that `--target auto` does not fetch (operator fetches first, or we accept missing remote as "branch gone"). **Do not** implicit-fetch here (forbidden without `--fetch`; backfill has no `--fetch`). Remote-tracking existence is enough.
+- [x] Integration tests as listed in the Tests table. Use two temp clones for the partial-history case.
+- [x] Never push. Never fetch unless we need to see remote `5x/<slug>` for the auto rule — use already-present remote-tracking refs; document that `--target auto` does not fetch (operator fetches first, or we accept missing remote as "branch gone"). **Do not** implicit-fetch here (forbidden without `--fetch`; backfill has no `--fetch`). Remote-tracking existence is enough.
 
 ---
 

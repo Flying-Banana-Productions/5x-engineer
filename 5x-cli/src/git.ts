@@ -458,6 +458,30 @@ export async function createWorktree(
 	return { path, branch };
 }
 
+/**
+ * Check out an existing branch (or create it from `startPoint`) in a new
+ * worktree. Does not fetch. Used by records backfill for `5x/<slug>` when
+ * the mapped worktree is not already on that branch.
+ */
+export async function addWorktreeForBranch(
+	repoRoot: string,
+	path: string,
+	branch: string,
+	startPoint?: string,
+): Promise<WorktreeInfo> {
+	const exists = await branchExists(branch, repoRoot);
+	const args = exists
+		? ["worktree", "add", path, branch]
+		: startPoint
+			? ["worktree", "add", "-b", branch, path, startPoint]
+			: ["worktree", "add", path, "-b", branch];
+	const result = await run(args, repoRoot);
+	if (result.exitCode !== 0) {
+		throw new Error(`Failed to create worktree at "${path}": ${result.stderr}`);
+	}
+	return { path, branch };
+}
+
 /** Remove a git worktree. */
 export async function removeWorktree(
 	repoRoot: string,

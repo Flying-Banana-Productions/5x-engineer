@@ -73,6 +73,19 @@ class MemoryPromptStore implements PromptStore {
 		return filtered.map(cloneRecord);
 	}
 
+	listAnsweredPrompts(runId: string): PromptRecord[] {
+		const answered = [...this.records.values()].filter(
+			(row) =>
+				row.runId === runId &&
+				row.answeredAt !== null &&
+				row.abandonedAt === null,
+		);
+		answered.sort((a, b) =>
+			a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+		);
+		return answered.map(cloneRecord);
+	}
+
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult {
 		const current = this.requirePrompt(id);
 		if (!isOpen(current)) {

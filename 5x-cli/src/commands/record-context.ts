@@ -50,6 +50,53 @@ function copyPerformer(performer: RecordPerformer): RecordPerformer {
 	return out;
 }
 
+/**
+ * Already-redacted `originFor` / `redactedRecorder` from identity + config.
+ * Backfill uses this without a run-scoped `createRecordContext`.
+ */
+export function createRecordAttribution(opts: {
+	identity: ReturnType<typeof loadOrCreateInstallationIdentity>;
+	configActor?: string;
+	envActor?: string;
+	redact: string[];
+}): {
+	originFor: (performer: RecordPerformer) => RecordOrigin;
+	redactedRecorder: () => RecordRecorder;
+} {
+	const { identity, configActor, envActor, redact } = opts;
+
+	function rawRecorder(): RecordRecorder {
+		return resolveRecorder({
+			identity,
+			configActor,
+			envActor,
+		});
+	}
+
+	function redactedRecorder(): RecordRecorder {
+		return redactRecorder(rawRecorder(), redact);
+	}
+
+	function originFor(performer: RecordPerformer): RecordOrigin {
+		const origin = redactOrigin(
+			{
+				recorder: redactedRecorder(),
+				performer: copyPerformer(performer),
+			},
+			redact,
+		);
+		if (origin === null) {
+			throw new RecordContextError(
+				"INVALID_ORIGIN",
+				"originFor produced a null origin",
+			);
+		}
+		return origin;
+	}
+
+	return { originFor, redactedRecorder };
+}
+
 function fallbackExecutionContext(
 	runId: string,
 	db: DbContext["db"],
@@ -125,37 +172,12 @@ export async function createRecordContext(opts: {
 	});
 
 	const identity = loadOrCreateInstallationIdentity({ homeDir: homedir() });
-	const redact = config.records.redact;
-	const configActor = config.records.actor;
-
-	function rawRecorder(): RecordRecorder {
-		return resolveRecorder({
-			identity,
-			configActor,
-			envActor: process.env.FIVEX_RECORDS_ACTOR,
-		});
-	}
-
-	function redactedRecorder(): RecordRecorder {
-		return redactRecorder(rawRecorder(), redact);
-	}
-
-	function originFor(performer: RecordPerformer): RecordOrigin {
-		const origin = redactOrigin(
-			{
-				recorder: redactedRecorder(),
-				performer: copyPerformer(performer),
-			},
-			redact,
-		);
-		if (origin === null) {
-			throw new RecordContextError(
-				"INVALID_ORIGIN",
-				"originFor produced a null origin",
-			);
-		}
-		return origin;
-	}
+	const { originFor, redactedRecorder } = createRecordAttribution({
+		identity,
+		configActor: config.records.actor,
+		envActor: process.env.FIVEX_RECORDS_ACTOR,
+		redact: config.records.redact,
+	});
 
 	return {
 		db,

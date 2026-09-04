@@ -117,6 +117,10 @@ import {
 } from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
 import type { AgentEvent } from "../providers/types.js";
+import {
+	envelopeAttribution,
+	formatAttributionLines,
+} from "../records/attribution.js";
 import { resolveRecordPerformer } from "../records/origin.js";
 import { resolveRecordsRoot } from "../records/paths.js";
 import {
@@ -980,6 +984,9 @@ export function formatStateText(data: {
 	source?: string;
 	source_ref?: string;
 	source_age_seconds?: number;
+	creator?: RecordRecorder | null;
+	sealer?: RecordRecorder | null;
+	exported_by?: RecordOrigin;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -993,7 +1000,9 @@ export function formatStateText(data: {
 								? "HEAD"
 								: data.source === "diverged"
 									? "diverged"
-									: "remote",
+									: data.source === "backfilled"
+										? "backfilled"
+										: "remote",
 					label: data.source,
 					age_seconds: data.source_age_seconds,
 				})
@@ -1005,6 +1014,15 @@ export function formatStateText(data: {
 	console.log(`Plan:    ${run.plan_path}`);
 	console.log(`Status:  ${run.status}`);
 	console.log(`Created: ${run.created_at}`);
+	if (data.creator !== undefined || data.exported_by) {
+		for (const line of formatAttributionLines({
+			creator: data.creator ?? null,
+			sealer: data.sealer,
+			exported_by: data.exported_by,
+		})) {
+			console.log(line);
+		}
+	}
 	console.log(
 		`Steps:   ${data.steps_used} / ${data.max_steps} (${data.steps_remaining} remaining)`,
 	);
@@ -1583,6 +1601,38 @@ async function loadGitRecordForPlan(opts: {
 	return { summary: win.summary, steps };
 }
 
+function posixJoinRecords(...parts: string[]): string {
+	return parts
+		.map((p) => p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""))
+		.filter(Boolean)
+		.join("/");
+}
+
+function loadDiskRunSummary(opts: {
+	workdir: string;
+	recordsRelPath: string;
+	planPath: string;
+	runId: string;
+	worktreePath?: string | null;
+}): ReturnType<typeof parseRunJson> | null {
+	const slug = planSlugFromPath(opts.planPath);
+	const prefix = posixJoinRecords(opts.recordsRelPath, slug, opts.runId);
+	const roots = [
+		opts.worktreePath ? join(opts.worktreePath, ...prefix.split("/")) : null,
+		join(opts.workdir, ...prefix.split("/")),
+	].filter((p): p is string => Boolean(p));
+	for (const root of roots) {
+		const runJsonPath = join(root, "run.json");
+		if (!existsSync(runJsonPath)) continue;
+		try {
+			return parseRunJson(readFileSync(runJsonPath, "utf-8"));
+		} catch {
+			/* try next root */
+		}
+	}
+	return null;
+}
+
 export async function runV1State(params: RunStateParams): Promise<void> {
 	const { config, db, controlPlane, projectRoot } = await resolveDbContext({
 		startDir: params.startDir,
@@ -1656,6 +1706,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					max_steps: budget.max,
 					steps_remaining: budget.remaining,
 					...progressFields,
+					...envelopeAttribution(gitRecord.summary),
 				},
 				formatStateText,
 			);
@@ -1718,6 +1769,18 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	// Phase 3b: report worktree path when run has a mapped worktree
 	const plan = run.plan_path ? getPlan(db, run.plan_path) : null;
 	const worktreePath = plan?.worktree_path || null;
+	const recordsRelPath = resolveRecordsRoot({
+		recordsConfigAbs: config.paths.records,
+		controlPlaneRoot: projectRoot,
+		effectiveWorkdir: worktreePath ?? projectRoot,
+	}).recordsRelPath;
+	const diskSummary = loadDiskRunSummary({
+		workdir: projectRoot,
+		recordsRelPath,
+		planPath: run.plan_path,
+		runId: run.id,
+		worktreePath,
+	});
 
 	outputSuccess(
 		{
@@ -1735,6 +1798,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
 			...progressFields,
+			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},
 		formatStateText,
 	);

@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { parseRunJson } from "../control-plane/record-layout.js";
 import {
 	fetchFiveXBranches,
 	gitLogLastTouching,
@@ -499,6 +500,45 @@ function phaseCompletionPct(markdown: string): number {
 	return Math.round((done / total) * 100);
 }
 
+async function maybeBackfilledSource(opts: {
+	workdir: string;
+	planSlug: string;
+	recordsRelPath: string;
+	source: ProgressSource;
+	commit: string | null;
+}): Promise<ProgressSource> {
+	if (opts.source.kind !== "HEAD" || !opts.commit) return opts.source;
+	const fiveX = await listFiveXRefs(opts.workdir);
+	const localName = `5x/${opts.planSlug}`;
+	const hasConv =
+		fiveX.local.includes(localName) ||
+		fiveX.remote.some(
+			(r) => r.ref.endsWith(`/${localName}`) || r.ref === localName,
+		);
+	if (hasConv) return opts.source;
+	const prefix = posixJoin(opts.recordsRelPath, opts.planSlug);
+	const paths = await gitLsTreePaths(opts.workdir, opts.commit, prefix);
+	for (const rel of paths) {
+		if (!rel.endsWith("/run.json") && rel !== `${prefix}/run.json`) continue;
+		const text = await gitShowFile(opts.workdir, opts.commit, rel);
+		if (text == null) continue;
+		try {
+			const summary = parseRunJson(text);
+			if (summary.backfilled === true) {
+				return {
+					kind: "backfilled",
+					label: "backfilled",
+					ref: opts.source.ref,
+					commit: opts.commit,
+				};
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	return opts.source;
+}
+
 async function readMarkdownAtCommit(
 	workdir: string,
 	commit: string,
@@ -663,7 +703,13 @@ export async function resolvePlanProgress(opts: {
 			}
 		}
 		return {
-			source: win.source,
+			source: await maybeBackfilledSource({
+				workdir: opts.workdir,
+				planSlug: opts.planSlug,
+				recordsRelPath: recordsRel,
+				source: win.source,
+				commit: win.commit,
+			}),
 			markdown,
 			planPath: relPlanPath ?? opts.planPath,
 			commit: win.commit,

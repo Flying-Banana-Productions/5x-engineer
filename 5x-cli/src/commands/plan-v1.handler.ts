@@ -18,6 +18,11 @@ import {
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
+import { parseRunJson } from "../control-plane/record-layout.js";
+import type {
+	RecordOrigin,
+	RecordRecorder,
+} from "../control-plane/record-types.js";
 import { getDb } from "../db/connection.js";
 import { type PlanRow, upsertPlan } from "../db/operations.js";
 import {
@@ -27,6 +32,7 @@ import {
 	updateRunPlanPath,
 } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
+import { gitLsTreePaths, gitShowFile } from "../git.js";
 import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
@@ -37,6 +43,10 @@ import {
 	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
+import {
+	envelopeAttribution,
+	formatAttributionLines,
+} from "../records/attribution.js";
 import { resolveRecordsRoot } from "../records/paths.js";
 import {
 	envelopeFromProgress,
@@ -135,6 +145,9 @@ export interface PlanListEntry {
 	source_ref?: string;
 	source_age_seconds?: number;
 	diverged?: boolean;
+	creator?: RecordRecorder | null;
+	sealer?: RecordRecorder | null;
+	exported_by?: RecordOrigin;
 }
 
 /** Internal row with file mtime for sort (omitted from JSON output). */
@@ -211,11 +224,49 @@ export function formatPlanListText(data: {
 		const line = cols.map((c) => row[c.key].padEnd(c.width)).join("  ");
 		console.log(line);
 	}
+
+	const attributed = plans.filter(
+		(p) => p.creator !== undefined || p.exported_by,
+	);
+	if (attributed.length > 0) {
+		console.log();
+		for (const p of attributed) {
+			const bits = formatAttributionLines({
+				creator: p.creator ?? null,
+				sealer: p.sealer,
+				exported_by: p.exported_by,
+			});
+			console.log(`${p.plan_path}  ${bits.join("  ")}`);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
+
+async function loadPlanRecordAttribution(opts: {
+	workdir: string;
+	commit: string | null;
+	recordsRelPath: string;
+	slug: string;
+}): Promise<ReturnType<typeof envelopeAttribution> | null> {
+	if (!opts.commit) return null;
+	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
+	const rels = (await gitLsTreePaths(opts.workdir, opts.commit, prefix)).filter(
+		(p) => p.endsWith("/run.json"),
+	);
+	for (const rel of rels) {
+		const text = await gitShowFile(opts.workdir, opts.commit, rel);
+		if (text == null) continue;
+		try {
+			return envelopeAttribution(parseRunJson(text));
+		} catch {
+			/* try next run.json */
+		}
+	}
+	return null;
+}
 
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	const { config, projectRoot } = await resolveDbContext({ migrate: false });
@@ -432,6 +483,9 @@ export async function planList(
 		let source_ref: string | undefined;
 		let source_age_seconds: number | undefined;
 		let diverged = false;
+		let creator: PlanListEntry["creator"];
+		let sealer: PlanListEntry["sealer"];
+		let exported_by: PlanListEntry["exported_by"];
 
 		try {
 			const resolved = await resolvePlanProgress({
@@ -465,6 +519,17 @@ export async function planList(
 							`It is still listed; move or edit the file if it is not a plan.\n`,
 					);
 				}
+			}
+			const attr = await loadPlanRecordAttribution({
+				workdir: projectRoot,
+				commit: resolved.commit,
+				recordsRelPath,
+				slug: planSlugFromPath(rel),
+			});
+			if (attr) {
+				creator = attr.creator;
+				sealer = attr.sealer;
+				exported_by = attr.exported_by;
 			}
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err);
@@ -510,6 +575,9 @@ export async function planList(
 			...(source_ref ? { source_ref } : {}),
 			...(typeof source_age_seconds === "number" ? { source_age_seconds } : {}),
 			...(diverged ? { diverged: true } : {}),
+			...(creator !== undefined ? { creator } : {}),
+			...(sealer !== undefined ? { sealer } : {}),
+			...(exported_by ? { exported_by } : {}),
 			mtime_ms,
 		});
 	}
