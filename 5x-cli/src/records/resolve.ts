@@ -69,6 +69,8 @@ export interface ProgressSession {
 	tips: NamedTip[];
 	parents: Map<string, string[]>;
 	logEntries: Array<{ commit: string; files: string[] }>;
+	/** Paths covered by a successful batch, including negative lookups. */
+	logPaths: string[];
 	discoveredPlanRels: string[];
 	/** In-process `(refSha, pathKey) → lastTouching` for one `plan list` invocation. */
 	cache: LastTouchingCache;
@@ -122,13 +124,8 @@ export function parseLogNameOnly(
 			current = { commit: raw, files: [] };
 			continue;
 		}
-		if (raw === "") {
-			if (current) {
-				entries.push(current);
-				current = null;
-			}
-			continue;
-		}
+		// Git separates the commit header from its filenames with a blank line.
+		if (raw === "") continue;
 		if (current) current.files.push(toPosix(raw));
 	}
 	if (current) entries.push(current);
@@ -421,11 +418,11 @@ export async function prepareProgressSession(opts: {
 		recordsRelPath,
 	].filter(Boolean);
 	const uniqueLogPaths = [...new Set(logPaths)];
-	const logEntries = parseLogNameOnly(
+	const logOutput =
 		uniqueShas.length > 0 && uniqueLogPaths.length > 0
 			? await gitLogNameOnly(opts.workdir, uniqueShas, uniqueLogPaths)
-			: "",
-	);
+			: null;
+	const logEntries = parseLogNameOnly(logOutput ?? "");
 
 	return {
 		workdir: opts.workdir,
@@ -434,6 +431,7 @@ export async function prepareProgressSession(opts: {
 		tips,
 		parents,
 		logEntries,
+		logPaths: logOutput === null ? [] : uniqueLogPaths,
 		discoveredPlanRels: [...discovered].sort(),
 		cache: opts.cache ?? new Map(),
 	};
@@ -469,9 +467,15 @@ async function rankCandidates(
 			const reachable = reachableFrom(session.parents, tip.sha);
 			reachable.add(tip.sha);
 			last = lastTouchingFromLog(session.logEntries, reachable, touchPaths);
-			if (!last) {
-				const ref = tip.source.ref ?? tip.sha;
-				last = await gitLogLastTouching(session.workdir, ref, touchPaths);
+			const covered =
+				session.parents.has(tip.sha) &&
+				touchPaths.every((path) =>
+					session.logPaths.some(
+						(root) => path === root || path.startsWith(`${root}/`),
+					),
+				);
+			if (!last && !covered) {
+				last = await gitLogLastTouching(session.workdir, tip.sha, touchPaths);
 			}
 			session.cache.set(cacheKey, last);
 		}

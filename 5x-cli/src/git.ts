@@ -797,18 +797,28 @@ export async function gitRevListParents(
 	return result.stdout;
 }
 
-/** `git log --format=%H --name-only tips... -- paths`. */
+/** Batched path history; null distinguishes a failed query from no matches. */
 export async function gitLogNameOnly(
 	workdir: string,
 	tips: string[],
 	paths: string[],
-): Promise<string> {
+): Promise<string | null> {
 	if (tips.length === 0 || paths.length === 0) return "";
+	// Include files changed against every parent of a merge (conflict resolutions),
+	// without treating an unchanged plan carried through a merge as a new touch.
 	const result = await run(
-		["log", "--format=%H", "--name-only", ...tips, "--", ...paths],
+		[
+			"log",
+			"--format=%H",
+			"--name-only",
+			"--diff-merges=combined",
+			...tips,
+			"--",
+			...paths,
+		],
 		workdir,
 	);
-	if (result.exitCode !== 0) return "";
+	if (result.exitCode !== 0) return null;
 	return result.stdout;
 }
 

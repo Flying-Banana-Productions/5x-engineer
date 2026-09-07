@@ -854,4 +854,13 @@ describe("listFiveXRefs / isAncestor / fetch / remotes", () => {
 		);
 		expect(await gitLsTreePaths("/repo", "aaa", "docs")).toEqual(["docs/p.md"]);
 	});
+
+	test("gitLogNameOnly distinguishes an empty history from a failed query", async () => {
+		mockGit(
+			[(args) => args.includes("missing"), fail("bad revision")],
+			[(args) => args[0] === "log", ok("")],
+		);
+		expect(await gitLogNameOnly("/repo", ["aaa"], ["docs"])).toBe("");
+		expect(await gitLogNameOnly("/repo", ["missing"], ["docs"])).toBeNull();
+	});
 });

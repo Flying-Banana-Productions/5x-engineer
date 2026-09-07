@@ -7,6 +7,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gitLogNameOnly } from "../../../src/git.js";
+import { parseLogNameOnly } from "../../../src/records/resolve.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -113,6 +115,83 @@ function parseJson(stdout: string): Record<string, unknown> {
 const PLAN_REL = "docs/development/alpha.md";
 
 describe("progress resolution", () => {
+	test(
+		"batched history includes plan progress resolved in a merge commit",
+		async () => {
+			const dir = makeTmpDir("5x-prog-merge-history");
+			try {
+				initRepo(dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [false, false]),
+					"add plan",
+				);
+				git(["checkout", "-b", "side"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [false, true]),
+					"side progress",
+				);
+				git(["checkout", "main"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [true, false]),
+					"main progress",
+				);
+				git(["merge", "--no-commit", "-s", "ours", "side"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [true, true]),
+					"resolve progress",
+				);
+				const merge = git(["rev-parse", "HEAD"], dir);
+				const history = await gitLogNameOnly(dir, ["HEAD"], [PLAN_REL]);
+				expect(parseLogNameOnly(history ?? "")[0]).toEqual({
+					commit: merge,
+					files: [PLAN_REL],
+				});
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).toBe(0);
+				const data = parseJson(phases.stdout).data as {
+					source_commit: string;
+					phases: Array<{ done: boolean }>;
+				};
+				expect(data.source_commit).toBe(merge);
+				expect(data.phases.every((phase) => phase.done)).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"batched history parses filenames from real git output across commits",
+		async () => {
+			const dir = makeTmpDir("5x-prog-history");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [false]), "add plan");
+				const first = git(["rev-parse", "HEAD"], dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [true]), "finish plan");
+				const second = git(["rev-parse", "HEAD"], dir);
+				const history = await gitLogNameOnly(dir, ["HEAD"], [PLAN_REL]);
+				expect(history).not.toBeNull();
+				expect(parseLogNameOnly(history ?? "")).toEqual([
+					{ commit: second, files: [PLAN_REL] },
+					{ commit: first, files: [PLAN_REL] },
+				]);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
 	test(
 		"merged: squash-merge + deleted branch reports source HEAD",
 		async () => {

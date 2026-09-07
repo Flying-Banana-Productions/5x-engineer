@@ -14,6 +14,7 @@ import {
 	isAncestorInGraph,
 	parseLogNameOnly,
 	parseRevListParents,
+	prepareProgressSession,
 	resolvePlanProgress,
 } from "../../../src/records/resolve.js";
 import { subprocess } from "../../../src/utils/subprocess.js";
@@ -91,18 +92,124 @@ describe("parse helpers", () => {
 	});
 
 	test("parseLogNameOnly groups files under commits", () => {
-		expect(parseLogNameOnly(`${B}\n${PLAN}\n\n${A}\n${PLAN}\n`)).toEqual([
-			{ commit: B, files: [PLAN] },
+		expect(
+			parseLogNameOnly(`${B}\n\n${PLAN}\nother.md\n${A}\n\n${PLAN}\n`),
+		).toEqual([
+			{ commit: B, files: [PLAN, "other.md"] },
+			{ commit: A, files: [PLAN] },
+		]);
+	});
+
+	test("parseLogNameOnly handles empty commits and an unterminated final line", () => {
+		expect(parseLogNameOnly("")).toEqual([]);
+		expect(parseLogNameOnly(`${B}\n\n${A}\n\n${PLAN}`)).toEqual([
+			{ commit: B, files: [] },
 			{ commit: A, files: [PLAN] },
 		]);
 	});
 });
 
 describe("resolvePlanProgress", () => {
+	test("shared session resolves many plans and refs without per-plan history queries", async () => {
+		const plans = Array.from(
+			{ length: 20 },
+			(_, i) => `docs/development/plan-${i}.md`,
+		);
+		const refs = [
+			"refs/remotes/one/5x/foo",
+			"refs/remotes/two/5x/foo",
+			"refs/remotes/three/5x/foo",
+		];
+		const spy = mockGit(
+			[
+				(args) =>
+					args[0] === "for-each-ref" && args[1] === "--format=%(refname)",
+				ok(refs.join("\n")),
+			],
+			[
+				(args) => args[0] === "for-each-ref",
+				ok(
+					refs
+						.map((ref, i) => `${[B, C, D][i]}\t${ref}\t1700000000`)
+						.join("\n"),
+				),
+			],
+			[(args) => args[0] === "rev-parse", ok(A)],
+			[
+				(args) => args[0] === "rev-list",
+				ok(`${D} ${C}\n${C} ${B}\n${B} ${A}\n${A}`),
+			],
+			[
+				(args) => args[0] === "log" && args.includes("--name-only"),
+				ok(`${B}\n\n${plans.join("\n")}\n`),
+			],
+			[(args) => args[0] === "show", ok(PLAN_MD_A)],
+		);
+		const session = await prepareProgressSession({
+			workdir: "/repo",
+			recordsRelPath: "docs/development/runs",
+			planRepoRels: plans,
+		});
+		for (const [i, plan] of plans.entries()) {
+			const resolved = await resolvePlanProgress({
+				workdir: "/repo",
+				planPath: `/repo/${plan}`,
+				planSlug: `plan-${i}`,
+				recordsRelPath: session.recordsRelPath,
+				session,
+			});
+			expect(resolved.commit).toBe(B);
+			expect(resolved.markdown).toBe(PLAN_MD_A);
+		}
+		expect(spy.mock.calls.filter(([args]) => args[0] === "log")).toHaveLength(
+			1,
+		);
+	});
+
+	test.each(["failed", "uncovered", "missing topology"])(
+		"falls back to individual history queries when the batch is %s",
+		async (scenario) => {
+			const spy = mockGit(
+				[(args) => args[0] === "for-each-ref", ok("")],
+				[(args) => args[0] === "rev-parse", ok(A)],
+				[
+					(args) => args[0] === "rev-list",
+					scenario === "missing topology" ? fail("topology failed") : ok(A),
+				],
+				[
+					(args) => args[0] === "log" && args.includes("--name-only"),
+					scenario === "failed" ? fail("batch failed") : ok(""),
+				],
+				[(args) => args[0] === "log" && args.includes("-1"), ok(A)],
+				[(args) => args[0] === "show", ok(PLAN_MD_A)],
+				[(args) => args[0] === "ls-tree", ok("")],
+			);
+			const session = await prepareProgressSession({
+				workdir: "/repo",
+				recordsRelPath: "docs/development/runs",
+				planRepoRels: scenario === "uncovered" ? ["other.md"] : [PLAN],
+			});
+			const resolved = await resolvePlanProgress({
+				workdir: "/repo",
+				planPath: `/repo/${PLAN}`,
+				planSlug: "foo",
+				recordsRelPath: session.recordsRelPath,
+				session,
+			});
+			expect(resolved.commit).toBe(A);
+			expect(resolved.markdown).toBe(PLAN_MD_A);
+			expect(
+				spy.mock.calls.filter(
+					([args]) => args[0] === "log" && args.includes("-1"),
+				),
+			).toHaveLength(1);
+		},
+	);
+
 	test("missing 5x ref is skipped; untouched HEAD yields checkout fallback", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "5x-resolve-missing-"));
 		try {
-			mockGit(
+			const spy = mockGit(
 				[(args) => args[0] === "for-each-ref", ok("")],
 				[
 					(args) => args[0] === "rev-parse" && args.includes("HEAD^{commit}"),
@@ -121,6 +228,9 @@ describe("resolvePlanProgress", () => {
 			expect(resolved.markdown).toBeNull();
 			expect(resolved.source.kind).toBe("HEAD");
 			expect(resolved.commit).toBeNull();
+			expect(spy.mock.calls.filter(([args]) => args[0] === "log")).toHaveLength(
+				1,
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
