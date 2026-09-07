@@ -19,6 +19,14 @@ import {
 	stepBudgetWarning,
 } from "../../../src/commands/run-v1.handler.js";
 import { FiveXConfigSchema } from "../../../src/config.js";
+import type {
+	RecordOrigin,
+	RecordPerformer,
+} from "../../../src/control-plane/index.js";
+import {
+	createMemoryRecordStore,
+	RUN_RECORD_FORMAT_VERSION,
+} from "../../../src/control-plane/index.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
@@ -124,9 +132,31 @@ describe("recordStepInternal step budget", () => {
 	});
 
 	function dbContext(maxStepsPerRun = 250) {
+		const store = createMemoryRecordStore();
+		store.putRun({
+			id: "run1",
+			plan_path: join(tmp, "plan.md"),
+			config_json: { maxStepsPerRun },
+			created_at: "2026-01-01 00:00:00",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "1.0.0",
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: { installation_id: "00000000-0000-4000-8000-000000000001" },
+		});
+		const originFor = (performer: RecordPerformer): RecordOrigin => ({
+			recorder: { installation_id: "00000000-0000-4000-8000-000000000001" },
+			performer,
+		});
 		return {
 			db: getDb(tmp),
 			config: FiveXConfigSchema.parse({ maxStepsPerRun }),
+			recordStore: store,
+			originFor,
+			redactedRecorder: () => ({
+				installation_id: "00000000-0000-4000-8000-000000000001",
+			}),
 		};
 	}
 

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	applyModelOverrides,
 	defineConfig,
 	FiveXConfigSchema,
 	loadConfig,
+	RECORDS_ROOT_OUTSIDE_REPO,
 	resolveDelegationContext,
 	resolveHarnessModelForRole,
 } from "../../src/config.js";
@@ -571,6 +572,10 @@ describe("loadConfig path normalization", () => {
 			expect(config.paths.plans).toBe(join(tmp, "docs/development"));
 			expect(config.paths.reviews).toBe(join(tmp, "docs/development/reviews"));
 			expect(config.paths.archive).toBe(join(tmp, "docs/archive"));
+			expect(config.paths.records).toBe(join(tmp, "docs/development/runs"));
+			expect(config.records.redact).toEqual([]);
+			expect(config.records.actor).toBeUndefined();
+			expect(config.plans.branch).toBeUndefined();
 			expect(config.paths.templates.plan).toBe(
 				join(tmp, "docs/_implementation_plan_template.md"),
 			);
@@ -625,6 +630,156 @@ describe("loadConfig path normalization", () => {
 			const { config } = await loadConfig(child);
 			// Paths resolved against the config file's directory (parent), not child
 			expect(config.paths.plans).toBe(join(tmp, "docs/plans"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// paths.records / records.* (Phase 2, 212-git-native-run-records)
+// ---------------------------------------------------------------------------
+
+describe("paths.records and records.*", () => {
+	test("defaults records path, redact, and actor", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.paths.records).toBe(join(tmp, "docs/development/runs"));
+			expect(config.records.redact).toEqual([]);
+			expect(config.records.actor).toBeUndefined();
+			expect(config.plans.branch).toBeUndefined();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("relative paths.records resolves against the config file directory", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[paths]\nrecords = "custom/runs"\n`);
+			const { config } = await loadConfig(tmp);
+			expect(config.paths.records).toBe(join(tmp, "custom/runs"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("absolute paths.records inside the repo is accepted", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const inside = resolve(tmp, "custom/runs");
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = ${JSON.stringify(inside)}\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.paths.records).toBe(inside);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("absolute paths.records outside the repo is RECORDS_ROOT_OUTSIDE_REPO", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "/tmp/5x-records"\n`,
+			);
+			await expect(loadConfig(tmp)).rejects.toThrow(RECORDS_ROOT_OUTSIDE_REPO);
+			await expect(loadConfig(tmp)).rejects.toThrow(
+				"must be inside the repository",
+			);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("relative paths.records that escapes the repo is RECORDS_ROOT_OUTSIDE_REPO", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[paths]\nrecords = "../../tmp/records"\n`,
+			);
+			await expect(loadConfig(tmp)).rejects.toThrow(RECORDS_ROOT_OUTSIDE_REPO);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown-key warning does not fire for [records]", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[records]\nredact = ["cost_usd"]\nactor = "ci-bot"\n`,
+			);
+			const { config } = await loadConfig(tmp, undefined, warn);
+			expect(config.records.redact).toEqual(["cost_usd"]);
+			expect(config.records.actor).toBe("ci-bot");
+			expect(warnings.join("\n")).not.toContain("records");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("records.actor round-trips when set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[records]\nactor = "release-engineer"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.records.actor).toBe("release-engineer");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("plans.branch", () => {
+	test("defaults to unset", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.plans.branch).toBeUndefined();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown-key warning does not fire for [plans]", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[plans]\nbranch = "release/plans"\n`,
+			);
+			const { config } = await loadConfig(tmp, undefined, warn);
+			expect(config.plans.branch).toBe("release/plans");
+			expect(warnings.join("\n")).not.toContain("plans");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("plans.branch round-trips when set", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), `[plans]\nbranch = "docs-main"\n`);
+			const { config } = await loadConfig(tmp);
+			expect(config.plans.branch).toBe("docs-main");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

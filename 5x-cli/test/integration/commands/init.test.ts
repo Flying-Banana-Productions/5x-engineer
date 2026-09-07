@@ -57,6 +57,11 @@ describe("5x init (integration)", () => {
 				expect(result.stdout).toContain("5x config set");
 				expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
 				expect(existsSync(join(tmp, ".5x"))).toBe(true);
+				const ga = await Bun.file(join(tmp, ".gitattributes")).text();
+				expect(ga).toContain("docs/development/runs/**/*.jsonl merge=union");
+				expect(existsSync(join(tmp, "docs", "development", "runs"))).toBe(
+					false,
+				);
 			});
 		},
 		{ timeout: 15000 },
@@ -107,5 +112,22 @@ describe("5x init (integration)", () => {
 			});
 		},
 		{ timeout: 30000 },
+	);
+
+	test(
+		"writes merge=union gitattributes for a custom records path",
+		async () => {
+			await withTmp(async (tmp) => {
+				await Bun.write(
+					join(tmp, "5x.toml"),
+					`[paths]\nrecords = "custom/runs"\n`,
+				);
+				const result = await runInit(tmp);
+				expect(result.exitCode).toBe(0);
+				const ga = await Bun.file(join(tmp, ".gitattributes")).text();
+				expect(ga).toContain("custom/runs/**/*.jsonl merge=union");
+			});
+		},
+		{ timeout: 15000 },
 	);
 });

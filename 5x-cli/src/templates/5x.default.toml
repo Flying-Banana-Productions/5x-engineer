@@ -63,6 +63,7 @@ reviews = "docs/development/reviews"
 # planReviews = "docs/development/reviews/plans"
 # runReviews = "docs/development/reviews/impl"
 archive = "docs/archive"
+records = "docs/development/runs"
 
 [paths.templates]
 plan = ".5x/templates/implementation-plan-template.md"
@@ -71,3 +72,14 @@ review = ".5x/templates/review-template.md"
 # SQLite database location for run history and state
 [db]
 path = ".5x/5x.db"
+
+# Git-tracked run records. `actor` is optional and appears in git history when set.
+# Prefer FIVEX_RECORDS_ACTOR or user-scope identity.json over a committed actor.
+# [records]
+# redact = []
+# actor = "your-label"
+
+# Optional extra progress-resolution candidate after 5x/<slug> refs (before HEAD).
+# Use this when plans live on a non-conventional branch.
+# [plans]
+# branch = "release/plans"

@@ -630,6 +630,126 @@ describe("custom formatter output (--text)", () => {
 		},
 		{ timeout: 15000 },
 	);
+
+	test(
+		"plan list --text: contains Source column",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+
+				const result = await run5x(dir, ["--text", "plan", "list"]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain("Source");
+				expect(result.stdout).not.toContain('{"ok"');
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"plan list / plan phases JSON: source is additive",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+
+				const list = await run5x(dir, ["--json", "plan", "list"]);
+				expect(list.exitCode).toBe(0);
+				const listEnv = JSON.parse(list.stdout) as {
+					ok: boolean;
+					data: {
+						plans: Array<{
+							plan_path: string;
+							title: string;
+							status: string;
+							source: string;
+							creator?: unknown;
+							exported_by?: unknown;
+						}>;
+					};
+				};
+				expect(listEnv.ok).toBe(true);
+				expect(listEnv.data.plans.length).toBeGreaterThan(0);
+				const firstPlan = listEnv.data.plans[0];
+				expect(firstPlan).toBeDefined();
+				expect(typeof firstPlan?.source).toBe("string");
+				expect(firstPlan).toHaveProperty("title");
+				expect(firstPlan).toHaveProperty("status");
+
+				const phases = await run5x(dir, ["--json", "plan", "phases", planPath]);
+				expect(phases.exitCode).toBe(0);
+				const phasesEnv = JSON.parse(phases.stdout) as {
+					ok: boolean;
+					data: { source: string; phases: unknown[] };
+				};
+				expect(phasesEnv.ok).toBe(true);
+				expect(typeof phasesEnv.data.source).toBe("string");
+				expect(Array.isArray(phasesEnv.data.phases)).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"records index --text and backfill --dry-run --text: exporter is not creator",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const initResult = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(initResult.exitCode).toBe(0);
+
+				const index = await run5x(dir, ["--text", "records", "index"]);
+				expect(index.exitCode).toBe(0);
+				expect(index.stdout).toContain("runs_upserted:");
+				expect(index.stdout).not.toContain('{"ok"');
+
+				const backfill = await run5x(dir, [
+					"--text",
+					"records",
+					"backfill",
+					"--dry-run",
+				]);
+				expect(backfill.exitCode).toBe(0);
+				expect(backfill.stdout).toContain("dry_run: true");
+				expect(backfill.stdout).toMatch(/^exported_by: /m);
+				expect(backfill.stdout).not.toContain('{"ok"');
+				expect(backfill.stdout).not.toMatch(/^creator: /m);
+				expect(backfill.stdout).not.toMatch(/^sealer: /m);
+
+				const backfillJson = await run5x(dir, [
+					"--json",
+					"records",
+					"backfill",
+					"--dry-run",
+				]);
+				expect(backfillJson.exitCode).toBe(0);
+				const env = JSON.parse(backfillJson.stdout) as {
+					ok: boolean;
+					data: {
+						exported_by: { recorder: { installation_id: string } };
+						mappings: Array<{ run_id: string }>;
+					};
+				};
+				expect(env.ok).toBe(true);
+				expect(env.data.exported_by.recorder.installation_id).toBeTruthy();
+				expect(JSON.stringify(env.data.mappings)).not.toContain('"creator"');
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });
 
 // ---------------------------------------------------------------------------

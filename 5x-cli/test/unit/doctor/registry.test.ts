@@ -25,7 +25,7 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("registers freshness, locks, worktrees, runs, db, prompts, and invocations in that order", () => {
+	test("registers freshness, locks, worktrees, runs, db, prompts, invocations, and records in that order", () => {
 		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
 			"harness-freshness",
 			"locks",
@@ -34,6 +34,7 @@ describe("builtinDoctorChecks", () => {
 			"db",
 			"prompts",
 			"invocations",
+			"records",
 		]);
 	});
 });
@@ -249,6 +250,62 @@ describe("findingKey", () => {
 					status: "fail",
 					fixable: true,
 					detail: { runId: "run_1" },
+				}),
+			),
+		).toThrow(/empty identity/);
+	});
+
+	test("RECORD_INDEX_MISSING_ROW keys on detail.stepKey", () => {
+		expect(
+			findingKey(
+				finding({
+					check: "records",
+					code: "RECORD_INDEX_MISSING_ROW",
+					status: "fail",
+					fixable: true,
+					detail: { stepKey: "step:run_a:author:impl:1:1", runId: "run_a" },
+				}),
+			),
+		).toBe("records:RECORD_INDEX_MISSING_ROW:step:run_a:author:impl:1:1");
+	});
+
+	test("RECORD_INDEX_MISSING_RUN keys on detail.runId", () => {
+		expect(
+			findingKey(
+				finding({
+					check: "records",
+					code: "RECORD_INDEX_MISSING_RUN",
+					status: "fail",
+					fixable: true,
+					detail: { runId: "run_a", planSlug: "alpha" },
+				}),
+			),
+		).toBe("records:RECORD_INDEX_MISSING_RUN:run_a");
+	});
+
+	test("throws when fixable RECORD_INDEX_MISSING_ROW is missing stepKey", () => {
+		expect(() =>
+			findingKey(
+				finding({
+					check: "records",
+					code: "RECORD_INDEX_MISSING_ROW",
+					status: "fail",
+					fixable: true,
+					detail: { runId: "run_a" },
+				}),
+			),
+		).toThrow(/empty identity/);
+	});
+
+	test("throws when fixable RECORD_INDEX_MISSING_RUN is missing runId", () => {
+		expect(() =>
+			findingKey(
+				finding({
+					check: "records",
+					code: "RECORD_INDEX_MISSING_RUN",
+					status: "fail",
+					fixable: true,
+					detail: { planSlug: "alpha" },
 				}),
 			),
 		).toThrow(/empty identity/);

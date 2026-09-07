@@ -35,6 +35,7 @@ import {
 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
+import { subprocess } from "../../../src/utils/subprocess.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 // ---------------------------------------------------------------------------
@@ -847,6 +848,52 @@ describe("runCommit", () => {
 						stderr: "pipe",
 					},
 				);
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--files git add pathspec includes recordsRelPath when recordsAbsPath exists",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			const addCalls: string[][] = [];
+			const originalExecGit = subprocess.execGit.bind(subprocess);
+			const gitSpy = spyOn(subprocess, "execGit").mockImplementation(
+				async (args, cwd) => {
+					if (args[0] === "add") {
+						addCalls.push([...args]);
+						return { stdout: "ok", stderr: "", exitCode: 0 };
+					}
+					return originalExecGit(args, cwd);
+				},
+			);
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				mkdirSync(join(ctx.tmp, "docs", "development", "runs"), {
+					recursive: true,
+				});
+				writeFileSync(join(ctx.tmp, "src.ts"), "export const n = 1;\n");
+
+				await runCommit({
+					run: runId,
+					message: "dry records pathspec",
+					files: ["src.ts"],
+					dryRun: true,
+					phase: "1",
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				expect(addCalls.length).toBe(1);
+				const addArgs = addCalls[0] ?? [];
+				expect(addArgs).toContain("src.ts");
+				expect(addArgs).toContain("docs/development/runs");
+			} finally {
+				gitSpy.mockRestore();
+				spy.mockRestore();
 				teardown(ctx);
 			}
 		},

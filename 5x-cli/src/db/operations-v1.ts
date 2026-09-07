@@ -417,6 +417,10 @@ export function listRuns(
 	const where =
 		conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 	const limit = opts?.limit ?? 50;
+	// `limit: 0` means unlimited (backfill must not silently truncate).
+	const unlimited = limit === 0;
+	const limitSql = unlimited ? "" : `LIMIT ?${paramIdx}`;
+	const queryParams = unlimited ? params : [...params, limit];
 
 	return db
 		.query(
@@ -425,9 +429,9 @@ export function listRuns(
 			 FROM runs r
 			 ${where}
 			 ORDER BY r.created_at DESC
-			 LIMIT ?${paramIdx}`,
+			 ${limitSql}`,
 		)
-		.all(...params, limit) as RunSummaryV1[];
+		.all(...queryParams) as RunSummaryV1[];
 }
 
 /**

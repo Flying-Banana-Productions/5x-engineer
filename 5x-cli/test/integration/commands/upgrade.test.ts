@@ -69,9 +69,37 @@ describe("5x upgrade", () => {
 				expect(stdout).toContain("skipping config upgrade");
 				expect(stdout).toContain("Database:");
 				expect(stdout).toContain("Templates:");
+				expect(stdout).toContain("Git attributes:");
 				expect(stdout).toContain("Upgrade complete.");
 
 				expect(existsSync(join(tmp, "5x.toml"))).toBe(false);
+				expect(existsSync(join(tmp, ".gitattributes"))).toBe(true);
+				expect(readFileSync(join(tmp, ".gitattributes"), "utf-8")).toContain(
+					"docs/development/runs/**/*.jsonl merge=union",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"writes merge=union gitattributes for a custom records path",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					`[paths]\nrecords = "custom/runs"\n`,
+					"utf-8",
+				);
+				const { stdout, exitCode } = await runUpgrade(tmp);
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain("Git attributes:");
+				expect(readFileSync(join(tmp, ".gitattributes"), "utf-8")).toContain(
+					"custom/runs/**/*.jsonl merge=union",
+				);
 			} finally {
 				cleanupDir(tmp);
 			}

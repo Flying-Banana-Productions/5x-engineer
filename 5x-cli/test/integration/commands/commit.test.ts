@@ -298,7 +298,7 @@ describe("5x commit (integration)", () => {
 				expect(result.stdout).not.toContain('{"ok"');
 				// Should contain the short hash + message format
 				expect(result.stdout).toContain("text mode commit");
-				expect(result.stdout).toContain("1 files");
+				expect(result.stdout).toMatch(/\d+ files/);
 			} finally {
 				cleanupDir(dir);
 			}
@@ -645,5 +645,51 @@ describe("5x commit (integration)", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+
+	test(
+		"--files with dirty steps.jsonl includes the jsonl in diff-tree",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+				await run5x(dir, [
+					"run",
+					"record",
+					"author:impl:status",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+					"--phase",
+					"1",
+				]);
+				writeFileSync(join(dir, "src-foo.ts"), "export const n = 1;\n");
+				const result = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"code and records",
+					"--files",
+					"src-foo.ts",
+					"--phase",
+					"1",
+				]);
+				expect(result.exitCode).toBe(0);
+				const files = git(
+					["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+					dir,
+				);
+				expect(files).toContain("src-foo.ts");
+				expect(files).toContain(
+					`docs/development/runs/test-plan/${runId}/steps.jsonl`,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
 	);
 });

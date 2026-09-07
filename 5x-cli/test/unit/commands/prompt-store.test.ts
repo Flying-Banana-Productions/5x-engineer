@@ -12,7 +12,11 @@ import {
 	promptConfirm,
 	promptInput,
 } from "../../../src/commands/prompt.handler.js";
-import { createMemoryPromptStore } from "../../../src/control-plane/index.js";
+import {
+	createMemoryPromptStore,
+	createMemoryRecordStore,
+	RUN_RECORD_FORMAT_VERSION,
+} from "../../../src/control-plane/index.js";
 import type { PromptStore } from "../../../src/control-plane/store.js";
 import { CliError } from "../../../src/output.js";
 import {
@@ -801,6 +805,166 @@ describe("confirm/input equivalent persist+CAS", () => {
 		const record = lastRecord(store);
 		expect(record?.answeredBy).toBe("terminal");
 		expect(record?.answer).toBe("hello world\n");
+	});
+});
+
+describe("prompt decision snapshots", () => {
+	const originFor = () => ({
+		recorder: {
+			installation_id: "00000000-0000-4000-8000-000000000001",
+			actor: "prompt-actor",
+		},
+		performer: { kind: "human" as const, role: "operator" },
+	});
+
+	test("answered with runId appends one decision line with origin", async () => {
+		const store = createMemoryPromptStore();
+		const recordStore = createMemoryRecordStore();
+		recordStore.putRun({
+			id: "run_prompt1",
+			plan_path: "plan.md",
+			config_json: null,
+			created_at: "2026-01-01 00:00:00",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "1.0.0",
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: { installation_id: "00000000-0000-4000-8000-000000000001" },
+		});
+		const result = await invoke(() =>
+			promptChoose(
+				{
+					message: "Pick",
+					options: "red,green",
+					default: "green",
+					run: "run_prompt1",
+				},
+				{
+					store,
+					runExists: () => true,
+					recordStore,
+					originFor,
+					isTTY: () => false,
+				},
+			),
+		);
+		expect(result.ok).toBe(true);
+		const lines = recordStore.listLines("run_prompt1", "decisions");
+		expect(lines).toHaveLength(1);
+		expect(lines[0]?.origin?.performer).toEqual({
+			kind: "human",
+			role: "operator",
+		});
+		expect(lines[0]?.origin?.recorder.installation_id).toBe(
+			"00000000-0000-4000-8000-000000000001",
+		);
+	});
+
+	test("second CAS loser does not duplicate the decision line", async () => {
+		const inner = createMemoryPromptStore();
+		const recordStore = createMemoryRecordStore();
+		recordStore.putRun({
+			id: "run_prompt1",
+			plan_path: "plan.md",
+			config_json: null,
+			created_at: "2026-01-01 00:00:00",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "1.0.0",
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: { installation_id: "00000000-0000-4000-8000-000000000001" },
+		});
+		const chooseParams = {
+			message: "Pick",
+			options: "red,green",
+			default: "green",
+			run: "run_prompt1",
+		};
+		await invoke(() =>
+			promptChoose(chooseParams, {
+				store: inner,
+				runExists: () => true,
+				recordStore,
+				originFor,
+				isTTY: () => false,
+			}),
+		);
+		const prompt = lastRecord(inner);
+		expect(prompt).toBeTruthy();
+		expect(recordStore.listLines("run_prompt1", "decisions")).toHaveLength(1);
+
+		const loserStore = wrapStore(inner);
+		loserStore.createPrompt = () => {
+			const row = inner.getPrompt(prompt?.id ?? "");
+			if (!row) throw new Error("expected existing prompt");
+			return row;
+		};
+		await invoke(() =>
+			promptChoose(chooseParams, {
+				store: loserStore,
+				runExists: () => true,
+				recordStore,
+				originFor,
+				isTTY: () => false,
+			}),
+		);
+		expect(recordStore.listLines("run_prompt1", "decisions")).toHaveLength(1);
+	});
+
+	test("runId null appends nothing", async () => {
+		const store = createMemoryPromptStore();
+		const recordStore = createMemoryRecordStore();
+		await invoke(() =>
+			promptChoose(
+				{ message: "Pick", options: "red,green", default: "green" },
+				{ store, recordStore, originFor, isTTY: () => false },
+			),
+		);
+		expect(recordStore.listRuns()).toEqual([]);
+	});
+
+	test("records.redact origin.actor omits actor on the decision line", async () => {
+		const store = createMemoryPromptStore();
+		const recordStore = createMemoryRecordStore();
+		recordStore.putRun({
+			id: "run_prompt1",
+			plan_path: "plan.md",
+			config_json: null,
+			created_at: "2026-01-01 00:00:00",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "1.0.0",
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: { installation_id: "00000000-0000-4000-8000-000000000001" },
+		});
+		const redactedOriginFor = () => ({
+			recorder: { installation_id: "00000000-0000-4000-8000-000000000001" },
+			performer: { kind: "human" as const, role: "operator" },
+		});
+		await invoke(() =>
+			promptChoose(
+				{
+					message: "Pick",
+					options: "red,green",
+					default: "green",
+					run: "run_prompt1",
+				},
+				{
+					store,
+					runExists: () => true,
+					recordStore,
+					originFor: redactedOriginFor,
+					isTTY: () => false,
+				},
+			),
+		);
+		const line = recordStore.listLines("run_prompt1", "decisions")[0];
+		expect(line?.origin?.recorder.actor).toBeUndefined();
+		expect(line?.origin?.recorder.installation_id).toBeTruthy();
+		expect(line?.origin?.performer.kind).toBe("human");
 	});
 });
 

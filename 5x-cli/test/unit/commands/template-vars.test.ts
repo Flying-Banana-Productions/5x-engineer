@@ -33,6 +33,7 @@ function makeConfig(
 				review: "/project/docs/development/reviews/_review_template.md",
 			},
 			...overrides,
+			records: overrides.records ?? "/project/docs/development/runs",
 		},
 	};
 }

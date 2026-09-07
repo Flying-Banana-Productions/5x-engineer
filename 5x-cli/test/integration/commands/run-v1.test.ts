@@ -2293,3 +2293,515 @@ describe("5x run ambient identity", () => {
 		{ timeout: 15000 },
 	);
 });
+
+describe("git-native run records (phase 4)", () => {
+	test(
+		"dirty records do not DIRTY_WORKTREE; other dirty files still do",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				await run5x(projectRoot, [
+					"run",
+					"record",
+					"author:impl:status",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+					"--phase",
+					"1",
+				]);
+
+				const plan2 = join(projectRoot, "docs", "development", "other-plan.md");
+				writeFileSync(plan2, "# Other\n\n## Phase 1\n\n- [ ] x\n");
+				Bun.spawnSync(["git", "add", plan2], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "other plan"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+
+				const recordsOnly = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					plan2,
+				]);
+				expect(recordsOnly.exitCode).toBe(0);
+
+				writeFileSync(join(projectRoot, "extra-dirty.txt"), "dirty\n");
+				const blocked = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					plan2,
+				]);
+				expect(blocked.exitCode).toBe(5);
+				expect(
+					(parseJson(blocked.stdout).error as Record<string, unknown>).code,
+				).toBe("DIRTY_WORKTREE");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"planted format_version 2 complete and abort leave streams and sqlite unchanged",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				await run5x(projectRoot, [
+					"run",
+					"record",
+					"author:impl:status",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+					"--phase",
+					"1",
+				]);
+
+				const runDir = join(
+					projectRoot,
+					"docs",
+					"development",
+					"runs",
+					"test-plan",
+					runId,
+				);
+				const runJsonPath = join(runDir, "run.json");
+				const stepsPath = join(runDir, "steps.jsonl");
+				const originalSteps = readFileSync(stepsPath, "utf-8");
+				const parsed = JSON.parse(readFileSync(runJsonPath, "utf-8")) as Record<
+					string,
+					unknown
+				>;
+				parsed.format_version = 2;
+				parsed.future_field = true;
+				writeFileSync(runJsonPath, `${JSON.stringify(parsed, null, 2)}\n`);
+				const planted = readFileSync(runJsonPath, "utf-8");
+				const logBefore = Bun.spawnSync(["git", "log", "-1", "--format=%H"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				}).stdout.toString();
+				const pointerPath = join(projectRoot, ".5x", CURRENT_RUN_FILENAME);
+				const pointerBefore = readFileSync(pointerPath, "utf-8");
+				const lockDir = join(projectRoot, ".5x", "locks");
+				const locksBefore = existsSync(lockDir)
+					? Bun.spawnSync(["ls", "-1", lockDir], {
+							cwd: projectRoot,
+							stdin: "ignore",
+							stdout: "pipe",
+							stderr: "pipe",
+						}).stdout.toString()
+					: "";
+
+				for (const status of ["completed", "aborted"] as const) {
+					const result = await run5x(projectRoot, [
+						"run",
+						"complete",
+						"--run",
+						runId,
+						"--status",
+						status,
+					]);
+					expect(result.exitCode).not.toBe(0);
+					expect(
+						(parseJson(result.stdout).error as Record<string, unknown>).code,
+					).toBe("UNSUPPORTED_FORMAT_VERSION");
+					expect(readFileSync(runJsonPath, "utf-8")).toBe(planted);
+					expect(planted).toContain("future_field");
+					expect(readFileSync(stepsPath, "utf-8")).toBe(originalSteps);
+					expect(readFileSync(stepsPath, "utf-8")).not.toContain(
+						"run:complete",
+					);
+					expect(readFileSync(stepsPath, "utf-8")).not.toContain("run:abort");
+					const db = new Database(join(projectRoot, ".5x", "5x.db"));
+					const row = db
+						.query("SELECT status FROM runs WHERE id = ?1")
+						.get(runId) as { status: string };
+					db.close();
+					expect(row.status).toBe("active");
+					const logAfter = Bun.spawnSync(["git", "log", "-1", "--format=%H"], {
+						cwd: projectRoot,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					}).stdout.toString();
+					expect(logAfter).toBe(logBefore);
+					expect(readFileSync(pointerPath, "utf-8")).toBe(pointerBefore);
+					const locksAfter = existsSync(lockDir)
+						? Bun.spawnSync(["ls", "-1", lockDir], {
+								cwd: projectRoot,
+								stdin: "ignore",
+								stdout: "pipe",
+								stderr: "pipe",
+							}).stdout.toString()
+						: "";
+					expect(locksAfter).toBe(locksBefore);
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"complete with dirty records creates one records-only seal commit",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				await run5x(projectRoot, [
+					"run",
+					"record",
+					"author:impl:status",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+					"--phase",
+					"1",
+				]);
+				writeFileSync(join(projectRoot, "extra-dirty.txt"), "leave me out\n");
+				const before = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+
+				const result = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(result.exitCode).toBe(0);
+
+				const logLine = Bun.spawnSync(["git", "log", "-1", "--format=%s"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+				expect(logLine).toBe(`5x: seal run ${runId}`);
+				const after = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+				expect(after).not.toBe(before);
+				const files = Bun.spawnSync(
+					["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+					{
+						cwd: projectRoot,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				)
+					.stdout.toString()
+					.trim()
+					.split("\n")
+					.filter(Boolean);
+				expect(files.length).toBeGreaterThan(0);
+				for (const file of files) {
+					expect(file.startsWith("docs/development/runs/")).toBe(true);
+				}
+				expect(files).not.toContain("extra-dirty.txt");
+
+				const runJson = JSON.parse(
+					readFileSync(
+						join(
+							projectRoot,
+							"docs",
+							"development",
+							"runs",
+							"test-plan",
+							runId,
+							"run.json",
+						),
+						"utf-8",
+					),
+				) as {
+					status: string;
+					creator: { installation_id: string };
+					sealer: { installation_id: string };
+				};
+				expect(runJson.status).toBe("completed");
+				expect(runJson.creator.installation_id).toBeTruthy();
+				expect(runJson.sealer.installation_id).toBe(
+					runJson.creator.installation_id,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"complete with already-committed records creates one records-only seal commit",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				await run5x(projectRoot, [
+					"run",
+					"record",
+					"author:impl:status",
+					"--run",
+					runId,
+					"--result",
+					'{"ok":true}',
+					"--phase",
+					"1",
+				]);
+				Bun.spawnSync(["git", "add", "docs/development/runs"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "records"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				writeFileSync(join(projectRoot, "extra-dirty.txt"), "leave me out\n");
+				const before = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+
+				const result = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(result.exitCode).toBe(0);
+				const after = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+				expect(after).not.toBe(before);
+				const logLine = Bun.spawnSync(["git", "log", "-1", "--format=%s"], {
+					cwd: projectRoot,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				})
+					.stdout.toString()
+					.trim();
+				expect(logLine).toBe(`5x: seal run ${runId}`);
+				const files = Bun.spawnSync(
+					["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+					{
+						cwd: projectRoot,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				)
+					.stdout.toString()
+					.trim()
+					.split("\n")
+					.filter(Boolean);
+				expect(files.length).toBeGreaterThan(0);
+				for (const file of files) {
+					expect(file.startsWith("docs/development/runs/")).toBe(true);
+				}
+				expect(files).not.toContain("extra-dirty.txt");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"abort seals run.json as aborted and sets sealer",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				const result = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+					"--status",
+					"aborted",
+				]);
+				expect(result.exitCode).toBe(0);
+				const runJson = JSON.parse(
+					readFileSync(
+						join(
+							projectRoot,
+							"docs",
+							"development",
+							"runs",
+							"test-plan",
+							runId,
+							"run.json",
+						),
+						"utf-8",
+					),
+				) as {
+					status: string;
+					creator: { installation_id: string } | null;
+					sealer: { installation_id: string };
+				};
+				expect(runJson.status).toBe("aborted");
+				expect(runJson.creator?.installation_id).toBeTruthy();
+				expect(runJson.sealer.installation_id).toBeTruthy();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+
+	test(
+		"complete of creator null keeps creator null and sets sealer",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath, projectRoot } = setupProject(dir);
+				const init = await run5x(projectRoot, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(init.exitCode).toBe(0);
+				const runId = (parseJson(init.stdout).data as Record<string, unknown>)
+					.run_id as string;
+				const runJsonPath = join(
+					projectRoot,
+					"docs",
+					"development",
+					"runs",
+					"test-plan",
+					runId,
+					"run.json",
+				);
+				const summary = JSON.parse(
+					readFileSync(runJsonPath, "utf-8"),
+				) as Record<string, unknown>;
+				summary.creator = null;
+				writeFileSync(runJsonPath, `${JSON.stringify(summary, null, 2)}\n`);
+
+				const result = await run5x(projectRoot, [
+					"run",
+					"complete",
+					"--run",
+					runId,
+				]);
+				expect(result.exitCode).toBe(0);
+				const sealed = JSON.parse(readFileSync(runJsonPath, "utf-8")) as {
+					creator: { installation_id: string } | null;
+					sealer: { installation_id: string };
+					status: string;
+				};
+				expect(sealed.creator).toBeNull();
+				expect(sealed.sealer.installation_id).toBeTruthy();
+				expect(sealed.status).toBe("completed");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
+	);
+});

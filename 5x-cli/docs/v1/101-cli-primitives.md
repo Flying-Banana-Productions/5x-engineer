@@ -88,6 +88,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 | **Quality** | `quality run` | Execute quality gates |
 | **Phase composites** | `phase finish` | Sugar over quality + author protocol validate/record + checklist |
 | **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
+| **Records** | `records index`, `records backfill` | Rebuild the SQLite index from git-tracked run records; export historical DB rows into the record format |
 | **Worktree** | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` | Git worktree isolation for runs |
 | **Human interaction** | `prompt choose`, `prompt confirm`, `prompt input` | Present choices, confirmations, or collect input from the user |
 
@@ -148,11 +149,12 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 
 - Checks for an existing active run for this plan. If found, returns it instead of creating a new one (idempotent).
 - Acquires a file-based plan lock under the control-plane root's state directory (`<controlPlaneRoot>/<stateDir>/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen.
-- Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0.
+- Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0. Uncommitted changes under `paths.records` are exempt — they are expected between `run record` and `5x commit` / seal.
 - Canonicalizes the plan path for DB identity (worktree-safe). **Validates that the plan path is under `controlPlaneRoot`** — external plans are rejected with `PLAN_OUTSIDE_CONTROL_PLANE`.
 - Validates that the plan path resolves inside the configured `paths.plans` directory. The file itself may be created later by the author workflow.
 - When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
 - Run state is always stored in the control-plane root DB, regardless of which checkout the command is run from.
+- Dual-writes an unsealed `run.json` under `paths.records/<plan-slug>/<run-id>/` in the run's effective worktree (`format_version: 1`, `creator` from this installation's already-redacted recorder, `status: active`). Record files are re-rooted to a `--worktree` checkout so they commit with the code.
 - Writes the run id to the control-plane state root's `current-run` file (`.5x/current-run` by default; absolute configured `db.path` is the state root). Overwrites on resume.
 
 ---
@@ -163,7 +165,7 @@ Query the current state of a run.
 
 ```
 5x run state [--run <id>]
-5x run state --plan <path>     # find active run for this plan (ignores FIVEX_RUN / pointer)
+5x run state --plan <path> [--fetch] [--all-refs]     # find active run for this plan (ignores FIVEX_RUN / pointer)
 ```
 
 **Returns:**
@@ -210,7 +212,8 @@ Query the current state of a run.
 
 - Returns ALL recorded steps for the run, ordered by creation time.
 - The `summary` field provides a computed snapshot so the orchestrating agent doesn't need to compute it from raw steps.
-- If `--plan` is used and no active run exists, returns `ok: true` with `data: null`.
+- `--plan` adds additive `source` / `source_ref` / `source_commit` / `source_age_seconds` / `diverged_sources` from git progress resolution (same algorithm as `plan phases`). Local SQLite still supplies the active run and step `id`s when present.
+- If `--plan` is used and no local run exists, a `run.json` at the winning git commit is surfaced (`status` from the record, steps decoded from `steps.jsonl`). Those git-only step objects omit `id` (SQLite autoincrement is local-only); other step keys match the SQLite path. `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
 ---
 
@@ -256,6 +259,12 @@ The step is keyed by `(run_id, step_name, phase, iteration)`. If a record alread
 
 This is the foundation of resumability. The orchestrating agent can re-attempt steps without worrying about duplication.
 
+**Dual-write and origin:**
+
+Every admitted step is appended to the git-tracked run record first (`steps.jsonl` in the run's effective worktree), then projected into SQLite. Re-recording an existing key appends no JSONL line and returns the existing SQLite row. JSONL first-line-wins is the same contract as SQLite `INSERT OR IGNORE` — the idempotency key does not change.
+
+Each JSONL line carries `schema_version`, `provenance: "recorded"`, and an **origin envelope** (recorder vs performer). Origin is constructed only through `originFor` (already redacted: forbidden identity keys stripped; `origin.actor` omitted when `records.redact` includes it). Direct `run record` / `commit` / `quality run --record` stamp `{ kind: "system", role: "cli" }`; `invoke --record` stamps `{ kind: "agent", role, provider }`; answered prompts stamp `{ kind: "human", role: "operator" }`. `session_id`, `log_path`, hostname, hardware ID, and OS username are never recorded.
+
 **Auto-increment iteration:**
 
 If `--iteration` is omitted, the CLI computes `MAX(iteration) + 1` for the given `(run_id, step_name, phase)`. This simplifies the common pattern of recording successive attempts.
@@ -270,7 +279,9 @@ Mark a run as completed or aborted.
 5x run complete [--run <id>] [--status completed|aborted] [--reason <text>]
 ```
 
-Defaults to `completed`. Records a terminal `run:complete` or `run:abort` step, updates the run status, and releases the plan lock. `--run` is ambient-resolved when omitted. Clears `.5x/current-run` **iff** the file still names this run.
+Defaults to `completed`. **Version-checks `run.json` `format_version` before any mutation.** A summary with `format_version > 1` fails closed (`UNSUPPORTED_FORMAT_VERSION`): no terminal `run:complete` / `run:abort` line, SQLite status stays `active`, no seal commit, `run.json` and streams stay byte-identical.
+
+For a v1 run: records a terminal `run:complete` or `run:abort` step through the same dual-write path (with `head_commit`), seals `run.json` (preserves `creator` including `null`, sets `sealer` to this installation's redacted recorder), updates the run status, and releases the plan lock. If record files remain uncommitted, creates a dedicated `5x: seal run <id>` commit. `--run` is ambient-resolved when omitted. Clears `.5x/current-run` **iff** the file still names this run.
 
 ---
 
@@ -591,7 +602,7 @@ Success payload: `{ run_id, phase, iteration, steps }`. Non-complete author resu
 Parse a plan and return its phases.
 
 ```
-5x plan phases <path>
+5x plan phases <path> [--fetch] [--all-refs]
 ```
 
 **Returns:**
@@ -604,26 +615,37 @@ Parse a plan and return its phases.
       { "id": "1", "title": "Authentication Module", "done": true, "checklist_total": 5, "checklist_done": 5 },
       { "id": "2", "title": "Authorization Layer", "done": false, "checklist_total": 4, "checklist_done": 1 },
       { "id": "3", "title": "API Endpoints", "done": false, "checklist_total": 6, "checklist_done": 0 }
-    ]
+    ],
+    "filePaths": { "root": "/repo/docs/development/plan.md" },
+    "source": "origin/5x/plan",
+    "source_ref": "origin/5x/plan",
+    "source_commit": "abc123",
+    "source_age_seconds": 7200
   }
 }
 ```
 
 Phase IDs are numeric strings parsed from markdown headings (e.g., `"1"`, `"1.1"`, `"2"`), matching the regex `\d+(\.\d+)?`. This matches the current v0 plan parser output. Phases are sorted numerically (`CAST(phase AS REAL)`).
 
+Progress is resolved from git refs (mapped worktree → local `5x/<slug>` → remote-tracking `*/5x/<slug>` → `HEAD`) without checking out. Additive `source*` fields name the winning ref. `--fetch` updates remote-tracking `5x/*` refs first (fetch failure is a warning). `--all-refs` includes non-conventional branches. When multiple tips have diverged edits, `source` is `"diverged"` and `diverged_sources` lists them; displayed completion is the maximum. `PLAN_NOT_FOUND` only when the plan is missing from git and from the checkout.
+
+Text mode prints `source: origin/5x/<slug> (fetched 2h ago)` when the winning source is not the checked-out worktree or HEAD file.
+
 ### `5x plan list`
 
-List all markdown plans under `paths.plans` (recursive into subdirectories), with completion status and run summaries joined from the DB. Entire subtrees rooted at `paths.reviews`, `paths.planReviews`, and `paths.runReviews` are skipped when they fall under `paths.plans` (so implementation-plan reviews and similar folders do not pollute the list).
+List all markdown plans under `paths.plans` (recursive into subdirectories), with completion status and run summaries joined from the DB. Entire subtrees rooted at `paths.reviews`, `paths.planReviews`, `paths.runReviews`, and `paths.records` are skipped when they fall under `paths.plans` (so implementation-plan reviews, run records, and similar folders do not pollute the list).
 
 **Config resolution:** Uses layered config with `contextDir` set to the current working directory (same idea as `5x config show` with a context directory). In a monorepo with a root `5x.toml` and a nested `5x.toml` (for example under `5x-cli/`), running `5x plan list` from that subdirectory merges root + nearest config and resolves `paths.plans` relative to the nearest config file—so package-local `docs/development` applies to that package, not the repository root.
 
 ```
-5x plan list [--exclude-finished]
+5x plan list [--exclude-finished] [--fetch] [--all-refs]
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--exclude-finished` | No | Omit plans that are 100% complete (all phases done). |
+| `--fetch` | No | Fetch remote `5x/*` branches before resolving progress. Never implicit. Fetch failure is a warning. |
+| `--all-refs` | No | Discover plans and progress from all heads/remotes, not only `5x/<slug>`. |
 
 **Returns:**
 
@@ -643,18 +665,19 @@ List all markdown plans under `paths.plans` (recursive into subdirectories), wit
         "phases_done": 3,
         "phases_total": 3,
         "active_run": null,
-        "runs_total": 2
+        "runs_total": 2,
+        "source": "HEAD"
       }
     ]
   }
 }
 ```
 
-Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery is disk-authoritative: files on disk appear even if never used with `run init`; DB-only rows without a matching file are omitted. When a plan is mapped to a worktree, the worktree copy is read for phase/checklist state (same rule as `plan phases`).
+Each entry’s `plan_path` is POSIX-style and relative to `plans_dir` (stable identity; nested plan directories are included, excluding the skipped review subtrees above). Discovery unions checkout `.md` files with plan files on `5x/*` refs (and all refs with `--all-refs`), so branch-only plans appear with their `source`. `active_run` / `runs_total` remain local-index coordination (0 on a fresh clone until `records index`). Additive `source`, `source_ref`, `source_age_seconds`, and `diverged` name the winning git ref for checklist progress.
 
-**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the same file used for parsing (worktree copy when mapped).
+**Sort order (JSON and `--text`):** completion percentage descending (100% first, then lower buckets), then modified time ascending within each percentage (oldest file first), then `plan_path` ascending as a final tie-break. The modified time is taken from the checkout file when present.
 
-**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`). When there are no plans, prints `(no plans)` on the line after the directory (no table).
+**Text mode:** Prints `Plans directory: <absolute paths.plans>` on the first line, then a blank line before the table when there are rows. Column-aligned table: Plan Path, Status (`complete` / `incomplete`), Progress (percent), Phases (done/total), Runs (count), Active Run (run ID or `-`), Source. When there are no plans, prints `(no plans)` on the line after the directory (no table).
 
 ### `5x diff`
 
@@ -806,6 +829,57 @@ The root repository's `.5x/` directory is the single control-plane for all state
 Explicit `--workdir` always overrides automatic worktree resolution.
 
 **Isolated mode:** If `5x init` is run in a worktree whose parent repo is not 5x-managed (no root `.5x/5x.db`), a local state DB is created. State is local to that worktree. If the parent repo is later initialized, commands from the worktree switch to managed mode and use the root DB. `5x init` from a linked worktree is blocked when the parent repo is already 5x-managed.
+
+---
+
+## 6b. Run records
+
+Git-tracked run records (`run.json`, `steps.jsonl`, `decisions.jsonl`, `budget.jsonl`) are the source of truth for completed work. SQLite `runs` / `steps` are a rebuildable index. Origin, provenance, and summary attribution live on the record — they are not SQLite columns.
+
+### `5x records index`
+
+Rebuild the local SQLite index from the resolved git record.
+
+```
+5x records index [--plan <slug>]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--plan` | No | Limit indexing to one plan slug. |
+
+Walks the same progress-resolution algorithm as `plan list` (§6) and re-materializes `runs` / `steps` from `run.json` / `steps.jsonl`. Idempotent. Never overwrites a row that has a *newer* local-only step (in-flight work on this machine). Origin / creator / sealer are **not** copied into SQLite; a backfilled `creator: null` stays unknown after index.
+
+`5x doctor --fix` re-indexes when the `records` check reports missing index rows. `--fix` does not delete extra SQLite rows, rewrite JSONL, or delete `.txn.*` artifacts.
+
+**Returns:** `plans`, `runs_upserted`, `steps_upserted`, `steps_skipped_newer_local`.
+
+### `5x records backfill`
+
+Export historical SQLite runs into the record format.
+
+```
+5x records backfill [--plan <slug>] [--target auto|<branch>] [--dry-run]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--plan` | No | Limit export to one plan slug. |
+| `--target` | No | Branch to write. Default `auto`. |
+| `--dry-run` | No | Print the run → target mapping and file list without writing. |
+
+**Target rule (`--target auto`):** if `refs/heads/5x/<slug>` exists **or** any `refs/remotes/*/5x/<slug>` exists, records go to `5x/<slug>` (mapped worktree if it is that branch; otherwise a temporary worktree). If the branch is gone (merged and deleted, no remote-tracking), records go to the current branch. `--target <branch>` overrides auto (must exist). `--target auto` does **not** fetch; operators fetch remote `5x/<slug>` refs first if they want them considered. Never push.
+
+**Backfill origin honesty:** exported JSONL lines have `provenance: "backfilled"`, `origin: null`, and a separate `materializer` for this installation's exporter (`performer.kind: "system"`, `role: "exporter"`). `run.json` `creator` is `null`; terminal runs also have `sealer: null`. The exporter is **not** the original origin or the run's creator/sealer. Text and JSON output identify the exporter as `exported_by` only. A DB row that disagrees with an existing `provenance: "recorded"` line is reported (`recorded-vs-backfill`) and never overwritten.
+
+`--dry-run` prints the mapping without `git add`, file writes, or commits. A second real run is a no-op when the target is already clean (`created: false`, no new commit). Active runs are exported unsealed (`status: active`, `backfilled: true`, no `sealer`).
+
+### Origin, identity, and privacy
+
+- **Identity file:** user-scope `identity.json` (Unix: `$XDG_CONFIG_HOME/5x` or `~/.config/5x`; Windows: `%APPDATA%/5x`; tests/CI: `FIVEX_CONFIG_HOME`). Never under the repository, `paths.records`, or project `.5x/`. `installation_id` is a random UUID v4 correlator for one CLI install, not a person. Corrupt files fail closed (`IDENTITY_CORRUPT`).
+- **Actor:** optional label. Precedence: `FIVEX_RECORDS_ACTOR` → `records.actor` → identity-file `actor`. Never inferred from OS username, hostname, or Git identity. When set, `actor` **will appear in git history / PRs**. Public repositories should omit it or add `origin.actor` to `records.redact`.
+- **`originFor` / `redactedRecorder`:** sole already-redacted constructors for persisted origin and `run.json` creator/sealer. `records.redact = ["origin.actor"]` omits actor on steps, decisions, budget, and summary attribution while keeping `installation_id` and `performer.kind`.
+- **Fail-closed newer format:** `run.json` `format_version > 1` is readable for display/index but this CLI will not mutate it (`UNSUPPORTED_FORMAT_VERSION`).
 
 ---
 
@@ -1024,10 +1098,12 @@ Each step is uniquely identified by `(run_id, step_name, phase, iteration)`:
 
 ### Recording behavior
 
-`5x run record` uses INSERT OR IGNORE semantics:
+`5x run record` uses INSERT OR IGNORE semantics (SQLite) and first-line-wins (JSONL under `paths.records`):
 
-- If the key doesn't exist: insert the record, return `recorded: true`
-- If the key exists: return the existing record, return `recorded: false`
+- If the key doesn't exist: append the record line, project into SQLite, return `recorded: true`
+- If the key exists: return the existing record, return `recorded: false`; no second JSONL line
+
+The idempotency key is unchanged: `(run_id, step_name, phase, iteration)`. JSONL first-line-wins after `merge=union` concatenation is the same contract as `INSERT OR IGNORE`.
 
 ### Auto-increment vs explicit iteration
 
@@ -1213,6 +1289,14 @@ export default {
   paths: {
     plans: "docs/development",
     reviews: "docs/development/reviews",
+    records: "docs/development/runs",  // git-tracked run records; must be inside the repo
+  },
+
+  // Optional recorder label. Appears in git history / PRs when set.
+  // Prefer FIVEX_RECORDS_ACTOR or user-scope identity.json over a committed value.
+  records: {
+    redact: [],            // extra fields to drop; "origin.actor" omits actor on lines and run.json
+    // actor: "your-label",
   },
 
   // v1 additions
@@ -1231,6 +1315,8 @@ export default {
 ```
 
 **`db.path` semantics:** `db.path` is a directory path, not a file path. The canonical DB file is always `5x.db` within this directory. Legacy file-style values (e.g. `.5x/5x.db`) are normalized automatically — if the value ends with `5x.db`, the filename is stripped and the parent directory is used.
+
+**`paths.records` / `[records]`:** `paths.records` defaults to `docs/development/runs` and must resolve inside the repository (`RECORDS_ROOT_OUTSIDE_REPO` otherwise). `records.redact` defaults to `[]`. `records.actor` is optional. Identity lives outside the repo (`~/.config/5x/identity.json` or `%APPDATA%/5x/identity.json`; `FIVEX_CONFIG_HOME` override). Actor precedence: `FIVEX_RECORDS_ACTOR` → `records.actor` → identity file. Public repositories should omit `actor` or set `records.redact = ["origin.actor"]` so the label does not land in git history. See §6b.
 
 ### Config layering (monorepo support)
 

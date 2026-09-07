@@ -99,6 +99,17 @@ class SqlitePromptStore implements PromptStore {
 		return rows.map(mapRow);
 	}
 
+	listAnsweredPrompts(runId: string): PromptRecord[] {
+		const rows = this.db
+			.query(
+				`SELECT * FROM prompts
+				 WHERE run_id = ?1 AND answered_at IS NOT NULL AND abandoned_at IS NULL
+				 ORDER BY created_at ASC`,
+			)
+			.all(runId) as PromptSqlRow[];
+		return rows.map(mapRow);
+	}
+
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult {
 		this.db
 			.query(
