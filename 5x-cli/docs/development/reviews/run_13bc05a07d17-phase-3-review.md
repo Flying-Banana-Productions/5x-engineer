@@ -80,3 +80,35 @@ Threshold defaults now live in two places: the Zod schema in `src/config.ts` and
 ## Phase readiness
 
 Phase 3 is complete. Phase 4 (record lines, `atomicAppendIfAllNew`, facade, v8 index) has no dependency on the P2 item and can proceed; P2.1 can be folded into this phase's fix pass or picked up alongside Phase 4.
+
+---
+
+## Addendum — Re-review at `309357cd7fbaeaf2750c13ea2ea09839424b7b12`
+
+**Diff since last review:** one commit, `309357c` ("test: guard review budget defaults against drift"), touching only `test/unit/config-v1.test.ts` (plus the run's `steps.jsonl` ledger). No production source changed.
+
+### Prior findings — disposition
+
+| ID | Status | Notes |
+|---|---|---|
+| P2.1 — no drift guard between Zod defaults and `DEFAULT_REVIEW_BUDGET_CONFIG` | **Addressed** | `config-v1.test.ts`'s `"reviewBudget uses advisory defaults"` test now imports `DEFAULT_REVIEW_BUDGET_CONFIG` from `src/review-budget/types.ts` and asserts `FiveXConfigSchema.parse({}).reviewBudget` equals `{ mode: "advisory", ...DEFAULT_REVIEW_BUDGET_CONFIG }`, replacing the prior hand-copied literal. This is exactly the requested fix: the two default sources can no longer silently diverge — editing either the Zod schema or the frozen constant without updating the other now fails this test. |
+
+### What changed
+
+- `test/unit/config-v1.test.ts:7` — new import of `DEFAULT_REVIEW_BUDGET_CONFIG`.
+- `test/unit/config-v1.test.ts:98–102` — the 10 hard-coded threshold fields are replaced with a spread of `DEFAULT_REVIEW_BUDGET_CONFIG` alongside the literal `mode: "advisory"` (correct, since `ReviewBudgetThresholds = Omit<ReviewBudgetConfig, "mode">` excludes `mode` from the frozen constant).
+
+### Verification
+
+- `bun test test/unit/config-v1.test.ts test/unit/config.test.ts test/unit/config-registry.test.ts test/unit/providers/opencode.test.ts test/unit/review-budget/types.test.ts` — 153 pass, 0 fail.
+- `bunx tsc --noEmit` — clean.
+
+### New issues
+
+None. The change is minimal, test-only, and matches the requested fix precisely.
+
+### Updated readiness
+
+All P2 items from the prior review are resolved and no blockers exist. Phase 3 is complete and ready to proceed to Phase 4.
+
+**Readiness:** Ready — no outstanding items.
