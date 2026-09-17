@@ -7,6 +7,7 @@ import {
 	FiveXConfigSchema,
 	loadConfig,
 } from "../../src/config.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../src/review-budget/types.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -97,16 +98,7 @@ describe("config v1 extensions", () => {
 	test("reviewBudget uses advisory defaults", () => {
 		expect(FiveXConfigSchema.parse({}).reviewBudget).toEqual({
 			mode: "advisory",
-			growthPercent: 25,
-			minimumGrowthPoints: 2,
-			debtTradeoffRatio: 1,
-			maxDebtCreditPercent: 25,
-			absoluteGrowthPercent: 50,
-			baselineDisagreementPercent: 25,
-			minimumBaselineDisagreementPoints: 2,
-			maxPositiveArchitecturePercent: 25,
-			minimumPositiveArchitecturePoints: 2,
-			singleArchitectureReviewPoints: 5,
+			...DEFAULT_REVIEW_BUDGET_CONFIG,
 		});
 	});
 
