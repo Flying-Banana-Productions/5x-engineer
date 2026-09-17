@@ -94,6 +94,44 @@ describe("parseDeliveryBudget", () => {
 		expect(rawDeliveryBudgetSection("# No budget")).toBeNull();
 	});
 
+	test("ignores fenced budget headings and fenced section-ending headings", () => {
+		const fencedExample = `# Documented format
+
+\`\`\`markdown
+## Delivery Budget
+- Estimate confidence: low
+\`\`\`
+
+${CANONICAL.replace(
+	"- Estimate confidence: medium\n",
+	"- Estimate confidence: medium\n\n```text\n# not a real section end\n```\n",
+)}`;
+		const result = parseDeliveryBudget(fencedExample);
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.message);
+		expect(result.value.workItems).toHaveLength(2);
+		const raw = rawDeliveryBudgetSection(fencedExample);
+		expect(raw).toContain("# not a real section end");
+		expect(raw).toContain("### Surface Snapshot");
+		expect(raw?.startsWith("## Delivery Budget\n")).toBe(true);
+	});
+
+	test("parses CRLF input and extracts a CRLF-preserving raw section", () => {
+		const crlf = CANONICAL.replaceAll("\n", "\r\n");
+		expect(parseDeliveryBudget(crlf).ok).toBe(true);
+		const raw = rawDeliveryBudgetSection(crlf);
+		expect(raw).toContain("\r\n### Surface Snapshot\r\n");
+		expect(raw).not.toContain("## Phase 1");
+	});
+
+	test("parses and extracts a budget section at EOF", () => {
+		const atEof = CANONICAL.slice(0, CANONICAL.indexOf("\n## Phase 1"));
+		expect(parseDeliveryBudget(atEof).ok).toBe(true);
+		expect(rawDeliveryBudgetSection(atEof)?.endsWith("contracts: 0")).toBe(
+			true,
+		);
+	});
+
 	test("accepts case-insensitive confidence and split boundary aliases", () => {
 		const markdown = replaceOnce("medium", "HIGH").replace(
 			"- Persistent/external boundaries: 1",
@@ -103,6 +141,47 @@ describe("parseDeliveryBudget", () => {
 		expect(result.ok).toBe(true);
 		if (result.ok)
 			expect(result.value.surface.persistentOrExternalBoundaries).toBe(5);
+	});
+
+	test("accepts adjacent and unrelated debt-claim coupling", () => {
+		for (const coupling of ["adjacent", "unrelated"] as const) {
+			const result = parseDeliveryBudget(
+				replaceOnce("DC0 (`intrinsic`)", `DC0 (\`${coupling}\`)`),
+			);
+			expect(result.ok).toBe(true);
+			if (result.ok)
+				expect(result.value.workItems[1]?.debtClaim?.coupling).toBe(coupling);
+		}
+	});
+
+	test("accepts zero minimal-compliant effort and normalizes negative zero", () => {
+		const markdown = replaceOnce(
+			"Minimal-compliant effort delta: 2",
+			"Minimal-compliant effort delta: 0",
+		)
+			.replace("| 3 | 0 |", "| 3 | -0 |")
+			.replace(
+				"Minimal-compliant architecture delta: 0",
+				"Minimal-compliant architecture delta: -0",
+			)
+			.replace(
+				"Persistent/external boundaries: 1",
+				"Persistent/external boundaries: -0",
+			);
+		const result = parseDeliveryBudget(markdown);
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.message);
+		const claim = result.value.workItems[1]?.debtClaim;
+		expect(claim?.minimalAlternativeEffortDelta).toBe(0);
+		expect(Object.is(result.value.workItems[0]?.architectureDelta, -0)).toBe(
+			false,
+		);
+		expect(Object.is(claim?.minimalAlternativeArchitectureDelta, -0)).toBe(
+			false,
+		);
+		expect(
+			Object.is(result.value.surface.persistentOrExternalBoundaries, -0),
+		).toBe(false);
 	});
 
 	test("reports missing section", () => {
@@ -116,6 +195,13 @@ describe("parseDeliveryBudget", () => {
 		);
 		expectFailure(
 			replaceOnce("- Estimate confidence: medium\n", ""),
+			"BUDGET_INVALID_CONFIDENCE",
+		);
+		expectFailure(
+			replaceOnce("- Estimate confidence: medium\n", "").replace(
+				"#### DC0\n",
+				"#### DC0\n\n- Estimate confidence: medium\n",
+			),
 			"BUDGET_INVALID_CONFIDENCE",
 		);
 	});
@@ -148,13 +234,6 @@ describe("parseDeliveryBudget", () => {
 	});
 
 	test("validates effort and architecture allowed sets", () => {
-		expectFailure(
-			replaceOnce(
-				"| W1 | Existing behavior | 3 |",
-				"| W1 | Existing behavior | 4 |",
-			),
-			"BUDGET_INVALID_EFFORT",
-		);
 		const effort = expectFailure(
 			replaceOnce(
 				"| W1 | Existing behavior | 3 |",
@@ -201,6 +280,13 @@ describe("parseDeliveryBudget", () => {
 			replaceOnce("phase-2", "review"),
 			"BUDGET_INVALID_TARGET_PHASE",
 		);
+		const missingTarget = expectFailure(
+			replaceOnce("- Target phase: phase-2\n", ""),
+			"BUDGET_INVALID_TARGET_PHASE",
+		);
+		expect(missingTarget.line).toBe(
+			CANONICAL.split("\n").indexOf("#### DC0") + 1,
+		);
 		expectFailure(
 			replaceOnce(
 				"Minimal-compliant effort delta: 2",
@@ -212,6 +298,16 @@ describe("parseDeliveryBudget", () => {
 			replaceOnce(
 				"Minimal-compliant architecture delta: 0",
 				"Minimal-compliant architecture delta: 4",
+			),
+			"BUDGET_INVALID_MINIMAL_ALTERNATIVE",
+		);
+	});
+
+	test("stops a debt-claim block at the next same-or-higher heading", () => {
+		expectFailure(
+			replaceOnce(
+				"- Target phase: phase-2\n",
+				"- Target phase: phase-2\n\n### Notes\n",
 			),
 			"BUDGET_INVALID_MINIMAL_ALTERNATIVE",
 		);
@@ -251,6 +347,10 @@ describe("parseDeliveryBudget", () => {
 
 	test("validates Addresses tokens", () => {
 		expectFailure(replaceOnce("F0, F1", "F0, , F1"), "BUDGET_TABLE_MALFORMED");
+		expectFailure(
+			replaceOnce("F0, F1", "F0, invalid/id"),
+			"BUDGET_TABLE_MALFORMED",
+		);
 	});
 
 	test("requires and validates the surface snapshot", () => {
@@ -266,5 +366,20 @@ describe("parseDeliveryBudget", () => {
 			replaceOnce("- Subsystems: 4\n", ""),
 			"BUDGET_SNAPSHOT_MISSING",
 		);
+		expectFailure(
+			replaceOnce("- Subsystems: 4", "- Subsystems: 4\n- Subsystems: 99"),
+			"BUDGET_SNAPSHOT_INVALID",
+		);
+	});
+
+	test("does not read snapshot bullets from a later subsection", () => {
+		const result = parseDeliveryBudget(
+			replaceOnce(
+				"- New shared abstractions or public contracts: 0",
+				"- New shared abstractions or public contracts: 0\n\n### Notes\n\n- Subsystems: 99",
+			),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.value.surface.subsystems).toBe(4);
 	});
 });

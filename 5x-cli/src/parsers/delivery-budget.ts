@@ -44,6 +44,10 @@ interface LocatedLine {
 	line: number;
 }
 
+interface MarkdownLine extends LocatedLine {
+	start: number;
+}
+
 interface TableClaim {
 	id: string;
 	coupling: CouplingClass;
@@ -63,6 +67,13 @@ const EFFORT_SET = "{1, 2, 3, 5, 8}";
 const ARCHITECTURE_SET = "{0, ±1, ±2, ±3, ±5}";
 const CLAIM_CELL_RE = /^DC\d+\s+\(`(intrinsic|adjacent|unrelated)`\)$/;
 const FINDING_ID_RE = /^[A-Za-z0-9._-]+$/;
+const REQUIRED_SNAPSHOT_LABELS = new Set([
+	"subsystems",
+	"production files",
+	"persistent/external boundaries",
+	"persistent schemas or migrations",
+	"external/platform boundaries",
+]);
 
 function failure(
 	code: DeliveryBudgetParseCode,
@@ -91,7 +102,7 @@ function isSeparatorRow(cells: readonly string[]): boolean {
 function parseInteger(value: string): number | null {
 	if (!/^-?\d+$/.test(value.trim())) return null;
 	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) ? parsed : null;
+	return Number.isSafeInteger(parsed) ? (parsed === 0 ? 0 : parsed) : null;
 }
 
 function isNumericPhaseRef(value: string): boolean {
@@ -100,38 +111,97 @@ function isNumericPhaseRef(value: string): boolean {
 	);
 }
 
-function sectionLines(markdown: string): LocatedLine[] | null {
-	const lines = markdown.split(/\r\n|\n|\r/);
-	const start = lines.findIndex((line) =>
-		/^##\s+Delivery Budget\s*$/.test(line),
-	);
-	if (start < 0) return null;
+function markdownLines(markdown: string): MarkdownLine[] {
+	const lines: MarkdownLine[] = [];
+	const pattern = /([^\r\n]*)(?:\r\n|\n|\r|$)/g;
+	let match = pattern.exec(markdown);
+	while (match !== null && match[0].length > 0) {
+		lines.push({
+			text: match[1] ?? "",
+			line: lines.length + 1,
+			start: match.index,
+		});
+		match = pattern.exec(markdown);
+	}
+	return lines;
+}
 
+function fenceMarker(line: string): string | null {
+	return line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)?.[1] ?? null;
+}
+
+function sectionBounds(
+	markdown: string,
+): { lines: MarkdownLine[]; start: number; end: number } | null {
+	const lines = markdownLines(markdown);
+	let activeFence: string | null = null;
+	let start = -1;
 	let end = lines.length;
-	for (let index = start + 1; index < lines.length; index++) {
-		if (/^#{1,2}\s+/.test(lines[index] ?? "")) {
+
+	for (let index = 0; index < lines.length; index++) {
+		const text = lines[index]?.text ?? "";
+		const marker = fenceMarker(text);
+		if (activeFence) {
+			if (
+				marker !== null &&
+				marker[0] === activeFence[0] &&
+				marker.length >= activeFence.length &&
+				text.slice(text.indexOf(marker) + marker.length).trim().length === 0
+			) {
+				activeFence = null;
+			}
+			continue;
+		}
+		if (marker) {
+			activeFence = marker;
+			continue;
+		}
+		if (start < 0 && /^##\s+Delivery Budget\s*$/.test(text)) {
+			start = index;
+			continue;
+		}
+		if (start >= 0 && /^#{1,2}\s+/.test(text)) {
 			end = index;
 			break;
 		}
 	}
 
-	return lines.slice(start, end).map((text, offset) => ({
-		text,
-		line: start + offset + 1,
-	}));
+	return start < 0 ? null : { lines, start, end };
+}
+
+function sectionLines(markdown: string): LocatedLine[] | null {
+	const bounds = sectionBounds(markdown);
+	if (!bounds) return null;
+
+	let activeFence: string | null = null;
+	return bounds.lines.slice(bounds.start, bounds.end).filter((entry) => {
+		const marker = fenceMarker(entry.text);
+		if (activeFence) {
+			if (
+				marker !== null &&
+				marker[0] === activeFence[0] &&
+				marker.length >= activeFence.length &&
+				entry.text.slice(entry.text.indexOf(marker) + marker.length).trim()
+					.length === 0
+			) {
+				activeFence = null;
+			}
+			return false;
+		}
+		if (marker) {
+			activeFence = marker;
+			return false;
+		}
+		return true;
+	});
 }
 
 /** Return the Delivery Budget section without trailing inter-section whitespace. */
 export function rawDeliveryBudgetSection(markdown: string): string | null {
-	const heading = /^##\s+Delivery Budget[ \t]*$/m.exec(markdown);
-	if (!heading || heading.index === undefined) return null;
-	const start = heading.index;
-	const afterHeading = start + heading[0].length;
-	const rest = markdown.slice(afterHeading);
-	const nextHeading = /(?:\r?\n|\r)(?=#{1,2}\s+)/.exec(rest);
-	const end = nextHeading
-		? afterHeading + (nextHeading.index ?? 0)
-		: markdown.length;
+	const bounds = sectionBounds(markdown);
+	if (!bounds) return null;
+	const start = bounds.lines[bounds.start]?.start ?? 0;
+	const end = bounds.lines[bounds.end]?.start ?? markdown.length;
 	return markdown
 		.slice(start, end)
 		.replace(/(?:\r\n|\n|\r)[ \t]*(?:(?:\r\n|\n|\r)[ \t]*)*$/, "");
@@ -254,23 +324,29 @@ function parseSnapshot(
 	lines: readonly LocatedLine[],
 	headingIndex: number,
 ): SurfaceSnapshot | DeliveryBudgetParseResult {
-	if (headingIndex < 0) {
-		const line = lines.at(-1)?.line ?? lines[0]?.line ?? 1;
-		return failure(
-			"BUDGET_SNAPSHOT_MISSING",
-			line,
-			"Delivery Budget requires a '### Surface Snapshot' subsection",
-		);
-	}
-	const snapshotLines = lines.slice(headingIndex + 1);
+	const nextHeadingOffset = lines
+		.slice(headingIndex + 1)
+		.findIndex((entry) => /^#{1,6}\s+/.test(entry.text));
+	const snapshotEnd =
+		nextHeadingOffset < 0 ? lines.length : headingIndex + 1 + nextHeadingOffset;
+	const snapshotLines = lines.slice(headingIndex + 1, snapshotEnd);
 	const values = new Map<string, { value: string; line: number }>();
 	for (const entry of snapshotLines) {
 		const match = entry.text.match(/^\s*-\s*([^:]+):\s*(.*)$/);
-		if (match?.[1])
-			values.set(match[1].trim().toLowerCase(), {
+		if (match?.[1]) {
+			const label = match[1].trim().toLowerCase();
+			if (REQUIRED_SNAPSHOT_LABELS.has(label) && values.has(label)) {
+				return failure(
+					"BUDGET_SNAPSHOT_INVALID",
+					entry.line,
+					`Surface Snapshot required label '${label}' must appear exactly once`,
+				);
+			}
+			values.set(label, {
 				value: match[2]?.trim() ?? "",
 				line: entry.line,
 			});
+		}
 	}
 
 	const required = (label: string): number | DeliveryBudgetParseResult => {
@@ -368,7 +444,20 @@ export function parseDeliveryBudget(
 			"Missing exact '## Delivery Budget' section",
 		);
 
-	const confidenceEntry = findBullet(lines, "estimate confidence");
+	const firstTableIndex = lines.findIndex((entry) =>
+		entry.text.trim().startsWith("|"),
+	);
+	const firstSubsectionIndex = lines.findIndex((entry) =>
+		/^###\s+/.test(entry.text),
+	);
+	const confidenceEnd = Math.min(
+		firstTableIndex < 0 ? lines.length : firstTableIndex,
+		firstSubsectionIndex < 0 ? lines.length : firstSubsectionIndex,
+	);
+	const confidenceEntry = findBullet(
+		lines.slice(1, confidenceEnd),
+		"estimate confidence",
+	);
 	const confidence = confidenceEntry?.value.toLowerCase();
 	if (
 		confidence !== "low" &&
@@ -382,9 +471,6 @@ export function parseDeliveryBudget(
 		);
 	}
 
-	const firstTableIndex = lines.findIndex((entry) =>
-		entry.text.trim().startsWith("|"),
-	);
 	if (firstTableIndex < 0)
 		return failure(
 			"BUDGET_TABLE_MISSING",
@@ -587,7 +673,11 @@ export function parseDeliveryBudget(
 					heading.line,
 					`Debt claim evidence '${heading.id}' is not referenced by a negative work-item row`,
 				);
-			const nextIndex = blockHeadings[blockIndex + 1]?.index ?? debtEnd;
+			const nextHeadingOffset = lines
+				.slice(heading.index + 1, debtEnd)
+				.findIndex((entry) => /^#{1,4}\s+/.test(entry.text));
+			const nextIndex =
+				nextHeadingOffset < 0 ? debtEnd : heading.index + 1 + nextHeadingOffset;
 			const parsed = parseClaimEvidence(
 				heading.id,
 				tableClaim.coupling,
