@@ -208,3 +208,28 @@ No new blocking correctness, architecture, phasing, testability, risk, or scope 
 ### Updated readiness
 - **Plan completion:** ❌ — the plan describes stronger paired-write behavior than the merged, frozen RecordStore/admission implementation supplies.
 - **Ready for implementation:** ❌ — `not_ready` pending an explicit cross-slice decision and contract update for atomic duplicate handling and iteration allocation. Phases 1-3 remain independently implementable, but Phase 6 persistence wiring must not begin.
+
+---
+
+## Addendum (2026-09-17) — Revision 1.9 re-review
+
+**Reviewed:** `bd288070daa22edf0d47832eaee56cbba5dce123` | plan version 1.9
+
+### Previously raised findings
+
+- **R1 — Paired append duplicate semantics: Resolved.** The plan correctly preserves merged 212's per-operation `atomicAppend` behavior and explicitly labels it as current behavior. Phase 4 instead adds the planned (not claimed-current) `atomicAppendIfAllNew` contract on both backends, under the existing lock/journal or clone transaction. It specifies all-new-or-no-op behavior, first-writer preservation, multi-run rejection, crash behavior, and cross-store tests for the prior existing-step/new-budget failure mode. The paired wrapper uses only this new operation; generic and `human:` recording retain `atomicAppend`.
+- **R2 — Final iteration ownership: Resolved.** The plan correctly states that merged `prepareRecordStepAppend` leaves omitted iteration undefined. Phase 6 extracts a single planned `finalizeAndWritePreparedStep` seam from generic post-admit recording and makes both generic and paired writers use it. The seam finalizes every append key from the resolved tuple, preserves prepare's admission/ceiling order, distinguishes specified-iteration duplicates from omitted-iteration races, and requires focused retry and race tests. It does not falsely claim the new retry behavior is already in 212.
+
+### Verification
+
+- The cited implementation matches the plan's current-state claims: `RecordStore.atomicAppend` remains per-operation duplicate skipping, and the existing contract test proves an existing step plus new budget operation produces `[false, true]`; `prepareRecordStepAppend` preserves an omitted iteration, while current generic recording allocates it afterward.
+- The v8 statement remains prospective and consistent: current `src/db/schema.ts` ends at migration v7, while the plan explicitly scopes v8 as this slice's derived-index migration.
+
+### Final assessment
+
+No new correctness, architecture, phasing, testability, risk, or scope blocker was found. The approved cross-slice decisions are represented as explicit planned Phase 4 and Phase 6 work, with contract and race coverage, rather than as capabilities already present in merged slice 212.
+
+### Updated readiness
+
+- **Plan completion:** ✅ — R1 and R2 are addressed with explicit, testable implementation contracts.
+- **Ready for implementation:** ✅ — `ready`.
