@@ -160,3 +160,33 @@ Additionally, the context is built whenever `role === reviewer && phase === plan
 
 - **Phase 6 completion:** ✅ — all P1/P2 items are resolved and independently verified in the current source and test suite.
 - **Ready for next phase:** ✅ — the empty-plan-file truthiness regression is fixed and covered for protocol and invoke.
+
+---
+
+## Addendum (2026-09-17) — Empty-plan-file P2 fix
+
+**Reviewed:** `65fcbc5` (`fix: distinguish empty review plans from read failures`), diffed against `558db04`/`2421dde` (prior addendum baseline)
+
+**Local verification:** `bun test` → 3392 pass / 0 fail (up from 3388); `bunx tsc --noEmit` clean
+
+### What's addressed (✅)
+
+- **P2 (new) — Empty-but-present plan file silently treated as read failure** — **Addressed.** The diff is scoped to exactly the two call sites flagged: `protocol.handler.ts` and `invoke.handler.ts` both now declare `let planMarkdown = ""` and a separate `let planReadFailed = false`, set `planReadFailed = true` only inside the `catch` block, and branch on `if (planReadFailed)` / `if (!planReadFailed)` instead of testing `planMarkdown` truthiness. A `readFileSync` that succeeds with `""` no longer collapses into the read-failure branch — it now flows into `applyPlanReviewBudget`, which calls `parseDeliveryBudget("")` and correctly fails closed. Production diff is exactly 9 lines changed in each handler; no other logic in `apply.ts`, `run-v1.handler.ts`, or `review-budget-context.ts` was touched (confirmed via `git diff --stat 558db04 65fcbc5 -- src/`).
+- **Test coverage** — Four new focused tests, one pair per handler:
+  - `invoke.test.ts`: `"empty readable plan reaches budget parsing"` asserts an empty `effectivePlanPath` rejects with `BUDGET_SECTION_MISSING` (the actual code the parser emits for a missing/empty delivery-budget section — confirmed at `src/parsers/delivery-budget.ts:444`); `"unreadable plan maps to PLAN_NOT_FOUND"` asserts the genuine-read-failure path is unchanged.
+  - `protocol-validate.test.ts`: `"recorded empty plan reaches budget parsing instead of read-failure fallback"` and `"recorded unreadable plan reports PLAN_NOT_FOUND, not a parse error"` mirror the same two cases under `--record`, and both additionally assert `ctx.recordStore.listLines("run1", "budget")` stays empty — i.e., the failure (either code) still leaves no orphan budget line, consistent with the admission-ordering fix from the prior addendum.
+  
+  These tests exercise the real regression (falsy-but-successful read) rather than just re-asserting "does not throw," closing the gap I noted in the prior addendum.
+
+### New issues introduced by this revision
+
+None found. The change is minimal, single-purpose, and the two new branches (`planReadFailed` true/false) are each covered by a dedicated test in both handlers it touches.
+
+### Remaining concerns
+
+None outstanding from this or prior rounds. The `prepareRecordStepAppend`-called-twice note from the previous addendum remains a non-blocking, cosmetic observation and is not a regression from this commit.
+
+### Updated readiness
+
+- **Phase 6 completion:** ✅ — all P0/P1/P2 items raised across this review's lifecycle (missing tests, `RecordContextError` handling, admission-before-capture ordering, unbounded retry, retry-`I`/duplicate-`listSnapshots`, and the empty-plan-file truthiness bug) are resolved and independently re-verified against current source, with full-suite `bun test` green (3392/0) and `tsc --noEmit` clean.
+- **Ready for next phase:** ✅ — no blockers remain for progressing to Phase 7.
