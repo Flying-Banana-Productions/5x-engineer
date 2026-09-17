@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildReviewBudgetState,
 	formatStateText,
+	tryBuildReviewBudgetState,
 	warnForReviewBudgetRunState,
 } from "../../../src/commands/run-v1.handler.js";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../../../src/control-plane/index.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
+import { ENFORCED_REVIEW_BUDGET_WARNING } from "../../../src/review-budget/ensure-baseline.js";
 import {
 	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type ParsedDeliveryBudget,
@@ -44,7 +46,32 @@ const ledger: ParsedDeliveryBudget = {
 	},
 };
 
-function fixture() {
+function planMarkdown(effort = 5): string {
+	return `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Feature | ${effort} | 0 | - | - | required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 2
+- Persistent/external boundaries: 0
+`;
+}
+
+function fixture(
+	options: {
+		withSnapshot?: boolean;
+		semanticHumanRequired?: boolean;
+		cacheDerived?: boolean;
+	} = {},
+) {
 	const db = new Database(":memory:");
 	runMigrations(db);
 	db.exec("INSERT INTO runs(id, plan_path) VALUES ('run1', '/plan.md')");
@@ -78,23 +105,25 @@ function fixture() {
 		findings: [],
 		assessments: [],
 		config: baseline.configSnapshot,
-		semanticHumanRequired: false,
+		semanticHumanRequired: options.semanticHumanRequired ?? false,
 	});
-	store.appendSnapshot({
-		runId: "run1",
-		stepName: "reviewer:plan",
-		phase: "plan",
-		iteration: 1,
-		currentLedger: ledger,
-		findings: [],
-		assessments: [],
-		baselineAssessment: {
-			independentEffortEstimate: 8,
-			confidence: "medium",
-			reason: "independent estimate",
-		},
-		derived,
-	});
+	if (options.withSnapshot !== false) {
+		store.appendSnapshot({
+			runId: "run1",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 1,
+			currentLedger: ledger,
+			findings: [],
+			assessments: [],
+			baselineAssessment: {
+				independentEffortEstimate: 8,
+				confidence: "medium",
+				reason: "independent estimate",
+			},
+			...(options.cacheDerived === false ? {} : { derived }),
+		});
+	}
 	return { db, store };
 }
 
@@ -129,6 +158,18 @@ describe("run state review budget", () => {
 					runId: "legacy",
 					mode: "advisory",
 					store: emptyStore,
+					hasPriorPlanReviewerStep: false,
+				}),
+			).toEqual({
+				status: "uninitialized",
+				mode: "advisory",
+				enforcement_implemented: false,
+			});
+			expect(
+				buildReviewBudgetState({
+					runId: "legacy",
+					mode: "advisory",
+					store: emptyStore,
 					hasPriorPlanReviewerStep: true,
 				}),
 			).toEqual({
@@ -141,14 +182,15 @@ describe("run state review budget", () => {
 		}
 	});
 
-	test("reconstructs authoritative I and direction after the index is wiped", () => {
-		const { db, store } = fixture();
+	test("reconstructs authoritative I, direction, and semantic human flag after index wipe", () => {
+		const { db, store } = fixture({ semanticHumanRequired: true });
 		try {
 			const before = buildReviewBudgetState({
 				runId: "run1",
 				mode: "advisory",
 				store,
 				hasPriorPlanReviewerStep: true,
+				semanticHumanRequiredFor: () => true,
 			});
 			expect(before?.status).toBe("active");
 			expect(before?.I).toBe(8);
@@ -161,13 +203,87 @@ describe("run state review budget", () => {
 				mode: "advisory",
 				store,
 				hasPriorPlanReviewerStep: true,
+				semanticHumanRequiredFor: () => true,
 			});
 			expect(after?.I).toBe(before?.I);
 			expect(after?.baseline_direction).toBe(before?.baseline_direction);
 			expect(after?.W).toBe(5);
+			expect(after?.requires_human).toBe(before?.requires_human);
+			expect(after?.requires_human).toBe(true);
 			expect(
 				db.query("SELECT count(*) AS n FROM review_budget_snapshots").get(),
 			).toEqual({ n: 1 });
+		} finally {
+			db.close();
+		}
+	});
+
+	test("recomputes a null-derived cache row with semantic human-required", () => {
+		const { db, store } = fixture({
+			semanticHumanRequired: true,
+			cacheDerived: false,
+		});
+		try {
+			const state = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: true,
+				semanticHumanRequiredFor: () => true,
+			});
+			expect(state?.I).toBe(8);
+			expect(state?.baseline_direction).toBe("understated");
+			expect(state?.requires_human).toBe(true);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("active pre-first-record uses live plan and falls back to original ledger", () => {
+		const { db, store } = fixture({ withSnapshot: false });
+		try {
+			const live = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: false,
+				currentPlanMarkdown: planMarkdown(8),
+			});
+			expect(live?.status).toBe("active");
+			expect(live?.W).toBe(8);
+			expect(live?.R).toBe(0);
+			const fallback = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: false,
+				currentPlanMarkdown: "# malformed plan",
+			});
+			expect(fallback?.W).toBe(5);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("marks only a changed current plan stale", () => {
+		const { db, store } = fixture();
+		try {
+			const matching = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: true,
+				currentPlanMarkdown: planMarkdown(5),
+			});
+			expect(matching?.stale_plan).toBeUndefined();
+			const changed = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: true,
+				currentPlanMarkdown: planMarkdown(8),
+			});
+			expect(changed?.stale_plan).toBe(true);
 		} finally {
 			db.close();
 		}
@@ -216,6 +332,108 @@ describe("run state review budget", () => {
 		}
 	});
 
+	test("text formatter labels non-active and enforced telemetry honestly", () => {
+		const lines: string[] = [];
+		const original = console.log;
+		console.log = (...args: unknown[]) => lines.push(String(args[0] ?? ""));
+		try {
+			formatStateText({
+				run: {
+					id: "run1",
+					plan_path: "/plan.md",
+					status: "active",
+					created_at: "now",
+					updated_at: "now",
+				},
+				steps: [],
+				summary: {
+					total_steps: 0,
+					phases_completed: [],
+					total_tokens_in: 0,
+					total_tokens_out: 0,
+					total_cost_usd: 0,
+					total_duration_ms: 0,
+				},
+				steps_used: 0,
+				max_steps: 1,
+				steps_remaining: 1,
+				review_budget: {
+					status: "v1_compat",
+					mode: "enforced",
+					enforcement_implemented: false,
+				},
+			});
+			expect(lines.join("\n")).toContain("status=v1_compat");
+			expect(lines.join("\n")).toContain("enforced: not implemented");
+			expect(lines.join("\n")).not.toContain("(enforced)");
+		} finally {
+			console.log = original;
+		}
+	});
+
+	test("text formatter includes stale-plan suffix", () => {
+		const { db, store } = fixture();
+		const lines: string[] = [];
+		const original = console.log;
+		console.log = (...args: unknown[]) => lines.push(String(args[0] ?? ""));
+		try {
+			const reviewBudget = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: true,
+				currentPlanMarkdown: planMarkdown(8),
+			});
+			if (!reviewBudget) throw new Error("missing review budget fixture");
+			formatStateText({
+				run: {
+					id: "run1",
+					plan_path: "/plan.md",
+					status: "active",
+					created_at: "now",
+					updated_at: "now",
+				},
+				steps: [],
+				summary: {
+					total_steps: 0,
+					phases_completed: [],
+					total_tokens_in: 0,
+					total_tokens_out: 0,
+					total_cost_usd: 0,
+					total_duration_ms: 0,
+				},
+				steps_used: 0,
+				max_steps: 1,
+				steps_remaining: 1,
+				review_budget: reviewBudget,
+			});
+			expect(lines.join("\n")).toContain("stale plan");
+		} finally {
+			console.log = original;
+			db.close();
+		}
+	});
+
+	test("malformed record payload warns and omits review_budget", () => {
+		const warnings: string[] = [];
+		const state = tryBuildReviewBudgetState(
+			{
+				runId: "broken",
+				mode: "advisory",
+				store: {
+					getBaseline: () => {
+						throw new Error("invalid baseline payload");
+					},
+				} as never,
+				hasPriorPlanReviewerStep: false,
+			},
+			(message) => warnings.push(message),
+		);
+		expect(state).toBeUndefined();
+		expect(warnings[0]).toContain("run broken");
+		expect(warnings[0]).toContain("omitting review_budget");
+	});
+
 	test("warns for reserved enforced mode only", () => {
 		const warnings: string[] = [];
 		warnForReviewBudgetRunState("advisory", (warning) =>
@@ -224,8 +442,6 @@ describe("run state review budget", () => {
 		warnForReviewBudgetRunState("enforced", (warning) =>
 			warnings.push(warning),
 		);
-		expect(warnings).toEqual([
-			"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
-		]);
+		expect(warnings).toEqual([ENFORCED_REVIEW_BUDGET_WARNING]);
 	});
 });

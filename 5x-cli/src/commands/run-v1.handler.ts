@@ -137,6 +137,7 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
+import { ENFORCED_REVIEW_BUDGET_WARNING } from "../review-budget/ensure-baseline.js";
 import type {
 	BaselineDirection,
 	BudgetAlert,
@@ -967,9 +968,6 @@ export interface ReviewBudgetState {
 	enforcement_implemented: false;
 }
 
-const ENFORCED_REVIEW_BUDGET_WARNING =
-	"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only";
-
 export function warnForReviewBudgetRunState(
 	mode: ReviewBudgetMode,
 	warn: (message: string) => void,
@@ -987,6 +985,9 @@ export function buildReviewBudgetState(input: {
 	store: ReviewBudgetStore;
 	hasPriorPlanReviewerStep: boolean;
 	currentPlanMarkdown?: string;
+	semanticHumanRequiredFor?: (
+		snapshot: NonNullable<ReturnType<ReviewBudgetStore["latestSnapshot"]>>,
+	) => boolean;
 }): ReviewBudgetState | undefined {
 	if (input.mode === "off") return undefined;
 
@@ -1025,7 +1026,7 @@ export function buildReviewBudgetState(input: {
 			findings: latest.findings,
 			assessments: latest.assessments,
 			config: baseline.configSnapshot,
-			semanticHumanRequired: false,
+			semanticHumanRequired: input.semanticHumanRequiredFor?.(latest) ?? false,
 		});
 	}
 	if (!latest) {
@@ -1076,6 +1077,65 @@ export function buildReviewBudgetState(input: {
 		...(stalePlan ? { stale_plan: true as const } : {}),
 		enforcement_implemented: false,
 	};
+}
+
+export function tryBuildReviewBudgetState(
+	input: Parameters<typeof buildReviewBudgetState>[0],
+	warn: (message: string) => void,
+): ReviewBudgetState | undefined {
+	try {
+		return buildReviewBudgetState(input);
+	} catch (error) {
+		warn(
+			`Unable to read review budget records for run ${input.runId}; omitting review_budget: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
+function resultHasHumanRequired(result: unknown): boolean {
+	let value = result;
+	if (typeof value === "string") {
+		try {
+			value = JSON.parse(value);
+		} catch {
+			return false;
+		}
+	}
+	if (typeof value !== "object" || value === null) return false;
+	const items = (value as { items?: unknown }).items;
+	return (
+		Array.isArray(items) &&
+		items.some(
+			(item) =>
+				typeof item === "object" &&
+				item !== null &&
+				(item as { action?: unknown }).action === "human_required",
+		)
+	);
+}
+
+export function semanticHumanRequiredFromSteps(
+	snapshot: {
+		stepName?: string;
+		phase: string | null;
+		iteration: number | null;
+	},
+	steps: ReadonlyArray<{
+		step_name: string;
+		phase: string | null;
+		iteration: number | null;
+		result_json: unknown;
+	}>,
+): boolean {
+	if (!snapshot.stepName) return false;
+	const step = steps.find(
+		(candidate) =>
+			candidate.step_name === snapshot.stepName &&
+			candidate.phase === snapshot.phase &&
+			candidate.iteration === snapshot.iteration,
+	);
+	return resultHasHumanRequired(step?.result_json);
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,6 +1242,10 @@ export function formatStateText(data: {
 	);
 	if (data.review_budget) {
 		const budget = data.review_budget;
+		const modeLabel =
+			budget.mode === "enforced"
+				? "enforced: not implemented; advisory telemetry"
+				: "advisory";
 		if (
 			budget.status === "active" &&
 			budget.W !== undefined &&
@@ -1191,10 +1255,10 @@ export function formatStateText(data: {
 		) {
 			const alerts = budget.budget_alerts?.join(",") || "none";
 			console.log(
-				`Budget:  W+R=${budget.W + budget.R}  E=${budget.E}  band=${budget.budget_band}  alerts=${alerts}  (${budget.mode}${budget.stale_plan ? ", stale plan" : ""})`,
+				`Budget:  W+R=${budget.W + budget.R}  E=${budget.E}  band=${budget.budget_band}  alerts=${alerts}  (${modeLabel}${budget.stale_plan ? ", stale plan" : ""})`,
 			);
 		} else {
-			console.log(`Budget:  status=${budget.status}  (${budget.mode})`);
+			console.log(`Budget:  status=${budget.status}  (${modeLabel})`);
 		}
 	}
 
@@ -1689,7 +1753,7 @@ function summaryFromGitSteps(
 	};
 }
 
-async function loadGitRecordForPlan(opts: {
+export async function loadGitRecordForPlan(opts: {
 	workdir: string;
 	commit: string | null;
 	recordsRelPath: string;
@@ -1699,6 +1763,7 @@ async function loadGitRecordForPlan(opts: {
 	summary: ReturnType<typeof parseRunJson>;
 	steps: ReturnType<typeof formatGitRecordStep>[];
 	budgetLines: RecordLine[];
+	budgetDecodeError?: string;
 } | null> {
 	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
 	let runJsonRels: string[] = [];
@@ -1782,16 +1847,24 @@ async function loadGitRecordForPlan(opts: {
 		}
 	}
 	let budgetLines: RecordLine[] = [];
+	let budgetDecodeError: string | undefined;
 	if (win.budgetText) {
 		try {
 			budgetLines = decodeJsonlFile(win.budgetText, win.summary.id).filter(
 				(line) => line.stream === "budget",
 			);
-		} catch {
+		} catch (error) {
 			budgetLines = [];
+			budgetDecodeError =
+				error instanceof Error ? error.message : String(error);
 		}
 	}
-	return { summary: win.summary, steps, budgetLines };
+	return {
+		summary: win.summary,
+		steps,
+		budgetLines,
+		...(budgetDecodeError ? { budgetDecodeError } : {}),
+	};
 }
 
 function posixJoinRecords(...parts: string[]): string {
@@ -1889,33 +1962,44 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
 			if (config.reviewBudget.mode !== "off") {
-				warnForReviewBudgetRunState(
-					config.reviewBudget.mode,
+				const warn =
 					params.warn ??
-						((message) => process.stderr.write(`Warning: ${message}\n`)),
-				);
-				const records = createMemoryRecordStore();
-				records.putRun(gitRecord.summary);
-				if (gitRecord.budgetLines.length > 0) {
-					records.atomicAppend(
-						gitRecord.budgetLines.map((line) => ({
-							...line,
-						})),
+					((message: string) => process.stderr.write(`Warning: ${message}\n`));
+				warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
+				if (gitRecord.budgetDecodeError) {
+					warn(
+						`Unable to read review budget records for run ${gitRecord.summary.id}; omitting review_budget: ${gitRecord.budgetDecodeError}`,
+					);
+				} else {
+					const records = createMemoryRecordStore();
+					records.putRun(gitRecord.summary);
+					if (gitRecord.budgetLines.length > 0) {
+						records.atomicAppend(
+							gitRecord.budgetLines.map((line) => ({
+								...line,
+							})),
+						);
+					}
+					const priorReviewer = allSteps.some(
+						(step) =>
+							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
+					);
+					reviewBudget = tryBuildReviewBudgetState(
+						{
+							runId: gitRecord.summary.id,
+							mode: config.reviewBudget.mode,
+							store: createReviewBudgetStore(records),
+							hasPriorPlanReviewerStep: priorReviewer,
+							semanticHumanRequiredFor: (snapshot) => {
+								return semanticHumanRequiredFromSteps(snapshot, allSteps);
+							},
+							...(existsSync(planPath)
+								? { currentPlanMarkdown: readFileSync(planPath, "utf-8") }
+								: {}),
+						},
+						warn,
 					);
 				}
-				const priorReviewer = allSteps.some(
-					(step) =>
-						step.phase === "plan" && step.step_name.startsWith("reviewer:"),
-				);
-				reviewBudget = buildReviewBudgetState({
-					runId: gitRecord.summary.id,
-					mode: config.reviewBudget.mode,
-					store: createReviewBudgetStore(records),
-					hasPriorPlanReviewerStep: priorReviewer,
-					...(existsSync(planPath)
-						? { currentPlanMarkdown: readFileSync(planPath, "utf-8") }
-						: {}),
-				});
 			}
 			outputSuccess(
 				{
@@ -2011,11 +2095,10 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
 	if (config.reviewBudget.mode !== "off") {
-		warnForReviewBudgetRunState(
-			config.reviewBudget.mode,
+		const warn =
 			params.warn ??
-				((message) => process.stderr.write(`Warning: ${message}\n`)),
-		);
+			((message: string) => process.stderr.write(`Warning: ${message}\n`));
+		warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
 		const recordContext = await createRecordContext({
 			runId: run.id,
 			startDir: params.startDir,
@@ -2047,13 +2130,40 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			);
 		}
 		reviewBudget = hasRecordRun
-			? buildReviewBudgetState({
-					runId: run.id,
-					mode: config.reviewBudget.mode,
-					store: reviewStore,
-					hasPriorPlanReviewerStep: priorInDb || priorInRecords,
-					currentPlanMarkdown,
-				})
+			? tryBuildReviewBudgetState(
+					{
+						runId: run.id,
+						mode: config.reviewBudget.mode,
+						store: reviewStore,
+						hasPriorPlanReviewerStep: priorInDb || priorInRecords,
+						currentPlanMarkdown,
+						semanticHumanRequiredFor: (snapshot) => {
+							if (!snapshot.stepName || snapshot.iteration === null)
+								return false;
+							const key = stepIdempotencyKey({
+								runId: run.id,
+								stepName: snapshot.stepName,
+								phase: snapshot.phase,
+								iteration: snapshot.iteration,
+							});
+							const line = recordContext.recordStore.getLine(
+								run.id,
+								"steps",
+								key,
+							);
+							if (line) {
+								return resultHasHumanRequired(
+									(line.payload as Partial<StepRecordPayload>).result_json,
+								);
+							}
+							return semanticHumanRequiredFromSteps(
+								snapshot,
+								getSteps(db, run.id),
+							);
+						},
+					},
+					warn,
+				)
 			: {
 					status: priorInDb ? "v1_compat" : "uninitialized",
 					mode: config.reviewBudget.mode,

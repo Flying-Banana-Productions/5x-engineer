@@ -14,6 +14,9 @@ export type EnsurePlanReviewBaselineResult =
 	  }
 	| { status: "error"; code: string; message: string };
 
+export const ENFORCED_REVIEW_BUDGET_WARNING =
+	"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only";
+
 export function ensurePlanReviewBaseline(input: {
 	runId: string;
 	planMarkdown: string;
@@ -71,9 +74,7 @@ export function ensurePlanReviewBaseline(input: {
 		origin: input.origin,
 	});
 	if (result.created && input.config.mode === "enforced") {
-		input.warn(
-			"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
-		);
+		input.warn(ENFORCED_REVIEW_BUDGET_WARNING);
 	}
 	return result.created
 		? { status: "captured", baseline: result.baseline }
