@@ -122,3 +122,24 @@ None blocking. P2.5 above is the only residual gap, and it is cosmetic/consisten
 
 - **Phase 2 completion:** ✅ — all five items from the first review (one P1, four P2) are verified fixed with passing regression tests; no regressions found in `parsePlan` interaction or the existing 44 fixtures (all still pass alongside the 7 new ones).
 - **Ready for next phase:** ✅ — Phase 2 can be considered closed. The one new item (P2.5) is optional-field polish and does not block Phase 3 or Phase 7 baseline capture.
+
+---
+
+## Addendum (2026-09-17, second follow-up) — P2.5 verified fixed
+
+**Reviewed:** `23ff36baefd4cbbce56dad946bc24723bacb0aca` (single commit on top of `ce6b724`, touching `src/parsers/delivery-budget.ts` and `test/unit/parsers/delivery-budget.test.ts` only)
+
+**Local verification:** `bun test test/unit/parsers` — 52 pass / 0 fail (up from 51); `bunx tsc --noEmit` — clean; `bunx biome check` on touched files — clean; confirmed no stale references to the old `REQUIRED_SNAPSHOT_LABELS` name remain.
+
+### What's addressed (✅)
+
+- **P2.5 — Optional Surface Snapshot labels last-wins on duplicates**: Fully addressed. The set was renamed `REQUIRED_SNAPSHOT_LABELS` → `UNIQUE_SNAPSHOT_LABELS` and extended to include `new shared abstractions or public contracts` and `new persistent schemas` (`delivery-budget.ts:70-79`), with the diagnostic message correctly reworded from "required label ... must appear exactly once" to "label ... must appear at most once" — accurate now that the set spans both required and optional labels. New test `rejects duplicate optional surface snapshot labels` (`delivery-budget.test.ts:375-390`) exercises both newly-covered labels via table-driven `expectFailure` calls, each asserting `BUDGET_SNAPSHOT_INVALID`. This is exactly the fix recommended in the prior addendum (extend the same duplicate-detection set to cover all recognized snapshot labels) — no scope creep, no unrelated changes.
+
+### Remaining concerns
+
+None. All items raised across all three review passes (original P1.1/P2.1–P2.4, and follow-up P2.5) are now verified fixed with regression coverage.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — no open findings remain.
+- **Ready for next phase:** ✅ — Phase 2 is complete and production-ready as delivered; Phase 3 and the eventual Phase 7 baseline-capture consumer can build on this parser without reservation.
