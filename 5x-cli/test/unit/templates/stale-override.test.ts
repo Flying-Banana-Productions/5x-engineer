@@ -17,7 +17,7 @@ describe("stale override version warning", () => {
 
 	test("warns when override version is older than bundled version", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-stale-"));
-		// Write a v1 override — bundled templates are now at v2
+		// Write a v1 override — bundled templates are now at v3
 		writeFileSync(
 			join(tmpDir, "author-generate-plan.md"),
 			[
@@ -53,7 +53,7 @@ describe("stale override version warning", () => {
 				true,
 			);
 			expect(
-				stderrLines.some((l) => l.includes("older than bundled (v2)")),
+				stderrLines.some((l) => l.includes("older than bundled (v3)")),
 			).toBe(true);
 			expect(
 				stderrLines.some((l) =>
@@ -67,13 +67,13 @@ describe("stale override version warning", () => {
 
 	test("no warning when override version matches bundled version", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-current-"));
-		// Write a v2 override — same as bundled
+		// Write a v3 override — same as bundled
 		writeFileSync(
 			join(tmpDir, "author-generate-plan.md"),
 			[
 				"---",
 				"name: author-generate-plan",
-				"version: 2",
+				"version: 3",
 				"variables:",
 				"  - prd_path",
 				"  - plan_path",
@@ -96,7 +96,7 @@ describe("stale override version warning", () => {
 
 			// Should use the override
 			expect(body).toContain("CURRENT OVERRIDE:");
-			expect(metadata.version).toBe(2);
+			expect(metadata.version).toBe(3);
 
 			// Should NOT have emitted a stale warning
 			expect(stderrLines.some((l) => l.includes("older than bundled"))).toBe(

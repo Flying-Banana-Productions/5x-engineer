@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 4
+version: 5
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:review"
 variable_defaults:
@@ -28,8 +28,17 @@ Treat line numbers from your prior findings as potentially stale — re-anchor t
 3. Walk through your prior findings and classify each one against the new state.
 4. Surface any new issues introduced by the revision.
 5. Write your updated assessment as a new **Addendum** section appended to `{{review_path}}`. Do not modify existing review content.
+6. Re-check every plan-row `Addresses` value against still-open findings. Reuse each prior finding's stable ID when it remains partially addressed or open; assign a new ID only to a genuinely new finding, and never recycle or renumber IDs.
 
 Follow the same review perspective, issue classification (`auto_fix` / `human_required`), and readiness assessment (`ready` / `ready_with_corrections` / `not_ready`) from your initial review prompt.
+
+### Continued Delivery Budget Assessment
+
+- Do **not** emit `baselineAssessment` or `--baseline-assessment`; the independent baseline assessment is initial-review only.
+- Emit complete per-item `scopeClass`, `effortDelta`, `architectureDelta`, `estimateConfidence`, and negative-delta `coupling` for every remaining or new item. Prefer closure of prior findings, but this is advisory guidance and does not change readiness routing.
+- Emit `--credit-assessment` only for an author-ledger `DCn` that is new or changed since the last recorded review. A claim is unchanged only when its coupling, work-item architecture delta, target phase, minimal-compliant effort/architecture deltas, before, and after all match the previous ledger. The CLI carries unchanged assessments forward; do not re-emit every claim as a ritual.
+- A credit assessment must name a persisted author `DCn` or a reviewer `creditClaim` introduced by this verdict. Do not invent author-side evidence. Item `creditClaim` remains reserved for claims introduced by that finding and must include the complete minimal-compliant comparison and non-empty before/after.
+- Never emit reviewer-authored totals, ceilings, status, or CLI-owned fields (`budget`, `budgetBand`, `requiresHuman`, `B0`, `W`, `R`, `S`, `N`, `D`, `E`, `A`, `P`, `projectedEffort`, `baselineDirection`). Budget telemetry is advisory; route only by readiness and item action.
 
 ## Non-Interactive Execution
 
@@ -44,4 +53,4 @@ Write your updated review to `{{review_path}}` and commit the file:
 
     5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: update plan review for <plan name>"
 
-Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.
+Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready`, complete `--item` flags, and `--credit-assessment` only for new/changed claims. Never pass `--baseline-assessment` on a continued review. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.

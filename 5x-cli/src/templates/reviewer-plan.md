@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 3
+version: 4
 variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:review"
 variable_defaults:
@@ -34,6 +34,15 @@ Evaluate the plan across these dimensions:
 - **Testability**: Is the test strategy sufficient? Are the right types of tests planned?
 - **Risks**: What could go wrong? Are there unaddressed failure modes?
 - **Scope**: Is the scope appropriate? Should anything be added or removed?
+- **Delivery budget**: Independently estimate the initial accepted scope's effort; do not copy or sum a plan total. Check stable `Wn` / `DCn` IDs, `Addresses`, scores, and complete debt evidence. Every negative author row needs coupling, target phase, minimal-compliant effort/architecture deltas, and concrete non-empty before/after states.
+
+### Delivery Budget Verdict Fields
+
+This is the initial review. Emit exactly one `--baseline-assessment` with your independent effort estimate `I`, confidence, and reason. Assess every author-ledger `DCn` on this first review with a repeatable `--credit-assessment`; the assessment names the persisted claim and does not repeat or invent its evidence.
+
+Every review item must keep a stable ID across later reviews and include `scopeClass` (`acceptance_required`, `risk_reduction`, or `polish`), non-negative integer `effortDelta`, allowed `architectureDelta`, and `estimateConfidence`. Include `coupling` when architecture delta is negative. An optional item `creditClaim` is only for a debt claim introduced by that finding and must contain `creditClaimId`, `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty `before` / `after`; never use it to copy an author-ledger `DCn`.
+
+Do not author budget totals or CLI-owned fields, including `budget`, `budgetBand`, `budgetAlerts`, `requiresHuman`, `B0`, `B`, `W`, `R`, `S`, `N`, `D`, `E`, `A`, `P`, `projectedEffort`, or `baselineDirection`. Budget telemetry is advisory only: retain the existing `auto_fix` / `human_required` meaning and readiness rules below; do not change readiness because a forecast may require human attention.
 
 ### Review Format
 
@@ -105,10 +114,13 @@ The structured verdict (readiness assessment and review items) is captured separ
 When your review is complete, produce your structured verdict by running:
 
     5x protocol emit reviewer --no-ready \
-      --item '{"title":"...","action":"auto_fix","reason":"..."}' \
+      --baseline-assessment '{"independentEffortEstimate":8,"confidence":"medium","reason":"Independent estimate from the accepted implementation scope"}' \
+      --credit-assessment '{"creditClaimId":"DC0","eligibility":"eligible","coupling":"intrinsic","reason":"The persisted simplification is intrinsic to W2"}' \
+      --item '{"id":"P1.1","title":"...","action":"auto_fix","reason":"...","scopeClass":"acceptance_required","effortDelta":2,"architectureDelta":0,"estimateConfidence":"high"}' \
       --summary "..."
 
 Use `--ready` or `--no-ready`. Items imply corrections (`--ready` + items → `ready_with_corrections`).
+Do not omit the first-review `--baseline-assessment`, even when there are no items. Omit `--credit-assessment` only when the author ledger has no debt claims.
 Include the command's JSON output verbatim as your structured result.
 Do not wrap it in markdown fences.
 The output is raw canonical JSON — do not wrap or modify it.

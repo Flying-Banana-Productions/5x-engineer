@@ -31,6 +31,12 @@ timeout handling.
 - Plan path must resolve inside `paths.plans` (from config)
 - After author generates plan, file must exist AND parse via
   `5x plan phases`
+- Every generated plan must contain a parseable `## Delivery Budget` and
+  `### Surface Snapshot`. Work-item and debt-claim IDs are stable; every
+  negative architecture row has complete `#### DCn` evidence (coupling,
+  target phase, minimal-compliant effort/architecture deltas, and concrete
+  non-empty before/after states). Tests are included in their work item, not
+  scored separately, and plans contain no author-written budget totals.
 {{#if author_native}}
 - Author must produce a commit via `5x commit` — no commit is an
   invariant violation; re-invoke with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`)
@@ -181,6 +187,9 @@ Report to the human: plan is ready at $PLAN_PATH.
 - After author generates the plan, the plan file must exist at $PLAN_PATH.
 - The plan must parse successfully (`5x plan phases $PLAN_PATH` returns phases).
 - The plan must have at least one phase.
+- The plan must include the Delivery Budget table. Its `Wn` / `DCn` IDs stay
+  stable across review revisions, and every negative architecture row has a
+  matching complete Debt Claims block.
 - Author must produce a commit via `5x commit` (AuthorStatus.commit is
   present). All author completions — plan generation, plan revision —
   must result in a committed change.

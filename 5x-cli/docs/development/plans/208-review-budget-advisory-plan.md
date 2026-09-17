@@ -1513,7 +1513,7 @@ Keep it one or two lines. Do not dump the ledger.
 
 ---
 
-## Phase 9: Templates, skills, and docs
+## Phase 9: Templates, skills, and docs - COMPLETE
 
 **Completion gate:** Generated-plan template contains the budget table and Debt Claims subsection. Author/reviewer prompts explain stable IDs, `Addresses`, complete §4.3 evidence on author `DCn`, “do not emit totals,” and first-review `I`. Plan-review skill documents preflight and “do not route on `budget.requiresHuman`.” No implementation-review template (`reviewer-commit.md`) changes.
 
@@ -1601,8 +1601,8 @@ Update `test/unit/harnesses/opencode-skills.test.ts` / `cursor-skills.test.ts` i
 
 Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented until the slice ships; a one-line “advisory persistence: plan 208” note is optional.
 
-- [ ] Templates, skills, 101 primitives, default artifact, repo plan template.
-- [ ] Harness skill unit tests still pass (update expected substrings).
+- [x] Templates, skills, 101 primitives, default artifact, repo plan template.
+- [x] Harness skill unit tests still pass (update expected substrings).
 
 ---
 

@@ -61,6 +61,14 @@ Only use `--new-session` for recovery (context loss, empty output).
 - When using `--run`, do not pass `--var plan_path=...` unless you are
   intentionally overriding run-linked plan resolution. Let the CLI resolve
   the mapped worktree copy automatically.
+- Review-budget forecasts are advisory in this slice. Never route, stop, or
+  open a human gate because `result.budget.requiresHuman` is true, even when
+  `reviewBudget.mode = "enforced"`; use only readiness, review-item actions,
+  and `maxReviewIterations` for routing.
+- Initial active-budget reviews require `baselineAssessment` and assessments
+  for every current author `DCn`. Continued reviews must omit the baseline
+  assessment and assess only author claims that are new or changed; unchanged
+  assessments are carried forward by the CLI.
 
 ## Tools
 
@@ -81,6 +89,16 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
 - `5x invoke <author|reviewer> <template> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
+{{#if reviewer_native}}
+- `5x protocol validate reviewer --opt-in-budget-baseline ...` — after an
+  explicit human confirmation, activate budgeting for a mid-review
+  `v1_compat` run whose current plan has a valid Delivery Budget
+{{/if}}
+{{#if reviewer_invoke}}
+- `5x invoke reviewer reviewer-plan --opt-in-budget-baseline ...` — after an
+  explicit human confirmation, activate budgeting for a mid-review
+  `v1_compat` run whose current plan has a valid Delivery Budget
+{{/if}}
 {{#if any_native}}
 - Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes below.
 - **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
@@ -219,6 +237,22 @@ Read $REVIEW_PATH from `.data.variables.review_path` in the template render outp
 Read $REVIEW_PATH from a separate template render call before each reviewer invoke.
 {{/if}}
 
+Before the first reviewer invocation, inspect `5x run state`:
+
+- A new run in advisory mode should acquire an active baseline when the first
+  `reviewer-plan` template is rendered. If rendering fails with
+  `BUDGET_SECTION_MISSING`, `BUDGET_DEBT_CLAIM_EVIDENCE_MISSING`, or another
+  budget parse diagnostic, invoke the plan author to add/fix the Delivery
+  Budget, Surface Snapshot, and complete `#### DCn` evidence, commit the plan,
+  then retry the first render. Read the plan before drafting guidance; do not
+  invent scores, target phases, minimal alternatives, or before/after text.
+- If `review_budget.status` is `v1_compat`, stay on the v1 path. Offer budget
+  opt-in to the human; only after explicit confirmation and after the table is
+  valid may the next recorded reviewer validation/invocation use
+  `--opt-in-budget-baseline`. Record the confirmation as a `human:gate`.
+- `reviewBudget.mode = "off"` remains v1. Reserved mode `enforced` still
+  records advisory telemetry only.
+
 ### Step 1: Review
 
 {{#if reviewer_native}}
@@ -263,9 +297,25 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
+For an active budget, verify the reviewer follows the rendered prompt:
+
+- The first review emits one independent `baselineAssessment` (`I`) and a
+  `creditAssessment` for every current author-ledger `DCn`.
+- Continued reviews omit `baselineAssessment` and emit credit assessments only
+  for new/changed claims. Claim equality includes coupling, work-item
+  architecture delta, target phase, both minimal-compliant deltas, before, and
+  after. Omission of an unchanged claim is correct.
+- Every item carries stable identity and per-item deltas. Reviewers never emit
+  totals, ceilings, bands, status, `requiresHuman`, or other CLI-owned budget
+  aggregates. `creditClaim` is only for a reviewer-introduced claim, not a copy
+  of persisted author `DCn` evidence.
+
 ### Step 2: Route the verdict
 
 Read the verdict from `READINESS` (`.data.result.readiness`):
+
+Ignore `result.budget.requiresHuman` for routing. It is telemetry only; the
+following v1 readiness/action routing remains authoritative.
 
 **If `readiness: "ready"`:**
   Plan is approved. Go to Step 5 (Complete).

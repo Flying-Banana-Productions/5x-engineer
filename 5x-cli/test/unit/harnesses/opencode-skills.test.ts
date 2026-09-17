@@ -321,6 +321,14 @@ describe("5x-plan skill — Task tool delegation", () => {
 		expect(content).toContain("commit");
 		expect(content).toContain('result: "needs_human"');
 	});
+
+	test("requires complete Delivery Budget evidence in generated plans", () => {
+		const content = getDefaultSkillRaw("5x-plan");
+		expect(content).toContain("## Delivery Budget");
+		expect(content).toContain("stable");
+		expect(content).toContain("minimal-compliant effort/architecture deltas");
+		expect(content).toContain("before/after");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -378,6 +386,19 @@ describe("5x-plan-review skill — Task tool delegation", () => {
 		// The example should show protocol validate doing the recording
 		expect(content).toContain("5x protocol validate reviewer");
 		expect(content).toContain("--record");
+	});
+
+	test("documents advisory budget preflight and review lifecycle", () => {
+		const content = getDefaultSkillRaw("5x-plan-review");
+		expect(content).toContain("BUDGET_SECTION_MISSING");
+		expect(content).toContain("BUDGET_DEBT_CLAIM_EVIDENCE_MISSING");
+		expect(content).toContain("baselineAssessment");
+		expect(content).toContain("new or changed");
+		expect(content).toContain("--opt-in-budget-baseline");
+		expect(content).toContain(
+			"Ignore `result.budget.requiresHuman` for routing",
+		);
+		expect(content).toContain("Reviewers never emit");
 	});
 });
 

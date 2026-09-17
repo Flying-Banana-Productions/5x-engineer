@@ -85,4 +85,22 @@ describe("cursor skills loader", () => {
 		expect(windows).toBeDefined();
 		expect(windows?.content).toContain("FIVEX_RUN");
 	});
+
+	test("renders review-budget guidance in shared plan skills", () => {
+		const skills = listSkills();
+		const plan = skills.find((skill) => skill.name === "5x-plan")?.content;
+		const review = skills.find(
+			(skill) => skill.name === "5x-plan-review",
+		)?.content;
+
+		expect(plan).toContain("## Delivery Budget");
+		expect(plan).toContain("minimal-compliant effort/architecture deltas");
+		expect(review).toContain("BUDGET_SECTION_MISSING");
+		expect(review).toContain("baselineAssessment");
+		expect(review).toContain("new or changed");
+		expect(review).toContain("--opt-in-budget-baseline");
+		expect(review).toContain(
+			"Ignore `result.budget.requiresHuman` for routing",
+		);
+	});
 });
