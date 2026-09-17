@@ -34,6 +34,11 @@ const ORIGIN: RecordOrigin = {
 	performer: { kind: "agent", role: "reviewer" },
 };
 const DEAD_PID = 1_000_000_007;
+const PRE_COMMIT_EVENTS: TxnEvent[] = [
+	"after-new",
+	"after-dirsync:staging",
+	"after-dirsync:prepared",
+];
 
 function plantDeadLock(dir: string): void {
 	const lock = join(dir, ".txn.lock");
@@ -43,6 +48,78 @@ function plantDeadLock(dir: string): void {
 }
 
 describe("atomic-append crash (integration)", () => {
+	for (const crashEvent of PRE_COMMIT_EVENTS) {
+		test(`atomicAppendIfAllNew rolls back after ${crashEvent}`, () => {
+			const root = mkdtempSync(join(tmpdir(), "5x-rec-if-new-crash-"));
+			try {
+				const store = createWorkingTreeRecordStore({
+					recordsRoot: root,
+					now: () => FIXED_NOW,
+					fsyncFile: () => {},
+					fsyncDir: () => {},
+					onWarn: () => {},
+					onTxnEvent: (event: TxnEvent) => {
+						if (event === crashEvent) throw new Error(`crash-${crashEvent}`);
+					},
+				});
+				store.putRun({
+					id: "run_if_new",
+					plan_path: PLAN_PATH,
+					config_json: null,
+					created_at: FIXED_NOW,
+					sealed_at: null,
+					status: "active",
+					final_head_commit: null,
+					cli_version: "1.3.0",
+					format_version: 1,
+					creator: { installation_id: ORIGIN.recorder.installation_id },
+				});
+				const stepKey = stepIdempotencyKey({
+					runId: "run_if_new",
+					stepName: "reviewer:plan",
+					phase: "plan",
+					iteration: 1,
+				});
+				expect(() =>
+					store.atomicAppendIfAllNew([
+						{
+							runId: "run_if_new",
+							stream: "steps",
+							idempotencyKey: stepKey,
+							payload: { step_name: "reviewer:plan" },
+							...recordedEnvelope(ORIGIN),
+						},
+						{
+							runId: "run_if_new",
+							stream: "budget",
+							idempotencyKey: "budget:if-new",
+							payload: { remaining: 1 },
+							...recordedEnvelope(ORIGIN),
+						},
+					]),
+				).toThrow(`crash-${crashEvent}`);
+
+				const dir = runRecordDir(root, SLUG, "run_if_new");
+				resetWorkingTreeLockOwnersForTest();
+				plantDeadLock(dir);
+				const reopened = createWorkingTreeRecordStore({
+					recordsRoot: root,
+					now: () => FIXED_NOW,
+					fsyncFile: () => {},
+					fsyncDir: () => {},
+					onWarn: () => {},
+				});
+				expect(reopened.listLines("run_if_new", "steps")).toEqual([]);
+				expect(reopened.listLines("run_if_new", "budget")).toEqual([]);
+				expect(existsSync(join(dir, ".txn.journal.json"))).toBe(false);
+				expect(existsSync(join(dir, ".txn.commit"))).toBe(false);
+			} finally {
+				resetWorkingTreeLockOwnersForTest();
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
 	test("interrupt after commit then reopen is all-or-nothing", () => {
 		const root = mkdtempSync(join(tmpdir(), "5x-rec-crash-"));
 		try {

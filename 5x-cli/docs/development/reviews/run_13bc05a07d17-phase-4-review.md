@@ -84,7 +84,7 @@ Both backends inspect keys only against the pre-existing store state. A batch co
 - [x] Reindex restores baseline + snapshots incl. first-snapshot `baselineAssessment`; `I` / `baselineDirection` recompute identically
 - [x] Type-complete against `src/review-budget/types.ts` only; boundary test in place
 - [x] Tests, typecheck, lint green
-- [ ] P2.1–P2.3 corrections
+- [x] P2.1–P2.3 corrections
 
 ## Phase readiness
 

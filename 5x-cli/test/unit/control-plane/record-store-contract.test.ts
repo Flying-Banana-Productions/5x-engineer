@@ -613,6 +613,27 @@ export function runRecordStoreContract(setup: () => RecordStore): void {
 		expect(store.listLines("run_b", "budget")).toEqual([]);
 	});
 
+	test("atomicAppendIfAllNew rejects an intra-batch repeated stream key before mutation", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_repeated"));
+		const first = {
+			runId: "run_repeated",
+			stream: "budget" as const,
+			idempotencyKey: "budget:repeated",
+			payload: { writer: 1 },
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		};
+		expectCode(
+			() =>
+				store.atomicAppendIfAllNew([
+					first,
+					{ ...first, payload: { writer: 2 } },
+				]),
+			"INVALID_ATOMIC_APPEND",
+		);
+		expect(store.listLines("run_repeated", "budget")).toEqual([]);
+	});
+
 	test("atomicAppendIfAllNew throw during an all-new apply leaves both streams unchanged", () => {
 		const store = setup();
 		store.putRun(v1Summary("run_throw"));

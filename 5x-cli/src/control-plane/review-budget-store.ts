@@ -140,7 +140,8 @@ export function createReviewBudgetStore(
 		record: ReviewBudgetSnapshotRecord,
 	): void {
 		if (!index) return;
-		const seq = budgetLines(runId).findIndex(
+		const allLines = budgetLines(runId);
+		const seq = allLines.findIndex(
 			(line) => line.idempotencyKey === idempotencyKey,
 		);
 		if (seq >= 0) index.upsertSnapshot(record, idempotencyKey, seq);
@@ -249,18 +250,22 @@ export function createReviewBudgetStore(
 		},
 
 		listSnapshots(runId) {
-			const lines = budgetLines(runId).filter(
-				(line) =>
-					typeof line.payload === "object" &&
-					line.payload !== null &&
-					(line.payload as { kind?: unknown }).kind === "snapshot",
+			const allLines = budgetLines(runId);
+			const snapshots = allLines.flatMap((line, recordSeq) =>
+				typeof line.payload === "object" &&
+				line.payload !== null &&
+				(line.payload as { kind?: unknown }).kind === "snapshot"
+					? [{ line, recordSeq }]
+					: [],
 			);
 			const cached = index?.listSnapshots(runId);
 			if (
 				cached !== undefined &&
-				cached.length === lines.length &&
+				cached.length === snapshots.length &&
 				cached.every((record, position) => {
-					const payload = decodeBudgetSnapshotPayload(lines[position]?.payload);
+					const payload = decodeBudgetSnapshotPayload(
+						snapshots[position]?.line.payload,
+					);
 					return (
 						record.id === payload.id &&
 						(payload.baselineAssessment === undefined ||
@@ -271,13 +276,10 @@ export function createReviewBudgetStore(
 				return cached;
 			}
 			const records: ReviewBudgetSnapshotRecord[] = [];
-			for (const line of lines) {
+			for (const { line, recordSeq } of snapshots) {
 				const record = snapshotRecord(line.payload);
 				records.push(record);
-				const seq = budgetLines(runId).findIndex(
-					(candidate) => candidate.idempotencyKey === line.idempotencyKey,
-				);
-				index?.upsertSnapshot(record, line.idempotencyKey, seq);
+				index?.upsertSnapshot(record, line.idempotencyKey, recordSeq);
 			}
 			return records;
 		},

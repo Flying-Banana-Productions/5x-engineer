@@ -18,6 +18,7 @@ import {
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
 	requireSingleRunAtomicAppend,
+	requireUniqueAtomicAppendKeys,
 } from "./record-types.js";
 
 export interface MemoryRecordStoreOptions {
@@ -257,6 +258,7 @@ class MemoryRecordStore implements RecordStore {
 	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return { created: true, results: [] };
 		requireSingleRunAtomicAppend(ops);
+		requireUniqueAtomicAppendKeys(ops);
 		const runId = ops[0]?.runId as string;
 		const run = this.runs.get(runId);
 		if (!run) {

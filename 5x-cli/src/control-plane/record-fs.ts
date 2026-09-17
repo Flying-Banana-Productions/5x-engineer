@@ -47,6 +47,7 @@ import {
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
 	requireSingleRunAtomicAppend,
+	requireUniqueAtomicAppendKeys,
 } from "./record-types.js";
 
 export type TxnEvent =
@@ -734,6 +735,8 @@ class WorkingTreeRecordStore implements RecordStore {
 
 	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return { created: true, results: [] };
+		requireSingleRunAtomicAppend(ops);
+		requireUniqueAtomicAppendKeys(ops);
 		return this.atomicAppendUnderLock(ops, true) as AtomicAppendIfAllNewResult;
 	}
 

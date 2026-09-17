@@ -165,6 +165,21 @@ export function requireSingleRunAtomicAppend(ops: AppendOp[]): void {
 	}
 }
 
+/** Coupled all-new batches cannot repeat an identity within the batch. */
+export function requireUniqueAtomicAppendKeys(ops: AppendOp[]): void {
+	const seen = new Set<string>();
+	for (const op of ops) {
+		const identity = `${op.stream}\0${op.idempotencyKey}`;
+		if (seen.has(identity)) {
+			throw new RecordStoreError(
+				"INVALID_ATOMIC_APPEND",
+				`atomicAppendIfAllNew received repeated key (${op.stream}, ${op.idempotencyKey})`,
+			);
+		}
+		seen.add(identity);
+	}
+}
+
 /** The only step-key encoder. Lookup via `getLine("steps", key)`. */
 export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 	return `step:${k.runId}:${k.stepName}:${k.phase ?? ""}:${k.iteration}`;
