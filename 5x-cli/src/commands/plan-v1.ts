@@ -27,18 +27,31 @@ export function registerPlan(parent: Command) {
 				"has a mapped worktree copy, 5x prefers that file when it exists.",
 		)
 		.argument("<path>", "Path to implementation plan")
+		.option(
+			"--fetch",
+			"Fetch remote 5x/* branches before resolving progress (never implicit)",
+		)
+		.option(
+			"--all-refs",
+			"Discover progress from all refs, not only 5x/<slug> and HEAD",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x plan phases docs/development/015-test-separation.md\n" +
 				"  $ 5x plan phases ./plan.md | jq '.data.phases[].name'\n" +
+				"  $ 5x plan phases ./plan.md --fetch\n" +
 				"  PS> $j = 5x plan phases .\\plan.md | ConvertFrom-Json\n" +
 				"  PS> $j.data.phases\n\n" +
 				"If you are outside the control-plane repo or worktree mapping cannot be resolved,\n" +
 				"use the worktree plan path from `5x run state` (for example `worktree_plan_path`).",
 		)
-		.action(async (path) => {
-			await planPhases({ path });
+		.action(async (path, opts) => {
+			await planPhases({
+				path,
+				fetch: opts.fetch,
+				allRefs: opts.allRefs,
+			});
 		});
 
 	plan
@@ -53,16 +66,27 @@ export function registerPlan(parent: Command) {
 			"--exclude-finished",
 			"Omit plans whose phases are all complete (100%)",
 		)
+		.option(
+			"--fetch",
+			"Fetch remote 5x/* branches before resolving progress (never implicit)",
+		)
+		.option(
+			"--all-refs",
+			"Discover plans and progress from all refs, not only 5x/<slug>",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x plan list\n" +
 				"  $ 5x --text plan list\n" +
-				"  $ 5x plan list --exclude-finished\n",
+				"  $ 5x plan list --exclude-finished\n" +
+				"  $ 5x plan list --fetch\n",
 		)
 		.action(async (opts) => {
 			await planList({
 				excludeFinished: opts.excludeFinished,
+				fetch: opts.fetch,
+				allRefs: opts.allRefs,
 				startDir: process.cwd(),
 			});
 		});

@@ -146,6 +146,47 @@ for (const backend of backends) {
 			expect(onlyB.some((p) => p.runId === null)).toBe(false);
 		});
 
+		test("listAnsweredPrompts returns answered run-scoped prompts and omits open/abandoned/other runs", () => {
+			ensureRun("run_aaa");
+			ensureRun("run_bbb");
+
+			const openA = store.createPrompt({
+				runId: "run_aaa",
+				kind: "input",
+				message: "open",
+			});
+			const answeredA = store.createPrompt({
+				runId: "run_aaa",
+				kind: "confirm",
+				message: "answered-a",
+			});
+			store.answerPrompt(answeredA.id, "true", "terminal");
+			const answeredB = store.createPrompt({
+				runId: "run_bbb",
+				kind: "input",
+				message: "answered-b",
+			});
+			store.answerPrompt(answeredB.id, "ok", "terminal");
+			const abandoned = store.createPrompt({
+				runId: "run_aaa",
+				kind: "input",
+				message: "abandoned",
+			});
+			store.abandonPrompt(abandoned.id, "timeout");
+			store.createPrompt({
+				kind: "input",
+				message: "standalone",
+			});
+
+			expect(store.listAnsweredPrompts).toBeDefined();
+			const listed = store.listAnsweredPrompts?.("run_aaa") ?? [];
+			expect(idsOf(listed)).toEqual([answeredA.id]);
+			expect(listed[0]?.answer).toBe("true");
+			expect(listed.some((p) => p.id === openA.id)).toBe(false);
+			expect(listed.some((p) => p.id === answeredB.id)).toBe(false);
+			expect(listed.some((p) => p.id === abandoned.id)).toBe(false);
+		});
+
 		test("first answerPrompt wins; second returns ok:false with the first answer; answered_by unchanged", () => {
 			const created = store.createPrompt({
 				kind: "choose",

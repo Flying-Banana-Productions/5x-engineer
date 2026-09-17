@@ -538,6 +538,14 @@ describe("listRuns", () => {
 		const runs = listRuns(db, { limit: 3 });
 		expect(runs).toHaveLength(3);
 	});
+
+	test("limit 0 returns all runs without truncating", () => {
+		for (let i = 0; i < 3; i++) {
+			createRunV1(db, { id: `run-all-${i}`, planPath: "/plan.md" });
+		}
+		const runs = listRuns(db, { limit: 0 });
+		expect(runs.length).toBeGreaterThanOrEqual(3);
+	});
 });
 
 describe("computeRunSummary", () => {

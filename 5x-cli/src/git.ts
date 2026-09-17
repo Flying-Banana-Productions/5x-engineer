@@ -6,7 +6,8 @@
  * spawning real processes.
  */
 
-import { planSlugFromPath } from "./paths.js";
+import { resolve } from "node:path";
+import { isPathUnder, planSlugFromPath, realpathExisting } from "./paths.js";
 import { subprocess } from "./utils/subprocess.js";
 
 // ---------------------------------------------------------------------------
@@ -45,43 +46,112 @@ async function run(
 // Safety checks
 // ---------------------------------------------------------------------------
 
+interface PorcelainEntry {
+	xy: string;
+	paths: string[];
+}
+
+/**
+ * Parse `git status --porcelain=v1 -z`.
+ *
+ * Ordinary entries: `XY PATH\0`.
+ * Renames/copies: `XY to\0from\0` (v1) or `R100\0old\0new` (score form).
+ */
+export function parsePorcelainZ(stdout: string): PorcelainEntry[] {
+	if (!stdout) return [];
+	const parts = stdout.split("\0");
+	const entries: PorcelainEntry[] = [];
+	let i = 0;
+	while (i < parts.length) {
+		const rec = parts[i];
+		if (rec === undefined || rec === "") {
+			i += 1;
+			continue;
+		}
+		const scoreMatch = rec.match(/^([RC])(\d{3})$/);
+		if (scoreMatch) {
+			const oldPath = parts[i + 1] ?? "";
+			const newPath = parts[i + 2] ?? "";
+			entries.push({
+				xy: `${scoreMatch[1]} `,
+				paths: [oldPath, newPath].filter(Boolean),
+			});
+			i += 3;
+			continue;
+		}
+		if (rec.length >= 2) {
+			const xy = rec.slice(0, 2);
+			const path = rec.length >= 3 ? rec.slice(3) : "";
+			const paths = path ? [path] : [];
+			const isRename = xy.includes("R") || xy.includes("C");
+			if (isRename) {
+				i += 1;
+				const other = parts[i];
+				if (other) paths.push(other);
+			}
+			entries.push({ xy, paths });
+		}
+		i += 1;
+	}
+	return entries;
+}
+
+function porcelainPathExempt(
+	repoRoot: string,
+	porcelainPath: string,
+	exemptAbsRoots: string[],
+): boolean {
+	if (exemptAbsRoots.length === 0) return false;
+	const abs = resolve(repoRoot, porcelainPath);
+	return exemptAbsRoots.some((root) => isPathUnder(abs, root));
+}
+
 /**
  * Check git repository safety before agent invocation.
  * Returns a report including dirty state and branch info.
+ *
+ * `exemptRoots` are absolute directories whose dirty/untracked files are
+ * ignored (used for the records root between `run record` and `5x commit`).
  */
 export async function checkGitSafety(
 	workdir: string,
+	opts?: { exemptRoots?: string[] },
 ): Promise<GitSafetyReport> {
 	// Get repo root
 	const rootResult = await run(["rev-parse", "--show-toplevel"], workdir);
 	if (rootResult.exitCode !== 0) {
 		throw new Error(`Not a git repository: ${workdir}. ${rootResult.stderr}`);
 	}
-	const repoRoot = rootResult.stdout;
+	const repoRoot = rootResult.stdout.trim();
 
 	// Get current branch
 	const branch = await getCurrentBranch(workdir);
 
-	// Check porcelain status
-	const statusResult = await run(["status", "--porcelain"], workdir);
-	const lines = statusResult.stdout
-		? statusResult.stdout.split("\n").filter(Boolean)
-		: [];
+	// `--untracked-files=all` lists each untracked file. Without it, a brand-new
+	// records tree collapses to `?? docs/` and fails the path-scoped exemption.
+	const statusResult = await run(
+		["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+		workdir,
+	);
+	const entries = parsePorcelainZ(statusResult.stdout);
+	const exemptAbsRoots = (opts?.exemptRoots ?? []).map((root) =>
+		realpathExisting(root),
+	);
 
 	const untrackedFiles: string[] = [];
 	let isDirty = false;
 
-	for (const line of lines) {
-		if (line.startsWith("??")) {
-			untrackedFiles.push(line.slice(3));
+	for (const entry of entries) {
+		const nonExempt = entry.paths.filter(
+			(p) => !porcelainPathExempt(repoRoot, p, exemptAbsRoots),
+		);
+		if (nonExempt.length === 0) continue;
+		if (entry.xy === "??") {
+			untrackedFiles.push(...nonExempt);
+			isDirty = true;
 		} else {
 			isDirty = true;
 		}
-	}
-
-	// Also mark dirty if there are untracked files (conservative)
-	if (untrackedFiles.length > 0) {
-		isDirty = true;
 	}
 
 	return {
@@ -189,6 +259,7 @@ export async function listChangedFiles(workdir: string): Promise<string[]> {
 
 /**
  * Commit specific files (relative paths) with a fixed message.
+ * Uses `git commit --only` so pre-staged unrelated paths are not included.
  */
 export async function commitFiles(
 	workdir: string,
@@ -204,7 +275,12 @@ export async function commitFiles(
 		throw new Error(`Failed to stage files: ${addResult.stderr}`);
 	}
 
-	const commitResult = await run(["commit", "-m", message], workdir);
+	// `--only` commits the listed paths from a temporary index so
+	// caller-pre-staged unrelated files are not published.
+	const commitResult = await run(
+		["commit", "--only", "-m", message, "--", ...files],
+		workdir,
+	);
 	if (commitResult.exitCode !== 0) {
 		throw new Error(`Failed to create commit: ${commitResult.stderr}`);
 	}
@@ -388,6 +464,30 @@ export async function createWorktree(
 	return { path, branch };
 }
 
+/**
+ * Check out an existing branch (or create it from `startPoint`) in a new
+ * worktree. Does not fetch. Used by records backfill for `5x/<slug>` when
+ * the mapped worktree is not already on that branch.
+ */
+export async function addWorktreeForBranch(
+	repoRoot: string,
+	path: string,
+	branch: string,
+	startPoint?: string,
+): Promise<WorktreeInfo> {
+	const exists = await branchExists(branch, repoRoot);
+	const args = exists
+		? ["worktree", "add", path, branch]
+		: startPoint
+			? ["worktree", "add", "-b", branch, path, startPoint]
+			: ["worktree", "add", path, "-b", branch];
+	const result = await run(args, repoRoot);
+	if (result.exitCode !== 0) {
+		throw new Error(`Failed to create worktree at "${path}": ${result.stderr}`);
+	}
+	return { path, branch };
+}
+
 /** Remove a git worktree. */
 export async function removeWorktree(
 	repoRoot: string,
@@ -463,4 +563,275 @@ export async function deleteBranch(
 	if (result.exitCode !== 0) {
 		throw new Error(`Failed to delete branch "${branch}": ${result.stderr}`);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Record helpers (patch-id, numstat, show, log)
+// ---------------------------------------------------------------------------
+
+/**
+ * `git patch-id --stable` of `git diff from to`. Returns null on any failure
+ * (squash-safe; do not throw at record time).
+ */
+export async function computePatchId(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<string | null> {
+	const diff = await run(["diff", fromCommit, toCommit], workdir);
+	if (diff.exitCode !== 0) return null;
+	const patchId = await subprocess.execGitStdin(
+		["patch-id", "--stable"],
+		workdir,
+		diff.stdout,
+	);
+	if (patchId.exitCode !== 0) return null;
+	const id = patchId.stdout.trim().split(/\s+/)[0];
+	return id ? id : null;
+}
+
+export interface NumstatSummary {
+	files_changed: number;
+	insertions: number;
+	deletions: number;
+}
+
+/**
+ * `git diff --numstat from to`. Returns null on any git failure.
+ */
+export async function computeDiffSummary(
+	workdir: string,
+	fromCommit: string,
+	toCommit: string,
+): Promise<NumstatSummary | null> {
+	const result = await run(
+		["diff", "--numstat", fromCommit, toCommit],
+		workdir,
+	);
+	if (result.exitCode !== 0) return null;
+	let files_changed = 0;
+	let insertions = 0;
+	let deletions = 0;
+	if (result.stdout) {
+		for (const line of result.stdout.split("\n")) {
+			if (!line.trim()) continue;
+			const parts = line.split("\t");
+			const ins = parts[0];
+			const del = parts[1];
+			if (ins === undefined || del === undefined) continue;
+			files_changed += 1;
+			if (ins !== "-") insertions += Number.parseInt(ins, 10) || 0;
+			if (del !== "-") deletions += Number.parseInt(del, 10) || 0;
+		}
+	}
+	return { files_changed, insertions, deletions };
+}
+
+/** `git show commit:path`. Null if the path is missing at that commit. */
+export async function gitShowFile(
+	workdir: string,
+	commit: string,
+	path: string,
+): Promise<string | null> {
+	const result = await run(["show", `${commit}:${path}`], workdir);
+	if (result.exitCode !== 0) return null;
+	return result.stdout;
+}
+
+/** `git log -1 --format=%H ref -- paths`. Null if none / failure. */
+export async function gitLogLastTouching(
+	workdir: string,
+	ref: string,
+	paths: string[],
+): Promise<string | null> {
+	if (paths.length === 0) return null;
+	const result = await run(
+		["log", "-1", "--format=%H", ref, "--", ...paths],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return null;
+	return result.stdout;
+}
+
+export interface FiveXRemoteRef {
+	remote: string;
+	/** Short name, e.g. `origin/5x/<slug>`. */
+	ref: string;
+}
+
+/**
+ * Local `5x/<slug>` branches and remote-tracking `<remote>/5x/<slug>` refs.
+ * Uses `git for-each-ref` on `refs/heads/5x/*` and remote `5x/*` patterns.
+ */
+export async function listFiveXRefs(workdir: string): Promise<{
+	local: string[];
+	remote: FiveXRemoteRef[];
+}> {
+	const result = await run(
+		[
+			"for-each-ref",
+			"--format=%(refname)",
+			"refs/heads/5x/*",
+			"refs/remotes/*/5x/*",
+		],
+		workdir,
+	);
+	const local: string[] = [];
+	const remote: FiveXRemoteRef[] = [];
+	if (result.exitCode !== 0 || !result.stdout) return { local, remote };
+	for (const line of result.stdout.split("\n")) {
+		const refname = line.trim();
+		if (!refname) continue;
+		const head = refname.match(/^refs\/heads\/(5x\/.+)$/);
+		if (head?.[1]) {
+			local.push(head[1]);
+			continue;
+		}
+		const rem = refname.match(/^refs\/remotes\/([^/]+)\/(5x\/.+)$/);
+		if (rem?.[1] && rem[2]) {
+			remote.push({ remote: rem[1], ref: `${rem[1]}/${rem[2]}` });
+		}
+	}
+	return { local, remote };
+}
+
+/** `git merge-base --is-ancestor maybeAncestor commit`. */
+export async function isAncestor(
+	workdir: string,
+	maybeAncestor: string,
+	commit: string,
+): Promise<boolean> {
+	const result = await run(
+		["merge-base", "--is-ancestor", maybeAncestor, commit],
+		workdir,
+	);
+	return result.exitCode === 0;
+}
+
+/**
+ * Fetch `refs/heads/5x/*` into remote-tracking branches.
+ * Only called when `--fetch` is set.
+ */
+export async function fetchFiveXBranches(
+	workdir: string,
+	remote: string,
+): Promise<void> {
+	const result = await run(
+		["fetch", remote, `+refs/heads/5x/*:refs/remotes/${remote}/5x/*`],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		throw new Error(
+			result.stderr || `git fetch ${remote} refs/heads/5x/* failed`,
+		);
+	}
+}
+
+/** `git remote`. */
+export async function listRemotes(workdir: string): Promise<string[]> {
+	const result = await run(["remote"], workdir);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	return result.stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+}
+
+export interface GitRefTip {
+	sha: string;
+	refname: string;
+	committerUnix: number | null;
+}
+
+/** `git for-each-ref --format=sha\\trefname\\tcommitterdate:unix patterns`. */
+export async function listRefTips(
+	workdir: string,
+	patterns: string[],
+): Promise<GitRefTip[]> {
+	if (patterns.length === 0) return [];
+	const result = await run(
+		[
+			"for-each-ref",
+			"--format=%(objectname)%09%(refname)%09%(committerdate:unix)",
+			...patterns,
+		],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	const tips: GitRefTip[] = [];
+	for (const line of result.stdout.split("\n")) {
+		if (!line) continue;
+		const [sha, refname, unixRaw] = line.split("\t");
+		if (!sha || !refname) continue;
+		const unix = unixRaw ? Number.parseInt(unixRaw, 10) : Number.NaN;
+		tips.push({
+			sha,
+			refname,
+			committerUnix: Number.isFinite(unix) ? unix : null,
+		});
+	}
+	return tips;
+}
+
+/** `git rev-parse --verify --quiet ref^{commit}`. */
+export async function revParseCommit(
+	workdir: string,
+	ref: string,
+): Promise<string | null> {
+	const result = await run(
+		["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return null;
+	return result.stdout;
+}
+
+/** `git rev-list --parents tips...` for in-memory ancestor queries. */
+export async function gitRevListParents(
+	workdir: string,
+	tips: string[],
+): Promise<string> {
+	if (tips.length === 0) return "";
+	const result = await run(["rev-list", "--parents", ...tips], workdir);
+	if (result.exitCode !== 0) return "";
+	return result.stdout;
+}
+
+/** Batched path history; null distinguishes a failed query from no matches. */
+export async function gitLogNameOnly(
+	workdir: string,
+	tips: string[],
+	paths: string[],
+): Promise<string | null> {
+	if (tips.length === 0 || paths.length === 0) return "";
+	// Include files changed against every parent of a merge (conflict resolutions),
+	// without treating an unchanged plan carried through a merge as a new touch.
+	const result = await run(
+		[
+			"log",
+			"--format=%H",
+			"--name-only",
+			"--diff-merges=combined",
+			...tips,
+			"--",
+			...paths,
+		],
+		workdir,
+	);
+	if (result.exitCode !== 0) return null;
+	return result.stdout;
+}
+
+/** `git ls-tree -r --name-only ref -- pathspec`. */
+export async function gitLsTreePaths(
+	workdir: string,
+	ref: string,
+	pathspec: string,
+): Promise<string[]> {
+	const result = await run(
+		["ls-tree", "-r", "--name-only", ref, "--", pathspec],
+		workdir,
+	);
+	if (result.exitCode !== 0 || !result.stdout) return [];
+	return result.stdout.split("\n").filter(Boolean);
 }

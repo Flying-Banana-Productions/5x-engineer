@@ -410,9 +410,9 @@ export function stepIdempotencyKey(k: StepIdempotencyKey): string {
 }
 ```
 
-- [ ] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
-- [ ] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface), and `origin` must come from `ctx.originFor` on `ReviewBudgetCommandContext` (1.5 / Phase 4) — `recordedEnvelope` does not construct or redact origin. Tests and 06 may construct `RecordOrigin` as a **fixture value** in Phase 1 contract tests; production writers never assemble origin by hand. Identity-file I/O is Phase 2.
-- [ ] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line), `UNSUPPORTED_FORMAT_VERSION` (`putRun` against an existing summary whose `format_version` is greater than `RUN_RECORD_FORMAT_VERSION`). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
+- [x] `stepIdempotencyKey` is the only step-key encoder; 06's `prepareRecordStepAppend` will look up by this key via `getLine("steps", key)`.
+- [x] `recordedEnvelope(origin)` is the only helper 06 should use to stamp live budget/step ops (Phase 1 freeze surface), and `origin` must come from `ctx.originFor` on `ReviewBudgetCommandContext` (1.5 / Phase 4) — `recordedEnvelope` does not construct or redact origin. Tests and 06 may construct `RecordOrigin` as a **fixture value** in Phase 1 contract tests; production writers never assemble origin by hand. Identity-file I/O is Phase 2.
+- [x] `RecordStoreError` codes used in Phase 1: `RUN_NOT_FOUND` (append/getLine against a run that was never `putRun`), `INVALID_STREAM`, `INVALID_ORIGIN` (recorded line missing origin; `materializer` present on a recorded line), `UNSUPPORTED_FORMAT_VERSION` (`putRun` against an existing summary whose `format_version` is greater than `RUN_RECORD_FORMAT_VERSION`). Do not invent CAS codes — duplicates are `created: false`, not errors. Phase 3 adds `INVALID_JSONL`, `RECORD_TXN_CORRUPT`, and `RECORD_TXN_LOCKED`. `RECORDS_ROOT_OUTSIDE_REPO` is a config / `resolveRecordsRoot` error (Phase 2/4), not a store-method code. `IDENTITY_CORRUPT` is identity-file I/O (Phase 2), not a store-method code.
 
 #### 1.2 Interface — `src/control-plane/record-store.ts` (new)
 
@@ -452,8 +452,8 @@ export interface RecordStore {
 7. Methods take `runId` + stream + key. **No path parameters.**
 8. Envelope validation on append: `provenance === "recorded"` requires non-null `origin`; `materializer` is forbidden on recorded lines (`INVALID_ORIGIN`). `provenance === "backfilled"` allows `origin === null` (this slice's exporter always passes `null`) and should include `materializer`. Do not reject a backfilled line that somehow has a known original origin — but do not invent one. Default `schemaVersion` to `RECORD_LINE_SCHEMA_VERSION` only when the caller omitted it; do not invent origin. The store does not read the identity file.
 
-- [ ] File-level comment states the interface must not assume a working-tree path (`207` §3).
-- [ ] Do not add `gitShow` / `commit` / `fetch` to this interface.
+- [x] File-level comment states the interface must not assume a working-tree path (`207` §3).
+- [x] Do not add `gitShow` / `commit` / `fetch` to this interface.
 
 #### 1.3 Memory implementation — `src/control-plane/record-memory.ts` (new)
 
@@ -471,8 +471,8 @@ export function createMemoryRecordStore(
 
 Internal structure: `Map<runId, { summary: RunRecordSummary; streams: Record<RecordStream, Map<string, RecordLine> & { order: string[] }> }>`. `atomicAppend` clones the affected run maps, applies ops, then swaps. A throw during apply leaves the original maps in place.
 
-- [ ] `listRuns({ planSlug })` filters by `planSlugFromPath(summary.plan_path)` (`paths.ts:171–175`).
-- [ ] Returned objects are cloned (mutating a `getLine` result must not change the store).
+- [x] `listRuns({ planSlug })` filters by `planSlugFromPath(summary.plan_path)` (`paths.ts:171–175`).
+- [x] Returned objects are cloned (mutating a `getLine` result must not change the store).
 
 #### 1.4 Shared contract tests — `test/unit/control-plane/record-store-contract.test.ts` (new)
 
@@ -484,23 +484,23 @@ export function runRecordStoreContract(setup: () => RecordStore): void;
 
 Required cases:
 
-- [ ] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set). Include a variant whose first `putRun` has `creator: null` and `materializer` set: seal copies `creator: null`, sets `sealer`, and does not copy `materializer` into `creator` or `sealer`.
-- [ ] `putRun` of a v1 summary succeeds; a subsequent `putRun` after planting `format_version: 2` (and, on the FS backend, an extra `future_field`) throws `UNSUPPORTED_FORMAT_VERSION`; `getRun` still returns `format_version === 2`; the on-disk file (FS) still contains `future_field`.
-- [ ] `listRuns` / `listRuns({ planSlug })`.
-- [ ] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json` **and** original `origin`.
-- [ ] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
-- [ ] Budget stream: append `{ idempotencyKey: "budget:baseline:run_1", payload: { b0: 4 }, ...recordedEnvelope(origin) }`; get/list; duplicate CAS; origin round-trips.
-- [ ] Decisions stream: same shape, opaque payload, origin round-trips.
-- [ ] `atomicAppend([step, budget])` both `created: true`; `getLine` both streams; both lines share the same `origin` fixture.
-- [ ] `atomicAppend([step, budget])` when step key already exists: step `created: false`, budget still appended (caller/06 decides whether to include budget; the store does not infer pairing).
-- [ ] `atomicAppend` throw: spy/hook the memory store **or** pass an op that the test double throws on after the first write in the in-memory apply; assert store unchanged. For memory, implement by wrapping `append` internals: if any op's `stream` is the sentinel `"__throw__"` as a test-only… **Do not** add a test stream. Instead: `atomicAppend` of two valid ops where the test subclasses/spies `put` of the second stream map and throws. Simplest: export a test-only `createMemoryRecordStore({ now, onBeforeCommit?: () => void })` that `onBeforeCommit` throws after mutating the clone but before swap — the swap is skipped, original intact.
-- [ ] `append` without `putRun` throws `RUN_NOT_FOUND`.
-- [ ] Missing `getLine` / `getRun` return `null`.
-- [ ] Recorded append with `origin: null` throws `INVALID_ORIGIN`; recorded append with `materializer` throws `INVALID_ORIGIN`.
-- [ ] Backfilled append with `origin: null` and `materializer` round-trips; `getLine` does not promote `materializer` into `origin`.
-- [ ] Fixture origin uses a random UUID and optional `actor`; it must not include `hostname`, `username`, or `session_id` keys (types forbid them; a widened object is stripped only at the writer in Phase 3/4 — Phase 1 fixtures are well-typed).
+- [x] `putRun` / `getRun` round-trip including `sealed_at: null` then a second `putRun` that seals (`creator` unchanged; `sealer` set). Include a variant whose first `putRun` has `creator: null` and `materializer` set: seal copies `creator: null`, sets `sealer`, and does not copy `materializer` into `creator` or `sealer`.
+- [x] `putRun` of a v1 summary succeeds; a subsequent `putRun` after planting `format_version: 2` (and, on the FS backend, an extra `future_field`) throws `UNSUPPORTED_FORMAT_VERSION`; `getRun` still returns `format_version === 2`; the on-disk file (FS) still contains `future_field`.
+- [x] `listRuns` / `listRuns({ planSlug })`.
+- [x] Step append then `getLine` by `stepIdempotencyKey`; duplicate returns `created: false` and original `result_json` **and** original `origin`.
+- [x] `listLines("steps")` insertion order with two lines sharing `createdAt` (inject `now`).
+- [x] Budget stream: append `{ idempotencyKey: "budget:baseline:run_1", payload: { b0: 4 }, ...recordedEnvelope(origin) }`; get/list; duplicate CAS; origin round-trips.
+- [x] Decisions stream: same shape, opaque payload, origin round-trips.
+- [x] `atomicAppend([step, budget])` both `created: true`; `getLine` both streams; both lines share the same `origin` fixture.
+- [x] `atomicAppend([step, budget])` when step key already exists: step `created: false`, budget still appended (caller/06 decides whether to include budget; the store does not infer pairing).
+- [x] `atomicAppend` throw: spy/hook the memory store **or** pass an op that the test double throws on after the first write in the in-memory apply; assert store unchanged. For memory, implement by wrapping `append` internals: if any op's `stream` is the sentinel `"__throw__"` as a test-only… **Do not** add a test stream. Instead: `atomicAppend` of two valid ops where the test subclasses/spies `put` of the second stream map and throws. Simplest: export a test-only `createMemoryRecordStore({ now, onBeforeCommit?: () => void })` that `onBeforeCommit` throws after mutating the clone but before swap — the swap is skipped, original intact.
+- [x] `append` without `putRun` throws `RUN_NOT_FOUND`.
+- [x] Missing `getLine` / `getRun` return `null`.
+- [x] Recorded append with `origin: null` throws `INVALID_ORIGIN`; recorded append with `materializer` throws `INVALID_ORIGIN`.
+- [x] Backfilled append with `origin: null` and `materializer` round-trips; `getLine` does not promote `materializer` into `origin`.
+- [x] Fixture origin uses a random UUID and optional `actor`; it must not include `hostname`, `username`, or `session_id` keys (types forbid them; a widened object is stripped only at the writer in Phase 3/4 — Phase 1 fixtures are well-typed).
 
-- [ ] Re-export `RecordStore`, types, `createMemoryRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, `RecordStoreError` from `src/control-plane/index.ts` and `src/index.ts`.
+- [x] Re-export `RecordStore`, types, `createMemoryRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, `RecordStoreError` from `src/control-plane/index.ts` and `src/index.ts`.
 
 #### 1.5 Binding slice-06 origin-writer contract (consumed by `208` §6.2)
 
@@ -556,9 +556,9 @@ The facade's `CaptureBaselineInput` includes required `origin: RecordOrigin` (al
 
 **Cross-slice tests** (this slice owns attribution assertions; 06 owns payload assertions). Unit: wrapper with injected `RecordCommandContext.originFor` spy — invoke-reviewer admit stamps identical origin on step and budget ops; baseline-only append calls `originFor` once with the caller performer; `records.redact = ["origin.actor"]` omits actor on both. Integration (`origin-attribution.test.ts`): invoke reviewer `--record` retains configured provider/role on **both** the step line and the budget snapshot; a baseline-only capture (template-render path or direct `ensurePlanReviewBaseline`) is `{ kind: "system", role: "cli" }` unless an agent invocation is the caller.
 
-- [ ] `208` §6.2 context factory, `PreparedRecordStep` consumption, `recordPlanReviewerStepWithSnapshot` step 4, and `CaptureBaselineInput.origin` match this subsection; **`208` Phases 4–5 wait only on this slice's Phase 1; `208` Phase 6+ waits on this slice's Phase 4** (coordinated plan edit in the same revision as 1.8).
-- [ ] Contract tests may use a fixture `originFor`; production 06 code under test must still go through the injected factory, not an inline `RecordOrigin`.
-- [ ] Phase 1 files and 06 Phase 4 facade tests import no `createRecordContext`.
+- [x] `208` §6.2 context factory, `PreparedRecordStep` consumption, `recordPlanReviewerStepWithSnapshot` step 4, and `CaptureBaselineInput.origin` match this subsection; **`208` Phases 4–5 wait only on this slice's Phase 1; `208` Phase 6+ waits on this slice's Phase 4** (coordinated plan edit in the same revision as 1.8).
+- [x] Contract tests may use a fixture `originFor`; production 06 code under test must still go through the injected factory, not an inline `RecordOrigin`.
+- [x] Phase 1 files and 06 Phase 4 facade tests import no `createRecordContext`.
 
 ---
 
@@ -601,10 +601,10 @@ const RecordsSchema = z.object({
 
 Mount as `records: RecordsSchema.default({})`.
 
-- [ ] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`. Immediately after resolve, if `!isPathUnder(config.paths.records, baseDir)`, throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Use error code `RECORDS_ROOT_OUTSIDE_REPO` when the load path has an envelope (otherwise a thrown `Error` whose message includes that code/phrase). This is fail-closed for every command that loads config.
-- [ ] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
-- [ ] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []` / `# actor = "your-label"`.
-- [ ] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, relative resolution, **absolute path inside the repo accepted** (configured value `resolve(projectRoot, "custom/runs")` → stored abs equals that path), **absolute path outside the repo rejected** (`/tmp/5x-records` → `RECORDS_ROOT_OUTSIDE_REPO`), **relative path that escapes** (`../../tmp/records` → same error), unknown-key warning does not fire for `[records]`, `records.actor` round-trips when set.
+- [x] `resolveConfigPaths` (`:476–494`) resolves `paths.records` with `resolve(baseDir, config.paths.records)` alongside `plans` / `reviews` / `archive`. Immediately after resolve, if `!isPathUnder(config.paths.records, baseDir)`, throw: `paths.records must be inside the repository (resolved to <abs>). Git-tracked run records cannot live outside the work tree.` Use error code `RECORDS_ROOT_OUTSIDE_REPO` when the load path has an envelope (otherwise a thrown `Error` whose message includes that code/phrase). This is fail-closed for every command that loads config.
+- [x] Add `"records"` to `KNOWN_ROOT_CONFIG_KEYS` (`:498–512`).
+- [x] `src/templates/5x.default.toml` (`:59–65`): `records = "docs/development/runs"` under `[paths]`; commented `[records]` / `redact = []` / `# actor = "your-label"`.
+- [x] Unit tests: `test/unit/config.test.ts`, `test/unit/config-registry.test.ts` — default, override, relative resolution, **absolute path inside the repo accepted** (configured value `resolve(projectRoot, "custom/runs")` → stored abs equals that path), **absolute path outside the repo rejected** (`/tmp/5x-records` → `RECORDS_ROOT_OUTSIDE_REPO`), **relative path that escapes** (`../../tmp/records` → same error), unknown-key warning does not fire for `[records]`, `records.actor` round-trips when set.
 
 `config-registry.ts` walks Zod automatically; no hand-maintained key list.
 
@@ -626,14 +626,14 @@ export function ensureGitattributes(
 ): { created: boolean; appended: boolean };
 ```
 
-- [ ] If `.gitattributes` is missing, create it with the comment + one rule.
-- [ ] If present and the exact rule line exists, no-op.
-- [ ] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
-- [ ] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` — config load has already rejected an outside root, so this relative path is always inside the repo. If `relativePathUnder` would still return null (defense in depth), throw `RECORDS_ROOT_OUTSIDE_REPO`; **do not** skip `.gitattributes` or log a warning.
-- [ ] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records` (same inside-repo relative path).
-- [ ] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records` inside the repo (relative and absolute-inside). An outside `paths.records` fails at config load before attributes are written.
+- [x] If `.gitattributes` is missing, create it with the comment + one rule.
+- [x] If present and the exact rule line exists, no-op.
+- [x] If present without the rule, append (preserve existing content; do not rewrite unrelated attributes).
+- [x] Call from `initScaffold` after `ensureGitignore` (`:379–387`). Use the **relative** default `docs/development/runs` on first init (Zod default; no `5x.toml` required). If layered config is already loaded, use `relative(projectRoot, config.paths.records)` — config load has already rejected an outside root, so this relative path is always inside the repo. If `relativePathUnder` would still return null (defense in depth), throw `RECORDS_ROOT_OUTSIDE_REPO`; **do not** skip `.gitattributes` or log a warning.
+- [x] Call from `runUpgrade` (`upgrade.handler.ts:485`) as a new "Git attributes:" section after templates (`:533–537`), using the resolved layered `paths.records` (same inside-repo relative path).
+- [x] Tests: `test/unit/commands/init.test.ts`, `test/unit/commands/upgrade.test.ts`, `test/integration/commands/init.test.ts`, `test/integration/commands/upgrade.test.ts` — create, append, idempotent, custom `paths.records` inside the repo (relative and absolute-inside). An outside `paths.records` fails at config load before attributes are written.
 
-- [ ] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
+- [x] Do **not** create the records directory on init (empty dirs are not git-tracked). The first `putRun` creates `<slug>/<run-id>/`.
 
 #### 2.3 Installation identity — `src/records/identity.ts` (new)
 
@@ -663,12 +663,12 @@ export function resolveRecorder(opts: {
 }): RecordRecorder;
 ```
 
-- [ ] `identityDir` must **not** resolve under a project checkout, `paths.records`, or `.5x/`. Tests pass a temp `homeDir` / `FIVEX_CONFIG_HOME`; never write the real home directory in unit tests.
-- [ ] `loadOrCreateInstallationIdentity`: if `identity.json` is missing, create `{ version: 1, installation_id: <uuid-v4> }` with `mkdirSync` recursive, atomic tmp+rename, file mode `0o600` where the platform supports it. Second load returns the same `installation_id`.
-- [ ] Corrupt / unreadable / non-UUID `installation_id`: throw `IDENTITY_CORRUPT` (fail closed). Do **not** silently mint a new id (that would split attribution). Doctor may later report this; `--fix` does not rewrite identity in this slice.
-- [ ] `resolveRecorder` actor precedence (first non-empty wins): `FIVEX_RECORDS_ACTOR` → `config.records.actor` → `identity.actor`. If none, omit `actor`. Never use `os.userInfo()`, `os.hostname()`, `process.env.USER` / `USERNAME`, or Git `user.name` / `user.email`.
-- [ ] `FIVEX_INSTALLATION_ID` is **not** a production override (would make attribution spoofable in shared logs). Tests inject via the identity file / `configHome`.
-- [ ] Unit: `test/unit/records/identity.test.ts` — create, stable reload, corrupt throws, actor precedence, env/config do not change `installation_id`, identity path is outside a temp repo root.
+- [x] `identityDir` must **not** resolve under a project checkout, `paths.records`, or `.5x/`. Tests pass a temp `homeDir` / `FIVEX_CONFIG_HOME`; never write the real home directory in unit tests.
+- [x] `loadOrCreateInstallationIdentity`: if `identity.json` is missing, create `{ version: 1, installation_id: <uuid-v4> }` with `mkdirSync` recursive, atomic tmp+rename, file mode `0o600` where the platform supports it. Second load returns the same `installation_id`.
+- [x] Corrupt / unreadable / non-UUID `installation_id`: throw `IDENTITY_CORRUPT` (fail closed). Do **not** silently mint a new id (that would split attribution). Doctor may later report this; `--fix` does not rewrite identity in this slice.
+- [x] `resolveRecorder` actor precedence (first non-empty wins): `FIVEX_RECORDS_ACTOR` → `config.records.actor` → `identity.actor`. If none, omit `actor`. Never use `os.userInfo()`, `os.hostname()`, `process.env.USER` / `USERNAME`, or Git `user.name` / `user.email`.
+- [x] `FIVEX_INSTALLATION_ID` is **not** a production override (would make attribution spoofable in shared logs). Tests inject via the identity file / `configHome`.
+- [x] Unit: `test/unit/records/identity.test.ts` — create, stable reload, corrupt throws, actor precedence, env/config do not change `installation_id`, identity path is outside a temp repo root.
 
 **Privacy:** `installation_id` is a random correlator for one CLI installation, not a person. `actor` is optional and **will appear in git history / PRs** when set. Teams with public repositories should omit `actor` or add `origin.actor` to `records.redact`. Document this in Phase 8 / 101.
 
@@ -741,13 +741,13 @@ Backfilled `run.json` (original creator/sealer unknown; exporter is summary `mat
 
 Forbidden origin keys (`hostname`, `hardware_id`, `os_username`, `username`, `session_id`, `log_path`, `transcript`, `git_user`, `user_email`): `encodeJsonlLine` / `redactOrigin` / `redactRecorder` delete them if present on a widened object. Do not persist them.
 
-- [ ] `decodeJsonlFile` drops conflict-marker lines if present (treat as corrupt: throw `RecordStoreError("INVALID_JSONL")` rather than silently parsing half a merge). After a correct `merge=union` there are no markers — the throw is a doctor-facing signal.
-- [ ] First occurrence of an `idempotency_key` wins; later duplicates in the same file are ignored on read (union merge of two backfills). Origin/provenance of the **first** line win with the key.
-- [ ] Codec unit tests: `decodeJsonlFile` of a steps line, a decisions line, and a budget line each return `RecordLine.runId ===` the caller-supplied id **and** round-trip `origin` / `provenance` / `schemaVersion`; encode round-trip does not emit `run_id`; mismatched on-disk `run_id` throws `INVALID_JSONL`.
-- [ ] Codec: missing `schema_version`, `schema_version: 0`, recorded + `origin: null`, recorded + `materializer`, unknown `performer.kind` each throw `INVALID_JSONL`. `schema_version: 2` with all v1 fields present succeeds and ignores an extra `future_field`.
-- [ ] Codec: backfilled line with `origin: null` + `materializer` decodes; `line.origin` is `null`; `line.materializer` is the exporter.
-- [ ] `parseRunJson`: `creator: null` and omitted `sealer` round-trip; terminal summary with `creator: null`, `sealer: null`, and `materializer` round-trips; `getRun` does not promote `materializer` into `creator` or `sealer`.
-- [ ] `parseRunJson`: `format_version: 2` with all v1 summary fields plus `future_field` succeeds (`format_version === 2`; typed object need not retain `future_field`). `putRun` over that file throws `UNSUPPORTED_FORMAT_VERSION`; on-disk bytes still contain `future_field` and `format_version: 2`.
+- [x] `decodeJsonlFile` drops conflict-marker lines if present (treat as corrupt: throw `RecordStoreError("INVALID_JSONL")` rather than silently parsing half a merge). After a correct `merge=union` there are no markers — the throw is a doctor-facing signal.
+- [x] First occurrence of an `idempotency_key` wins; later duplicates in the same file are ignored on read (union merge of two backfills). Origin/provenance of the **first** line win with the key.
+- [x] Codec unit tests: `decodeJsonlFile` of a steps line, a decisions line, and a budget line each return `RecordLine.runId ===` the caller-supplied id **and** round-trip `origin` / `provenance` / `schemaVersion`; encode round-trip does not emit `run_id`; mismatched on-disk `run_id` throws `INVALID_JSONL`.
+- [x] Codec: missing `schema_version`, `schema_version: 0`, recorded + `origin: null`, recorded + `materializer`, unknown `performer.kind` each throw `INVALID_JSONL`. `schema_version: 2` with all v1 fields present succeeds and ignores an extra `future_field`.
+- [x] Codec: backfilled line with `origin: null` + `materializer` decodes; `line.origin` is `null`; `line.materializer` is the exporter.
+- [x] `parseRunJson`: `creator: null` and omitted `sealer` round-trip; terminal summary with `creator: null`, `sealer: null`, and `materializer` round-trips; `getRun` does not promote `materializer` into `creator` or `sealer`.
+- [x] `parseRunJson`: `format_version: 2` with all v1 summary fields plus `future_field` succeeds (`format_version === 2`; typed object need not retain `future_field`). `putRun` over that file throws `UNSUPPORTED_FORMAT_VERSION`; on-disk bytes still contain `future_field` and `format_version: 2`.
 
 #### 3.2 Working-tree store — `src/control-plane/record-fs.ts` (new)
 
@@ -879,23 +879,23 @@ Let `journalOk` mean `.txn.journal.json` parses as version 1, has the required f
 
 **Fault-injection tests** (working-tree FS suite, not required of memory): `onTxnEvent` / `fsyncDir` may throw (simulating kill or directory-sync failure). Cases:
 
-- [ ] Interrupt after each `.new` write, after `after-dirsync:staging`, and after `after-dirsync:prepared`: reopen the store; neither stream from a mixed `[step, budget]` batch is visible; no leftover partial line. Reopen steals the stale `.txn.lock` (dead PID) before recovering.
-- [ ] Interrupt after `after-dirsync:commit` and after 0, 1, … n−1 stream replacements (including after each `after-dirsync:rename:<stream>`): reopen; **both** (all) streams from the batch are visible; no journal remains after recovery.
-- [ ] Interrupt **during recovery** of a committed txn (hook on the first roll-forward rename): second open finishes the batch; still all-or-nothing.
-- [ ] Interrupt `fsyncDir` (injected `fsyncDir` throws) after staging, after prepared journal, after commit marker, after a stream rename, and during cleanup: reopen is either all-or-nothing or `RECORD_TXN_CORRUPT`; never a silent mixed-stream view.
-- [ ] **Torn / corrupt commit marker:** after a durable prepared journal, write truncated or garbage `.txn.commit` (and a variant that also completes 0 or 1 stream replacement, then corrupts the marker). Reopen throws `RECORD_TXN_CORRUPT`; `.txn.*` artifacts remain on disk (not deleted); `getLine` / `listLines` throw rather than returning a partial batch.
-- [ ] **Corrupt journal after commit:** durable commit marker + one stream replacement, then truncate/garbage `.txn.journal.json`. Reopen throws `RECORD_TXN_CORRUPT`; does **not** treat as prepared and delete `.old` / `.new`.
-- [ ] `atomicAppend` JS throw before the commit marker is directory-durable: same as rollback (in-process catch still deletes staging if the process lives); lock is released in `finally`.
-- [ ] **Live lock is not recovered:** hold `.txn.lock` in a child process with a prepared `.txn.journal.json` + `.new` files (PID alive). A second store `atomicAppend` / `getLine` must **not** delete those staging files. With `lockTimeoutMs` shorter than the hold: throws `RECORD_TXN_LOCKED` and streams are unchanged. After the child exits (or releases): the waiter acquires, recovers the abandoned txn, then proceeds.
-- [ ] **Stale lock is stolen:** write `.txn.lock` with a dead PID plus a prepared uncommitted journal; reopen steals the lock, rolls back, then a subsequent append succeeds.
-- [ ] **Lock pathname is never empty:** after `after-lock-linked` and after `after-lock-acquired`, `.txn.lock` parses as version 1 with `pid` + `owner` (not an empty file). `acquireRunWriterLock` must not `openSync(".txn.lock", "wx")`.
-- [ ] **`after-lock-temp-written` mutual exclusion:** pause A at `after-lock-temp-written` (temp exists; `.txn.lock` does not). Contender B may win `linkSync`. Exactly one process becomes owner and may call `recoverRunDir`. The loser must not stage `.txn.journal.json` or recover. Resume A: `EEXIST` → wait or `RECORD_TXN_LOCKED`; A does not also own.
-- [ ] **`after-lock-linked` is already complete:** pause A at `after-lock-linked` (before `after-lock-acquired` / temp unlink). `.txn.lock` is a valid live-PID record. Contender B waits or throws `RECORD_TXN_LOCKED`; B must **not** unlink `.txn.lock`, must **not** obtain the lock, must **not** reach `recoverRunDir`.
-- [ ] **Creation-window race (P0.5):** deterministic multi-process (or child + parent) coverage. Process A performs the exclusive creation of the lock pathname and pauses **before** owner metadata would have been readable under the old `wx` protocol: child `openSync(".txn.lock", "wx")` then sleeps without writing `{ pid, owner }` (empty/unreadable visible lock, PID alive), **or** equivalent planted empty `.txn.lock` while a sibling process is live. Process B constructs `createWorkingTreeRecordStore` and calls `atomicAppend` / `getLine` with `lockTimeoutMs` longer than the pause. During the pause B must **not** obtain `.txn.lock` and must **not** reach journal recovery (no unlink of the empty file on the first observation; no delete of a prepared `.txn.journal.json` / `.new` planted beside it). After A writes+fsyncs complete metadata and `fsyncDir`, or after A exits, B either waits on the live owner or steals a dead-PID lock — never two concurrent owners.
-- [ ] **Malformed lock is not immediately stolen:** write empty or garbage `.txn.lock` (no valid pid). An acquire with `lockTimeoutMs` well above several `lockPollMs` intervals must still see that file on the second poll (not unlinked after the first observation). After a continuous `lockTimeoutMs` of malformed observations, a later acquire may steal (abandoned garbage) and proceed.
-- [ ] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename (`format_version` + `creator` present, including `creator: null`); reading a union-concatenated file with two keys returns both in file order with each line's own origin; concatenated file with duplicate key returns first payload **and** first origin. Plant `run.json` with `format_version: 2` and `future_field: true`; `getRun` succeeds; `putRun` throws `UNSUPPORTED_FORMAT_VERSION`; file bytes still contain `future_field`.
-- [ ] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
-- [ ] **Multi-process integration** (`test/integration/records/concurrent-append.test.ts`): temp `recordsRoot` with one `putRun`. Two `Bun.spawn` workers (`cleanGitEnv()`, `stdin: "ignore"`, timeout 30s) each construct `createWorkingTreeRecordStore` on that root and `atomicAppend` a **distinct** op (worker A: a step line; worker B: a decision or budget line). Both exit 0. Reopen: both keys exist with original payloads; no `.txn.lock` / `.txn.journal.json` / `.txn.commit` / `.new` / `.old` remain; `getLine` does not throw `RECORD_TXN_CORRUPT`. Repeat the pair enough times (or with a barrier file) that the appends overlap, not merely run sequentially. Include a variant that pauses the first worker after exclusive lock-path creation and before metadata publication (empty `wx` stand-in or `after-lock-temp-written` / planted empty lock as above) and asserts the second worker does not recover or append until the window closes.
+- [x] Interrupt after each `.new` write, after `after-dirsync:staging`, and after `after-dirsync:prepared`: reopen the store; neither stream from a mixed `[step, budget]` batch is visible; no leftover partial line. Reopen steals the stale `.txn.lock` (dead PID) before recovering.
+- [x] Interrupt after `after-dirsync:commit` and after 0, 1, … n−1 stream replacements (including after each `after-dirsync:rename:<stream>`): reopen; **both** (all) streams from the batch are visible; no journal remains after recovery.
+- [x] Interrupt **during recovery** of a committed txn (hook on the first roll-forward rename): second open finishes the batch; still all-or-nothing.
+- [x] Interrupt `fsyncDir` (injected `fsyncDir` throws) after staging, after prepared journal, after commit marker, after a stream rename, and during cleanup: reopen is either all-or-nothing or `RECORD_TXN_CORRUPT`; never a silent mixed-stream view.
+- [x] **Torn / corrupt commit marker:** after a durable prepared journal, write truncated or garbage `.txn.commit` (and a variant that also completes 0 or 1 stream replacement, then corrupts the marker). Reopen throws `RECORD_TXN_CORRUPT`; `.txn.*` artifacts remain on disk (not deleted); `getLine` / `listLines` throw rather than returning a partial batch.
+- [x] **Corrupt journal after commit:** durable commit marker + one stream replacement, then truncate/garbage `.txn.journal.json`. Reopen throws `RECORD_TXN_CORRUPT`; does **not** treat as prepared and delete `.old` / `.new`.
+- [x] `atomicAppend` JS throw before the commit marker is directory-durable: same as rollback (in-process catch still deletes staging if the process lives); lock is released in `finally`.
+- [x] **Live lock is not recovered:** hold `.txn.lock` in a child process with a prepared `.txn.journal.json` + `.new` files (PID alive). A second store `atomicAppend` / `getLine` must **not** delete those staging files. With `lockTimeoutMs` shorter than the hold: throws `RECORD_TXN_LOCKED` and streams are unchanged. After the child exits (or releases): the waiter acquires, recovers the abandoned txn, then proceeds.
+- [x] **Stale lock is stolen:** write `.txn.lock` with a dead PID plus a prepared uncommitted journal; reopen steals the lock, rolls back, then a subsequent append succeeds.
+- [x] **Lock pathname is never empty:** after `after-lock-linked` and after `after-lock-acquired`, `.txn.lock` parses as version 1 with `pid` + `owner` (not an empty file). `acquireRunWriterLock` must not `openSync(".txn.lock", "wx")`.
+- [x] **`after-lock-temp-written` mutual exclusion:** pause A at `after-lock-temp-written` (temp exists; `.txn.lock` does not). Contender B may win `linkSync`. Exactly one process becomes owner and may call `recoverRunDir`. The loser must not stage `.txn.journal.json` or recover. Resume A: `EEXIST` → wait or `RECORD_TXN_LOCKED`; A does not also own.
+- [x] **`after-lock-linked` is already complete:** pause A at `after-lock-linked` (before `after-lock-acquired` / temp unlink). `.txn.lock` is a valid live-PID record. Contender B waits or throws `RECORD_TXN_LOCKED`; B must **not** unlink `.txn.lock`, must **not** obtain the lock, must **not** reach `recoverRunDir`.
+- [x] **Creation-window race (P0.5):** deterministic multi-process (or child + parent) coverage. Process A performs the exclusive creation of the lock pathname and pauses **before** owner metadata would have been readable under the old `wx` protocol: child `openSync(".txn.lock", "wx")` then sleeps without writing `{ pid, owner }` (empty/unreadable visible lock, PID alive), **or** equivalent planted empty `.txn.lock` while a sibling process is live. Process B constructs `createWorkingTreeRecordStore` and calls `atomicAppend` / `getLine` with `lockTimeoutMs` longer than the pause. During the pause B must **not** obtain `.txn.lock` and must **not** reach journal recovery (no unlink of the empty file on the first observation; no delete of a prepared `.txn.journal.json` / `.new` planted beside it). After A writes+fsyncs complete metadata and `fsyncDir`, or after A exits, B either waits on the live owner or steals a dead-PID lock — never two concurrent owners.
+- [x] **Malformed lock is not immediately stolen:** write empty or garbage `.txn.lock` (no valid pid). An acquire with `lockTimeoutMs` well above several `lockPollMs` intervals must still see that file on the second poll (not unlinked after the first observation). After a continuous `lockTimeoutMs` of malformed observations, a later acquire may steal (abandoned garbage) and proceed.
+- [x] Extra FS tests (not required of memory): `putRun` creates nested dirs and directory-fsyncs after `run.json` rename (`format_version` + `creator` present, including `creator: null`); reading a union-concatenated file with two keys returns both in file order with each line's own origin; concatenated file with duplicate key returns first payload **and** first origin. Plant `run.json` with `format_version: 2` and `future_field: true`; `getRun` succeeds; `putRun` throws `UNSUPPORTED_FORMAT_VERSION`; file bytes still contain `future_field`.
+- [x] Add working-tree harness to `runRecordStoreContract` using `mkdtempSync`. Assert files on disk after append (one line, valid JSON). `listLines` / `getLine` return `runId` matching the directory.
+- [x] **Multi-process integration** (`test/integration/records/concurrent-append.test.ts`): temp `recordsRoot` with one `putRun`. Two `Bun.spawn` workers (`cleanGitEnv()`, `stdin: "ignore"`, timeout 30s) each construct `createWorkingTreeRecordStore` on that root and `atomicAppend` a **distinct** op (worker A: a step line; worker B: a decision or budget line). Both exit 0. Reopen: both keys exist with original payloads; no `.txn.lock` / `.txn.journal.json` / `.txn.commit` / `.new` / `.old` remain; `getLine` does not throw `RECORD_TXN_CORRUPT`. Repeat the pair enough times (or with a barrier file) that the appends overlap, not merely run sequentially. Include a variant that pauses the first worker after exclusive lock-path creation and before metadata publication (empty `wx` stand-in or `after-lock-temp-written` / planted empty lock as above) and asserts the second worker does not recover or append until the window closes.
 
 Single-op `append` is `atomicAppend([op])` (same lock + journal path; one stream).
 
@@ -954,8 +954,8 @@ export async function gitLogLastTouching(
 // git log -1 --format=%H ref -- paths
 ```
 
-- [ ] Unit tests in `test/unit/git.test.ts` with the existing `mockGit` helper (`:50–73`). Do not spawn real git in unit tests.
-- [ ] `computePatchId` returns `null` when `execGit` diff or patch-id is non-zero (squash-safe; do not throw at record time).
+- [x] Unit tests in `test/unit/git.test.ts` with the existing `mockGit` helper (`:50–73`). Do not spawn real git in unit tests.
+- [x] `computePatchId` returns `null` when `execGit` diff or patch-id is non-zero (squash-safe; do not throw at record time).
 
 #### 3.4 Redaction helper — `src/control-plane/record-redact.ts` (new)
 
@@ -988,11 +988,11 @@ export function redactRecorder(
 ): RecordRecorder;
 ```
 
-- [ ] Always omit `session_id` / `log_path` if a caller smuggles them on a widened step payload (delete those keys).
-- [ ] For each name in `redact` that exists on the payload, set the field to `null` (keep the key so schema stays stable) **except** `result_json` / `step_name` / `phase` / `iteration` / `head_commit` which are **not redactable** — ignore them in the list.
-- [ ] `redactOrigin`: if `redact` includes `origin.actor` or `actor`, omit `recorder.actor`. Never null out `installation_id` or `performer.kind`. Strip `FORBIDDEN_ORIGIN_KEYS` from recorder, performer, and the origin object itself if a widened object smuggles them.
-- [ ] `redactRecorder`: same actor-omit and forbidden-key stripping for `run.json` `creator`/`sealer` and for `materializer.recorder`. `redactOrigin` must call `redactRecorder` for the recorder half (one implementation).
-- [ ] Unit tests: drop `cost_usd`; ignore unknown names; refuse to strip `result_json`; `origin.actor` redacted; hostname smuggled on origin is deleted; `null` origin stays `null`; `redactRecorder` omits `actor` and strips forbidden keys without touching `installation_id`.
+- [x] Always omit `session_id` / `log_path` if a caller smuggles them on a widened step payload (delete those keys).
+- [x] For each name in `redact` that exists on the payload, set the field to `null` (keep the key so schema stays stable) **except** `result_json` / `step_name` / `phase` / `iteration` / `head_commit` which are **not redactable** — ignore them in the list.
+- [x] `redactOrigin`: if `redact` includes `origin.actor` or `actor`, omit `recorder.actor`. Never null out `installation_id` or `performer.kind`. Strip `FORBIDDEN_ORIGIN_KEYS` from recorder, performer, and the origin object itself if a widened object smuggles them.
+- [x] `redactRecorder`: same actor-omit and forbidden-key stripping for `run.json` `creator`/`sealer` and for `materializer.recorder`. `redactOrigin` must call `redactRecorder` for the recorder half (one implementation).
+- [x] Unit tests: drop `cost_usd`; ignore unknown names; refuse to strip `result_json`; `origin.actor` redacted; hostname smuggled on origin is deleted; `null` origin stays `null`; `redactRecorder` omits `actor` and strips forbidden keys without touching `installation_id`.
 
 ---
 
@@ -1012,10 +1012,10 @@ export function resolveRecordsRoot(opts: {
 }): ResolvedRecordsRoot;
 ```
 
-- [ ] Same checkout (`effectiveWorkdir === controlPlaneRoot`): `recordsAbsPath` equals `recordsConfigAbs`; `recordsRelPath` is the POSIX relative (default `docs/development/runs`).
-- [ ] Linked worktree: `recordsAbsPath === join(worktree, recordsRelPath)` and is **not** equal to `recordsConfigAbs`; `recordsRelPath` is unchanged.
-- [ ] `relativePathUnder` null → throw `RECORDS_ROOT_OUTSIDE_REPO` (defense in depth; config load already rejected this).
-- [ ] Unit: `test/unit/records/paths.test.ts`.
+- [x] Same checkout (`effectiveWorkdir === controlPlaneRoot`): `recordsAbsPath` equals `recordsConfigAbs`; `recordsRelPath` is the POSIX relative (default `docs/development/runs`).
+- [x] Linked worktree: `recordsAbsPath === join(worktree, recordsRelPath)` and is **not** equal to `recordsConfigAbs`; `recordsRelPath` is unchanged.
+- [x] `relativePathUnder` null → throw `RECORDS_ROOT_OUTSIDE_REPO` (defense in depth; config load already rejected this).
+- [x] Unit: `test/unit/records/paths.test.ts`.
 
 #### 4.1 `checkGitSafety` exemption — `src/git.ts:52–94`
 
@@ -1026,10 +1026,10 @@ export async function checkGitSafety(
 ): Promise<GitSafetyReport>;
 ```
 
-- [ ] Switch status to `["status", "--porcelain=v1", "-z"]`. Parse NUL-delimited records. Handle rename (`R100\0old\0new`) by testing **both** paths; if either is non-exempt, the repo is dirty. Untracked (`??`) same as today but skip exempt paths.
-- [ ] Canonicalize: `resolve(repoRoot, porcelainPath)` then `isPathUnder(abs, realpathExisting(exemptRoot))`.
-- [ ] Existing `checkGitSafety` tests (`test/unit/git.test.ts:79+`) still pass with no `exemptRoots` (treat as today). New tests: only records dirty → `safe: true`, `untrackedFiles` empty; records + `README.md` dirty → `safe: false`, `untrackedFiles` contains `README.md` only; rename out of records root is dirty.
-- [ ] `runV1Init` (`run-v1.handler.ts:1003`) passes `{ exemptRoots: [resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot: projectRoot, effectiveWorkdir: projectRoot }).recordsAbsPath] }` for the non-`--worktree` safety check (`--worktree` still skips `checkGitSafety` today because worktrees are isolated). Do not pass raw `config.paths.records` when a later caller uses a linked-worktree `workdir`.
+- [x] Switch status to `["status", "--porcelain=v1", "-z"]`. Parse NUL-delimited records. Handle rename (`R100\0old\0new`) by testing **both** paths; if either is non-exempt, the repo is dirty. Untracked (`??`) same as today but skip exempt paths.
+- [x] Canonicalize: `resolve(repoRoot, porcelainPath)` then `isPathUnder(abs, realpathExisting(exemptRoot))`.
+- [x] Existing `checkGitSafety` tests (`test/unit/git.test.ts:79+`) still pass with no `exemptRoots` (treat as today). New tests: only records dirty → `safe: true`, `untrackedFiles` empty; records + `README.md` dirty → `safe: false`, `untrackedFiles` contains `README.md` only; rename out of records root is dirty.
+- [x] `runV1Init` (`run-v1.handler.ts:1003`) passes `{ exemptRoots: [resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot: projectRoot, effectiveWorkdir: projectRoot }).recordsAbsPath] }` for the non-`--worktree` safety check (`--worktree` still skips `checkGitSafety` today because worktrees are isolated). Do not pass raw `config.paths.records` when a later caller uses a linked-worktree `workdir`.
 
 #### 4.2 `prepareRecordStepAppend` — `src/commands/run-v1.handler.ts`
 
@@ -1097,8 +1097,8 @@ Algorithm (preserve today's order):
 7. Resolve `performer`: if `params.performer` is present, copy it (validate `kind` is `human` \| `agent` \| `system`; do not invent `provider`/`role` when absent). Else `resolveRecordPerformer({ stepName: params.stepName })`. Store the result on `prepared.performer`.
 8. `{ outcome: "admit" }` (duplicate cases already returned in steps 4 and 6). `prepared.performer` is set on both admit and duplicate outcomes.
 
-- [ ] `recordStepInternal` calls `prepareRecordStepAppend` then the persist sequence below. Slice 06's wrapper (`recordPlanReviewerStepWithSnapshot`) calls the same prepare **before** `atomicAppend([step, budget])`, keeps `prepared.performer`, and stamps `ctx.originFor(prepared.performer)` for **every** op in the batch (1.5). 06 must not map prepare down to `{ stepInput, maxSteps }` and lose performer.
-- [ ] Unit tests with `MemoryRecordStore`: terminal run, missing worktree, invalid JSON, new-at-limit throw with **zero** store lines; duplicate-at-limit is `duplicate` with zero new lines; `params.performer` round-trips onto `prepared.performer`; omitted performer on a `human:*` step becomes `{ kind: "human", role: "operator" }`; omitted performer on `git:commit` becomes `{ kind: "system", role: "cli" }`.
+- [x] `recordStepInternal` calls `prepareRecordStepAppend` then the persist sequence below. Slice 06's wrapper (`recordPlanReviewerStepWithSnapshot`) calls the same prepare **before** `atomicAppend([step, budget])`, keeps `prepared.performer`, and stamps `ctx.originFor(prepared.performer)` for **every** op in the batch (1.5). 06 must not map prepare down to `{ stepInput, maxSteps }` and lose performer.
+- [x] Unit tests with `MemoryRecordStore`: terminal run, missing worktree, invalid JSON, new-at-limit throw with **zero** store lines; duplicate-at-limit is `duplicate` with zero new lines; `params.performer` round-trips onto `prepared.performer`; omitted performer on a `human:*` step becomes `{ kind: "human", role: "operator" }`; omitted performer on `git:commit` becomes `{ kind: "system", role: "cli" }`.
 
 #### 4.3 Persist sequence — `recordStepInternal`
 
@@ -1117,15 +1117,15 @@ On `duplicate` or `created: false`:
 
 9. Do not append. `recordStep` / upsert from the existing line so a missing SQLite row is repaired. Return `recorded: false`. Do not rewrite origin.
 
-- [ ] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` **and** `originFor` / `redactedRecorder` to that object.
-- [ ] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, then `resolveRunExecutionContext` for the run, then `resolveRecordsRoot` with that context's `effectiveWorkingDirectory`, then `createWorkingTreeRecordStore({ recordsRoot: recordsAbsPath })`, then `loadOrCreateInstallationIdentity` + `resolveRecorder`. Return `{ db, config, controlPlane, recordStore, recordsRelPath, recordsAbsPath, executionContext, originFor(performer: RecordPerformer): RecordOrigin, redactedRecorder(): RecordRecorder }` (`RecordCommandContext`, 1.5). **`originFor` is the sole origin constructor** (and `redactedRecorder` is the sole `RecordRecorder` constructor for summaries): both apply `redactOrigin` / `redactRecorder` including forbidden-key stripping before returning. `originFor(p)` is `{ recorder: redactedRecorder(), performer }` after stripping `FORBIDDEN_ORIGIN_KEYS` from the performer object — never return unredacted actor. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted. **Never** `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`. **Never** construct `RecordOrigin` or persist `creator`/`sealer`/`materializer.recorder` without these helpers. Slice 06's `review-budget-context.ts` **embeds this factory** (`ReviewBudgetCommandContext = { ...createRecordContext(...), store }`) and uses `recordedEnvelope(ctx.originFor(performer))` only.
-- [ ] `resolveRecordPerformer(input: { stepName?: string; performer?: RecordPerformer })` (same file or `src/records/origin.ts`) is a **fallback** when `RunRecordParams.performer` is omitted. It does not read invocation state (that is the caller's job — see 4.8). Rules:
+- [x] Handlers still never import `bun:sqlite`. `recordStepInternal` already receives `db` through `dbContext`; add `recordStore` **and** `originFor` / `redactedRecorder` to that object.
+- [x] Factory `src/commands/record-context.ts` (new), analogue of `prompt-context.ts`: one `resolveDbContext`, then `resolveRunExecutionContext` for the run, then `resolveRecordsRoot` with that context's `effectiveWorkingDirectory`, then `createWorkingTreeRecordStore({ recordsRoot: recordsAbsPath })`, then `loadOrCreateInstallationIdentity` + `resolveRecorder`. Return `{ db, config, controlPlane, recordStore, recordsRelPath, recordsAbsPath, executionContext, originFor(performer: RecordPerformer): RecordOrigin, redactedRecorder(): RecordRecorder }` (`RecordCommandContext`, 1.5). **`originFor` is the sole origin constructor** (and `redactedRecorder` is the sole `RecordRecorder` constructor for summaries): both apply `redactOrigin` / `redactRecorder` including forbidden-key stripping before returning. `originFor(p)` is `{ recorder: redactedRecorder(), performer }` after stripping `FORBIDDEN_ORIGIN_KEYS` from the performer object — never return unredacted actor. `recordStepInternal` / `runV1Init` / `runV1Complete` use it when `dbContext` is omitted. **Never** `createWorkingTreeRecordStore({ recordsRoot: config.paths.records })`. **Never** construct `RecordOrigin` or persist `creator`/`sealer`/`materializer.recorder` without these helpers. Slice 06's `review-budget-context.ts` **embeds this factory** (`ReviewBudgetCommandContext = { ...createRecordContext(...), store }`) and uses `recordedEnvelope(ctx.originFor(performer))` only.
+- [x] `resolveRecordPerformer(input: { stepName?: string; performer?: RecordPerformer })` (same file or `src/records/origin.ts`) is a **fallback** when `RunRecordParams.performer` is omitted. It does not read invocation state (that is the caller's job — see 4.8). Rules:
   - explicit `performer` argument wins (copy; do not fill missing `provider` from config).
   - `human:*` step → `{ kind: "human", role: "operator" }` (do not copy `answered_by` if it looks like an OS username).
   - `git:commit`, `run:complete`, `run:abort`, `quality:*` → `{ kind: "system", role: "cli" }`.
   - Unknown / omitted → `{ kind: "system", role: "cli" }`. Do **not** guess `agent` or fill `provider` from `os.hostname()`, step name heuristics beyond the prefixes above, or Git config. **Invoke and protocol must pass `params.performer` explicitly** so agent role/provider is not lost on this fallback.
-- [ ] For `run init`, after `ensureRunWorktree` / `createRunV1`, `effectiveWorkdir` is the mapped worktree path when `--worktree`, else `projectRoot`. `putRun` uses the store rooted there.
-- [ ] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content **including** `schema_version`, `provenance: "recorded"`, and `origin.recorder.installation_id` matching the test identity file. Assert the line JSON does not contain hostname, OS username, `session_id`, or `log_path`. Assert `records.redact = ["origin.actor"]` omits `actor` on the step line **and** on `run.json` `creator` for env, config, and identity-file actor sources, while `installation_id` and `performer.kind` remain.
+- [x] For `run init`, after `ensureRunWorktree` / `createRunV1`, `effectiveWorkdir` is the mapped worktree path when `--worktree`, else `projectRoot`. `putRun` uses the store rooted there.
+- [x] Unit tests inject `MemoryRecordStore`. Integration tests in a temp git repo assert `steps.jsonl` content **including** `schema_version`, `provenance: "recorded"`, and `origin.recorder.installation_id` matching the test identity file. Assert the line JSON does not contain hostname, OS username, `session_id`, or `log_path`. Assert `records.redact = ["origin.actor"]` omits `actor` on the step line **and** on `run.json` `creator` for env, config, and identity-file actor sources, while `installation_id` and `performer.kind` remain.
 
 #### 4.4 `run init` writes `run.json`
 
@@ -1167,16 +1167,16 @@ Resume path (`:1034–1052`): if `getRun` is null (index-only row from before th
    - If the seal commit fails, do not `completeRun`, do not release the lock; surface `COMMIT_FAILED`. The operator retries `run complete` (idempotent terminal step).
 6. `completeRun` (SQLite status). Then release lock and clear pointer (today's `:1507–1516`, after the commit).
 
-- [ ] Tests: complete with dirty records → one commit whose `diff-tree` is only under records; complete with already-committed records → no extra commit; abort status seals as `aborted`. Complete preserves a live `creator` and sets `sealer`. Complete of a summary with `creator: null` keeps `creator: null` and sets `sealer`.
-- [ ] Planted-v2 integration (unit + CLI): on an **active** run, plant `run.json` with `format_version: 2` + `future_field: true` (and a pre-existing `steps.jsonl`). `run complete` and `run abort` each fail with `UNSUPPORTED_FORMAT_VERSION`. `run.json` bytes unchanged (still contain `future_field`). Streams are byte-identical — **no** `run:complete` / `run:abort` line. SQLite `runs.status` remains `active`. No seal commit (`git log -1` unchanged). Lock and `.5x/current-run` unchanged. Retry with a v1 summary can still complete.
+- [x] Tests: complete with dirty records → one commit whose `diff-tree` is only under records; complete with already-committed records → no extra commit; abort status seals as `aborted`. Complete preserves a live `creator` and sets `sealer`. Complete of a summary with `creator: null` keeps `creator: null` and sets `sealer`.
+- [x] Planted-v2 integration (unit + CLI): on an **active** run, plant `run.json` with `format_version: 2` + `future_field: true` (and a pre-existing `steps.jsonl`). `run complete` and `run abort` each fail with `UNSUPPORTED_FORMAT_VERSION`. `run.json` bytes unchanged (still contain `future_field`). Streams are byte-identical — **no** `run:complete` / `run:abort` line. SQLite `runs.status` remains `active`. No seal commit (`git log -1` unchanged). Lock and `.5x/current-run` unchanged. Retry with a v1 summary can still complete.
 
 #### 4.6 `5x commit` stages records — `commit.handler.ts:192–207`
 
 When `params.files` is set (not `--all-files`), append `recordsRelPath` to the `git add` pathspec if `existsSync(recordsAbsPath)` in the **effective worktree** (`resolveRunExecutionContext` + `resolveRecordsRoot`). Dry-run (`:151–157`) uses the same pathspec. Do not `existsSync(config.paths.records)` — that is the control-plane checkout and is wrong for `--worktree` runs.
 
-- [ ] Integration: `test/integration/commands/commit.test.ts` — `--files src/foo.ts` with a dirty `docs/development/runs/.../steps.jsonl` includes the jsonl in `diff-tree`.
-- [ ] Unit: mock `execGit` and assert `add` args contain the records **relative** path.
-- [ ] Linked-worktree integration (see 4.8): `run init --worktree`, record a step, `5x commit --files` from that run; `diff-tree` includes the worktree records files and the control-plane checkout does not hold the only copy.
+- [x] Integration: `test/integration/commands/commit.test.ts` — `--files src/foo.ts` with a dirty `docs/development/runs/.../steps.jsonl` includes the jsonl in `diff-tree`.
+- [x] Unit: mock `execGit` and assert `add` args contain the records **relative** path.
+- [x] Linked-worktree integration (see 4.8): `run init --worktree`, record a step, `5x commit --files` from that run; `diff-tree` includes the worktree records files and the control-plane checkout does not hold the only copy.
 
 #### 4.7 Decision snapshots from prompts — `prompt.handler.ts`
 
@@ -1201,7 +1201,7 @@ After a successful or losing `answerPrompt` (`:245`) when `prompt.runId` is non-
 
 Extend `PromptCommandContext` (`prompt.handler.ts` + `prompt-context.ts`) with optional `recordStore` **and** `originFor` from the same record-context factory (already-redacted). When `prompt.runId` is set, resolve that run's execution context and pass a store rooted at `resolveRecordsRoot(..., effectiveWorkingDirectory).recordsAbsPath` (same factory as record-context, not control-plane `config.paths.records`). If `getRun(runId)` is null (prompt answered before `run init` wrote a record — unusual), skip the snapshot (do not throw; prompt UX must not fail). Abandoned prompts are **not** decisions. The snapshot **must** use `recordStore.append` (store-internal writer lock + journal) and **must** stamp origin via `originFor({ kind: "human", role: "operator" })` — do not assemble `RecordOrigin` inline, and do not call `recordedEnvelope` with an unredacted origin. Do not `writeFileSync` / append to `decisions.jsonl` from the handler — a concurrent `recordStepInternal` `atomicAppend` on the same run would otherwise clobber or recover the in-flight txn.
 
-- [ ] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line with origin; second CAS loser does not duplicate; `runId` null appends nothing. With `records.redact = ["origin.actor"]` and an identity-file / env / config actor, the decision line has no `recorder.actor` while `installation_id` and `performer.kind` remain.
+- [x] Unit: `test/unit/commands/prompt-store.test.ts` — answered with `runId` appends one decision line with origin; second CAS loser does not duplicate; `runId` null appends nothing. With `records.redact = ["origin.actor"]` and an identity-file / env / config actor, the decision line has no `recorder.actor` while `installation_id` and `performer.kind` remain.
 
 #### 4.8 Context wiring
 
@@ -1219,12 +1219,12 @@ Every production origin is `ctx.originFor(performer)`. Every production `run.jso
 | Slice 06 reviewer step + budget snapshot | `params.performer` → `prepared.performer` → `ctx.originFor` on **every** op in the batch | `{ kind: "agent", role: "reviewer", provider }` when the caller is invoke; protocol omits `provider` unless already present. Both ops share that origin. Context is `ReviewBudgetCommandContext` (1.5), not a fork without `originFor`. |
 | Slice 06 baseline-only budget append | caller performer + `ctx.originFor` | `{ kind: "system", role: "cli" }` from template render; same agent performer as the reviewer step when capture is a `--record` safety-net. Facade receives `origin` from `originFor`; it does not construct origin. |
 
-- [ ] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:580+` and `:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` **and** `originFor` / `redactedRecorder` via the shared context (re-rooted per run). Do not add a second `resolveDbContext`. Invoke and protocol **must** set `params.performer` as in the table (do not rely on `resolveRecordPerformer` to recover agent/provider). Quality/commit/direct record may omit it.
-- [ ] Slice 06 `review-budget-context.ts` **must** call `createRecordContext` and return `ReviewBudgetCommandContext` (1.5): `{ ...recordContext, store }`. It must not return `{ db, config, controlPlane, recordStore, store }` without `originFor`. `recordPlanReviewerStepWithSnapshot` consumes this slice's `prepareRecordStepAppend` (retaining `prepared.performer`) and stamps `recordedEnvelope(ctx.originFor(prepared.performer))` on **every** op in the `atomicAppend` batch, including the opaque budget line. `captureBaseline` / `ensurePlanReviewBaseline` take `origin: ctx.originFor(performer)` (see 1.5 table). Do not construct origin without `originFor`. Coordinated `208` §6.2 text matches this. **`208` Phase 6 must not start until this phase merges**; 06 Phases 4–5 remain valid against Phase 1 alone (fixture origins, no `createRecordContext` import).
-- [ ] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line in the effective worktree with origin.
-- [ ] Integration: `test/integration/records/worktree-records.test.ts` (new). `cleanGitEnv()`, `stdin: "ignore"`, timeout 30s. `run init --worktree` on a temp repo; assert `run.json` exists at `join(worktree, recordsRelPath, slug, runId, "run.json")` and is **not** the only copy under the main checkout's `config.paths.records` (main checkout must not be the write target). Assert `format_version` and `creator.installation_id`. Record a step; assert `steps.jsonl` is in the worktree and the line's `origin.recorder.installation_id` matches the test identity file (not the Git committer). `5x commit --files` of a code path (cwd/startDir such that the run resolves to the worktree) includes both the code file and the record files in `diff-tree`. `.txn.*` files are absent from the commit. Identity file is **not** in the commit or under the records root.
-- [ ] Integration: `test/integration/records/origin-attribution.test.ts` (new). Author `invoke --record` and reviewer `invoke --record` each write a step whose `origin.performer` is `{ kind: "agent", role: "author"|"reviewer", provider }` matching the configured provider. Direct `run record` / `5x commit` lines are `{ kind: "system", role: "cli" }`. A `human:*` step (or prompt answer) is `{ kind: "human", role: "operator" }`. Invoke reviewer `--record` paired step **and** budget snapshot share that agent origin (cross-slice; wrapper uses `originFor(prepared.performer)`). Baseline-only capture via `ensurePlanReviewBaseline` / `captureBaseline` uses `originFor` (`system`/`cli` unless an agent invocation is the caller) and redacts `origin.actor` when configured. Memory-level `[step, budget]` `atomicAppend` via `originFor` has identical origin on both ops. `records.redact = ["origin.actor"]` with actor from **config**, **env** (`FIVEX_RECORDS_ACTOR`), and **identity file** (three cases) omits `actor` on the step line, a prompt decision, a baseline-only budget append, a paired budget snapshot, and `run.json` `creator`/`sealer`; `installation_id` and `performer.kind` remain; no `FORBIDDEN_ORIGIN_KEYS` appear on any surface.
-- [ ] Integration: planted-v2 `run complete` / `run abort` in `test/integration/commands/run-v1.test.ts` (or `test/integration/records/origin-attribution.test.ts`): no `run:complete`/`run:abort` line, no SQLite status change, no seal commit, `run.json` bytes unchanged (4.5).
+- [x] `runV1Record`, `protocol.handler.ts` record path (`:427+`), `invoke.handler.ts` (`:580+` and `:644+`), `quality-v1.handler.ts`, `commit.handler.ts` already funnel through `recordStepInternal` — pass `recordStore` **and** `originFor` / `redactedRecorder` via the shared context (re-rooted per run). Do not add a second `resolveDbContext`. Invoke and protocol **must** set `params.performer` as in the table (do not rely on `resolveRecordPerformer` to recover agent/provider). Quality/commit/direct record may omit it.
+- [x] Slice 06 `review-budget-context.ts` **must** call `createRecordContext` and return `ReviewBudgetCommandContext` (1.5): `{ ...recordContext, store }`. It must not return `{ db, config, controlPlane, recordStore, store }` without `originFor`. `recordPlanReviewerStepWithSnapshot` consumes this slice's `prepareRecordStepAppend` (retaining `prepared.performer`) and stamps `recordedEnvelope(ctx.originFor(prepared.performer))` on **every** op in the `atomicAppend` batch, including the opaque budget line. `captureBaseline` / `ensurePlanReviewBaseline` take `origin: ctx.originFor(performer)` (see 1.5 table). Do not construct origin without `originFor`. Coordinated `208` §6.2 text matches this. **`208` Phase 6 must not start until this phase merges**; 06 Phases 4–5 remain valid against Phase 1 alone (fixture origins, no `createRecordContext` import).
+- [x] `phase.handler.ts` unchanged (composite). Add a regression integration test that `phase finish` produces a `steps.jsonl` line in the effective worktree with origin.
+- [x] Integration: `test/integration/records/worktree-records.test.ts` (new). `cleanGitEnv()`, `stdin: "ignore"`, timeout 30s. `run init --worktree` on a temp repo; assert `run.json` exists at `join(worktree, recordsRelPath, slug, runId, "run.json")` and is **not** the only copy under the main checkout's `config.paths.records` (main checkout must not be the write target). Assert `format_version` and `creator.installation_id`. Record a step; assert `steps.jsonl` is in the worktree and the line's `origin.recorder.installation_id` matches the test identity file (not the Git committer). `5x commit --files` of a code path (cwd/startDir such that the run resolves to the worktree) includes both the code file and the record files in `diff-tree`. `.txn.*` files are absent from the commit. Identity file is **not** in the commit or under the records root.
+- [x] Integration: `test/integration/records/origin-attribution.test.ts` (new). Author `invoke --record` and reviewer `invoke --record` each write a step whose `origin.performer` is `{ kind: "agent", role: "author"|"reviewer", provider }` matching the configured provider. Direct `run record` / `5x commit` lines are `{ kind: "system", role: "cli" }`. A `human:*` step (or prompt answer) is `{ kind: "human", role: "operator" }`. Invoke reviewer `--record` paired step **and** budget snapshot share that agent origin (cross-slice; wrapper uses `originFor(prepared.performer)`). Baseline-only capture via `ensurePlanReviewBaseline` / `captureBaseline` uses `originFor` (`system`/`cli` unless an agent invocation is the caller) and redacts `origin.actor` when configured. Memory-level `[step, budget]` `atomicAppend` via `originFor` has identical origin on both ops. `records.redact = ["origin.actor"]` with actor from **config**, **env** (`FIVEX_RECORDS_ACTOR`), and **identity file** (three cases) omits `actor` on the step line, a prompt decision, a baseline-only budget append, a paired budget snapshot, and `run.json` `creator`/`sealer`; `installation_id` and `performer.kind` remain; no `FORBIDDEN_ORIGIN_KEYS` appear on any surface.
+- [x] Integration: planted-v2 `run complete` / `run abort` in `test/integration/commands/run-v1.test.ts` (or `test/integration/records/origin-attribution.test.ts`): no `run:complete`/`run:abort` line, no SQLite status change, no seal commit, `run.json` bytes unchanged (4.5).
 
 ---
 
@@ -1233,6 +1233,8 @@ Every production origin is `ctx.originFor(performer)`. Every production `run.jso
 **Completion gate:** Against a scripted temp git fixture (real git, `cleanGitEnv()`), `plan list` / `plan phases` / `run state --plan` report progress from the winning ref with additive `source` / `source_ref` / `source_age_seconds` / `diverged_sources`. Merged, stacked, diverged, branch-only, remote-only, and worktree cases pass. `--fetch` is the only network; `--all-refs` discovers non-conventional branches. No existing envelope field is renamed.
 
 Start this phase with a **short spike** (half day, same checkout): measure `merge-base --is-ancestor` fan-out for N plans × remotes. If a 20-plan / 3-remote fixture exceeds ~500ms, implement the batched `for-each-ref` + single `rev-list` topology query **before** wiring handlers. If it is fast, ship the naive loop and leave a comment with the measured number. Do not skip the measurement.
+
+**Spike (2026-09-03):** a 20-plan × 3-remote fixture with the naive `git log -1` × `merge-base --is-ancestor` loop took 1551ms (last-touching 1120ms, pairwise ancestor 430ms / 40 calls). That exceeds the ~500ms budget, so this phase ships batched `for-each-ref` + one `rev-list --parents` topology query + one `git log --name-only`. In-process `(refSha, path) → lastTouching` cache is shared across a `plan list` invocation; it is not persisted in SQLite.
 
 #### 5.1 Resolution module — `src/records/resolve.ts` (new)
 
@@ -1312,14 +1314,14 @@ export async function fetchFiveXBranches(
 export async function listRemotes(workdir: string): Promise<string[]>;
 ```
 
-- [ ] Unit tests with `mockGit` covering ancestor prune, diverged pair, missing ref.
-- [ ] Cache `(refSha, path) → lastTouching` in-process for a single `plan list` invocation (the handler passes a shared `Map` or the resolve module holds a per-call cache object). Do not persist the cache in SQLite in this slice unless the spike shows it is necessary.
+- [x] Unit tests with `mockGit` covering ancestor prune, diverged pair, missing ref.
+- [x] Cache `(refSha, path) → lastTouching` in-process for a single `plan list` invocation (the handler passes a shared `Map` or the resolve module holds a per-call cache object). Do not persist the cache in SQLite in this slice unless the spike shows it is necessary.
 
 #### 5.2 `plan phases` — `plan-v1.handler.ts:181–212` and `plan-v1.ts:21–42`
 
-- [ ] Add `--fetch` and `--all-refs` flags (boolean).
-- [ ] Replace `readFileSync(effectivePath)` with `resolvePlanProgress`. `PLAN_NOT_FOUND` only when markdown is null and no checkout file exists.
-- [ ] Envelope **additive** fields on the existing result (`:198–209`):
+- [x] Add `--fetch` and `--all-refs` flags (boolean).
+- [x] Replace `readFileSync(effectivePath)` with `resolvePlanProgress`. `PLAN_NOT_FOUND` only when markdown is null and no checkout file exists.
+- [x] Envelope **additive** fields on the existing result (`:198–209`):
 
 ```typescript
 {
@@ -1333,16 +1335,16 @@ export async function listRemotes(workdir: string): Promise<string[]>;
 }
 ```
 
-- [ ] `formatPhasesText`: when `source` is not the checked-out worktree/HEAD file, print a line `source: origin/5x/<slug> (fetched 2h ago)` so users do not distrust unchecked local boxes (`207` §2.4.5).
-- [ ] Unreachable `head_commit` on verbose output is **not** required on `plan phases` today (no `--verbose`). If adding a verbose note later, it is informational. Do not fail the command.
+- [x] `formatPhasesText`: when `source` is not the checked-out worktree/HEAD file, print a line `source: origin/5x/<slug> (fetched 2h ago)` so users do not distrust unchecked local boxes (`207` §2.4.5).
+- [x] Unreachable `head_commit` on verbose output is **not** required on `plan phases` today (no `--verbose`). If adding a verbose note later, it is informational. Do not fail the command.
 
 #### 5.3 `plan list` — `plan-v1.handler.ts:270–377` and `plan-v1.ts:44–68`
 
-- [ ] Add `--fetch` / `--all-refs`.
-- [ ] Include `config.paths.records` in `planListSkipSubtrees` (`:222–234`).
-- [ ] After scanning checkout `.md` files, **union** plan paths discovered from `listFiveXRefs` (`git ls-tree -r --name-only <ref> -- <plansRel>` filtered to `.md`, minus reviews/records skip roots). Branch-only plans appear with their source.
-- [ ] Per plan, call `resolvePlanProgress` (shared cache). Derive `completion_pct` from the resolved markdown the same way as today (`:312–323`).
-- [ ] Extend `PlanListEntry` (`:90–101`):
+- [x] Add `--fetch` / `--all-refs`.
+- [x] Include `config.paths.records` in `planListSkipSubtrees` (`:222–234`).
+- [x] After scanning checkout `.md` files, **union** plan paths discovered from `listFiveXRefs` (`git ls-tree -r --name-only <ref> -- <plansRel>` filtered to `.md`, minus reviews/records skip roots). Branch-only plans appear with their source.
+- [x] Per plan, call `resolvePlanProgress` (shared cache). Derive `completion_pct` from the resolved markdown the same way as today (`:312–323`).
+- [x] Extend `PlanListEntry` (`:90–101`):
 
 ```typescript
 source: string;
@@ -1353,15 +1355,15 @@ diverged?: boolean;
 
 Do not remove `active_run` / `runs_total` — those remain local-index coordination. If the index is empty on a fresh clone, `runs_total` is 0 until `records index`; progress still comes from git.
 
-- [ ] `formatPlanListText`: add a `Source` column.
-- [ ] `--fetch`: `listRemotes` then `fetchFiveXBranches` each. Fetch failure is a **warning** on stderr, not a hard fail (offline clone still lists local refs).
+- [x] `formatPlanListText`: add a `Source` column.
+- [x] `--fetch`: `listRemotes` then `fetchFiveXBranches` each. Fetch failure is a **warning** on stderr, not a hard fail (offline clone still lists local refs).
 
 #### 5.4 `run state --plan` — `run-v1.handler.ts:1092–1181`
 
 When `params.plan` is set (`:1100–1104`), resolve progress and add the same additive `source*` fields on the **top-level** success payload (`:1163–1178`). Still select the local active run for step listing (coordination). If no local run:
 
-- [ ] If the resolved records at the winning commit contain a `run.json`, surface that summary (`status` from the record, `steps` from decoding `steps.jsonl` via `gitShowFile`) **without** requiring SQLite rows. Auto-increment `steps.id` in the formatted output may be missing; use `null` or omit `id` — **do not change** `formatStep` keys for the SQLite path. Prefer: when SQLite has the run, keep today's step objects; when only git has it, emit steps without `id` (additive omission). Document in 101.
-- [ ] `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
+- [x] If the resolved records at the winning commit contain a `run.json`, surface that summary (`status` from the record, `steps` from decoding `steps.jsonl` via `gitShowFile`) **without** requiring SQLite rows. Auto-increment `steps.id` in the formatted output may be missing; use `null` or omit `id` — **do not change** `formatStep` keys for the SQLite path. Prefer: when SQLite has the run, keep today's step objects; when only git has it, emit steps without `id` (additive omission). Document in 101.
+- [x] `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
 Existing `--run` path is unchanged (no resolution).
 
@@ -1379,7 +1381,7 @@ Timeout 30s. `cleanGitEnv()`, `stdin: "ignore"`. Scripted repo:
 | worktree | mapped worktree has newer checklist than `main` | `source: worktree` |
 | no implicit fetch | remote updated but no `--fetch` | still shows old remote-tracking SHA |
 
-- [ ] Envelope `source` field present in JSON mode; text mode mentions source when not checkout.
+- [x] Envelope `source` field present in JSON mode; text mode mentions source when not checkout.
 
 ---
 
@@ -1416,10 +1418,10 @@ For each plan (or `--plan` slug):
 5. Never delete rows in this slice (safer). Doctor `--fix` does not delete extras.
 6. Do **not** write origin/provenance into SQLite. Do **not** stamp a materializer onto existing recorded JSONL lines (index is a projection, not a rewrite of the record). `creator` / `sealer` / summary `materializer` on `run.json` are stored only in the record file; the `runs` row has no origin column. A backfilled summary with `creator: null` must not be projected as if this installation created the run.
 
-- [ ] Idempotent: second `records index` is a no-op on counts.
-- [ ] `session_id` / `log_path` stay null on rebuilt rows.
-- [ ] Rebuilt rows from a backfilled line still have no origin in SQLite; the JSONL `origin: null` / `materializer` is unchanged.
-- [ ] Index of a backfilled `run.json` with `creator: null` / `sealer: null` / `materializer` present does not invent a creator; decode of the on-disk summary still has `creator === null` and a distinct `materializer`.
+- [x] Idempotent: second `records index` is a no-op on counts.
+- [x] `session_id` / `log_path` stay null on rebuilt rows.
+- [x] Rebuilt rows from a backfilled line still have no origin in SQLite; the JSONL `origin: null` / `materializer` is unchanged.
+- [x] Index of a backfilled `run.json` with `creator: null` / `sealer: null` / `materializer` present does not invent a creator; decode of the on-disk summary still has `creator === null` and a distinct `materializer`.
 
 #### 6.2 Command — `src/commands/records.ts` + `records.handler.ts` (new)
 
@@ -1435,8 +1437,8 @@ Register in `bin.ts` (`:88–104`) next to `registerDoctor`.
 
 Handler uses `resolveDbContext` (allowed: this **is** the index command) + `rebuildRecordsIndex`. No `bun:sqlite` import in the handler file — pass `db` from context into `index-rebuild.ts` which may import `operations-v1`.
 
-- [ ] Success envelope: `{ runs_upserted, steps_upserted, steps_skipped_newer_local, plans }`.
-- [ ] `--plan` limits to one slug (`planSlugFromPath` / exact directory name).
+- [x] Success envelope: `{ runs_upserted, steps_upserted, steps_skipped_newer_local, plans }`.
+- [x] `--plan` limits to one slug (`planSlugFromPath` / exact directory name).
 
 #### 6.3 Doctor check — `src/doctor/checks/records.ts` (new)
 
@@ -1458,9 +1460,9 @@ Join `builtinDoctorChecks` (`registry.ts:17–25`) after `invocationsCheck`.
 
 `RECORD_TXN_CORRUPT` walks `recordsAbsPath` in each of those checkouts for `.txn.journal.json` / `.txn.commit` that fail `recoverRunDir` (catch `RECORD_TXN_CORRUPT`). Include `runId` and the run directory path in the finding detail. Leave artifacts on disk. If `.txn.lock` is held by a **live** PID, do **not** call `recoverRunDir` and do **not** emit `RECORD_TXN_CORRUPT` (transaction in flight). If `.txn.lock` exists but is **unreadable/empty/malformed**, do **not** treat it as absent and do **not** immediately steal it — same P0.5 rule as acquire; skip recover for this pass (do not emit `RECORD_TXN_CORRUPT`). If the lock is stale (dead PID) or absent with leftover journal/commit files, acquire/steal the lock then recover; on `RECORD_TXN_CORRUPT`, report it and release the lock without deleting artifacts. `RECORD_TXN_LOCKED` is a store error, not a doctor finding.
 
-- [ ] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
-- [ ] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging. Seed an empty/unreadable `.txn.lock` plus a prepared journal and assert doctor does **not** immediately recover or emit `RECORD_TXN_CORRUPT`.
-- [ ] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
+- [x] `findingKey` cases in `registry.ts:83–116` for `RECORD_INDEX_MISSING_ROW` (`stepKey`), `RECORD_INDEX_MISSING_RUN` (`runId`). `RECORD_TXN_CORRUPT` is not fixable; still pass `runId` in detail for operator UX. Empty identity on fixable must throw (existing invariant).
+- [x] Unit: `test/unit/doctor/records.test.ts`. Integration: seed drift in temp repo; `5x doctor --json` contains codes; `5x doctor --fix` lists them under `fixed`; re-run clean for fixable codes. Seed a torn `.txn.commit` and assert `RECORD_TXN_CORRUPT` is reported and `--fix` does not delete journal files. Seed a live `.txn.lock` (child PID alive + prepared journal) and assert doctor does **not** emit `RECORD_TXN_CORRUPT` and does **not** delete staging. Seed an empty/unreadable `.txn.lock` plus a prepared journal and assert doctor does **not** immediately recover or emit `RECORD_TXN_CORRUPT`.
+- [x] `test/unit/doctor/registry.test.ts` — check order includes `records`; identity cases.
 
 ---
 
@@ -1507,14 +1509,14 @@ Export algorithm:
 7. Write via `WorkingTreeRecordStore` in the target worktree: `createWorkingTreeRecordStore({ recordsRoot: resolveRecordsRoot({ recordsConfigAbs: config.paths.records, controlPlaneRoot, effectiveWorkdir: targetWorktree }).recordsAbsPath })`. Existing lines by idempotency key: if `provenance === "recorded"`, push disagreement `recorded-vs-backfill` and **do not overwrite** (live origin must not become `null`). If payloads differ, push a disagreement and **do not overwrite**. If payloads equal and existing provenance is `backfilled`, skip (`created: false`). Do not treat `materializer` differences as payload disagreement when both sides are backfilled with equal payloads.
 8. Commit unless `dryRun`.
 
-- [ ] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
-- [ ] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
-- [ ] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile(text, runId)` contains all keys; each backfilled line has `origin: null` and a `materializer`.
-- [ ] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
-- [ ] Exported JSONL must not contain hostname, OS username, Git user, `session_id`, or `log_path`. `origin` is JSON `null`, not omitted in a way that decode treats as recorded.
-- [ ] Unit: backfill of a DB step does **not** put `materializer.recorder.installation_id` into `origin`.
-- [ ] Unit: backfill of a historical run writes `run.json` with `creator: null`; terminal runs also have `sealer: null`; `materializer.performer.role === "exporter"`; decode/index leave creator/sealer unknown.
-- [ ] Integration + text/JSON output: `5x records backfill` then `run state` / `plan list` (JSON and text) show unknown creator/sealer (null/omitted), while the exporter is identifiable only via `materializer` (or an explicit `exported_by` output field derived from it). The exporter installation id must **not** appear as creator or sealer.
+- [x] Dry-run: no `git add`, no file writes (compute mappings in memory; existence checks only).
+- [x] Second real run: `disagreements: []`, `created: false` for every line, no new commit if `git status` clean.
+- [x] Two DBs with partial history (A: phases 1–3, B: 4–5) backfill independently; after merge=union, `decodeJsonlFile(text, runId)` contains all keys; each backfilled line has `origin: null` and a `materializer`.
+- [x] Pre-v5 rows (`head_commit` null): export with `head_commit: null`; `plan list` may show `source: backfilled` when the only record is on HEAD with `backfilled: true` and no conventional branch — only if no other candidate exists.
+- [x] Exported JSONL must not contain hostname, OS username, Git user, `session_id`, or `log_path`. `origin` is JSON `null`, not omitted in a way that decode treats as recorded.
+- [x] Unit: backfill of a DB step does **not** put `materializer.recorder.installation_id` into `origin`.
+- [x] Unit: backfill of a historical run writes `run.json` with `creator: null`; terminal runs also have `sealer: null`; `materializer.performer.role === "exporter"`; decode/index leave creator/sealer unknown.
+- [x] Integration + text/JSON output: `5x records backfill` then `run state` / `plan list` (JSON and text) show unknown creator/sealer (null/omitted), while the exporter is identifiable only via `materializer` (or an explicit `exported_by` output field derived from it). The exporter installation id must **not** appear as creator or sealer.
 
 #### 7.2 CLI — `records.handler.ts`
 
@@ -1524,8 +1526,8 @@ Export algorithm:
 
 Default `--target auto`.
 
-- [ ] Integration tests as listed in the Tests table. Use two temp clones for the partial-history case.
-- [ ] Never push. Never fetch unless we need to see remote `5x/<slug>` for the auto rule — use already-present remote-tracking refs; document that `--target auto` does not fetch (operator fetches first, or we accept missing remote as "branch gone"). **Do not** implicit-fetch here (forbidden without `--fetch`; backfill has no `--fetch`). Remote-tracking existence is enough.
+- [x] Integration tests as listed in the Tests table. Use two temp clones for the partial-history case.
+- [x] Never push. Never fetch unless we need to see remote `5x/<slug>` for the auto rule — use already-present remote-tracking refs; document that `--target auto` does not fetch (operator fetches first, or we accept missing remote as "branch gone"). **Do not** implicit-fetch here (forbidden without `--fetch`; backfill has no `--fetch`). Remote-tracking existence is enough.
 
 ---
 
@@ -1535,27 +1537,27 @@ Default `--target auto`.
 
 #### 8.1 Docs
 
-- [ ] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer; summary `creator`/`sealer` nullable when unknown + summary materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor` and applies to `run.json` creator/sealer via `redactedRecorder`. Note fail-closed mutation of `format_version > 1`.
-- [ ] `docs/v1/101-cli-primitives.md`:
+- [x] `docs/v2/207-state-segmentation.md`: Status line; **Implementation plan** link to this file; mark open questions 1–2 resolved as implemented (seal commit; keep SQLite as index). Leave Q3 `plan.autoFetch` and Q4 lease interface as open/deferred. Extend §2.3 provenance with the origin envelope (recorder vs performer; backfill `origin: null` + materializer; summary `creator`/`sealer` nullable when unknown + summary materializer). Privacy default: still never record `session_id` / `log_path` / transcripts; also never record hostname / hardware ID / OS username as origin; `records.redact` may drop `origin.actor` and applies to `run.json` creator/sealer via `redactedRecorder`. Note fail-closed mutation of `format_version > 1`.
+- [x] `docs/v1/101-cli-primitives.md`:
   - §2 taxonomy (`:82–92`): add **Records** group (`records index`, `records backfill`).
   - §3 `run init` / `run record` / `run complete`: dual-write + seal commit + origin stamp.
   - §6 `plan phases` (`:589`) / `plan list` (`:614`): `--fetch`, `--all-refs`, `source` fields; branch-only discovery.
   - New §6b (or under Inspection): `5x records index` / `backfill` flags, dry-run, target rule, doctor `--fix`, backfill origin honesty (line `origin: null`; summary `creator`/`sealer` null; exporter is `materializer` only).
   - §10 idempotency: JSONL first-line-wins ≡ `INSERT OR IGNORE`; no key change.
   - §13 (`:1193`): `paths.records`, `records.redact`, `records.actor` example; identity file location; `FIVEX_RECORDS_ACTOR`; public-repo guidance (`origin.actor` redact).
-- [ ] Do not rewrite skills unless a command name in the hot loop changed (none expected).
+- [x] Do not rewrite skills unless a command name in the hot loop changed (none expected).
 
 #### 8.2 Exports
 
-- [ ] `src/control-plane/index.ts` and `src/index.ts`: `RecordStore`, `createMemoryRecordStore`, `createWorkingTreeRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, record types, `RecordStoreError`.
-- [ ] Do not export SQL, identity-file I/O, or filesystem helpers from the public control-plane barrel except the two factories. `loadOrCreateInstallationIdentity` may be exported from `src/records/` or `src/index.ts` if tests/06 need it, not from the control-plane store barrel.
+- [x] `src/control-plane/index.ts` and `src/index.ts`: `RecordStore`, `createMemoryRecordStore`, `createWorkingTreeRecordStore`, `stepIdempotencyKey`, `recordedEnvelope`, `RECORD_LINE_SCHEMA_VERSION`, `RUN_RECORD_FORMAT_VERSION`, record types, `RecordStoreError`.
+- [x] Do not export SQL, identity-file I/O, or filesystem helpers from the public control-plane barrel except the two factories. `loadOrCreateInstallationIdentity` may be exported from `src/records/` or `src/index.ts` if tests/06 need it, not from the control-plane store barrel.
 
 #### 8.3 Compatibility sweep
 
-- [ ] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
-- [ ] Integration `text-output.test.ts` updated for new columns/lines. Backfilled-run JSON/text must not print the exporter as creator/sealer.
-- [ ] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
-- [ ] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
+- [x] Existing envelope fields on `plan list`, `plan phases`, `run state`, `run record`, `commit` unchanged (additive only).
+- [x] Integration `text-output.test.ts` updated for new columns/lines. Backfilled-run JSON/text must not print the exporter as creator/sealer.
+- [x] `test/unit/git.test.ts` porcelain `-z` mocks updated for `checkGitSafety` (Phase 4) — confirm still green.
+- [x] No `bun:sqlite` in `src/commands/plan-v1.handler.ts`, `records.handler.ts`, `prompt.handler.ts` (prompt still uses PromptStore). `index-rebuild.ts` / `backfill.ts` may use `operations-v1` (already sqlite-backed) but not new ad-hoc SQL in command files.
 
 ---
 

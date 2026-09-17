@@ -9,6 +9,7 @@ import { harnessFreshnessCheck } from "./checks/harness-freshness.js";
 import { invocationsCheck } from "./checks/invocations.js";
 import { locksCheck } from "./checks/locks.js";
 import { promptsCheck } from "./checks/prompts.js";
+import { recordsCheck } from "./checks/records.js";
 import { runsCheck } from "./checks/runs.js";
 import { worktreesCheck } from "./checks/worktrees.js";
 import type { DoctorCheck, DoctorFinding, DoctorReport } from "./types.js";
@@ -22,6 +23,7 @@ export const builtinDoctorChecks: DoctorCheck[] = [
 	dbCheck,
 	promptsCheck,
 	invocationsCheck,
+	recordsCheck,
 ];
 
 export function summarizeDoctor(
@@ -68,6 +70,8 @@ export function checkFailedFinding(
  *   WORKTREE_MAPPING_MISSING  → detail.planPath
  *   PROMPT_ORPHANED           → detail.promptId
  *   INVOCATION_STALE          → detail.invocationId
+ *   RECORD_INDEX_MISSING_ROW  → detail.stepKey
+ *   RECORD_INDEX_MISSING_RUN  → detail.runId
  *
  * Invariant: a `fixable: true` finding MUST produce a non-empty identity
  * component. The switch `default` returns `""` (also the fallback when a
@@ -104,6 +108,10 @@ export function findingKey(f: DoctorFinding): string {
 				return String(d.promptId ?? "");
 			case "INVOCATION_STALE":
 				return String(d.invocationId ?? "");
+			case "RECORD_INDEX_MISSING_ROW":
+				return String(d.stepKey ?? "");
+			case "RECORD_INDEX_MISSING_RUN":
+				return String(d.runId ?? "");
 			default:
 				return "";
 		}

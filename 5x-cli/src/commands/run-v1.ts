@@ -108,6 +108,14 @@ export function registerRun(parent: Command) {
 		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.option("-p, --plan <path>", "Plan path (alternative to --run)")
 		.option(
+			"--fetch",
+			"Fetch remote 5x/* branches before resolving progress (with --plan)",
+		)
+		.option(
+			"--all-refs",
+			"Include non-conventional branches when resolving progress (with --plan)",
+		)
+		.option(
 			"-t, --tail <n>",
 			"Return only the last N steps",
 			intArg("--tail", { positive: true }),
@@ -123,6 +131,7 @@ export function registerRun(parent: Command) {
 				"  $ 5x run state                                     # ambient run identity\n" +
 				"  $ 5x run state -r abc123\n" +
 				"  $ 5x run state -p plan.md\n" +
+				"  $ 5x run state -p plan.md --fetch\n" +
 				"  $ 5x run state -r abc123 -t 5                      # last 5 steps only\n" +
 				"  $ 5x run state -r abc123 --since-step 42            # steps after #42",
 		)
@@ -132,6 +141,8 @@ export function registerRun(parent: Command) {
 				plan: opts.plan,
 				tail: opts.tail,
 				sinceStep: opts.sinceStep,
+				fetch: opts.fetch,
+				allRefs: opts.allRefs,
 			});
 		});
 

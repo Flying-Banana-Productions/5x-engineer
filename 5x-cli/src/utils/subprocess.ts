@@ -66,6 +66,30 @@ export const subprocess = {
 	},
 
 	/**
+	 * Execute a git command with stdin supplied (e.g. `git patch-id --stable`).
+	 * Same env sanitization as {@link execGit}.
+	 */
+	async execGitStdin(
+		args: string[],
+		workdir: string,
+		stdin: string,
+	): Promise<ExecResult> {
+		const proc = Bun.spawn(["git", ...args], {
+			cwd: workdir,
+			env: cleanEnv(),
+			stdin: new Blob([stdin]),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+	},
+
+	/**
 	 * Execute a shell command asynchronously.
 	 * Spawns via `shellArgs(command)` (sh/cmd) with the given working directory.
 	 * stdin is inherited so interactive commands work.

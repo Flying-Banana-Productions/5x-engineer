@@ -599,6 +599,11 @@ export async function invokeAgent(
 									tokensOut: runResult.tokens.out,
 									costUsd: runResult.costUsd ?? undefined,
 									logPath: logPath ?? undefined,
+									performer: {
+										kind: "agent",
+										role,
+										provider: providerName,
+									},
 								});
 							} catch (err) {
 								const msg = err instanceof Error ? err.message : String(err);
@@ -667,6 +672,11 @@ export async function invokeAgent(
 					tokensOut: runResult.tokens.out,
 					costUsd: runResult.costUsd ?? undefined,
 					logPath: logPath ?? undefined,
+					performer: {
+						kind: "agent",
+						role,
+						provider: providerName,
+					},
 				});
 			} catch (err) {
 				// Recording is a side effect — primary envelope already written.

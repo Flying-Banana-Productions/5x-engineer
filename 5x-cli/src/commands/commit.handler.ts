@@ -9,10 +9,12 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { outputError, outputSuccess } from "../output.js";
 import { validateRunId } from "../run-id.js";
 import { subprocess } from "../utils/subprocess.js";
 import { type DbContext, resolveDbContext } from "./context.js";
+import { createRecordContext, RecordContextError } from "./record-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { requireAmbientRunId } from "./run-identity.js";
 import { recordStepInternal } from "./run-v1.handler.js";
@@ -147,13 +149,44 @@ export async function runCommit(params: CommitParams): Promise<void> {
 
 	const workdir = ctx.effectiveWorkingDirectory;
 
+	let recordsRelPath: string | undefined;
+	try {
+		const recordCtx = await createRecordContext({
+			runId,
+			dbContext: { projectRoot: controlPlaneRoot, db, config, controlPlane },
+		});
+		if (existsSync(recordCtx.recordsAbsPath)) {
+			recordsRelPath = recordCtx.recordsRelPath;
+		}
+	} catch (err) {
+		if (err instanceof RecordContextError) {
+			if (
+				err.code === "WORKTREE_MISSING" ||
+				err.code === "PLAN_PATH_INVALID" ||
+				err.code === "RUN_NOT_FOUND"
+			) {
+				outputError(err.code, err.message, err.detail);
+			}
+		}
+		throw err;
+	}
+
+	const addRecords =
+		params.files && recordsRelPath !== undefined ? [recordsRelPath] : [];
+
 	// 4. Dry-run mode
 	if (params.dryRun) {
 		let dryRunArgs: string[];
 		if (params.allFiles) {
 			dryRunArgs = ["add", "-A", "--dry-run"];
 		} else {
-			dryRunArgs = ["add", "--dry-run", "--", ...(params.files ?? [])];
+			dryRunArgs = [
+				"add",
+				"--dry-run",
+				"--",
+				...(params.files ?? []),
+				...addRecords,
+			];
 		}
 
 		const dryResult = await subprocess.execGit(dryRunArgs, workdir);
@@ -194,7 +227,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	if (params.allFiles) {
 		stageArgs = ["add", "-A"];
 	} else {
-		stageArgs = ["add", "--", ...(params.files ?? [])];
+		stageArgs = ["add", "--", ...(params.files ?? []), ...addRecords];
 	}
 
 	const stageResult = await subprocess.execGit(stageArgs, workdir);

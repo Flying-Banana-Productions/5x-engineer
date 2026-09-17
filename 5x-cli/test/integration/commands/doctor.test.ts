@@ -128,7 +128,7 @@ function writeLock(
 
 describe("5x doctor (integration)", () => {
 	test(
-		"JSON envelope + seven check classes on a healthy project, exit 0",
+		"JSON envelope + eight check classes on a healthy project, exit 0",
 		() => {
 			const dir = makeTmpDir();
 			try {
@@ -145,11 +145,15 @@ describe("5x doctor (integration)", () => {
 				expect(checks).toContain("db");
 				expect(checks).toContain("prompts");
 				expect(checks).toContain("invocations");
+				expect(checks).toContain("records");
 				expect(report.checks.some((c) => c.code === "DB_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "LOCKS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "RUNS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "PROMPTS_OK")).toBe(true);
 				expect(report.checks.some((c) => c.code === "INVOCATIONS_OK")).toBe(
+					true,
+				);
+				expect(report.checks.some((c) => c.code === "RECORD_INDEX_OK")).toBe(
 					true,
 				);
 				expect(report.fixed).toEqual([]);
@@ -392,5 +396,139 @@ describe("5x doctor (integration)", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+
+	test(
+		"records drift is reported; --fix re-indexes; torn txn is not deleted",
+		() => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				mkdirSync(join(dir, "docs", "development", "runs", "alpha", "run_a"), {
+					recursive: true,
+				});
+				writeFileSync(
+					join(dir, "docs", "development", "alpha.md"),
+					"# Alpha\n\n## Phase 1: P1\n\n- [x] task\n",
+				);
+				writeFileSync(
+					join(
+						dir,
+						"docs",
+						"development",
+						"runs",
+						"alpha",
+						"run_a",
+						"run.json",
+					),
+					`${JSON.stringify(
+						{
+							id: "run_a",
+							plan_path: "docs/development/alpha.md",
+							config_json: null,
+							created_at: "2026-09-01 12:00:00",
+							sealed_at: null,
+							status: "active",
+							final_head_commit: null,
+							cli_version: "1.3.0",
+							format_version: 1,
+							creator: {
+								installation_id: "11111111-1111-4111-8111-111111111111",
+							},
+						},
+						null,
+						2,
+					)}\n`,
+				);
+				writeFileSync(
+					join(
+						dir,
+						"docs",
+						"development",
+						"runs",
+						"alpha",
+						"run_a",
+						"steps.jsonl",
+					),
+					`${JSON.stringify({
+						schema_version: 1,
+						stream: "steps",
+						idempotency_key: "step:run_a:author:impl:1:1",
+						created_at: "2026-09-01 12:00:00",
+						provenance: "recorded",
+						origin: {
+							recorder: {
+								installation_id: "11111111-1111-4111-8111-111111111111",
+							},
+							performer: { kind: "system", role: "cli" },
+						},
+						payload: {
+							step_name: "author:impl",
+							phase: "1",
+							iteration: 1,
+							result_json: { ok: true },
+							head_commit: null,
+							patch_id: null,
+							diff_summary: null,
+							duration_ms: null,
+							tokens_in: null,
+							tokens_out: null,
+							cost_usd: null,
+							model: null,
+						},
+					})}\n`,
+				);
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "records"], dir);
+
+				const detect = run5x(dir, ["doctor"]);
+				expect(detect.exitCode).toBe(1);
+				const detected = reportOf(detect.stdout);
+				expect(
+					detected.checks.some((c) => c.code === "RECORD_INDEX_MISSING_RUN"),
+				).toBe(true);
+				expect(
+					detected.checks.some((c) => c.code === "RECORD_INDEX_MISSING_ROW"),
+				).toBe(true);
+
+				const fixed = run5x(dir, ["doctor", "--fix"]);
+				expect(fixed.exitCode).toBe(0);
+				const fixedReport = reportOf(fixed.stdout);
+				expect(
+					fixedReport.fixed.some(
+						(f) =>
+							f.check === "records" && f.code === "RECORD_INDEX_MISSING_RUN",
+					),
+				).toBe(true);
+				expect(
+					fixedReport.checks.some((c) => c.code === "RECORD_INDEX_MISSING_RUN"),
+				).toBe(false);
+				expect(
+					fixedReport.checks.some((c) => c.code === "RECORD_INDEX_MISSING_ROW"),
+				).toBe(false);
+
+				const runDir = join(
+					dir,
+					"docs",
+					"development",
+					"runs",
+					"alpha",
+					"run_a",
+				);
+				writeFileSync(join(runDir, ".txn.commit"), "{");
+				writeFileSync(join(runDir, ".txn.journal.json"), "{");
+				const corrupt = run5x(dir, ["doctor", "--fix"]);
+				expect(corrupt.exitCode).toBe(1);
+				const corruptReport = reportOf(corrupt.stdout);
+				expect(
+					corruptReport.checks.some((c) => c.code === "RECORD_TXN_CORRUPT"),
+				).toBe(true);
+				expect(existsSync(join(runDir, ".txn.commit"))).toBe(true);
+				expect(existsSync(join(runDir, ".txn.journal.json"))).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 20000 },
 	);
 });

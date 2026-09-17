@@ -1,11 +1,12 @@
 # 5x CLI v2 — State Segmentation: Repository Records and the Control Plane
 
-**Status:** Draft — Not Implemented
+**Status:** Implemented — local working-tree records; remote plane still deferred
 **Date:** August 28, 2026
+**Updated:** September 3, 2026
 **Part of:** v2 (`200-overview.md`, area #7)
 **Shared core used:** Run-state surface (`200-overview.md` §3.2); refines forward-compat constraint #4 (§3a)
 **Refines:** `202-control-plane.md` §3.1 (store interface), `203-recovery-and-doctor.md` §3 (locks are per-machine), `204-run-context-ergonomics.md` §3 (local materialization vs. logical identity), `206-review-budget-governance.md` §6.4 (run-state records)
-**Implementation plan:** — (plan input: `plan-inputs/10-git-native-run-records.plan-input.md`)
+**Implementation plan:** [`docs/development/plans/212-git-native-run-records-plan.md`](../development/plans/212-git-native-run-records-plan.md) (plan input: `plan-inputs/10-git-native-run-records.plan-input.md`)
 
 ---
 
@@ -95,9 +96,11 @@ Records live under a configurable, git-tracked root, keyed by plan slug and run 
   <plan-slug>/
     <run-id>/
       run.json          # summary: id, plan_path, config_json, created_at,
-                        #   sealed_at, status, final_head_commit, cli_version
+                        #   sealed_at, status, final_head_commit, cli_version,
+                        #   format_version, creator, sealer, optional materializer
       steps.jsonl       # append-only, one line per recorded step (§2.2 fields)
       decisions.jsonl   # append-only: answered prompts + human:* steps
+      budget.jsonl      # append-only opaque stream for slice 06 (review budget)
 ```
 
 Rules:
@@ -107,8 +110,14 @@ Rules:
 - **Dirty-tree safety exempts the records root.** `checkGitSafety` (`src/git.ts`) must treat uncommitted changes under `paths.records` as expected, otherwise every `run record` would block the next agent invocation. Nothing else about the safety check changes.
 - **Idempotency key is unchanged.** `(run_id, step_name, phase, iteration)` still dedupes; re-recording an existing step does not append a duplicate line. The local store remains the fast path for that check; on a fresh clone the check is rebuilt from the record (§2.5).
 - **Squash-merge safe by design.** `5x/*` branches are commonly squash-merged, so intermediate commits vanish. Records are content, not commits, and survive; but `head_commit` in `steps.jsonl` then points at commits that no longer exist. Each step line therefore also carries `patch_id` (`git patch-id --stable` of the diff between the previous recorded step's `head_commit` and this one, computed at record time while both exist) and `diff_summary` (`{ files_changed, insertions, deletions }`). A step remains verifiable against the squashed result by patch-id even when its commit is gone; `plan phases --verbose` labels unreachable `head_commit` values as informational rather than erroring.
-- **Provenance.** Every step line carries `provenance: "recorded"` (written at record time) or `"backfilled"` (exported later, §2.7).
-- **Privacy default.** `tokens_*`, `cost_usd`, and `model` are recorded (they are summaries, and useful history); `session_id`, `log_path`, and transcript content are not. A `records.redact` config list allows dropping additional fields for public repositories.
+- **Provenance.** Every JSONL line (`steps`, `decisions`, `budget`) carries `schema_version` and `provenance: "recorded"` (written at record time) or `"backfilled"` (exported later, §2.7). Provenance is how the line entered the record. It is not origin, and it is not Git commit author/committer (squash-merges rewrite those).
+- **Origin envelope (recorder vs performer).** Every recorded line also carries a versioned `origin` object so reconstructed history answers "who recorded this, and who performed it" without relying on Git attribution:
+  - **Recorder** — a random `installation_id` (UUID v4) from a user-scope identity file outside the repository (`$XDG_CONFIG_HOME/5x/identity.json` or `%APPDATA%/5x/identity.json`, overridable via `FIVEX_CONFIG_HOME`), plus an optional operator-chosen `actor` label (`FIVEX_RECORDS_ACTOR` → `records.actor` → identity-file `actor`). `installation_id` is a correlator for one CLI install, not a person.
+  - **Performer** — `human` | `agent` | `system`, with `role` / `provider` when known (e.g. agent author/reviewer with the configured provider; CLI steps `system`/`cli`; answered prompts `human`/`operator`).
+  - Live writers construct origin only through `originFor` (already redacted). `run.json` `creator` (init) and `sealer` (complete) are **summary-only** and may be `null` when unknown. Seal preserves `creator` including `null` and sets `sealer` to this installation.
+  - Backfill writes `origin: null` (original recorder/performer unknown) and a separate `materializer` for the exporter (`performer.kind: "system"`, `role: "exporter"`). Summary `creator`/`sealer` stay `null`; the exporter is summary `materializer` only — never copied into `origin`, `creator`, or `sealer`. Text/JSON output surfaces the exporter as `exported_by`.
+- **Privacy default.** `tokens_*`, `cost_usd`, and `model` are recorded (they are summaries, and useful history); `session_id`, `log_path`, and transcript content are not. Origin never records hostname, hardware ID, OS username, or Git `user.name` / `user.email`. A `records.redact` config list allows dropping additional fields for public repositories — including `origin.actor`, which `originFor` / `redactedRecorder` omit from step/decision/budget lines **and** from `run.json` `creator`/`sealer`. Teams with public repositories should omit `actor` or add `origin.actor` to `records.redact`.
+- **Newer `run.json` is read-only for this CLI.** `format_version` is a number; this slice writes `1`. A summary with `format_version > 1` is readable for display/index when v1 required fields are present, but `putRun` / `run complete` / abort refuse mutation (`UNSUPPORTED_FORMAT_VERSION`). Completion **version-checks before any terminal append**, so a rejected seal cannot leave a `run:complete` / `run:abort` line beside an untouched newer summary.
 
 ### 2.4 Reading the record from git: progress resolution
 
@@ -147,7 +156,7 @@ Runs recorded before this area lands exist only in local `.5x/5x.db` files. `5x 
 
 - **Pure export.** Reads `runs` / `steps`, applies the §2.3 field policy and `records.redact`, writes `run.json` / `steps.jsonl` / `decisions.jsonl`. It never touches coordination state and never invents a terminal status: runs still `active` in the DB are exported as `status: active` with `backfilled: true`, for a human (or `doctor`) to seal.
 - **Target-branch rule (`--target auto`).** If `5x/<slug>` exists locally or on a remote, records go to that branch — through its mapped worktree if one exists, otherwise a temporary worktree — as a `5x: backfill records for <run-id>` commit. If the branch is gone (merged and deleted), records go to the current branch in one aggregate `5x: backfill records` commit. `--dry-run` prints the run → target mapping and file list without writing.
-- **Degraded provenance is explicit.** `patch_id` is computed only when both the previous step's and this step's `head_commit` are reachable; otherwise it is `null`. Every backfilled line carries `provenance: "backfilled"` (live lines carry `provenance: "recorded"`) so consumers never mistake exported rows for contemporaneous evidence.
+- **Degraded provenance is explicit.** `patch_id` is computed only when both the previous step's and this step's `head_commit` are reachable; otherwise it is `null`. Every backfilled line carries `provenance: "backfilled"` (live lines carry `provenance: "recorded"`) so consumers never mistake exported rows for contemporaneous evidence. Original origin is unknown: lines have `origin: null` plus a separate exporter `materializer`. `run.json` `creator` is `null`; terminal exports also set `sealer: null` and still set `sealed_at` / `status` from the SQLite row. The exporter is never copied into `origin`, `creator`, or `sealer`.
 - **Idempotent and merge-friendly.** Steps already present in the target's record are skipped by idempotency key, so machines that each hold part of a plan's history (A did phases 1–3, B did 4–5) can backfill independently and `merge=union` combines them. A DB row that *disagrees* with an existing record line on the same key is reported, never overwritten.
 - **Runs without a plan branch and without `head_commit`** (pre-schema-v5 rows) are exported with `head_commit: null`; `plan list` shows them as `source: backfilled` rather than hiding them.
 
@@ -177,7 +186,7 @@ It never parses a plan, computes a budget, or decides whether a phase is complet
 
 ## 4. Migration / compatibility
 
-- **Additive.** New config (`paths.records`, `records.redact`, `coordination.allowOffline`), new files under the records root, new `records index` command, new doctor check, new `source` field on `plan list` / `plan phases` envelopes. No existing envelope field changes; `--json` consumers that ignore unknown fields are unaffected.
+- **Additive.** New config (`paths.records`, `records.redact`, `records.actor`; `coordination.allowOffline` remains reserved), new files under the records root, new `records index` / `records backfill` commands, new doctor `records` check, new `source` (and related) fields on `plan list` / `plan phases` / `run state --plan` envelopes. No existing envelope field names change; `--json` consumers that ignore unknown fields are unaffected.
 - **Existing runs.** Runs recorded before this lands have no record on disk. `5x records backfill` (§2.7) exports them from the local DB to the plan branch or current branch with explicit `provenance: backfilled`. Not required; history without a record simply shows `source: local-index` in `plan list`.
 - **Dirty-tree exemption** for the records root is the only behavior change to an existing safety check; it is scoped to that path.
 - **`.gitattributes`** entry for `merge=union` is written by `5x init` / `5x upgrade` when the records root is created.
@@ -191,11 +200,11 @@ Resolved August 28, 2026:
 - **Records root is a sibling of the plans tree** (`docs/development/runs/`, configurable via `paths.records`), not nested under `paths.plans` and not a ref namespace. The `RecordStore` seam keeps the ref-namespace option open.
 - **Squash merges are the common case.** Step lines carry `patch_id` and `diff_summary` in addition to `head_commit` (§2.3); unreachable commits are informational.
 - **Slice 06 proceeds in parallel** against the frozen `RecordStore` interface with the in-memory implementation; the interface is the first deliverable of slice 10 (§2.6).
-- **Privacy default:** `cost_usd`, `tokens_*`, and `model` are recorded; `session_id`, `log_path`, and transcripts never are; `records.redact` narrows the set for public repositories.
+- **Privacy default:** `cost_usd`, `tokens_*`, and `model` are recorded; `session_id`, `log_path`, and transcripts never are; hostname / hardware ID / OS username are never origin; `records.redact` may drop `origin.actor` (and applies to `run.json` creator/sealer via `redactedRecorder`).
+- **Seal commit (open question 1, implemented).** Post-commit steps (final reviewer verdict, `run complete`) land in a dedicated `5x: seal run <id>` commit when record files remain uncommitted. They are not folded into a later `5x commit` that may never come.
+- **SQLite stays the index (open question 2, implemented).** Record-derived `runs` / `steps` are rebuildable from git via `5x records index`. SQLite is not dropped.
 
 ## 6. Open questions
 
-1. **Sealing commit vs. folding.** Post-commit steps (final reviewer verdict, `run complete`) need a home. A dedicated `5x: seal run` commit is simplest; alternatively leave the seal for the next `5x commit` on the branch (which may never come for the last phase). Leaning: the seal commit.
-2. **Drop SQLite entirely for local-only mode?** At current volumes plain JSON would suffice, but every v2 slice is built on it and the index role is cheap. Leaning: keep it as the index; revisit after slices 03–06 ship.
-3. **`--fetch` default.** §2.4 says never fetch implicitly. A `plan.autoFetch` config for teams that want `plan list` to always reflect the remote is cheap; is it wanted?
-4. **Lease interface timing.** `203`'s PID locks become one impl of a lease interface when a remote plane exists. Defining that interface now (unused remote impl) vs. when the remote design lands — leaning: later, to avoid speculative abstraction.
+1. **`--fetch` default (`plan.autoFetch`).** §2.4 says never fetch implicitly. A `plan.autoFetch` config for teams that want `plan list` to always reflect the remote is cheap; is it wanted? **Deferred** — `--fetch` remains explicit.
+2. **Lease interface timing.** `203`'s PID locks become one impl of a lease interface when a remote plane exists. Defining that interface now (unused remote impl) vs. when the remote design lands — leaning: later, to avoid speculative abstraction. **Deferred** with the remote plane.

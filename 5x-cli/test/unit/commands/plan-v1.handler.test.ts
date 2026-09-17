@@ -1,11 +1,13 @@
 /**
  * Direct-call unit tests for `planList` — no CLI subprocess.
  *
- * Each case uses an isolated temp git checkout + chdir so `resolveDbContext()`
- * resolves DB and paths locally (see AGENTS.md: unit tier).
+ * Each case uses an isolated temp git checkout, owned SQLite connection, and
+ * injected `startDir` / `dbContext` so tests stay off `process.chdir` and the
+ * process-wide `getDb` singleton (see AGENTS.md: unit tier, `--concurrent`).
  */
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
@@ -16,13 +18,23 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { planList } from "../../../src/commands/plan-v1.handler.js";
-import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
+import { join, relative, resolve } from "node:path";
+import type { DbContext } from "../../../src/commands/context.js";
+import {
+	type PlanListParams,
+	planList,
+} from "../../../src/commands/plan-v1.handler.js";
+import { FiveXConfigSchema } from "../../../src/config.js";
 import { runMigrations } from "../../../src/db/schema.js";
-import { setOutputFormat, setPrettyPrint } from "../../../src/output.js";
 import { canonicalizePlanPath } from "../../../src/paths.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+
+interface ProjectCtx {
+	root: string;
+	plansDir: string;
+	db: Database;
+	dbContext: DbContext;
+}
 
 function setupGitProject(dir: string): void {
 	Bun.spawnSync(["git", "init"], {
@@ -64,62 +76,96 @@ function setupGitProject(dir: string): void {
 	});
 }
 
-function openProjectDb(projectRoot: string) {
-	closeDb();
-	_resetForTest();
-	const db = getDb(projectRoot);
-	runMigrations(db);
-	return db;
-}
-
-function captureStderrWrite(): {
-	lines: string[];
-	restore: () => void;
-} {
-	const lines: string[] = [];
-	const orig = process.stderr.write.bind(process.stderr);
-	process.stderr.write = (chunk: string | Uint8Array) => {
-		const s =
-			typeof chunk === "string"
-				? chunk
-				: new TextDecoder().decode(chunk as Uint8Array);
-		lines.push(s);
-		return true;
-	};
+function resolvedConfig(root: string) {
+	const raw = FiveXConfigSchema.parse({});
 	return {
-		lines,
-		restore: () => {
-			process.stderr.write = orig;
+		...raw,
+		paths: {
+			...raw.paths,
+			plans: resolve(root, raw.paths.plans),
+			reviews: resolve(root, raw.paths.reviews),
+			archive: resolve(root, raw.paths.archive),
+			records: resolve(root, raw.paths.records),
+			templates: {
+				plan: resolve(root, raw.paths.templates.plan),
+				review: resolve(root, raw.paths.templates.review),
+			},
 		},
 	};
 }
 
-async function withProject<T>(
-	fn: (ctx: { root: string; plansDir: string }) => Promise<T>,
-): Promise<T> {
-	const prevCwd = process.cwd();
+function openOwnedDb(projectRoot: string): Database {
+	mkdirSync(join(projectRoot, ".5x"), { recursive: true });
+	const db = new Database(resolve(projectRoot, ".5x/5x.db"));
+	db.exec("PRAGMA journal_mode=WAL");
+	db.exec("PRAGMA foreign_keys=ON");
+	db.exec("PRAGMA busy_timeout=5000");
+	runMigrations(db);
+	return db;
+}
+
+function setupProject(): ProjectCtx {
 	const root = mkdtempSync(join(tmpdir(), "5x-planlist-"));
 	setupGitProject(root);
-	const plansDir = join(root, "docs", "development");
-	process.chdir(root);
-	setOutputFormat("json");
-	setPrettyPrint(false);
+	const db = openOwnedDb(root);
+	const config = resolvedConfig(root);
+	const dbContext: DbContext = {
+		projectRoot: root,
+		config,
+		db,
+		controlPlane: {
+			controlPlaneRoot: root,
+			stateDir: ".5x",
+			mode: "isolated",
+		},
+	};
+	return { root, plansDir: config.paths.plans, db, dbContext };
+}
+
+function teardown(ctx: ProjectCtx): void {
 	try {
-		return await fn({ root, plansDir });
-	} finally {
-		closeDb();
-		_resetForTest();
-		process.chdir(prevCwd);
-		try {
-			rmSync(root, { recursive: true, force: true });
-		} catch {
-			/* ignore */
-		}
+		ctx.db.close();
+	} catch {
+		/* already closed */
+	}
+	try {
+		rmSync(ctx.root, { recursive: true, force: true });
+	} catch {
+		/* ignore */
 	}
 }
 
+async function withProject<T>(fn: (ctx: ProjectCtx) => Promise<T>): Promise<T> {
+	const ctx = setupProject();
+	try {
+		return await fn(ctx);
+	} finally {
+		teardown(ctx);
+	}
+}
+
+async function listPlans(
+	ctx: ProjectCtx,
+	params: Omit<PlanListParams, "startDir" | "dbContext" | "warn"> = {},
+): Promise<{
+	plans_dir: string;
+	plans: Awaited<ReturnType<typeof planList>>["plans"];
+	warnings: string;
+}> {
+	const warnings: string[] = [];
+	const result = await planList({
+		...params,
+		startDir: ctx.root,
+		dbContext: ctx.dbContext,
+		warn: (message) => {
+			warnings.push(message);
+		},
+	});
+	return { ...result, warnings: warnings.join("") };
+}
+
 function insertRun(
-	db: ReturnType<typeof getDb>,
+	db: Database,
 	id: string,
 	planPath: string,
 	status: string,
@@ -132,7 +178,7 @@ function insertRun(
 }
 
 function insertPlanRow(
-	db: ReturnType<typeof getDb>,
+	db: Database,
 	planPath: string,
 	worktreePath: string | null,
 ): void {
@@ -142,227 +188,131 @@ function insertPlanRow(
 	);
 }
 
-afterEach(() => {
-	setOutputFormat("json");
-	setPrettyPrint(false);
-});
-
 describe("planList handler", () => {
 	test("recursively discovers nested markdown plans but skips paths.reviews under paths.plans", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(join(plansDir, "deep", "nest"), { recursive: true });
+		await withProject(async (ctx) => {
+			mkdirSync(join(ctx.plansDir, "deep", "nest"), { recursive: true });
 			writeFileSync(
-				join(plansDir, "deep", "nest", "inner.md"),
+				join(ctx.plansDir, "deep", "nest", "inner.md"),
 				`# Inner\n\n## Phase 1: A\n\n- [x] t\n`,
 			);
 			writeFileSync(
-				join(plansDir, "root.md"),
+				join(ctx.plansDir, "root.md"),
 				`# R\n\n## Phase 1: B\n\n- [ ] u\n`,
 			);
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			const { lines, restore } = captureStderrWrite();
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-				restore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				ok: boolean;
-				data: { plans: { plan_path: string }[] };
-			};
-			expect(env.ok).toBe(true);
-			const paths = env.data.plans.map((p) => p.plan_path).sort();
-			expect(paths).toEqual(["deep/nest/inner.md", "root.md"]);
-			expect(lines.join("")).toBe("");
+			const { plans, warnings } = await listPlans(ctx);
+			expect(plans.map((p) => p.plan_path).sort()).toEqual([
+				"deep/nest/inner.md",
+				"root.md",
+			]);
+			expect(warnings).toBe("");
 		});
 	});
 
 	test("does not list markdown under paths.reviews inside paths.plans", async () => {
-		await withProject(async ({ plansDir }) => {
-			const reviewsDir = join(plansDir, "reviews");
+		await withProject(async (ctx) => {
+			const reviewsDir = join(ctx.plansDir, "reviews");
 			mkdirSync(join(reviewsDir, "nested"), { recursive: true });
 			writeFileSync(
 				join(reviewsDir, "nested", "impl-review.md"),
 				`# Review\n\n## Phase 1: A\n\n- [x] t\n`,
 			);
 			writeFileSync(
-				join(plansDir, "real.md"),
+				join(ctx.plansDir, "real.md"),
 				`# Real\n\n## Phase 1: B\n\n- [ ] u\n`,
 			);
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				ok: boolean;
-				data: { plans: { plan_path: string }[] };
-			};
-			expect(env.ok).toBe(true);
-			const paths = env.data.plans.map((p) => p.plan_path).sort();
-			expect(paths).toEqual(["real.md"]);
+			const { plans } = await listPlans(ctx);
+			expect(plans.map((p) => p.plan_path).sort()).toEqual(["real.md"]);
 		});
 	});
 
 	test("duplicate basenames in different subdirectories are distinct plan_path values", async () => {
-		await withProject(async ({ plansDir }) => {
+		await withProject(async (ctx) => {
 			for (const d of ["nest1", "nest2"]) {
-				mkdirSync(join(plansDir, d), { recursive: true });
+				mkdirSync(join(ctx.plansDir, d), { recursive: true });
 				writeFileSync(
-					join(plansDir, d, "same.md"),
+					join(ctx.plansDir, d, "same.md"),
 					`# ${d}\n\n## Phase 1: X\n\n- [ ] a\n`,
 				);
 			}
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				data: { plans: { plan_path: string; name: string }[] };
-			};
-			const paths = env.data.plans.map((p) => p.plan_path).sort();
-			expect(paths).toEqual(["nest1/same.md", "nest2/same.md"]);
-			// Basename slug matches; stable identity is plan_path.
-			expect(env.data.plans.every((p) => p.name === "same")).toBe(true);
+			const { plans } = await listPlans(ctx);
+			expect(plans.map((p) => p.plan_path).sort()).toEqual([
+				"nest1/same.md",
+				"nest2/same.md",
+			]);
+			expect(plans.every((p) => p.name === "same")).toBe(true);
 		});
 	});
 
 	test("missing plans directory returns empty list without throwing", async () => {
-		await withProject(async () => {
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				ok: boolean;
-				data: { plans: unknown[]; plans_dir: string };
-			};
-			expect(env.ok).toBe(true);
-			expect(env.data.plans).toEqual([]);
-			expect(existsSync(env.data.plans_dir)).toBe(false);
+		await withProject(async (ctx) => {
+			const { plans, plans_dir } = await listPlans(ctx);
+			expect(plans).toEqual([]);
+			expect(existsSync(plans_dir)).toBe(false);
 		});
 	});
 
 	test("--exclude-finished filters complete plans", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(plansDir, { recursive: true });
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
 			writeFileSync(
-				join(plansDir, "done.md"),
+				join(ctx.plansDir, "done.md"),
 				`# D\n\n## Phase 1: A\n\n- [x] a\n`,
 			);
 			writeFileSync(
-				join(plansDir, "todo.md"),
+				join(ctx.plansDir, "todo.md"),
 				`# T\n\n## Phase 1: B\n\n- [ ] b\n`,
 			);
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({ excludeFinished: true });
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				data: { plans: { plan_path: string }[] };
-			};
-			expect(env.data.plans.map((p) => p.plan_path)).toEqual(["todo.md"]);
+			const { plans } = await listPlans(ctx, { excludeFinished: true });
+			expect(plans.map((p) => p.plan_path)).toEqual(["todo.md"]);
 		});
 	});
 
 	test("sorts by completion pct desc then mtime asc; plan_path tie-break", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(plansDir, { recursive: true });
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
 			writeFileSync(
-				join(plansDir, "zzz_complete.md"),
+				join(ctx.plansDir, "zzz_complete.md"),
 				`# Z\n\n## Phase 1: A\n\n- [x] a\n`,
 			);
 			writeFileSync(
-				join(plansDir, "mmm_complete.md"),
+				join(ctx.plansDir, "mmm_complete.md"),
 				`# M\n\n## Phase 1: B\n\n- [x] b\n`,
 			);
 			writeFileSync(
-				join(plansDir, "aaa_incomplete.md"),
+				join(ctx.plansDir, "aaa_incomplete.md"),
 				`# A\n\n## Phase 1: C\n\n- [ ] c\n`,
 			);
 			const tZ = new Date("2019-01-01T00:00:00Z");
 			const tM = new Date("2019-02-01T00:00:00Z");
 			const tA = new Date("2019-03-01T00:00:00Z");
-			utimesSync(join(plansDir, "zzz_complete.md"), tZ, tZ);
-			utimesSync(join(plansDir, "mmm_complete.md"), tM, tM);
-			utimesSync(join(plansDir, "aaa_incomplete.md"), tA, tA);
+			utimesSync(join(ctx.plansDir, "zzz_complete.md"), tZ, tZ);
+			utimesSync(join(ctx.plansDir, "mmm_complete.md"), tM, tM);
+			utimesSync(join(ctx.plansDir, "aaa_incomplete.md"), tA, tA);
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				data: { plans: { plan_path: string; status: string }[] };
-			};
-			// 100% rows first (mtime asc: zzz written before mmm), then 0%.
-			expect(env.data.plans.map((p) => p.plan_path)).toEqual([
+			const { plans } = await listPlans(ctx);
+			expect(plans.map((p) => p.plan_path)).toEqual([
 				"zzz_complete.md",
 				"mmm_complete.md",
 				"aaa_incomplete.md",
 			]);
-			expect(env.data.plans[0]?.status).toBe("complete");
-			expect(env.data.plans[1]?.status).toBe("complete");
-			expect(env.data.plans[2]?.status).toBe("incomplete");
+			expect(plans[0]?.status).toBe("complete");
+			expect(plans[1]?.status).toBe("complete");
+			expect(plans[2]?.status).toBe("incomplete");
 		});
 	});
 
 	test("mapped worktree with on-disk copy prefers worktree markdown", async () => {
-		await withProject(async ({ root, plansDir }) => {
-			const relUnderRoot = relative(root, join(plansDir, "wt.plan.md"));
+		await withProject(async (ctx) => {
+			const relUnderRoot = relative(ctx.root, join(ctx.plansDir, "wt.plan.md"));
 			const rootMd = `# Root\n\n## Phase 1: One\n\n- [ ] root\n`;
 			const wtMd = `# Worktree\n\n## Phase 1: One\n\n- [x] wt\n`;
-			mkdirSync(join(plansDir), { recursive: true });
-			writeFileSync(join(plansDir, "wt.plan.md"), rootMd);
+			mkdirSync(join(ctx.plansDir), { recursive: true });
+			writeFileSync(join(ctx.plansDir, "wt.plan.md"), rootMd);
 
 			const wtRoot = mkdtempSync(join(tmpdir(), "5x-planlist-wt-"));
 			try {
@@ -370,28 +320,11 @@ describe("planList handler", () => {
 				mkdirSync(join(mirrored, ".."), { recursive: true });
 				writeFileSync(mirrored, wtMd);
 
-				const db = openProjectDb(root);
-				const canon = canonicalizePlanPath(join(plansDir, "wt.plan.md"));
-				insertPlanRow(db, canon, wtRoot);
+				const canon = canonicalizePlanPath(join(ctx.plansDir, "wt.plan.md"));
+				insertPlanRow(ctx.db, canon, wtRoot);
 
-				const logs: string[] = [];
-				const logSpy = spyOn(console, "log").mockImplementation(
-					(msg?: unknown) => {
-						logs.push(String(msg));
-					},
-				);
-				try {
-					await planList({});
-				} finally {
-					logSpy.mockRestore();
-				}
-
-				const env = JSON.parse(logs[0] ?? "{}") as {
-					data: {
-						plans: { title: string; status: string; completion_pct: number }[];
-					};
-				};
-				const row = env.data.plans.find(
+				const { plans } = await listPlans(ctx);
+				const row = plans.find(
 					(p) => p.title === "Worktree" || p.title === "Root",
 				);
 				expect(row?.title).toBe("Worktree");
@@ -404,123 +337,80 @@ describe("planList handler", () => {
 	});
 
 	test("read failure on one file yields incomplete fallback and other files still list", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(plansDir, { recursive: true });
-			const bad = join(plansDir, "unreadable.md");
-			const good = join(plansDir, "good.md");
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
+			const bad = join(ctx.plansDir, "unreadable.md");
+			const good = join(ctx.plansDir, "good.md");
 			writeFileSync(bad, `# B\n\n## Phase 1: X\n\n- [x] a\n`);
 			writeFileSync(good, `# G\n\n## Phase 1: Y\n\n- [x] b\n`);
 
 			chmodSync(bad, 0o000);
-
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			const { lines, restore } = captureStderrWrite();
 			try {
-				await planList({});
+				const { plans, warnings } = await listPlans(ctx);
+				expect(warnings).toContain("could not read");
+				expect(warnings).toContain("unreadable.md");
+
+				const byPath = Object.fromEntries(plans.map((p) => [p.plan_path, p]));
+				expect(byPath["unreadable.md"]?.completion_pct).toBe(0);
+				expect(byPath["unreadable.md"]?.title).toBe("");
+				expect(byPath["good.md"]?.completion_pct).toBe(100);
 			} finally {
-				restore();
-				logSpy.mockRestore();
 				try {
 					chmodSync(bad, 0o644);
 				} catch {
 					/* ignore */
 				}
 			}
-
-			const stderr = lines.join("");
-			expect(stderr).toContain("could not read");
-			expect(stderr).toContain("unreadable.md");
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				data: {
-					plans: { plan_path: string; completion_pct: number; title: string }[];
-				};
-			};
-			const byPath = Object.fromEntries(
-				env.data.plans.map((p) => [p.plan_path, p]),
-			);
-			expect(byPath["unreadable.md"]?.completion_pct).toBe(0);
-			expect(byPath["unreadable.md"]?.title).toBe("");
-			expect(byPath["good.md"]?.completion_pct).toBe(100);
 		});
 	});
 
 	test("non-plan markdown emits stderr warning only; JSON envelope has no warning text", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(plansDir, { recursive: true });
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
 			writeFileSync(
-				join(plansDir, "notes.md"),
+				join(ctx.plansDir, "notes.md"),
 				"# Notes\n\nNot a plan body.\n",
 			);
 			writeFileSync(
-				join(plansDir, "real.md"),
+				join(ctx.plansDir, "real.md"),
 				`# Real\n\n## Phase 1: One\n\n- [ ] t\n`,
 			);
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			const { lines, restore } = captureStderrWrite();
-			try {
-				await planList({});
-			} finally {
-				restore();
-				logSpy.mockRestore();
-			}
-
-			const stderr = lines.join("");
-			expect(stderr).toContain("notes.md");
-			expect(stderr).toContain("no implementation-plan phases");
-
-			const raw = logs[0] ?? "";
-			expect(raw.toLowerCase()).not.toContain("warning");
-			const env = JSON.parse(raw) as { ok: boolean; data: unknown };
-			expect(env.ok).toBe(true);
-			expect(JSON.stringify(env.data).toLowerCase()).not.toContain("warning");
+			const { plans, warnings } = await listPlans(ctx);
+			expect(warnings).toContain("notes.md");
+			expect(warnings).toContain("no implementation-plan phases");
+			expect(JSON.stringify(plans).toLowerCase()).not.toContain("warning");
 		});
 	});
 
 	test("associates runs with plans by canonical plan_path", async () => {
-		await withProject(async ({ plansDir }) => {
-			mkdirSync(plansDir, { recursive: true });
-			const path = join(plansDir, "tracked.md");
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
+			const path = join(ctx.plansDir, "tracked.md");
 			writeFileSync(path, `# T\n\n## Phase 1: A\n\n- [ ] x\n`);
-			const db = openProjectDb(process.cwd());
 			const canon = canonicalizePlanPath(path);
-			insertRun(db, "run_unitactive01", canon, "active");
+			insertRun(ctx.db, "run_unitactive01", canon, "active");
 
-			const logs: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation(
-				(msg?: unknown) => {
-					logs.push(String(msg));
-				},
-			);
-			try {
-				await planList({});
-			} finally {
-				logSpy.mockRestore();
-			}
-
-			const env = JSON.parse(logs[0] ?? "{}") as {
-				data: {
-					plans: {
-						plan_path: string;
-						runs_total: number;
-						active_run: string | null;
-					}[];
-				};
-			};
-			const row = env.data.plans.find((p) => p.plan_path === "tracked.md");
+			const { plans } = await listPlans(ctx);
+			const row = plans.find((p) => p.plan_path === "tracked.md");
 			expect(row?.runs_total).toBe(1);
 			expect(row?.active_run).toBe("run_unitactive01");
 		});
+	});
+
+	test("isolated projects list concurrently without sharing cwd or getDb", async () => {
+		const listing = async (name: string) =>
+			withProject(async (ctx) => {
+				mkdirSync(ctx.plansDir, { recursive: true });
+				writeFileSync(
+					join(ctx.plansDir, `${name}.md`),
+					`# ${name}\n\n## Phase 1: A\n\n- [ ] x\n`,
+				);
+				const { plans } = await listPlans(ctx);
+				expect(plans.map((p) => p.plan_path)).toEqual([`${name}.md`]);
+				expect(plans[0]?.title).toBe(name);
+			});
+
+		await Promise.all([listing("alpha"), listing("beta")]);
 	});
 });

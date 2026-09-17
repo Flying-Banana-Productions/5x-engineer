@@ -9,15 +9,27 @@ import {
 	branchNameFromPlan,
 	checkGitSafety,
 	commitFiles,
+	computeDiffSummary,
+	computePatchId,
 	createBranch,
 	createWorktree,
+	fetchFiveXBranches,
 	getBranchCommits,
 	getCurrentBranch,
 	getLatestCommit,
+	gitLogLastTouching,
+	gitLogNameOnly,
+	gitLsTreePaths,
+	gitRevListParents,
+	gitShowFile,
 	hasUncommittedChanges,
+	isAncestor,
 	isBranchMerged,
 	isBranchRelevant,
 	listChangedFiles,
+	listFiveXRefs,
+	listRefTips,
+	listRemotes,
 	listWorktrees,
 	removeWorktree,
 	runWorktreeSetupCommand,
@@ -36,10 +48,12 @@ const fail = (stderr: string, exitCode = 1) => ({
 });
 
 let execGitSpy: Mock<typeof subprocess.execGit>;
+let execGitStdinSpy: Mock<typeof subprocess.execGitStdin>;
 let execShellSpy: Mock<typeof subprocess.execShell>;
 
 afterEach(() => {
 	execGitSpy?.mockRestore();
+	execGitStdinSpy?.mockRestore();
 	execShellSpy?.mockRestore();
 });
 
@@ -81,7 +95,7 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain"), ok("")],
+			[cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"), ok("")],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(true);
@@ -95,7 +109,10 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain"), ok(" M README.md")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok(" M README.md\0"),
+			],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(false);
@@ -106,7 +123,10 @@ describe("checkGitSafety", () => {
 		mockGit(
 			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
 			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
-			[cmd("status", "--porcelain"), ok("?? untracked.txt")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? untracked.txt\0"),
+			],
 		);
 		const rpt = await checkGitSafety("/fake/repo");
 		expect(rpt.safe).toBe(false);
@@ -121,6 +141,71 @@ describe("checkGitSafety", () => {
 		await expect(checkGitSafety("/not/a/repo")).rejects.toThrow(
 			"Not a git repository",
 		);
+	});
+
+	test("only records dirty reports safe with exemptRoots", async () => {
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? docs/development/runs/p/r/steps.jsonl\0"),
+			],
+		);
+		const rpt = await checkGitSafety("/fake/repo", {
+			exemptRoots: ["/fake/repo/docs/development/runs"],
+		});
+		expect(rpt.safe).toBe(true);
+		expect(rpt.untrackedFiles).toEqual([]);
+	});
+
+	test("trims trailing newline from git toplevel before exempt matching", async () => {
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo\n")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main\n")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? docs/development/runs/p/r/steps.jsonl\0"),
+			],
+		);
+		const rpt = await checkGitSafety("/fake/repo", {
+			exemptRoots: ["/fake/repo/docs/development/runs"],
+		});
+		expect(rpt.safe).toBe(true);
+		expect(rpt.isDirty).toBe(false);
+		expect(rpt.repoRoot).toBe("/fake/repo");
+		expect(rpt.untrackedFiles).toEqual([]);
+	});
+
+	test("records plus README.md dirty reports README only", async () => {
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("?? docs/development/runs/p/r/steps.jsonl\0?? README.md\0"),
+			],
+		);
+		const rpt = await checkGitSafety("/fake/repo", {
+			exemptRoots: ["/fake/repo/docs/development/runs"],
+		});
+		expect(rpt.safe).toBe(false);
+		expect(rpt.untrackedFiles).toEqual(["README.md"]);
+	});
+
+	test("rename out of records root is dirty", async () => {
+		mockGit(
+			[cmd("rev-parse", "--show-toplevel"), ok("/fake/repo")],
+			[cmd("rev-parse", "--abbrev-ref", "HEAD"), ok("main")],
+			[
+				cmd("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+				ok("R100\0docs/development/runs/old.jsonl\0README.md\0"),
+			],
+		);
+		const rpt = await checkGitSafety("/fake/repo", {
+			exemptRoots: ["/fake/repo/docs/development/runs"],
+		});
+		expect(rpt.safe).toBe(false);
 	});
 });
 
@@ -224,18 +309,18 @@ describe("listChangedFiles", () => {
 });
 
 describe("commitFiles", () => {
-	test("stages files, commits, returns hash", async () => {
+	test("stages files, commits only those paths, returns hash", async () => {
 		const hash = "a1b2c3d4e5f6".repeat(4).slice(0, 40);
 		mockGit(
 			[cmd("add", "--"), ok("")],
-			[cmd("commit", "-m"), ok("")],
+			[cmd("commit", "--only", "-m"), ok("")],
 			[cmd("rev-parse", "HEAD"), ok(hash)],
 		);
 		const result = await commitFiles("/r", ["file.txt"], "test commit");
 		expect(result.commit).toBe(hash);
 		expect(execGitSpy).toHaveBeenCalledWith(["add", "--", "file.txt"], "/r");
 		expect(execGitSpy).toHaveBeenCalledWith(
-			["commit", "-m", "test commit"],
+			["commit", "--only", "-m", "test commit", "--", "file.txt"],
 			"/r",
 		);
 	});
@@ -256,7 +341,7 @@ describe("commitFiles", () => {
 	test("throws on commit failure", async () => {
 		mockGit(
 			[cmd("add", "--"), ok("")],
-			[cmd("commit", "-m"), fail("nothing to commit")],
+			[cmd("commit", "--only", "-m"), fail("nothing to commit")],
 		);
 		await expect(commitFiles("/r", ["f.txt"], "msg")).rejects.toThrow(
 			"Failed to create commit",
@@ -606,5 +691,176 @@ describe("isBranchMerged", () => {
 	test("handles git failure gracefully", async () => {
 		mockGit([cmd("branch", "--merged", "HEAD"), fail("error")]);
 		expect(await isBranchMerged("any", "/r")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Record helpers (patch-id, numstat, show, log)
+// ---------------------------------------------------------------------------
+
+describe("computePatchId", () => {
+	test("returns the first field of git patch-id --stable", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), ok("diff --git a/f b/f")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () =>
+				ok("0123456789abcdef 0000000000000000000000000000000000000000"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBe(
+			"0123456789abcdef",
+		);
+		expect(execGitStdinSpy).toHaveBeenCalledWith(
+			["patch-id", "--stable"],
+			"/repo",
+			"diff --git a/f b/f",
+		);
+	});
+
+	test("returns null when diff is non-zero", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), fail("bad sha")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () => fail("not called"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBeNull();
+		expect(execGitStdinSpy).not.toHaveBeenCalled();
+	});
+
+	test("returns null when patch-id is non-zero", async () => {
+		mockGit([cmd("diff", "aaa", "bbb"), ok("diff")]);
+		execGitStdinSpy = spyOn(subprocess, "execGitStdin").mockImplementation(
+			async () => fail("patch-id failed"),
+		);
+		expect(await computePatchId("/repo", "aaa", "bbb")).toBeNull();
+	});
+});
+
+describe("computeDiffSummary", () => {
+	test("parses numstat including binary dashes", async () => {
+		mockGit([
+			cmd("diff", "--numstat", "aaa", "bbb"),
+			ok("3\t2\tsrc/foo.ts\n-\t-\timage.png\n1\t0\tbar.ts"),
+		]);
+		expect(await computeDiffSummary("/repo", "aaa", "bbb")).toEqual({
+			files_changed: 3,
+			insertions: 4,
+			deletions: 2,
+		});
+	});
+
+	test("returns null on git failure", async () => {
+		mockGit([cmd("diff", "--numstat", "aaa", "bbb"), fail("missing")]);
+		expect(await computeDiffSummary("/repo", "aaa", "bbb")).toBeNull();
+	});
+});
+
+describe("gitShowFile / gitLogLastTouching", () => {
+	test("gitShowFile returns stdout when present", async () => {
+		mockGit([cmd("show", "abc:docs/f.md"), ok("# hi")]);
+		expect(await gitShowFile("/repo", "abc", "docs/f.md")).toBe("# hi");
+	});
+
+	test("gitShowFile returns null if missing", async () => {
+		mockGit([cmd("show", "abc:missing.md"), fail("exists not")]);
+		expect(await gitShowFile("/repo", "abc", "missing.md")).toBeNull();
+	});
+
+	test("gitLogLastTouching returns the hash", async () => {
+		mockGit([
+			(args) => args[0] === "log" && args.includes("main"),
+			ok("def456"),
+		]);
+		expect(await gitLogLastTouching("/repo", "main", ["docs/f.md"])).toBe(
+			"def456",
+		);
+	});
+
+	test("gitLogLastTouching returns null when empty", async () => {
+		mockGit([(args) => args[0] === "log", ok("")]);
+		expect(await gitLogLastTouching("/repo", "main", ["docs/f.md"])).toBeNull();
+	});
+});
+
+describe("listFiveXRefs / isAncestor / fetch / remotes", () => {
+	test("listFiveXRefs splits local and remote 5x refs", async () => {
+		mockGit([
+			cmd("for-each-ref"),
+			ok("refs/heads/5x/foo\nrefs/remotes/origin/5x/foo\n"),
+		]);
+		expect(await listFiveXRefs("/repo")).toEqual({
+			local: ["5x/foo"],
+			remote: [{ remote: "origin", ref: "origin/5x/foo" }],
+		});
+	});
+
+	test("listFiveXRefs is empty when no 5x refs exist", async () => {
+		mockGit([cmd("for-each-ref"), ok("")]);
+		expect(await listFiveXRefs("/repo")).toEqual({ local: [], remote: [] });
+	});
+
+	test("isAncestor is true on exit 0", async () => {
+		mockGit([cmd("merge-base", "--is-ancestor", "aaa", "bbb"), ok("")]);
+		expect(await isAncestor("/repo", "aaa", "bbb")).toBe(true);
+	});
+
+	test("isAncestor is false on exit 1", async () => {
+		mockGit([cmd("merge-base", "--is-ancestor", "aaa", "bbb"), fail("not")]);
+		expect(await isAncestor("/repo", "aaa", "bbb")).toBe(false);
+	});
+
+	test("fetchFiveXBranches uses a 5x/* refspec", async () => {
+		const spy = mockGit([
+			(args) =>
+				args[0] === "fetch" &&
+				args[1] === "origin" &&
+				args[2] === "+refs/heads/5x/*:refs/remotes/origin/5x/*",
+			ok(""),
+		]);
+		await fetchFiveXBranches("/repo", "origin");
+		expect(spy).toHaveBeenCalled();
+	});
+
+	test("listRemotes splits git remote output", async () => {
+		mockGit([cmd("remote"), ok("origin\nupstream")]);
+		expect(await listRemotes("/repo")).toEqual(["origin", "upstream"]);
+	});
+
+	test("listRefTips parses sha, refname, and committer unix", async () => {
+		mockGit([
+			cmd("for-each-ref"),
+			ok(
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/5x/foo\t1700000000\n",
+			),
+		]);
+		expect(await listRefTips("/repo", ["refs/heads/5x/*"])).toEqual([
+			{
+				sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				refname: "refs/heads/5x/foo",
+				committerUnix: 1700000000,
+			},
+		]);
+	});
+
+	test("gitRevListParents / gitLogNameOnly / gitLsTreePaths return stdout", async () => {
+		mockGit(
+			[cmd("rev-list", "--parents", "aaa"), ok("aaa bbb")],
+			[
+				(args) => args[0] === "log" && args.includes("--name-only"),
+				ok("aaa\ndocs/p.md\n"),
+			],
+			[cmd("ls-tree", "-r", "--name-only", "aaa"), ok("docs/p.md\n")],
+		);
+		expect(await gitRevListParents("/repo", ["aaa"])).toBe("aaa bbb");
+		expect(await gitLogNameOnly("/repo", ["aaa"], ["docs"])).toBe(
+			"aaa\ndocs/p.md\n",
+		);
+		expect(await gitLsTreePaths("/repo", "aaa", "docs")).toEqual(["docs/p.md"]);
+	});
+
+	test("gitLogNameOnly distinguishes an empty history from a failed query", async () => {
+		mockGit(
+			[(args) => args.includes("missing"), fail("bad revision")],
+			[(args) => args[0] === "log", ok("")],
+		);
+		expect(await gitLogNameOnly("/repo", ["aaa"], ["docs"])).toBe("");
+		expect(await gitLogNameOnly("/repo", ["missing"], ["docs"])).toBeNull();
 	});
 });

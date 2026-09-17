@@ -5,7 +5,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -237,6 +243,60 @@ describe("5x phase finish (integration)", () => {
 				expect((json.error as Record<string, unknown>).code).toBe(
 					"PHASE_CHECKLIST_INCOMPLETE",
 				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"phase finish appends a steps.jsonl line with origin",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { runId } = await setupProject(dir);
+				const input = join(dir, "author.json");
+				writeFileSync(
+					input,
+					JSON.stringify({ result: "complete", commit: "abc123def" }),
+				);
+				const result = await run5x(dir, [
+					"phase",
+					"finish",
+					"--phase",
+					"1",
+					"--iteration",
+					"1",
+					"--step",
+					"author:impl",
+					"--run",
+					runId,
+					"--input",
+					input,
+				]);
+				expect(result.exitCode).toBe(0);
+				const stepsPath = join(
+					dir,
+					"docs",
+					"development",
+					"runs",
+					"test-plan",
+					runId,
+					"steps.jsonl",
+				);
+				expect(existsSync(stepsPath)).toBe(true);
+				const lines = readFileSync(stepsPath, "utf-8")
+					.trim()
+					.split("\n")
+					.filter(Boolean);
+				expect(lines.length).toBeGreaterThan(0);
+				const parsed = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+					origin?: { recorder?: { installation_id?: string } };
+					provenance?: string;
+				};
+				expect(parsed.provenance).toBe("recorded");
+				expect(parsed.origin?.recorder?.installation_id).toBeTruthy();
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}
