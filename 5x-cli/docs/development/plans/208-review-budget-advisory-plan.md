@@ -648,7 +648,7 @@ export function rawDeliveryBudgetSection(markdown: string): string | null;
 
 ---
 
-## Phase 3: `reviewBudget` configuration
+## Phase 3: `reviewBudget` configuration - COMPLETE
 
 **Completion gate:** `FiveXConfigSchema.parse({})` yields `reviewBudget.mode === "advisory"` and the `206` §7 defaults. Layered overlay can set `mode = "off"`. Invalid mode/percent fails Zod parse. Registry lists dotted keys. `KNOWN_ROOT_CONFIG_KEYS` includes `reviewBudget`.
 
@@ -710,10 +710,10 @@ mode = "advisory"
 
 Layering: existing `deepMerge` (`src/config.ts:695`) already merges nested tables. Personal/local overlays may tighten percents. No new merge rules.
 
-- [ ] Schema + defaults + `KNOWN_ROOT_CONFIG_KEYS`.
-- [ ] `test/unit/config.test.ts` / `config-v1.test.ts`: parse `{}`, overlay `mode = "off"`, reject `mode = "strict"`, reject negative percent.
-- [ ] `test/unit/config-registry.test.ts`: `reviewBudget.mode` default `"advisory"`; `allowedValues` includes `enforced`.
-- [ ] Update any snapshot of `5x config show` keys if tests enumerate them.
+- [x] Schema + defaults + `KNOWN_ROOT_CONFIG_KEYS`.
+- [x] `test/unit/config.test.ts` / `config-v1.test.ts`: parse `{}`, overlay `mode = "off"`, reject `mode = "strict"`, reject negative percent.
+- [x] `test/unit/config-registry.test.ts`: `reviewBudget.mode` default `"advisory"`; `allowedValues` includes `enforced`.
+- [x] Update any snapshot of `5x config show` keys if tests enumerate them.
 
 ---
 

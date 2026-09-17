@@ -73,6 +73,21 @@ review = ".5x/templates/review-template.md"
 [db]
 path = ".5x/5x.db"
 
+# Delivery-budget forecasts during plan review (v2 area 206).
+# mode: off | advisory | enforced (enforced is reserved; behaves as advisory)
+[reviewBudget]
+mode = "advisory"
+# growthPercent = 25
+# minimumGrowthPoints = 2
+# debtTradeoffRatio = 1.0
+# maxDebtCreditPercent = 25
+# absoluteGrowthPercent = 50
+# baselineDisagreementPercent = 25
+# minimumBaselineDisagreementPoints = 2
+# maxPositiveArchitecturePercent = 25
+# minimumPositiveArchitecturePoints = 2
+# singleArchitectureReviewPoints = 5
+
 # Git-tracked run records. `actor` is optional and appears in git history when set.
 # Prefer FIVEX_RECORDS_ACTOR or user-scope identity.json over a committed actor.
 # [records]

@@ -94,6 +94,51 @@ describe("config v1 extensions", () => {
 		);
 	});
 
+	test("reviewBudget uses advisory defaults", () => {
+		expect(FiveXConfigSchema.parse({}).reviewBudget).toEqual({
+			mode: "advisory",
+			growthPercent: 25,
+			minimumGrowthPoints: 2,
+			debtTradeoffRatio: 1,
+			maxDebtCreditPercent: 25,
+			absoluteGrowthPercent: 50,
+			baselineDisagreementPercent: 25,
+			minimumBaselineDisagreementPoints: 2,
+			maxPositiveArchitecturePercent: 25,
+			minimumPositiveArchitecturePoints: 2,
+			singleArchitectureReviewPoints: 5,
+		});
+	});
+
+	test("reviewBudget rejects unsupported modes and negative percentages", () => {
+		expect(
+			FiveXConfigSchema.safeParse({ reviewBudget: { mode: "strict" } }).success,
+		).toBe(false);
+		expect(
+			FiveXConfigSchema.safeParse({
+				reviewBudget: { growthPercent: -1 },
+			}).success,
+		).toBe(false);
+	});
+
+	test("reviewBudget is a known root table with validated nested keys", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[reviewBudget]\nmode = "off"\ngrowthPercent = 10\n`,
+			);
+			const { config } = await loadConfig(tmp, undefined, (...args) => {
+				warnings.push(args.map(String).join(" "));
+			});
+			expect(config.reviewBudget.mode).toBe("off");
+			expect(warnings.join("\n")).not.toContain("reviewBudget");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	// -----------------------------------------------------------------------
 	// Backward compatibility — deprecated keys still parse
 	// -----------------------------------------------------------------------
