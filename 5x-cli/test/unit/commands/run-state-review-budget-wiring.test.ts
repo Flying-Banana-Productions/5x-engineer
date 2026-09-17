@@ -125,6 +125,12 @@ async function captureState(
 		await runV1State({
 			...selector,
 			warn,
+			progressResolver: async () => ({
+				source: { kind: "worktree", label: "worktree" },
+				markdown: planText,
+				planPath: ctx.planPath,
+				commit: null,
+			}),
 			startDir: ctx.root,
 			dbContext: {
 				projectRoot: ctx.root,

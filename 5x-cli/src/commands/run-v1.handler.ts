@@ -195,6 +195,8 @@ export interface RunStateParams {
 	dbContext?: DbContext;
 	/** Warning sink; defaults to stderr. */
 	warn?: (message: string) => void;
+	/** Unit-test seam; production uses the git-backed progress resolver. */
+	progressResolver?: typeof resolvePlanProgress;
 }
 
 export interface RunRecordParams {
@@ -1928,7 +1930,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			relativePathUnder(planPath, projectRoot)?.replace(/\\/g, "/") ??
 			params.plan.replace(/\\/g, "/");
 		const mapped = planPath ? getPlan(db, planPath) : null;
-		const resolved = await resolvePlanProgress({
+		const resolved = await (params.progressResolver ?? resolvePlanProgress)({
 			workdir: projectRoot,
 			planPath,
 			planSlug: planSlugFromPath(rel),
