@@ -343,6 +343,8 @@ export interface ReviewBudgetConfig {
 	singleArchitectureReviewPoints: number;
 }
 
+export type ReviewBudgetThresholds = Omit<ReviewBudgetConfig, "mode">;
+
 export const DEFAULT_REVIEW_BUDGET_CONFIG: Omit<ReviewBudgetConfig, "mode"> = {
 	growthPercent: 25,
 	minimumGrowthPoints: 2,
@@ -426,7 +428,7 @@ export interface DerivedBudgetResult {
 	requiresHuman: boolean;
 	positiveArchitectureLimit: number;
 	baselineDisagreementThreshold: number;
-	thresholds: ReviewBudgetConfig;
+	thresholds: ReviewBudgetThresholds;
 }
 ```
 

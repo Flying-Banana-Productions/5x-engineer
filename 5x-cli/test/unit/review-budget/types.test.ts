@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
 	type BaselineAssessment,
+	DEFAULT_REVIEW_BUDGET_CONFIG,
 	isArchitectureDelta,
 	isCompleteDebtClaimEvidence,
 	isEffortPoints,
@@ -23,6 +24,10 @@ test("recognizes documented effort and architecture values", () => {
 	expect(isArchitectureDelta(4)).toBe(false);
 });
 
+test("freezes the shared default thresholds", () => {
+	expect(Object.isFrozen(DEFAULT_REVIEW_BUDGET_CONFIG)).toBe(true);
+});
+
 test("requires complete debt-claim evidence", () => {
 	const complete = {
 		debtClaimId: "DC0",
@@ -34,6 +39,15 @@ test("requires complete debt-claim evidence", () => {
 		after: "one path",
 	};
 	expect(isCompleteDebtClaimEvidence(complete)).toBe(true);
+	expect(
+		isCompleteDebtClaimEvidence({
+			...complete,
+			debtClaimId: "review-credit-1",
+		}),
+	).toBe(true);
+	expect(isCompleteDebtClaimEvidence({ ...complete, debtClaimId: " " })).toBe(
+		false,
+	);
 	expect(isCompleteDebtClaimEvidence({ ...complete, before: " " })).toBe(false);
 	expect(isCompleteDebtClaimEvidence({ ...complete, targetPhase: "" })).toBe(
 		false,

@@ -155,6 +155,7 @@ describe("eligible N", () => {
 	});
 
 	test("provisionally includes complete intrinsic reviewer claims", () => {
+		const reviewerEvidence = { ...evidence, debtClaimId: "review-credit-1" };
 		expect(
 			eligibleN(
 				[],
@@ -162,7 +163,7 @@ describe("eligible N", () => {
 					finding({
 						architectureDelta: -2,
 						coupling: "intrinsic",
-						creditClaim: evidence,
+						creditClaim: reviewerEvidence,
 					}),
 				],
 				[],
@@ -201,4 +202,107 @@ test("derives bands, thresholds, alerts, and semantic escalation", () => {
 		"positive_architecture_exceeded",
 	]);
 	expect(result.budgetAlerts).not.toContain("credit_unrealized");
+	expect(result.thresholds).toBe(config);
+	expect(result.thresholds).not.toHaveProperty("mode");
+});
+
+describe("budget bands and human flags", () => {
+	const derive = (
+		overrides: Partial<Parameters<typeof deriveBudget>[0]> = {},
+	) =>
+		deriveBudget({
+			B0: 4,
+			B: 4,
+			I: null,
+			workItems: [workItem()],
+			findings: [],
+			assessments: [],
+			config,
+			semanticHumanRequired: false,
+			...overrides,
+		});
+
+	test("reports within-standard with no human flag and a null direction", () => {
+		expect(derive()).toMatchObject({
+			budgetBand: "within_standard",
+			requiresHuman: false,
+			baselineDirection: null,
+		});
+	});
+
+	test("reports within-debt-allowance for eligible intrinsic debt", () => {
+		const debtClaim = {
+			debtClaimId: "DC1",
+			coupling: "intrinsic" as const,
+			targetPhase: "phase-2",
+			minimalAlternativeEffortDelta: 2,
+			minimalAlternativeArchitectureDelta: 0 as const,
+			before: "many paths",
+			after: "one path",
+		};
+		const result = derive({
+			workItems: [workItem({ effort: 5, architectureDelta: -3, debtClaim })],
+			findings: [finding({ effortDelta: 2 })],
+			assessments: [
+				{
+					creditClaimId: "DC1",
+					eligibility: "eligible",
+					coupling: "intrinsic",
+				},
+			],
+		});
+
+		expect(result).toMatchObject({
+			budgetBand: "within_debt_allowance",
+			D: 1,
+			E: 7,
+			requiresHuman: false,
+		});
+	});
+
+	test("reports over-absolute and requires a human", () => {
+		expect(
+			derive({
+				workItems: [workItem({ effort: 8 })],
+				findings: [finding({ effortDelta: 1 })],
+			}),
+		).toMatchObject({ budgetBand: "over_absolute", requiresHuman: true });
+	});
+
+	test("honors the semantic human-required flag by itself", () => {
+		expect(derive({ semanticHumanRequired: true })).toMatchObject({
+			budgetBand: "within_standard",
+			budgetAlerts: [],
+			requiresHuman: true,
+		});
+	});
+
+	test("alerts when P exactly equals the positive architecture limit", () => {
+		expect(
+			derive({ workItems: [workItem({ architectureDelta: 2 })] }),
+		).toMatchObject({
+			P: 2,
+			positiveArchitectureLimit: 2,
+			budgetAlerts: ["positive_architecture_exceeded"],
+			requiresHuman: true,
+		});
+	});
+
+	test("excludes polish findings from P and architecture alerts", () => {
+		expect(
+			derive({
+				findings: [
+					finding({
+						effortDelta: 0,
+						architectureDelta: 5,
+						scopeClass: "polish",
+					}),
+				],
+			}),
+		).toMatchObject({
+			P: 0,
+			budgetAlerts: [],
+			requiresHuman: false,
+		});
+	});
 });

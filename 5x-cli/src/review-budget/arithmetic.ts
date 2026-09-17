@@ -3,15 +3,12 @@ import {
 	type BudgetAlert,
 	type BudgetBand,
 	type CreditAssessmentInput,
-	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type DerivedBudgetResult,
 	type FindingDelta,
 	isCompleteDebtClaimEvidence,
 	type ParsedWorkItem,
-	type ReviewBudgetConfig,
+	type ReviewBudgetThresholds,
 } from "./types.js";
-
-type BudgetThresholds = Omit<ReviewBudgetConfig, "mode">;
 
 function assertNonNegative(value: number, name: string): void {
 	if (!Number.isFinite(value) || value < 0) {
@@ -25,7 +22,7 @@ export function sumEffort(items: readonly { effort: number }[]): number {
 
 export function computeCeilings(
 	B: number,
-	config: BudgetThresholds,
+	config: ReviewBudgetThresholds,
 ): {
 	S: number;
 	A: number;
@@ -50,7 +47,7 @@ export function computeCeilings(
 export function computeProvisionalD(
 	B: number,
 	N: number,
-	config: BudgetThresholds,
+	config: ReviewBudgetThresholds,
 ): number {
 	assertNonNegative(B, "B");
 	assertNonNegative(N, "N");
@@ -79,21 +76,15 @@ export function computeBaselineDirection(
 
 export function computePendingR(
 	findings: readonly FindingDelta[],
-	incorporatedIds: ReadonlySet<string>,
+	_incorporatedIds: ReadonlySet<string>,
 ): number {
-	let pending = 0;
-	const stillListedIds = new Set(findings.map((finding) => finding.id));
-	for (const finding of findings) {
-		if (finding.scopeClass === "polish") continue;
-
-		if (incorporatedIds.has(finding.id)) {
-			// An incorporated finding re-enters R when the current verdict still lists it.
-			if (stillListedIds.has(finding.id)) pending += finding.effortDelta;
-			continue;
-		}
-		pending += finding.effortDelta;
-	}
-	return pending;
+	// Every input finding is still listed in the current verdict, so incorporated
+	// IDs re-enter R. Addresses only matter when a finding is no longer listed.
+	return findings.reduce(
+		(total, finding) =>
+			total + (finding.scopeClass === "polish" ? 0 : finding.effortDelta),
+		0,
+	);
 }
 
 export function computeGrossP(
@@ -154,7 +145,7 @@ export function deriveBudget(input: {
 	workItems: readonly ParsedWorkItem[];
 	findings: readonly FindingDelta[];
 	assessments: readonly CreditAssessmentInput[];
-	config: BudgetThresholds;
+	config: ReviewBudgetThresholds;
 	semanticHumanRequired: boolean;
 }): DerivedBudgetResult {
 	assertNonNegative(input.B0, "B0");
@@ -174,7 +165,10 @@ export function deriveBudget(input: {
 	const N = eligibleN(input.workItems, input.findings, input.assessments);
 	const D = computeProvisionalD(input.B, N, input.config);
 	const E = computeEffectiveCeiling(S, D, A);
-	const P = computeGrossP(input.workItems, input.findings);
+	const pendingFindings = input.findings.filter(
+		(finding) => finding.scopeClass !== "polish",
+	);
+	const P = computeGrossP(input.workItems, pendingFindings);
 	const baselineDisagreementThreshold = Math.max(
 		input.config.minimumBaselineDisagreementPoints,
 		Math.ceil((input.B0 * input.config.baselineDisagreementPercent) / 100),
@@ -200,7 +194,7 @@ export function deriveBudget(input: {
 	}
 	const singleArchitectureExceeded = [
 		...input.workItems,
-		...input.findings,
+		...pendingFindings,
 	].some(
 		(item) =>
 			item.architectureDelta >= input.config.singleArchitectureReviewPoints,
@@ -234,10 +228,6 @@ export function deriveBudget(input: {
 		requiresHuman,
 		positiveArchitectureLimit,
 		baselineDisagreementThreshold,
-		thresholds: {
-			mode: "advisory",
-			...DEFAULT_REVIEW_BUDGET_CONFIG,
-			...input.config,
-		},
+		thresholds: input.config,
 	};
 }

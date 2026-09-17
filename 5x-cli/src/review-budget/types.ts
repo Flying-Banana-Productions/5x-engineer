@@ -50,18 +50,21 @@ export interface ReviewBudgetConfig {
 	singleArchitectureReviewPoints: number;
 }
 
-export const DEFAULT_REVIEW_BUDGET_CONFIG: Omit<ReviewBudgetConfig, "mode"> = {
-	growthPercent: 25,
-	minimumGrowthPoints: 2,
-	debtTradeoffRatio: 1,
-	maxDebtCreditPercent: 25,
-	absoluteGrowthPercent: 50,
-	baselineDisagreementPercent: 25,
-	minimumBaselineDisagreementPoints: 2,
-	maxPositiveArchitecturePercent: 25,
-	minimumPositiveArchitecturePoints: 2,
-	singleArchitectureReviewPoints: 5,
-};
+export type ReviewBudgetThresholds = Omit<ReviewBudgetConfig, "mode">;
+
+export const DEFAULT_REVIEW_BUDGET_CONFIG: Readonly<ReviewBudgetThresholds> =
+	Object.freeze({
+		growthPercent: 25,
+		minimumGrowthPoints: 2,
+		debtTradeoffRatio: 1,
+		maxDebtCreditPercent: 25,
+		absoluteGrowthPercent: 50,
+		baselineDisagreementPercent: 25,
+		minimumBaselineDisagreementPoints: 2,
+		maxPositiveArchitecturePercent: 25,
+		minimumPositiveArchitecturePoints: 2,
+		singleArchitectureReviewPoints: 5,
+	});
 
 export interface DebtClaimEvidence {
 	debtClaimId: string;
@@ -133,7 +136,7 @@ export interface DerivedBudgetResult {
 	requiresHuman: boolean;
 	positiveArchitectureLimit: number;
 	baselineDisagreementThreshold: number;
-	thresholds: ReviewBudgetConfig;
+	thresholds: ReviewBudgetThresholds;
 }
 
 export function isEffortPoints(value: unknown): value is EffortPoints {
@@ -159,7 +162,7 @@ export function isCompleteDebtClaimEvidence(
 	const claim = value as Record<string, unknown>;
 	return (
 		typeof claim.debtClaimId === "string" &&
-		/^DC\d+$/.test(claim.debtClaimId) &&
+		claim.debtClaimId.trim().length > 0 &&
 		(claim.coupling === "intrinsic" ||
 			claim.coupling === "adjacent" ||
 			claim.coupling === "unrelated") &&
