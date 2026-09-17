@@ -338,6 +338,47 @@ Some description here.
 		expect(plan.status).toBe("");
 		expect(plan.phases.length).toBe(1);
 	});
+
+	test("extracts every phase when Delivery Budget is before Phase 1", () => {
+		const md = `# Plan
+
+## Delivery Budget
+
+| ID | Work item |
+|---|---|
+| W1 | Build |
+
+## Phase 1: Setup
+- [ ] Set up
+
+## Phase 2: Build
+- [ ] Build
+`;
+		const plan = parsePlan(md);
+		expect(plan.phases.map((phase) => phase.number)).toEqual(["1", "2"]);
+		expect(plan.phases.map((phase) => phase.items.length)).toEqual([1, 1]);
+	});
+
+	test("preserves prior phase extraction when Delivery Budget is after the last phase", () => {
+		const md = `# Plan
+
+## Phase 1: Setup
+- [x] Set up
+
+## Phase 2: Build
+- [ ] Build
+
+## Delivery Budget
+
+| ID | Work item |
+|---|---|
+| W1 | Build |
+`;
+		const plan = parsePlan(md);
+		expect(plan.phases.map((phase) => phase.number)).toEqual(["1", "2"]);
+		expect(plan.phases.map((phase) => phase.items.length)).toEqual([1, 1]);
+		expect(plan.currentPhase?.number).toBe("2");
+	});
 });
 
 // --- Smoke test against real plan (loose assertions only) ---

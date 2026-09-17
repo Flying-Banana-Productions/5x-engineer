@@ -537,7 +537,7 @@ export function deriveBudget(input: {
 
 ---
 
-## Phase 2: Delivery Budget parser
+## Phase 2: Delivery Budget parser - COMPLETE
 
 **Completion gate:** Fixture tests cover happy path (including complete debt-claim evidence), every diagnostic code, and `parsePlan` phase extraction unchanged when the budget section sits before Phase 1 or after the last phase.
 
@@ -641,9 +641,9 @@ export function rawDeliveryBudgetSection(markdown: string): string | null;
 
 `rawDeliveryBudgetSection` returns the exact substring from `## Delivery Budget` through the last snapshot bullet (exclusive of the next `##`), **including** `### Debt Claims` when present. Slice 08 will byte-compare this for `text_only`; this slice only needs it for tests and for storing `original_section` on the baseline if cheap. Store the parsed ledger JSON (**including `debtClaim` evidence on each work item**) as source of truth; optionally also store `original_section` text on capture for audit.
 
-- [ ] Implement parser + helpers.
-- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5` **and** complete `### Debt Claims` / `#### DC0` evidence); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; negative arch with table `DCn` but **no** Debt Claims subsection; negative arch with empty `Before`; invalid `targetPhase` (`review`); orphan `#### DC9`; duplicate `DC0`; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
-- [ ] Round-trip: `parseDeliveryBudget(canonical).value.workItems[1].debtClaim` equals `{ debtClaimId: "DC0", coupling: "intrinsic", targetPhase: "phase-2", minimalAlternativeEffortDelta: 2, minimalAlternativeArchitectureDelta: 0, before: "five independent proposal construction paths", after: "one invariant-enforcing proposal constructor" }`.
+- [x] Implement parser + helpers.
+- [x] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5` **and** complete `### Debt Claims` / `#### DC0` evidence); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; negative arch with table `DCn` but **no** Debt Claims subsection; negative arch with empty `Before`; invalid `targetPhase` (`review`); orphan `#### DC9`; duplicate `DC0`; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
+- [x] Round-trip: `parseDeliveryBudget(canonical).value.workItems[1].debtClaim` equals `{ debtClaimId: "DC0", coupling: "intrinsic", targetPhase: "phase-2", minimalAlternativeEffortDelta: 2, minimalAlternativeArchitectureDelta: 0, before: "five independent proposal construction paths", after: "one invariant-enforcing proposal constructor" }`.
 - [ ] Re-export parse types from `src/index.ts` in Phase 10 (not required to compile Phase 2).
 
 ---
