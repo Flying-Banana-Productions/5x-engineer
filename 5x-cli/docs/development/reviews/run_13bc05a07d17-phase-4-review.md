@@ -89,3 +89,25 @@ Both backends inspect keys only against the pre-existing store state. A batch co
 ## Phase readiness
 
 Phase 4's completion gate is met. Phase 5 (protocol types, emit, normalize) does not depend on any of the P2 items and can proceed once the mechanical corrections are applied.
+
+---
+
+## Addendum — re-review at `ca74acac7efd43468f217e30620b33df004d09d2`
+
+**Scope of change:** one follow-up commit (`fix: harden review budget atomic persistence`) touching `record-types.ts`, `record-fs.ts`, `record-memory.ts`, `review-budget-store.ts`, plus a new integration crash-fault-injection suite and one new shared contract test.
+
+**Local verification:** `bun test test/unit/control-plane test/unit/db test/unit/review-budget test/integration/records` → 397 pass / 0 fail (30 more than the prior review, from the new crash suite + dedup contract test); `bunx tsc --noEmit` clean; `bunx biome check src test` clean.
+
+### Disposition of prior findings
+
+- **P2.1 — `atomicAppendIfAllNew` accepts a batch that repeats the same `(stream, idempotencyKey)`: Addressed.** New `requireUniqueAtomicAppendKeys` (`src/control-plane/record-types.ts`) walks `ops` and throws `INVALID_ATOMIC_APPEND` on the first repeated `(stream, idempotencyKey)` pair, called from both `MemoryRecordStore.atomicAppendIfAllNew` and `WorkingTreeRecordStore.atomicAppendIfAllNew` before any lock/clone work begins. The new shared contract test (`record-store-contract.test.ts`, "rejects an intra-batch repeated stream key before mutation") runs against both backends via `runRecordStoreContract` and asserts no line is written. Verified: repeated-key batches now fail closed with no mutation, satisfying §4.0 step 6.
+- **P2.2 — No working-tree crash test for `atomicAppendIfAllNew`: Addressed, and more thoroughly than requested.** The new `test/integration/records/atomic-append-crash.test.ts` fault-injects all three pre-commit `TxnEvent`s (`after-new`, `after-dirsync:staging`, `after-dirsync:prepared`) into `atomicAppendIfAllNew`, then closes and **reopens** the store from a simulated dead-lock state and asserts both `steps` and `budget` streams are empty and no journal/commit marker survives. This is a stronger check than the in-process assertion I suggested — it exercises the real recovery path on reopen, matching the existing `atomic-append-crash` pattern used for plain `atomicAppend`.
+- **P2.3 — Facade re-lists the budget stream once per snapshot: Addressed.** `listSnapshots` now computes `{ line, recordSeq }` pairs in a single `flatMap` over one `budgetLines(runId)` call and reuses `recordSeq` directly when upserting, instead of re-deriving the ordinal with a nested `findIndex` scan per snapshot. `projectSnapshot` similarly captures `allLines` once. The working-tree repair path is now O(n) instead of O(n²) in file reads.
+
+### New issues from this revision
+
+None. The diff is narrowly scoped to the three flagged items, the new guard function follows the existing `requireSingleRunAtomicAppend` sibling pattern (same file, same error code, called at the same call sites in both backends), and the `listSnapshots`/`projectSnapshot` refactor is behavior-preserving (same records, same index writes) while removing the quadratic scan.
+
+### Updated readiness
+
+**Readiness:** Ready — no remaining P0/P1/P2 items from this review. Phase 4 is complete; Phase 5 can proceed.
