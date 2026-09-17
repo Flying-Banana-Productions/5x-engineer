@@ -100,3 +100,63 @@ Additionally, the context is built whenever `role === reviewer && phase === plan
 
 - **Phase 6 completion:** ⚠️ — implementation matches the design; verification does not yet exist for the completion gate.
 - **Ready for Phase 7:** ⚠️ — after P1.1 and P1.2. Phase 7 builds directly on `ensurePlanReviewBaseline` and the capture ordering, so the ensure-baseline tests and the active-run guard should land first.
+
+---
+
+## Addendum (2026-09-17) — Phase 6 hardening fix
+
+**Reviewed:** `558db04` (`fix: harden phase 6 budget persistence`), diffed against `4944120`/`b8e25ab` (prior review baseline)
+
+**Local verification:** `bun test` → 3388 pass / 0 fail (up from 3351); `bunx tsc --noEmit` clean
+
+### What's addressed (✅)
+
+- **P1.1 (missing test files)** — **Addressed.** All five previously-absent/untouched files now exist with focused coverage matching plan §6.5:
+  - `test/unit/review-budget/apply.test.ts` grew from 6 to 14 tests, now covering reject-aggregates, Addresses-vs-still-listed-`R`, new/changed-claim-requires-assessment, overlay-reassessment-wins, author-`N`-from-persisted-ledger, `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED` on an injected ledger, and idempotent-retry-uses-persisted-`I`.
+  - `test/unit/review-budget/persist-record.test.ts` (new, 5 tests): failed-append leaves nothing, unique+retry keeps one snapshot, retry repairs missing SQLite projections, projection failure after durable success is repaired, reindex restores `baselineAssessment`.
+  - `test/unit/review-budget/ensure-baseline.test.ts` (new, 3 tests): system origin, agent safety-net origin + enforced warning, missing-section failure with no unattributed line.
+  - `test/unit/commands/record-plan-reviewer-step.test.ts` (new, 10 tests): the full admission/duplicate/ceiling/lost-race/origin-sharing/redaction matrix from plan §6.5.
+  - `test/unit/commands/finalize-and-write-prepared-step.test.ts` (new, 4 tests): generic vs paired mode, specified-iteration no-retry, and the new bounded-retry behavior.
+  - `test/unit/commands/protocol-validate.test.ts` gained a dedicated `"protocol validate reviewer — active review budget"` describe block (8 tests) covering record+decorate, enforced-warning, terminal/at-limit admission-failure-captures-nothing, dry-validate degradation, mode-off skip, and context-failure-to-CliError mapping.
+  
+  The completion gate's core durability/admission claims now have direct test coverage. Plan checkboxes are truthful.
+
+- **P1.2 (`RecordContextError` / plan-read errors escape unstructured)** — **Addressed.** Both `protocol.handler.ts` and `invoke.handler.ts` now wrap `createReviewBudgetContext` in try/catch: a `RecordContextError` maps to `outputError(code, message, detail)` when `--record` is set, and degrades to `budgetContext = undefined` (skip decoration, keep the v1-compatible envelope) when it is not. `readFileSync` on the plan path is likewise wrapped, mapping to `PLAN_NOT_FOUND` under `--record` and falling back gracefully otherwise. Context creation is now skipped entirely under `mode: "off"` (checked via `loadConfig`/`config.reviewBudget.mode` before ever calling the factory), which also resolves the second half of the original complaint (a missing worktree no longer fails a v1 dry-validate when budgets are off). Confirmed by `"record maps context failures to structured CliError"`, `"dry validation degrades on context and plan read failures"`, and `"mode off skips review-budget context creation"`.
+
+- **P2 (baseline captured before admission)** — **Addressed.** Both handlers now run a side-effect-free `prepareRecordStepAppend` probe before invoking `applyPlanReviewBudget`'s safety-net capture when `params.record && !baseline`; a thrown `RecordError` sets `admissionEligible = false` and skips apply entirely, so a terminal or at-the-ceiling run no longer appends an orphan baseline line before failing. `prepareRecordStepAppend` performs no store mutation (confirmed in `run-v1.handler.ts:1811+`), so calling it once as a probe and again inside the real record path is safe, if slightly redundant. Confirmed by `"terminal admission failure captures no baseline or snapshot"` and `"at-limit admission failure captures no baseline or snapshot"`.
+
+- **P2 (unbounded retry loop)** — **Addressed.** `finalizeAndWritePreparedStep` now computes `maxAttempts = Math.max(1, prepared.maxSteps - initialSummary.total_steps)` up front and throws `RECORD_ITERATION_RETRY_EXHAUSTED` once `attempts >= maxAttempts` on an omitted-iteration lost race, rather than looping unconditionally. Covered by `"omitted-iteration retry is bounded by remaining room"`.
+
+- **P2 (retry uses caller's `I` instead of persisted)** — **Addressed.** `apply.ts` now reads `snapshots` once, derives `firstSnapshot = snapshots[0]`, and computes `firstAssessment = firstSnapshot?.baselineAssessment ?? input.verdict.baselineAssessment` — persisted wins whenever a first snapshot exists. A new `isInitialRetry` guard also tightens the old `BASELINE_ASSESSMENT_UNEXPECTED` check: it now only tolerates a caller resending `baselineAssessment` when the matching snapshot **is** the run's first snapshot (previously any snapshot matching the same step/phase/iteration key sufficed, which could coincidentally accept a resent `baselineAssessment` on a non-initial key). Covered by `"idempotent retry uses persisted first assessment"`.
+
+- **P2 (`listSnapshots` called twice)** — **Addressed.** `apply.ts` now calls `input.store.listSnapshots(input.runId)` exactly once and derives `firstSnapshot`, `latest` (`.at(-1)`), and `matchingSnapshot` from that single array.
+
+### New issue introduced by this revision
+
+- **P2 (new) — Empty-but-present plan file is silently treated as "context vanished," even under `--record`.** In both `protocol.handler.ts:528-548` and `invoke.handler.ts:708-722`, the plan-read failure handling uses a truthiness check on the string:
+  ```ts
+  try {
+    planMarkdown = readFileSync(path, "utf-8");
+  } catch (err) {
+    if (!params.record) planMarkdown = "";
+    else outputError("PLAN_NOT_FOUND", ...);
+  }
+  if (!planMarkdown) {
+    // dry-validation stays v1-compatible
+  } else {
+    ... applyPlanReviewBudget(...) ...
+  }
+  ```
+  `readFileSync` succeeding with an empty string (`""`) is indistinguishable from the caught-and-defaulted `""` used for the *read failure* path, because both are falsy. So a plan file that exists but is empty (or was truncated) silently skips `applyPlanReviewBudget` even when `--record` is set — no `PLAN_NOT_FOUND`, no parse error, no budget decoration, and the step still gets recorded via `recordStepInternal`/`recordPlanReviewerStepWithSnapshot` with no budget line. Before this revision, an empty plan would have reached `parseDeliveryBudget("")` inside `applyPlanReviewBudget` and surfaced a structured parse-failure code. This is a narrow edge case (a real plan.md is essentially never empty in practice) but it is a genuine regression in fail-closed behavior for `--record`, and it is untested — the two new tests that exercise this branch (`"dry validation degrades on context and plan read failures"`, `"record maps context failures to structured CliError"`) only assert "does not throw" / "throws mapped CliError," not the empty-content case.
+
+  **Fix:** track read success/failure with an explicit boolean instead of relying on string truthiness, e.g. `let planReadFailed = false;` set in the `catch`, and branch on `if (planReadFailed) { ... } else { applyPlanReviewBudget(...) }` so a successfully-read empty file still reaches (and fails through) the parser.
+
+### Remaining concerns
+
+- None at P0/P1. The one new item above is P2 and narrow in practical impact.
+- Minor, not worth a line item: `prepareRecordStepAppend` is now invoked twice per `--record` review call (once as the admission probe, once inside the real record path) — cheap (in-memory checks + a best-effort git call) but slightly redundant; not worth restructuring given the clarity of the current split between "check eligibility" and "actually record."
+
+### Updated readiness
+
+- **Phase 6 completion:** ✅ — all P1/P0 items from the initial review are resolved and independently verified in the current source and test suite; one narrow new P2 remains.
+- **Ready for next phase:** ✅ — the one new finding (empty-plan-file truthiness bug) is mechanical and does not block moving to Phase 7; it can be fixed alongside or after that work.
