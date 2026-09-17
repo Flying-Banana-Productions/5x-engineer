@@ -189,3 +189,22 @@ No new blocking correctness, architecture, phasing, testability, risk, or scope 
 ### Updated readiness
 - **Plan completion:** ✅ — all previously raised directly derivable corrections are specified and testable.
 - **Ready for implementation:** ✅ — `ready`, subject to the documented slice-10 Phase-1 prerequisite for persistence phases.
+
+---
+
+## Addendum (2026-09-17) — Re-review after merged slice 212 implementation
+
+**Reviewed:** current `main` at `42af0da`; plan version 1.8; merged slice-212 implementation and its RecordStore contract tests.
+
+### What's confirmed (✅)
+- Slice 212 is now implemented on the current branch (rather than merely a planned prerequisite): `RecordStore`, working-tree and memory implementations, `createRecordContext`, redacted `originFor`, and `prepareRecordStepAppend` exist at `src/control-plane/record-store.ts`, `src/commands/record-context.ts`, and `src/commands/run-v1.handler.ts:1811-1945`.
+- The plan remains aligned on record authority, origin/performer propagation, redaction, v8-as-derived-index intent, parse/evidence handling, and record-first projection repair. The merged contract tests exercise insertion ordering, mixed-stream atomic writes, origin envelopes, redaction, and crash recovery.
+- Most old source line references are stale after slice 212's substantial handler growth, but they are navigational references rather than incorrect implementation requirements and are not readiness blockers.
+
+### Remaining concerns
+- **P0 — The frozen `atomicAppend` duplicate contract cannot provide the plan's paired-step no-op guarantee.** The plan requires that a duplicate reviewer step cause *no* budget append (`208-review-budget-advisory-plan.md:187-190, 1247-1251`) and treats a store-level `created: false` as a projection-repair-only outcome. The actual frozen `RecordStore.atomicAppend` instead deduplicates each operation independently (`src/control-plane/record-store.ts:30-38`): the current shared contract explicitly proves that an existing step plus a new budget op returns `[false, true]` and appends the budget line (`test/unit/control-plane/record-store-contract.test.ts:413-453`). Pre-admission lookup does not close this race or protect against a pre-existing step line with no snapshot. A wrapper cannot roll back that newly appended line. This can persist a snapshot derived from a losing/different verdict and contradicts the required one-step/one-snapshot semantics. **Action: `human_required`.** Reconcile the two slices before implementation by choosing and specifying a pair-conditional RecordStore operation (all-new-or-no-op for the coupled keys), or an explicit, safe reconciliation policy for a partially duplicate batch. Add a cross-store race/partial-duplicate contract test; do not rely on `created: false` meaning that neither operation was appended.
+- **P0 — The plan relies on a resolved iteration that the merged admission API does not return.** Phase 6 says `prepareRecordStepAppend` resolves omitted iteration and that the wrapper derives the snapshot key from `prepared.iteration` (`208-review-budget-advisory-plan.md:1221-1228, 1247-1248`). In the actual merged implementation, `prepareRecordStepAppend` copies an omitted iteration as `undefined` (`src/commands/run-v1.handler.ts:1922-1944`); generic recording allocates it only afterward using private store/SQLite logic (`src/commands/run-v1.handler.ts:2077-2089`). Thus a 208 wrapper following its stated contract cannot build the required unique step and snapshot keys from the prepared value, and using the caller's undefined iteration would mismatch the durable step key. **Action: `human_required`.** Define the cross-slice ownership of atomic iteration allocation before 208 Phase 6: either make admission return the final iteration or expose a single allocation/finalization seam that the paired writer uses before constructing both append ops. Preserve the current new-at-limit and duplicate-at-limit ordering, and add an omitted-iteration paired-write/retry test.
+
+### Updated readiness
+- **Plan completion:** ❌ — the plan describes stronger paired-write behavior than the merged, frozen RecordStore/admission implementation supplies.
+- **Ready for implementation:** ❌ — `not_ready` pending an explicit cross-slice decision and contract update for atomic duplicate handling and iteration allocation. Phases 1-3 remain independently implementable, but Phase 6 persistence wiring must not begin.
