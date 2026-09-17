@@ -372,6 +372,24 @@ ${CANONICAL.replace(
 		);
 	});
 
+	test("rejects duplicate optional surface snapshot labels", () => {
+		for (const [label, insertionPoint] of [
+			[
+				"New shared abstractions or public contracts",
+				"- New shared abstractions or public contracts: 0",
+			],
+			["New persistent schemas", "- Persistent/external boundaries: 1"],
+		] as const) {
+			expectFailure(
+				replaceOnce(
+					insertionPoint,
+					`${insertionPoint}\n- ${label}: 1\n- ${label}: 2`,
+				),
+				"BUDGET_SNAPSHOT_INVALID",
+			);
+		}
+	});
+
 	test("does not read snapshot bullets from a later subsection", () => {
 		const result = parseDeliveryBudget(
 			replaceOnce(

@@ -67,12 +67,14 @@ const EFFORT_SET = "{1, 2, 3, 5, 8}";
 const ARCHITECTURE_SET = "{0, ±1, ±2, ±3, ±5}";
 const CLAIM_CELL_RE = /^DC\d+\s+\(`(intrinsic|adjacent|unrelated)`\)$/;
 const FINDING_ID_RE = /^[A-Za-z0-9._-]+$/;
-const REQUIRED_SNAPSHOT_LABELS = new Set([
+const UNIQUE_SNAPSHOT_LABELS = new Set([
 	"subsystems",
 	"production files",
 	"persistent/external boundaries",
 	"persistent schemas or migrations",
 	"external/platform boundaries",
+	"new shared abstractions or public contracts",
+	"new persistent schemas",
 ]);
 
 function failure(
@@ -335,11 +337,11 @@ function parseSnapshot(
 		const match = entry.text.match(/^\s*-\s*([^:]+):\s*(.*)$/);
 		if (match?.[1]) {
 			const label = match[1].trim().toLowerCase();
-			if (REQUIRED_SNAPSHOT_LABELS.has(label) && values.has(label)) {
+			if (UNIQUE_SNAPSHOT_LABELS.has(label) && values.has(label)) {
 				return failure(
 					"BUDGET_SNAPSHOT_INVALID",
 					entry.line,
-					`Surface Snapshot required label '${label}' must appear exactly once`,
+					`Surface Snapshot label '${label}' must appear at most once`,
 				);
 			}
 			values.set(label, {
