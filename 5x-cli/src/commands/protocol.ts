@@ -118,6 +118,10 @@ export function registerProtocol(parent: Command) {
 			"Iteration number (used with --record)",
 			intArg("--iteration"),
 		)
+		.option(
+			"--opt-in-budget-baseline",
+			"Explicitly capture a budget baseline for a mid-review v1-compatible run",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -133,6 +137,7 @@ export function registerProtocol(parent: Command) {
 				step: opts.step,
 				phase: opts.phase,
 				iteration: opts.iteration,
+				optInBudgetBaseline: opts.optInBudgetBaseline,
 			});
 		});
 

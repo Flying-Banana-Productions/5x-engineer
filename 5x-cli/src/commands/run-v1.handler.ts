@@ -1967,6 +1967,169 @@ function projectStepToSqlite(
 	});
 }
 
+export interface FinalizedRecordStep extends PreparedRecordStep {
+	iteration: number;
+}
+
+export type FinalizeWriteMode = "generic" | "paired-all-new";
+
+/**
+ * Resolve an admitted step's iteration, append its durable record operation(s),
+ * and project the authoritative step line. Omitted-iteration collisions are
+ * races, not duplicates: re-read the store and allocate the next identity.
+ */
+export async function finalizeAndWritePreparedStep(
+	prepared: PreparedRecordStep,
+	ctx: {
+		db: Database;
+		config: FiveXConfig;
+		recordStore: RecordStore;
+		originFor: (performer: RecordPerformer) => RecordOrigin;
+		run: RunRowV1;
+	},
+	opts: {
+		mode: FinalizeWriteMode;
+		extraOps?: (
+			finalized: FinalizedRecordStep,
+			envelope: ReturnType<typeof recordedEnvelope>,
+		) => AppendOp[];
+	},
+): Promise<{
+	finalized: FinalizedRecordStep;
+	recorded: boolean;
+	stepLine: RecordLine;
+	dbResult: ReturnType<typeof recordStep>;
+}> {
+	const callerOmittedIteration = prepared.iteration === undefined;
+	let retry = false;
+	for (;;) {
+		if (retry) {
+			const summary = computeRunSummary(ctx.db, prepared.runId);
+			if (summary.total_steps >= prepared.maxSteps) {
+				throw new RecordError(
+					"MAX_STEPS_EXCEEDED",
+					`Run has reached the maximum of ${prepared.maxSteps} steps`,
+				);
+			}
+		}
+		const stepLines = storeListLines(ctx.recordStore, prepared.runId, "steps");
+		const storeMax = maxStoreIteration(
+			stepLines,
+			prepared.stepName,
+			prepared.phase,
+		);
+		const iteration =
+			prepared.iteration ??
+			(storeMax !== null
+				? storeMax + 1
+				: nextIteration(
+						ctx.db,
+						prepared.runId,
+						prepared.stepName,
+						prepared.phase,
+					));
+		const finalized: FinalizedRecordStep = { ...prepared, iteration };
+
+		let patchId: string | null = null;
+		let diffSummary: StepRecordPayload["diff_summary"] = null;
+		const previousHead = lastHeadCommit(stepLines);
+		if (previousHead && prepared.headCommit && prepared.effectiveWorkdir) {
+			try {
+				patchId = await computePatchId(
+					prepared.effectiveWorkdir,
+					previousHead,
+					prepared.headCommit,
+				);
+			} catch {
+				patchId = null;
+			}
+			try {
+				diffSummary = await computeDiffSummary(
+					prepared.effectiveWorkdir,
+					previousHead,
+					prepared.headCommit,
+				);
+			} catch {
+				diffSummary = null;
+			}
+		}
+		const payload = redactStepPayload(
+			{
+				step_name: prepared.stepName,
+				phase: prepared.phase ?? null,
+				iteration,
+				result_json: JSON.parse(prepared.resultJson) as unknown,
+				head_commit: prepared.headCommit ?? null,
+				patch_id: patchId,
+				diff_summary: diffSummary,
+				duration_ms: prepared.durationMs ?? null,
+				tokens_in: prepared.tokensIn ?? null,
+				tokens_out: prepared.tokensOut ?? null,
+				cost_usd: prepared.costUsd ?? null,
+				model: prepared.model ?? null,
+			},
+			ctx.config.records.redact,
+		);
+		const envelope = recordedEnvelope(ctx.originFor(prepared.performer));
+		const stepKey = stepIdempotencyKey({
+			runId: prepared.runId,
+			stepName: prepared.stepName,
+			phase: prepared.phase ?? null,
+			iteration,
+		});
+		const stepOp: AppendOp = {
+			runId: prepared.runId,
+			stream: "steps",
+			idempotencyKey: stepKey,
+			payload,
+			...envelope,
+		};
+		const ops = [stepOp, ...(opts.extraOps?.(finalized, envelope) ?? [])];
+		ensureRunRecord(ctx.recordStore, ctx.run, ctx.originFor);
+
+		let created: boolean;
+		let stepLine: RecordLine | null;
+		if (opts.mode === "generic") {
+			const result = ctx.recordStore.atomicAppend(ops)[0];
+			created = Boolean(result?.created);
+			stepLine =
+				result?.line ??
+				storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
+		} else {
+			const result = ctx.recordStore.atomicAppendIfAllNew(ops);
+			created = result.created;
+			stepLine = result.created
+				? (result.results[0]?.line ?? null)
+				: storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
+			if (!result.created && !stepLine) {
+				throw new RecordError(
+					"RECORD_PAIR_CORRUPT",
+					"Budget snapshot identity exists without its coupled step",
+				);
+			}
+		}
+
+		if (!created && callerOmittedIteration) {
+			retry = true;
+			continue;
+		}
+		if (!stepLine) {
+			throw new RecordError(
+				"RECORD_WRITE_FAILED",
+				"Step append returned no durable record line",
+			);
+		}
+		const durablePayload = parseStepPayload(stepLine.payload) ?? payload;
+		const dbResult = projectStepToSqlite(
+			ctx.db,
+			prepared,
+			durablePayload,
+			iteration,
+		);
+		return { finalized, recorded: created, stepLine, dbResult };
+	}
+}
+
 /**
  * Record a step in the database. Pure persistence — no stdout, no CliError.
  * Throws RecordError on validation failures (caller decides how to surface).
@@ -2074,126 +2237,47 @@ export async function recordStepInternal(
 		};
 	}
 
-	const stepLines = storeListLines(recordStore, prepared.runId, "steps");
-	let iteration = prepared.iteration;
-	if (iteration === undefined) {
-		const storeMax = maxStoreIteration(
-			stepLines,
-			prepared.stepName,
-			prepared.phase,
-		);
-		iteration =
-			storeMax !== null
-				? storeMax + 1
-				: nextIteration(db, prepared.runId, prepared.stepName, prepared.phase);
-	}
-
-	let patchId: string | null = null;
-	let diffSummary: StepRecordPayload["diff_summary"] = null;
-	const previousHead = lastHeadCommit(stepLines);
-	if (previousHead && prepared.headCommit && prepared.effectiveWorkdir) {
-		try {
-			patchId = await computePatchId(
-				prepared.effectiveWorkdir,
-				previousHead,
-				prepared.headCommit,
-			);
-		} catch {
-			patchId = null;
-		}
-		try {
-			const summary = await computeDiffSummary(
-				prepared.effectiveWorkdir,
-				previousHead,
-				prepared.headCommit,
-			);
-			diffSummary = summary;
-		} catch {
-			diffSummary = null;
-		}
-	}
-
-	const payload = redactStepPayload(
-		{
-			step_name: prepared.stepName,
-			phase: prepared.phase ?? null,
-			iteration,
-			result_json: JSON.parse(prepared.resultJson) as unknown,
-			head_commit: prepared.headCommit ?? null,
-			patch_id: patchId,
-			diff_summary: diffSummary,
-			duration_ms: prepared.durationMs ?? null,
-			tokens_in: prepared.tokensIn ?? null,
-			tokens_out: prepared.tokensOut ?? null,
-			cost_usd: prepared.costUsd ?? null,
-			model: prepared.model ?? null,
-		},
-		config.records.redact,
-	);
-
-	const origin = originFor(prepared.performer);
-	const envelope = recordedEnvelope(origin);
-	const stepKey = stepIdempotencyKey({
-		runId: prepared.runId,
-		stepName: prepared.stepName,
-		phase: prepared.phase ?? null,
-		iteration,
-	});
-	const ops: AppendOp[] = [
-		{
-			runId: prepared.runId,
-			stream: "steps",
-			idempotencyKey: stepKey,
-			payload,
-			...envelope,
-		},
-	];
-	if (prepared.stepName.startsWith("human:")) {
-		ops.push({
-			runId: prepared.runId,
-			stream: "decisions",
-			idempotencyKey: `decision:human:${stepKey}`,
-			payload: {
-				kind: "human-step",
-				step_name: prepared.stepName,
-				phase: prepared.phase ?? null,
-				iteration,
-				result_json: JSON.parse(prepared.resultJson) as unknown,
-			},
-			...envelope,
-		});
-	}
-
 	try {
-		ensureRunRecord(recordStore, run, originFor);
-		const results = recordStore.atomicAppend(ops);
-		const stepResult = results[0];
-		if (!stepResult?.created) {
-			const existing =
-				stepResult?.line ??
-				storeGetLine(recordStore, prepared.runId, "steps", stepKey);
-			const dbResult = existing
-				? projectFromLine(existing)
-				: projectStepToSqlite(db, prepared, payload, iteration);
-			const after = computeRunSummary(db, prepared.runId);
-			return {
-				step_id: dbResult.step_id,
-				step_name: dbResult.step_name,
-				phase: dbResult.phase,
-				iteration: dbResult.iteration,
-				recorded: false,
-				total_steps: after.total_steps,
-				max_steps: prepared.maxSteps,
-			};
-		}
-		const dbResult = projectStepToSqlite(db, prepared, payload, iteration);
+		const written = await finalizeAndWritePreparedStep(
+			prepared,
+			{ db, config, recordStore, originFor, run },
+			{
+				mode: "generic",
+				extraOps: prepared.stepName.startsWith("human:")
+					? (finalized, envelope) => {
+							const stepKey = stepIdempotencyKey({
+								runId: finalized.runId,
+								stepName: finalized.stepName,
+								phase: finalized.phase ?? null,
+								iteration: finalized.iteration,
+							});
+							return [
+								{
+									runId: finalized.runId,
+									stream: "decisions",
+									idempotencyKey: `decision:human:${stepKey}`,
+									payload: {
+										kind: "human-step",
+										step_name: finalized.stepName,
+										phase: finalized.phase ?? null,
+										iteration: finalized.iteration,
+										result_json: JSON.parse(finalized.resultJson),
+									},
+									...envelope,
+								},
+							];
+						}
+					: undefined,
+			},
+		);
+		const dbResult = written.dbResult;
 		const after = computeRunSummary(db, prepared.runId);
 		return {
 			step_id: dbResult.step_id,
 			step_name: dbResult.step_name,
 			phase: dbResult.phase,
 			iteration: dbResult.iteration,
-			recorded: dbResult.recorded,
+			recorded: written.recorded && dbResult.recorded,
 			total_steps: after.total_steps,
 			max_steps: prepared.maxSteps,
 		};

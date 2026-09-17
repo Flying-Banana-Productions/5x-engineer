@@ -11,15 +11,26 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
+import { getStepsByPhase } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
+import type { ReviewerVerdict } from "../protocol.js";
+import {
+	applyPlanReviewBudget,
+	type PendingBudgetSnapshot,
+} from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
+import {
+	createReviewBudgetContext,
+	type ReviewBudgetCommandContext,
+	recordPlanReviewerStepWithSnapshot,
+} from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import {
 	outputAmbientError,
@@ -47,6 +58,8 @@ export interface ProtocolValidateParams {
 	phaseChecklistValidate?: boolean;
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
+	optInBudgetBaseline?: boolean;
+	warn?: (message: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +392,9 @@ export async function protocolValidate(
 	params: ProtocolValidateParams,
 ): Promise<void> {
 	const { role } = params;
-	const { result: validated, warnings } = await protocolValidateCore(params);
+	const { result: coreValidated, warnings } =
+		await protocolValidateCore(params);
+	let validated = coreValidated;
 
 	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
 	for (const w of warnings) {
@@ -452,6 +467,52 @@ export async function protocolValidate(
 		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
 
+	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
+		try {
+			budgetContext = await createReviewBudgetContext({
+				runId: params.run,
+				startDir: params.startDir,
+			});
+			const baseline = budgetContext.store.getBaseline(params.run);
+			if (params.record || baseline) {
+				const planPath = budgetContext.executionContext.effectivePlanPath;
+				const planMarkdown = readFileSync(planPath, "utf-8");
+				const performer = { kind: "agent", role: "reviewer" } as const;
+				const applied = applyPlanReviewBudget({
+					runId: params.run,
+					stepName: recordStepName ?? params.step ?? "reviewer:review",
+					phase: resolvedPhase,
+					iteration: params.iteration,
+					planMarkdown,
+					verdict: validated as ReviewerVerdict,
+					config: budgetContext.config.reviewBudget,
+					store: budgetContext.store,
+					hasPriorPlanReviewerStep: getStepsByPhase(
+						budgetContext.db,
+						params.run,
+						"plan",
+					).some((step) => step.step_name.startsWith("reviewer:")),
+					optInBaseline: params.optInBudgetBaseline ?? false,
+					origin: budgetContext.originFor(performer),
+					warn:
+						params.warn ?? ((message) => console.error(`Warning: ${message}`)),
+				});
+				if (applied.status === "error") {
+					outputError(applied.code, applied.message);
+				}
+				if (applied.status === "applied") {
+					validated = applied.verdict;
+					pendingSnapshot = applied.pendingSnapshot;
+				}
+			}
+		} catch (err) {
+			if (err instanceof RecordError) outputError(err.code, err.message);
+			throw err;
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	// Checklist gate: verify phase completion in plan (author-only)
 	//
@@ -491,7 +552,7 @@ export async function protocolValidate(
 	// -----------------------------------------------------------------------
 	if (params.record && recordStepName) {
 		try {
-			await recordStepInternal({
+			const recordParams = {
 				// params.run is guaranteed non-null here: prerequisite check above
 				// calls outputError() (which exits) when --run is absent.
 				run: params.run as string,
@@ -499,8 +560,17 @@ export async function protocolValidate(
 				result: JSON.stringify(validated),
 				phase: resolvedPhase,
 				iteration: params.iteration,
-				performer: { kind: "agent", role },
-			});
+				performer: { kind: "agent", role } as const,
+			};
+			if (pendingSnapshot && budgetContext) {
+				await recordPlanReviewerStepWithSnapshot(
+					recordParams,
+					pendingSnapshot,
+					budgetContext,
+				);
+			} else {
+				await recordStepInternal(recordParams);
+			}
 		} catch (err) {
 			// Recording is a side effect — primary envelope already written.
 			// Warn on stderr, set non-zero exit via process.exitCode.

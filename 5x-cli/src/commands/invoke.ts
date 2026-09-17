@@ -73,6 +73,10 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 			"--iteration <n>",
 			"Iteration number (used with --record)",
 			intArg("--iteration"),
+		)
+		.option(
+			"--opt-in-budget-baseline",
+			"Explicitly capture a budget baseline for a mid-review v1-compatible run",
 		);
 }
 
@@ -144,6 +148,7 @@ export function registerInvoke(parent: Command) {
 				recordStep: opts.recordStep,
 				phase: opts.phase,
 				iteration: opts.iteration,
+				optInBudgetBaseline: opts.optInBudgetBaseline,
 			});
 		});
 
@@ -185,6 +190,7 @@ export function registerInvoke(parent: Command) {
 				recordStep: opts.recordStep,
 				phase: opts.phase,
 				iteration: opts.iteration,
+				optInBudgetBaseline: opts.optInBudgetBaseline,
 			});
 		});
 

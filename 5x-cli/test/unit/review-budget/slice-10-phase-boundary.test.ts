@@ -22,3 +22,17 @@ describe("Phase 4 persistence boundary", () => {
 		}
 	});
 });
+
+describe("Phase 6 command context boundary", () => {
+	test("review budget context delegates attribution and store creation to createRecordContext", () => {
+		const text = readFileSync(
+			join(import.meta.dir, "../../../src/commands/review-budget-context.ts"),
+			"utf8",
+		);
+		expect(text).toContain(
+			'import { createRecordContext } from "./record-context.js"',
+		);
+		expect(text).toContain("await createRecordContext(...args)");
+		expect(text).not.toContain("createRecordAttribution");
+	});
+});

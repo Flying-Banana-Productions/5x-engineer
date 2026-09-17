@@ -82,6 +82,12 @@ export interface ReviewBudgetStore {
 	appendSnapshot(input: AppendSnapshotInput): ReviewBudgetSnapshotRecord;
 	latestSnapshot(runId: string): ReviewBudgetSnapshotRecord | null;
 	listSnapshots(runId: string): ReviewBudgetSnapshotRecord[];
+	/** Rebuild one snapshot projection from its authoritative record line. */
+	projectSnapshot(
+		runId: string,
+		idempotencyKey: string,
+		derived?: DerivedBudgetResult,
+	): ReviewBudgetSnapshotRecord | null;
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -134,7 +140,7 @@ export function createReviewBudgetStore(
 		return recordStore.listLines(runId, "budget");
 	}
 
-	function projectSnapshot(
+	function projectSnapshotToIndex(
 		runId: string,
 		idempotencyKey: string,
 		record: ReviewBudgetSnapshotRecord,
@@ -240,7 +246,7 @@ export function createReviewBudgetStore(
 				...recordedEnvelope(origin),
 			});
 			const record = snapshotRecord(result.line.payload, input.derived ?? null);
-			projectSnapshot(input.runId, key, record);
+			projectSnapshotToIndex(input.runId, key, record);
 			return record;
 		},
 
@@ -282,6 +288,14 @@ export function createReviewBudgetStore(
 				index?.upsertSnapshot(record, line.idempotencyKey, recordSeq);
 			}
 			return records;
+		},
+
+		projectSnapshot(runId, idempotencyKey, derived) {
+			const line = recordStore.getLine(runId, "budget", idempotencyKey);
+			if (!line) return null;
+			const record = snapshotRecord(line.payload, derived ?? null);
+			projectSnapshotToIndex(runId, idempotencyKey, record);
+			return record;
 		},
 	};
 }

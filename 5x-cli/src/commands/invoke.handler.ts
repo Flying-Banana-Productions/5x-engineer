@@ -17,6 +17,7 @@
  * the run row surfaced once — not a check in this file.
  */
 
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -30,6 +31,7 @@ import {
 	withInvocationLifecycle,
 } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
+import { getStepsByPhase } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import {
@@ -38,7 +40,11 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
+import {
+	AuthorStatusSchema,
+	type ReviewerVerdict,
+	ReviewerVerdictSchema,
+} from "../protocol.js";
 import { createProvider as defaultCreateProvider } from "../providers/factory.js";
 import {
 	appendLogLine,
@@ -51,6 +57,10 @@ import type {
 	RunOptions,
 	RunResult,
 } from "../providers/types.js";
+import {
+	applyPlanReviewBudget,
+	type PendingBudgetSnapshot,
+} from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -59,6 +69,11 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
+import {
+	createReviewBudgetContext,
+	type ReviewBudgetCommandContext,
+	recordPlanReviewerStepWithSnapshot,
+} from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { requireAmbientRunId } from "./run-identity.js";
 import { RecordError, recordStepInternal } from "./run-v1.handler.js";
@@ -106,6 +121,7 @@ export interface InvokeParams {
 	phase?: string;
 	iteration?: number;
 	env?: NodeJS.Dict<string>;
+	optInBudgetBaseline?: boolean;
 }
 
 interface InvokeResult {
@@ -624,6 +640,53 @@ export async function invokeAgent(
 		await provider.close().catch(() => {});
 	}
 
+	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	const recordPhase = params.phase ?? variables.phase_number;
+	if (role === "reviewer" && recordPhase === "plan") {
+		budgetContext = await createReviewBudgetContext({
+			runId,
+			startDir: workdir,
+		});
+		const baseline = budgetContext.store.getBaseline(runId);
+		if (params.record || baseline) {
+			const stepName =
+				params.recordStep ?? resolved.stepName ?? "reviewer:review";
+			const performer = {
+				kind: "agent",
+				role: "reviewer",
+				provider: providerName,
+			} as const;
+			const applied = applyPlanReviewBudget({
+				runId,
+				stepName,
+				phase: recordPhase,
+				iteration: params.iteration,
+				planMarkdown: readFileSync(
+					budgetContext.executionContext.effectivePlanPath,
+					"utf-8",
+				),
+				verdict: structured as ReviewerVerdict,
+				config: budgetContext.config.reviewBudget,
+				store: budgetContext.store,
+				hasPriorPlanReviewerStep: getStepsByPhase(
+					budgetContext.db,
+					runId,
+					"plan",
+				).some((step) => step.step_name.startsWith("reviewer:")),
+				optInBaseline: params.optInBudgetBaseline ?? false,
+				origin: budgetContext.originFor(performer),
+				warn: (message) => console.error(`Warning: ${message}`),
+			});
+			if (applied.status === "error")
+				outputError(applied.code, applied.message);
+			if (applied.status === "applied") {
+				structured = applied.verdict;
+				pendingSnapshot = applied.pendingSnapshot;
+			}
+		}
+	}
+
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: resolved.stepName,
@@ -659,7 +722,7 @@ export async function invokeAgent(
 			process.exitCode = 1;
 		} else {
 			try {
-				await recordStepInternal({
+				const recordParams = {
 					run: params.run,
 					stepName,
 					result: JSON.stringify(structured),
@@ -676,8 +739,17 @@ export async function invokeAgent(
 						kind: "agent",
 						role,
 						provider: providerName,
-					},
-				});
+					} as const,
+				};
+				if (pendingSnapshot && budgetContext) {
+					await recordPlanReviewerStepWithSnapshot(
+						recordParams,
+						pendingSnapshot,
+						budgetContext,
+					);
+				} else {
+					await recordStepInternal(recordParams);
+				}
 			} catch (err) {
 				// Recording is a side effect — primary envelope already written.
 				// Warn on stderr with structured code, set non-zero exit via process.exitCode.
