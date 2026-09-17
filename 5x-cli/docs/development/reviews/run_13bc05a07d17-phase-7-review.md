@@ -89,3 +89,28 @@ The completion gate's fourth clause ("`--opt-in-budget-baseline` captures `captu
 
 **Phase 7 completion:** ⚠️ — gate behaviour is implemented and the initial-capture / fail-closed / v1-compat clauses are proven; opt-in clause needs handler coverage and the prior-step predicate needs to match the plan.  
 **Ready for Phase 8:** ✅ after the mechanical corrections above; nothing here changes the store or snapshot shapes Phase 8 reads.
+
+---
+
+## Addendum (2026-09-17) — Review follow-up fixes
+
+**Reviewed:** `293b937` (fix: address phase 7 budget capture review)
+
+### What's addressed (✅)
+
+- **P1.1 — `hasPriorPlanReviewerStep` prefix match**: `review-budget-context.ts:76–79` now matches `typeof stepName === "string" && stepName.startsWith("reviewer:")` on both the SQLite-index and record-line branches, exactly as specified. New `test/unit/commands/review-budget-context.test.ts` covers all four cases I asked for: index hit (`reviewer:review`), record-line-only hit with an empty index, a custom `reviewer:plan-review-custom` name, and the negative case (non-plan-phase reviewer step + plan-phase `author:implement` step, both correctly rejected). **Addressed.**
+- **P1.2 — command-level opt-in coverage**: `test/unit/commands/invoke.test.ts` adds "continued reviewer opt-in captures once before provider and records the step snapshot" — it asserts the provider is created exactly once, the baseline is `captureKind: "opt_in"` *before* the provider call (proving pre-provider capture), exactly one `baseline` budget line, one snapshot, and one step line (proving `optInCapturedBeforeInvoke` correctly suppresses the second opt-in assertion at record time rather than double-capturing or erroring). It also adds "opt-in on an author invocation is rejected before provider creation," covering the invalid-flag branch. `test/unit/commands/protocol-validate.test.ts` adds the three rejection cases I named: opt-in without `--record`, opt-in for a recorded non-plan phase, and opt-in on an author verdict. All six new/extended tests pass. **Addressed.**
+- **P2.1 — actionable opt-in-with-existing-baseline message**: `ensure-baseline.ts:37` now reads `"A review budget baseline already exists; retry without --opt-in-budget-baseline"`, and the new test in `ensure-baseline.test.ts` asserts the message via `/baseline already exists.*without --opt-in/i`. **Addressed.**
+- **P2.2 — exercise `TemplateRenderDeps`**: new `test/unit/commands/template-handler.test.ts` injects `createReviewBudgetContext` and `readPlan` into `templateRender`, driving the previously-uncovered `PLAN_NOT_FOUND` branch, and asserts both the injected context factory and the injected plan reader were actually invoked (`contextCalls`, `readPath`). **Addressed.**
+
+### Remaining concerns
+
+None from the prior review. No new issues were introduced by this revision — the diff is additive (one predicate broadened to its originally-specified form, one string literal reworded, four new test files/blocks) and full local verification is clean:
+
+- `bun test test/unit/review-budget test/unit/commands/invoke.test.ts test/unit/commands/protocol-validate.test.ts test/unit/commands/review-budget-context.test.ts test/unit/commands/template-handler.test.ts test/integration/commands/template-render.test.ts` → 211 pass / 0 fail
+- `bunx tsc --noEmit` → clean
+
+### Updated readiness
+
+- **Phase 7 completion:** ✅ — all four review items (2×P1, 2×P2) are resolved with matching test coverage; no regressions.
+- **Ready for next phase:** ✅ — no conditions remaining.
