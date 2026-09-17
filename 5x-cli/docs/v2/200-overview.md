@@ -149,3 +149,4 @@ Unlike the v1 "clean break" (`docs/v1/100-architecture.md` §8), v2 is **not** a
 | `205-output-normalization.md` | Grandfathered-command normalization + migration notes |
 | `206-review-budget-governance.md` | Delivery budgets, review convergence, debt credits, protocol and human-gate changes |
 | `207-state-segmentation.md` | Record vs. coordination tiers, git-native run records, ref-based progress resolution, index rebuild |
+| `208-run-watch-tui.md` | Draft proposal: responsive terminal run watcher, sticky prose, tool/file activity, and additive event metadata |
