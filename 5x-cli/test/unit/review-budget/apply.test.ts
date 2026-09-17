@@ -6,7 +6,10 @@ import {
 	RUN_RECORD_FORMAT_VERSION,
 } from "../../../src/control-plane/index.js";
 import type { ReviewerVerdict } from "../../../src/protocol.js";
-import { applyPlanReviewBudget } from "../../../src/review-budget/apply.js";
+import {
+	applyPlanReviewBudget,
+	findIncompleteDebtClaimItem,
+} from "../../../src/review-budget/apply.js";
 import {
 	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type ReviewBudgetConfig,
@@ -113,6 +116,15 @@ function apply(
 }
 
 describe("applyPlanReviewBudget", () => {
+	test("rejects reviewer-authored aggregates", () => {
+		const { store } = setup();
+		const aggregate = { ...verdict(), budget: { B0: 999 } } as ReviewerVerdict;
+		expect(apply(store, aggregate)).toMatchObject({
+			status: "error",
+			code: "INVALID_STRUCTURED_OUTPUT",
+		});
+	});
+
 	test("skips off and v1-compatible runs", () => {
 		const { store } = setup();
 		expect(
@@ -131,6 +143,17 @@ describe("applyPlanReviewBudget", () => {
 		expect(result.verdict.readiness).toBe("ready_with_corrections");
 		expect(result.verdict.budget).toMatchObject({ B0: 3, W: 3, R: 2, N: 1 });
 		expect(records.listLines("run1", "budget")).toHaveLength(1);
+	});
+
+	test("still-listed findings remain in R even when Addresses names them", () => {
+		const { store } = setup();
+		const addressedPlan = plan.replace(
+			"| DC0 (`intrinsic`) | - |",
+			"| DC0 (`intrinsic`) | F1 |",
+		);
+		const result = apply(store, verdict(), { planMarkdown: addressedPlan });
+		expect(result).toMatchObject({ status: "applied" });
+		if (result.status === "applied") expect(result.verdict.budget.R).toBe(2);
 	});
 
 	test("requires the initial assessment and active item deltas", () => {
@@ -200,6 +223,153 @@ describe("applyPlanReviewBudget", () => {
 			status: "error",
 			code: "BASELINE_ASSESSMENT_UNEXPECTED",
 		});
+	});
+
+	test("new and evidence-changed claims require a current assessment", () => {
+		const { store } = setup();
+		const first = apply(store, verdict());
+		if (first.status !== "applied") throw new Error("expected applied");
+		store.appendSnapshot({ ...first.pendingSnapshot, origin });
+		const continued = verdict({
+			baselineAssessment: undefined,
+			creditAssessments: [],
+		});
+		const changed = apply(store, continued, {
+			iteration: 2,
+			planMarkdown: plan.replace("Before: Direct", "Before: Changed direct"),
+		});
+		expect(changed).toMatchObject({
+			status: "error",
+			code: "CREDIT_ASSESSMENT_REQUIRED",
+		});
+
+		const newClaimPlan = plan
+			.replace(
+				"| W1 | Build it | 3 | -1 | DC0 (`intrinsic`) | - | Required |",
+				"| W1 | Build it | 3 | -1 | DC0 (`intrinsic`) | - | Required |\n| W2 | More | 1 | -1 | DC1 (`intrinsic`) | - | More |",
+			)
+			.replace(
+				"### Surface Snapshot",
+				"#### DC1\n- Target phase: phase-2\n- Minimal-compliant effort delta: 0\n- Minimal-compliant architecture delta: 0\n- Before: One path\n- After: Two paths\n\n### Surface Snapshot",
+			);
+		expect(
+			apply(store, continued, { iteration: 2, planMarkdown: newClaimPlan }),
+		).toMatchObject({
+			status: "error",
+			code: "CREDIT_ASSESSMENT_REQUIRED",
+		});
+	});
+
+	test("current reassessment overlays persisted eligibility", () => {
+		const { store } = setup();
+		const first = apply(store, verdict());
+		if (first.status !== "applied") throw new Error("expected applied");
+		store.appendSnapshot({ ...first.pendingSnapshot, origin });
+		const second = apply(
+			store,
+			verdict({
+				baselineAssessment: undefined,
+				creditAssessments: [
+					{
+						creditClaimId: "DC0",
+						eligibility: "ineligible",
+						coupling: "intrinsic",
+						reason: "Reassessed",
+					},
+				],
+			}),
+			{ iteration: 2 },
+		);
+		expect(second).toMatchObject({ status: "applied" });
+		if (second.status === "applied") {
+			expect(second.verdict.budget.N).toBe(0);
+			expect(second.pendingSnapshot.assessments[0]?.eligibility).toBe(
+				"ineligible",
+			);
+		}
+	});
+
+	test("author N comes from persisted ledger architecture and requiresHuman is advisory", () => {
+		const { store } = setup();
+		const baseItem = verdict().items[0];
+		if (!baseItem) throw new Error("missing fixture item");
+		const human = verdict({
+			readiness: "ready_with_corrections",
+			items: [
+				{
+					...baseItem,
+					action: "human_required",
+					architectureDelta: -5,
+					coupling: "unrelated",
+					creditClaim: {
+						creditClaimId: "RC1",
+						targetPhase: "phase-1",
+						minimalAlternativeEffortDelta: 0,
+						minimalAlternativeArchitectureDelta: 0,
+						before: "A",
+						after: "B",
+					},
+				},
+			],
+		});
+		const result = apply(store, human);
+		expect(result).toMatchObject({ status: "applied" });
+		if (result.status === "applied") {
+			expect(result.verdict.budget.N).toBe(1);
+			expect(result.verdict.budget.requiresHuman).toBe(true);
+			expect(result.verdict.readiness).toBe("ready_with_corrections");
+		}
+	});
+
+	test("defensive evidence validator rejects injected incomplete negative rows", () => {
+		const incomplete = {
+			estimateConfidence: "medium" as const,
+			workItems: [
+				{
+					id: "W1",
+					title: "Bad claim",
+					effort: 1 as const,
+					architectureDelta: -1 as const,
+					debtClaim: {
+						debtClaimId: "DC0",
+						coupling: "intrinsic" as const,
+					} as never,
+					addresses: [],
+					rationale: "bad",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		};
+		expect(findIncompleteDebtClaimItem(incomplete)?.id).toBe("W1");
+	});
+
+	test("idempotent retry uses persisted first assessment", () => {
+		const { store } = setup();
+		const first = apply(store, verdict());
+		if (first.status !== "applied") throw new Error("expected applied");
+		store.appendSnapshot({ ...first.pendingSnapshot, origin });
+		const retry = apply(
+			store,
+			verdict({
+				baselineAssessment: {
+					independentEffortEstimate: 99,
+					confidence: "low",
+					reason: "Conflicting retry",
+				},
+			}),
+		);
+		expect(retry).toMatchObject({ status: "applied" });
+		if (retry.status === "applied") {
+			expect(retry.verdict.budget.I).toBe(3);
+			expect(
+				retry.pendingSnapshot.baselineAssessment?.independentEffortEstimate,
+			).toBe(3);
+		}
 	});
 
 	test("warns in reserved enforced mode without changing routing", () => {

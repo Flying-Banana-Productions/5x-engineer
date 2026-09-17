@@ -69,6 +69,7 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
+import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
 	type ReviewBudgetCommandContext,
@@ -76,7 +77,11 @@ import {
 } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { requireAmbientRunId } from "./run-identity.js";
-import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import {
+	prepareRecordStepAppend,
+	RecordError,
+	recordStepInternal,
+} from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
 	hasStdinVarFlag,
@@ -98,6 +103,7 @@ export interface InvokeAgentDeps {
 	prepareLogPath?: typeof defaultPrepareLogPath;
 	appendSessionStart?: typeof defaultAppendSessionStart;
 	createProvider?: typeof defaultCreateProvider;
+	createReviewBudgetContext?: typeof createReviewBudgetContext;
 }
 
 export interface InvokeParams {
@@ -643,46 +649,100 @@ export async function invokeAgent(
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
 	const recordPhase = params.phase ?? variables.phase_number;
-	if (role === "reviewer" && recordPhase === "plan") {
-		budgetContext = await createReviewBudgetContext({
-			runId,
-			startDir: workdir,
-		});
+	if (
+		role === "reviewer" &&
+		recordPhase === "plan" &&
+		config.reviewBudget.mode !== "off"
+	) {
+		try {
+			budgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId, startDir: workdir });
+		} catch (err) {
+			if (!params.record && err instanceof RecordContextError) {
+				budgetContext = undefined;
+			} else if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			} else throw err;
+		}
+	}
+	if (
+		role === "reviewer" &&
+		recordPhase === "plan" &&
+		budgetContext &&
+		config.reviewBudget.mode !== "off"
+	) {
 		const baseline = budgetContext.store.getBaseline(runId);
-		if (params.record || baseline) {
-			const stepName =
-				params.recordStep ?? resolved.stepName ?? "reviewer:review";
+		let admissionEligible = true;
+		const budgetStepName =
+			params.recordStep ?? resolved.stepName ?? "reviewer:review";
+		if (params.record && !baseline) {
+			try {
+				await prepareRecordStepAppend(
+					{
+						run: runId,
+						stepName: budgetStepName,
+						result: JSON.stringify(structured),
+						phase: recordPhase,
+						iteration: params.iteration,
+						performer: {
+							kind: "agent",
+							role,
+							provider: providerName,
+						},
+					},
+					budgetContext,
+				);
+			} catch (err) {
+				if (err instanceof RecordError) admissionEligible = false;
+				else throw err;
+			}
+		}
+		if ((params.record || baseline) && admissionEligible) {
+			const stepName = budgetStepName;
 			const performer = {
 				kind: "agent",
 				role: "reviewer",
 				provider: providerName,
 			} as const;
-			const applied = applyPlanReviewBudget({
-				runId,
-				stepName,
-				phase: recordPhase,
-				iteration: params.iteration,
-				planMarkdown: readFileSync(
+			let planMarkdown: string;
+			try {
+				planMarkdown = readFileSync(
 					budgetContext.executionContext.effectivePlanPath,
 					"utf-8",
-				),
-				verdict: structured as ReviewerVerdict,
-				config: budgetContext.config.reviewBudget,
-				store: budgetContext.store,
-				hasPriorPlanReviewerStep: getStepsByPhase(
-					budgetContext.db,
+				);
+			} catch (err) {
+				if (!params.record) planMarkdown = "";
+				else {
+					const message = err instanceof Error ? err.message : String(err);
+					outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+				}
+			}
+			if (planMarkdown) {
+				const applied = applyPlanReviewBudget({
 					runId,
-					"plan",
-				).some((step) => step.step_name.startsWith("reviewer:")),
-				optInBaseline: params.optInBudgetBaseline ?? false,
-				origin: budgetContext.originFor(performer),
-				warn: (message) => console.error(`Warning: ${message}`),
-			});
-			if (applied.status === "error")
-				outputError(applied.code, applied.message);
-			if (applied.status === "applied") {
-				structured = applied.verdict;
-				pendingSnapshot = applied.pendingSnapshot;
+					stepName,
+					phase: recordPhase,
+					iteration: params.iteration,
+					planMarkdown,
+					verdict: structured as ReviewerVerdict,
+					config: budgetContext.config.reviewBudget,
+					store: budgetContext.store,
+					hasPriorPlanReviewerStep: getStepsByPhase(
+						budgetContext.db,
+						runId,
+						"plan",
+					).some((step) => step.step_name.startsWith("reviewer:")),
+					optInBaseline: params.optInBudgetBaseline ?? false,
+					origin: budgetContext.originFor(performer),
+					warn: (message) => console.error(`Warning: ${message}`),
+				});
+				if (applied.status === "error")
+					outputError(applied.code, applied.message);
+				if (applied.status === "applied") {
+					structured = applied.verdict;
+					pendingSnapshot = applied.pendingSnapshot;
+				}
 			}
 		}
 	}
@@ -748,7 +808,7 @@ export async function invokeAgent(
 						budgetContext,
 					);
 				} else {
-					await recordStepInternal(recordParams);
+					await recordStepInternal(recordParams, budgetContext);
 				}
 			} catch (err) {
 				// Recording is a side effect — primary envelope already written.

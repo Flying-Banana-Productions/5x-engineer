@@ -86,13 +86,13 @@ Additionally, the context is built whenever `role === reviewer && phase === plan
 - (none)
 
 **P1 recommended**
-- [ ] P1.1 Write the five missing/unchanged test files and the missing `apply.test.ts` cases; make plan checkboxes truthful
-- [ ] P1.2 Structured handling of `RecordContextError` / plan read errors; dry-validate degrades instead of failing
+- [x] P1.1 Write the five missing/unchanged test files and the missing `apply.test.ts` cases; make plan checkboxes truthful
+- [x] P1.2 Structured handling of `RecordContextError` / plan read errors; dry-validate degrades instead of failing
 
 **P2**
-- [ ] Active-run guard before safety-net baseline capture
-- [ ] Bound the omitted-iteration retry loop
-- [ ] Persisted `I` wins on retry; single `listSnapshots` read
+- [x] Active-run guard before safety-net baseline capture
+- [x] Bound the omitted-iteration retry loop
+- [x] Persisted `I` wins on retry; single `listSnapshots` read
 
 ---
 

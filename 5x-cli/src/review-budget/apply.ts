@@ -82,6 +82,16 @@ function sameClaim(current: ParsedWorkItem, previous: ParsedWorkItem): boolean {
 	);
 }
 
+export function findIncompleteDebtClaimItem(
+	ledger: ParsedDeliveryBudget,
+): ParsedWorkItem | undefined {
+	return ledger.workItems.find(
+		(item) =>
+			item.architectureDelta < 0 &&
+			!isCompleteDebtClaimEvidence(item.debtClaim),
+	);
+}
+
 export function applyPlanReviewBudget(
 	input: ApplyPlanReviewBudgetInput,
 ): ApplyPlanReviewBudgetResult {
@@ -115,34 +125,34 @@ export function applyPlanReviewBudget(
 
 	const parsed = parseDeliveryBudget(input.planMarkdown);
 	if (!parsed.ok) return error(parsed.code, parsed.message);
-	for (const item of parsed.value.workItems) {
-		if (
-			item.architectureDelta < 0 &&
-			!isCompleteDebtClaimEvidence(item.debtClaim)
-		) {
-			return error(
-				"BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED",
-				`Work item '${item.id}' requires complete debt-claim evidence`,
-			);
-		}
+	const incompleteClaimItem = findIncompleteDebtClaimItem(parsed.value);
+	if (incompleteClaimItem) {
+		return error(
+			"BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED",
+			`Work item '${incompleteClaimItem.id}' requires complete debt-claim evidence`,
+		);
 	}
 
-	const latest = input.store.latestSnapshot(input.runId);
-	const matchingSnapshot = input.store
-		.listSnapshots(input.runId)
-		.find(
-			(snapshot) =>
-				snapshot.stepName === input.stepName &&
-				(snapshot.phase ?? undefined) === input.phase &&
-				(snapshot.iteration ?? undefined) === input.iteration,
-		);
+	const snapshots = input.store.listSnapshots(input.runId);
+	const firstSnapshot = snapshots[0];
+	const latest = snapshots.at(-1);
+	const matchingSnapshot = snapshots.find(
+		(snapshot) =>
+			snapshot.stepName === input.stepName &&
+			(snapshot.phase ?? undefined) === input.phase &&
+			(snapshot.iteration ?? undefined) === input.iteration,
+	);
+	const isInitialRetry =
+		matchingSnapshot !== undefined &&
+		matchingSnapshot === firstSnapshot &&
+		firstSnapshot.baselineAssessment !== undefined;
 	if (!latest && !input.verdict.baselineAssessment) {
 		return error(
 			"BASELINE_ASSESSMENT_REQUIRED",
 			"baselineAssessment is required on the first active plan review",
 		);
 	}
-	if (latest && input.verdict.baselineAssessment && !matchingSnapshot) {
+	if (latest && input.verdict.baselineAssessment && !isInitialRetry) {
 		return error(
 			"BASELINE_ASSESSMENT_UNEXPECTED",
 			"baselineAssessment is initial-review only",
@@ -265,8 +275,12 @@ export function applyPlanReviewBudget(
 		authorClaimIds.has(assessment.creditClaimId),
 	);
 	const firstAssessment =
-		input.verdict.baselineAssessment ??
-		input.store.listSnapshots(input.runId)[0]?.baselineAssessment;
+		firstSnapshot?.baselineAssessment ?? input.verdict.baselineAssessment;
+	const snapshotBaselineAssessment = isInitialRetry
+		? firstSnapshot.baselineAssessment
+		: latest
+			? undefined
+			: input.verdict.baselineAssessment;
 	const { mode: _mode, ...thresholds } = input.config;
 	const derived = deriveBudget({
 		B0: baseline.b0,
@@ -288,8 +302,8 @@ export function applyPlanReviewBudget(
 		currentLedger: parsed.value,
 		findings,
 		assessments: effectiveAssessments,
-		...(input.verdict.baselineAssessment
-			? { baselineAssessment: input.verdict.baselineAssessment }
+		...(snapshotBaselineAssessment
+			? { baselineAssessment: snapshotBaselineAssessment }
 			: {}),
 		derived,
 	};

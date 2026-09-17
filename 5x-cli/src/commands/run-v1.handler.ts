@@ -2001,8 +2001,14 @@ export async function finalizeAndWritePreparedStep(
 	dbResult: ReturnType<typeof recordStep>;
 }> {
 	const callerOmittedIteration = prepared.iteration === undefined;
+	const initialSummary = computeRunSummary(ctx.db, prepared.runId);
+	const maxAttempts = callerOmittedIteration
+		? Math.max(1, prepared.maxSteps - initialSummary.total_steps)
+		: 1;
+	let attempts = 0;
 	let retry = false;
 	for (;;) {
+		attempts++;
 		if (retry) {
 			const summary = computeRunSummary(ctx.db, prepared.runId);
 			if (summary.total_steps >= prepared.maxSteps) {
@@ -2110,6 +2116,12 @@ export async function finalizeAndWritePreparedStep(
 		}
 
 		if (!created && callerOmittedIteration) {
+			if (attempts >= maxAttempts) {
+				throw new RecordError(
+					"RECORD_ITERATION_RETRY_EXHAUSTED",
+					`Could not allocate a unique iteration after ${attempts} attempts`,
+				);
+			}
 			retry = true;
 			continue;
 		}

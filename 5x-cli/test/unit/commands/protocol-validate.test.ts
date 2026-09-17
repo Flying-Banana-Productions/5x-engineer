@@ -19,8 +19,13 @@ import {
 	protocolValidate,
 } from "../../../src/commands/protocol.handler.js";
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
+import { RecordContextError } from "../../../src/commands/record-context.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
+import {
+	makeBudgetContext,
+	pendingSnapshot,
+} from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,6 +39,16 @@ function makeTmpDir(): string {
 	mkdirSync(dir, { recursive: true });
 	return dir;
 }
+
+const budgetPlan = `## Delivery Budget
+- Estimate confidence: high
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+| --- | --- | --- | --- | --- | --- | --- |
+| W1 | Work | 2 | 0 | - | - | Needed |
+### Surface Snapshot
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0`;
 
 function cleanupDir(dir: string): void {
 	try {
@@ -177,6 +192,226 @@ describe("protocol validate author (unit)", () => {
 			// We catch CliError to detect validation failures.
 			await protocolValidate({ role: "author", input: inputPath });
 			// If we get here, validation passed (outputSuccess was called)
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+describe("protocol validate reviewer — active review budget", () => {
+	function reviewerInput(dir: string): string {
+		return writeInput(dir, {
+			readiness: "ready",
+			items: [],
+			baselineAssessment: {
+				independentEffortEstimate: 2,
+				confidence: "high",
+				reason: "estimate",
+			},
+			creditAssessments: [],
+		});
+	}
+
+	test("record decorates the durable result and writes one snapshot", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			const payload = ctx.recordStore.listLines("run1", "steps")[0]
+				?.payload as { result_json?: { budget?: { B0?: number } } };
+			expect(payload.result_json?.budget?.B0).toBe(2);
+			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(2);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("direct enforced capture uses the injected warning sink", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		const warnings: string[] = [];
+		ctx.config.reviewBudget.mode = "enforced";
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(warnings).toHaveLength(1);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("terminal admission failure captures no baseline or snapshot", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ status: "completed" });
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
+		} finally {
+			process.exitCode = 0;
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("at-limit admission failure captures no baseline or snapshot", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ maxSteps: 1 });
+		ctx.db.run(
+			"INSERT INTO steps(run_id, step_name, phase, iteration, result_json) VALUES ('run1','old','plan',1,'{}')",
+		);
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
+		} finally {
+			process.exitCode = 0;
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("dry validation degrades on context and plan read failures", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const input = reviewerInput(dir);
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "plan",
+				startDir: dir,
+				createReviewBudgetContext: async () => {
+					throw new RecordContextError("WORKTREE_MISSING", "missing");
+				},
+			});
+			const ctx = makeBudgetContext();
+			ctx.store.captureBaseline({
+				runId: "run1",
+				captureKind: "initial",
+				parsed: pendingSnapshot().currentLedger,
+				configSnapshot: pendingSnapshot().derived.thresholds,
+				origin: ctx.originFor({ kind: "system", role: "cli" }),
+			});
+			ctx.executionContext.effectivePlanPath = join(dir, "missing.md");
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "plan",
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			ctx.db.close();
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("mode off skips review-budget context creation", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(
+				join(dir, "5x.toml.local"),
+				'[reviewBudget]\nmode = "off"\n',
+			);
+			let calls = 0;
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				phase: "plan",
+				startDir: dir,
+				createReviewBudgetContext: async () => {
+					calls++;
+					throw new Error("must not be called");
+				},
+			});
+			expect(calls).toBe(0);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("record maps context failures to structured CliError", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: reviewerInput(dir),
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "plan",
+					startDir: dir,
+					createReviewBudgetContext: async () => {
+						throw new RecordContextError("WORKTREE_MISSING", "missing");
+					},
+				}),
+			).rejects.toMatchObject({ code: "WORKTREE_MISSING" });
 		} finally {
 			cleanupDir(dir);
 		}

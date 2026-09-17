@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { getStepsByPhase } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
@@ -26,6 +27,7 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
+import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
 	type ReviewBudgetCommandContext,
@@ -37,7 +39,11 @@ import {
 	REQUIRED_REMEDIATION,
 	resolveAmbientRunId,
 } from "./run-identity.js";
-import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import {
+	prepareRecordStepAppend,
+	RecordError,
+	recordStepInternal,
+} from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,6 +66,7 @@ export interface ProtocolValidateParams {
 	env?: NodeJS.Dict<string>;
 	optInBudgetBaseline?: boolean;
 	warn?: (message: string) => void;
+	createReviewBudgetContext?: typeof createReviewBudgetContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,47 +476,101 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
-	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
+	const budgetMode =
+		role === "reviewer" && resolvedPhase === "plan" && params.run
+			? (await loadConfig(resolve(params.startDir ?? "."))).config.reviewBudget
+					.mode
+			: "off";
+	if (
+		role === "reviewer" &&
+		resolvedPhase === "plan" &&
+		params.run &&
+		budgetMode !== "off"
+	) {
+		const contextFactory =
+			params.createReviewBudgetContext ?? createReviewBudgetContext;
 		try {
-			budgetContext = await createReviewBudgetContext({
+			budgetContext = await contextFactory({
 				runId: params.run,
 				startDir: params.startDir,
 			});
+		} catch (err) {
+			if (!params.record && err instanceof RecordContextError) {
+				budgetContext = undefined;
+			} else if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			} else {
+				throw err;
+			}
+		}
+		if (budgetContext && budgetContext.config.reviewBudget.mode !== "off") {
 			const baseline = budgetContext.store.getBaseline(params.run);
-			if (params.record || baseline) {
-				const planPath = budgetContext.executionContext.effectivePlanPath;
-				const planMarkdown = readFileSync(planPath, "utf-8");
-				const performer = { kind: "agent", role: "reviewer" } as const;
-				const applied = applyPlanReviewBudget({
-					runId: params.run,
-					stepName: recordStepName ?? params.step ?? "reviewer:review",
-					phase: resolvedPhase,
-					iteration: params.iteration,
-					planMarkdown,
-					verdict: validated as ReviewerVerdict,
-					config: budgetContext.config.reviewBudget,
-					store: budgetContext.store,
-					hasPriorPlanReviewerStep: getStepsByPhase(
-						budgetContext.db,
-						params.run,
-						"plan",
-					).some((step) => step.step_name.startsWith("reviewer:")),
-					optInBaseline: params.optInBudgetBaseline ?? false,
-					origin: budgetContext.originFor(performer),
-					warn:
-						params.warn ?? ((message) => console.error(`Warning: ${message}`)),
-				});
-				if (applied.status === "error") {
-					outputError(applied.code, applied.message);
-				}
-				if (applied.status === "applied") {
-					validated = applied.verdict;
-					pendingSnapshot = applied.pendingSnapshot;
+			let admissionEligible = true;
+			if (params.record && !baseline && recordStepName) {
+				try {
+					await prepareRecordStepAppend(
+						{
+							run: params.run,
+							stepName: recordStepName,
+							result: JSON.stringify(validated),
+							phase: resolvedPhase,
+							iteration: params.iteration,
+							performer: { kind: "agent", role },
+						},
+						budgetContext,
+					);
+				} catch (err) {
+					if (err instanceof RecordError) admissionEligible = false;
+					else throw err;
 				}
 			}
-		} catch (err) {
-			if (err instanceof RecordError) outputError(err.code, err.message);
-			throw err;
+			if ((params.record || baseline) && admissionEligible) {
+				let planMarkdown: string;
+				try {
+					planMarkdown = readFileSync(
+						budgetContext.executionContext.effectivePlanPath,
+						"utf-8",
+					);
+				} catch (err) {
+					if (!params.record) planMarkdown = "";
+					else {
+						const message = err instanceof Error ? err.message : String(err);
+						outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+					}
+				}
+				if (!planMarkdown) {
+					// Dry validation remains v1-compatible when its optional context vanished.
+				} else {
+					const performer = { kind: "agent", role: "reviewer" } as const;
+					const applied = applyPlanReviewBudget({
+						runId: params.run,
+						stepName: recordStepName ?? params.step ?? "reviewer:review",
+						phase: resolvedPhase,
+						iteration: params.iteration,
+						planMarkdown,
+						verdict: validated as ReviewerVerdict,
+						config: budgetContext.config.reviewBudget,
+						store: budgetContext.store,
+						hasPriorPlanReviewerStep: getStepsByPhase(
+							budgetContext.db,
+							params.run,
+							"plan",
+						).some((step) => step.step_name.startsWith("reviewer:")),
+						optInBaseline: params.optInBudgetBaseline ?? false,
+						origin: budgetContext.originFor(performer),
+						warn:
+							params.warn ??
+							((message) => console.error(`Warning: ${message}`)),
+					});
+					if (applied.status === "error") {
+						outputError(applied.code, applied.message);
+					}
+					if (applied.status === "applied") {
+						validated = applied.verdict;
+						pendingSnapshot = applied.pendingSnapshot;
+					}
+				}
+			}
 		}
 	}
 
@@ -569,7 +630,7 @@ export async function protocolValidate(
 					budgetContext,
 				);
 			} else {
-				await recordStepInternal(recordParams);
+				await recordStepInternal(recordParams, budgetContext);
 			}
 		} catch (err) {
 			// Recording is a side effect — primary envelope already written.
