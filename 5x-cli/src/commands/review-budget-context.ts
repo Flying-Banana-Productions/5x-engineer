@@ -76,7 +76,8 @@ export function hasPriorPlanReviewerStep(
 ): boolean {
 	const isPlanReviewer = (stepName: unknown, phase: unknown) =>
 		phase === "plan" &&
-		(stepName === "reviewer:review" || stepName === "reviewer:plan");
+		typeof stepName === "string" &&
+		stepName.startsWith("reviewer:");
 	if (
 		getStepsByPhase(ctx.db, runId, "plan").some((step) =>
 			isPlanReviewer(step.step_name, step.phase),

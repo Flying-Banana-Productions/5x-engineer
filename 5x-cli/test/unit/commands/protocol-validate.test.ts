@@ -212,6 +212,67 @@ describe("protocol validate reviewer — active review budget", () => {
 		});
 	}
 
+	test("opt-in is rejected without --record", async () => {
+		const dir = makeTmpDir();
+		try {
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: reviewerInput(dir),
+					phase: "plan",
+					optInBudgetBaseline: true,
+				}),
+			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("opt-in is rejected for a recorded non-plan reviewer phase", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: reviewerInput(dir),
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "phase-1",
+					startDir: dir,
+					optInBudgetBaseline: true,
+				}),
+			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("opt-in is rejected for an author protocol result", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const input = writeInput(dir, { result: "complete", commit: "abc123" });
+			await expect(
+				protocolValidate({
+					role: "author",
+					input,
+					run: "run1",
+					record: true,
+					step: "author:implement",
+					phase: "plan",
+					startDir: dir,
+					optInBudgetBaseline: true,
+				}),
+			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
 	test("record decorates the durable result and writes one snapshot", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();

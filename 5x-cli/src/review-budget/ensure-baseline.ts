@@ -34,7 +34,7 @@ export function ensurePlanReviewBaseline(input: {
 				status: "error",
 				code: "BUDGET_BASELINE_OPT_IN_INVALID",
 				message:
-					"--opt-in-budget-baseline is valid only for a mid-review run without a baseline",
+					"A review budget baseline already exists; retry without --opt-in-budget-baseline",
 			};
 		}
 		return { status: "skipped", reason: "already" };

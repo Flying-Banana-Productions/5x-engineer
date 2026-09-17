@@ -201,6 +201,42 @@ describe("ensurePlanReviewBaseline", () => {
 		});
 	});
 
+	test("existing baseline opt-in rejection explains to omit the flag", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "99999999-9999-4999-8999-999999999999" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { store } = setup(origin);
+		ensurePlanReviewBaseline({
+			runId: "run1",
+			planMarkdown: plan,
+			config,
+			store,
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
+			origin,
+			warn: () => {},
+		});
+		expect(
+			ensurePlanReviewBaseline({
+				runId: "run1",
+				planMarkdown: plan,
+				config,
+				store,
+				hasPriorPlanReviewerStep: true,
+				optIn: true,
+				origin,
+				warn: () => {},
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "BUDGET_BASELINE_OPT_IN_INVALID",
+			message: expect.stringMatching(
+				/baseline already exists.*without --opt-in/i,
+			),
+		});
+	});
+
 	test("incomplete debt-claim evidence fails closed", () => {
 		const origin: RecordOrigin = {
 			recorder: { installation_id: "77777777-7777-4777-8777-777777777777" },
