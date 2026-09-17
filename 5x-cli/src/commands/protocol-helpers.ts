@@ -14,8 +14,8 @@ import {
 	assertAuthorStatus,
 	assertReviewerVerdict,
 	isStructuredOutputError,
-	rejectCliOwnedBudgetFields,
 	type ReviewerVerdict,
+	rejectCliOwnedBudgetFields,
 } from "../protocol.js";
 import {
 	normalizeAuthorStatus,

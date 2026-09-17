@@ -13,7 +13,8 @@ const baselineAssessment: BaselineAssessment = {
 	confidence: "high",
 	reason: "Independent estimate",
 };
-const protocolBaselineAssessment: ProtocolBaselineAssessment = baselineAssessment;
+const protocolBaselineAssessment: ProtocolBaselineAssessment =
+	baselineAssessment;
 const verdictBaselineAssessment: ReviewerVerdict["baselineAssessment"] =
 	protocolBaselineAssessment;
 

@@ -1,8 +1,5 @@
 import type { BaselineAssessment } from "./review-budget/types.js";
-import {
-	ARCHITECTURE_DELTAS,
-	EFFORT_POINTS,
-} from "./review-budget/types.js";
+import { ARCHITECTURE_DELTAS, EFFORT_POINTS } from "./review-budget/types.js";
 
 export type { BaselineAssessment };
 
@@ -89,7 +86,8 @@ export function rejectCliOwnedBudgetFields(value: unknown): void {
 	const visited = new Set<object>();
 	while (pending.length > 0) {
 		const current = pending.pop();
-		if (!current || typeof current !== "object" || visited.has(current)) continue;
+		if (!current || typeof current !== "object" || visited.has(current))
+			continue;
 		visited.add(current);
 		if (Array.isArray(current)) {
 			pending.push(...current);
@@ -359,8 +357,14 @@ export function assertReviewerVerdict(
 		if (item.coupling !== undefined && !coupling(item.coupling)) {
 			fail(`item '${item.id}' has invalid 'coupling'.`);
 		}
-		if (item.architectureDelta !== undefined && item.architectureDelta < 0 && !item.coupling) {
-			fail(`item '${item.id}' requires 'coupling' when 'architectureDelta' is negative.`);
+		if (
+			item.architectureDelta !== undefined &&
+			item.architectureDelta < 0 &&
+			!item.coupling
+		) {
+			fail(
+				`item '${item.id}' requires 'coupling' when 'architectureDelta' is negative.`,
+			);
 		}
 		if (
 			item.estimateConfidence !== undefined &&
@@ -372,28 +376,75 @@ export function assertReviewerVerdict(
 		}
 		if (item.creditClaim !== undefined) {
 			const claim = item.creditClaim;
-			if (!nonEmpty(claim.creditClaimId)) fail(`item '${item.id}' creditClaim requires a non-empty 'creditClaimId'.`);
-			if (!nonEmpty(claim.targetPhase)) fail(`item '${item.id}' creditClaim requires a non-empty 'targetPhase'.`);
-			if (!nonEmpty(claim.before) || !nonEmpty(claim.after)) fail(`item '${item.id}' creditClaim requires non-empty 'before' and 'after'.`);
-			if (!Number.isInteger(claim.minimalAlternativeEffortDelta) || (claim.minimalAlternativeEffortDelta !== 0 && !EFFORT_POINTS.includes(claim.minimalAlternativeEffortDelta as never))) fail(`item '${item.id}' creditClaim has invalid 'minimalAlternativeEffortDelta'.`);
-			if (!ARCHITECTURE_DELTAS.includes(claim.minimalAlternativeArchitectureDelta as never)) fail(`item '${item.id}' creditClaim has invalid 'minimalAlternativeArchitectureDelta'.`);
+			if (!nonEmpty(claim.creditClaimId))
+				fail(
+					`item '${item.id}' creditClaim requires a non-empty 'creditClaimId'.`,
+				);
+			if (!nonEmpty(claim.targetPhase))
+				fail(
+					`item '${item.id}' creditClaim requires a non-empty 'targetPhase'.`,
+				);
+			if (!nonEmpty(claim.before) || !nonEmpty(claim.after))
+				fail(
+					`item '${item.id}' creditClaim requires non-empty 'before' and 'after'.`,
+				);
+			if (
+				!Number.isInteger(claim.minimalAlternativeEffortDelta) ||
+				(claim.minimalAlternativeEffortDelta !== 0 &&
+					!EFFORT_POINTS.includes(claim.minimalAlternativeEffortDelta as never))
+			)
+				fail(
+					`item '${item.id}' creditClaim has invalid 'minimalAlternativeEffortDelta'.`,
+				);
+			if (
+				!ARCHITECTURE_DELTAS.includes(
+					claim.minimalAlternativeArchitectureDelta as never,
+				)
+			)
+				fail(
+					`item '${item.id}' creditClaim has invalid 'minimalAlternativeArchitectureDelta'.`,
+				);
 		}
 	}
 
 	if (verdict.baselineAssessment !== undefined) {
 		const assessment = verdict.baselineAssessment;
-		if (!Number.isInteger(assessment.independentEffortEstimate) || assessment.independentEffortEstimate < 0) fail("baselineAssessment has invalid 'independentEffortEstimate'.");
-		if (assessment.confidence !== "low" && assessment.confidence !== "medium" && assessment.confidence !== "high") fail("baselineAssessment has invalid 'confidence'.");
-		if (!nonEmpty(assessment.reason)) fail("baselineAssessment requires a non-empty 'reason'.");
+		if (
+			!Number.isInteger(assessment.independentEffortEstimate) ||
+			assessment.independentEffortEstimate < 0
+		)
+			fail("baselineAssessment has invalid 'independentEffortEstimate'.");
+		if (
+			assessment.confidence !== "low" &&
+			assessment.confidence !== "medium" &&
+			assessment.confidence !== "high"
+		)
+			fail("baselineAssessment has invalid 'confidence'.");
+		if (!nonEmpty(assessment.reason))
+			fail("baselineAssessment requires a non-empty 'reason'.");
 	}
 
 	if (verdict.creditAssessments !== undefined) {
-		if (!Array.isArray(verdict.creditAssessments)) fail("'creditAssessments' must be an array.");
+		if (!Array.isArray(verdict.creditAssessments))
+			fail("'creditAssessments' must be an array.");
 		for (const assessment of verdict.creditAssessments) {
-			if (!nonEmpty(assessment.creditClaimId)) fail("creditAssessment requires a non-empty 'creditClaimId'.");
-			if (assessment.eligibility !== "eligible" && assessment.eligibility !== "ineligible") fail(`creditAssessment '${assessment.creditClaimId}' has invalid 'eligibility'.`);
-			if (!coupling(assessment.coupling)) fail(`creditAssessment '${assessment.creditClaimId}' has invalid 'coupling'.`);
-			if (!nonEmpty(assessment.reason)) fail(`creditAssessment '${assessment.creditClaimId}' requires a non-empty 'reason'.`);
+			if (!nonEmpty(assessment.creditClaimId))
+				fail("creditAssessment requires a non-empty 'creditClaimId'.");
+			if (
+				assessment.eligibility !== "eligible" &&
+				assessment.eligibility !== "ineligible"
+			)
+				fail(
+					`creditAssessment '${assessment.creditClaimId}' has invalid 'eligibility'.`,
+				);
+			if (!coupling(assessment.coupling))
+				fail(
+					`creditAssessment '${assessment.creditClaimId}' has invalid 'coupling'.`,
+				);
+			if (!nonEmpty(assessment.reason))
+				fail(
+					`creditAssessment '${assessment.creditClaimId}' requires a non-empty 'reason'.`,
+				);
 		}
 	}
 

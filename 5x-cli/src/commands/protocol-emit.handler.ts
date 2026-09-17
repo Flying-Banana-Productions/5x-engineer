@@ -17,8 +17,8 @@ import {
 	assertReviewerVerdict,
 	type BaselineAssessment,
 	type CreditAssessment,
-	rejectCliOwnedBudgetFields,
 	type ReviewerVerdict,
+	rejectCliOwnedBudgetFields,
 	type VerdictItem,
 } from "../protocol.js";
 import {
@@ -186,10 +186,7 @@ export async function protocolEmitReviewer(
 				baselineAssessmentJson,
 			) as BaselineAssessment;
 		} catch {
-			outputError(
-				"INVALID_JSON",
-				"--baseline-assessment is not valid JSON.",
-			);
+			outputError("INVALID_JSON", "--baseline-assessment is not valid JSON.");
 		}
 		try {
 			rejectCliOwnedBudgetFields(baselineAssessment);
