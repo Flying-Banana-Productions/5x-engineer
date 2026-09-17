@@ -14,6 +14,7 @@ import {
 	assertAuthorStatus,
 	assertReviewerVerdict,
 	isStructuredOutputError,
+	rejectCliOwnedBudgetFields,
 	type ReviewerVerdict,
 } from "../protocol.js";
 import {
@@ -87,6 +88,16 @@ export function validateStructuredOutput(
 	if (role === "author") {
 		valueToValidate = normalizeAuthorStatus(structured);
 	} else {
+		try {
+			rejectCliOwnedBudgetFields(structured);
+		} catch (err) {
+			return {
+				ok: false,
+				code: "INVALID_STRUCTURED_OUTPUT",
+				message: err instanceof Error ? err.message : String(err),
+				detail: { raw: structured },
+			};
+		}
 		valueToValidate = normalizeReviewerVerdict(structured);
 	}
 

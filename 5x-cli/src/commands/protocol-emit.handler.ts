@@ -15,6 +15,9 @@ import {
 	type AuthorStatus,
 	assertAuthorStatus,
 	assertReviewerVerdict,
+	type BaselineAssessment,
+	type CreditAssessment,
+	rejectCliOwnedBudgetFields,
 	type ReviewerVerdict,
 	type VerdictItem,
 } from "../protocol.js";
@@ -31,6 +34,8 @@ export interface ProtocolEmitReviewerParams {
 	ready?: boolean;
 	item?: string[];
 	summary?: string;
+	baselineAssessment?: string;
+	creditAssessment?: string[];
 	stdinData?: string;
 }
 
@@ -67,7 +72,14 @@ async function readStdinIfPiped(): Promise<string | undefined> {
 export async function protocolEmitReviewer(
 	params: ProtocolEmitReviewerParams,
 ): Promise<void> {
-	const { ready, item: itemJsonStrings, summary, stdinData } = params;
+	const {
+		ready,
+		item: itemJsonStrings,
+		summary,
+		baselineAssessment: baselineAssessmentJson,
+		creditAssessment: creditAssessmentJsonStrings,
+		stdinData,
+	} = params;
 
 	// Stdin fallback: if no readiness flags provided and stdin has data
 	if (ready === undefined) {
@@ -83,6 +95,14 @@ export async function protocolEmitReviewer(
 				);
 			}
 
+			try {
+				rejectCliOwnedBudgetFields(parsed);
+			} catch (err) {
+				outputError(
+					"INVALID_STRUCTURED_OUTPUT",
+					err instanceof Error ? err.message : String(err),
+				);
+			}
 			const normalized = normalizeReviewerVerdict(parsed);
 			const verdict = normalized as ReviewerVerdict;
 
@@ -117,6 +137,14 @@ export async function protocolEmitReviewer(
 			}
 
 			const rec = parsed as Record<string, unknown>;
+			try {
+				rejectCliOwnedBudgetFields(rec);
+			} catch (err) {
+				outputError(
+					"INVALID_STRUCTURED_OUTPUT",
+					err instanceof Error ? err.message : String(err),
+				);
+			}
 			const item: VerdictItem = {
 				id: (rec.id as string) || `R${i + 1}`,
 				title: (rec.title as string) || "",
@@ -125,9 +153,74 @@ export async function protocolEmitReviewer(
 				...(rec.priority
 					? { priority: rec.priority as VerdictItem["priority"] }
 					: {}),
+				...(rec.scopeClass !== undefined
+					? { scopeClass: rec.scopeClass as VerdictItem["scopeClass"] }
+					: {}),
+				...(rec.effortDelta !== undefined
+					? { effortDelta: rec.effortDelta as number }
+					: {}),
+				...(rec.architectureDelta !== undefined
+					? { architectureDelta: rec.architectureDelta as number }
+					: {}),
+				...(rec.coupling !== undefined
+					? { coupling: rec.coupling as VerdictItem["coupling"] }
+					: {}),
+				...(rec.estimateConfidence !== undefined
+					? {
+							estimateConfidence:
+								rec.estimateConfidence as VerdictItem["estimateConfidence"],
+						}
+					: {}),
+				...(rec.creditClaim !== undefined
+					? { creditClaim: rec.creditClaim as VerdictItem["creditClaim"] }
+					: {}),
 			};
 			items.push(item);
 		}
+	}
+
+	let baselineAssessment: BaselineAssessment | undefined;
+	if (baselineAssessmentJson !== undefined) {
+		try {
+			baselineAssessment = JSON.parse(
+				baselineAssessmentJson,
+			) as BaselineAssessment;
+		} catch {
+			outputError(
+				"INVALID_JSON",
+				"--baseline-assessment is not valid JSON.",
+			);
+		}
+		try {
+			rejectCliOwnedBudgetFields(baselineAssessment);
+		} catch (err) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+	}
+
+	const creditAssessments: CreditAssessment[] = [];
+	for (const [index, raw] of (creditAssessmentJsonStrings ?? []).entries()) {
+		let assessment: CreditAssessment;
+		try {
+			assessment = JSON.parse(raw) as CreditAssessment;
+		} catch {
+			outputError(
+				"INVALID_JSON",
+				`--credit-assessment at index ${index} is not valid JSON.`,
+			);
+		}
+		try {
+			rejectCliOwnedBudgetFields(assessment);
+		} catch (err) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		creditAssessments.push(assessment);
 	}
 
 	// Derive readiness from flags + item presence
@@ -142,6 +235,8 @@ export async function protocolEmitReviewer(
 		readiness,
 		items,
 		...(summary ? { summary } : {}),
+		...(baselineAssessment ? { baselineAssessment } : {}),
+		...(creditAssessments.length > 0 ? { creditAssessments } : {}),
 	};
 
 	// Run through normalization (handles defaults, id generation for items)

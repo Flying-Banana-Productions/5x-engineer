@@ -34,6 +34,56 @@ describe("normalizeReviewerVerdict", () => {
 		expect(items[0]?.priority).toBe("P0");
 	});
 
+	test("passes through canonical budget inputs without inventing deltas", () => {
+		const input = {
+			readiness: "not_ready",
+			items: [
+				{
+					id: "R1",
+					title: "X",
+					action: "auto_fix",
+					reason: "Y",
+					scopeClass: "risk_reduction",
+					architectureDelta: -1,
+					coupling: "intrinsic",
+				},
+			],
+			baselineAssessment: {
+				independentEffortEstimate: 5,
+				confidence: "medium",
+				reason: "Estimate",
+			},
+			creditAssessments: [],
+		};
+		const result = normalizeReviewerVerdict(input) as Record<string, unknown>;
+		const item = (result.items as Array<Record<string, unknown>>)[0];
+		expect(item?.scopeClass).toBe("risk_reduction");
+		expect(item?.architectureDelta).toBe(-1);
+		expect(item?.coupling).toBe("intrinsic");
+		expect(item).not.toHaveProperty("effortDelta");
+		expect(result.baselineAssessment).toEqual(input.baselineAssessment);
+		expect(result.creditAssessments).toEqual([]);
+	});
+
+	test("does not map implementation-review scope classes", () => {
+		const input = {
+			readiness: "not_ready",
+			items: [
+				{
+					id: "R1",
+					title: "X",
+					action: "auto_fix",
+					reason: "Y",
+					scopeClass: "required",
+				},
+			],
+		};
+		const result = normalizeReviewerVerdict(input) as Record<string, unknown>;
+		expect(
+			(result.items as Array<Record<string, unknown>>)[0]?.scopeClass,
+		).toBe("required");
+	});
+
 	test("verdict → readiness mapping", () => {
 		expect(
 			(

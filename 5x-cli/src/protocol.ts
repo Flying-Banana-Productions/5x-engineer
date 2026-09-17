@@ -1,3 +1,11 @@
+import type { BaselineAssessment } from "./review-budget/types.js";
+import {
+	ARCHITECTURE_DELTAS,
+	EFFORT_POINTS,
+} from "./review-budget/types.js";
+
+export type { BaselineAssessment };
+
 export type LegacyAuthorStatus = {
 	status: "done" | "failed" | "needs_human";
 	commit?: string;
@@ -13,19 +21,92 @@ export type AuthorStatus = {
 	notes?: string;
 };
 
+export type PlanReviewScopeClass =
+	| "acceptance_required"
+	| "risk_reduction"
+	| "polish";
+
+export interface CreditClaim {
+	creditClaimId: string;
+	targetPhase: string;
+	minimalAlternativeEffortDelta: number;
+	minimalAlternativeArchitectureDelta: number;
+	before: string;
+	after: string;
+}
+
 export type VerdictItem = {
 	id: string;
 	title: string;
 	action: "auto_fix" | "human_required";
 	reason: string;
 	priority?: "P0" | "P1" | "P2";
+	scopeClass?: PlanReviewScopeClass;
+	effortDelta?: number;
+	architectureDelta?: number;
+	coupling?: "intrinsic" | "adjacent" | "unrelated";
+	estimateConfidence?: "low" | "medium" | "high";
+	creditClaim?: CreditClaim;
 };
+
+export interface CreditAssessment {
+	creditClaimId: string;
+	eligibility: "eligible" | "ineligible";
+	coupling: "intrinsic" | "adjacent" | "unrelated";
+	reason: string;
+}
 
 export type ReviewerVerdict = {
 	readiness: "ready" | "ready_with_corrections" | "not_ready";
 	items: VerdictItem[];
 	summary?: string;
+	baselineAssessment?: BaselineAssessment;
+	creditAssessments?: CreditAssessment[];
 };
+
+export const CLI_OWNED_VERDICT_KEYS = [
+	"budget",
+	"budgetBand",
+	"budgetAlerts",
+	"requiresHuman",
+	"B0",
+	"B",
+	"W",
+	"R",
+	"S",
+	"N",
+	"D",
+	"E",
+	"A",
+	"P",
+	"projectedEffort",
+	"baselineDirection",
+] as const;
+
+/** Reject fields whose values are derived and owned by the CLI. */
+export function rejectCliOwnedBudgetFields(value: unknown): void {
+	const pending: unknown[] = [value];
+	const visited = new Set<object>();
+	while (pending.length > 0) {
+		const current = pending.pop();
+		if (!current || typeof current !== "object" || visited.has(current)) continue;
+		visited.add(current);
+		if (Array.isArray(current)) {
+			pending.push(...current);
+			continue;
+		}
+		const record = current as Record<string, unknown>;
+		const key = CLI_OWNED_VERDICT_KEYS.find((candidate) =>
+			Object.hasOwn(record, candidate),
+		);
+		if (key) {
+			throw new Error(
+				`Reviewer verdict must not provide CLI-derived budget field '${key}'.`,
+			);
+		}
+		pending.push(...Object.values(record));
+	}
+}
 
 export const AuthorStatusSchema = {
 	type: "object",
@@ -87,6 +168,48 @@ export const ReviewerVerdictSchema = {
 						enum: ["P0", "P1", "P2"],
 						description: "P0: blocking. P1: important. P2: nice-to-have.",
 					},
+					scopeClass: {
+						type: "string",
+						enum: ["acceptance_required", "risk_reduction", "polish"],
+					},
+					effortDelta: { type: "integer", minimum: 0 },
+					architectureDelta: {
+						type: "integer",
+						enum: [...ARCHITECTURE_DELTAS],
+					},
+					coupling: {
+						type: "string",
+						enum: ["intrinsic", "adjacent", "unrelated"],
+					},
+					estimateConfidence: {
+						type: "string",
+						enum: ["low", "medium", "high"],
+					},
+					creditClaim: {
+						type: "object",
+						properties: {
+							creditClaimId: { type: "string" },
+							targetPhase: { type: "string" },
+							minimalAlternativeEffortDelta: {
+								type: "integer",
+								enum: [0, ...EFFORT_POINTS],
+							},
+							minimalAlternativeArchitectureDelta: {
+								type: "integer",
+								enum: [...ARCHITECTURE_DELTAS],
+							},
+							before: { type: "string" },
+							after: { type: "string" },
+						},
+						required: [
+							"creditClaimId",
+							"targetPhase",
+							"minimalAlternativeEffortDelta",
+							"minimalAlternativeArchitectureDelta",
+							"before",
+							"after",
+						],
+					},
 				},
 				required: ["id", "title", "action", "reason"],
 			},
@@ -94,6 +217,34 @@ export const ReviewerVerdictSchema = {
 		summary: {
 			type: "string",
 			description: "Optional 1-3 sentence overall assessment.",
+		},
+		baselineAssessment: {
+			type: "object",
+			properties: {
+				independentEffortEstimate: { type: "integer", minimum: 0 },
+				confidence: { type: "string", enum: ["low", "medium", "high"] },
+				reason: { type: "string" },
+			},
+			required: ["independentEffortEstimate", "confidence", "reason"],
+		},
+		creditAssessments: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					creditClaimId: { type: "string" },
+					eligibility: {
+						type: "string",
+						enum: ["eligible", "ineligible"],
+					},
+					coupling: {
+						type: "string",
+						enum: ["intrinsic", "adjacent", "unrelated"],
+					},
+					reason: { type: "string" },
+				},
+				required: ["creditClaimId", "eligibility", "coupling", "reason"],
+			},
 		},
 	},
 	required: ["readiness", "items"],
@@ -159,6 +310,17 @@ export function assertReviewerVerdict(
 	context: string,
 ): ReviewerVerdictAssertionResult {
 	const warnings: string[] = [];
+	const fail = (message: string): never => {
+		throw new Error(
+			`[${context}] ReviewerVerdict invariant violation: ${message}`,
+		);
+	};
+	const nonEmpty = (value: unknown): value is string =>
+		typeof value === "string" && value.trim().length > 0;
+	const coupling = (value: unknown): boolean =>
+		value === "intrinsic" || value === "adjacent" || value === "unrelated";
+
+	if (!Array.isArray(verdict.items)) fail("'items' must be an array.");
 
 	if (verdict.readiness !== "ready" && verdict.items.length === 0) {
 		warnings.push(
@@ -173,6 +335,65 @@ export function assertReviewerVerdict(
 				`[${context}] ReviewerVerdict invariant violation: item '${item.id}' is missing 'action'. ` +
 					"Each item must have action: 'auto_fix' | 'human_required'. Escalating.",
 			);
+		}
+		if (
+			item.scopeClass !== undefined &&
+			item.scopeClass !== "acceptance_required" &&
+			item.scopeClass !== "risk_reduction" &&
+			item.scopeClass !== "polish"
+		) {
+			fail(`item '${item.id}' has invalid 'scopeClass'.`);
+		}
+		if (
+			item.effortDelta !== undefined &&
+			(!Number.isInteger(item.effortDelta) || item.effortDelta < 0)
+		) {
+			fail(`item '${item.id}' has invalid 'effortDelta'.`);
+		}
+		if (
+			item.architectureDelta !== undefined &&
+			!ARCHITECTURE_DELTAS.includes(item.architectureDelta as never)
+		) {
+			fail(`item '${item.id}' has invalid 'architectureDelta'.`);
+		}
+		if (item.coupling !== undefined && !coupling(item.coupling)) {
+			fail(`item '${item.id}' has invalid 'coupling'.`);
+		}
+		if (item.architectureDelta !== undefined && item.architectureDelta < 0 && !item.coupling) {
+			fail(`item '${item.id}' requires 'coupling' when 'architectureDelta' is negative.`);
+		}
+		if (
+			item.estimateConfidence !== undefined &&
+			item.estimateConfidence !== "low" &&
+			item.estimateConfidence !== "medium" &&
+			item.estimateConfidence !== "high"
+		) {
+			fail(`item '${item.id}' has invalid 'estimateConfidence'.`);
+		}
+		if (item.creditClaim !== undefined) {
+			const claim = item.creditClaim;
+			if (!nonEmpty(claim.creditClaimId)) fail(`item '${item.id}' creditClaim requires a non-empty 'creditClaimId'.`);
+			if (!nonEmpty(claim.targetPhase)) fail(`item '${item.id}' creditClaim requires a non-empty 'targetPhase'.`);
+			if (!nonEmpty(claim.before) || !nonEmpty(claim.after)) fail(`item '${item.id}' creditClaim requires non-empty 'before' and 'after'.`);
+			if (!Number.isInteger(claim.minimalAlternativeEffortDelta) || (claim.minimalAlternativeEffortDelta !== 0 && !EFFORT_POINTS.includes(claim.minimalAlternativeEffortDelta as never))) fail(`item '${item.id}' creditClaim has invalid 'minimalAlternativeEffortDelta'.`);
+			if (!ARCHITECTURE_DELTAS.includes(claim.minimalAlternativeArchitectureDelta as never)) fail(`item '${item.id}' creditClaim has invalid 'minimalAlternativeArchitectureDelta'.`);
+		}
+	}
+
+	if (verdict.baselineAssessment !== undefined) {
+		const assessment = verdict.baselineAssessment;
+		if (!Number.isInteger(assessment.independentEffortEstimate) || assessment.independentEffortEstimate < 0) fail("baselineAssessment has invalid 'independentEffortEstimate'.");
+		if (assessment.confidence !== "low" && assessment.confidence !== "medium" && assessment.confidence !== "high") fail("baselineAssessment has invalid 'confidence'.");
+		if (!nonEmpty(assessment.reason)) fail("baselineAssessment requires a non-empty 'reason'.");
+	}
+
+	if (verdict.creditAssessments !== undefined) {
+		if (!Array.isArray(verdict.creditAssessments)) fail("'creditAssessments' must be an array.");
+		for (const assessment of verdict.creditAssessments) {
+			if (!nonEmpty(assessment.creditClaimId)) fail("creditAssessment requires a non-empty 'creditClaimId'.");
+			if (assessment.eligibility !== "eligible" && assessment.eligibility !== "ineligible") fail(`creditAssessment '${assessment.creditClaimId}' has invalid 'eligibility'.`);
+			if (!coupling(assessment.coupling)) fail(`creditAssessment '${assessment.creditClaimId}' has invalid 'coupling'.`);
+			if (!nonEmpty(assessment.reason)) fail(`creditAssessment '${assessment.creditClaimId}' requires a non-empty 'reason'.`);
 		}
 	}
 

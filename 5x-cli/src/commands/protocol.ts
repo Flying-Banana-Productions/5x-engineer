@@ -157,7 +157,7 @@ export function registerProtocol(parent: Command) {
 				"Use --ready or --no-ready to set the readiness assessment.\n" +
 				"Use --item to add review items (repeatable). Items imply corrections.\n" +
 				"If no flags are provided and stdin is piped, reads JSON from stdin\n" +
-				"and normalizes it to canonical form.",
+				"and normalizes it to canonical form. Budget aggregates are CLI-derived and must not be supplied.",
 		)
 		.option("--ready", "Plan/code is ready (possibly with corrections)")
 		.option("--no-ready", "Plan/code is not ready")
@@ -168,6 +168,16 @@ export function registerProtocol(parent: Command) {
 			[] as string[],
 		)
 		.option("--summary <text>", "1-3 sentence assessment")
+		.option(
+			"--baseline-assessment <json>",
+			"Independent baseline estimate as JSON (initial plan review only)",
+		)
+		.option(
+			"--credit-assessment <json>",
+			"Debt credit assessment as JSON (repeatable); aggregates are CLI-derived",
+			collect,
+			[] as string[],
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -180,6 +190,8 @@ export function registerProtocol(parent: Command) {
 				ready: opts.ready,
 				item: opts.item,
 				summary: opts.summary,
+				baselineAssessment: opts.baselineAssessment,
+				creditAssessment: opts.creditAssessment,
 			});
 		});
 

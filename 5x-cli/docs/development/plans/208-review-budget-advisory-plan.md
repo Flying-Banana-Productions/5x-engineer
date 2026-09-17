@@ -1121,11 +1121,11 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ### 5.4 Tests
 
-- [ ] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
-- [ ] Type-level: `BaselineAssessment` re-exported from `src/protocol.ts` is the same type as `src/review-budget/types.ts` (import/re-export, not a second `interface` declaration). A Phase 1 `BaselineAssessment` value is assignable to `ReviewerVerdict["baselineAssessment"]`.
-- [ ] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
-- [ ] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
-- [ ] Do not add `--credit-realization` or implementation `scopeClass` enums.
+- [x] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
+- [x] Type-level: `BaselineAssessment` re-exported from `src/protocol.ts` is the same type as `src/review-budget/types.ts` (import/re-export, not a second `interface` declaration). A Phase 1 `BaselineAssessment` value is assignable to `ReviewerVerdict["baselineAssessment"]`.
+- [x] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
+- [x] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
+- [x] Do not add `--credit-realization` or implementation `scopeClass` enums.
 
 ---
 

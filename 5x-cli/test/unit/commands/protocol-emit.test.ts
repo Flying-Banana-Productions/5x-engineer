@@ -109,6 +109,93 @@ describe("protocolEmitReviewer", () => {
 		expect(result.summary).toBe("Looks good");
 	});
 
+	test("budget item extras and assessments round-trip", async () => {
+		await protocolEmitReviewer({
+			ready: false,
+			item: [
+				JSON.stringify({
+					id: "R1",
+					title: "Reduce coupling",
+					action: "auto_fix",
+					reason: "Architecture",
+					scopeClass: "risk_reduction",
+					effortDelta: 2,
+					architectureDelta: -1,
+					coupling: "intrinsic",
+					estimateConfidence: "high",
+					creditClaim: {
+						creditClaimId: "RC1",
+						targetPhase: "Phase 2",
+						minimalAlternativeEffortDelta: 1,
+						minimalAlternativeArchitectureDelta: 0,
+						before: "before",
+						after: "after",
+					},
+				}),
+			],
+			baselineAssessment: JSON.stringify({
+				independentEffortEstimate: 8,
+				confidence: "medium",
+				reason: "Independent estimate",
+			}),
+			creditAssessment: [
+				JSON.stringify({
+					creditClaimId: "DC1",
+					eligibility: "eligible",
+					coupling: "intrinsic",
+					reason: "Necessary",
+				}),
+				JSON.stringify({
+					creditClaimId: "DC2",
+					eligibility: "ineligible",
+					coupling: "adjacent",
+					reason: "Optional",
+				}),
+			],
+		});
+
+		const result = parseOutput();
+		const item = (result.items as Array<Record<string, unknown>>)[0];
+		expect(item?.scopeClass).toBe("risk_reduction");
+		expect(item?.effortDelta).toBe(2);
+		expect(item?.creditClaim).toMatchObject({ creditClaimId: "RC1" });
+		expect(result.baselineAssessment).toMatchObject({
+			independentEffortEstimate: 8,
+		});
+		expect(result.creditAssessments).toHaveLength(2);
+	});
+
+	test("rejects CLI-owned aggregate fields from stdin and item flags", async () => {
+		for (const params of [
+			{
+				stdinData: JSON.stringify({
+					readiness: "ready",
+					items: [],
+					budget: { W: 1 },
+				}),
+			},
+			{
+				ready: false,
+				item: [
+					JSON.stringify({
+						title: "X",
+						action: "auto_fix",
+						reason: "Y",
+						budgetBand: "within_standard",
+					}),
+				],
+			},
+		]) {
+			try {
+				await protocolEmitReviewer(params);
+				expect.unreachable("should reject CLI-owned fields");
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("INVALID_STRUCTURED_OUTPUT");
+			}
+		}
+	});
+
 	test("missing --ready/--no-ready without stdin → error", async () => {
 		// Pass empty string for stdinData to simulate no piped input without
 		// relying on readStdinIfPiped() which is non-deterministic in test runs
