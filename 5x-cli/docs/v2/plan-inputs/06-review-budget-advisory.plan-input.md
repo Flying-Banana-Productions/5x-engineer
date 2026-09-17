@@ -7,7 +7,7 @@
 | **Slice ID** | `v2-review-budget-advisory` |
 | **Status** | `draft` |
 | **Owner** | |
-| **Generated plan** | `-` |
+| **Generated plan** | `docs/development/plans/208-review-budget-advisory-plan.md` |
 | **Last updated** | 2026-08-13 |
 
 ---

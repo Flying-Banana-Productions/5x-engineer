@@ -105,6 +105,7 @@ export {
 	reindexReviewBudget,
 } from "./review-budget-index.js";
 export type {
+	AppendSnapshotInput,
 	CaptureBaselineInput,
 	CaptureBaselineResult,
 	ReviewBudgetBaseline,

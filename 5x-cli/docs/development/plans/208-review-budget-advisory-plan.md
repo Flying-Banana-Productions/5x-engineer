@@ -1648,8 +1648,8 @@ New `review-budget.test.ts` (spawn CLI, `cleanGitEnv()`, `stdin: "ignore"`, `tim
 
 Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the temp project.
 
-- [ ] Exports + integration tests + full `bun test`.
-- [ ] Update plan-input metadata `Generated plan` to this file path if the docs owner wants it; not required for the slice to compile.
+- [x] Exports + integration tests + full `bun test`.
+- [x] Update plan-input metadata `Generated plan` to this file path if the docs owner wants it; not required for the slice to compile.
 
 ---
 
