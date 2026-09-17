@@ -93,3 +93,32 @@ Surface and confidence are authoritative record fields on the immutable baseline
 - [ ] P2.4 — Remove unreachable `parseSnapshot` branch
 
 **Phase readiness:** Completion gate (happy path with debt evidence, every diagnostic code, `parsePlan` unchanged for both placements) is met. Phase 3 (`reviewBudget` config) does not depend on the parser, so it can proceed once the mechanical corrections above land; P1.1 must be fixed before Phase 7 consumes the parser for baseline capture.
+
+---
+
+## Addendum (2026-09-17) — Hardening fixes verified
+
+**Reviewed:** `dd265ac7d080aab13f4d126c99922a524d4286e4` (single commit on top of `25c58b2`, touching `src/parsers/delivery-budget.ts` and `test/unit/parsers/delivery-budget.test.ts` only)
+
+**Local verification:** `bun test test/unit/parsers` — 51 pass / 0 fail (up from 44); `bunx tsc --noEmit` — clean; `bunx biome check` on touched files — clean. Additional ad-hoc probes: duplicate optional snapshot label, an unclosed fence preceding the heading, a fence closed by a shorter/mismatched marker, and the missing-`Target phase`-bullet line number.
+
+### What's addressed (✅)
+
+- **P1.1 — Bullet-lookup scoping**: Fully addressed. `parseSnapshot` now stops at the next `#{1,6}` heading (`delivery-budget.ts:327-332`) instead of running to the end of the section; the confidence bullet is looked up only in `lines.slice(1, confidenceEnd)`, bounded by `min(firstTableIndex, firstSubsectionIndex)` (`:447-460`); each `#### DCn` claim block now stops at the next `#{1,4}` heading instead of only the next `#### DCn` (`:676-684`). Verified: a trailing `### Notes` with `- Subsystems: 99` after the real snapshot no longer overrides it (`surface.subsystems` stays `4`); a `- Estimate confidence:` bullet placed inside a `#### DC0` block is rejected as `BUDGET_INVALID_CONFIDENCE` rather than adopted; a `### Notes` heading interposed inside a claim block now correctly truncates it (new test "stops a debt-claim block at the next same-or-higher heading"). As a bonus beyond the original ask, duplicate *required* Surface Snapshot labels (including the split-alias labels) are now rejected via `REQUIRED_SNAPSHOT_LABELS` (`:70-76`, `:338-344`) instead of silently last-wins.
+- **P2.1 — Fence-aware section location**: Fully addressed. New `markdownLines` / `fenceMarker` / `sectionBounds` machinery tracks fenced code regions (backtick and tilde, CommonMark same-character/length-≥-open-length close rule) and skips them when locating `## Delivery Budget` and its end, in both `sectionLines` and `rawDeliveryBudgetSection`. Verified: a `## Delivery Budget` heading inside a fenced example is ignored (the real section is parsed instead), and a `# not a real section end` line inside a fence within the real section no longer truncates it — confirmed both via the new test and an independent probe with a 4-backtick fence containing a nested 3-backtick line (correctly stays open until the matching 4-backtick close).
+- **P2.2 — Test gaps**: Addressed. Added coverage for `adjacent`/`unrelated` coupling, minimal-compliant effort delta `0`, CRLF input (both `parseDeliveryBudget` and `rawDeliveryBudgetSection`), a budget section at EOF, an invalid Addresses token (`invalid/id`), and the missing-`Target phase`-bullet line number (verified it falls back to the `#### DC0` heading line). The duplicate `BUDGET_INVALID_EFFORT` assertion was removed.
+- **P2.3 — Normalize `-0`**: Addressed. `parseInteger` now maps `-0` to `0` (`:102-106`). Verified via `Object.is` on `architectureDelta`, `minimalAlternativeArchitectureDelta`, and `persistentOrExternalBoundaries` all being `0` rather than `-0`; a new test asserts this directly.
+- **P2.4 — Unreachable branch**: Addressed. The `headingIndex < 0` early-return in `parseSnapshot` was removed; `parseDeliveryBudget` is the sole source of `BUDGET_SNAPSHOT_MISSING` for a missing heading.
+
+### New issues from this revision
+
+- **P2.5 (new, minor) — Optional Surface Snapshot labels still last-wins on duplicates.** `REQUIRED_SNAPSHOT_LABELS` covers `subsystems`, `production files`, and the boundary labels, but not `new shared abstractions or public contracts` or `new persistent schemas`. A duplicated optional bullet is silently overwritten by the later value (verified: two `- New shared abstractions or public contracts:` bullets parse `ok: true` and take the second value) instead of raising `BUDGET_SNAPSHOT_INVALID` like the required labels now do. Low severity — these fields are optional/advisory and unlikely to be hand-duplicated — but it's an inconsistency the same fix (`REQUIRED_SNAPSHOT_LABELS` → include optional labels, or a separate "seen" set for all recognized snapshot labels) would close in one pass.
+
+### Remaining concerns
+
+None blocking. P2.5 above is the only residual gap, and it is cosmetic/consistency-only.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — all five items from the first review (one P1, four P2) are verified fixed with passing regression tests; no regressions found in `parsePlan` interaction or the existing 44 fixtures (all still pass alongside the 7 new ones).
+- **Ready for next phase:** ✅ — Phase 2 can be considered closed. The one new item (P2.5) is optional-field polish and does not block Phase 3 or Phase 7 baseline capture.
