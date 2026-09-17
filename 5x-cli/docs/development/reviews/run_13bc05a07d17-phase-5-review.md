@@ -101,3 +101,48 @@ Before this phase `assertReviewerVerdict` was effectively unreachable as a throw
 ## Phase readiness
 
 Phase 6 (validate/derive/persist) can start once P1.1 lands; it builds directly on `assertReviewerVerdict` as the shape gate before arithmetic, so the null-shape guards should be in place first to avoid `TypeError`s propagating into `applyPlanReviewBudget`.
+
+---
+
+## Addendum — 6b82578 (fix: harden reviewer budget protocol validation)
+
+**Diff reviewed:** `b545c14..6b82578` (`src/commands/protocol-emit.handler.ts`, `src/protocol.ts`, and matching tests in `protocol.test.ts`, `protocol-emit.test.ts`, `protocol-helpers.test.ts`)
+**Local verification:** `bun test test/unit/protocol.test.ts test/unit/protocol-normalize.test.ts test/unit/commands/protocol-emit.test.ts test/unit/commands/protocol-helpers.test.ts` — 88 pass / 0 fail (up from 84); `tsc --noEmit` clean; `biome check src test` clean; manual re-probe of every case from P1.1's table plus the happy path (all below).
+
+### Prior findings — disposition
+
+**P1.1 — New-field validation failures surface as `INTERNAL_ERROR`; `null` values crash with a raw `TypeError` → Addressed.**
+
+All four recommended changes landed:
+- `assertReviewerVerdict` (`src/protocol.ts`) now guards `creditClaim`, `baselineAssessment`, and each `creditAssessments` entry with an `objectShape` check before dereferencing, failing with `"… must be an object."` instead of throwing a raw `TypeError` on `null`/non-object values. `independentEffortEstimate` is also now checked for `typeof === "number"` before `Number.isInteger`, closing a latent `NaN`/string coercion gap in the same spot.
+- `protocolEmitReviewer` (`src/commands/protocol-emit.handler.ts`) wraps both `assertReviewerVerdict` call sites (stdin path and flag path) via a new `assertReviewerVerdictForEmit` helper that catches and maps to `outputError("INVALID_STRUCTURED_OUTPUT", …)`, mirroring the existing `rejectCliOwnedBudgetFields` handling.
+- `--baseline-assessment` and `--credit-assessment` flag JSON is now checked with `isObjectShape` after `JSON.parse`; a non-object (including `null`, arrays, and bare scalars) now fails closed with `INVALID_STRUCTURED_OUTPUT` instead of being silently dropped or crashing.
+- Tests were added at all three levels: `protocol.test.ts` (`rejects null object-shaped budget fields with actionable messages` — covers item `creditClaim: null`, top-level `baselineAssessment: null`, and `creditAssessments: [null]`), `protocol-emit.test.ts` (`rejects null assessment flags as invalid structured output` for both flags; `maps assertion failures to INVALID_STRUCTURED_OUTPUT` for an invalid-enum item and a stdin `baselineAssessment: null`).
+
+Re-verified live against the exact table from the original finding — every row that previously returned `INTERNAL_ERROR` or a raw `TypeError` message, or silently dropped input, now returns `{"ok":false,"error":{"code":"INVALID_STRUCTURED_OUTPUT", …}}` with an actionable message (exit 7, the pre-existing convention for that code):
+
+| Input | Before | After |
+|---|---|---|
+| `--item '{…,"effortDelta":"3"}'` | `INTERNAL_ERROR` | `INVALID_STRUCTURED_OUTPUT`: invalid 'effortDelta' |
+| `--item '{…,"architectureDelta":-2}'` (no coupling) | `INTERNAL_ERROR` | `INVALID_STRUCTURED_OUTPUT`: requires 'coupling' |
+| `--item '{…,"creditClaim":"x"}'` | `INTERNAL_ERROR` (validation msg, but only by luck of key ordering) | `INVALID_STRUCTURED_OUTPUT`: creditClaim must be an object |
+| `--item '{…,"creditClaim":null}'` | `INTERNAL_ERROR`: raw `TypeError` | `INVALID_STRUCTURED_OUTPUT`: creditClaim must be an object |
+| `--baseline-assessment 'null'` | silently dropped, exit 0 | `INVALID_STRUCTURED_OUTPUT`: must be a JSON object |
+| `--baseline-assessment '[1]'` / `'7'` | `INTERNAL_ERROR` | `INVALID_STRUCTURED_OUTPUT`: must be a JSON object |
+| `--credit-assessment 'null'` | `INTERNAL_ERROR`: raw `TypeError` | `INVALID_STRUCTURED_OUTPUT`: must be a JSON object |
+| stdin `"baselineAssessment":null` | raw `TypeError` | `INVALID_STRUCTURED_OUTPUT`: baselineAssessment must be an object |
+| stdin `"creditAssessments":[null]` | raw `TypeError` | `INVALID_STRUCTURED_OUTPUT`: each creditAssessment must be an object |
+
+The happy-path item (`effortDelta:3, architectureDelta:-2, coupling:"intrinsic"`) still emits successfully with exit 0, confirming no regression to the valid-input path.
+
+**P2 — Reject walk is deeper than the Design Decision states (pin with a test) → Addressed.**
+
+`protocol-helpers.test.ts` gained `rejects nested reviewer-authored CLI aggregate keys`, asserting `validateStructuredOutput` fails closed on `items[0].creditClaim.W` with `INVALID_STRUCTURED_OUTPUT` and a message containing `'W'` — exactly the pinning test recommended. Re-verified live: `--credit-assessment '{…,"W":3}'` still correctly rejects with `"Reviewer verdict must not provide CLI-derived budget field 'W'."`.
+
+### New issues from this revision
+
+None found. The diff is narrowly scoped to the two prior findings, does not touch parsing/normalization logic, does not add new fields, and does not regress the CLI-owned-key rejection path. `assertReviewerVerdictForEmit`'s return type is inferred as `ReviewerVerdictAssertionResult | undefined` (since `outputError` doesn't return `never` from TS's perspective in this codebase's existing pattern — same shape as `rejectCliOwnedBudgetFields`'s call sites elsewhere in the same file), and the call sites destructure `.warnings` off it unconditionally; this only matters if `outputError` doesn't actually terminate the process, which the passing tests and the manual re-probe above disprove (every rejected case returns before reaching the `.warnings` loop). Not flagged as an issue — this is the same pattern already used for `rejectCliOwnedBudgetFields` throughout the file.
+
+### Updated readiness
+
+**Readiness:** Ready — both P1 and P2 items from the initial review are addressed, verified by tests and live CLI probing, with no regressions and no new findings. Phase 5 is complete; Phase 6 can proceed without the null-shape-guard prerequisite noted in the original Phase readiness section.
