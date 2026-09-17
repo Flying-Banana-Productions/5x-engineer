@@ -82,3 +82,36 @@ This violates the plan's "after a wipe the header matches what was computed at r
 - [ ] P2.4 — text label cannot imply enforcement
 
 **Phase readiness:** Phase 8 completion gate is met for JSON presence/omission, text block, and post-wipe `I` / `baseline_direction`. Ready for Phase 9 once P1.1 is corrected; P2s can ride along in the same fix commit.
+
+---
+
+## Addendum (2026-09-17) — Re-review at `51cb624`
+
+**Reviewed:** `dc43d56361bec738dc4678340567f81603fe4222` (fix commit) + `51cb624f88327c120bb16a838a8f2bf8c8146dfa` (test-isolation follow-up)  
+**Local verification:** `bun test test/unit/commands test/integration/commands/run-v1.test.ts test/integration/records` — 700 pass / 0 fail (up from 688); `bun test test/unit/commands/run-state-review-budget.test.ts test/unit/commands/run-state-review-budget-wiring.test.ts` — 16 pass / 0 fail; `bunx tsc --noEmit` clean; `bunx biome check` on all touched files clean.
+
+### What's addressed (✅)
+
+- **P1.1 — recomputed `requires_human` diverges from record time**: Fixed. `buildReviewBudgetState` now accepts an optional `semanticHumanRequiredFor(snapshot)` callback and threads it into both `deriveBudget` recompute branches (`run-v1.handler.ts`, index-wipe and null-derived-cache paths) in place of the hard-coded `false`. Both `runV1State` call sites supply real implementations:
+  - DB path: looks up the coupled `reviewer:*` step by its idempotency key in the record store first (handles the parsed-JSON `StepRecordPayload.result_json` shape), falling back to `getSteps(db, run.id)` + `semanticHumanRequiredFromSteps` (handles the string-encoded `StepRow.result_json` shape) if the record line isn't found.
+  - Git-record path: `semanticHumanRequiredFromSteps(snapshot, allSteps)` against `formatGitRecordStep`'s string-encoded `result_json`.
+  - `resultHasHumanRequired` correctly normalizes both the parsed-object and JSON-string encodings via a `typeof value === "string"` branch, so both call sites resolve to the same predicate as `apply.ts`'s record-time `verdict.items.some(action === "human_required")`.
+  - Verified independently: the index-wipe unit test now asserts `after.requires_human === before.requires_human === true`, and a new wiring test (`runV1State recomputes semantic requires_human from the coupled step`) exercises the full DB path end-to-end with a `human_required` step appended via the record store. Confirmed **fixed**, not just tested — re-ran the original repro pattern from the prior review manually against current code and the flag now holds `true` post-wipe.
+  - Minor residual note (not a new blocker): the DB-path closure returns `false` immediately when `snapshot.iteration === null` rather than falling through to the `semanticHumanRequiredFromSteps` fallback for that case. Per the plan's Phase 6 provenance ("generic `recordStepInternal` allocates [iteration] only afterward"), admitted steps always end up with an allocated iteration by the time `run state` reads them, so this is a defensive branch for a state that shouldn't occur in practice, not a live gap.
+
+- **P2.1 — thin test coverage**: Fixed. Two new/expanded suites (`run-state-review-budget.test.ts` grew from 4 to 12 tests; new `run-state-review-budget-wiring.test.ts` adds 6 end-to-end tests) now cover: `uninitialized` status, active pre-first-record with live-plan parse and malformed-plan fallback to `originalLedger`, `stale_plan: true`/absent, a null-derived cache row recomputing with the semantic flag, the non-active and `enforced` text-label rendering, the `stale plan` text suffix, a fully-wired `runV1State` call (both DB and git-record selectors) asserting `review_budget` presence/omission under `mode=off`, and the coupled-step semantic lookup on both paths. This closes essentially all the gaps named in the original P2.1.
+
+- **P2.2 — corrupt budget line crashes `run state`**: Fixed. New `tryBuildReviewBudgetState` wraps `buildReviewBudgetState` in try/catch, warns with a message naming the run and "omitting review_budget", and returns `undefined` instead of throwing. Both `runV1State` call sites (DB and git-record) now route through it. The git-record loader additionally surfaces JSONL decode failures explicitly via a new `budgetDecodeError` field (rather than silently swallowing to an empty array as before), and `runV1State` warns + omits on that path too. Two new tests (`malformed record payload warns and omits review_budget`, `runV1State warns and omits corrupt budget records`, plus `git-record loader surfaces malformed budget JSONL`) exercise this for both paths.
+
+- **P2.3 — duplicated warning literal**: Fixed. `ENFORCED_REVIEW_BUDGET_WARNING` is now defined once in `src/review-budget/ensure-baseline.ts` and imported by `run-v1.handler.ts`; a test asserts the run-state warning path uses the shared constant.
+
+- **P2.4 — text label implies enforcement is live**: Fixed. `formatStateText` now computes a `modeLabel` that renders `"advisory"` for advisory mode and `"enforced: not implemented; advisory telemetry"` for enforced mode, used in both the active and non-active render branches. A test explicitly asserts the output contains `"enforced: not implemented"` and does **not** contain the bare `"(enforced)"` string.
+
+### Remaining concerns
+
+None blocking. No new issues were introduced by the revision — the diff is scoped exactly to the four flagged items plus their test coverage, and a small unrelated test-isolation fix (`progressResolver` seam on `RunStateParams`, added in `51cb624`) that decouples the new wiring tests from the git-backed progress resolver. That seam is additive, optional, and doesn't change production behavior (falls back to `resolvePlanProgress` when omitted).
+
+### Updated readiness
+
+- **Phase 8 completion:** ✅ — all P1/P2 items from the initial review are resolved and verified with passing tests, clean typecheck, and clean lint; no regressions in the broader `run-v1`/records suite (688 → 700 passing).
+- **Ready for next phase:** ✅ — Phase 8 can be considered complete; proceed to Phase 9 (templates, skills, docs).
