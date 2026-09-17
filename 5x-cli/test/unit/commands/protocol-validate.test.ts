@@ -416,6 +416,62 @@ describe("protocol validate reviewer — active review budget", () => {
 			cleanupDir(dir);
 		}
 	});
+
+	test("recorded empty plan reaches budget parsing instead of read-failure fallback", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			setupProjectDir(dir);
+			const planPath = join(dir, "empty-plan.md");
+			writeFileSync(planPath, "");
+			insertRun(dir, "run1", planPath);
+			ctx.executionContext.effectivePlanPath = planPath;
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: reviewerInput(dir),
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "plan",
+					iteration: 1,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("recorded unreadable plan reports PLAN_NOT_FOUND, not a parse error", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "missing-plan.md"));
+			ctx.executionContext.effectivePlanPath = join(dir, "missing-plan.md");
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: reviewerInput(dir),
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "plan",
+					iteration: 1,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
+			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
 });
 
 // ===========================================================================

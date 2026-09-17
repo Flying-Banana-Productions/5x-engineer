@@ -705,20 +705,21 @@ export async function invokeAgent(
 				role: "reviewer",
 				provider: providerName,
 			} as const;
-			let planMarkdown: string;
+			let planMarkdown = "";
+			let planReadFailed = false;
 			try {
 				planMarkdown = readFileSync(
 					budgetContext.executionContext.effectivePlanPath,
 					"utf-8",
 				);
 			} catch (err) {
-				if (!params.record) planMarkdown = "";
-				else {
+				planReadFailed = true;
+				if (params.record) {
 					const message = err instanceof Error ? err.message : String(err);
 					outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
 				}
 			}
-			if (planMarkdown) {
+			if (!planReadFailed) {
 				const applied = applyPlanReviewBudget({
 					runId,
 					stepName,

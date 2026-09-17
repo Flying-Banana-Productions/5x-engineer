@@ -21,7 +21,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
+import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { makeBudgetContext } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,6 +99,112 @@ describe("invoke — template resolution (unit)", () => {
 		expect(() => loadTemplate("nonexistent-template")).toThrow(
 			/Unknown template/,
 		);
+	});
+});
+
+describe("invoke reviewer — plan read state", () => {
+	async function setupBudgetInvoke(dir: string) {
+		for (const args of [
+			["init"],
+			["config", "user.email", "test@test.com"],
+			["config", "user.name", "Test"],
+		] as const) {
+			Bun.spawnSync(["git", ...args], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+		}
+		await initScaffold({ startDir: dir });
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, "# Provider-visible plan\n");
+		const db = getDb(dir);
+		createRunV1(db, { id: "run1", planPath });
+		closeDb();
+		_resetForTest();
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[author]
+provider = "sample"
+model = "sample/test"
+
+[reviewer]
+provider = "sample"
+model = "sample/test"
+
+[sample]
+echo = false
+
+[sample.structured]
+readiness = "ready"
+items = []
+creditAssessments = []
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "estimate"
+`,
+		);
+		return planPath;
+	}
+
+	async function invokeWithBudgetContext(
+		dir: string,
+		planPath: string,
+		effectivePlanPath: string,
+	) {
+		const ctx = makeBudgetContext();
+		ctx.executionContext.effectivePlanPath = effectivePlanPath;
+		try {
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					vars: [`plan_path=${planPath}`],
+					phase: "plan",
+					record: true,
+					quiet: true,
+					workdir: dir,
+				},
+				{ createReviewBudgetContext: async () => ctx },
+			);
+		} finally {
+			ctx.db.close();
+		}
+	}
+
+	test("empty readable plan reaches budget parsing", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			const emptyPath = join(dir, "empty.md");
+			writeFileSync(emptyPath, "");
+			await expect(
+				invokeWithBudgetContext(dir, planPath, emptyPath),
+			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("unreadable plan maps to PLAN_NOT_FOUND", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			await expect(
+				invokeWithBudgetContext(dir, planPath, join(dir, "missing.md")),
+			).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
 	});
 });
 

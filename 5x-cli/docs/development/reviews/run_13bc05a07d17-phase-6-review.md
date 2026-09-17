@@ -153,10 +153,10 @@ Additionally, the context is built whenever `role === reviewer && phase === plan
 
 ### Remaining concerns
 
-- None at P0/P1. The one new item above is P2 and narrow in practical impact.
+- [x] The empty-but-present plan P2 is resolved: both handlers now track read failure explicitly, so successful empty reads reach fail-closed budget parsing while actual read failures retain their v1-dry/structured-record routing.
 - Minor, not worth a line item: `prepareRecordStepAppend` is now invoked twice per `--record` review call (once as the admission probe, once inside the real record path) — cheap (in-memory checks + a best-effort git call) but slightly redundant; not worth restructuring given the clarity of the current split between "check eligibility" and "actually record."
 
 ### Updated readiness
 
-- **Phase 6 completion:** ✅ — all P1/P0 items from the initial review are resolved and independently verified in the current source and test suite; one narrow new P2 remains.
-- **Ready for next phase:** ✅ — the one new finding (empty-plan-file truthiness bug) is mechanical and does not block moving to Phase 7; it can be fixed alongside or after that work.
+- **Phase 6 completion:** ✅ — all P1/P2 items are resolved and independently verified in the current source and test suite.
+- **Ready for next phase:** ✅ — the empty-plan-file truthiness regression is fixed and covered for protocol and invoke.

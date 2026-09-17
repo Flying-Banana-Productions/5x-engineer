@@ -525,20 +525,21 @@ export async function protocolValidate(
 				}
 			}
 			if ((params.record || baseline) && admissionEligible) {
-				let planMarkdown: string;
+				let planMarkdown = "";
+				let planReadFailed = false;
 				try {
 					planMarkdown = readFileSync(
 						budgetContext.executionContext.effectivePlanPath,
 						"utf-8",
 					);
 				} catch (err) {
-					if (!params.record) planMarkdown = "";
-					else {
+					planReadFailed = true;
+					if (params.record) {
 						const message = err instanceof Error ? err.message : String(err);
 						outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
 					}
 				}
-				if (!planMarkdown) {
+				if (planReadFailed) {
 					// Dry validation remains v1-compatible when its optional context vanished.
 				} else {
 					const performer = { kind: "agent", role: "reviewer" } as const;
