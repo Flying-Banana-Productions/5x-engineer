@@ -315,6 +315,8 @@ export function assertReviewerVerdict(
 	};
 	const nonEmpty = (value: unknown): value is string =>
 		typeof value === "string" && value.trim().length > 0;
+	const objectShape = (value: unknown): value is Record<string, unknown> =>
+		typeof value === "object" && value !== null && !Array.isArray(value);
 	const coupling = (value: unknown): boolean =>
 		value === "intrinsic" || value === "adjacent" || value === "unrelated";
 
@@ -375,7 +377,10 @@ export function assertReviewerVerdict(
 			fail(`item '${item.id}' has invalid 'estimateConfidence'.`);
 		}
 		if (item.creditClaim !== undefined) {
-			const claim = item.creditClaim;
+			const claimValue: unknown = item.creditClaim;
+			if (!objectShape(claimValue))
+				fail(`item '${item.id}' creditClaim must be an object.`);
+			const claim = claimValue as Record<string, unknown>;
 			if (!nonEmpty(claim.creditClaimId))
 				fail(
 					`item '${item.id}' creditClaim requires a non-empty 'creditClaimId'.`,
@@ -408,10 +413,15 @@ export function assertReviewerVerdict(
 	}
 
 	if (verdict.baselineAssessment !== undefined) {
-		const assessment = verdict.baselineAssessment;
+		const assessmentValue: unknown = verdict.baselineAssessment;
+		if (!objectShape(assessmentValue))
+			fail("baselineAssessment must be an object.");
+		const assessment = assessmentValue as Record<string, unknown>;
+		const independentEffortEstimate = assessment.independentEffortEstimate;
 		if (
-			!Number.isInteger(assessment.independentEffortEstimate) ||
-			assessment.independentEffortEstimate < 0
+			typeof independentEffortEstimate !== "number" ||
+			!Number.isInteger(independentEffortEstimate) ||
+			independentEffortEstimate < 0
 		)
 			fail("baselineAssessment has invalid 'independentEffortEstimate'.");
 		if (
@@ -427,7 +437,10 @@ export function assertReviewerVerdict(
 	if (verdict.creditAssessments !== undefined) {
 		if (!Array.isArray(verdict.creditAssessments))
 			fail("'creditAssessments' must be an array.");
-		for (const assessment of verdict.creditAssessments) {
+		for (const assessmentValue of verdict.creditAssessments) {
+			if (!objectShape(assessmentValue))
+				fail("each creditAssessment must be an object.");
+			const assessment = assessmentValue as unknown as Record<string, unknown>;
 			if (!nonEmpty(assessment.creditClaimId))
 				fail("creditAssessment requires a non-empty 'creditClaimId'.");
 			if (

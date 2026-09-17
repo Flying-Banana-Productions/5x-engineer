@@ -69,6 +69,21 @@ async function readStdinIfPiped(): Promise<string | undefined> {
 // Reviewer emit
 // ---------------------------------------------------------------------------
 
+function isObjectShape(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertReviewerVerdictForEmit(verdict: ReviewerVerdict) {
+	try {
+		return assertReviewerVerdict(verdict, "protocol emit reviewer");
+	} catch (err) {
+		outputError(
+			"INVALID_STRUCTURED_OUTPUT",
+			err instanceof Error ? err.message : String(err),
+		);
+	}
+}
+
 export async function protocolEmitReviewer(
 	params: ProtocolEmitReviewerParams,
 ): Promise<void> {
@@ -106,7 +121,7 @@ export async function protocolEmitReviewer(
 			const normalized = normalizeReviewerVerdict(parsed);
 			const verdict = normalized as ReviewerVerdict;
 
-			const result = assertReviewerVerdict(verdict, "protocol emit reviewer");
+			const result = assertReviewerVerdictForEmit(verdict);
 			for (const w of result.warnings) {
 				console.error(`Warning: ${w}`);
 			}
@@ -181,13 +196,19 @@ export async function protocolEmitReviewer(
 
 	let baselineAssessment: BaselineAssessment | undefined;
 	if (baselineAssessmentJson !== undefined) {
+		let parsed: unknown;
 		try {
-			baselineAssessment = JSON.parse(
-				baselineAssessmentJson,
-			) as BaselineAssessment;
+			parsed = JSON.parse(baselineAssessmentJson);
 		} catch {
 			outputError("INVALID_JSON", "--baseline-assessment is not valid JSON.");
 		}
+		if (!isObjectShape(parsed)) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				"--baseline-assessment must be a JSON object.",
+			);
+		}
+		baselineAssessment = parsed as unknown as BaselineAssessment;
 		try {
 			rejectCliOwnedBudgetFields(baselineAssessment);
 		} catch (err) {
@@ -200,15 +221,22 @@ export async function protocolEmitReviewer(
 
 	const creditAssessments: CreditAssessment[] = [];
 	for (const [index, raw] of (creditAssessmentJsonStrings ?? []).entries()) {
-		let assessment: CreditAssessment;
+		let parsed: unknown;
 		try {
-			assessment = JSON.parse(raw) as CreditAssessment;
+			parsed = JSON.parse(raw);
 		} catch {
 			outputError(
 				"INVALID_JSON",
 				`--credit-assessment at index ${index} is not valid JSON.`,
 			);
 		}
+		if (!isObjectShape(parsed)) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				`--credit-assessment at index ${index} must be a JSON object.`,
+			);
+		}
+		const assessment = parsed as unknown as CreditAssessment;
 		try {
 			rejectCliOwnedBudgetFields(assessment);
 		} catch (err) {
@@ -240,10 +268,7 @@ export async function protocolEmitReviewer(
 	const normalized = normalizeReviewerVerdict(verdict) as ReviewerVerdict;
 
 	// Validate
-	const assertResult = assertReviewerVerdict(
-		normalized,
-		"protocol emit reviewer",
-	);
+	const assertResult = assertReviewerVerdictForEmit(normalized);
 	for (const w of assertResult.warnings) {
 		console.error(`Warning: ${w}`);
 	}

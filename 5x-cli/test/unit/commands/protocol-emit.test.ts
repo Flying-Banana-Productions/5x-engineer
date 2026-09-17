@@ -196,6 +196,53 @@ describe("protocolEmitReviewer", () => {
 		}
 	});
 
+	test("rejects null assessment flags as invalid structured output", async () => {
+		for (const params of [
+			{ ready: true, baselineAssessment: "null" },
+			{ ready: true, creditAssessment: ["null"] },
+		]) {
+			try {
+				await protocolEmitReviewer(params);
+				expect.unreachable("should reject non-object assessment JSON");
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("INVALID_STRUCTURED_OUTPUT");
+				expect((err as CliError).message).toContain("JSON object");
+			}
+		}
+	});
+
+	test("maps assertion failures to INVALID_STRUCTURED_OUTPUT", async () => {
+		for (const params of [
+			{
+				ready: false,
+				item: [
+					JSON.stringify({
+						title: "Invalid confidence",
+						action: "auto_fix",
+						reason: "Invalid enum",
+						estimateConfidence: "certain",
+					}),
+				],
+			},
+			{
+				stdinData: JSON.stringify({
+					readiness: "ready",
+					items: [],
+					baselineAssessment: null,
+				}),
+			},
+		]) {
+			try {
+				await protocolEmitReviewer(params);
+				expect.unreachable("should reject invalid reviewer fields");
+			} catch (err) {
+				expect(err).toBeInstanceOf(CliError);
+				expect((err as CliError).code).toBe("INVALID_STRUCTURED_OUTPUT");
+			}
+		}
+	});
+
 	test("missing --ready/--no-ready without stdin → error", async () => {
 		// Pass empty string for stdinData to simulate no piped input without
 		// relying on readStdinIfPiped() which is non-deterministic in test runs

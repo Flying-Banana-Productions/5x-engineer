@@ -221,4 +221,44 @@ describe("assertReviewerVerdict", () => {
 			"independentEffortEstimate",
 		);
 	});
+
+	test("rejects null object-shaped budget fields with actionable messages", () => {
+		const cases: Array<[ReviewerVerdict, string]> = [
+			[
+				{
+					readiness: "not_ready",
+					items: [
+						{
+							id: "R1",
+							title: "Claim",
+							action: "auto_fix",
+							reason: "Reason",
+							creditClaim: null,
+						} as unknown as ReviewerVerdict["items"][number],
+					],
+				},
+				"creditClaim must be an object",
+			],
+			[
+				{
+					readiness: "ready",
+					items: [],
+					baselineAssessment: null,
+				} as unknown as ReviewerVerdict,
+				"baselineAssessment must be an object",
+			],
+			[
+				{
+					readiness: "ready",
+					items: [],
+					creditAssessments: [null],
+				} as unknown as ReviewerVerdict,
+				"each creditAssessment must be an object",
+			],
+		];
+
+		for (const [verdict, message] of cases) {
+			expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(message);
+		}
+	});
 });

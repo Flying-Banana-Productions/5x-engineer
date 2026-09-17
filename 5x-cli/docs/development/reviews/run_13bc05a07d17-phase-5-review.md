@@ -80,10 +80,10 @@ Before this phase `assertReviewerVerdict` was effectively unreachable as a throw
 - [x] None
 
 **P1 recommended**
-- [ ] P1.1 — shape guards + `INVALID_STRUCTURED_OUTPUT` mapping for new-field validation in emit/assert, with tests
+- [x] P1.1 — shape guards + `INVALID_STRUCTURED_OUTPUT` mapping for new-field validation in emit/assert, with tests
 
 **P2**
-- [ ] Pin nested-key rejection behaviour with a test
+- [x] Pin nested-key rejection behaviour with a test
 
 ---
 

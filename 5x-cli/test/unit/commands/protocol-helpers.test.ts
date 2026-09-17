@@ -97,6 +97,30 @@ describe("validateStructuredOutput (result-based)", () => {
 		}
 	});
 
+	test("rejects nested reviewer-authored CLI aggregate keys", () => {
+		const result = validateStructuredOutput(
+			{
+				readiness: "not_ready",
+				items: [
+					{
+						id: "R1",
+						title: "Claim",
+						action: "auto_fix",
+						reason: "Reason",
+						creditClaim: { W: 3 },
+					},
+				],
+			},
+			"reviewer",
+			{ context: "test" },
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.code).toBe("INVALID_STRUCTURED_OUTPUT");
+			expect(result.message).toContain("'W'");
+		}
+	});
+
 	test("returns failure result (not throw) for author complete without commit", () => {
 		const result = validateStructuredOutput({ result: "complete" }, "author", {
 			context: "test",
