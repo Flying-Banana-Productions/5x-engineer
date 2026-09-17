@@ -430,9 +430,9 @@ export interface DerivedBudgetResult {
 }
 ```
 
-- [ ] Create `src/review-budget/types.ts` with the types above, including shared structural `BaselineAssessment`. Do **not** declare this type in `src/protocol.ts` in this phase (or any later persistence phase).
-- [ ] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
-- [ ] Type-level test `test/unit/review-budget/types.test.ts`: a value satisfying `{ independentEffortEstimate, confidence, reason }` is assignable to `BaselineAssessment` exported from `src/review-budget/types.ts`. This test (and all Phase 1 tests) must not import `src/protocol.ts`.
+- [x] Create `src/review-budget/types.ts` with the types above, including shared structural `BaselineAssessment`. Do **not** declare this type in `src/protocol.ts` in this phase (or any later persistence phase).
+- [x] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
+- [x] Type-level test `test/unit/review-budget/types.test.ts`: a value satisfying `{ independentEffortEstimate, confidence, reason }` is assignable to `BaselineAssessment` exported from `src/review-budget/types.ts`. This test (and all Phase 1 tests) must not import `src/protocol.ts`.
 
 ### 1.2 Arithmetic — `src/review-budget/arithmetic.ts`
 
@@ -530,8 +530,8 @@ export function deriveBudget(input: {
 
 `requiresHuman`: true if band is `over_effective` or `over_absolute`, or alerts include `baseline_disputed` or `positive_architecture_exceeded`, or `semanticHumanRequired`. Advisory callers record this and do not route.
 
-- [ ] Implement `arithmetic.ts` with no I/O.
-- [ ] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; **incomplete `debtClaim` (missing before/after or targetPhase) excluded from `N` even if an assessment says eligible**; `D` capped by percent and by `floor(N * ratio)`.
+- [x] Implement `arithmetic.ts` with no I/O.
+- [x] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; **incomplete `debtClaim` (missing before/after or targetPhase) excluded from `N` even if an assessment says eligible**; `D` capped by percent and by `floor(N * ratio)`.
 
 ---
 
