@@ -78,3 +78,33 @@ Recommendation: restore the exact parser-accepted form in the default artifact (
 ## Phase readiness
 
 Plan compliance for §9.1–§9.5 is otherwise complete and the completion gate is met in substance. After P1.1 is corrected, proceed to Phase 10 (integration, compatibility, exports); the round-trip test requested above complements the Phase 10 integration spawn rather than replacing it.
+
+---
+
+## Addendum — Re-review at `e66641c5e7aa2ffce7fc454f99435e1c3d122e91`
+
+**Scope of change:** `fix: address phase 9 review feedback` (`2520bf0..e66641c`) — a single commit targeting exactly the four items from the prior review, plus their test coverage. No other production code changed.
+
+**Local verification:** `bun test test/unit/templates test/unit/harnesses test/unit/parsers/delivery-budget.test.ts` — 537 pass, 0 fail (up from 511; net new tests all pass).
+
+### Prior findings — disposition
+
+- **P1.1 — Shipped default template documents a debt-claim cell format the parser rejects: Addressed.**
+  `src/templates/default-artifacts.ts` now uses the exact parser-accepted form `` DC0 (`intrinsic`) `` (verified against `CLAIM_CELL_RE` in `src/parsers/delivery-budget.ts:68`, unchanged). `docs/_implementation_plan_template.md` was updated to the same literal syntax. Both author prompts (`author-generate-plan.md` v3→v4, `author-process-plan-review.md` v3→v4) now spell out the literal cell form and explicitly say "do not backtick `DC0`, and do backtick the coupling." A new test, `test/unit/parsers/delivery-budget.test.ts` ("parses a negative debt claim filled from the shipped plan scaffold"), fills the actual `DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE` export with a negative row exactly as documented and asserts `parseDeliveryBudget` returns `ok: true` with `coupling === "intrinsic"` — this is precisely the round-trip guard recommended, so future scaffold/parser drift will fail CI. Confirmed passing locally.
+
+- **P2.1 — Qualify first-review budget instructions for off / no-section plans: Addressed.**
+  `reviewer-plan.md` (v4→v5) now gates the Delivery Budget dimension and verdict-field instructions on "the plan has `## Delivery Budget` and the workflow context indicates budgeting is active," explicitly says to "Skip this dimension in mode off or `v1_compat`," and the emit-example guidance now reads "For mode off or `v1_compat`, omit both flags." This resolves the concern more thoroughly than the one-line qualifier suggested — it also covers the `v1_compat` case I hadn't separately called out.
+
+- **P2.2 — Assert harness-conditional opt-in tool line in skill tests: Addressed.**
+  Both `test/unit/harnesses/cursor-skills.test.ts` and `test/unit/harnesses/opencode-skills.test.ts` gained a "renders the opt-in command for the reviewer delegation mode" test using `createRenderContext(true/false)` that asserts the native path contains `5x protocol validate reviewer --opt-in-budget-baseline` and not the invoke form, and vice versa. This closes the exact gap noted.
+
+- **P2.3 — Document `stale_plan` in 101 run state section: Addressed.**
+  `docs/v1/101-cli-primitives.md` now states: "It also includes `stale_plan: true` when the current plan's scored effort differs from the latest recorded snapshot; the field is omitted when the snapshot is current." Matches the Phase 8 handler behavior.
+
+### New issues from this revision
+
+None found. The diff is narrowly scoped to the four flagged items, each fix is minimal and consistent with existing conventions (backtick-escaping in the TS template literal, `createRenderContext` already used elsewhere for harness-conditional rendering), and no new prompt/scaffold inconsistencies were introduced. I re-checked the updated `CLAIM_CELL_RE` match against all three scaffold/template occurrences (`default-artifacts.ts`, `docs/_implementation_plan_template.md`, both author prompts) — all now agree on the literal form.
+
+### Updated readiness
+
+**Readiness:** Ready — all P1/P2 items from the initial Phase 9 review are resolved with passing tests; no new findings. Phase 9 is complete; proceed to Phase 10.
