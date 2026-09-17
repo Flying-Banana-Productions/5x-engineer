@@ -294,11 +294,34 @@ export type {
 // construction deliberately remains internal; reindexReviewBudget is the
 // public repair operation and always rebuilds from a RecordStore.
 export type {
+	ArchitectureDelta,
 	BaselineAssessment,
+	BaselineDirection,
+	BudgetAlert,
+	BudgetBand,
+	CouplingClass,
+	CreditAssessmentInput,
+	CreditEligibility,
 	DebtClaimEvidence,
 	DerivedBudgetResult,
+	EffortPoints,
+	EstimateConfidence,
+	FindingDelta,
 	ParsedDeliveryBudget,
 	ParsedWorkItem,
+	PlanScopeClass,
+	ReviewBudgetConfig,
+	ReviewBudgetMode,
+	ReviewBudgetThresholds,
+	SurfaceSnapshot,
+} from "./review-budget/types.js";
+export {
+	ARCHITECTURE_DELTAS,
+	DEFAULT_REVIEW_BUDGET_CONFIG,
+	EFFORT_POINTS,
+	isArchitectureDelta,
+	isCompleteDebtClaimEvidence,
+	isEffortPoints,
 } from "./review-budget/types.js";
 // Templates
 export type {

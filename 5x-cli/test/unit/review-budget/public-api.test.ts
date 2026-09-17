@@ -35,6 +35,8 @@ describe("review-budget public API", () => {
 		expect(publicApi.createReviewBudgetStore).toBeFunction();
 		expect(publicApi.reindexReviewBudget).toBeFunction();
 		expect(publicApi.createReviewBudgetId).toBeFunction();
+		expect(publicApi.isCompleteDebtClaimEvidence).toBeFunction();
+		expect(publicApi.EFFORT_POINTS).toEqual([1, 2, 3, 5, 8]);
 	});
 
 	test("does not expose SQLite index construction as public authority", () => {
