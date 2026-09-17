@@ -16,6 +16,7 @@ import {
 	listSkills,
 	parseSkillFrontmatter,
 } from "../../../src/harnesses/opencode/skills/loader.js";
+import { createRenderContext } from "../../../src/skills/renderer.js";
 import {
 	listTemplates,
 	renderTemplate,
@@ -399,6 +400,26 @@ describe("5x-plan-review skill — Task tool delegation", () => {
 			"Ignore `result.budget.requiresHuman` for routing",
 		);
 		expect(content).toContain("Reviewers never emit");
+	});
+
+	test("renders the opt-in command for the reviewer delegation mode", () => {
+		const native = getDefaultSkillRaw(
+			"5x-plan-review",
+			createRenderContext(true),
+		);
+		const invoke = getDefaultSkillRaw(
+			"5x-plan-review",
+			createRenderContext(false),
+		);
+		const nativeOptIn =
+			"5x protocol validate reviewer --opt-in-budget-baseline";
+		const invokeOptIn =
+			"5x invoke reviewer reviewer-plan --opt-in-budget-baseline";
+
+		expect(native).toContain(nativeOptIn);
+		expect(native).not.toContain(invokeOptIn);
+		expect(invoke).toContain(invokeOptIn);
+		expect(invoke).not.toContain(nativeOptIn);
 	});
 });
 

@@ -5,6 +5,7 @@ import {
 } from "../../../src/harnesses/cursor/skills/loader.js";
 import { parseSkillFrontmatter } from "../../../src/skills/frontmatter.js";
 import { listBaseSkillNames } from "../../../src/skills/loader.js";
+import { createRenderContext } from "../../../src/skills/renderer.js";
 
 describe("cursor skills loader", () => {
 	test("loads all shared skills from shared base template names", () => {
@@ -102,5 +103,23 @@ describe("cursor skills loader", () => {
 		expect(review).toContain(
 			"Ignore `result.budget.requiresHuman` for routing",
 		);
+	});
+
+	test("renders the opt-in command for the reviewer delegation mode", () => {
+		const native = listSkills(createRenderContext(true)).find(
+			(skill) => skill.name === "5x-plan-review",
+		)?.content;
+		const invoke = listSkills(createRenderContext(false)).find(
+			(skill) => skill.name === "5x-plan-review",
+		)?.content;
+		const nativeOptIn =
+			"5x protocol validate reviewer --opt-in-budget-baseline";
+		const invokeOptIn =
+			"5x invoke reviewer reviewer-plan --opt-in-budget-baseline";
+
+		expect(native).toContain(nativeOptIn);
+		expect(native).not.toContain(invokeOptIn);
+		expect(invoke).toContain(invokeOptIn);
+		expect(invoke).not.toContain(nativeOptIn);
 	});
 });

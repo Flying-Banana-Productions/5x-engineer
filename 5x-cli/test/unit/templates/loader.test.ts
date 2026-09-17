@@ -17,7 +17,7 @@ describe("loadTemplate", () => {
 	test("loads a known template with valid metadata", () => {
 		const { metadata, body } = loadTemplate("author-generate-plan");
 		expect(metadata.name).toBe("author-generate-plan");
-		expect(metadata.version).toBe(3);
+		expect(metadata.version).toBe(4);
 		expect(metadata.variables).toContain("prd_path");
 		expect(metadata.variables).toContain("plan_path");
 		expect(metadata.variables).toContain("plan_template_path");
@@ -122,6 +122,7 @@ describe("author-generate-plan template", () => {
 		expect(result.prompt).toContain("stable `Wn` ID");
 		expect(result.prompt).toContain("minimal-compliant effort delta");
 		expect(result.prompt).toContain("Do not claim architecture reduction");
+		expect(result.prompt).toContain("DC0 (`intrinsic`)");
 	});
 });
 
@@ -359,6 +360,8 @@ describe("reviewer-plan template", () => {
 		expect(result.prompt).toContain("stable ID");
 		expect(result.prompt).toContain("Do not author budget totals");
 		expect(result.prompt).toContain("Budget telemetry is advisory only");
+		expect(result.prompt).toContain("review-budget mode is off");
+		expect(result.prompt).toContain("omit all budget-specific verdict fields");
 	});
 });
 

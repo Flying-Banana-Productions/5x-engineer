@@ -5,6 +5,7 @@ import {
 	parseDeliveryBudget,
 	rawDeliveryBudgetSection,
 } from "../../../src/parsers/delivery-budget.js";
+import { DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE } from "../../../src/templates/default-artifacts.js";
 
 const CANONICAL = `# Plan
 
@@ -55,6 +56,38 @@ function replaceOnce(from: string, to: string): string {
 }
 
 describe("parseDeliveryBudget", () => {
+	test("parses a negative debt claim filled from the shipped plan scaffold", () => {
+		const markdown = DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE.replace(
+			"- Estimate confidence: {low | medium | high}",
+			"- Estimate confidence: medium",
+		)
+			.replace(
+				"| W1 | {Work item} | {1\\|2\\|3\\|5\\|8} | {0 or ±1/2/3/5} | - | - | {Why this score} |",
+				"| W1 | Consolidate paths | 3 | -2 | DC0 (`intrinsic`) | - | Reduce coupling |",
+			)
+			.replace("- Target phase: {phase-N}", "- Target phase: phase-1")
+			.replace(
+				"- Minimal-compliant effort delta: {0 or 1\\|2\\|3\\|5\\|8}",
+				"- Minimal-compliant effort delta: 1",
+			)
+			.replace(
+				"- Minimal-compliant architecture delta: {0 or ±1/2/3/5}",
+				"- Minimal-compliant architecture delta: 0",
+			)
+			.replace("- Before: {concrete pre-state}", "- Before: duplicated paths")
+			.replace(
+				"- After: {concrete simpler post-state}",
+				"- After: one shared path",
+			)
+			.replaceAll("{n}", "1");
+
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain("DC0 (`intrinsic`)");
+		const result = parseDeliveryBudget(markdown);
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.message);
+		expect(result.value.workItems[0]?.debtClaim?.coupling).toBe("intrinsic");
+	});
+
 	test("parses the canonical table and joins complete debt evidence", () => {
 		const result = parseDeliveryBudget(CANONICAL);
 		expect(result.ok).toBe(true);
