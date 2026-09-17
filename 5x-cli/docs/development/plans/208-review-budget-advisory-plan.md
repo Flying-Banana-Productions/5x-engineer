@@ -762,15 +762,15 @@ atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult;
 
 Add:
 
-- [ ] All keys new (`[step, budget]`): `{ created: true }`, both `getLine` hits, insertion order preserved, origins round-trip.
-- [ ] Existing step + new budget: `{ created: false }`, `duplicates` includes only the step op, **budget line absent**, step payload is the first-writer payload.
-- [ ] Existing budget + new step: `{ created: false }`, step line absent, budget payload unchanged.
-- [ ] Both keys already exist: `{ created: false }`, neither line rewritten.
-- [ ] Sequential retry of the same pair: first `{ created: true }`; second `{ created: false }`; still exactly one step line and one budget line.
-- [ ] Throw / `onBeforeCommit` during an all-new apply: store unchanged (no step, no budget).
-- [ ] Multi-run ops throw `INVALID_ATOMIC_APPEND` with no mutation.
-- [ ] **Regression:** `atomicAppend` existing-step + new-budget still returns `[false, true]` and still appends the budget line — proving this method did not change general per-op dedup.
-- [ ] The existing-step + new-budget `atomicAppendIfAllNew` case is the deterministic cross-store race/partial-duplicate contract (memory **and** working-tree). Do **not** implement a wrapper that calls `atomicAppend` and then tries to undo a sibling line.
+- [x] All keys new (`[step, budget]`): `{ created: true }`, both `getLine` hits, insertion order preserved, origins round-trip.
+- [x] Existing step + new budget: `{ created: false }`, `duplicates` includes only the step op, **budget line absent**, step payload is the first-writer payload.
+- [x] Existing budget + new step: `{ created: false }`, step line absent, budget payload unchanged.
+- [x] Both keys already exist: `{ created: false }`, neither line rewritten.
+- [x] Sequential retry of the same pair: first `{ created: true }`; second `{ created: false }`; still exactly one step line and one budget line.
+- [x] Throw / `onBeforeCommit` during an all-new apply: store unchanged (no step, no budget).
+- [x] Multi-run ops throw `INVALID_ATOMIC_APPEND` with no mutation.
+- [x] **Regression:** `atomicAppend` existing-step + new-budget still returns `[false, true]` and still appends the budget line — proving this method did not change general per-op dedup.
+- [x] The existing-step + new-budget `atomicAppendIfAllNew` case is the deterministic cross-store race/partial-duplicate contract (memory **and** working-tree). Do **not** implement a wrapper that calls `atomicAppend` and then tries to undo a sibling line.
 
 Do **not** delete or weaken the existing mixed-stream `atomicAppend` tests.
 
@@ -995,17 +995,17 @@ export function reindexReviewBudget(
 
 `reindexReviewBudget` walks budget lines in insertion order and upserts by `record_idempotency_key`. It never invents a baseline or snapshot that has no record line. Snapshot upserts copy `decodeBudgetSnapshotPayload(...).baselineAssessment` onto the facade record and into `baseline_assessment_json` (NULL when the payload omits it). Reindex must not drop a first-snapshot assessment or fill `I` from `derived_json`. Merged 212 already ships `5x records index`; this slice does **not** change that CLI. Optional later wiring may call this helper from it. Command retry must not wait for `records index` — the duplicate / `created: false` projection-repair path is the online repair.
 
-- [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`, nullable `baseline_assessment_json`).
-- [ ] Update version assertions from 7 → 8.
-- [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
-- [ ] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`. **This file must not import `createRecordContext`.**
-- [ ] `test/unit/review-budget/slice-10-phase-boundary.test.ts` (**new**): read Phase 4 production files (`src/control-plane/review-budget-store.ts`, `src/review-budget/record-lines.ts`, `src/control-plane/review-budget-index.ts`) and Phase 4 tests (`review-budget-store-contract.test.ts`, `review-budget-index.test.ts`, `record-lines.test.ts`) as text; assert none contain the identifier `createRecordContext` or an import of `record-context`. Phase 6 extends this file to assert `src/commands/review-budget-context.ts` **does** import and call `createRecordContext`. Until Phase 6 exists, the Phase 4 half still passes.
-- [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
-- [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
-- [ ] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
-- [ ] Do not add a SQLite-backed `RecordStore` implementation in this slice. The only `RecordStore` source edits are the additive `atomicAppendIfAllNew` method and shared apply-under-lock extraction needed to implement it.
-- [ ] `atomicAppendIfAllNew` contract tests in `record-store-contract.test.ts` (both backends) per §4.0, including existing-step + new-budget as a no-op **and** the frozen `atomicAppend` `[false, true]` regression.
+- [x] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`, nullable `baseline_assessment_json`).
+- [x] Update version assertions from 7 → 8.
+- [x] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
+- [x] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
+- [x] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`. **This file must not import `createRecordContext`.**
+- [x] `test/unit/review-budget/slice-10-phase-boundary.test.ts` (**new**): read Phase 4 production files (`src/control-plane/review-budget-store.ts`, `src/review-budget/record-lines.ts`, `src/control-plane/review-budget-index.ts`) and Phase 4 tests (`review-budget-store-contract.test.ts`, `review-budget-index.test.ts`, `record-lines.test.ts`) as text; assert none contain the identifier `createRecordContext` or an import of `record-context`. Phase 6 extends this file to assert `src/commands/review-budget-context.ts` **does** import and call `createRecordContext`. Until Phase 6 exists, the Phase 4 half still passes.
+- [x] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
+- [x] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
+- [x] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
+- [x] Do not add a SQLite-backed `RecordStore` implementation in this slice. The only `RecordStore` source edits are the additive `atomicAppendIfAllNew` method and shared apply-under-lock extraction needed to implement it.
+- [x] `atomicAppendIfAllNew` contract tests in `record-store-contract.test.ts` (both backends) per §4.0, including existing-step + new-budget as a no-op **and** the frozen `atomicAppend` `[false, true]` regression.
 
 ---
 

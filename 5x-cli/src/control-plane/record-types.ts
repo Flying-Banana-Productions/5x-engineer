@@ -134,6 +134,14 @@ export interface AppendResult {
 	line: RecordLine;
 }
 
+/** Result of a coupled append that is committed only when every key is new. */
+export type AtomicAppendIfAllNewResult =
+	| { created: true; results: AppendResult[] }
+	| {
+			created: false;
+			duplicates: Array<{ index: number; line: RecordLine }>;
+	  };
+
 export class RecordStoreError extends Error {
 	readonly code: string;
 	constructor(code: string, message: string) {

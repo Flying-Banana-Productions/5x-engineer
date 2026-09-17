@@ -39,6 +39,7 @@ import type { RecordStore } from "./record-store.js";
 import {
 	type AppendOp,
 	type AppendResult,
+	type AtomicAppendIfAllNewResult,
 	RECORD_LINE_SCHEMA_VERSION,
 	type RecordLine,
 	RecordStoreError,
@@ -728,6 +729,18 @@ class WorkingTreeRecordStore implements RecordStore {
 	}
 
 	atomicAppend(ops: AppendOp[]): AppendResult[] {
+		return this.atomicAppendUnderLock(ops, false) as AppendResult[];
+	}
+
+	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
+		if (ops.length === 0) return { created: true, results: [] };
+		return this.atomicAppendUnderLock(ops, true) as AtomicAppendIfAllNewResult;
+	}
+
+	private atomicAppendUnderLock(
+		ops: AppendOp[],
+		ifAllNew: boolean,
+	): AppendResult[] | AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return [];
 		requireSingleRunAtomicAppend(ops);
 
@@ -801,6 +814,17 @@ class WorkingTreeRecordStore implements RecordStore {
 					budget: readFileBuffer(streamPath(runDir, "budget")),
 				};
 				const mutated = new Set<RecordStream>();
+				if (ifAllNew) {
+					const duplicates: Array<{ index: number; line: RecordLine }> = [];
+					for (const [index, op] of ops.entries()) {
+						if (op.runId !== runId) continue;
+						const stream = requireStream(op.stream);
+						validateEnvelope(op);
+						const existing = states[stream].lines.get(op.idempotencyKey);
+						if (existing) duplicates.push({ index, line: cloneLine(existing) });
+					}
+					if (duplicates.length > 0) return { created: false, duplicates };
+				}
 				for (const op of ops) {
 					if (op.runId !== runId) continue;
 					const stream = requireStream(op.stream);
@@ -831,7 +855,7 @@ class WorkingTreeRecordStore implements RecordStore {
 			for (const { runDir, prepared } of mutations) {
 				this.commitPrepared(runDir, prepared, fire, fsyncFile, fsyncDir);
 			}
-			return results;
+			return ifAllNew ? { created: true, results } : results;
 		} catch (err) {
 			if (!crashed) {
 				for (const { runDir } of runDirs) {

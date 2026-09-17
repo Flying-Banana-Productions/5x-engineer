@@ -503,6 +503,45 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 8,
+		description: "Rebuildable review-budget baseline and snapshot indexes",
+		up(db) {
+			db.exec(`
+				CREATE TABLE review_budget_baselines (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					capture_kind TEXT NOT NULL CHECK (capture_kind IN ('initial', 'opt_in')),
+					b0 INTEGER NOT NULL CHECK (b0 > 0),
+					b INTEGER NOT NULL CHECK (b > 0),
+					original_ledger_json TEXT NOT NULL,
+					surface_snapshot_json TEXT NOT NULL,
+					original_section TEXT,
+					config_snapshot_json TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+
+				CREATE TABLE review_budget_snapshots (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					step_name TEXT,
+					phase TEXT,
+					iteration INTEGER,
+					current_ledger_json TEXT NOT NULL,
+					findings_json TEXT NOT NULL,
+					assessments_json TEXT NOT NULL,
+					baseline_assessment_json TEXT,
+					derived_json TEXT,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_review_budget_snapshots_run
+					ON review_budget_snapshots(run_id, record_seq);
+			`);
+		},
+	},
 ];
 
 /**
