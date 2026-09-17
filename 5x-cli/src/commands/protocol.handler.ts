@@ -12,7 +12,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
-import { getStepsByPhase } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
@@ -30,6 +29,7 @@ import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
+	hasPriorPlanReviewerStep,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
 } from "./review-budget-context.js";
@@ -473,6 +473,15 @@ export async function protocolValidate(
 		recordStepName = params.step;
 		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
+	if (
+		params.optInBudgetBaseline &&
+		(role !== "reviewer" || !params.record || resolvedPhase !== "plan")
+	) {
+		outputError(
+			"BUDGET_BASELINE_OPT_IN_INVALID",
+			"--opt-in-budget-baseline requires a recorded plan-reviewer verdict",
+		);
+	}
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
@@ -552,11 +561,10 @@ export async function protocolValidate(
 						verdict: validated as ReviewerVerdict,
 						config: budgetContext.config.reviewBudget,
 						store: budgetContext.store,
-						hasPriorPlanReviewerStep: getStepsByPhase(
-							budgetContext.db,
+						hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
+							budgetContext,
 							params.run,
-							"plan",
-						).some((step) => step.step_name.startsWith("reviewer:")),
+						),
 						optInBaseline: params.optInBudgetBaseline ?? false,
 						origin: budgetContext.originFor(performer),
 						warn:

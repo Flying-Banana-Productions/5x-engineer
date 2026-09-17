@@ -900,7 +900,7 @@ describe("invoke CLI integration", () => {
 					insertRun(dir, "run_stepname_test");
 					writeFileSync(
 						join(dir, "5x.toml"),
-						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nreadiness = "ready"\nitems = []\n',
+						'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "off"\n\n[sample]\necho = false\n\n[sample.structured]\nreadiness = "ready"\nitems = []\n',
 					);
 
 					const result = await run5x(dir, [

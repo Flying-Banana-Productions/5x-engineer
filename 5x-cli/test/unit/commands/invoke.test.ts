@@ -155,6 +155,7 @@ reason = "estimate"
 		dir: string,
 		planPath: string,
 		effectivePlanPath: string,
+		onCreateProvider?: () => never,
 	) {
 		const ctx = makeBudgetContext();
 		ctx.executionContext.effectivePlanPath = effectivePlanPath;
@@ -170,7 +171,12 @@ reason = "estimate"
 					quiet: true,
 					workdir: dir,
 				},
-				{ createReviewBudgetContext: async () => ctx },
+				{
+					createReviewBudgetContext: async () => ctx,
+					...(onCreateProvider
+						? { createProvider: async () => onCreateProvider() }
+						: {}),
+				},
 			);
 		} finally {
 			ctx.db.close();
@@ -183,9 +189,14 @@ reason = "estimate"
 			const planPath = await setupBudgetInvoke(dir);
 			const emptyPath = join(dir, "empty.md");
 			writeFileSync(emptyPath, "");
+			let providerCreations = 0;
 			await expect(
-				invokeWithBudgetContext(dir, planPath, emptyPath),
+				invokeWithBudgetContext(dir, planPath, emptyPath, () => {
+					providerCreations++;
+					throw new Error("provider must not be created before preflight");
+				}),
 			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+			expect(providerCreations).toBe(0);
 		} finally {
 			closeDb();
 			_resetForTest();

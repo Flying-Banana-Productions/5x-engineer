@@ -106,22 +106,32 @@ export function applyPlanReviewBudget(
 	if (input.config.mode === "off") return { status: "skipped", reason: "off" };
 
 	let baseline = input.store.getBaseline(input.runId);
-	if (!baseline && input.hasPriorPlanReviewerStep && !input.optInBaseline) {
-		return { status: "skipped", reason: "v1_compat" };
-	}
-	if (!baseline) {
+	if (!baseline || input.optInBaseline) {
 		const ensured = ensurePlanReviewBaseline({
 			runId: input.runId,
 			planMarkdown: input.planMarkdown,
 			config: input.config,
 			store: input.store,
-			captureKind: input.optInBaseline ? "opt_in" : "initial",
+			hasPriorPlanReviewerStep: input.hasPriorPlanReviewerStep,
+			optIn: input.optInBaseline,
 			origin: input.origin,
 			warn: input.warn,
 		});
-		if (!ensured.ok) return error(ensured.code, ensured.message);
-		baseline = ensured.baseline;
+		if (ensured.status === "error") return error(ensured.code, ensured.message);
+		if (ensured.status === "skipped") {
+			if (ensured.reason === "off" || ensured.reason === "v1_compat") {
+				return { status: "skipped", reason: ensured.reason };
+			}
+			baseline = input.store.getBaseline(input.runId);
+		} else {
+			baseline = ensured.baseline;
+		}
 	}
+	if (!baseline)
+		return error(
+			"BUDGET_BASELINE_MISSING",
+			"Review budget baseline is missing",
+		);
 
 	const parsed = parseDeliveryBudget(input.planMarkdown);
 	if (!parsed.ok) return error(parsed.code, parsed.message);

@@ -31,7 +31,6 @@ import {
 	withInvocationLifecycle,
 } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
-import { getStepsByPhase } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
 import {
@@ -72,6 +71,8 @@ import { validateStructuredOutput } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
+	ensurePlanReviewBaselineForContext,
+	hasPriorPlanReviewerStep,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
 } from "./review-budget-context.js";
@@ -104,6 +105,7 @@ export interface InvokeAgentDeps {
 	appendSessionStart?: typeof defaultAppendSessionStart;
 	createProvider?: typeof defaultCreateProvider;
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
+	warn?: (message: string) => void;
 }
 
 export interface InvokeParams {
@@ -435,6 +437,70 @@ export async function invokeAgent(
 		worktreeRoot: resolvedWorktreePath ?? undefined,
 	});
 	const { variables } = resolved;
+	if (
+		params.optInBudgetBaseline &&
+		(role !== "reviewer" ||
+			!isPlanReviewTemplate(resolved.selectedTemplateName))
+	) {
+		outputError(
+			"BUDGET_BASELINE_OPT_IN_INVALID",
+			"--opt-in-budget-baseline is valid only for a plan-reviewer invocation",
+		);
+	}
+	const invocationWorkdir = params.workdir
+		? resolve(params.workdir)
+		: (effectiveWorkdir ?? projectRoot);
+	const roleConfig = config[role] as Record<string, unknown>;
+	const providerName =
+		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
+	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let optInCapturedBeforeInvoke = false;
+
+	// Fail closed before provider/session creation so an unbudgeted initial
+	// plan review spends no tokens. Continued templates remain v1-compatible.
+	if (
+		role === "reviewer" &&
+		(resolved.selectedTemplateName === "reviewer-plan" ||
+			(params.optInBudgetBaseline &&
+				isPlanReviewTemplate(resolved.selectedTemplateName))) &&
+		params.run &&
+		resolvedPlanPath &&
+		config.reviewBudget.mode !== "off"
+	) {
+		try {
+			budgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir });
+		} catch (err) {
+			if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
+		let planMarkdown: string;
+		try {
+			planMarkdown = readFileSync(
+				budgetContext.executionContext.effectivePlanPath,
+				"utf-8",
+			);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+		}
+		const ensured = ensurePlanReviewBaselineForContext({
+			ctx: budgetContext,
+			runId: params.run,
+			planMarkdown,
+			optIn: params.optInBudgetBaseline ?? false,
+			performer: { kind: "agent", role: "reviewer", provider: providerName },
+			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		});
+		if (ensured.status === "error") {
+			outputError(ensured.code, ensured.message);
+		}
+		optInCapturedBeforeInvoke =
+			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";
+	}
 
 	// Append the review diff block (continued plan reviews only). The diff
 	// can't be a template variable (multi-line), so it's added post-render.
@@ -472,10 +538,7 @@ export async function invokeAgent(
 	// 3. Start or resume session
 	// Phase 2: use resolved worktree workdir when available.
 	// Explicit --workdir wins, then mapped worktree, then projectRoot.
-	const workdir = params.workdir
-		? resolve(params.workdir)
-		: (effectiveWorkdir ?? projectRoot);
-	const roleConfig = config[role] as Record<string, unknown>;
+	const workdir = invocationWorkdir;
 	const model =
 		params.model ??
 		(typeof roleConfig?.model === "string" ? roleConfig.model : "default");
@@ -517,9 +580,6 @@ export async function invokeAgent(
 	const appendStart = deps?.appendSessionStart ?? defaultAppendSessionStart;
 
 	const logDir = join(controlPlane.controlPlaneRoot, stateDir, "logs", runId);
-	const providerName =
-		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
-
 	const outputSchema =
 		role === "author" ? AuthorStatusSchema : ReviewerVerdictSchema;
 	const quiet = params.quiet ?? false;
@@ -646,7 +706,6 @@ export async function invokeAgent(
 		await provider.close().catch(() => {});
 	}
 
-	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
 	const recordPhase = params.phase ?? variables.phase_number;
 	if (
@@ -655,7 +714,7 @@ export async function invokeAgent(
 		config.reviewBudget.mode !== "off"
 	) {
 		try {
-			budgetContext = await (
+			budgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
 			)({ runId, startDir: workdir });
 		} catch (err) {
@@ -729,14 +788,15 @@ export async function invokeAgent(
 					verdict: structured as ReviewerVerdict,
 					config: budgetContext.config.reviewBudget,
 					store: budgetContext.store,
-					hasPriorPlanReviewerStep: getStepsByPhase(
-						budgetContext.db,
+					hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
+						budgetContext,
 						runId,
-						"plan",
-					).some((step) => step.step_name.startsWith("reviewer:")),
-					optInBaseline: params.optInBudgetBaseline ?? false,
+					),
+					optInBaseline:
+						(params.optInBudgetBaseline ?? false) && !optInCapturedBeforeInvoke,
 					origin: budgetContext.originFor(performer),
-					warn: (message) => console.error(`Warning: ${message}`),
+					warn:
+						deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
 				});
 				if (applied.status === "error")
 					outputError(applied.code, applied.message);

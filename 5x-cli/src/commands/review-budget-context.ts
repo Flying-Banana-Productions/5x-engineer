@@ -1,6 +1,7 @@
 import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordLine, StepRecordPayload } from "../control-plane/index.js";
 import { stepIdempotencyKey } from "../control-plane/index.js";
+import type { RecordPerformer } from "../control-plane/record-types.js";
 import type { RecordCommandContext } from "../control-plane/record-writer-types.js";
 import { createReviewBudgetIndex } from "../control-plane/review-budget-index.js";
 import {
@@ -10,9 +11,14 @@ import {
 import {
 	computeRunSummary,
 	getRunV1,
+	getStepsByPhase,
 	recordStep,
 } from "../db/operations-v1.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import {
+	type EnsurePlanReviewBaselineResult,
+	ensurePlanReviewBaseline,
+} from "../review-budget/ensure-baseline.js";
 import {
 	encodeBudgetSnapshotPayload,
 	snapshotIdempotencyKey,
@@ -62,6 +68,47 @@ export async function createReviewBudgetContext(
 			createReviewBudgetIndex(record.db),
 		),
 	};
+}
+
+export function hasPriorPlanReviewerStep(
+	ctx: Pick<ReviewBudgetCommandContext, "db" | "recordStore">,
+	runId: string,
+): boolean {
+	const isPlanReviewer = (stepName: unknown, phase: unknown) =>
+		phase === "plan" &&
+		(stepName === "reviewer:review" || stepName === "reviewer:plan");
+	if (
+		getStepsByPhase(ctx.db, runId, "plan").some((step) =>
+			isPlanReviewer(step.step_name, step.phase),
+		)
+	) {
+		return true;
+	}
+	return ctx.recordStore.listLines(runId, "steps").some((line) => {
+		const payload = line.payload as Partial<StepRecordPayload>;
+		return isPlanReviewer(payload.step_name, payload.phase);
+	});
+}
+
+/** Shared capture entry point for render, invoke, and record-time safety nets. */
+export function ensurePlanReviewBaselineForContext(input: {
+	ctx: ReviewBudgetCommandContext;
+	runId: string;
+	planMarkdown: string;
+	optIn: boolean;
+	performer: RecordPerformer;
+	warn: (message: string) => void;
+}): EnsurePlanReviewBaselineResult {
+	return ensurePlanReviewBaseline({
+		runId: input.runId,
+		planMarkdown: input.planMarkdown,
+		config: input.ctx.config.reviewBudget,
+		store: input.ctx.store,
+		hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(input.ctx, input.runId),
+		optIn: input.optIn,
+		origin: input.ctx.originFor(input.performer),
+		warn: input.warn,
+	});
 }
 
 function projectStepLine(

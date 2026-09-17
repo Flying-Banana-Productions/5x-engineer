@@ -1448,9 +1448,9 @@ CLI is the source of truth: skills cannot silently skip a missing section on a n
 
 `--opt-in-budget-baseline` (Phase 6) is the only capture path for `v1_compat` runs. Template render must **not** treat continued reviews as opt-in.
 
-- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, **missing Debt Claims evidence**, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
-- [ ] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
-- [ ] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
+- [x] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, **missing Debt Claims evidence**, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
+- [x] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
+- [x] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
 
 ---
 

@@ -9,6 +9,7 @@
  * - describe: Show detailed metadata for a specific template
  */
 
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
@@ -25,6 +26,12 @@ import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import { RecordContextError } from "./record-context.js";
+import {
+	createReviewBudgetContext,
+	ensurePlanReviewBaselineForContext,
+	type ReviewBudgetCommandContext,
+} from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { outputAmbientError, resolveAmbientRunId } from "./run-identity.js";
 import { validateSessionContinuity } from "./session-check.js";
@@ -68,12 +75,19 @@ export interface TemplateRenderOutput {
 	worktree_root?: string;
 }
 
+export interface TemplateRenderDeps {
+	createReviewBudgetContext?: typeof createReviewBudgetContext;
+	readPlan?: (path: string) => string;
+	warn?: (message: string) => void;
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
 export async function templateRender(
 	params: TemplateRenderParams,
+	deps?: TemplateRenderDeps,
 ): Promise<void> {
 	// -----------------------------------------------------------------------
 	// Resolve run context (optional — only when --run is provided)
@@ -241,6 +255,50 @@ export async function templateRender(
 		// Re-root review_path into the worktree when a worktree is mapped
 		worktreeRoot: resolvedWorktreeRoot ?? undefined,
 	});
+
+	// Capture B0 before an initial plan reviewer can be invoked. Continued
+	// templates intentionally preserve v1 compatibility and never opt in.
+	if (
+		resolved.selectedTemplateName === "reviewer-plan" &&
+		params.run &&
+		resolvedPlanPath &&
+		config.reviewBudget.mode !== "off"
+	) {
+		let budgetContext: ReviewBudgetCommandContext;
+		try {
+			budgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({
+				runId: params.run,
+				startDir: resolvedWorktreeRoot ?? projectRoot,
+			});
+		} catch (err) {
+			if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
+		let planMarkdown: string;
+		try {
+			planMarkdown = (
+				deps?.readPlan ?? ((path) => readFileSync(path, "utf-8"))
+			)(budgetContext.executionContext.effectivePlanPath);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+		}
+		const ensured = ensurePlanReviewBaselineForContext({
+			ctx: budgetContext,
+			runId: params.run,
+			planMarkdown,
+			optIn: false,
+			performer: { kind: "system", role: "cli" },
+			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		});
+		if (ensured.status === "error") {
+			outputError(ensured.code, ensured.message);
+		}
+	}
 	let prompt = resolved.prompt;
 
 	// -----------------------------------------------------------------------

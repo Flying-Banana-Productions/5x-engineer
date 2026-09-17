@@ -76,7 +76,7 @@ function addInvokeOptions<C extends Command>(cmd: C) {
 		)
 		.option(
 			"--opt-in-budget-baseline",
-			"Explicitly capture a budget baseline for a mid-review v1-compatible run",
+			"After human confirmation, capture a budget baseline for a mid-review v1-compatible run",
 		);
 }
 

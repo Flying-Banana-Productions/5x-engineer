@@ -54,24 +54,26 @@ describe("ensurePlanReviewBaseline", () => {
 			planMarkdown: plan,
 			config,
 			store,
-			captureKind: "initial",
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
 			origin,
 			warn: () => {},
 		});
-		expect(first.ok).toBe(true);
+		expect(first.status).toBe("captured");
 		expect(records.listLines("run1", "budget")[0]?.origin).toEqual(origin);
 		const second = ensurePlanReviewBaseline({
 			runId: "run1",
 			planMarkdown: "broken",
 			config,
 			store,
-			captureKind: "opt_in",
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
 			origin,
 			warn: () => {
 				throw new Error("must not warn");
 			},
 		});
-		expect(second.ok).toBe(true);
+		expect(second).toEqual({ status: "skipped", reason: "already" });
 		expect(records.listLines("run1", "budget")).toHaveLength(1);
 	});
 
@@ -87,7 +89,8 @@ describe("ensurePlanReviewBaseline", () => {
 			planMarkdown: plan,
 			config: { ...config, mode: "enforced" },
 			store,
-			captureKind: "initial",
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
 			origin,
 			warn: (message) => warnings.push(message),
 		});
@@ -107,11 +110,145 @@ describe("ensurePlanReviewBaseline", () => {
 				planMarkdown: "# no budget",
 				config,
 				store,
-				captureKind: "initial",
+				hasPriorPlanReviewerStep: false,
+				optIn: false,
 				origin,
 				warn: () => {},
 			}),
-		).toMatchObject({ ok: false, code: "BUDGET_SECTION_MISSING" });
+		).toMatchObject({
+			status: "error",
+			code: "BUDGET_SECTION_MISSING",
+			message: expect.stringContaining("author preflight"),
+		});
 		expect(records.listLines("run1", "budget")).toHaveLength(0);
+	});
+
+	test("mode off skips parsing and warning", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "44444444-4444-4444-8444-444444444444" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { records, store } = setup(origin);
+		const result = ensurePlanReviewBaseline({
+			runId: "run1",
+			planMarkdown: "not a budget",
+			config: { ...config, mode: "off" },
+			store,
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
+			origin,
+			warn: () => {
+				throw new Error("must not warn");
+			},
+		});
+		expect(result).toEqual({ status: "skipped", reason: "off" });
+		expect(records.listLines("run1", "budget")).toHaveLength(0);
+	});
+
+	test("prior review remains v1-compatible unless explicitly opted in", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "55555555-5555-4555-8555-555555555555" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { records, store } = setup(origin);
+		expect(
+			ensurePlanReviewBaseline({
+				runId: "run1",
+				planMarkdown: plan,
+				config,
+				store,
+				hasPriorPlanReviewerStep: true,
+				optIn: false,
+				origin,
+				warn: () => {},
+			}),
+		).toEqual({ status: "skipped", reason: "v1_compat" });
+		const optedIn = ensurePlanReviewBaseline({
+			runId: "run1",
+			planMarkdown: plan,
+			config,
+			store,
+			hasPriorPlanReviewerStep: true,
+			optIn: true,
+			origin,
+			warn: () => {},
+		});
+		expect(optedIn.status).toBe("captured");
+		expect(store.getBaseline("run1")?.captureKind).toBe("opt_in");
+		expect(records.listLines("run1", "budget")).toHaveLength(1);
+	});
+
+	test("opt-in is rejected outside a baseline-less mid-review run", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "66666666-6666-4666-8666-666666666666" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { store } = setup(origin);
+		expect(
+			ensurePlanReviewBaseline({
+				runId: "run1",
+				planMarkdown: plan,
+				config,
+				store,
+				hasPriorPlanReviewerStep: false,
+				optIn: true,
+				origin,
+				warn: () => {},
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "BUDGET_BASELINE_OPT_IN_INVALID",
+		});
+	});
+
+	test("incomplete debt-claim evidence fails closed", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "77777777-7777-4777-8777-777777777777" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { store } = setup(origin);
+		const incomplete = plan.replace(
+			"| W1 | Work | 2 | 0 | - | - | Needed |",
+			"| W1 | Work | 2 | -1 | DC0 (`intrinsic`) | - | Needed |",
+		);
+		expect(
+			ensurePlanReviewBaseline({
+				runId: "run1",
+				planMarkdown: incomplete,
+				config,
+				store,
+				hasPriorPlanReviewerStep: false,
+				optIn: false,
+				origin,
+				warn: () => {},
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "BUDGET_DEBT_CLAIM_EVIDENCE_MISSING",
+		});
+	});
+
+	test("enforced mode warns only when this call wins capture", () => {
+		const origin: RecordOrigin = {
+			recorder: { installation_id: "88888888-8888-4888-8888-888888888888" },
+			performer: { kind: "system", role: "cli" },
+		};
+		const { store } = setup(origin);
+		const warnings: string[] = [];
+		const input = {
+			runId: "run1",
+			planMarkdown: plan,
+			config: { ...config, mode: "enforced" } as ReviewBudgetConfig,
+			store,
+			hasPriorPlanReviewerStep: false,
+			optIn: false,
+			origin,
+			warn: (message: string) => warnings.push(message),
+		};
+		ensurePlanReviewBaseline(input);
+		ensurePlanReviewBaseline(input);
+		expect(warnings).toEqual([
+			"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
+		]);
 	});
 });

@@ -7,40 +7,75 @@ import {
 import type { ReviewBudgetConfig } from "./types.js";
 
 export type EnsurePlanReviewBaselineResult =
+	| { status: "skipped"; reason: "off" | "v1_compat" | "already" }
 	| {
-			ok: true;
+			status: "captured";
 			baseline: NonNullable<ReturnType<ReviewBudgetStore["getBaseline"]>>;
 	  }
-	| { ok: false; code: string; message: string };
+	| { status: "error"; code: string; message: string };
 
 export function ensurePlanReviewBaseline(input: {
 	runId: string;
 	planMarkdown: string;
 	config: ReviewBudgetConfig;
 	store: ReviewBudgetStore;
-	captureKind: "initial" | "opt_in";
+	hasPriorPlanReviewerStep: boolean;
+	optIn: boolean;
 	origin: RecordOrigin;
 	warn: (message: string) => void;
 }): EnsurePlanReviewBaselineResult {
+	if (input.config.mode === "off") {
+		return { status: "skipped", reason: "off" };
+	}
 	const existing = input.store.getBaseline(input.runId);
-	if (existing) return { ok: true, baseline: existing };
+	if (existing) {
+		if (input.optIn) {
+			return {
+				status: "error",
+				code: "BUDGET_BASELINE_OPT_IN_INVALID",
+				message:
+					"--opt-in-budget-baseline is valid only for a mid-review run without a baseline",
+			};
+		}
+		return { status: "skipped", reason: "already" };
+	}
+	if (input.optIn && !input.hasPriorPlanReviewerStep) {
+		return {
+			status: "error",
+			code: "BUDGET_BASELINE_OPT_IN_INVALID",
+			message:
+				"--opt-in-budget-baseline is valid only after a plan-reviewer step has already been recorded",
+		};
+	}
+	if (input.hasPriorPlanReviewerStep && !input.optIn) {
+		return { status: "skipped", reason: "v1_compat" };
+	}
 	const parsed = parseDeliveryBudget(input.planMarkdown);
 	if (!parsed.ok) {
-		return { ok: false, code: parsed.code, message: parsed.message };
-	}
-	if (input.config.mode === "enforced") {
-		input.warn(
-			"reviewBudget.mode = enforced is reserved; recording advisory telemetry only",
-		);
+		return {
+			status: "error",
+			code: parsed.code,
+			message:
+				parsed.code === "BUDGET_SECTION_MISSING"
+					? `${parsed.message} Run an author preflight to add ## Delivery Budget before the first reviewer.`
+					: parsed.message,
+		};
 	}
 	const { mode: _mode, ...configSnapshot } = input.config;
 	const result = input.store.captureBaseline({
 		runId: input.runId,
-		captureKind: input.captureKind,
+		captureKind: input.optIn ? "opt_in" : "initial",
 		parsed: parsed.value,
 		originalSection: rawDeliveryBudgetSection(input.planMarkdown) ?? undefined,
 		configSnapshot,
 		origin: input.origin,
 	});
-	return { ok: true, baseline: result.baseline };
+	if (result.created && input.config.mode === "enforced") {
+		input.warn(
+			"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
+		);
+	}
+	return result.created
+		? { status: "captured", baseline: result.baseline }
+		: { status: "skipped", reason: "already" };
 }
