@@ -28,6 +28,7 @@ import {
 } from "../config.js";
 import {
 	type AppendOp,
+	createMemoryRecordStore,
 	type RecordLine,
 	type RecordOrigin,
 	type RecordPerformer,
@@ -48,6 +49,11 @@ import type {
 	PreparedRecordStep,
 	PrepareRecordStepOutcome,
 } from "../control-plane/record-writer-types.js";
+import { createReviewBudgetIndex } from "../control-plane/review-budget-index.js";
+import {
+	createReviewBudgetStore,
+	type ReviewBudgetStore,
+} from "../control-plane/review-budget-store.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import {
@@ -100,6 +106,7 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
@@ -129,11 +136,18 @@ import {
 	formatProgressSourceLine,
 	resolvePlanProgress,
 } from "../records/resolve.js";
+import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
+import type {
+	BaselineDirection,
+	BudgetAlert,
+	BudgetBand,
+	ReviewBudgetMode,
+} from "../review-budget/types.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { version } from "../version.js";
-import { resolveDbContext } from "./context.js";
+import { type DbContext, resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
 	controlPlaneDbPath,
@@ -176,6 +190,10 @@ export interface RunStateParams {
 	env?: NodeJS.Dict<string>;
 	fetch?: boolean;
 	allRefs?: boolean;
+	/** Test seam for the already-resolved control-plane context. */
+	dbContext?: DbContext;
+	/** Warning sink; defaults to stderr. */
+	warn?: (message: string) => void;
 }
 
 export interface RunRecordParams {
@@ -925,6 +943,141 @@ function formatStep(step: StepRow) {
 	};
 }
 
+export interface ReviewBudgetState {
+	status: "active" | "v1_compat" | "uninitialized";
+	mode: ReviewBudgetMode;
+	capture_kind?: "initial" | "opt_in";
+	B0?: number;
+	B?: number;
+	W?: number;
+	R?: number;
+	projected_effort?: number;
+	S?: number;
+	N?: number;
+	D?: number;
+	E?: number;
+	A?: number;
+	P?: number;
+	I?: number | null;
+	baseline_direction?: BaselineDirection | null;
+	budget_band?: BudgetBand;
+	budget_alerts?: BudgetAlert[];
+	requires_human?: boolean;
+	stale_plan?: true;
+	enforcement_implemented: false;
+}
+
+const ENFORCED_REVIEW_BUDGET_WARNING =
+	"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only";
+
+export function warnForReviewBudgetRunState(
+	mode: ReviewBudgetMode,
+	warn: (message: string) => void,
+): void {
+	if (mode === "enforced") warn(ENFORCED_REVIEW_BUDGET_WARNING);
+}
+
+/**
+ * Build the delivery-budget header from authoritative record lines. The
+ * facade deliberately reads through (and repairs) an empty SQLite index.
+ */
+export function buildReviewBudgetState(input: {
+	runId: string;
+	mode: ReviewBudgetMode;
+	store: ReviewBudgetStore;
+	hasPriorPlanReviewerStep: boolean;
+	currentPlanMarkdown?: string;
+}): ReviewBudgetState | undefined {
+	if (input.mode === "off") return undefined;
+
+	const baseline = input.store.getBaseline(input.runId);
+	if (!baseline) {
+		return {
+			status: input.hasPriorPlanReviewerStep ? "v1_compat" : "uninitialized",
+			mode: input.mode,
+			enforcement_implemented: false,
+		};
+	}
+
+	const snapshots = input.store.listSnapshots(input.runId);
+	const latest = snapshots.at(-1);
+	const initialAssessment = snapshots.find(
+		(snapshot) => snapshot.baselineAssessment !== undefined,
+	)?.baselineAssessment;
+	let currentParse: ReturnType<typeof parseDeliveryBudget> | undefined;
+	if (input.currentPlanMarkdown !== undefined) {
+		currentParse = parseDeliveryBudget(input.currentPlanMarkdown);
+	}
+
+	let derived = latest?.derived ?? null;
+	// baselineAssessment is a record fact. A cache row with no derived JSON (or
+	// an old/incomplete derived row) must not erase the initial estimate.
+	if (
+		latest &&
+		(derived === null ||
+			(derived.I === null && initialAssessment !== undefined))
+	) {
+		derived = deriveBudget({
+			B0: baseline.b0,
+			B: baseline.b,
+			I: initialAssessment?.independentEffortEstimate ?? null,
+			workItems: latest.currentLedger.workItems,
+			findings: latest.findings,
+			assessments: latest.assessments,
+			config: baseline.configSnapshot,
+			semanticHumanRequired: false,
+		});
+	}
+	if (!latest) {
+		const ledger = currentParse?.ok
+			? currentParse.value
+			: baseline.originalLedger;
+		derived = deriveBudget({
+			B0: baseline.b0,
+			B: baseline.b,
+			I: null,
+			workItems: ledger.workItems,
+			findings: [],
+			assessments: [],
+			config: baseline.configSnapshot,
+			semanticHumanRequired: false,
+		});
+	}
+
+	const stalePlan =
+		latest !== undefined &&
+		currentParse?.ok === true &&
+		derived !== null &&
+		sumEffort(currentParse.value.workItems) !== derived.W;
+	return {
+		status: "active",
+		mode: input.mode,
+		capture_kind: baseline.captureKind,
+		B0: baseline.b0,
+		B: baseline.b,
+		...(derived
+			? {
+					W: derived.W,
+					R: derived.R,
+					projected_effort: derived.projectedEffort,
+					S: derived.S,
+					N: derived.N,
+					D: derived.D,
+					E: derived.E,
+					A: derived.A,
+					P: derived.P,
+					I: derived.I,
+					baseline_direction: derived.baselineDirection,
+					budget_band: derived.budgetBand,
+					budget_alerts: derived.budgetAlerts,
+					requires_human: derived.requiresHuman,
+				}
+			: {}),
+		...(stalePlan ? { stale_plan: true as const } : {}),
+		enforcement_implemented: false,
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Text formatters
 // ---------------------------------------------------------------------------
@@ -987,6 +1140,7 @@ export function formatStateText(data: {
 	creator?: RecordRecorder | null;
 	sealer?: RecordRecorder | null;
 	exported_by?: RecordOrigin;
+	review_budget?: ReviewBudgetState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1026,6 +1180,23 @@ export function formatStateText(data: {
 	console.log(
 		`Steps:   ${data.steps_used} / ${data.max_steps} (${data.steps_remaining} remaining)`,
 	);
+	if (data.review_budget) {
+		const budget = data.review_budget;
+		if (
+			budget.status === "active" &&
+			budget.W !== undefined &&
+			budget.R !== undefined &&
+			budget.E !== undefined &&
+			budget.budget_band !== undefined
+		) {
+			const alerts = budget.budget_alerts?.join(",") || "none";
+			console.log(
+				`Budget:  W+R=${budget.W + budget.R}  E=${budget.E}  band=${budget.budget_band}  alerts=${alerts}  (${budget.mode}${budget.stale_plan ? ", stale plan" : ""})`,
+			);
+		} else {
+			console.log(`Budget:  status=${budget.status}  (${budget.mode})`);
+		}
+	}
 
 	if (steps.length === 0) {
 		console.log();
@@ -1527,6 +1698,7 @@ async function loadGitRecordForPlan(opts: {
 }): Promise<{
 	summary: ReturnType<typeof parseRunJson>;
 	steps: ReturnType<typeof formatGitRecordStep>[];
+	budgetLines: RecordLine[];
 } | null> {
 	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
 	let runJsonRels: string[] = [];
@@ -1539,6 +1711,7 @@ async function loadGitRecordForPlan(opts: {
 	type Loaded = {
 		summary: ReturnType<typeof parseRunJson>;
 		stepsText: string | null;
+		budgetText: string | null;
 	};
 	const loaded: Loaded[] = [];
 
@@ -1550,7 +1723,13 @@ async function loadGitRecordForPlan(opts: {
 			const summary = parseRunJson(text);
 			const stepsRel = rel.replace(/run\.json$/, "steps.jsonl");
 			const stepsText = await gitShowFile(opts.workdir, opts.commit, stepsRel);
-			loaded.push({ summary, stepsText });
+			const budgetRel = rel.replace(/run\.json$/, "budget.jsonl");
+			const budgetText = await gitShowFile(
+				opts.workdir,
+				opts.commit,
+				budgetRel,
+			);
+			loaded.push({ summary, stepsText, budgetText });
 		} catch {}
 	}
 
@@ -1572,7 +1751,11 @@ async function loadGitRecordForPlan(opts: {
 						const stepsText = existsSync(stepsPath)
 							? readFileSync(stepsPath, "utf-8")
 							: null;
-						loaded.push({ summary, stepsText });
+						const budgetPath = join(root, ent.name, "budget.jsonl");
+						const budgetText = existsSync(budgetPath)
+							? readFileSync(budgetPath, "utf-8")
+							: null;
+						loaded.push({ summary, stepsText, budgetText });
 					} catch {}
 				}
 			} catch {}
@@ -1598,7 +1781,17 @@ async function loadGitRecordForPlan(opts: {
 			steps = [];
 		}
 	}
-	return { summary: win.summary, steps };
+	let budgetLines: RecordLine[] = [];
+	if (win.budgetText) {
+		try {
+			budgetLines = decodeJsonlFile(win.budgetText, win.summary.id).filter(
+				(line) => line.stream === "budget",
+			);
+		} catch {
+			budgetLines = [];
+		}
+	}
+	return { summary: win.summary, steps, budgetLines };
 }
 
 function posixJoinRecords(...parts: string[]): string {
@@ -1634,9 +1827,12 @@ function loadDiskRunSummary(opts: {
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { config, db, controlPlane, projectRoot } = await resolveDbContext({
-		startDir: params.startDir,
-	});
+	const dbContext =
+		params.dbContext ??
+		(await resolveDbContext({
+			startDir: params.startDir,
+		}));
+	const { config, db, controlPlane, projectRoot } = dbContext;
 
 	// `--plan` is an explicit selector: skip ambient identity (including FIVEX_RUN).
 	// `--run` wins when both are present (checked first today).
@@ -1681,7 +1877,8 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			if (!gitRecord) {
 				outputError("RUN_NOT_FOUND", "Run not found");
 			}
-			let steps = gitRecord.steps;
+			const allSteps = gitRecord.steps;
+			let steps = allSteps;
 			if (params.tail !== undefined) {
 				steps = steps.slice(-params.tail);
 			}
@@ -1690,6 +1887,36 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				config as unknown as Record<string, unknown>,
 			);
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
+			let reviewBudget: ReviewBudgetState | undefined;
+			if (config.reviewBudget.mode !== "off") {
+				warnForReviewBudgetRunState(
+					config.reviewBudget.mode,
+					params.warn ??
+						((message) => process.stderr.write(`Warning: ${message}\n`)),
+				);
+				const records = createMemoryRecordStore();
+				records.putRun(gitRecord.summary);
+				if (gitRecord.budgetLines.length > 0) {
+					records.atomicAppend(
+						gitRecord.budgetLines.map((line) => ({
+							...line,
+						})),
+					);
+				}
+				const priorReviewer = allSteps.some(
+					(step) =>
+						step.phase === "plan" && step.step_name.startsWith("reviewer:"),
+				);
+				reviewBudget = buildReviewBudgetState({
+					runId: gitRecord.summary.id,
+					mode: config.reviewBudget.mode,
+					store: createReviewBudgetStore(records),
+					hasPriorPlanReviewerStep: priorReviewer,
+					...(existsSync(planPath)
+						? { currentPlanMarkdown: readFileSync(planPath, "utf-8") }
+						: {}),
+				});
+			}
 			outputSuccess(
 				{
 					run: {
@@ -1705,6 +1932,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					steps_used: budget.used,
 					max_steps: budget.max,
 					steps_remaining: budget.remaining,
+					...(reviewBudget ? { review_budget: reviewBudget } : {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -1781,6 +2009,57 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		runId: run.id,
 		worktreePath,
 	});
+	let reviewBudget: ReviewBudgetState | undefined;
+	if (config.reviewBudget.mode !== "off") {
+		warnForReviewBudgetRunState(
+			config.reviewBudget.mode,
+			params.warn ??
+				((message) => process.stderr.write(`Warning: ${message}\n`)),
+		);
+		const recordContext = await createRecordContext({
+			runId: run.id,
+			startDir: params.startDir,
+			dbContext,
+		});
+		const reviewStore = createReviewBudgetStore(
+			recordContext.recordStore,
+			createReviewBudgetIndex(db),
+		);
+		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
+		const isPlanReviewer = (stepName: unknown, phase: unknown) =>
+			phase === "plan" &&
+			typeof stepName === "string" &&
+			stepName.startsWith("reviewer:");
+		const priorInDb = getSteps(db, run.id).some((step) =>
+			isPlanReviewer(step.step_name, step.phase),
+		);
+		const priorInRecords =
+			hasRecordRun &&
+			recordContext.recordStore.listLines(run.id, "steps").some((line) => {
+				const payload = line.payload as Partial<StepRecordPayload>;
+				return isPlanReviewer(payload.step_name, payload.phase);
+			});
+		let currentPlanMarkdown: string | undefined;
+		if (existsSync(recordContext.executionContext.effectivePlanPath)) {
+			currentPlanMarkdown = readFileSync(
+				recordContext.executionContext.effectivePlanPath,
+				"utf-8",
+			);
+		}
+		reviewBudget = hasRecordRun
+			? buildReviewBudgetState({
+					runId: run.id,
+					mode: config.reviewBudget.mode,
+					store: reviewStore,
+					hasPriorPlanReviewerStep: priorInDb || priorInRecords,
+					currentPlanMarkdown,
+				})
+			: {
+					status: priorInDb ? "v1_compat" : "uninitialized",
+					mode: config.reviewBudget.mode,
+					enforcement_implemented: false,
+				};
+	}
 
 	outputSuccess(
 		{
@@ -1797,6 +2076,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			steps_used: budget.used,
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
+			...(reviewBudget ? { review_budget: reviewBudget } : {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},

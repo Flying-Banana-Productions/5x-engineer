@@ -1509,7 +1509,7 @@ Keep it one or two lines. Do not dump the ledger.
 
 ### 8.3 Tests
 
-- [ ] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture **RecordStore** with baseline + snapshot lines (index may be empty — facade must reconstruct); omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`; **after wiping the index, `review_budget.I` and `baseline_direction` match the first snapshot’s `baselineAssessment` (identical to pre-wipe derived values)**.
+- [x] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture **RecordStore** with baseline + snapshot lines (index may be empty — facade must reconstruct); omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`; **after wiping the index, `review_budget.I` and `baseline_direction` match the first snapshot’s `baselineAssessment` (identical to pre-wipe derived values)**.
 
 ---
 
