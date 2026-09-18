@@ -692,4 +692,60 @@ describe("5x commit (integration)", () => {
 		},
 		{ timeout: 20000 },
 	);
+
+	test(
+		"--no-record checkpoints the self-dirtied journal without another event",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+				writeFileSync(join(dir, "checkpoint.ts"), "export const n = 1;\n");
+
+				const tracked = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"tracked commit",
+					"--all-files",
+					"--phase",
+					"1",
+				]);
+				expect(tracked.exitCode).toBe(0);
+				expect(git(["status", "--porcelain"], dir)).toContain("steps.jsonl");
+
+				const checkpoint = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"checkpoint run records",
+					"--all-files",
+					"--no-record",
+				]);
+				expect(checkpoint.exitCode).toBe(0);
+				const checkpointData = parseJson(checkpoint.stdout).data as Record<
+					string,
+					unknown
+				>;
+				expect(checkpointData.recorded).toBe(false);
+				expect(checkpointData.step_id).toBeNull();
+				expect(git(["status", "--porcelain"], dir)).toBe("");
+
+				const stateResult = await run5x(dir, ["run", "state", "--run", runId]);
+				const stateData = parseJson(stateResult.stdout).data as Record<
+					string,
+					unknown
+				>;
+				const steps = stateData.steps as Array<Record<string, unknown>>;
+				expect(steps.filter((s) => s.step_name === "git:commit")).toHaveLength(
+					1,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });

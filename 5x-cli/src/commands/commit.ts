@@ -1,7 +1,7 @@
 /**
  * v1 Commit command — commander adapter.
  *
- * `5x commit --run <id> -m <msg> [--files <paths...> | --all-files] [--phase <p>] [--dry-run]`
+ * `5x commit --run <id> -m <msg> [--files <paths...> | --all-files] [--phase <p>] [--no-record] [--dry-run]`
  *
  * Atomically stages files, creates a git commit, and records a `git:commit`
  * step in the run's step journal. Business logic lives in commit.handler.ts.
@@ -24,6 +24,10 @@ export function registerCommit(parent: Command) {
 		.option("--files <paths...>", "Specific files to stage")
 		.option("--all-files", "Stage all changes (git add -A)")
 		.option("--phase <phase>", "Phase identifier for the step")
+		.option(
+			"--no-record",
+			"Do not append git:commit (run-artifact-only checkpoints)",
+		)
 		.option("--dry-run", "Preview what would happen without side effects")
 		.addHelpText(
 			"after",
@@ -31,7 +35,8 @@ export function registerCommit(parent: Command) {
 				'  $ 5x commit -m "implement feature" --all-files      # ambient run identity\n' +
 				'  $ 5x commit --run abc123 -m "implement feature" --all-files\n' +
 				'  $ 5x commit --run abc123 -m "fix bug" --files src/foo.ts src/bar.ts\n' +
-				'  $ 5x commit --run abc123 -m "test" --all-files --dry-run',
+				'  $ 5x commit --run abc123 -m "test" --all-files --dry-run\n' +
+				'  $ 5x commit --run abc123 -m "checkpoint run records" --all-files --no-record',
 		)
 		.action(async (opts) => {
 			// Mutual exclusion validation
@@ -56,6 +61,7 @@ export function registerCommit(parent: Command) {
 				files: opts.files,
 				allFiles: opts.allFiles,
 				phase: opts.phase,
+				noRecord: !opts.record,
 				dryRun: opts.dryRun,
 			});
 		});

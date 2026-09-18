@@ -7,6 +7,12 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+### Fixes
+
+- **Run artifact checkpoints** — `5x commit --no-record` can commit only the
+  active run's tracked artifacts without recursively appending another
+  `git:commit` event, allowing a clean mid-run checkpoint.
+
 ## 2.0
 
 ### Features
