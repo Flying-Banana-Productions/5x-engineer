@@ -386,6 +386,20 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 
 `run init --plan` takes the implementation plan output path, not the requirements doc path. The file may not exist yet, but it must live under `paths.plans`.
 
+### Commits
+
+```bash
+5x commit --run <id> -m <message> (--files <paths...> | --all-files) [--phase <p>]
+5x commit --run <id> -m <message> (--files <paths...> | --all-files) --no-record
+```
+
+Normal commits append a `git:commit` event to the active run's tracked journal,
+so `steps.jsonl` is expected to be dirty again immediately after the commit.
+Use `--no-record` to checkpoint those run artifacts without recursively adding
+another event. For safety, `--no-record` rejects a staged commit containing
+anything outside the active run's records directory. A successful artifact-only
+checkpoint leaves the worktree clean when no other changes are present.
+
 **Windows notes:**
 - In PowerShell, prefer `--result @path/to/result.json` or `Get-Content result.json -Raw | 5x run record ... --result -` over inline JSON.
 - On older Windows PowerShell, use `;` or separate lines instead of `&&`.

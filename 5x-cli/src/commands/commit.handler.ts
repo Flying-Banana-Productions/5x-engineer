@@ -10,7 +10,9 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { posix } from "node:path";
 import { outputError, outputSuccess } from "../output.js";
+import { planSlugFromPath } from "../paths.js";
 import { validateRunId } from "../run-id.js";
 import { subprocess } from "../utils/subprocess.js";
 import { type DbContext, resolveDbContext } from "./context.js";
@@ -29,6 +31,7 @@ export interface CommitParams {
 	files?: string[];
 	allFiles?: boolean;
 	phase?: string;
+	noRecord?: boolean;
 	dryRun?: boolean;
 	startDir?: string; // for testability; defaults to run context resolution
 	dbContext?: DbContext; // for testability; bypasses singleton DB when provided
@@ -135,9 +138,10 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		);
 	}
 
-	// 3b. Resolve phase: explicit --phase wins, then inherit from run history
+	// 3b. Resolve phase: explicit --phase wins, then inherit from run history.
+	// Artifact-only checkpoints do not create a step and therefore need no phase.
 	let resolvedPhase = params.phase;
-	if (!resolvedPhase) {
+	if (!params.noRecord && !resolvedPhase) {
 		resolvedPhase = inheritPhaseFromRun(db, runId);
 		if (!resolvedPhase) {
 			outputError(
@@ -150,6 +154,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	const workdir = ctx.effectiveWorkingDirectory;
 
 	let recordsRelPath: string | undefined;
+	let activeRunRecordsRelPath: string | undefined;
 	try {
 		const recordCtx = await createRecordContext({
 			runId,
@@ -158,6 +163,11 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		if (existsSync(recordCtx.recordsAbsPath)) {
 			recordsRelPath = recordCtx.recordsRelPath;
 		}
+		activeRunRecordsRelPath = posix.join(
+			recordCtx.recordsRelPath,
+			planSlugFromPath(ctx.run.plan_path),
+			runId,
+		);
 	} catch (err) {
 		if (err instanceof RecordContextError) {
 			if (
@@ -171,8 +181,10 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		throw err;
 	}
 
-	const addRecords =
-		params.files && recordsRelPath !== undefined ? [recordsRelPath] : [];
+	const recordsStagePath = params.noRecord
+		? activeRunRecordsRelPath
+		: recordsRelPath;
+	const addRecords = params.files && recordsStagePath ? [recordsStagePath] : [];
 
 	// 4. Dry-run mode
 	if (params.dryRun) {
@@ -208,6 +220,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 					step_name: "git:commit",
 					phase: resolvedPhase ?? null,
 					message: params.message,
+					recorded: !params.noRecord,
 				},
 			},
 			(data) => {
@@ -236,6 +249,39 @@ export async function runCommit(params: CommitParams): Promise<void> {
 			"COMMIT_FAILED",
 			`git add failed: ${stageResult.stderr || stageResult.stdout}`,
 		);
+	}
+
+	// A no-record commit is the escape hatch for materializing the active run's
+	// journal without recursively appending another git:commit line. Keep it
+	// narrow so implementation commits cannot silently bypass run tracking.
+	if (params.noRecord) {
+		const stagedResult = await subprocess.execGit(
+			["diff", "--cached", "--name-only", "-z"],
+			workdir,
+		);
+		if (stagedResult.exitCode !== 0) {
+			outputError(
+				"COMMIT_FAILED",
+				`git diff --cached failed: ${stagedResult.stderr || stagedResult.stdout}`,
+			);
+		}
+
+		const stagedFiles = stagedResult.stdout.split("\0").filter(Boolean);
+		const allowedPrefix = `${activeRunRecordsRelPath}/`;
+		const disallowedFiles = stagedFiles.filter(
+			(file) =>
+				file !== activeRunRecordsRelPath && !file.startsWith(allowedPrefix),
+		);
+		if (disallowedFiles.length > 0) {
+			outputError(
+				"INVALID_ARGS",
+				"--no-record may only commit artifacts for the active run.",
+				{
+					allowed_path: activeRunRecordsRelPath,
+					disallowed_files: disallowedFiles,
+				},
+			);
+		}
 	}
 
 	// 6. Commit — fires hooks (pre-commit, commit-msg). Fail-early: no step
@@ -272,20 +318,24 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	//    that was resolved at the top of this handler. Passing it explicitly
 	//    prevents recordStepInternal from re-resolving via process cwd, which
 	//    would target the wrong DB when called from a linked worktree.
-	const stepResult = await recordStepInternal(
-		{
-			run: runId,
-			stepName: "git:commit",
-			phase: resolvedPhase,
-			result: JSON.stringify({
-				hash,
-				short_hash,
-				message: params.message,
-				files,
-			}),
-		},
-		{ db, config, controlPlane },
-	);
+	let stepId: number | null = null;
+	if (!params.noRecord) {
+		const stepResult = await recordStepInternal(
+			{
+				run: runId,
+				stepName: "git:commit",
+				phase: resolvedPhase,
+				result: JSON.stringify({
+					hash,
+					short_hash,
+					message: params.message,
+					files,
+				}),
+			},
+			{ db, config, controlPlane },
+		);
+		stepId = stepResult.step_id;
+	}
 
 	// 9. Output success
 	outputSuccess(
@@ -295,7 +345,8 @@ export async function runCommit(params: CommitParams): Promise<void> {
 			message: params.message,
 			files,
 			run_id: runId,
-			step_id: stepResult.step_id,
+			step_id: stepId,
+			recorded: !params.noRecord,
 		},
 		formatCommitText,
 	);

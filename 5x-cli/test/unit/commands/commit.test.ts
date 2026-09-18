@@ -260,6 +260,82 @@ describe("runCommit", () => {
 	);
 
 	test(
+		"--no-record commits only active run artifacts and leaves the worktree clean",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				const runRecordsDir = join(
+					ctx.tmp,
+					"docs",
+					"development",
+					"runs",
+					"plan",
+					runId,
+				);
+				mkdirSync(runRecordsDir, { recursive: true });
+				writeFileSync(join(runRecordsDir, "steps.jsonl"), '{"step":"one"}\n');
+
+				await runCommit({
+					run: runId,
+					message: "checkpoint run records",
+					allFiles: true,
+					noRecord: true,
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const status = Bun.spawnSync(["git", "status", "--porcelain"], {
+					cwd: ctx.tmp,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				expect(status.stdout.toString()).toBe("");
+				expect(
+					getSteps(ctx.db, runId).filter((s) => s.step_name === "git:commit"),
+				).toHaveLength(0);
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--no-record rejects commits containing non-run files",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				writeFileSync(join(ctx.tmp, "source.ts"), "export const x = 1;\n");
+
+				await expect(
+					runCommit({
+						run: runId,
+						message: "untracked code commit",
+						allFiles: true,
+						noRecord: true,
+						startDir: ctx.tmp,
+						dbContext: ctx.dbContext,
+					}),
+				).rejects.toMatchObject({
+					code: "INVALID_ARGS",
+					message: "--no-record may only commit artifacts for the active run.",
+				});
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"--dry-run with --all-files creates no commit and records no step",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});
