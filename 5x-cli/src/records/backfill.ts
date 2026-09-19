@@ -54,6 +54,7 @@ import {
 	listWorktrees,
 	removeWorktree,
 	revParseCommit,
+	runWorktreeSetupCommand,
 } from "../git.js";
 import { planSlugFromPath, realpathExisting } from "../paths.js";
 import { version } from "../version.js";
@@ -632,11 +633,15 @@ async function ensureTargetWorktree(
 	workdir: string,
 	target: ResolvedTarget,
 	temps: string[],
+	postCreateHook?: string,
 ): Promise<string> {
 	if (target.worktree) return target.worktree;
 	const path = mkdtempSync(join(tmpdir(), "5x-backfill-wt-"));
 	temps.push(path);
 	await addWorktreeForBranch(workdir, path, target.branch, target.startPoint);
+	if (postCreateHook) {
+		await runWorktreeSetupCommand(path, postCreateHook);
+	}
 	return path;
 }
 
@@ -895,6 +900,7 @@ export async function backfillRecords(
 				workdir,
 				group.target,
 				temps,
+				config.worktree.postCreate,
 			);
 			const resolved = resolveRecordsRoot({
 				recordsConfigAbs: config.paths.records,

@@ -6,6 +6,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -317,6 +318,56 @@ describe("records backfill (integration)", () => {
 			cleanupDir(configHome);
 		}
 	});
+
+	test(
+		"runs postCreate before committing in a temporary target worktree",
+		() => {
+			const dir = makeTmpDir("5x-bf-post-create");
+			const configHome = makeTmpDir("5x-bf-id");
+			try {
+				const { planPath } = initRepo(dir);
+				git(["checkout", "-b", "5x/alpha"], dir);
+				git(["checkout", "main"], dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[worktree]\npostCreate = "touch .backfill-worktree-ready"\n',
+				);
+				git(["add", "5x.toml"], dir);
+				git(["commit", "-m", "configure worktree setup"], dir);
+
+				const hooksDir = resolve(
+					dir,
+					git(["rev-parse", "--git-path", "hooks"], dir),
+				);
+				const hookPath = join(hooksDir, "pre-commit");
+				writeFileSync(
+					hookPath,
+					"#!/bin/sh\ntest -f .backfill-worktree-ready\n",
+				);
+				chmodSync(hookPath, 0o755);
+
+				seedHistorical(dir, {
+					runId: "run_post_create",
+					planPath,
+					status: "completed",
+					steps: [{ name: "author:impl", phase: "1", iteration: 1 }],
+				});
+
+				const result = run5x(dir, ["records", "backfill"], {
+					FIVEX_CONFIG_HOME: configHome,
+				});
+				expect(result.exitCode).toBe(0);
+				expect(parseEnvelope(result.stdout).ok).toBe(true);
+				expect(git(["log", "-1", "--format=%s", "5x/alpha"], dir)).toBe(
+					"5x: backfill records for run_post_create",
+				);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(configHome);
+			}
+		},
+		{ timeout: 15000 },
+	);
 
 	test("two clones with partial history merge=union all keys", async () => {
 		const origin = makeTmpDir("5x-bf-origin");
