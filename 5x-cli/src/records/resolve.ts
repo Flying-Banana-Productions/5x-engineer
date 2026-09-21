@@ -16,6 +16,7 @@ import { isAbsolute, join } from "node:path";
 import { parseRunJson } from "../control-plane/record-layout.js";
 import {
 	fetchFiveXBranches,
+	gitDeletedPaths,
 	gitLogLastTouching,
 	gitLogNameOnly,
 	gitLsTreePaths,
@@ -46,9 +47,12 @@ export interface ProgressSource {
 	age_seconds?: number; // remote-tracking tip vs now
 }
 
+export type PlanProgressState = "present" | "deleted" | "missing" | "diverged";
+
 export interface ResolvedPlanProgress {
+	state: PlanProgressState;
 	source: ProgressSource;
-	diverged_sources?: ProgressSource[];
+	diverged_sources?: Array<ProgressSource & { plan_state: PlanProgressState }>;
 	markdown: string | null;
 	planPath: string;
 	commit: string | null;
@@ -72,6 +76,8 @@ export interface ProgressSession {
 	/** Paths covered by a successful batch, including negative lookups. */
 	logPaths: string[];
 	discoveredPlanRels: string[];
+	/** Batched working-copy removals, keyed by checkout root. */
+	checkoutDeletions: Map<string, Set<string>>;
 	/** In-process `(refSha, pathKey) → lastTouching` for one `plan list` invocation. */
 	cache: LastTouchingCache;
 }
@@ -293,15 +299,10 @@ async function collectCandidateTips(opts: {
 	}
 
 	const fiveX = await listFiveXRefs(opts.workdir);
-	const slug = opts.planSlug;
-	const localRefs = slug
-		? fiveX.local.filter((r) => r === `5x/${slug}`)
-		: fiveX.local;
-	const remoteRefs = slug
-		? fiveX.remote.filter(
-				(r) => r.ref.endsWith(`/5x/${slug}`) || r.ref === `5x/${slug}`,
-			)
-		: fiveX.remote;
+	// A different plan branch can carry a later edit or deletion. Use the same
+	// candidates for individual lookups as for the shared plan-list session.
+	const localRefs = fiveX.local;
+	const remoteRefs = fiveX.remote;
 
 	const fiveXTips = await listRefTips(opts.workdir, [
 		"refs/heads/5x/*",
@@ -423,6 +424,13 @@ export async function prepareProgressSession(opts: {
 			? await gitLogNameOnly(opts.workdir, uniqueShas, uniqueLogPaths)
 			: null;
 	const logEntries = parseLogNameOnly(logOutput ?? "");
+	const checkoutDeletions = new Map<string, Set<string>>();
+	for (const tip of tips) {
+		const checkout =
+			tip.source.kind === "HEAD" ? opts.workdir : tip.worktreePath;
+		if (!checkout || checkoutDeletions.has(checkout)) continue;
+		checkoutDeletions.set(checkout, new Set(await gitDeletedPaths(checkout)));
+	}
 
 	return {
 		workdir: opts.workdir,
@@ -433,6 +441,7 @@ export async function prepareProgressSession(opts: {
 		logEntries,
 		logPaths: logOutput === null ? [] : uniqueLogPaths,
 		discoveredPlanRels: [...discovered].sort(),
+		checkoutDeletions,
 		cache: opts.cache ?? new Map(),
 	};
 }
@@ -441,54 +450,86 @@ interface RankedCandidate {
 	source: ProgressSource;
 	commit: string;
 	tipSha: string;
+	/** Explicit working-copy removal; don't read the still-present HEAD blob. */
+	deleted?: boolean;
+}
+
+async function lastTouching(
+	session: ProgressSession,
+	sha: string,
+	touchPaths: string[],
+): Promise<string | null> {
+	const cacheKey = `${sha}\0${touchPaths.join("\0")}`;
+	let last = session.cache.get(cacheKey);
+	if (last !== undefined) return last;
+	const reachable = reachableFrom(session.parents, sha);
+	last = lastTouchingFromLog(session.logEntries, reachable, touchPaths);
+	const covered =
+		session.parents.has(sha) &&
+		touchPaths.every((path) =>
+			session.logPaths.some(
+				(root) => path === root || path.startsWith(`${root}/`),
+			),
+		);
+	if (!last && !covered) {
+		last = await gitLogLastTouching(session.workdir, sha, touchPaths);
+	}
+	session.cache.set(cacheKey, last);
+	return last;
+}
+
+/** Tie-break only equivalent progress commits, never newer vs older progress. */
+function sourcePriority(
+	source: ProgressSource,
+	planSlug: string,
+	plansBranch?: string | null,
+): number {
+	if (source.kind === "worktree") return 0;
+	if (source.kind === "HEAD") return 1;
+	if (plansBranch && shortRef(source.ref ?? "") === shortRef(plansBranch)) {
+		return 2;
+	}
+	if (source.kind === "branch" && source.label === `5x/${planSlug}`) return 3;
+	if (source.kind === "remote" && source.label.endsWith(`/5x/${planSlug}`)) {
+		return 4;
+	}
+	return 5;
 }
 
 async function rankCandidates(
 	session: ProgressSession,
 	touchPaths: string[],
-	extraWorktree?: RankedCandidate,
+	planSlug: string,
+	plansBranch?: string | null,
+	checkoutCandidates: RankedCandidate[] = [],
 ): Promise<RankedCandidate[]> {
-	const ranked: RankedCandidate[] = [];
-	const seenCommit = new Set<string>();
-
-	const consider = (cand: RankedCandidate) => {
-		if (seenCommit.has(cand.commit)) return;
-		seenCommit.add(cand.commit);
-		ranked.push(cand);
-	};
-
-	if (extraWorktree) consider(extraWorktree);
+	const ranked = [...checkoutCandidates];
 
 	for (const tip of session.tips) {
 		if (tip.source.kind === "worktree") continue;
-		const cacheKey = `${tip.sha}\0${touchPaths.join("\0")}`;
-		let last = session.cache.get(cacheKey);
-		if (last === undefined) {
-			const reachable = reachableFrom(session.parents, tip.sha);
-			reachable.add(tip.sha);
-			last = lastTouchingFromLog(session.logEntries, reachable, touchPaths);
-			const covered =
-				session.parents.has(tip.sha) &&
-				touchPaths.every((path) =>
-					session.logPaths.some(
-						(root) => path === root || path.startsWith(`${root}/`),
-					),
-				);
-			if (!last && !covered) {
-				last = await gitLogLastTouching(session.workdir, tip.sha, touchPaths);
-			}
-			session.cache.set(cacheKey, last);
-		}
+		const last = await lastTouching(session, tip.sha, touchPaths);
 		if (!last) continue;
 		const source: ProgressSource = {
 			...tip.source,
 			commit: last,
 		};
-		consider({ source, commit: last, tipSha: tip.sha });
+		ranked.push({ source, commit: last, tipSha: tip.sha });
 	}
 
-	return ranked.filter((a) => {
-		for (const b of ranked) {
+	ranked.sort((a, b) => {
+		return (
+			sourcePriority(a.source, planSlug, plansBranch) -
+				sourcePriority(b.source, planSlug, plansBranch) ||
+			a.source.label.localeCompare(b.source.label)
+		);
+	});
+	const byCommit = new Map<string, RankedCandidate>();
+	for (const cand of ranked) {
+		if (!byCommit.has(cand.commit)) byCommit.set(cand.commit, cand);
+	}
+	const unique = [...byCommit.values()];
+	return unique.filter((a) => {
+		for (const b of unique) {
 			if (a.commit === b.commit) continue;
 			if (isAncestorInGraph(session.parents, a.commit, b.commit)) return false;
 		}
@@ -548,7 +589,7 @@ async function readMarkdownAtCommit(
 	commit: string,
 	relPlanPath: string,
 ): Promise<string | null> {
-	return gitShowFile(workdir, commit, relPlanPath);
+	return gitShowFile(workdir, commit, relPlanPath, { strict: true });
 }
 
 function readDiskMarkdown(opts: {
@@ -608,7 +649,25 @@ export async function resolvePlanProgress(opts: {
 			cache: opts.cache,
 		}));
 
-	let extraWorktree: RankedCandidate | undefined;
+	const checkoutCandidates: RankedCandidate[] = [];
+	if (relPlanPath) {
+		for (const tip of session.tips) {
+			const checkout =
+				tip.source.kind === "HEAD" ? opts.workdir : tip.worktreePath;
+			if (
+				!checkout ||
+				(checkout !== opts.workdir && checkout !== opts.worktreePath)
+			)
+				continue;
+			if (!session.checkoutDeletions.get(checkout)?.has(relPlanPath)) continue;
+			checkoutCandidates.push({
+				source: { ...tip.source, commit: tip.sha },
+				commit: tip.sha,
+				tipSha: tip.sha,
+				deleted: true,
+			});
+		}
+	}
 	if (opts.worktreePath && relPlanPath) {
 		const wtFile = checkoutAbs(opts.worktreePath, relPlanPath);
 		if (existsSync(wtFile)) {
@@ -626,6 +685,7 @@ export async function resolvePlanProgress(opts: {
 					worktreePath: opts.worktreePath,
 				});
 				return {
+					state: disk.markdown === null ? "missing" : "present",
 					source: {
 						kind: "worktree",
 						label: "worktree",
@@ -636,16 +696,9 @@ export async function resolvePlanProgress(opts: {
 					commit: null,
 				};
 			}
-			const cacheKey = `${wtSha}\0${touchPaths.join("\0")}`;
-			let last = session.cache.get(cacheKey);
-			if (last === undefined) {
-				const reachable = reachableFrom(session.parents, wtSha);
-				reachable.add(wtSha);
-				last = lastTouchingFromLog(session.logEntries, reachable, touchPaths);
-				session.cache.set(cacheKey, last);
-			}
+			const last = await lastTouching(session, wtSha, touchPaths);
 			const commit = last ?? wtSha;
-			extraWorktree = {
+			checkoutCandidates.push({
 				source: {
 					kind: "worktree",
 					label: "worktree",
@@ -654,11 +707,17 @@ export async function resolvePlanProgress(opts: {
 				},
 				commit,
 				tipSha: wtSha,
-			};
+			});
 		}
 	}
 
-	const survivors = await rankCandidates(session, touchPaths, extraWorktree);
+	const survivors = await rankCandidates(
+		session,
+		touchPaths,
+		opts.planSlug,
+		opts.plansBranch,
+		checkoutCandidates,
+	);
 
 	if (survivors.length === 0) {
 		const disk = readDiskMarkdown({
@@ -668,10 +727,11 @@ export async function resolvePlanProgress(opts: {
 			worktreePath: opts.worktreePath,
 		});
 		return {
+			state: disk.markdown === null ? "missing" : "present",
 			source: {
 				kind: disk.kind,
 				label: disk.kind === "worktree" ? "worktree" : "HEAD",
-				ref: disk.kind === "worktree" ? "HEAD" : "HEAD",
+				ref: "HEAD",
 			},
 			markdown: disk.markdown,
 			planPath: relPlanPath ?? opts.planPath,
@@ -679,9 +739,19 @@ export async function resolvePlanProgress(opts: {
 		};
 	}
 
-	if (survivors.length === 1) {
-		const win = survivors[0] as RankedCandidate;
+	// Keep deletion candidates until AFTER ancestry pruning. Otherwise a stale
+	// pre-archive branch would become the winner again when its deletion is dropped.
+	const states: Array<{
+		cand: RankedCandidate;
+		state: "present" | "deleted" | "missing";
+		markdown: string | null;
+	}> = [];
+	for (const win of survivors) {
 		let markdown: string | null = null;
+		if (win.deleted) {
+			states.push({ cand: win, state: "deleted", markdown: null });
+			continue;
+		}
 		if (win.source.kind === "worktree" && relPlanPath && opts.worktreePath) {
 			const disk = readDiskMarkdown({
 				workdir: opts.workdir,
@@ -696,17 +766,51 @@ export async function resolvePlanProgress(opts: {
 				win.commit,
 				relPlanPath,
 			);
-			if (markdown == null) {
-				const disk = readDiskMarkdown({
-					workdir: opts.workdir,
-					planPath: opts.planPath,
-					relPlanPath,
-					worktreePath: opts.worktreePath,
-				});
-				if (disk.markdown != null) markdown = disk.markdown;
+		}
+		const state =
+			markdown !== null
+				? "present"
+				: relPlanPath &&
+						(await lastTouching(session, win.commit, [relPlanPath]))
+					? "deleted"
+					: "missing";
+		states.push({ cand: win, state, markdown });
+	}
+
+	if (states.length === 1) {
+		const { cand: win, state, markdown } = states[0] as (typeof states)[number];
+		if (markdown === null && !win.deleted) {
+			const disk = readDiskMarkdown({
+				workdir: opts.workdir,
+				planPath: opts.planPath,
+				relPlanPath,
+				worktreePath: opts.worktreePath,
+			});
+			const base = session.tips.find((tip) =>
+				disk.kind === "worktree"
+					? tip.worktreePath === opts.worktreePath
+					: tip.source.kind === "HEAD",
+			)?.sha;
+			// A checkout based on the deletion may explicitly recreate the file.
+			// An older checkout still carrying it must not resurrect the plan.
+			if (
+				disk.markdown !== null &&
+				(state === "missing" ||
+					(base &&
+						(base === win.commit ||
+							isAncestorInGraph(session.parents, win.commit, base))))
+			) {
+				return {
+					state: "present",
+					source: { kind: disk.kind, label: disk.kind, ref: "HEAD" },
+					markdown: disk.markdown,
+					planPath: relPlanPath ?? opts.planPath,
+					commit: null,
+				};
 			}
 		}
 		return {
+			state,
 			source: await maybeBackfilledSource({
 				workdir: opts.workdir,
 				planSlug: opts.planSlug,
@@ -720,41 +824,20 @@ export async function resolvePlanProgress(opts: {
 		};
 	}
 
-	const withMd: Array<{
-		cand: RankedCandidate;
-		markdown: string;
-		pct: number;
-	}> = [];
-	for (const cand of survivors) {
-		let markdown: string | null = null;
-		if (cand.source.kind === "worktree" && relPlanPath) {
-			markdown = readDiskMarkdown({
-				workdir: opts.workdir,
-				planPath: opts.planPath,
-				relPlanPath,
-				worktreePath: opts.worktreePath,
-			}).markdown;
-		} else if (relPlanPath) {
-			markdown = await readMarkdownAtCommit(
-				opts.workdir,
-				cand.commit,
-				relPlanPath,
-			);
-		}
-		if (markdown == null) continue;
-		withMd.push({
-			cand,
-			markdown,
-			pct: phaseCompletionPct(markdown),
-		});
-	}
+	const withMd = states
+		.filter((s) => s.markdown !== null)
+		.map((s) => ({ ...s, pct: phaseCompletionPct(s.markdown as string) }));
 	withMd.sort((a, b) => {
 		if (a.pct !== b.pct) return b.pct - a.pct;
 		return a.cand.source.label.localeCompare(b.cand.source.label);
 	});
 	const best = withMd[0];
-	const diverged_sources = survivors.map((s) => s.source);
+	const diverged_sources = states.map((s) => ({
+		...s.cand.source,
+		plan_state: s.state,
+	}));
 	return {
+		state: "diverged",
 		source: {
 			kind: "diverged",
 			label: "diverged",
@@ -788,6 +871,7 @@ export function formatProgressSourceLine(
 }
 
 export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
+	plan_state: PlanProgressState;
 	source: string;
 	source_ref?: string;
 	source_commit?: string;
@@ -796,9 +880,11 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 		source: string;
 		ref?: string;
 		age_seconds?: number;
+		plan_state: PlanProgressState;
 	}>;
 } {
 	const out: {
+		plan_state: PlanProgressState;
 		source: string;
 		source_ref?: string;
 		source_commit?: string;
@@ -807,8 +893,9 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 			source: string;
 			ref?: string;
 			age_seconds?: number;
+			plan_state: PlanProgressState;
 		}>;
-	} = { source: resolved.source.label };
+	} = { source: resolved.source.label, plan_state: resolved.state };
 	if (resolved.source.ref) out.source_ref = resolved.source.ref;
 	const commit = resolved.source.commit ?? resolved.commit;
 	if (commit) out.source_commit = commit;
@@ -818,6 +905,7 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 	if (resolved.diverged_sources && resolved.diverged_sources.length > 0) {
 		out.diverged_sources = resolved.diverged_sources.map((s) => ({
 			source: s.label,
+			plan_state: s.plan_state,
 			...(s.ref ? { ref: s.ref } : {}),
 			...(typeof s.age_seconds === "number"
 				? { age_seconds: s.age_seconds }

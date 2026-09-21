@@ -632,10 +632,52 @@ export async function gitShowFile(
 	workdir: string,
 	commit: string,
 	path: string,
+	opts: { strict?: boolean } = {},
 ): Promise<string | null> {
 	const result = await run(["show", `${commit}:${path}`], workdir);
-	if (result.exitCode !== 0) return null;
+	if (result.exitCode !== 0) {
+		if (opts.strict) {
+			// A missing path is a valid lifecycle state; an unreadable object or
+			// failed Git command is not. Only return null after confirming absence.
+			const tree = await run(
+				[
+					"ls-tree",
+					"-r",
+					"--name-only",
+					"-z",
+					commit,
+					"--",
+					`:(literal)${path}`,
+				],
+				workdir,
+			);
+			if (tree.exitCode !== 0 || tree.stdout.split("\0").includes(path)) {
+				throw new Error(result.stderr || `Could not read ${commit}:${path}`);
+			}
+		}
+		return null;
+	}
 	return result.stdout;
+}
+
+/** Staged or unstaged removals relative to HEAD, including archive moves. */
+export async function gitDeletedPaths(workdir: string): Promise<string[]> {
+	const result = await run(
+		[
+			"diff",
+			"--name-only",
+			"--diff-filter=D",
+			"--no-renames",
+			"-z",
+			"HEAD",
+			"--",
+		],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		throw new Error(result.stderr || "Could not read checkout deletions");
+	}
+	return result.stdout.split("\0").filter(Boolean);
 }
 
 /** `git log -1 --format=%H ref -- paths`. Null if none / failure. */
@@ -806,9 +848,12 @@ export async function gitLogNameOnly(
 	if (tips.length === 0 || paths.length === 0) return "";
 	// Include files changed against every parent of a merge (conflict resolutions),
 	// without treating an unchanged plan carried through a merge as a new touch.
+	// Topological order keeps an ancestor from winning a last-touch lookup when
+	// timestamps tie or skew across branches.
 	const result = await run(
 		[
 			"log",
+			"--topo-order",
 			"--format=%H",
 			"--name-only",
 			"--diff-merges=combined",

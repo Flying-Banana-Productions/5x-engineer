@@ -4,11 +4,20 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gitLogNameOnly } from "../../../src/git.js";
-import { parseLogNameOnly } from "../../../src/records/resolve.js";
+import {
+	parseLogNameOnly,
+	resolvePlanProgress,
+} from "../../../src/records/resolve.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -114,7 +123,264 @@ function parseJson(stdout: string): Record<string, unknown> {
 
 const PLAN_REL = "docs/development/alpha.md";
 
+async function resolveAlpha(dir: string) {
+	return resolvePlanProgress({
+		workdir: dir,
+		planPath: join(dir, PLAN_REL),
+		planSlug: "alpha",
+		recordsRelPath: "docs/development/runs",
+	});
+}
+
+async function listedPlans(dir: string, args: string[] = []) {
+	const list = await run5x(dir, ["plan", "list", ...args]);
+	expect(list.exitCode).toBe(0);
+	return (
+		parseJson(list.stdout).data as {
+			plans: Array<{
+				plan_path: string;
+				source: string;
+				plan_state: string;
+				title: string;
+				completion_pct: number;
+				diverged_sources?: Array<{
+					source: string;
+					ref?: string;
+					plan_state: string;
+				}>;
+			}>;
+		}
+	).plans;
+}
+
 describe("progress resolution", () => {
+	test.each([false, true])(
+		"archive moves take effect before commit (staged: %s)",
+		async (staged) => {
+			const dir = makeTmpDir("5x-prog-uncommitted-archive");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [true]), "add alpha");
+				git(["branch", "5x/alpha"], dir);
+				mkdirSync(join(dir, "docs/archive"), { recursive: true });
+				renameSync(join(dir, PLAN_REL), join(dir, "docs/archive/alpha.md"));
+				if (staged) git(["add", "-A"], dir);
+				expect((await resolveAlpha(dir)).state).toBe("deleted");
+				expect(await listedPlans(dir)).toEqual([]);
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"merged remote copies cannot resurrect an archived plan; explicit reintroduction works",
+		async () => {
+			const dir = makeTmpDir("5x-prog-archive");
+			try {
+				initRepo(dir);
+				git(["checkout", "-b", "5x/alpha"], dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [true]), "add alpha");
+				git(["update-ref", "refs/remotes/origin/5x/alpha", "HEAD"], dir);
+				git(["checkout", "main"], dir);
+				git(["merge", "--no-ff", "5x/alpha", "-m", "merge alpha"], dir);
+				git(["branch", "-d", "5x/alpha"], dir);
+				mkdirSync(join(dir, "docs/archive"), { recursive: true });
+				renameSync(join(dir, PLAN_REL), join(dir, "docs/archive/alpha.md"));
+				git(["add", "-A"], dir);
+				git(["commit", "-m", "archive alpha"], dir);
+				git(["branch", "5x/bravo"], dir);
+				expect(await listedPlans(dir)).toEqual([]);
+				expect(await listedPlans(dir, ["--all-refs"])).toEqual([]);
+				const resolved = await resolveAlpha(dir);
+				expect(resolved.state).toBe("deleted");
+				expect(resolved.markdown).toBeNull();
+				expect(resolved.source.label).toBe("HEAD");
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).not.toBe(0);
+				expect(parseJson(phases.stdout).error).toMatchObject({
+					code: "PLAN_NOT_FOUND",
+					detail: { plan_state: "deleted" },
+				});
+
+				// An untracked recreation uses checkout attribution, not the archive commit.
+				mkdirSync(join(dir, "docs/development"), { recursive: true });
+				writeFileSync(
+					join(dir, PLAN_REL),
+					planMarkdown("Reintroduced", [false]),
+				);
+				const local = await resolveAlpha(dir);
+				expect(local.state).toBe("present");
+				expect(local.source.label).toBe("HEAD");
+				expect(local.commit).toBeNull();
+				expect((await listedPlans(dir))[0]?.title).toBe("Reintroduced");
+				git(["add", PLAN_REL], dir);
+				git(["commit", "-m", "reintroduce alpha"], dir);
+				expect((await resolveAlpha(dir)).state).toBe("present");
+				expect((await listedPlans(dir))[0]?.title).toBe("Reintroduced");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"deletion on a newer unrelated branch beats an older checkout copy",
+		async () => {
+			const dir = makeTmpDir("5x-prog-newer-deletion");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [true]), "add alpha");
+				git(["checkout", "-b", "5x/bravo"], dir);
+				git(["rm", PLAN_REL], dir);
+				git(["commit", "-m", "delete alpha"], dir);
+				git(["checkout", "main"], dir);
+				expect(existsSync(join(dir, PLAN_REL))).toBe(true);
+				expect((await resolveAlpha(dir)).state).toBe("deleted");
+				expect(await listedPlans(dir)).toEqual([]);
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).not.toBe(0);
+				expect(parseJson(phases.stdout).error).toMatchObject({
+					code: "PLAN_NOT_FOUND",
+				});
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"divergent deletion and modification remain explicit instead of hiding the live plan",
+		async () => {
+			const dir = makeTmpDir("5x-prog-delete-modify");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [false]), "base alpha");
+				git(["checkout", "-b", "5x/alpha"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [true]),
+					"finish alpha",
+				);
+				git(["checkout", "main"], dir);
+				git(["rm", PLAN_REL], dir);
+				git(["commit", "-m", "delete alpha"], dir);
+				const resolved = await resolveAlpha(dir);
+				expect(resolved.state).toBe("diverged");
+				expect(resolved.markdown).toContain("- [x]");
+				const row = (await listedPlans(dir))[0];
+				expect(row?.source).toBe("diverged");
+				expect(row?.completion_pct).toBe(100);
+				expect(row?.diverged_sources).toEqual([
+					{ source: "HEAD", ref: "HEAD", plan_state: "deleted" },
+					{ source: "5x/alpha", ref: "5x/alpha", plan_state: "present" },
+				]);
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).toBe(0);
+				expect(parseJson(phases.stdout).data).toMatchObject({
+					plan_state: "diverged",
+					diverged_sources: row?.diverged_sources,
+				});
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"nested archive paths are excluded from both disk and branch discovery",
+		async () => {
+			const dir = makeTmpDir("5x-prog-nested-archive");
+			try {
+				initRepo(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[paths]\narchive = "docs/development/retired"\n',
+				);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [false]),
+					"active plan",
+				);
+				commitPlan(
+					dir,
+					"docs/development/retired/old.md",
+					planMarkdown("Old", [true]),
+					"archived plan",
+				);
+				commitPlan(
+					dir,
+					"docs/development/retired-next/new.md",
+					planMarkdown("New", [false]),
+					"similar directory",
+				);
+				git(["checkout", "-b", "5x/bravo"], dir);
+				commitPlan(
+					dir,
+					"docs/development/retired/branch-only.md",
+					planMarkdown("Old branch", [true]),
+					"branch archive",
+				);
+				git(["checkout", "main"], dir);
+				writeFileSync(
+					join(dir, "docs/development/retired/untracked.md"),
+					planMarkdown("Untracked", [true]),
+				);
+				expect((await listedPlans(dir)).map((p) => p.plan_path).sort()).toEqual(
+					["alpha.md", "retired-next/new.md"],
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"HEAD wins equivalent-progress ties while newer branch progress still wins",
+		async () => {
+			const dir = makeTmpDir("5x-prog-source-ties");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [false]), "base alpha");
+				git(["branch", "5x/alpha"], dir);
+				git(["branch", "5x/aaa-unrelated"], dir);
+				git(["update-ref", "refs/remotes/origin/5x/alpha", "HEAD"], dir);
+				commitPlan(
+					dir,
+					"unrelated.txt",
+					"unrelated",
+					"advance main without touching alpha",
+				);
+				expect((await listedPlans(dir))[0]?.source).toBe("HEAD");
+				expect((await resolveAlpha(dir)).source.label).toBe("HEAD");
+				git(["checkout", "5x/alpha"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [true]),
+					"finish alpha",
+				);
+				git(["checkout", "main"], dir);
+				expect((await listedPlans(dir))[0]).toMatchObject({
+					source: "5x/alpha",
+					completion_pct: 100,
+				});
+				expect((await resolveAlpha(dir)).source.label).toBe("5x/alpha");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
 	test(
 		"batched history includes plan progress resolved in a merge commit",
 		async () => {
@@ -343,7 +609,7 @@ describe("progress resolution", () => {
 				};
 				expect(pdata.source).toBe("diverged");
 				const labels = pdata.diverged_sources?.map((s) => s.source).sort();
-				expect(labels).toContain("5x/alpha");
+				expect(labels).toContain("HEAD");
 				expect(labels).toContain("origin/5x/alpha");
 
 				const text = await run5x(clone, ["--text", "plan", "phases", PLAN_REL]);
@@ -368,6 +634,8 @@ describe("progress resolution", () => {
 					planMarkdown("Alpha", [false]),
 					"branch plan",
 				);
+				git(["branch", "5x/aaa-unrelated"], dir);
+				git(["update-ref", "refs/remotes/origin/5x/alpha", "HEAD"], dir);
 				git(["checkout", "main"], dir);
 				expect(existsSync(join(dir, PLAN_REL))).toBe(false);
 
@@ -385,6 +653,9 @@ describe("progress resolution", () => {
 				expect(phases.exitCode).toBe(0);
 				const pdata = parseJson(phases.stdout).data as { source: string };
 				expect(pdata.source).toBe("5x/alpha");
+				git(["branch", "-D", "5x/alpha"], dir);
+				expect((await listedPlans(dir))[0]?.source).toBe("origin/5x/alpha");
+				expect((await resolveAlpha(dir)).source.label).toBe("origin/5x/alpha");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -500,6 +771,17 @@ describe("progress resolution", () => {
 
 				const text = await run5x(dir, ["--text", "plan", "phases", PLAN_REL]);
 				expect(text.stdout).not.toMatch(/^source:/m);
+
+				// A mapped checkout's removal must not fall back to the root copy.
+				rmSync(join(wt, PLAN_REL));
+				expect(existsSync(join(dir, PLAN_REL))).toBe(true);
+				expect(await listedPlans(dir)).toEqual([]);
+				const removed = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(removed.exitCode).not.toBe(0);
+				expect(parseJson(removed.stdout).error).toMatchObject({
+					code: "PLAN_NOT_FOUND",
+					detail: { plan_state: "deleted", source: "worktree" },
+				});
 			} finally {
 				cleanupDir(dir);
 			}
@@ -579,11 +861,28 @@ describe("progress resolution", () => {
 					run: { id: string; status: string };
 					steps: Array<{ id?: number; step_name: string }>;
 				};
-				expect(data.source).toBe("5x/alpha");
+				expect(data.source).toBe("HEAD");
 				expect(data.run.id).toBe(runId);
 				expect(data.run.status).toBe("active");
 				expect(data.steps[0]?.step_name).toBe("run:init");
 				expect(data.steps[0]?.id).toBeUndefined();
+				git(["update-ref", "refs/remotes/origin/5x/alpha", "HEAD"], dir);
+				git(["rm", PLAN_REL], dir);
+				git(["commit", "-m", "delete plan but retain run history"], dir);
+				git(["branch", "5x/bravo"], dir);
+				expect(await listedPlans(dir)).toEqual([]);
+				const deletedState = await run5x(dir, [
+					"run",
+					"state",
+					"--plan",
+					PLAN_REL,
+				]);
+				expect(deletedState.exitCode).toBe(0);
+				expect(parseJson(deletedState.stdout).data).toMatchObject({
+					source: "HEAD",
+					plan_state: "deleted",
+					run: { id: runId },
+				});
 			} finally {
 				cleanupDir(dir);
 			}
@@ -701,6 +1000,8 @@ describe("progress resolution", () => {
 				);
 				git(["add", "-A"], dir);
 				git(["commit", "-m", "records"], dir);
+				git(["branch", "5x/aaa-unrelated"], dir);
+				git(["branch", "5x/alpha"], dir);
 				git(["checkout", "main"], dir);
 				expect(existsSync(join(dir, PLAN_REL))).toBe(false);
 
