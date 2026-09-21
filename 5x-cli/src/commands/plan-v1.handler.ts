@@ -144,6 +144,10 @@ export interface PlanListEntry {
 	source: string;
 	source_ref?: string;
 	source_age_seconds?: number;
+	plan_state?: ReturnType<typeof envelopeFromProgress>["plan_state"];
+	diverged_sources?: ReturnType<
+		typeof envelopeFromProgress
+	>["diverged_sources"];
 	diverged?: boolean;
 	creator?: RecordRecorder | null;
 	sealer?: RecordRecorder | null;
@@ -272,7 +276,10 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	const { config, projectRoot } = await resolveDbContext({ migrate: false });
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
 	const mapped = resolveMappedWorktree(planPath);
-	const worktreePlanPath = mapped?.worktreePlanPath ?? null;
+	const worktreePlanPath =
+		mapped && existsSync(mapped.worktreePlanPath)
+			? mapped.worktreePlanPath
+			: null;
 
 	if (params.fetch) {
 		await fetchFiveXWithWarnings(projectRoot);
@@ -298,12 +305,10 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 		allRefs: params.allRefs,
 	});
 
-	const checkoutExists =
-		existsSync(planPath) ||
-		(worktreePlanPath != null && existsSync(worktreePlanPath));
-	if (resolved.markdown == null && !checkoutExists) {
+	if (resolved.markdown === null) {
 		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
 			plan_path: planPath,
+			...envelopeFromProgress(resolved),
 			...(worktreePlanPath ? { worktree_plan_path: worktreePlanPath } : {}),
 		});
 	}
@@ -334,7 +339,7 @@ function posixRelativeDir(fromDir: string, toPath: string): string {
 }
 
 /**
- * Subtrees under `paths.plans` that hold review / audit markdown, not implementation plans.
+ * Subtrees under `paths.plans` that hold archives or review / audit markdown.
  * `plan list` recurses into other subdirectories but skips these roots entirely.
  */
 function planListSkipSubtrees(
@@ -344,6 +349,7 @@ function planListSkipSubtrees(
 	const roots: string[] = [];
 	const plansAbs = resolve(plansDir);
 	for (const p of [
+		paths.archive,
 		paths.reviews,
 		paths.planReviews,
 		paths.runReviews,
@@ -357,7 +363,9 @@ function planListSkipSubtrees(
 }
 
 function collectMarkdownFiles(dir: string, skipSubtrees: string[]): string[] {
-	if (!existsSync(dir)) return [];
+	if (!existsSync(dir) || skipSubtrees.some((root) => isPathUnder(dir, root))) {
+		return [];
+	}
 
 	const out: string[] = [];
 	const entries = readdirSync(dir, { withFileTypes: true });
@@ -479,9 +487,7 @@ export async function planList(
 		let phases_done = 0;
 		let completion_pct = 0;
 		let status: "complete" | "incomplete" = "incomplete";
-		let source = "HEAD";
-		let source_ref: string | undefined;
-		let source_age_seconds: number | undefined;
+		let progress: ReturnType<typeof envelopeFromProgress>;
 		let diverged = false;
 		let creator: PlanListEntry["creator"];
 		let sealer: PlanListEntry["sealer"];
@@ -498,11 +504,12 @@ export async function planList(
 				allRefs: params.allRefs,
 				session,
 			});
-			source = resolved.source.label;
-			source_ref = resolved.source.ref;
-			source_age_seconds = resolved.source.age_seconds;
+			if (resolved.state === "deleted" || resolved.state === "missing")
+				continue;
+			if (resolved.markdown === null) continue;
+			progress = envelopeFromProgress(resolved);
 			diverged = resolved.source.kind === "diverged";
-			if (resolved.markdown) {
+			if (resolved.markdown !== null) {
 				const parsed = parsePlan(resolved.markdown);
 				title = parsed.title;
 				phases_total = parsed.phases.length;
@@ -536,6 +543,7 @@ export async function planList(
 			warn(
 				`Warning: could not read ${plan_path} for plan listing: ${detail}\n`,
 			);
+			continue;
 		}
 
 		const runs = runsByPlanPath.get(canonical) ?? [];
@@ -571,9 +579,7 @@ export async function planList(
 			phases_total,
 			active_run,
 			runs_total,
-			source,
-			...(source_ref ? { source_ref } : {}),
-			...(typeof source_age_seconds === "number" ? { source_age_seconds } : {}),
+			...progress,
 			...(diverged ? { diverged: true } : {}),
 			...(creator !== undefined ? { creator } : {}),
 			...(sealer !== undefined ? { sealer } : {}),
@@ -773,7 +779,7 @@ const DB_FILENAME = "5x.db";
 
 /**
  * If the plan has a mapped worktree, return the worktree root and the
- * plan file path in that worktree (when the file exists).
+ * plan file path in that worktree. A missing file may be an explicit deletion.
  */
 function resolveMappedWorktree(planPath: string): {
 	worktreeRoot: string;
@@ -794,13 +800,11 @@ function resolveMappedWorktree(planPath: string): {
 			.get(planPath) as { worktree_path: string | null } | null;
 
 		const worktreeRoot = plan?.worktree_path;
-		if (!worktreeRoot) return null;
+		if (!worktreeRoot || !existsSync(worktreeRoot)) return null;
 
 		const relPlanPath = relativePathUnder(planPath, cp.controlPlaneRoot);
 		if (relPlanPath === null) return null;
 		const worktreePlanPath = join(worktreeRoot, relPlanPath);
-
-		if (!existsSync(worktreePlanPath)) return null;
 
 		return { worktreeRoot, worktreePlanPath };
 	} catch {

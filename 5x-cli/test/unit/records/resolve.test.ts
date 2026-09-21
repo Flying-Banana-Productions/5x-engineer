@@ -45,6 +45,7 @@ function mockGit(
 			for (const [match, response] of rules) {
 				if (match(args, cwd)) return response;
 			}
+			if (args[0] === "diff" && args.includes("--diff-filter=D")) return ok("");
 			return fail(`Unexpected git call: git ${args.join(" ")}`);
 		},
 	);
@@ -110,6 +111,103 @@ describe("parse helpers", () => {
 });
 
 describe("resolvePlanProgress", () => {
+	test.each(["deleted", "missing"] as const)(
+		"absent markdown is %s only when its path history supports that state",
+		async (state) => {
+			mockGit(
+				[(args) => args[0] === "for-each-ref", ok("")],
+				[(args) => args[0] === "rev-parse", ok(A)],
+				[(args) => args[0] === "rev-list", ok(A)],
+				[
+					(args) => args[0] === "log",
+					ok(
+						`${A}\n${state === "deleted" ? PLAN : "docs/development/runs/foo/run.json"}\n`,
+					),
+				],
+				[(args) => args[0] === "show", fail("path does not exist")],
+				[(args) => args[0] === "ls-tree", ok("")],
+			);
+			const resolved = await resolvePlanProgress({
+				workdir: "/repo",
+				planPath: `/repo/${PLAN}`,
+				planSlug: "foo",
+				recordsRelPath: "docs/development/runs",
+			});
+			expect(resolved.state).toBe(state);
+			expect(resolved.markdown).toBeNull();
+			expect(envelopeFromProgress(resolved).plan_state).toBe(state);
+		},
+	);
+
+	test.each(["object unreadable", "tree query failed"])(
+		"Git read failure is not treated as deletion: %s",
+		async (scenario) => {
+			mockGit(
+				[(args) => args[0] === "for-each-ref", ok("")],
+				[(args) => args[0] === "rev-parse", ok(A)],
+				[(args) => args[0] === "rev-list", ok(A)],
+				[(args) => args[0] === "log", ok(`${A}\n${PLAN}\n`)],
+				[(args) => args[0] === "show", fail("cannot read object")],
+				[
+					(args) => args[0] === "ls-tree",
+					scenario === "object unreadable" ? ok(`${PLAN}\0`) : fail("bad tree"),
+				],
+			);
+			await expect(
+				resolvePlanProgress({
+					workdir: "/repo",
+					planPath: `/repo/${PLAN}`,
+					planSlug: "foo",
+					recordsRelPath: "docs/development/runs",
+				}),
+			).rejects.toThrow("cannot read object");
+		},
+	);
+
+	test("checkout fallback replaces the branch source and clears its commit", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "5x-resolve-fallback-"));
+		try {
+			mkdirSync(join(dir, "docs/development"), { recursive: true });
+			writeFileSync(join(dir, PLAN), PLAN_MD_A);
+			mockGit(
+				[
+					(args) =>
+						args[0] === "for-each-ref" && args[1] === "--format=%(refname)",
+					ok("refs/remotes/origin/5x/foo"),
+				],
+				[
+					(args) => args[0] === "for-each-ref",
+					ok(`${B}\trefs/remotes/origin/5x/foo\t1700000000`),
+				],
+				[(args) => args[0] === "rev-parse", ok(A)],
+				[(args) => args[0] === "rev-list", ok(`${B} ${A}\n${A}`)],
+				[
+					(args) => args[0] === "log",
+					ok(`${B}\ndocs/development/runs/foo/run.json\n`),
+				],
+				[(args) => args[0] === "show", fail("path does not exist")],
+				[(args) => args[0] === "ls-tree", ok("")],
+			);
+			const resolved = await resolvePlanProgress({
+				workdir: dir,
+				planPath: join(dir, PLAN),
+				planSlug: "foo",
+				recordsRelPath: "docs/development/runs",
+			});
+			expect(resolved.markdown).toBe(PLAN_MD_A);
+			expect(resolved.state).toBe("present");
+			expect(resolved.source).toEqual({
+				kind: "HEAD",
+				label: "HEAD",
+				ref: "HEAD",
+			});
+			expect(resolved.commit).toBeNull();
+			expect(envelopeFromProgress(resolved).source_commit).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("shared session resolves many plans and refs without per-plan history queries", async () => {
 		const plans = Array.from(
 			{ length: 20 },

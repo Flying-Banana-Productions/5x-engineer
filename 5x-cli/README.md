@@ -500,6 +500,28 @@ Runs each command in `qualityGates` from config sequentially. Returns `{ passed:
 5x diff [--since <ref>] [--stat]        # Git diff (working tree or since ref)
 ```
 
+`plan list` discovers plans under `paths.plans` in the checkout, local and
+remote-tracking `5x/*` branches, and the configured `plans.branch`. `--all-refs`
+also considers other branches; `--fetch` explicitly refreshes remote 5x refs.
+The configured archive subtree is excluded. Later deletions or archive moves
+supersede older branch copies, including copies retained on merged branches.
+Staged and unstaged removals in the checkout or mapped worktree also count.
+New branch-only plans and explicitly reintroduced plans remain discoverable.
+
+Progress JSON includes `plan_state` (`present`, `deleted`, `missing`, or
+`diverged`). Deleted/missing plans are omitted from the list; `plan phases`
+returns `PLAN_NOT_FOUND` when no plan content remains. `run state --plan` can
+still return retained run history with the plan's lifecycle state. Divergent
+deletion-versus-edit histories remain visible with `diverged_sources` and each
+candidate's `plan_state`.
+
+`source` identifies the selected progress source. For equivalent progress
+commits, attribution prefers the mapped working copy, then `HEAD`, the configured
+plans branch, the plan's matching local branch, its matching remote-tracking
+branch, and finally other refs in stable order. Newer branch progress still wins
+over older checkout progress. Read failures produce warnings rather than empty
+plan rows.
+
 ### Human Interaction
 
 ```bash

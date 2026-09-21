@@ -336,7 +336,7 @@ describe("planList handler", () => {
 		});
 	});
 
-	test("read failure on one file yields incomplete fallback and other files still list", async () => {
+	test("read failure warns without a ghost row and other files still list", async () => {
 		await withProject(async (ctx) => {
 			mkdirSync(ctx.plansDir, { recursive: true });
 			const bad = join(ctx.plansDir, "unreadable.md");
@@ -351,8 +351,7 @@ describe("planList handler", () => {
 				expect(warnings).toContain("unreadable.md");
 
 				const byPath = Object.fromEntries(plans.map((p) => [p.plan_path, p]));
-				expect(byPath["unreadable.md"]?.completion_pct).toBe(0);
-				expect(byPath["unreadable.md"]?.title).toBe("");
+				expect(byPath["unreadable.md"]).toBeUndefined();
 				expect(byPath["good.md"]?.completion_pct).toBe(100);
 			} finally {
 				try {

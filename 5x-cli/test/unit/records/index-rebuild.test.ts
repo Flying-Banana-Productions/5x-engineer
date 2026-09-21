@@ -436,7 +436,7 @@ describe("rebuildRecordsIndex", () => {
 				expect(snapshot.diverged.map((d) => d.planSlug)).toEqual(["alpha"]);
 				expect(snapshot.runs).toEqual([]);
 				const labels = snapshot.diverged[0]?.sources.map((s) => s.label).sort();
-				expect(labels).toContain("5x/alpha");
+				expect(labels).toContain("HEAD");
 				expect(labels).toContain("origin/5x/alpha");
 
 				let caught: unknown;
