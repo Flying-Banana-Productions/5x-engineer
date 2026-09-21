@@ -164,3 +164,78 @@ The Overview defers name/line reconciliation to a "Phase 0 of execution" that do
 
 **P2**
 - [ ] P2.1 — Rescore positive architecture deltas.
+
+---
+
+## Addendum (2026-09-21) — Re-review of plan v1.1 (closure review)
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.1 @ `0248b10` (prior review commit `d92b809`). The prompt's appended diff and commit range were empty, so I recomputed the plan delta with `git diff d92b809 HEAD -- <plan>` and re-read the full revised plan.
+**Local verification:** Not run (static review). Re-checked against `main` and the plan-208 branch `5x/208-review-budget-advisory-plan` @ `cd7ee88` (`finalizeAndWritePreparedStep`, `applyPlanReviewBudget`, `recordPlanReviewerStepWithSnapshot`, `deriveBudget`).
+
+### What's addressed (✅)
+
+- **P0.1 — ✅ Addressed.** Phase 8/W8 and all dashboard parity work are removed. Slice 04 is no longer a prerequisite, and the plan keeps only CLI-side seams (exported `submitPlanReviewDecision`, redacted prompt view DTO) plus a follow-up handoff in §9.3. Phase 0 and the timeline are consistent.
+- **P0.2 — ⚠️ Partially addressed.** The design is now correct: `decision:review-gate:<gateId>` plus the human step in one `atomicAppendIfAllNew`, records first, prompt as projection, `decisionIntentHash` for semantic retries, and a two-facade cross-process test. The write path has a hole, though (see the P0.2 residual below).
+- **P0.3 — ✅ Addressed.** Routing step 2 suppresses causes covered by an active decision and records `resolvedBy`. Baseline dispute is covered by retain/adjust/re-estimate. Architecture is covered only within `approvedP` and the approved threshold-crossing IDs. Budget bands are never suppressed and use folded `B`. Post-decision matrix rows are added in §4.3.
+- **P0.4 — ✅ Addressed.** `priorFindings[]` is now a separate top-level array and `--prior-finding` is a repeatable flag. Only still-blocking IDs stay in `items[]`. The required-outcome set is defined, `--ready` with addressed-only outcomes emits `ready`, and the snapshot extension persists outcomes. This is consistent with plan 208's `computePendingR`, which sums only listed items.
+- **P1.1 — ✅ Addressed.** Mode is pinned into the baseline record, so advisory records diagnostics and a hypothetical route without rejecting, and enforced fails closed. This is the option I recommended, and it also settles the mid-run mode-change question. Note that runs captured before this ships decode as advisory, and there is no path to move an already-captured run to enforced; document that in §9.3.
+- **P1.2 — ✅ Addressed.** §6.3 and §7.3 inject a "Governing decisions" block into `author-process-plan-review` renders, and the author template is in Files Touched. Keep the block post-render, like `diffAppend`, because declared template variables must be single-line scalars.
+- **P1.3 — ✅ Addressed.** `buildPlanReviewDiffContext` always builds the full patch. Truncation is render-only and lists omitted hunk headers and the exact `git diff` command. `INTRODUCED_HUNK_NOT_FOUND` names the closest hunk, and a cited-hunk-after-line-200 test is added.
+- **P1.4 — ⚠️ Partially addressed.** The gate is now a pure derivation with a deterministic ID and no gate codec. The ID inputs are not stable across the decision itself (see the P1.4 residual below).
+- **P1.5 — ✅ Addressed.** The fold, index, and codec select only `kind: "plan-review-governance"`. Existing `human-step` and `answered-prompt` lines are ignored silently. The human step skips the generic mirror, and a three-kind fixture is planned.
+- **P1.6 — ✅ Addressed.** Phase 0 exists. `ReviewBudgetCommandContext` and `recordPlanReviewerStepWithSnapshot` replace the fictional `PlanReviewBudgetContext`. `governingBaseline` is an additive `applyPlanReviewBudget` input, and post-decision forecasts are pure recomputes with no extra snapshot. Removal of the reserved-`enforced` warning and copy is scheduled, and the cross-plan touches (`record-lines.ts`, `ensure-baseline.ts`, `review-budget-store.ts`) are in Files Touched.
+- **P1.7 — ✅ Addressed.** `followUpCount` and the follow-up emit bullet are gone, and follow-ups are Markdown-only. `adjacent` debt is allowed only as `human_required`, and `unrelated` is rejected from `items[]`, stated once in §1.3.
+- **P2.1 — ✅ Addressed.** Rescored: W1 +1, W2 +2, W5 +2, each with rationale.
+
+**Delivery-budget hygiene:** The ledger has stable IDs. W8 is removed and W9 keeps its ID, which is fine. There are no negative rows and no `DCn` claims, so there are no credit assessments to emit. The current ledger sums to 44 against the frozen `B0 = 52` baseline. I'm not emitting a new baseline assessment.
+
+**`Addresses` re-check:** The cells for W1, W3, W4, W6, W7 and W9 match findings that are now closed. W2 and W5 cite P0.2 and P1.4, which stay open below. Those cells are accurate accounting, since the effort is incorporated into W2/W5. Under 206 §6.1, partially-addressed findings re-enter pending `R` regardless, so I have scored their residual effort on the items below. Do not treat them as resolved until the fixes land.
+
+### Remaining concerns
+
+**P0.2 (residual; severity now P1) — the gate-key loser path breaks the plan-208 finalize seam.** §5.2 says to "build the finalized `human:review-governance` step … then call `atomicAppendIfAllNew` once" and, on `created:false`, load the gate-key winner. Two problems follow.
+- The step iteration is allocated inside `finalizeAndWritePreparedStep` (`src/commands/run-v1.handler.ts`, plan-208 branch), and the plan does not say to use it.
+- That seam treats every `!created` result as either an iteration collision or a pair-corruption case. A loser that runs after the winner committed builds step key N+1 (new) plus the gate key (existing), so the batch returns `created:false` and the step line does not exist. With an omitted iteration, the seam retries up to `maxSteps − total` times and throws `RECORD_ITERATION_RETRY_EXHAUSTED`. With an explicit iteration it throws `RECORD_PAIR_CORRUPT`. Every duplicate or losing submission would therefore error instead of "observing the winner".
+
+Fix, without a new primitive:
+- Route the write through `finalizeAndWritePreparedStep` with `mode: "paired-all-new"` and `extraOps` supplying the decision op.
+- Pre-read `getLine(runId, "decisions", "decision:review-gate:<gateId>")` before finalizing.
+- Extend the seam so that on `!created` it checks the extra ops' keys first and returns a "coupled key exists" outcome to the caller, instead of retrying or throwing.
+- Add contract tests for a loser that arrives simultaneously and for a loser that arrives after the winner (step iteration N+1).
+
+**P1.4 (residual) — `gateId` is derived from inputs that change when the gate is resolved.** The ID hashes `sorted causes`, but §2.2 and §4.1 define causes as the post-suppression result of the fold. After `retain_baseline` or `approve_architecture_burden`, recomputing causes drops the covered cause, so the recomputed `gateId` differs from `decision:review-gate:<gateId>`. The resolved gate then looks unresolved, or a different gate appears. Multi-cause gates are also unspecified: a baseline dispute plus `over_effective` is resolved by one decision that covers only one cause.
+
+Fix:
+- Hash `gateId` from the causes persisted in the reviewer snapshot at record time.
+- Make "resolved" mean the key exists.
+- After each decision, recompute the remaining uncovered causes from the fold. If any remain, derive one deterministic successor gate `sha256(runId, snapshotId, remainingCauses, predecessorGateId)`.
+- Add a two-cause test: the first decision leaves exactly one successor gate, and the resolved gate never reopens.
+
+**P1.8 (new) — a typed gate prompt cannot carry a decision payload.** `PromptStore.answerPrompt(id, answer: string, answeredBy)` accepts a single string, but decisions need rationale, evidence, scope and baseline fields. The plan removed the "answered prompt awaiting repair" direction. It does not say what happens when a human answers a `plan_review_gate` prompt through the generic prompt path (`5x prompt` answer or a later adapter) instead of `5x review decide`. The result would be an answered prompt, an `answered-prompt` line, and no decision.
+
+Fix:
+- Make the gate prompt a notification and wait handle only.
+- Have the generic answer path reject `plan_review_gate` prompts with a structured error pointing at `5x review decide`.
+- Have the prompt-wait function poll the gate-key decision, not the prompt answer.
+- Add the rejection and the wait behavior to the §5.3 tests.
+
+**P1.9 (new) — post-decision routing and skill resume are unspecified.** `submitPlanReviewDecision` returns a `route`, and §7.4 says to "resume from the durable decision", but nothing defines how that route is derived. Routing step 5 requires `ready`. A `not_ready` verdict whose only blocking items were deferred by `defer_accept_risk` matches neither step 5 nor step 7.
+
+Fix: define `routeAfterDecision` as a re-run of the pure `derivePlanReviewGovernance` on the latest recorded verdict with the new fold. Add matrix rows:
+- Deferral leaves zero required items → `complete`. The human explicitly accepted the risk and the reviewer raised nothing else.
+- `increase_budget` or `retain_baseline` → `author_revision`, or `final_corrections` if it qualifies.
+- `trade_scope` or `request_author_reestimate` → `author_revision`.
+- `abort` → terminal.
+
+Have `5x review gate show` and `5x review decide` return this route for the skill's branch.
+
+**P2.2 (new) — phase and work-item numbering skips 8.** The table of contents, headings, timeline and W-rows go from Phase 7 to Phase 9. Either renumber or add a one-line note that Phase 8/W8 is intentionally vacant, so a reader is not left wondering whether a phase is missing.
+
+**P2.3 (new) — side effects on a stale gate.** §5.2 validates the expected forecast before the append, then applies side effects after it. A newer reviewer snapshot landing between the two leaves a decision that is retained for audit but no longer governs, while an `abort` or baseline-change side effect would still run. Re-check that the gate is still the current derived gate after the append. If it is stale, skip side effects and return `REVIEW_GATE_STALE`, keeping the decision line as audit only.
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ⚠️ Materially improved. All four original P0 blockers are resolved or reduced to a mechanical write-path correction. The two human decisions (P0.1 scope split, P1.1 advisory strictness) were resolved as I recommended.
+- **Ready for implementation:** ⚠️ After the corrections above. All remaining items are `auto_fix` with a single derivable fix, and none needs a human decision.
+
+**Readiness:** Ready with corrections — fix the gate-key loser path (P0.2 residual) and the gate identity across decisions (P1.4 residual) before Phases 2 and 5. Fix the prompt payload path, post-decision routing and the stale-gate side effects (P1.8, P1.9, P2.3) in the same revision.
