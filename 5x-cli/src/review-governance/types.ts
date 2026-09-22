@@ -133,6 +133,9 @@ export type ReviewGateCause =
 	| (ReviewGateCauseBase & {
 			kind: "budget_alert";
 			alert: BudgetAlert;
+			/** Stable identities that caused an architecture threshold alert. */
+			itemIds?: string[];
+			workItemIds?: string[];
 	  })
 	| (ReviewGateCauseBase & {
 			kind: "semantic_human";
@@ -205,6 +208,15 @@ export interface PlanReviewGovernanceResult {
 	diagnostics: ClosureDiagnostic[];
 	hypotheticalEnforcedRoute?: PlanReviewRoute;
 }
+
+export type FinalCorrectionFailure =
+	| "no_corrections"
+	| "non_auto_fix"
+	| "effort_exceeded"
+	| "architecture_change"
+	| "reviewer_verification_required"
+	| "exception_requires_review"
+	| "effective_ceiling_exceeded";
 
 /** Closure-only protocol fields, kept separate until protocol integration. */
 export type GovernanceVerdictItem = VerdictItem & {

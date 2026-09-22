@@ -363,6 +363,15 @@ export {
 	PlanDiffError,
 	validateIntroducedBy,
 } from "./review-governance/plan-diff.js";
+export type {
+	ArchitectureRoutingContext,
+	DerivePlanReviewGovernanceInput,
+} from "./review-governance/routing.js";
+export {
+	derivePlanReviewGovernance,
+	routeAfterDecision,
+	validateFinalCorrections,
+} from "./review-governance/routing.js";
 export {
 	projectReviewGovernance,
 	reindexReviewGovernance,
@@ -385,6 +394,7 @@ export type {
 	CriticalSafetyEvidence,
 	DebtEligibility,
 	DecisionReraiseEvidence,
+	FinalCorrectionFailure,
 	FindingIdentity,
 	GovernanceReviewerVerdict,
 	GovernanceVerdictItem,

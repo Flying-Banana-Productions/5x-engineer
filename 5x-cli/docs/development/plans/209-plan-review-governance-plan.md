@@ -523,9 +523,9 @@ Routing precedence in enforced mode:
 6. Strictly valid `ready_with_corrections` → `final_corrections`.
 7. Remaining required corrections → normalize to `not_ready` and `author_revision` (followed by closure review).
 
-- [ ] Keep gross forecast, effective/absolute limits, positive burden, and provisional debt fields unchanged from plan 208 in output; the router selects a route only.
-- [ ] Derive gate causes as stable enums with item/claim references and optional `resolvedBy`; no prose parsing in skills or future adapters.
-- [ ] In advisory mode record closure diagnostics plus the hypothetical enforced route, but return the existing v1 route and never reject. In off/v1-compat mode omit governance routing decoration.
+- [x] Keep gross forecast, effective/absolute limits, positive burden, and provisional debt fields unchanged from plan 208 in output; the router selects a route only.
+- [x] Derive gate causes as stable enums with item/claim references and optional `resolvedBy`; no prose parsing in skills or future adapters.
+- [x] In advisory mode record closure diagnostics plus the hypothetical enforced route, but return the existing v1 route and never reject. In off/v1-compat mode omit governance routing decoration.
 
 ### 4.2 `ready_with_corrections` validator — same module
 
@@ -537,9 +537,9 @@ export function validateFinalCorrections(input: {
 }): { valid: true } | { valid: false; reasons: FinalCorrectionFailure[] };
 ```
 
-- [ ] Require all-auto-fix, combined effort `<= 1`, zero architecture delta, no reviewer-verification flag, no critical/prior-decision exception, and forecast within the effective limit.
-- [ ] Count the correction effort in the forecast before accepting the shortcut.
-- [ ] If a budget/semantic cause exists, route human rather than normalize; otherwise normalize to `not_ready`.
+- [x] Require all-auto-fix, combined effort `<= 1`, zero architecture delta, no reviewer-verification flag, no critical/prior-decision exception, and forecast within the effective limit.
+- [x] Count the correction effort in the forecast before accepting the shortcut.
+- [x] If a budget/semantic cause exists, route human rather than normalize; otherwise normalize to `not_ready`.
 
 ### 4.3 Post-decision route — same module
 
@@ -552,19 +552,19 @@ export function routeAfterDecision(input: {
 }): ReviewDecisionRoute;
 ```
 
-- [ ] Build filtered inputs first: remove every finding covered by an active deferral before both `deriveBudget` and readiness routing, fold governing `B`, then rerun `derivePlanReviewGovernance` against the latest snapshot. That pure rerun is authoritative for every fold-changing/covering choice; never trust a route supplied by the caller.
-- [ ] For `increase_budget`, `adjust_baseline`, `retain_baseline`, `defer_accept_risk`, and `approve_architecture_burden`, return the authoritative recomputed route unchanged: `complete` when no required work/cause remains, `final_corrections` when the strict shortcut qualifies, `author_revision` for remaining ordinary corrections, or one deterministic successor `human_gate` for uncovered causes.
-- [ ] Apply choice-specific overrides only to choices that deliberately close the current snapshot rather than using a fold change to cover its causes: `trade_scope` and `request_author_reestimate` return `author_revision`, and `abort` returns `aborted`. These three skip successor derivation; abort terminal handling runs afterward as a side effect, never before route derivation.
-- [ ] `5x review gate show` and `5x review decide` expose this durable derived route for skill branching.
+- [x] Build filtered inputs first: remove every finding covered by an active deferral before both `deriveBudget` and readiness routing, fold governing `B`, then rerun `derivePlanReviewGovernance` against the latest snapshot. That pure rerun is authoritative for every fold-changing/covering choice; never trust a route supplied by the caller.
+- [x] For `increase_budget`, `adjust_baseline`, `retain_baseline`, `defer_accept_risk`, and `approve_architecture_burden`, return the authoritative recomputed route unchanged: `complete` when no required work/cause remains, `final_corrections` when the strict shortcut qualifies, `author_revision` for remaining ordinary corrections, or one deterministic successor `human_gate` for uncovered causes.
+- [x] Apply choice-specific overrides only to choices that deliberately close the current snapshot rather than using a fold change to cover its causes: `trade_scope` and `request_author_reestimate` return `author_revision`, and `abort` returns `aborted`. These three skip successor derivation; abort terminal handling runs afterward as a side effect, never before route derivation.
+- [x] `5x review gate show` and `5x review decide` expose this durable derived route for skill branching.
 
 ### 4.4 Routing tests — new `test/unit/review-governance/routing.test.ts`
 
-- [ ] Cover each band, baseline direction, cumulative/single architecture alert, action, valid/invalid final correction, initial/closure, and pinned advisory/enforced mode.
-- [ ] Add post-decision rows: retain or adjust in round 1 records `resolvedBy` and keeps `baseline_disputed` out of round 2's first-gate causes; adjust still recomputes bands against folded `B`; a re-estimate leaves the next round's dispute active but limits that gate to retain/adjust/abort. Approved architecture does not re-gate unchanged burden; larger `P` or a new threshold-crossing ID re-gates.
-- [ ] Add post-decision route rows: deferral filters findings before budget and readiness and completes when it removes the only blockers; increase/adjust/retain return the authoritative complete/final-correction/revision/successor route; scope trade/re-estimate revise without a successor even when the old snapshot was over budget; abort derives `aborted` before terminal handling.
-- [ ] Cover every row in the choice-to-cause table, including unrelated remaining causes, a deferred finding that previously caused `over_effective`, and a pre-existing resolved cause that must not enter a later snapshot's first gate.
-- [ ] Assert reviewer readiness and authored aggregate-like fields cannot override the CLI route.
-- [ ] Assert eligible intrinsic debt expands only the effective limit supplied by plan 208 and never changes displayed gross effort/positive burden.
+- [x] Cover each band, baseline direction, cumulative/single architecture alert, action, valid/invalid final correction, initial/closure, and pinned advisory/enforced mode.
+- [x] Add post-decision rows: retain or adjust in round 1 records `resolvedBy` and keeps `baseline_disputed` out of round 2's first-gate causes; adjust still recomputes bands against folded `B`; a re-estimate leaves the next round's dispute active but limits that gate to retain/adjust/abort. Approved architecture does not re-gate unchanged burden; larger `P` or a new threshold-crossing ID re-gates.
+- [x] Add post-decision route rows: deferral filters findings before budget and readiness and completes when it removes the only blockers; increase/adjust/retain return the authoritative complete/final-correction/revision/successor route; scope trade/re-estimate revise without a successor even when the old snapshot was over budget; abort derives `aborted` before terminal handling.
+- [x] Cover every row in the choice-to-cause table, including unrelated remaining causes, a deferred finding that previously caused `over_effective`, and a pre-existing resolved cause that must not enter a later snapshot's first gate.
+- [x] Assert reviewer readiness and authored aggregate-like fields cannot override the CLI route.
+- [x] Assert eligible intrinsic debt expands only the effective limit supplied by plan 208 and never changes displayed gross effort/positive burden.
 
 ---
 
