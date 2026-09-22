@@ -375,3 +375,37 @@ Fix, using data already in the batch:
 - **Ready for implementation:** ⚠️ After the P1.10 correction, which touches only §2.1 (the staleness fold bullet) and §5.2's post-append check and should land before Phases 2 and 5. Phases 0, 1, 3, 4, 6 and 7 are unaffected. It is `auto_fix` with one derivable answer, and no human decision is needed.
 
 **Readiness:** Ready with corrections — define stale-at-acceptance by `steps`-stream order and align the §5.2 check with it (P1.10).
+
+---
+
+## Addendum 5 (2026-09-22) — Re-review of plan v1.5 (closure of the v1.4 residual)
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.5 @ `51c20b2` (prior reviewed revision `9fdbb45`, review commit `a45e1c8`). The prompt's appended diff and commit range were empty again, so I recomputed the delta with `git diff 9fdbb45 HEAD -- <plan>` and re-read the new "steps stream is the acceptance-order clock" design decision, §2.1's `classifyDecisionAcceptance` bullets, §2.3's reindex bullet, §5.2's post-append classification, and the affected test/Files-Touched rows.
+**Local verification:** Not run (static review). Re-checked the `role`/`phase` and snapshot↔step-key facts this fix depends on against `main` and the plan-208 branch `5x/208-review-budget-advisory-plan` @ `cd7ee88` (`performer.role`, `BudgetSnapshotStepKey`).
+
+### What's addressed (✅)
+
+- **P1.10 — ✅ Addressed.** The plan now defines staleness from one source: authoritative `steps`-stream insertion order, not cross-stream comparison or a second read of "the latest snapshot".
+  - `classifyDecisionAcceptance` resolves the gate's reviewer step from the decision's `forecastId` through plan-208's existing snapshot ↔ reviewer-step key (`BudgetSnapshotStepKey`), and resolves the paired `human:review-governance` step by the `decisionId`/`gateId` now stamped into its own result at write time — both of which this plan's own §5.2 append controls, so no new lookup index is required.
+  - Staleness is exactly "a `role=reviewer`, `phase=plan` step exists strictly between those two positions" in one stream's insertion order, which is well-defined and matches how `RecordStore` already orders lines (`record_seq`/insertion order, never `createdAt`).
+  - The same classifier is used in live handling (§5.2), the fold (§2.1), and `reindexReviewGovernance` (§2.3), so a wiped-index rebuild is required to reproduce the same stale/accepted classification as the live run — closing the exact "fold and handler disagree" gap I raised.
+  - Malformed boundaries (missing/duplicate stamped IDs, a human step not after its reviewer step, an unresolvable snapshot tuple) fail closed as audit-only rather than guessing, consistent with the plan's existing fail-closed posture elsewhere.
+  - I traced the race that originally motivated P1.10 (a newer reviewer step landing between validation and the decision's append) against the new rule: that reviewer step is written to `steps` before the decision's paired human step, so it necessarily falls strictly between the two boundary steps and the decision correctly classifies as stale. The fix holds for the case it was written for, not only the two ends of the test matrix.
+  - Tests are added for both step orders plus rebuild-equals-live, in the contract, handler, index and integration suites, and the affected `Addresses` cells (W2, W5, W9) and effort rationale are updated consistently; the ledger total is unchanged at 47 against the frozen `B0 = 52`, since the fix clarifies an already-scoped mechanism rather than adding surface.
+
+I checked for stray old wording ("re-read the latest snapshot", "current-gate check") that a five-round edit history could plausibly leave behind as a contradiction. The only remaining occurrence is in the "v1.2" **Revision History** entry, which correctly describes what that historical revision did at the time and is not live spec; the current §5.2 and §5.3 text is internally consistent with the new rule.
+
+**Delivery-budget hygiene:** Ledger IDs (W1–W7, W9, W10) are unchanged and stable; the table sums to 47 against `B0 = 52`; no negative architecture rows and no `DCn` claims, so there are no credit assessments to emit.
+
+**`Addresses` re-check:** Every finding cited across all nine rows (P0.1–P0.4, P1.1–P1.10, P2.1–P2.6) is now closed. No row cites an open finding.
+
+### Remaining concerns
+
+None found. This revision closes the last open item from the initial review and every subsequent addendum, and I did not find a new issue in the changed sections or in a targeted re-check of the areas most likely to regress after five rounds of incremental edits (staleness wording, revision history, ledger `Addresses` cells).
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ✅ Complete. All P0/P1/P2 findings from the initial review and Addenda 1–4 are closed; v1.5 closes the last one (P1.10) without introducing a new gap.
+- **Ready for implementation:** ✅ Yes. Phase 0's reconciliation checklist remains the only work that depends on plan 208's actual merge state; nothing else in this plan is blocked on further plan revision.
+
+**Readiness:** Ready — no outstanding review items.
