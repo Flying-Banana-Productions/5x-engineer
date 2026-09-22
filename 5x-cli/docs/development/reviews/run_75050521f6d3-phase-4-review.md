@@ -118,3 +118,38 @@ Extend the advisory test with these rows.
 - [ ] Add fold-change and over-budget post-decision test rows
 
 **Phase readiness:** The Phase 4 core is in place and well structured. Fix P1.1 and P1.2 before Phase 5/6 build on the router. No human decisions are required.
+
+---
+
+## Addendum (2026-09-22) — Follow-up fix review
+
+**Reviewed:** `7be90a9e0f35c3f8a287ad398be8bcf0733108da` (`fix: address plan 209 phase 4 routing review`), diffed against `7c208a41a6044e0d19c8d84530453dbfb61f3882`.
+
+**Local verification:** `bun test test/unit/review-governance/` → 67 pass / 0 fail (172 assertions, up from 158); `bun test test/unit/` → 2796 pass / 0 fail; `bunx tsc --noEmit` clean; `bunx biome check src/review-governance test/unit/review-governance` clean.
+
+### What changed
+
+- `derivePlanReviewGovernance` no longer patches the input `DerivedBudgetResult` by subtraction. It now takes a required `budgetContext: { workItems, findings, assessments }` and reruns plan-208's `deriveBudget` directly against the active (non-deferred) findings and the folded governing `B` (`routing.ts:210–262`). The old `budgetForGoverningBaseline` / `budgetForActiveItems` patch functions are gone entirely.
+- `architectureContext` (item/work-item IDs at or above the single-architecture threshold) is now derived from the same active-findings/work-items data used for the `deriveBudget` rerun, excluding `polish` findings, instead of from an optional caller-supplied context that defaulted to `workItemIds: []` (`routing.ts:222–238`).
+- `v1Route` now branches on `human_required` items and on an itemless `not_ready` verdict before falling back to `author_revision`, matching the `5x-plan-review` skill's Step 4 escalation table (`routing.ts:200–208`).
+- `findingIdentity` / `fingerprintById` now prefer `closure.findingOutcomes`, then an accepted-risk's persisted fingerprint (when the item omits `failure`/`lowestCostCorrection`), then a freshly computed fingerprint — all routed through one new shared helper, `fingerprintVerdictItem` in `fingerprint.ts`, which `closure.ts` also now imports instead of its own local `fingerprintItem` (`routing.ts:47–62`, `fingerprint.ts:44–60`, `closure.ts` diff).
+- The plan's 4.3 checkbox wording was corrected to state that CLI exposure (`5x review gate show` / `5x review decide`) is tracked in Phase 5.2, not implemented here.
+- Test file adds a dedicated architecture-preservation test reproducing the exact prior-review probe (B 40→44 adjustment, deferral, and an unscoped architecture approval, each keeping the work-item alert and `workItemIds: ["W1"]` visible), an advisory-mode test for both new `v1Route` branches, a debt-credit rerun test, a closure-identity-fallback test, and a `routeAfterDecision` test that folds a budget change to clear a gate while an unrelated semantic cause keeps it open.
+
+### Prior findings — status
+
+- **P1.1** (architecture gate silently dropped when `architectureContext` is omitted) — **addressed**. The optional-context/subtraction approach is gone; the router now always rebuilds the architecture context from the same real work-item/finding data it feeds into `deriveBudget`, so there is no code path left where the alert can be recomputed from an empty `workItemIds`. Re-ran the original repro (`B0=40, B=40→44`, one work item at `architectureDelta: 5`) via the new test at `routing.test.ts:420–441` — the alert and `workItemIds: ["W1"]` now survive the baseline adjustment. The fix goes further than my suggested minimum (required field) by removing the standalone patch functions rather than just closing the gap.
+- **P1.2** (advisory `v1Route` diverges from v1 skill escalation) — **addressed**. `v1Route` now matches the skill table exactly, and the advisory test exercises both the `human_required`-item branch and the itemless-`not_ready` branch (`routing.test.ts:365–380`).
+- **P2.1** (deferral N/D/E recompute used a non-plan-208 credit predicate) — **addressed**, and more thoroughly than requested: rather than reusing `isReviewerFindingCreditEligible` inside a patch function, the router now calls `deriveBudget` itself, so `N`/`D`/`E` after a deferral are computed by the exact same code path plan 208 uses everywhere else. The new "reruns plan-208 debt credit after deferring an intrinsic-credit finding" test confirms a deferred credit-bearing finding's `N` contribution is removed and the budget correctly moves to `over_effective`.
+- **P2.2** (duplicate fingerprint derivation between routing and closure) — **addressed**. Both modules now call the single `fingerprintVerdictItem` helper in `fingerprint.ts`. Note the shared helper always returns a string (never `null`), where `closure.ts`'s old private `fingerprintItem` returned `null` when required fields were missing; the two call sites in `closure.ts` that previously gated on a non-null fingerprint (`currentFingerprint &&` prior-finding-changed check, and the `?? finding.fingerprint` fallback in `findingOutcomes`) are technically now always-true/dead-fallback, but this doesn't change behavior: the helper's own fallback chain (item's own value → prior finding → `item.reason`) means a diagnosable fingerprint is now available in the same cases where it previously would have been `null`, and the comparison still isn't reached for finding IDs that don't have a matching item. Not a regression; a defensible simplification.
+- **P2.3** (premature 4.3 checkbox for `review gate show`/`review decide` CLI exposure) — **addressed**. The checkbox text was rewritten to `"Export the durable derived-route seam for skill branching; \`5x review gate show\` and \`5x review decide\` command exposure remains tracked in Phase 5.2."`
+- **P2.4** (post-decision tests lacked fold-change and over-budget rows) — **addressed**. The new `"fold changes clear budget gates or leave deterministic successors"` test covers an `increase_budget`/`adjust_baseline` fold that clears an over-absolute band, a `retain_baseline` (no fold) that leaves it gated, and a fold that clears the budget cause while an unrelated `human_required` item keeps the gate open. The explicit-closure `test.each` (`trade_scope`/`request_author_reestimate`/`abort`) now uses `effortDelta: 4`, which pushes the default snapshot into `over_absolute`, so those rows now exercise "revises without a successor even when the old snapshot was over budget" as 4.4 requires.
+
+### New issues introduced by this revision
+
+- **Vestigial `FindingIdentity | null` return type** (P2, cosmetic): `findingIdentity` (`routing.ts:47–62`) has no code path that returns `null` — every branch produces a `FindingIdentity`. The two call sites that guard on it (`routing.ts:75` `if (!identity) return true;` and `routing.ts:149` `if (!finding) continue;`) are dead code, and the `| null` in the signature overstates what the function can do. **Fix:** drop `| null` from the return type and delete the two now-unreachable guards (or, if the intent was to leave room for a future "no identity available" case, add a comment explaining why the type is wider than the implementation).
+
+### Updated readiness
+
+- **Phase 4 completion:** ✅ — all P1/P2 items from the initial review are resolved with direct regression coverage; no plan-compliance gaps remain in `routing.ts`.
+- **Ready for next phase:** ✅ — no human decisions outstanding. The one new item (vestigial null type) is cosmetic and does not block Phase 5/6 wiring.
