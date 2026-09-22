@@ -125,17 +125,26 @@ export function eligibleN(
 	}
 
 	for (const finding of findings) {
-		if (
-			finding.architectureDelta < 0 &&
-			finding.coupling === "intrinsic" &&
-			isCompleteDebtClaimEvidence(finding.creditClaim) &&
-			finding.creditClaim.coupling === "intrinsic"
-		) {
+		if (isReviewerFindingCreditEligible(finding)) {
 			total += Math.abs(finding.architectureDelta);
 		}
 	}
 
 	return total;
+}
+
+/** The single plan-208 predicate for reviewer-authored provisional credit. */
+export function isReviewerFindingCreditEligible(
+	finding: Pick<FindingDelta, "architectureDelta" | "coupling" | "creditClaim">,
+): finding is typeof finding & {
+	creditClaim: NonNullable<FindingDelta["creditClaim"]>;
+} {
+	return (
+		finding.architectureDelta < 0 &&
+		finding.coupling === "intrinsic" &&
+		isCompleteDebtClaimEvidence(finding.creditClaim) &&
+		finding.creditClaim.coupling === "intrinsic"
+	);
 }
 
 export function deriveBudget(input: {

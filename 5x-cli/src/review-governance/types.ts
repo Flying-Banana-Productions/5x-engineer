@@ -74,7 +74,7 @@ export interface PersistedFinding extends FindingIdentity {
  */
 export interface ReviewDecision {
 	decisionId: string;
-	choice: string;
+	choice: ReviewDecisionChoice;
 	findingRefs: ReadonlyArray<FindingIdentity & { scopeClass?: PlanScopeClass }>;
 	rationale?: string;
 	evidence?: readonly string[];
@@ -82,6 +82,16 @@ export interface ReviewDecision {
 	supersededByDecisionId?: string;
 	active?: boolean;
 }
+
+export type ReviewDecisionChoice =
+	| "increase_budget"
+	| "adjust_baseline"
+	| "retain_baseline"
+	| "request_author_reestimate"
+	| "trade_scope"
+	| "defer_accept_risk"
+	| "approve_architecture_burden"
+	| "abort";
 
 export interface PlanDiffContext {
 	previousReviewCommit: string;
@@ -103,8 +113,8 @@ export type DebtEligibility =
 			creditClaimId?: string;
 			reason:
 				| "incomplete_evidence"
-				| "reviewer_ineligible"
 				| "non_intrinsic"
+				| "not_credit_eligible"
 				| "invalid_target_phase"
 				| "not_simpler";
 	  };
@@ -159,13 +169,12 @@ export type ClosureDiagnosticCode =
 	| "ADJACENT_DEBT_REQUIRES_HUMAN"
 	| "UNRELATED_DEBT_NONBLOCKING"
 	| "DEBT_EVIDENCE_INCOMPLETE"
-	| "DEBT_REVIEWER_INELIGIBLE"
-	| "DEBT_COUPLING_INELIGIBLE"
 	| "DEBT_TARGET_PHASE_INVALID"
 	| "DEBT_AFTER_NOT_SIMPLER";
 
 export interface ClosureDiagnostic {
 	code: ClosureDiagnosticCode;
+	severity: "error" | "info";
 	message: string;
 	itemId?: string;
 	findingId?: string;

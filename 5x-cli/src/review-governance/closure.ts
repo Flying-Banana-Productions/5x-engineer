@@ -1,7 +1,9 @@
 import type { ReviewerVerdict } from "../protocol.js";
+import { isReviewerFindingCreditEligible } from "../review-budget/arithmetic.js";
 import {
 	isArchitectureDelta,
 	isCompleteDebtClaimEvidence,
+	isValidDebtTargetPhase,
 } from "../review-budget/types.js";
 import {
 	canonicalFindingFingerprint,
@@ -27,8 +29,9 @@ function diagnostic(
 	code: ClosureDiagnostic["code"],
 	message: string,
 	context: Pick<ClosureDiagnostic, "itemId" | "findingId" | "decisionId"> = {},
+	severity: ClosureDiagnostic["severity"] = "error",
 ): ClosureDiagnostic {
-	return { code, message, ...context };
+	return { code, severity, message, ...context };
 }
 
 function materialFailure(value: unknown): value is string {
@@ -73,11 +76,7 @@ function activeDecisions(
 }
 
 function isRiskDecision(decision: ReviewDecision): boolean {
-	return (
-		decision.choice === "defer_accept_risk" ||
-		decision.choice === "defer" ||
-		decision.choice === "accept_risk"
-	);
+	return decision.choice === "defer_accept_risk";
 }
 
 function decisionFindingRef(
@@ -117,15 +116,9 @@ function validateInitialItem(item: GovernanceVerdictItem): ClosureDiagnostic[] {
 	return diagnostics;
 }
 
-function validTargetPhase(value: string): boolean {
-	return /^phase(?:[-_\s]+)?(?:0|[1-9]\d*)(?:[._-][a-z0-9]+)*$/i.test(
-		value.trim(),
-	);
-}
-
 export function assessDebtEligibility(
 	item: GovernanceVerdictItem,
-	verdict: ReviewerVerdict,
+	_verdict?: ReviewerVerdict,
 ): DebtEligibility | null {
 	if (!item.creditClaim) return null;
 	const claim = {
@@ -139,6 +132,13 @@ export function assessDebtEligibility(
 		before: item.creditClaim.before,
 		after: item.creditClaim.after,
 	};
+	if (!isValidDebtTargetPhase(claim.targetPhase)) {
+		return {
+			eligible: false,
+			creditClaimId: item.creditClaim.creditClaimId,
+			reason: "invalid_target_phase",
+		};
+	}
 	if (!isCompleteDebtClaimEvidence(claim)) {
 		return {
 			eligible: false,
@@ -153,32 +153,22 @@ export function assessDebtEligibility(
 			reason: "non_intrinsic",
 		};
 	}
-	const assessment = verdict.creditAssessments?.find(
-		(entry) => entry.creditClaimId === item.creditClaim?.creditClaimId,
-	);
 	if (
-		assessment?.eligibility !== "eligible" ||
-		assessment.coupling !== "intrinsic"
+		!isReviewerFindingCreditEligible({
+			architectureDelta: item.architectureDelta ?? 0,
+			coupling: item.coupling,
+			creditClaim: claim,
+		})
 	) {
 		return {
 			eligible: false,
 			creditClaimId: item.creditClaim.creditClaimId,
-			reason: "reviewer_ineligible",
-		};
-	}
-	if (!validTargetPhase(claim.targetPhase)) {
-		return {
-			eligible: false,
-			creditClaimId: item.creditClaim.creditClaimId,
-			reason: "invalid_target_phase",
+			reason: "not_credit_eligible",
 		};
 	}
 	const before = normalizeFindingEvidenceText(claim.before);
 	const after = normalizeFindingEvidenceText(claim.after);
-	if (
-		before === after ||
-		(item.architectureDelta ?? 0) >= claim.minimalAlternativeArchitectureDelta
-	) {
+	if (before === after) {
 		return {
 			eligible: false,
 			creditClaimId: item.creditClaim.creditClaimId,
@@ -208,6 +198,7 @@ export function validateDebtPolicy(
 				),
 			);
 		}
+		if (item.coupling === "adjacent") continue;
 		if (item.coupling === "unrelated") {
 			diagnostics.push(
 				diagnostic(
@@ -216,22 +207,22 @@ export function validateDebtPolicy(
 					{ itemId: item.id },
 				),
 			);
+			continue;
 		}
 		const eligibility = assessDebtEligibility(item, verdict);
 		if (!eligibility || eligibility.eligible) continue;
-		const codeByReason: Record<
-			typeof eligibility.reason,
-			ClosureDiagnostic["code"]
+		const codeByReason: Partial<
+			Record<typeof eligibility.reason, ClosureDiagnostic["code"]>
 		> = {
 			incomplete_evidence: "DEBT_EVIDENCE_INCOMPLETE",
-			reviewer_ineligible: "DEBT_REVIEWER_INELIGIBLE",
-			non_intrinsic: "DEBT_COUPLING_INELIGIBLE",
 			invalid_target_phase: "DEBT_TARGET_PHASE_INVALID",
 			not_simpler: "DEBT_AFTER_NOT_SIMPLER",
 		};
+		const code = codeByReason[eligibility.reason];
+		if (!code) continue;
 		diagnostics.push(
 			diagnostic(
-				codeByReason[eligibility.reason],
+				code,
 				`Debt claim on finding '${item.id}' is ineligible: ${eligibility.reason.replaceAll("_", " ")}.`,
 				{ itemId: item.id },
 			),
@@ -256,11 +247,10 @@ function validateCriticalSafety(
 			),
 		);
 	}
-	const evidence = `${item.failure ?? ""} ${item.lateDiscoveryEvidence ?? ""}`;
 	if (
 		!nonEmpty(item.lateDiscoveryEvidence) ||
 		!/(security|vulnerab|authori[sz]ation|data[ -]?loss|corrupt|correctness|incorrect|wrong result|integrity)/i.test(
-			evidence,
+			item.lateDiscoveryEvidence,
 		)
 	) {
 		diagnostics.push(
@@ -491,7 +481,7 @@ export function validateClosureReview(input: {
 					),
 				);
 			}
-			const item = verdict.items.find(
+			const item = (verdict.items as GovernanceVerdictItem[]).find(
 				(entry) => entry.id === finding.findingId,
 			);
 			if (
@@ -517,13 +507,18 @@ export function validateClosureReview(input: {
 						"PRIOR_FINDING_FINGERPRINT_CHANGED",
 						`Prior finding '${finding.findingId}' changed its canonical identity.`,
 						{ itemId: item.id, findingId: finding.findingId },
+						"info",
 					),
 				);
+			}
+			if (item?.priorDecisionId) {
+				diagnostics.push(...validateReraise(item, finding, decisions));
 			}
 		}
 
 		for (const item of verdict.items) {
 			if (requiredIds.has(item.id)) continue;
+			diagnostics.push(...validateInitialItem(item));
 			const prior = latestFindings.get(item.id);
 			const coveringDecision = decisions.find(
 				(decision) =>
@@ -563,19 +558,24 @@ export function validateClosureReview(input: {
 		const status = verdict.priorFindings?.find(
 			(outcome) => outcome.id === finding.findingId,
 		)?.status;
+		const current = verdict.items.find((item) => item.id === finding.findingId);
+		const fingerprint = current
+			? (fingerprintItem(current, finding) ?? finding.fingerprint)
+			: finding.fingerprint;
 		return status
 			? [
 					{
 						findingId: finding.findingId,
-						fingerprint: finding.fingerprint,
+						fingerprint,
 						status,
 					},
 				]
 			: [];
 	});
+	const hasErrors = diagnostics.some((entry) => entry.severity === "error");
 	return {
-		valid: diagnostics.length === 0,
-		accepted: input.mode === "advisory" || diagnostics.length === 0,
+		valid: !hasErrors,
+		accepted: input.mode === "advisory" || !hasErrors,
 		diagnostics,
 		requiredOutcomeIds: requiredFindings.map((finding) => finding.findingId),
 		findingOutcomes,

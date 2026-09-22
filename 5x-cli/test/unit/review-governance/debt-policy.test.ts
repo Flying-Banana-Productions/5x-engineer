@@ -46,8 +46,9 @@ function debtVerdict(
 }
 
 describe("closure debt policy", () => {
-	test("accepts complete, intrinsic, reviewer-approved simplification evidence", () => {
+	test("reuses plan-208 reviewer-finding credit without a self-assessment", () => {
 		const verdict = debtVerdict();
+		verdict.creditAssessments = [];
 		const item = verdict.items[0];
 		if (!item) throw new Error("missing debt fixture item");
 		expect(assessDebtEligibility(item, verdict)).toEqual({
@@ -59,7 +60,7 @@ describe("closure debt policy", () => {
 		expect(validateDebtPolicy(verdict)).toEqual([]);
 	});
 
-	test("rejects incomplete evidence, invalid targets, and non-simpler After states", () => {
+	test("enforces complete evidence, non-empty targets, and distinct After states", () => {
 		const incomplete = debtVerdict({
 			creditClaim: {
 				creditClaimId: "DC1",
@@ -70,18 +71,18 @@ describe("closure debt policy", () => {
 				after: "one writer",
 			},
 		});
-		expect(validateDebtPolicy(incomplete)[0]?.code).toBe(
-			"DEBT_EVIDENCE_INCOMPLETE",
+		expect(validateDebtPolicy(incomplete)).toContainEqual(
+			expect.objectContaining({ code: "DEBT_EVIDENCE_INCOMPLETE" }),
 		);
 
 		const target = debtVerdict({
 			creditClaim: {
 				...debtVerdict().items[0]?.creditClaim,
-				targetPhase: "eventually",
+				targetPhase: "",
 			},
 		});
-		expect(validateDebtPolicy(target)[0]?.code).toBe(
-			"DEBT_TARGET_PHASE_INVALID",
+		expect(validateDebtPolicy(target)).toContainEqual(
+			expect.objectContaining({ code: "DEBT_TARGET_PHASE_INVALID" }),
 		);
 
 		const same = debtVerdict({
@@ -91,10 +92,47 @@ describe("closure debt policy", () => {
 				after: " one  WRITER ",
 			},
 		});
-		expect(validateDebtPolicy(same)[0]?.code).toBe("DEBT_AFTER_NOT_SIMPLER");
+		expect(validateDebtPolicy(same)).toContainEqual(
+			expect.objectContaining({ code: "DEBT_AFTER_NOT_SIMPLER" }),
+		);
 	});
 
-	test("requires reviewer eligibility and intrinsic coupling", () => {
+	test("uses plan-208 architecture semantics without comparing the alternative delta", () => {
+		const negative = debtVerdict({
+			architectureDelta: -1,
+			creditClaim: {
+				...debtVerdict().items[0]?.creditClaim,
+				minimalAlternativeArchitectureDelta: -2,
+			},
+		});
+		negative.creditAssessments = [];
+		expect(validateDebtPolicy(negative)).toEqual([]);
+		const negativeItem = negative.items[0];
+		if (!negativeItem) throw new Error("missing negative debt fixture");
+		const negativeEligibility = assessDebtEligibility(negativeItem, negative);
+		expect(negativeEligibility?.eligible).toBe(true);
+
+		const positive = debtVerdict({ architectureDelta: 1 });
+		expect(validateDebtPolicy(positive)).toEqual([]);
+		const positiveItem = positive.items[0];
+		if (!positiveItem) throw new Error("missing positive debt fixture");
+		expect(assessDebtEligibility(positiveItem, positive)).toMatchObject({
+			eligible: false,
+			reason: "not_credit_eligible",
+		});
+	});
+
+	test("accepts any non-empty plan-208 target label", () => {
+		const verdict = debtVerdict({
+			creditClaim: {
+				...debtVerdict().items[0]?.creditClaim,
+				targetPhase: "persistence rollout",
+			},
+		});
+		expect(validateDebtPolicy(verdict)).toEqual([]);
+	});
+
+	test("does not turn reviewer assessment ineligibility into a governance rejection", () => {
 		const ineligible = debtVerdict();
 		ineligible.creditAssessments = [
 			{
@@ -104,19 +142,22 @@ describe("closure debt policy", () => {
 				reason: "Not simpler.",
 			},
 		];
-		expect(validateDebtPolicy(ineligible)[0]?.code).toBe(
-			"DEBT_REVIEWER_INELIGIBLE",
-		);
+		expect(validateDebtPolicy(ineligible)).toEqual([]);
+	});
 
+	test("handles adjacent and unrelated debt only through the coupling rule", () => {
 		const adjacent = debtVerdict({
+			coupling: "adjacent",
+			action: "human_required",
+		});
+		expect(validateDebtPolicy(adjacent)).toEqual([]);
+
+		const adjacentAuto = debtVerdict({
 			coupling: "adjacent",
 			action: "auto_fix",
 		});
-		expect(validateDebtPolicy(adjacent).map((entry) => entry.code)).toEqual(
-			expect.arrayContaining([
-				"ADJACENT_DEBT_REQUIRES_HUMAN",
-				"DEBT_COUPLING_INELIGIBLE",
-			]),
+		expect(validateDebtPolicy(adjacentAuto).map((entry) => entry.code)).toEqual(
+			["ADJACENT_DEBT_REQUIRES_HUMAN"],
 		);
 
 		const unrelated = debtVerdict({ coupling: "unrelated" });

@@ -322,6 +322,7 @@ export {
 	isArchitectureDelta,
 	isCompleteDebtClaimEvidence,
 	isEffortPoints,
+	isValidDebtTargetPhase,
 } from "./review-budget/types.js";
 // Plan-review governance policy. These exports are pure structural contracts
 // and policy helpers; persistence and command adapters remain internal.
@@ -352,6 +353,7 @@ export type {
 	PriorFindingOutcome,
 	PriorFindingStatus,
 	ReviewDecision,
+	ReviewDecisionChoice,
 	ReviewDecisionRoute,
 	ReviewGateCause,
 } from "./review-governance/types.js";

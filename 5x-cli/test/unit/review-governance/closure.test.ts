@@ -131,6 +131,53 @@ describe("validateClosureReview", () => {
 		);
 	});
 
+	test("tracks a same-ID fingerprint change as informational changed evidence", () => {
+		const changedCorrection = "Add the idempotency key only to the retry path.";
+		const result = validate({
+			readiness: "not_ready",
+			priorFindings: [{ id: "P1.1", status: "partially_addressed" }],
+			items: [item({ lowestCostCorrection: changedCorrection })],
+		});
+		expect(result.valid).toBe(true);
+		expect(result.accepted).toBe(true);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "PRIOR_FINDING_FINGERPRINT_CHANGED",
+				severity: "info",
+			}),
+		);
+		expect(result.findingOutcomes).toEqual([
+			{
+				findingId: prior.findingId,
+				fingerprint: canonicalFindingFingerprint({
+					...identity,
+					lowestCostCorrection: changedCorrection,
+				}),
+				status: "partially_addressed",
+			},
+		]);
+	});
+
+	test("reports missing and unexpectedly retained prior-finding items", () => {
+		const missing = validate({
+			readiness: "not_ready",
+			priorFindings: [{ id: "P1.1", status: "still_open" }],
+			items: [],
+		});
+		expect(missing.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "PRIOR_FINDING_ITEM_MISSING" }),
+		);
+
+		const unexpected = validate({
+			readiness: "ready",
+			priorFindings: [{ id: "P1.1", status: "addressed" }],
+			items: [item()],
+		});
+		expect(unexpected.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "PRIOR_FINDING_ITEM_UNEXPECTED" }),
+		);
+	});
+
 	test("rejects an ordinary missed issue and accepts structured introduced evidence", () => {
 		const base = {
 			readiness: "not_ready" as const,
@@ -157,6 +204,55 @@ describe("validateClosureReview", () => {
 		expect(introduced.valid).toBe(true);
 	});
 
+	test("requires complete identity and hunk evidence on new closure blockers", () => {
+		const result = validate({
+			readiness: "not_ready",
+			priorFindings: [{ id: "P1.1", status: "addressed" }],
+			items: [
+				{
+					id: "P1.2",
+					title: "New blocker",
+					action: "auto_fix",
+					reason: "Introduced by the revision.",
+					introducedBy: {
+						commitRange: "",
+						diffHunk: "",
+						explanation: "",
+					},
+				},
+			],
+		});
+		expect(result.diagnostics.map((entry) => entry.code)).toEqual(
+			expect.arrayContaining([
+				"INITIAL_ITEM_FIELDS_REQUIRED",
+				"INITIAL_ITEM_FAILURE_NOT_MATERIAL",
+				"INTRODUCED_HUNK_EVIDENCE_INCOMPLETE",
+			]),
+		);
+	});
+
+	test("rejects conflicting introduced and critical evidence", () => {
+		const result = validate({
+			readiness: "not_ready",
+			priorFindings: [{ id: "P1.1", status: "addressed" }],
+			items: [
+				item({
+					id: "P0.2",
+					introducedBy: {
+						commitRange: "abc..def",
+						diffHunk: "@@ -1 +1 @@",
+						explanation: "Changed behavior.",
+					},
+					lateDiscovery: "critical_safety",
+					lateDiscoveryEvidence: "A correctness failure corrupts data.",
+				}),
+			],
+		});
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "INTRODUCED_AND_CRITICAL_CONFLICT" }),
+		);
+	});
+
 	test("allows only concrete critical-safety exceptions", () => {
 		const verdict: GovernanceReviewerVerdict = {
 			readiness: "not_ready",
@@ -166,7 +262,7 @@ describe("validateClosureReview", () => {
 					id: "P0.2",
 					lateDiscovery: "critical_safety",
 					lateDiscoveryEvidence:
-						"An unauthenticated request can delete persisted user data.",
+						"An unauthenticated request causes permanent user data loss.",
 					failure: "Missing authorization causes data loss.",
 					scopeClass: "risk_reduction",
 				}),
@@ -179,6 +275,36 @@ describe("validateClosureReview", () => {
 		});
 		expect(weak.diagnostics).toContainEqual(
 			expect.objectContaining({ code: "CRITICAL_SAFETY_EVIDENCE_REQUIRED" }),
+		);
+
+		const contentless = validate({
+			...verdict,
+			items: [
+				item({
+					id: "P0.2",
+					lateDiscovery: "critical_safety",
+					lateDiscoveryEvidence: "See the failure above.",
+					failure: "A correctness failure corrupts data.",
+				}),
+			],
+		});
+		expect(contentless.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "CRITICAL_SAFETY_EVIDENCE_REQUIRED" }),
+		);
+
+		const wrongScope = validate({
+			...verdict,
+			items: [
+				item({
+					id: "P0.2",
+					lateDiscovery: "critical_safety",
+					lateDiscoveryEvidence: "A correctness failure corrupts data.",
+					scopeClass: "polish",
+				}),
+			],
+		});
+		expect(wrongScope.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "CRITICAL_SAFETY_SCOPE_INVALID" }),
 		);
 	});
 
@@ -234,6 +360,67 @@ describe("validateClosureReview", () => {
 		expect(changed.diagnostics).toContainEqual(
 			expect.objectContaining({ code: "PRIOR_DECISION_FINDING_MISMATCH" }),
 		);
+
+		const repeatedEvidence = validate(
+			{
+				...reraised,
+				items: [
+					item({
+						priorDecisionId: "decision-1",
+						newEvidence: " risk is isolated to an OFFLINE tool. ",
+					}),
+				],
+			},
+			{ priorDecisions: [decision] },
+		);
+		expect(repeatedEvidence.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "PRIOR_DECISION_NEW_EVIDENCE_REQUIRED",
+			}),
+		);
+	});
+
+	test("treats inactive, superseded, and non-risk decisions as stale", () => {
+		const decision = (overrides: Partial<ReviewDecision>): ReviewDecision => ({
+			decisionId: "decision-1",
+			choice: "defer_accept_risk",
+			findingRefs: [
+				{
+					findingId: prior.findingId,
+					fingerprint: prior.fingerprint,
+					scopeClass: prior.scopeClass,
+				},
+			],
+			...overrides,
+		});
+		const verdict: GovernanceReviewerVerdict = {
+			readiness: "not_ready",
+			items: [
+				item({
+					priorDecisionId: "decision-1",
+					newEvidence: "A new public caller invokes the path.",
+				}),
+			],
+		};
+		const cases: ReviewDecision[][] = [
+			[decision({ active: false })],
+			[
+				decision({}),
+				decision({
+					decisionId: "decision-2",
+					choice: "retain_baseline",
+					findingRefs: [],
+					supersedesDecisionId: "decision-1",
+				}),
+			],
+			[decision({ choice: "increase_budget" })],
+		];
+		for (const priorDecisions of cases) {
+			const result = validate(verdict, { priorDecisions });
+			expect(result.diagnostics).toContainEqual(
+				expect.objectContaining({ code: "PRIOR_DECISION_STALE" }),
+			);
+		}
 	});
 
 	test("keeps violations as non-rejecting diagnostics in advisory mode", () => {
