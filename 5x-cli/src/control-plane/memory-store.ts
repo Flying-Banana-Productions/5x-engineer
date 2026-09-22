@@ -22,6 +22,7 @@ function cloneRecord(record: PromptRecord): PromptRecord {
 	return {
 		...record,
 		options: record.options ? [...record.options] : null,
+		context: record.context ? structuredClone(record.context) : null,
 	};
 }
 
@@ -53,6 +54,8 @@ class MemoryPromptStore implements PromptStore {
 			answeredBy: null,
 			abandonedAt: null,
 			abandonReason: null,
+			contextVersion: input.contextVersion ?? null,
+			context: input.context ? structuredClone(input.context) : null,
 		};
 		this.records.set(id, record);
 		return cloneRecord(record);
@@ -88,12 +91,33 @@ class MemoryPromptStore implements PromptStore {
 
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult {
 		const current = this.requirePrompt(id);
+		if (current.context?.type === "plan_review_gate") {
+			throw new PromptStoreError(
+				"REVIEW_GATE_DECISION_REQUIRED",
+				`review gate notifications must be resolved with 5x review decide --gate ${current.context.gateId}`,
+			);
+		}
 		if (!isOpen(current)) {
 			return { ok: false, prompt: cloneRecord(current) };
 		}
 		current.answeredAt = utcNow();
 		current.answer = answer;
 		current.answeredBy = answeredBy;
+		return { ok: true, prompt: cloneRecord(current) };
+	}
+
+	resolveReviewGatePrompt(id: string, decisionId: string): CasResult {
+		const current = this.requirePrompt(id);
+		if (current.context?.type !== "plan_review_gate") {
+			throw new PromptStoreError(
+				"PROMPT_CONTEXT_INVALID",
+				"only plan-review gate notifications may be resolved by a review decision",
+			);
+		}
+		if (!isOpen(current)) return { ok: false, prompt: cloneRecord(current) };
+		current.answeredAt = utcNow();
+		current.answer = decisionId;
+		current.answeredBy = "control-plane";
 		return { ok: true, prompt: cloneRecord(current) };
 	}
 

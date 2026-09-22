@@ -5,6 +5,9 @@
  * (lifecycle vs local cancellation) themselves.
  */
 
+import { governanceDecisionKey } from "../review-governance/decisions.js";
+import type { RecordStore } from "./record-store.js";
+import type { RecordLine } from "./record-types.js";
 import type { PromptStore } from "./store.js";
 import type { PromptRecord } from "./types.js";
 import { PromptStoreError } from "./types.js";
@@ -108,5 +111,32 @@ export async function waitForPromptAnswer(
 		if (signal?.aborted) {
 			throw new PromptWaitAbortedError();
 		}
+	}
+}
+
+/** Wait on the authoritative gate decision key, never on its prompt projection. */
+export async function waitForReviewGateDecision(
+	store: RecordStore,
+	runId: string,
+	gateId: string,
+	opts: WaitForPromptAnswerOptions = {},
+): Promise<RecordLine> {
+	const pollIntervalMs = opts.pollIntervalMs ?? PROMPT_POLL_INTERVAL_MS;
+	const timeoutMs = opts.timeoutMs ?? null;
+	const sleep = opts.sleep ?? defaultSleep;
+	const now = opts.now ?? Date.now;
+	const startedAt = now();
+	for (;;) {
+		const line = store.getLine(
+			runId,
+			"decisions",
+			governanceDecisionKey(gateId),
+		);
+		if (line) return line;
+		if (opts.signal?.aborted) throw new PromptWaitAbortedError();
+		if (timeoutMs !== null && now() - startedAt >= timeoutMs)
+			throw new PromptTimeoutError("review gate decision wait timed out");
+		await abortableSleep(pollIntervalMs, opts.signal, sleep);
+		if (opts.signal?.aborted) throw new PromptWaitAbortedError();
 	}
 }

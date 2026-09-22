@@ -5,6 +5,15 @@ export {
 	controlPlaneDbPath,
 	controlPlaneStatePath,
 } from "./commands/control-plane.js";
+export type {
+	ReviewDecisionDeps,
+	SubmitPlanReviewDecisionInput,
+	SubmitPlanReviewDecisionPayload,
+} from "./commands/review-decision.handler.js";
+export {
+	showPlanReviewGate,
+	submitPlanReviewDecision,
+} from "./commands/review-decision.handler.js";
 // Run identity
 export type {
 	AmbientRunErrorCode,
@@ -76,10 +85,12 @@ export type {
 	RecordRecorder,
 	RecordStore,
 	RecordStream,
+	RedactedPromptView,
 	RegisterInvocationInput,
 	ReviewBudgetBaseline,
 	ReviewBudgetSnapshotRecord,
 	ReviewBudgetStore,
+	ReviewGatePromptContext,
 	RunRecordSummary,
 	StepIdempotencyKey,
 	StepRecordPayload,
@@ -109,6 +120,7 @@ export {
 	PromptStoreError,
 	parseOpaqueCancellationHandle,
 	RECORD_LINE_SCHEMA_VERSION,
+	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
 	RecordStoreError,
 	RUN_RECORD_FORMAT_VERSION,
 	recordedEnvelope,
@@ -119,6 +131,8 @@ export {
 	toClientInvocationState,
 	toClientInvocationView,
 	toInvocationStatusEnvelope,
+	toRedactedPromptView,
+	waitForReviewGateDecision,
 	withInvocationLifecycle,
 } from "./control-plane/index.js";
 // DB — connection
@@ -387,8 +401,14 @@ export type {
 	ReviewGovernanceStore,
 } from "./review-governance/store.js";
 export {
+	allowedChoicesForGate,
 	createReviewGovernanceStore,
+	ensureReviewGatePrompt,
+	REVIEW_DECISION_REQUIRED_FIELDS,
 	ReviewGovernanceStoreError,
+	repairReviewGatePrompts,
+	resolveGatePromptProjection,
+	reviewGatePromptContext,
 } from "./review-governance/store.js";
 export type {
 	BlockingFindingEvidence,

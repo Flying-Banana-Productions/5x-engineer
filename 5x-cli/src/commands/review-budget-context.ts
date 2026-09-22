@@ -238,6 +238,12 @@ export async function recordPlanReviewerStepWithSnapshot(
 			},
 		},
 	);
+	if (written.outcome === "coupled-key-exists") {
+		throw new RecordError(
+			"RECORD_PAIR_CORRUPT",
+			"Budget snapshot identity exists without its coupled step",
+		);
+	}
 	const snapshotKey = snapshotIdempotencyKey(prepared.runId, {
 		stepName: written.finalized.stepName,
 		phase: written.finalized.phase ?? null,

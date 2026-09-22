@@ -99,6 +99,55 @@ for (const backend of backends) {
 			expect(loaded).toEqual(created);
 		});
 
+		test("review-gate context round-trips, rejects generic answers, and resolves internally", () => {
+			ensureRun("run_aaa");
+			const created = store.createPrompt({
+				runId: "run_aaa",
+				kind: "choose",
+				message: "Governance decision required",
+				options: ["retain_baseline", "abort"],
+				contextVersion: 1,
+				context: {
+					type: "plan_review_gate",
+					gateId: "gate-1",
+					snapshotId: "snapshot-1",
+					causes: [{ kind: "budget_alert", alert: "baseline_disputed" }],
+					eligibleFindings: [],
+					allowedChoices: ["retain_baseline", "abort"],
+					requiredFieldsByChoice: {
+						increase_budget: ["baseline"],
+						adjust_baseline: ["baseline"],
+						retain_baseline: ["rationale"],
+						request_author_reestimate: ["rationale"],
+						trade_scope: ["retained or removed scope"],
+						defer_accept_risk: ["findingRefs", "evidence"],
+						approve_architecture_burden: ["approvedP"],
+						abort: ["rationale"],
+					},
+				},
+			});
+			expect(store.getPrompt(created.id)?.context?.gateId).toBe("gate-1");
+			try {
+				store.answerPrompt(created.id, "retain_baseline", "control-plane");
+				throw new Error("expected rejection");
+			} catch (error) {
+				expect((error as PromptStoreError).code).toBe(
+					"REVIEW_GATE_DECISION_REQUIRED",
+				);
+				expect(error).toHaveProperty(
+					"message",
+					expect.stringContaining("5x review decide --gate gate-1"),
+				);
+			}
+			expect(store.getPrompt(created.id)?.answer).toBeNull();
+			const resolved = store.resolveReviewGatePrompt?.(
+				created.id,
+				"decision-1",
+			);
+			expect(resolved?.ok).toBe(true);
+			expect(resolved?.prompt.answer).toBe("decision-1");
+		});
+
 		test("listOpenPrompts omits answered and abandoned; runId filters; null run_id only in unfiltered list", () => {
 			ensureRun("run_aaa");
 			ensureRun("run_bbb");

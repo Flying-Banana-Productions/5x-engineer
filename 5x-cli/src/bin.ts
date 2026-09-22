@@ -15,6 +15,7 @@ import { registerPrompt } from "./commands/prompt.js";
 import { registerProtocol } from "./commands/protocol.js";
 import { registerQuality } from "./commands/quality-v1.js";
 import { registerRecords } from "./commands/records.js";
+import { registerReview } from "./commands/review.js";
 import { registerRun } from "./commands/run-v1.js";
 import { registerTemplate } from "./commands/template.js";
 import { registerUpgrade } from "./commands/upgrade.js";
@@ -104,6 +105,7 @@ registerWorktree(program);
 registerLock(program);
 registerDoctor(program);
 registerRecords(program);
+registerReview(program);
 
 // Configure output routing
 program.configureOutput({

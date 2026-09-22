@@ -28,6 +28,8 @@ interface PromptSqlRow {
 	answered_by: AnsweredBy | null;
 	abandoned_at: string | null;
 	abandon_reason: AbandonReason | null;
+	context_version: number | null;
+	context_json: string | null;
 }
 
 function parseOptions(json: string | null): string[] | null {
@@ -49,6 +51,10 @@ function mapRow(row: PromptSqlRow): PromptRecord {
 		answeredBy: row.answered_by,
 		abandonedAt: row.abandoned_at,
 		abandonReason: row.abandon_reason,
+		contextVersion: row.context_version,
+		context: row.context_json
+			? (JSON.parse(row.context_json) as PromptRecord["context"])
+			: null,
 	};
 }
 
@@ -61,13 +67,24 @@ class SqlitePromptStore implements PromptStore {
 		const options = input.options ?? null;
 		const optionsJson = options === null ? null : JSON.stringify(options);
 		const defaultValue = input.defaultValue ?? null;
+		const contextVersion = input.contextVersion ?? null;
+		const contextJson = input.context ? JSON.stringify(input.context) : null;
 
 		this.db
 			.query(
-				`INSERT INTO prompts (id, run_id, kind, message, options_json, default_value)
-				 VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+				`INSERT INTO prompts (id, run_id, kind, message, options_json, default_value, context_version, context_json)
+				 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
 			)
-			.run(id, runId, input.kind, input.message, optionsJson, defaultValue);
+			.run(
+				id,
+				runId,
+				input.kind,
+				input.message,
+				optionsJson,
+				defaultValue,
+				contextVersion,
+				contextJson,
+			);
 
 		return this.requirePrompt(id);
 	}
@@ -111,6 +128,13 @@ class SqlitePromptStore implements PromptStore {
 	}
 
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult {
+		const current = this.requirePrompt(id);
+		if (current.context?.type === "plan_review_gate") {
+			throw new PromptStoreError(
+				"REVIEW_GATE_DECISION_REQUIRED",
+				`review gate notifications must be resolved with 5x review decide --gate ${current.context.gateId}`,
+			);
+		}
 		this.db
 			.query(
 				`UPDATE prompts
@@ -118,6 +142,24 @@ class SqlitePromptStore implements PromptStore {
 				 WHERE id = ?3 AND answered_at IS NULL AND abandoned_at IS NULL`,
 			)
 			.run(answer, answeredBy, id);
+		return this.casResult(id);
+	}
+
+	resolveReviewGatePrompt(id: string, decisionId: string): CasResult {
+		const current = this.requirePrompt(id);
+		if (current.context?.type !== "plan_review_gate") {
+			throw new PromptStoreError(
+				"PROMPT_CONTEXT_INVALID",
+				"only plan-review gate notifications may be resolved by a review decision",
+			);
+		}
+		this.db
+			.query(
+				`UPDATE prompts
+				 SET answered_at = datetime('now'), answer = ?1, answered_by = 'control-plane'
+				 WHERE id = ?2 AND answered_at IS NULL AND abandoned_at IS NULL`,
+			)
+			.run(decisionId, id);
 		return this.casResult(id);
 	}
 

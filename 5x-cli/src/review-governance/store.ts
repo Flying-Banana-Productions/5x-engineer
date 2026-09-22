@@ -5,6 +5,10 @@ import type {
 	StepRecordPayload,
 } from "../control-plane/index.js";
 import type { PromptStore } from "../control-plane/store.js";
+import {
+	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
+	type ReviewGatePromptContext,
+} from "../control-plane/types.js";
 import { decodeBudgetSnapshotPayload } from "../review-budget/record-lines.js";
 import {
 	decodeReviewDecisionPayload,
@@ -12,6 +16,7 @@ import {
 } from "./codec.js";
 import {
 	applyDecisionCauseCoverage,
+	classifyDecisionAcceptance,
 	deriveGateId,
 	foldGoverningReviewState,
 	type GoverningReviewState,
@@ -29,6 +34,179 @@ export interface DerivedReviewGate {
 	causes: ReviewGateCause[];
 	resolved: boolean;
 	decision?: ReviewDecisionPayload;
+}
+
+export const REVIEW_DECISION_REQUIRED_FIELDS: Record<
+	ReviewDecisionPayload["choice"],
+	string[]
+> = {
+	increase_budget: ["rationale", "baseline"],
+	adjust_baseline: ["rationale", "baseline"],
+	retain_baseline: ["rationale"],
+	request_author_reestimate: ["rationale"],
+	trade_scope: ["rationale", "retained or removed scope"],
+	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
+	approve_architecture_burden: [
+		"rationale",
+		"approvedP",
+		"approvedItemIds or approvedWorkItemIds",
+	],
+	abort: ["rationale"],
+};
+
+function unique<T>(values: readonly T[]): T[] {
+	return [...new Set(values)];
+}
+
+export function allowedChoicesForGate(input: {
+	causes: readonly ReviewGateCause[];
+	baselineReestimatePending?: boolean;
+}): ReviewDecisionPayload["choice"][] {
+	const choices: ReviewDecisionPayload["choice"][] = [];
+	for (const cause of input.causes) {
+		if (cause.kind === "budget_alert" && cause.alert === "baseline_disputed") {
+			choices.push("adjust_baseline", "retain_baseline");
+			if (!input.baselineReestimatePending)
+				choices.push("request_author_reestimate", "trade_scope");
+		} else if (cause.kind === "budget_band") {
+			choices.push("increase_budget", "trade_scope", "defer_accept_risk");
+		} else if (
+			cause.kind === "budget_alert" &&
+			cause.alert === "positive_architecture_exceeded"
+		) {
+			choices.push(
+				"approve_architecture_burden",
+				"trade_scope",
+				"defer_accept_risk",
+			);
+		} else {
+			choices.push("trade_scope");
+			// Finding-backed safety/semantic causes are scoped. Submission still
+			// requires explicit accepted-risk evidence.
+			if ("finding" in cause) choices.push("defer_accept_risk");
+		}
+	}
+	choices.push("abort");
+	return unique(choices);
+}
+
+export function reviewGatePromptContext(input: {
+	gate: DerivedReviewGate;
+	baselineReestimatePending?: boolean;
+	eligibleFindings?: readonly { findingId: string; fingerprint: string }[];
+}): ReviewGatePromptContext {
+	const causeFindings = unique(
+		input.gate.causes.flatMap((cause) =>
+			"finding" in cause
+				? [`${cause.finding.findingId}\u0000${cause.finding.fingerprint}`]
+				: [],
+		),
+	).map((value) => {
+		const [findingId, fingerprint] = value.split("\u0000");
+		return { findingId: findingId ?? "", fingerprint: fingerprint ?? "" };
+	});
+	const eligibleFindings = [
+		...new Map(
+			[...causeFindings, ...(input.eligibleFindings ?? [])].map((finding) => [
+				`${finding.findingId}\u0000${finding.fingerprint}`,
+				structuredClone(finding),
+			]),
+		).values(),
+	];
+	return {
+		type: "plan_review_gate",
+		gateId: input.gate.gateId,
+		snapshotId: input.gate.snapshotId,
+		causes: structuredClone(input.gate.causes),
+		eligibleFindings,
+		allowedChoices: allowedChoicesForGate({
+			causes: input.gate.causes,
+			baselineReestimatePending: input.baselineReestimatePending,
+		}),
+		requiredFieldsByChoice: structuredClone(REVIEW_DECISION_REQUIRED_FIELDS),
+	};
+}
+
+/** Create or repair the notification projection for a derived open gate. */
+export function ensureReviewGatePrompt(input: {
+	promptStore: PromptStore;
+	gate: DerivedReviewGate;
+	baselineReestimatePending?: boolean;
+	eligibleFindings?: readonly { findingId: string; fingerprint: string }[];
+}): ReturnType<PromptStore["createPrompt"]> {
+	const existing = input.promptStore
+		.listOpenPrompts(input.gate.runId)
+		.find((prompt) => prompt.context?.gateId === input.gate.gateId);
+	if (existing) return existing;
+	const context = reviewGatePromptContext(input);
+	return input.promptStore.createPrompt({
+		runId: input.gate.runId,
+		kind: "choose",
+		message: `Plan review requires a governance decision for gate ${input.gate.gateId}`,
+		options: context.allowedChoices,
+		defaultValue: null,
+		contextVersion: REVIEW_GATE_PROMPT_CONTEXT_VERSION,
+		context,
+	});
+}
+
+export function resolveGatePromptProjection(
+	promptStore: PromptStore,
+	runId: string,
+	gateId: string,
+	decisionId: string,
+): void {
+	for (const prompt of promptStore.listOpenPrompts(runId)) {
+		if (prompt.context?.gateId === gateId) {
+			if (!promptStore.resolveReviewGatePrompt) continue;
+			try {
+				promptStore.resolveReviewGatePrompt(prompt.id, decisionId);
+			} catch {
+				// Projection is repairable from the authoritative decision line.
+			}
+		}
+	}
+}
+
+/** Best-effort records-first projection repair after a prompt/update crash. */
+export function repairReviewGatePrompts(
+	recordStore: RecordStore,
+	promptStore: PromptStore,
+	runId: string,
+): number {
+	let repaired = 0;
+	for (const prompt of promptStore.listOpenPrompts(runId)) {
+		const context = prompt.context;
+		if (context?.type !== "plan_review_gate") continue;
+		const line = recordStore.getLine(
+			runId,
+			"decisions",
+			governanceDecisionKey(context.gateId),
+		);
+		if (!line) continue;
+		let decision: ReviewDecisionPayload;
+		try {
+			decision = decodeReviewDecisionPayload(line.payload);
+		} catch {
+			continue;
+		}
+		const acceptance = classifyDecisionAcceptance({
+			decision,
+			steps: recordStore.listLines(runId, "steps"),
+			budget: recordStore.listLines(runId, "budget"),
+		});
+		if (!acceptance.accepted) continue;
+		if (!promptStore.resolveReviewGatePrompt) continue;
+		try {
+			if (
+				promptStore.resolveReviewGatePrompt(prompt.id, decision.decisionId).ok
+			)
+				repaired++;
+		} catch {
+			// Keep the notification open for a later repair pass.
+		}
+	}
+	return repaired;
 }
 
 export interface ResolveReviewGateInput {
@@ -140,7 +318,7 @@ export function createReviewGovernanceStore(
 					};
 				}
 				const next = applyDecisionCauseCoverage(causes, decision);
-				if (next.length === 0 || next.length === causes.length) return null;
+				if (next.length === 0) return null;
 				causes = next;
 				predecessorGateId = gateId;
 			}

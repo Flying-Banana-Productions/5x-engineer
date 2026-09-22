@@ -31,9 +31,11 @@ export function getDb(projectRoot: string, dbPath?: string): Database {
 	}
 
 	const db = new Database(resolvedPath);
+	// Configure lock waiting before WAL negotiation: independently-started CLI
+	// processes can otherwise race on journal_mode and fail immediately.
+	db.exec("PRAGMA busy_timeout=5000");
 	db.exec("PRAGMA journal_mode=WAL");
 	db.exec("PRAGMA foreign_keys=ON");
-	db.exec("PRAGMA busy_timeout=5000");
 
 	instance = db;
 	instancePath = resolvedPath;

@@ -2365,6 +2365,21 @@ export interface FinalizedRecordStep extends PreparedRecordStep {
 
 export type FinalizeWriteMode = "generic" | "paired-all-new";
 
+export type FinalizeAndWritePreparedStepResult =
+	| {
+			outcome: "written";
+			finalized: FinalizedRecordStep;
+			recorded: boolean;
+			stepLine: RecordLine;
+			dbResult: ReturnType<typeof recordStep>;
+	  }
+	| {
+			outcome: "coupled-key-exists";
+			finalized: FinalizedRecordStep;
+			key: string;
+			line: RecordLine;
+	  };
+
 /**
  * Resolve an admitted step's iteration, append its durable record operation(s),
  * and project the authoritative step line. Omitted-iteration collisions are
@@ -2386,12 +2401,7 @@ export async function finalizeAndWritePreparedStep(
 			envelope: ReturnType<typeof recordedEnvelope>,
 		) => AppendOp[];
 	},
-): Promise<{
-	finalized: FinalizedRecordStep;
-	recorded: boolean;
-	stepLine: RecordLine;
-	dbResult: ReturnType<typeof recordStep>;
-}> {
+): Promise<FinalizeAndWritePreparedStepResult> {
 	const callerOmittedIteration = prepared.iteration === undefined;
 	const initialSummary = computeRunSummary(ctx.db, prepared.runId);
 	const maxAttempts = callerOmittedIteration
@@ -2500,6 +2510,18 @@ export async function finalizeAndWritePreparedStep(
 				? (result.results[0]?.line ?? null)
 				: storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
 			if (!result.created && !stepLine) {
+				const coupled = result.duplicates.find(
+					(duplicate) => duplicate.index > 0,
+				);
+				if (coupled) {
+					return {
+						outcome: "coupled-key-exists",
+						finalized,
+						key:
+							ops[coupled.index]?.idempotencyKey ?? coupled.line.idempotencyKey,
+						line: coupled.line,
+					};
+				}
 				throw new RecordError(
 					"RECORD_PAIR_CORRUPT",
 					"Budget snapshot identity exists without its coupled step",
@@ -2530,7 +2552,13 @@ export async function finalizeAndWritePreparedStep(
 			durablePayload,
 			iteration,
 		);
-		return { finalized, recorded: created, stepLine, dbResult };
+		return {
+			outcome: "written",
+			finalized,
+			recorded: created,
+			stepLine,
+			dbResult,
+		};
 	}
 }
 
@@ -2674,6 +2702,12 @@ export async function recordStepInternal(
 					: undefined,
 			},
 		);
+		if (written.outcome === "coupled-key-exists") {
+			throw new RecordError(
+				"RECORD_PAIR_CORRUPT",
+				`Coupled record identity ${written.key} exists without its step`,
+			);
+		}
 		const dbResult = written.dbResult;
 		const after = computeRunSummary(db, prepared.runId);
 		return {

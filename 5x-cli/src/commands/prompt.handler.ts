@@ -30,6 +30,7 @@ import type {
 	PromptKind,
 	PromptRecord,
 } from "../control-plane/types.js";
+import { PromptStoreError } from "../control-plane/types.js";
 import {
 	PROMPT_POLL_INTERVAL_MS,
 	PromptAbandonedError,
@@ -304,7 +305,20 @@ async function casAnswer(
 	kind: PromptKind,
 	getAbortCause: () => CliAbortCause | undefined,
 ): Promise<void> {
-	const result = ctx.store.answerPrompt(id, answer, answeredBy);
+	let result: ReturnType<PromptStore["answerPrompt"]>;
+	try {
+		result = ctx.store.answerPrompt(id, answer, answeredBy);
+	} catch (error) {
+		if (error instanceof PromptStoreError) {
+			outputError(error.code, error.message, {
+				remediation:
+					error.code === "REVIEW_GATE_DECISION_REQUIRED"
+						? error.message
+						: undefined,
+			});
+		}
+		throw error;
+	}
 	if (result.prompt.answeredAt !== null) {
 		await emitAnswered(ctx, kind, result.prompt);
 		return;

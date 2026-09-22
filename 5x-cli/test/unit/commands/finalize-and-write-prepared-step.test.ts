@@ -114,6 +114,9 @@ describe("finalizeAndWritePreparedStep", () => {
 			writeContext(ctx),
 			{ mode: "paired-all-new" },
 		);
+		expect(result.outcome).toBe("written");
+		if (result.outcome !== "written")
+			throw new Error("expected written result");
 		expect(result.recorded).toBe(false);
 		expect(result.finalized.iteration).toBe(1);
 		expect(calls).toBe(1);
@@ -145,6 +148,42 @@ describe("finalizeAndWritePreparedStep", () => {
 			),
 		).rejects.toMatchObject({ code: "RECORD_ITERATION_RETRY_EXHAUSTED" });
 		expect(calls).toBe(3);
+		ctx.db.close();
+	});
+
+	test("paired extra-key collision returns coupled-key-exists before iteration retry", async () => {
+		const ctx = makeBudgetContext();
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "decisions",
+			idempotencyKey: "decision:gate",
+			payload: { winner: true },
+			schemaVersion: 1,
+			provenance: "recorded",
+			origin: ctx.originFor({ kind: "human" }),
+		});
+		const result = await finalizeAndWritePreparedStep(
+			await prepared(ctx, undefined),
+			writeContext(ctx),
+			{
+				mode: "paired-all-new",
+				extraOps: (_step, envelope) => [
+					{
+						runId: "run1",
+						stream: "decisions",
+						idempotencyKey: "decision:gate",
+						payload: { winner: false },
+						...envelope,
+					},
+				],
+			},
+		);
+		expect(result.outcome).toBe("coupled-key-exists");
+		if (result.outcome === "coupled-key-exists") {
+			expect(result.key).toBe("decision:gate");
+			expect(result.line.payload).toEqual({ winner: true });
+		}
+		expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(0);
 		ctx.db.close();
 	});
 });
