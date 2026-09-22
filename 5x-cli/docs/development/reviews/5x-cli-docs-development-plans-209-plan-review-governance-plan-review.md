@@ -295,3 +295,44 @@ Fix:
 - **Ready for implementation:** ⚠️ After the corrections above. Phase 0, Phases 1 to 3, and Phases 6 and 7 are unaffected. The corrections touch only §2.2, §4.1 step 2, §4.3–4.4 and §5.1–5.2, and should land before Phases 4 and 5. All are `auto_fix` with one derivable answer, and none needs a human decision.
 
 **Readiness:** Ready with corrections — write the choice × cause coverage table and reconcile the `routeAfterDecision` precedence (P1.4, P1.9) before Phases 4 and 5. P2.4 and P2.5 are polish and can ride along in the same revision.
+
+---
+
+## Addendum 3 (2026-09-21) — Re-review of plan v1.3 (closure of the v1.2 residuals)
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.3 @ `7b941af` (prior reviewed revision `3235868`, review commit `370dc4f`). The prompt's appended diff and commit range were empty again, so I recomputed the delta with `git diff 3235868 HEAD -- <plan>` and re-read the choice-to-cause table (§2.2), routing precedence (§4.1, §4.3–4.4) and the `review decide` contract (§5.2–5.3).
+**Local verification:** Not run (static review). Re-checked against plan-208 `deriveBudget` / `computeBaselineDirection` on `5x/208-review-budget-advisory-plan` @ `cd7ee88`.
+
+### What's addressed (✅)
+
+- **P1.4 (cause coverage, unsuppressed wording) — ✅ Addressed.** Snapshots now persist record-time effective unresolved causes, and causes suppressed by earlier decisions are kept separately with `resolvedBy` for audit. The first `gateId` hashes the effective causes. The choice-to-cause table covers all eight choices, and a test asserts a later snapshot persists only effective causes.
+- **P1.9 (post-decision route precedence) — ✅ Addressed.** Deferred findings are filtered before both `deriveBudget` and readiness routing. The pure rerun of `derivePlanReviewGovernance` is authoritative for `increase_budget`, `adjust_baseline`, `retain_baseline`, `defer_accept_risk` and `approve_architecture_burden`. Only `trade_scope`, `request_author_reestimate` and `abort` override, and they skip successor derivation. Abort is derived before terminal handling. The §4.4 rows match, including the deferred-`over_effective` case.
+- **P2.4 (`review decide` contract) — ✅ Addressed.** Individual flags, `--input-json` and stdin share one validator, with mutual-exclusion and choice-inapplicable errors. `review gate show` prints `requiredFieldsByChoice`. Skills and the CLI docs derive the syntax from that one contract.
+- **P2.5 (W5 saturation) — ✅ Addressed.** Notification, wait and PromptStore safeguards move to new W10 at 3 points. W8 stays vacant. The ledger sums to 47 against the frozen `B0 = 52`, still under the standard ceiling. W5's rationale for staying at 8 is sound.
+- **Carry-over note — ✅ Addressed.** The gate-key pre-read now runs before `prepareRecordStepAppend`, so a decision at the run's step limit still returns the winner.
+
+**Delivery-budget hygiene:** The ledger has stable IDs (W1–W7, W9, W10), no negative architecture rows and no `DCn` claims, so there are no credit assessments to emit.
+
+**`Addresses` re-check:** W2 (P1.4), W4 (P1.4, P1.9), W5 (P1.4, P1.9, P2.4, P2.5), W7 (P1.9, P2.4), W9 (P2.4) and W10 (P1.8, P2.5) all cite findings closed above. W4 also cites P0.3, which is partially regressed by this revision (see below), so that cell keeps its residual effort in pending `R` until the correction lands.
+
+### Remaining concerns
+
+**P0.3 (partial regression; severity now P1) — baseline dispute coverage no longer persists across rounds.** v1.1 correctly said any retain/adjust/re-estimate decision covers the immutable dispute for the run. v1.3's rewrite scoped that coverage to a single snapshot:
+- §2 ("Resolved causes…") and §2.2 say `retain_baseline` covers *this snapshot's* dispute, and §4.1 step 2 says "baseline retention covers that snapshot's dispute".
+- `adjust_baseline` is described as "thereby resolving the snapshot's baseline dispute", and `request_author_reestimate` is now explicitly non-suppressing.
+- Plan-208's `deriveBudget` computes `baseline_disputed` from `abs(I − B0)` on every snapshot. Both are immutable, so folding a new governing `B` never clears it. A retain, adjust or re-estimate in round N therefore leaves the dispute uncovered in round N+1, and the first gate of every later round re-opens the same dispute. This is the P0.3 failure mode (one human click per round, no convergence) again, and it contradicts the plan's own §4.4 row ("retained/adjusted baseline does not re-gate").
+
+Fix:
+- Treat the baseline dispute as run-level. An active, unsuperseded `retain_baseline` or `adjust_baseline` covers it for every later snapshot, with `resolvedBy` recorded. `adjust_baseline` also folds the new `B` into the bands.
+- Choose and state the `request_author_reestimate` behavior. The recommended one is that it intentionally does not cover the dispute, because the human must finalize the outcome with retain or adjust once the author's new estimate exists. In that case the next round's gate must offer only retain, adjust and abort, so re-estimate cannot loop.
+- Update the §2.2 table, §4.1 step 2, and the "Resolved causes" paragraph so all three say the same thing.
+- Add a routing row: a retained or adjusted baseline in round 1 does not put `baseline_disputed` back into round 2's first-gate causes.
+
+**P2.6 (new) — `--finding` asks the operator to author a fingerprint.** `review decide --finding '<FindingIdentity JSON>'` requires the caller to supply `{findingId, fingerprint}`, and the fingerprint is a CLI-derived `sha256:` value that neither a human nor the orchestrating agent can produce reliably. Accept `--finding <id>` and have the CLI resolve and validate the fingerprint against the latest snapshot. Keep the JSON form only inside `--input-json`, and print each finding's ID (and fingerprint) in `review gate show`.
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ✅ Effectively complete. Every finding from the initial review and from Addenda 1 and 2 is closed except one baseline-dispute coverage inconsistency introduced by the v1.3 wording, plus one polish item.
+- **Ready for implementation:** ⚠️ After the P0.3 wording correction, which touches only §2 (Resolved causes), §2.2 and §4.1 step 2 and should land before Phases 2 and 4. Phases 0, 1, 3, 5–7 are unaffected. Both remaining items are `auto_fix` with one derivable answer, and neither needs a human decision.
+
+**Readiness:** Ready with corrections — make baseline-dispute coverage run-level in the three places above (P0.3). P2.6 is polish and can ride along.
