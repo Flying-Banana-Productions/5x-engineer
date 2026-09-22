@@ -6,7 +6,7 @@ import {
 	isValidDebtTargetPhase,
 } from "../review-budget/types.js";
 import {
-	canonicalFindingFingerprint,
+	fingerprintVerdictItem,
 	normalizeFindingEvidenceText,
 } from "./fingerprint.js";
 import {
@@ -44,23 +44,6 @@ function materialFailure(value: unknown): value is string {
 	return !/^(?:incomplete|incompleteness|completeness|missing detail|unclear)[.!]?$/.test(
 		normalized,
 	);
-}
-
-function fingerprintItem(
-	item: GovernanceVerdictItem,
-	fallback?: PersistedFinding,
-): string | null {
-	const scopeClass = item.scopeClass ?? fallback?.scopeClass;
-	const failure = item.failure ?? fallback?.failure;
-	const correction =
-		item.lowestCostCorrection ?? fallback?.lowestCostCorrection;
-	if (!scopeClass || !nonEmpty(failure) || !nonEmpty(correction)) return null;
-	return canonicalFindingFingerprint({
-		title: item.title || fallback?.title || "",
-		scopeClass,
-		failure,
-		lowestCostCorrection: correction,
-	});
 }
 
 function activeDecisions(
@@ -338,7 +321,7 @@ function validateReraise(
 		return diagnostics;
 	}
 	const ref = decisionFindingRef(decision, item.id);
-	const fingerprint = fingerprintItem(item, prior);
+	const fingerprint = fingerprintVerdictItem(item, prior);
 	if (
 		!ref ||
 		!prior ||
@@ -518,7 +501,9 @@ export function validateClosureReview(input: {
 					),
 				);
 			}
-			const currentFingerprint = item ? fingerprintItem(item, finding) : null;
+			const currentFingerprint = item
+				? fingerprintVerdictItem(item, finding)
+				: null;
 			if (
 				item &&
 				currentFingerprint &&
@@ -588,7 +573,7 @@ export function validateClosureReview(input: {
 		)?.status;
 		const current = verdict.items.find((item) => item.id === finding.findingId);
 		const fingerprint = current
-			? (fingerprintItem(current, finding) ?? finding.fingerprint)
+			? (fingerprintVerdictItem(current, finding) ?? finding.fingerprint)
 			: finding.fingerprint;
 		return status
 			? [

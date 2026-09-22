@@ -1,13 +1,8 @@
 import type { ReviewBudgetSnapshotRecord } from "../control-plane/review-budget-store.js";
 import type { ReviewerVerdict, VerdictItem } from "../protocol.js";
-import {
-	computeCeilings,
-	computeEffectiveCeiling,
-	computeProvisionalD,
-	deriveBudget,
-} from "../review-budget/arithmetic.js";
+import { deriveBudget } from "../review-budget/arithmetic.js";
 import type {
-	BudgetAlert,
+	CreditAssessmentInput,
 	DerivedBudgetResult,
 	FindingDelta,
 	ParsedWorkItem,
@@ -16,7 +11,7 @@ import type {
 	GoverningReviewState,
 	ReviewDecisionPayload,
 } from "./decisions.js";
-import { canonicalFindingFingerprint } from "./fingerprint.js";
+import { fingerprintVerdictItem } from "./fingerprint.js";
 import type {
 	ClosureValidationResult,
 	FinalCorrectionFailure,
@@ -32,6 +27,12 @@ export interface ArchitectureRoutingContext {
 	workItemIds: readonly string[];
 }
 
+export interface ReviewBudgetRoutingContext {
+	workItems: readonly ParsedWorkItem[];
+	findings: readonly FindingDelta[];
+	assessments: readonly CreditAssessmentInput[];
+}
+
 export interface DerivePlanReviewGovernanceInput {
 	mode: "advisory" | "enforced";
 	reviewKind: "initial" | "closure";
@@ -39,23 +40,25 @@ export interface DerivePlanReviewGovernanceInput {
 	budget: DerivedBudgetResult;
 	closure: ClosureValidationResult;
 	governingState: GoverningReviewState;
-	/** Optional because the plan-208 budget aggregate does not retain source IDs. */
-	architectureContext?: ArchitectureRoutingContext;
+	/** Full plan-208 inputs; routing reruns canonical arithmetic after filtering. */
+	budgetContext: ReviewBudgetRoutingContext;
 }
 
-function findingIdentity(item: VerdictItem): FindingIdentity {
-	return {
-		findingId: item.id,
-		fingerprint: canonicalFindingFingerprint({
-			title: item.title,
-			scopeClass:
-				item.scopeClass === "risk_reduction" || item.scopeClass === "polish"
-					? item.scopeClass
-					: "acceptance_required",
-			failure: item.failure?.trim() || item.reason,
-			lowestCostCorrection: item.lowestCostCorrection?.trim() || item.reason,
-		}),
-	};
+function findingIdentity(
+	item: VerdictItem,
+	findingOutcomes: readonly FindingIdentity[],
+	state: GoverningReviewState,
+): FindingIdentity | null {
+	const outcome = findingOutcomes.find(
+		(candidate) => candidate.findingId === item.id,
+	);
+	if (outcome) return outcome;
+	const accepted = state.acceptedRisks.find(
+		(candidate) => candidate.findingId === item.id,
+	);
+	if (accepted && (!item.failure || !item.lowestCostCorrection))
+		return { findingId: accepted.findingId, fingerprint: accepted.fingerprint };
+	return { findingId: item.id, fingerprint: fingerprintVerdictItem(item) };
 }
 
 function sameFinding(a: FindingIdentity, b: FindingIdentity): boolean {
@@ -65,9 +68,11 @@ function sameFinding(a: FindingIdentity, b: FindingIdentity): boolean {
 function activeItems(
 	items: readonly VerdictItem[],
 	state: GoverningReviewState,
+	findingOutcomes: readonly FindingIdentity[],
 ): VerdictItem[] {
 	return items.filter((item) => {
-		const identity = findingIdentity(item);
+		const identity = findingIdentity(item, findingOutcomes, state);
+		if (!identity) return true;
 		const accepted = state.acceptedRisks.find((risk) =>
 			sameFinding(risk, identity),
 		);
@@ -78,137 +83,6 @@ function activeItems(
 			Boolean(item.newEvidence?.trim())
 		);
 	});
-}
-
-function budgetForActiveItems(
-	budget: DerivedBudgetResult,
-	verdict: ReviewerVerdict,
-	items: readonly VerdictItem[],
-	architectureContext: ArchitectureRoutingContext,
-): DerivedBudgetResult {
-	const allItems = verdict.items;
-	const activeIds = new Set(items.map((item) => item.id));
-	const removed = allItems.filter((item) => !activeIds.has(item.id));
-	if (removed.length === 0) return budget;
-	const removedR = removed.reduce(
-		(total, item) =>
-			total + (item.scopeClass === "polish" ? 0 : (item.effortDelta ?? 0)),
-		0,
-	);
-	const removedP = removed.reduce(
-		(total, item) =>
-			total +
-			(item.scopeClass !== "polish" && (item.architectureDelta ?? 0) > 0
-				? (item.architectureDelta ?? 0)
-				: 0),
-		0,
-	);
-	const removedN = removed.reduce((total, item) => {
-		if (
-			(item.architectureDelta ?? 0) >= 0 ||
-			item.coupling !== "intrinsic" ||
-			!item.creditClaim
-		)
-			return total;
-		const assessment = verdict.creditAssessments?.find(
-			(candidate) =>
-				candidate.creditClaimId === item.creditClaim?.creditClaimId,
-		);
-		if (
-			assessment?.eligibility !== "eligible" ||
-			assessment.coupling !== "intrinsic"
-		)
-			return total;
-		return total + Math.abs(item.architectureDelta ?? 0);
-	}, 0);
-	const R = Math.max(0, budget.R - removedR);
-	const P = Math.max(0, budget.P - removedP);
-	const N = Math.max(0, budget.N - removedN);
-	const D = computeProvisionalD(budget.B, N, budget.thresholds);
-	const E = computeEffectiveCeiling(budget.S, D, budget.A);
-	const projectedEffort = budget.W + R;
-	const budgetBand =
-		projectedEffort <= budget.S
-			? "within_standard"
-			: projectedEffort <= E
-				? "within_debt_allowance"
-				: projectedEffort <= budget.A
-					? "over_effective"
-					: "over_absolute";
-	const remainingSingleArchitecture = items.some(
-		(item) =>
-			(item.architectureDelta ?? 0) >=
-			budget.thresholds.singleArchitectureReviewPoints,
-	);
-	const budgetAlerts: BudgetAlert[] = budget.budgetAlerts.filter(
-		(alert) =>
-			alert !== "positive_architecture_exceeded" ||
-			P >= budget.positiveArchitectureLimit ||
-			remainingSingleArchitecture ||
-			architectureContext.workItemIds.length > 0,
-	);
-	return {
-		...budget,
-		R,
-		P,
-		N,
-		D,
-		E,
-		projectedEffort,
-		budgetBand,
-		budgetAlerts,
-		requiresHuman:
-			budgetBand === "over_effective" ||
-			budgetBand === "over_absolute" ||
-			budgetAlerts.some((alert) => alert !== "credit_unrealized") ||
-			items.some((item) => item.action === "human_required"),
-	};
-}
-
-function budgetForGoverningBaseline(
-	budget: DerivedBudgetResult,
-	governingBaseline: number,
-	architectureContext: ArchitectureRoutingContext,
-): DerivedBudgetResult {
-	if (budget.B === governingBaseline) return budget;
-	const { S, A, positiveArchitectureLimit } = computeCeilings(
-		governingBaseline,
-		budget.thresholds,
-	);
-	const D = computeProvisionalD(governingBaseline, budget.N, budget.thresholds);
-	const E = computeEffectiveCeiling(S, D, A);
-	const budgetBand =
-		budget.projectedEffort <= S
-			? "within_standard"
-			: budget.projectedEffort <= E
-				? "within_debt_allowance"
-				: budget.projectedEffort <= A
-					? "over_effective"
-					: "over_absolute";
-	const hasArchitectureAlert =
-		budget.P >= positiveArchitectureLimit ||
-		architectureContext.itemIds.length > 0 ||
-		architectureContext.workItemIds.length > 0;
-	const budgetAlerts: BudgetAlert[] = [];
-	for (const alert of budget.budgetAlerts) {
-		if (alert !== "positive_architecture_exceeded") budgetAlerts.push(alert);
-	}
-	if (hasArchitectureAlert) budgetAlerts.push("positive_architecture_exceeded");
-	return {
-		...budget,
-		B: governingBaseline,
-		S,
-		D,
-		E,
-		A,
-		positiveArchitectureLimit,
-		budgetBand,
-		budgetAlerts,
-		requiresHuman:
-			budgetBand === "over_effective" ||
-			budgetBand === "over_absolute" ||
-			budgetAlerts.some((alert) => alert !== "credit_unrealized"),
-	};
 }
 
 function architectureApproval(
@@ -236,6 +110,7 @@ function causesFor(input: {
 	budget: DerivedBudgetResult;
 	state: GoverningReviewState;
 	architectureContext: ArchitectureRoutingContext;
+	findingOutcomes: readonly FindingIdentity[];
 }): ReviewGateCause[] {
 	const causes: ReviewGateCause[] = [];
 	if (
@@ -270,7 +145,8 @@ function causesFor(input: {
 		});
 	}
 	for (const item of input.items) {
-		const finding = findingIdentity(item);
+		const finding = findingIdentity(item, input.findingOutcomes, input.state);
+		if (!finding) continue;
 		if (item.lateDiscovery === "critical_safety") {
 			causes.push({ kind: "critical_safety", finding });
 		} else if (
@@ -322,39 +198,67 @@ export function validateFinalCorrections(input: {
 }
 
 function v1Route(verdict: ReviewerVerdict): PlanReviewRoute {
-	return verdict.readiness === "ready" ? "complete" : "author_revision";
+	if (verdict.readiness === "ready") return "complete";
+	if (
+		verdict.items.some((item) => item.action === "human_required") ||
+		(verdict.readiness === "not_ready" && verdict.items.length === 0)
+	)
+		return "human_gate";
+	return "author_revision";
 }
 
 function deriveEnforced(
 	input: Omit<DerivePlanReviewGovernanceInput, "mode">,
 ): PlanReviewGovernanceResult {
-	const items = activeItems(input.verdict.items, input.governingState);
-	const architectureContext = input.architectureContext ?? {
-		itemIds: items
+	const items = activeItems(
+		input.verdict.items,
+		input.governingState,
+		input.closure.findingOutcomes,
+	);
+	const activeIds = new Set(items.map((item) => item.id));
+	const findings = input.budgetContext.findings.filter((finding) =>
+		activeIds.has(finding.id),
+	);
+	const architectureContext = {
+		itemIds: findings
+			.filter(
+				(finding) =>
+					finding.scopeClass !== "polish" &&
+					finding.architectureDelta >=
+						input.budget.thresholds.singleArchitectureReviewPoints,
+			)
+			.map((finding) => finding.id),
+		workItemIds: input.budgetContext.workItems
 			.filter(
 				(item) =>
-					(item.architectureDelta ?? 0) >=
+					item.architectureDelta >=
 					input.budget.thresholds.singleArchitectureReviewPoints,
 			)
 			.map((item) => item.id),
-		workItemIds: [],
 	};
-	const baselineBudget = budgetForGoverningBaseline(
-		input.budget,
-		input.governingState.governingBaseline,
-		architectureContext,
-	);
-	const effectiveBudget = budgetForActiveItems(
-		baselineBudget,
-		input.verdict,
-		items,
-		architectureContext,
-	);
+	const effectiveBudget = deriveBudget({
+		B0: input.budget.B0,
+		B: input.governingState.governingBaseline,
+		I: input.budget.I,
+		workItems: input.budgetContext.workItems,
+		findings,
+		assessments: input.budgetContext.assessments,
+		config: input.budget.thresholds,
+		semanticHumanRequired: items.some(
+			(item) => item.action === "human_required",
+		),
+	});
+	if (
+		input.budget.budgetAlerts.includes("credit_unrealized") &&
+		!effectiveBudget.budgetAlerts.includes("credit_unrealized")
+	)
+		effectiveBudget.budgetAlerts.push("credit_unrealized");
 	const gateCauses = causesFor({
 		items,
 		budget: effectiveBudget,
 		state: input.governingState,
 		architectureContext,
+		findingOutcomes: input.closure.findingOutcomes,
 	});
 	if (gateCauses.some((cause) => cause.resolvedBy === undefined)) {
 		return {
@@ -419,9 +323,22 @@ export function derivePlanReviewGovernance(
 	};
 }
 
-function fingerprintById(verdict: ReviewerVerdict): Map<string, string> {
+function fingerprintById(
+	verdict: ReviewerVerdict,
+	state: GoverningReviewState,
+): Map<string, string> {
 	return new Map(
-		verdict.items.map((item) => [item.id, findingIdentity(item).fingerprint]),
+		verdict.items.map((item) => {
+			const accepted = state.acceptedRisks.find(
+				(candidate) => candidate.findingId === item.id,
+			);
+			return [
+				item.id,
+				accepted && (!item.failure || !item.lowestCostCorrection)
+					? accepted.fingerprint
+					: fingerprintVerdictItem(item),
+			];
+		}),
 	);
 }
 
@@ -430,7 +347,7 @@ function filteredFindings(input: {
 	verdict: ReviewerVerdict;
 	state: GoverningReviewState;
 }): FindingDelta[] {
-	const fingerprints = fingerprintById(input.verdict);
+	const fingerprints = fingerprintById(input.verdict, input.state);
 	return input.findings.filter((finding) => {
 		const fingerprint = fingerprints.get(finding.id);
 		if (!fingerprint) return true;
@@ -446,21 +363,6 @@ function filteredFindings(input: {
 			item?.priorDecisionId === accepted.decisionId && item.newEvidence?.trim(),
 		);
 	});
-}
-
-function architectureContext(
-	verdict: ReviewerVerdict,
-	workItems: readonly ParsedWorkItem[],
-	threshold: number,
-): ArchitectureRoutingContext {
-	return {
-		itemIds: verdict.items
-			.filter((item) => (item.architectureDelta ?? 0) >= threshold)
-			.map((item) => item.id),
-		workItemIds: workItems
-			.filter((item) => item.architectureDelta >= threshold)
-			.map((item) => item.id),
-	};
 }
 
 export function routeAfterDecision(input: {
@@ -488,23 +390,11 @@ export function routeAfterDecision(input: {
 		...input.latestVerdict,
 		items: input.latestVerdict.items.filter((item) => activeIds.has(item.id)),
 	};
-	const budget = deriveBudget({
-		B0: previous.B0,
-		B: input.newGoverningState.governingBaseline,
-		I: previous.I,
-		workItems: input.latestBudgetSnapshot.currentLedger.workItems,
-		findings,
-		assessments: input.latestBudgetSnapshot.assessments,
-		config: previous.thresholds,
-		semanticHumanRequired: verdict.items.some(
-			(item) => item.action === "human_required",
-		),
-	});
 	return derivePlanReviewGovernance({
 		mode: "enforced",
 		reviewKind: verdict.priorFindings ? "closure" : "initial",
 		verdict,
-		budget,
+		budget: previous,
 		closure: {
 			valid: true,
 			accepted: true,
@@ -513,10 +403,10 @@ export function routeAfterDecision(input: {
 			findingOutcomes: [],
 		},
 		governingState: input.newGoverningState,
-		architectureContext: architectureContext(
-			verdict,
-			input.latestBudgetSnapshot.currentLedger.workItems,
-			budget.thresholds.singleArchitectureReviewPoints,
-		),
+		budgetContext: {
+			workItems: input.latestBudgetSnapshot.currentLedger.workItems,
+			findings,
+			assessments: input.latestBudgetSnapshot.assessments,
+		},
 	}).route;
 }

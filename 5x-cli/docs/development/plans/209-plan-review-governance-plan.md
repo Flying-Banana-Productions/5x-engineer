@@ -555,7 +555,7 @@ export function routeAfterDecision(input: {
 - [x] Build filtered inputs first: remove every finding covered by an active deferral before both `deriveBudget` and readiness routing, fold governing `B`, then rerun `derivePlanReviewGovernance` against the latest snapshot. That pure rerun is authoritative for every fold-changing/covering choice; never trust a route supplied by the caller.
 - [x] For `increase_budget`, `adjust_baseline`, `retain_baseline`, `defer_accept_risk`, and `approve_architecture_burden`, return the authoritative recomputed route unchanged: `complete` when no required work/cause remains, `final_corrections` when the strict shortcut qualifies, `author_revision` for remaining ordinary corrections, or one deterministic successor `human_gate` for uncovered causes.
 - [x] Apply choice-specific overrides only to choices that deliberately close the current snapshot rather than using a fold change to cover its causes: `trade_scope` and `request_author_reestimate` return `author_revision`, and `abort` returns `aborted`. These three skip successor derivation; abort terminal handling runs afterward as a side effect, never before route derivation.
-- [x] `5x review gate show` and `5x review decide` expose this durable derived route for skill branching.
+- [x] Export the durable derived-route seam for skill branching; `5x review gate show` and `5x review decide` command exposure remains tracked in Phase 5.2.
 
 ### 4.4 Routing tests — new `test/unit/review-governance/routing.test.ts`
 

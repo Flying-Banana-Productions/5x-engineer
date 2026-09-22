@@ -354,7 +354,10 @@ export {
 	governanceDecisionKey,
 	REVIEW_DECISION_VERSION,
 } from "./review-governance/decisions.js";
-export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
+export {
+	canonicalFindingFingerprint,
+	fingerprintVerdictItem,
+} from "./review-governance/fingerprint.js";
 export type { PlanDiffFailure } from "./review-governance/plan-diff.js";
 export {
 	buildPlanReviewDiffContext,
@@ -366,6 +369,7 @@ export {
 export type {
 	ArchitectureRoutingContext,
 	DerivePlanReviewGovernanceInput,
+	ReviewBudgetRoutingContext,
 } from "./review-governance/routing.js";
 export {
 	derivePlanReviewGovernance,

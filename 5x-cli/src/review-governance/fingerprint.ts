@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import type { VerdictItem } from "../protocol.js";
 import type { PlanScopeClass } from "../review-budget/types.js";
+import type { PersistedFinding } from "./types.js";
 
 function normalizeText(value: string, caseInsensitive = false): string {
 	const normalized = value
@@ -38,4 +40,22 @@ export function canonicalFindingFingerprint(input: {
 
 export function normalizeFindingEvidenceText(value: string): string {
 	return normalizeText(value, true);
+}
+
+/** Canonical item fingerprint shared by closure validation and routing. */
+export function fingerprintVerdictItem(
+	item: VerdictItem,
+	fallback?: PersistedFinding,
+): string {
+	const scopeClass =
+		item.scopeClass ?? fallback?.scopeClass ?? "acceptance_required";
+	const failure = item.failure ?? fallback?.failure ?? item.reason;
+	const lowestCostCorrection =
+		item.lowestCostCorrection ?? fallback?.lowestCostCorrection ?? item.reason;
+	return canonicalFindingFingerprint({
+		title: item.title || fallback?.title || "",
+		scopeClass,
+		failure,
+		lowestCostCorrection,
+	});
 }
