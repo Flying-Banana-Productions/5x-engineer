@@ -28,6 +28,7 @@ import {
 } from "../config.js";
 import {
 	type AppendOp,
+	createMemoryRecordStore,
 	type RecordLine,
 	type RecordOrigin,
 	type RecordPerformer,
@@ -48,6 +49,11 @@ import type {
 	PreparedRecordStep,
 	PrepareRecordStepOutcome,
 } from "../control-plane/record-writer-types.js";
+import { createReviewBudgetIndex } from "../control-plane/review-budget-index.js";
+import {
+	createReviewBudgetStore,
+	type ReviewBudgetStore,
+} from "../control-plane/review-budget-store.js";
 import { getDb } from "../db/connection.js";
 import { getPlan, upsertPlan } from "../db/operations.js";
 import {
@@ -100,6 +106,7 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
@@ -129,11 +136,19 @@ import {
 	formatProgressSourceLine,
 	resolvePlanProgress,
 } from "../records/resolve.js";
+import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
+import { ENFORCED_REVIEW_BUDGET_WARNING } from "../review-budget/ensure-baseline.js";
+import type {
+	BaselineDirection,
+	BudgetAlert,
+	BudgetBand,
+	ReviewBudgetMode,
+} from "../review-budget/types.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import { version } from "../version.js";
-import { resolveDbContext } from "./context.js";
+import { type DbContext, resolveDbContext } from "./context.js";
 import {
 	type ControlPlaneResult,
 	controlPlaneDbPath,
@@ -176,6 +191,12 @@ export interface RunStateParams {
 	env?: NodeJS.Dict<string>;
 	fetch?: boolean;
 	allRefs?: boolean;
+	/** Test seam for the already-resolved control-plane context. */
+	dbContext?: DbContext;
+	/** Warning sink; defaults to stderr. */
+	warn?: (message: string) => void;
+	/** Unit-test seam; production uses the git-backed progress resolver. */
+	progressResolver?: typeof resolvePlanProgress;
 }
 
 export interface RunRecordParams {
@@ -925,6 +946,200 @@ function formatStep(step: StepRow) {
 	};
 }
 
+export interface ReviewBudgetState {
+	status: "active" | "v1_compat" | "uninitialized";
+	mode: ReviewBudgetMode;
+	capture_kind?: "initial" | "opt_in";
+	B0?: number;
+	B?: number;
+	W?: number;
+	R?: number;
+	projected_effort?: number;
+	S?: number;
+	N?: number;
+	D?: number;
+	E?: number;
+	A?: number;
+	P?: number;
+	I?: number | null;
+	baseline_direction?: BaselineDirection | null;
+	budget_band?: BudgetBand;
+	budget_alerts?: BudgetAlert[];
+	requires_human?: boolean;
+	stale_plan?: true;
+	enforcement_implemented: false;
+}
+
+export function warnForReviewBudgetRunState(
+	mode: ReviewBudgetMode,
+	warn: (message: string) => void,
+): void {
+	if (mode === "enforced") warn(ENFORCED_REVIEW_BUDGET_WARNING);
+}
+
+/**
+ * Build the delivery-budget header from authoritative record lines. The
+ * facade deliberately reads through (and repairs) an empty SQLite index.
+ */
+export function buildReviewBudgetState(input: {
+	runId: string;
+	mode: ReviewBudgetMode;
+	store: ReviewBudgetStore;
+	hasPriorPlanReviewerStep: boolean;
+	currentPlanMarkdown?: string;
+	semanticHumanRequiredFor?: (
+		snapshot: NonNullable<ReturnType<ReviewBudgetStore["latestSnapshot"]>>,
+	) => boolean;
+}): ReviewBudgetState | undefined {
+	if (input.mode === "off") return undefined;
+
+	const baseline = input.store.getBaseline(input.runId);
+	if (!baseline) {
+		return {
+			status: input.hasPriorPlanReviewerStep ? "v1_compat" : "uninitialized",
+			mode: input.mode,
+			enforcement_implemented: false,
+		};
+	}
+
+	const snapshots = input.store.listSnapshots(input.runId);
+	const latest = snapshots.at(-1);
+	const initialAssessment = snapshots.find(
+		(snapshot) => snapshot.baselineAssessment !== undefined,
+	)?.baselineAssessment;
+	let currentParse: ReturnType<typeof parseDeliveryBudget> | undefined;
+	if (input.currentPlanMarkdown !== undefined) {
+		currentParse = parseDeliveryBudget(input.currentPlanMarkdown);
+	}
+
+	let derived = latest?.derived ?? null;
+	// baselineAssessment is a record fact. A cache row with no derived JSON (or
+	// an old/incomplete derived row) must not erase the initial estimate.
+	if (
+		latest &&
+		(derived === null ||
+			(derived.I === null && initialAssessment !== undefined))
+	) {
+		derived = deriveBudget({
+			B0: baseline.b0,
+			B: baseline.b,
+			I: initialAssessment?.independentEffortEstimate ?? null,
+			workItems: latest.currentLedger.workItems,
+			findings: latest.findings,
+			assessments: latest.assessments,
+			config: baseline.configSnapshot,
+			semanticHumanRequired: input.semanticHumanRequiredFor?.(latest) ?? false,
+		});
+	}
+	if (!latest) {
+		const ledger = currentParse?.ok
+			? currentParse.value
+			: baseline.originalLedger;
+		derived = deriveBudget({
+			B0: baseline.b0,
+			B: baseline.b,
+			I: null,
+			workItems: ledger.workItems,
+			findings: [],
+			assessments: [],
+			config: baseline.configSnapshot,
+			semanticHumanRequired: false,
+		});
+	}
+
+	const stalePlan =
+		latest !== undefined &&
+		currentParse?.ok === true &&
+		derived !== null &&
+		sumEffort(currentParse.value.workItems) !== derived.W;
+	return {
+		status: "active",
+		mode: input.mode,
+		capture_kind: baseline.captureKind,
+		B0: baseline.b0,
+		B: baseline.b,
+		...(derived
+			? {
+					W: derived.W,
+					R: derived.R,
+					projected_effort: derived.projectedEffort,
+					S: derived.S,
+					N: derived.N,
+					D: derived.D,
+					E: derived.E,
+					A: derived.A,
+					P: derived.P,
+					I: derived.I,
+					baseline_direction: derived.baselineDirection,
+					budget_band: derived.budgetBand,
+					budget_alerts: derived.budgetAlerts,
+					requires_human: derived.requiresHuman,
+				}
+			: {}),
+		...(stalePlan ? { stale_plan: true as const } : {}),
+		enforcement_implemented: false,
+	};
+}
+
+export function tryBuildReviewBudgetState(
+	input: Parameters<typeof buildReviewBudgetState>[0],
+	warn: (message: string) => void,
+): ReviewBudgetState | undefined {
+	try {
+		return buildReviewBudgetState(input);
+	} catch (error) {
+		warn(
+			`Unable to read review budget records for run ${input.runId}; omitting review_budget: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
+function resultHasHumanRequired(result: unknown): boolean {
+	let value = result;
+	if (typeof value === "string") {
+		try {
+			value = JSON.parse(value);
+		} catch {
+			return false;
+		}
+	}
+	if (typeof value !== "object" || value === null) return false;
+	const items = (value as { items?: unknown }).items;
+	return (
+		Array.isArray(items) &&
+		items.some(
+			(item) =>
+				typeof item === "object" &&
+				item !== null &&
+				(item as { action?: unknown }).action === "human_required",
+		)
+	);
+}
+
+export function semanticHumanRequiredFromSteps(
+	snapshot: {
+		stepName?: string;
+		phase: string | null;
+		iteration: number | null;
+	},
+	steps: ReadonlyArray<{
+		step_name: string;
+		phase: string | null;
+		iteration: number | null;
+		result_json: unknown;
+	}>,
+): boolean {
+	if (!snapshot.stepName) return false;
+	const step = steps.find(
+		(candidate) =>
+			candidate.step_name === snapshot.stepName &&
+			candidate.phase === snapshot.phase &&
+			candidate.iteration === snapshot.iteration,
+	);
+	return resultHasHumanRequired(step?.result_json);
+}
+
 // ---------------------------------------------------------------------------
 // Text formatters
 // ---------------------------------------------------------------------------
@@ -987,6 +1202,7 @@ export function formatStateText(data: {
 	creator?: RecordRecorder | null;
 	sealer?: RecordRecorder | null;
 	exported_by?: RecordOrigin;
+	review_budget?: ReviewBudgetState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1026,6 +1242,27 @@ export function formatStateText(data: {
 	console.log(
 		`Steps:   ${data.steps_used} / ${data.max_steps} (${data.steps_remaining} remaining)`,
 	);
+	if (data.review_budget) {
+		const budget = data.review_budget;
+		const modeLabel =
+			budget.mode === "enforced"
+				? "enforced: not implemented; advisory telemetry"
+				: "advisory";
+		if (
+			budget.status === "active" &&
+			budget.W !== undefined &&
+			budget.R !== undefined &&
+			budget.E !== undefined &&
+			budget.budget_band !== undefined
+		) {
+			const alerts = budget.budget_alerts?.join(",") || "none";
+			console.log(
+				`Budget:  W+R=${budget.W + budget.R}  E=${budget.E}  band=${budget.budget_band}  alerts=${alerts}  (${modeLabel}${budget.stale_plan ? ", stale plan" : ""})`,
+			);
+		} else {
+			console.log(`Budget:  status=${budget.status}  (${modeLabel})`);
+		}
+	}
 
 	if (steps.length === 0) {
 		console.log();
@@ -1518,7 +1755,7 @@ function summaryFromGitSteps(
 	};
 }
 
-async function loadGitRecordForPlan(opts: {
+export async function loadGitRecordForPlan(opts: {
 	workdir: string;
 	commit: string | null;
 	recordsRelPath: string;
@@ -1527,6 +1764,8 @@ async function loadGitRecordForPlan(opts: {
 }): Promise<{
 	summary: ReturnType<typeof parseRunJson>;
 	steps: ReturnType<typeof formatGitRecordStep>[];
+	budgetLines: RecordLine[];
+	budgetDecodeError?: string;
 } | null> {
 	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
 	let runJsonRels: string[] = [];
@@ -1539,6 +1778,7 @@ async function loadGitRecordForPlan(opts: {
 	type Loaded = {
 		summary: ReturnType<typeof parseRunJson>;
 		stepsText: string | null;
+		budgetText: string | null;
 	};
 	const loaded: Loaded[] = [];
 
@@ -1550,7 +1790,13 @@ async function loadGitRecordForPlan(opts: {
 			const summary = parseRunJson(text);
 			const stepsRel = rel.replace(/run\.json$/, "steps.jsonl");
 			const stepsText = await gitShowFile(opts.workdir, opts.commit, stepsRel);
-			loaded.push({ summary, stepsText });
+			const budgetRel = rel.replace(/run\.json$/, "budget.jsonl");
+			const budgetText = await gitShowFile(
+				opts.workdir,
+				opts.commit,
+				budgetRel,
+			);
+			loaded.push({ summary, stepsText, budgetText });
 		} catch {}
 	}
 
@@ -1572,7 +1818,11 @@ async function loadGitRecordForPlan(opts: {
 						const stepsText = existsSync(stepsPath)
 							? readFileSync(stepsPath, "utf-8")
 							: null;
-						loaded.push({ summary, stepsText });
+						const budgetPath = join(root, ent.name, "budget.jsonl");
+						const budgetText = existsSync(budgetPath)
+							? readFileSync(budgetPath, "utf-8")
+							: null;
+						loaded.push({ summary, stepsText, budgetText });
 					} catch {}
 				}
 			} catch {}
@@ -1598,7 +1848,25 @@ async function loadGitRecordForPlan(opts: {
 			steps = [];
 		}
 	}
-	return { summary: win.summary, steps };
+	let budgetLines: RecordLine[] = [];
+	let budgetDecodeError: string | undefined;
+	if (win.budgetText) {
+		try {
+			budgetLines = decodeJsonlFile(win.budgetText, win.summary.id).filter(
+				(line) => line.stream === "budget",
+			);
+		} catch (error) {
+			budgetLines = [];
+			budgetDecodeError =
+				error instanceof Error ? error.message : String(error);
+		}
+	}
+	return {
+		summary: win.summary,
+		steps,
+		budgetLines,
+		...(budgetDecodeError ? { budgetDecodeError } : {}),
+	};
 }
 
 function posixJoinRecords(...parts: string[]): string {
@@ -1634,9 +1902,12 @@ function loadDiskRunSummary(opts: {
 }
 
 export async function runV1State(params: RunStateParams): Promise<void> {
-	const { config, db, controlPlane, projectRoot } = await resolveDbContext({
-		startDir: params.startDir,
-	});
+	const dbContext =
+		params.dbContext ??
+		(await resolveDbContext({
+			startDir: params.startDir,
+		}));
+	const { config, db, controlPlane, projectRoot } = dbContext;
 
 	// `--plan` is an explicit selector: skip ambient identity (including FIVEX_RUN).
 	// `--run` wins when both are present (checked first today).
@@ -1659,7 +1930,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			relativePathUnder(planPath, projectRoot)?.replace(/\\/g, "/") ??
 			params.plan.replace(/\\/g, "/");
 		const mapped = planPath ? getPlan(db, planPath) : null;
-		const resolved = await resolvePlanProgress({
+		const resolved = await (params.progressResolver ?? resolvePlanProgress)({
 			workdir: projectRoot,
 			planPath,
 			planSlug: planSlugFromPath(rel),
@@ -1681,7 +1952,8 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			if (!gitRecord) {
 				outputError("RUN_NOT_FOUND", "Run not found");
 			}
-			let steps = gitRecord.steps;
+			const allSteps = gitRecord.steps;
+			let steps = allSteps;
 			if (params.tail !== undefined) {
 				steps = steps.slice(-params.tail);
 			}
@@ -1690,6 +1962,47 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				config as unknown as Record<string, unknown>,
 			);
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
+			let reviewBudget: ReviewBudgetState | undefined;
+			if (config.reviewBudget.mode !== "off") {
+				const warn =
+					params.warn ??
+					((message: string) => process.stderr.write(`Warning: ${message}\n`));
+				warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
+				if (gitRecord.budgetDecodeError) {
+					warn(
+						`Unable to read review budget records for run ${gitRecord.summary.id}; omitting review_budget: ${gitRecord.budgetDecodeError}`,
+					);
+				} else {
+					const records = createMemoryRecordStore();
+					records.putRun(gitRecord.summary);
+					if (gitRecord.budgetLines.length > 0) {
+						records.atomicAppend(
+							gitRecord.budgetLines.map((line) => ({
+								...line,
+							})),
+						);
+					}
+					const priorReviewer = allSteps.some(
+						(step) =>
+							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
+					);
+					reviewBudget = tryBuildReviewBudgetState(
+						{
+							runId: gitRecord.summary.id,
+							mode: config.reviewBudget.mode,
+							store: createReviewBudgetStore(records),
+							hasPriorPlanReviewerStep: priorReviewer,
+							semanticHumanRequiredFor: (snapshot) => {
+								return semanticHumanRequiredFromSteps(snapshot, allSteps);
+							},
+							...(existsSync(planPath)
+								? { currentPlanMarkdown: readFileSync(planPath, "utf-8") }
+								: {}),
+						},
+						warn,
+					);
+				}
+			}
 			outputSuccess(
 				{
 					run: {
@@ -1705,6 +2018,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					steps_used: budget.used,
 					max_steps: budget.max,
 					steps_remaining: budget.remaining,
+					...(reviewBudget ? { review_budget: reviewBudget } : {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -1781,6 +2095,83 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		runId: run.id,
 		worktreePath,
 	});
+	let reviewBudget: ReviewBudgetState | undefined;
+	if (config.reviewBudget.mode !== "off") {
+		const warn =
+			params.warn ??
+			((message: string) => process.stderr.write(`Warning: ${message}\n`));
+		warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
+		const recordContext = await createRecordContext({
+			runId: run.id,
+			startDir: params.startDir,
+			dbContext,
+		});
+		const reviewStore = createReviewBudgetStore(
+			recordContext.recordStore,
+			createReviewBudgetIndex(db),
+		);
+		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
+		const isPlanReviewer = (stepName: unknown, phase: unknown) =>
+			phase === "plan" &&
+			typeof stepName === "string" &&
+			stepName.startsWith("reviewer:");
+		const priorInDb = getSteps(db, run.id).some((step) =>
+			isPlanReviewer(step.step_name, step.phase),
+		);
+		const priorInRecords =
+			hasRecordRun &&
+			recordContext.recordStore.listLines(run.id, "steps").some((line) => {
+				const payload = line.payload as Partial<StepRecordPayload>;
+				return isPlanReviewer(payload.step_name, payload.phase);
+			});
+		let currentPlanMarkdown: string | undefined;
+		if (existsSync(recordContext.executionContext.effectivePlanPath)) {
+			currentPlanMarkdown = readFileSync(
+				recordContext.executionContext.effectivePlanPath,
+				"utf-8",
+			);
+		}
+		reviewBudget = hasRecordRun
+			? tryBuildReviewBudgetState(
+					{
+						runId: run.id,
+						mode: config.reviewBudget.mode,
+						store: reviewStore,
+						hasPriorPlanReviewerStep: priorInDb || priorInRecords,
+						currentPlanMarkdown,
+						semanticHumanRequiredFor: (snapshot) => {
+							if (!snapshot.stepName || snapshot.iteration === null)
+								return false;
+							const key = stepIdempotencyKey({
+								runId: run.id,
+								stepName: snapshot.stepName,
+								phase: snapshot.phase,
+								iteration: snapshot.iteration,
+							});
+							const line = recordContext.recordStore.getLine(
+								run.id,
+								"steps",
+								key,
+							);
+							if (line) {
+								return resultHasHumanRequired(
+									(line.payload as Partial<StepRecordPayload>).result_json,
+								);
+							}
+							return semanticHumanRequiredFromSteps(
+								snapshot,
+								getSteps(db, run.id),
+							);
+						},
+					},
+					warn,
+				)
+			: {
+					status: priorInDb ? "v1_compat" : "uninitialized",
+					mode: config.reviewBudget.mode,
+					enforcement_implemented: false,
+				};
+	}
 
 	outputSuccess(
 		{
@@ -1797,6 +2188,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			steps_used: budget.used,
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
+			...(reviewBudget ? { review_budget: reviewBudget } : {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},
@@ -1967,6 +2359,181 @@ function projectStepToSqlite(
 	});
 }
 
+export interface FinalizedRecordStep extends PreparedRecordStep {
+	iteration: number;
+}
+
+export type FinalizeWriteMode = "generic" | "paired-all-new";
+
+/**
+ * Resolve an admitted step's iteration, append its durable record operation(s),
+ * and project the authoritative step line. Omitted-iteration collisions are
+ * races, not duplicates: re-read the store and allocate the next identity.
+ */
+export async function finalizeAndWritePreparedStep(
+	prepared: PreparedRecordStep,
+	ctx: {
+		db: Database;
+		config: FiveXConfig;
+		recordStore: RecordStore;
+		originFor: (performer: RecordPerformer) => RecordOrigin;
+		run: RunRowV1;
+	},
+	opts: {
+		mode: FinalizeWriteMode;
+		extraOps?: (
+			finalized: FinalizedRecordStep,
+			envelope: ReturnType<typeof recordedEnvelope>,
+		) => AppendOp[];
+	},
+): Promise<{
+	finalized: FinalizedRecordStep;
+	recorded: boolean;
+	stepLine: RecordLine;
+	dbResult: ReturnType<typeof recordStep>;
+}> {
+	const callerOmittedIteration = prepared.iteration === undefined;
+	const initialSummary = computeRunSummary(ctx.db, prepared.runId);
+	const maxAttempts = callerOmittedIteration
+		? Math.max(1, prepared.maxSteps - initialSummary.total_steps)
+		: 1;
+	let attempts = 0;
+	let retry = false;
+	for (;;) {
+		attempts++;
+		if (retry) {
+			const summary = computeRunSummary(ctx.db, prepared.runId);
+			if (summary.total_steps >= prepared.maxSteps) {
+				throw new RecordError(
+					"MAX_STEPS_EXCEEDED",
+					`Run has reached the maximum of ${prepared.maxSteps} steps`,
+				);
+			}
+		}
+		const stepLines = storeListLines(ctx.recordStore, prepared.runId, "steps");
+		const storeMax = maxStoreIteration(
+			stepLines,
+			prepared.stepName,
+			prepared.phase,
+		);
+		const iteration =
+			prepared.iteration ??
+			(storeMax !== null
+				? storeMax + 1
+				: nextIteration(
+						ctx.db,
+						prepared.runId,
+						prepared.stepName,
+						prepared.phase,
+					));
+		const finalized: FinalizedRecordStep = { ...prepared, iteration };
+
+		let patchId: string | null = null;
+		let diffSummary: StepRecordPayload["diff_summary"] = null;
+		const previousHead = lastHeadCommit(stepLines);
+		if (previousHead && prepared.headCommit && prepared.effectiveWorkdir) {
+			try {
+				patchId = await computePatchId(
+					prepared.effectiveWorkdir,
+					previousHead,
+					prepared.headCommit,
+				);
+			} catch {
+				patchId = null;
+			}
+			try {
+				diffSummary = await computeDiffSummary(
+					prepared.effectiveWorkdir,
+					previousHead,
+					prepared.headCommit,
+				);
+			} catch {
+				diffSummary = null;
+			}
+		}
+		const payload = redactStepPayload(
+			{
+				step_name: prepared.stepName,
+				phase: prepared.phase ?? null,
+				iteration,
+				result_json: JSON.parse(prepared.resultJson) as unknown,
+				head_commit: prepared.headCommit ?? null,
+				patch_id: patchId,
+				diff_summary: diffSummary,
+				duration_ms: prepared.durationMs ?? null,
+				tokens_in: prepared.tokensIn ?? null,
+				tokens_out: prepared.tokensOut ?? null,
+				cost_usd: prepared.costUsd ?? null,
+				model: prepared.model ?? null,
+			},
+			ctx.config.records.redact,
+		);
+		const envelope = recordedEnvelope(ctx.originFor(prepared.performer));
+		const stepKey = stepIdempotencyKey({
+			runId: prepared.runId,
+			stepName: prepared.stepName,
+			phase: prepared.phase ?? null,
+			iteration,
+		});
+		const stepOp: AppendOp = {
+			runId: prepared.runId,
+			stream: "steps",
+			idempotencyKey: stepKey,
+			payload,
+			...envelope,
+		};
+		const ops = [stepOp, ...(opts.extraOps?.(finalized, envelope) ?? [])];
+		ensureRunRecord(ctx.recordStore, ctx.run, ctx.originFor);
+
+		let created: boolean;
+		let stepLine: RecordLine | null;
+		if (opts.mode === "generic") {
+			const result = ctx.recordStore.atomicAppend(ops)[0];
+			created = Boolean(result?.created);
+			stepLine =
+				result?.line ??
+				storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
+		} else {
+			const result = ctx.recordStore.atomicAppendIfAllNew(ops);
+			created = result.created;
+			stepLine = result.created
+				? (result.results[0]?.line ?? null)
+				: storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
+			if (!result.created && !stepLine) {
+				throw new RecordError(
+					"RECORD_PAIR_CORRUPT",
+					"Budget snapshot identity exists without its coupled step",
+				);
+			}
+		}
+
+		if (!created && callerOmittedIteration) {
+			if (attempts >= maxAttempts) {
+				throw new RecordError(
+					"RECORD_ITERATION_RETRY_EXHAUSTED",
+					`Could not allocate a unique iteration after ${attempts} attempts`,
+				);
+			}
+			retry = true;
+			continue;
+		}
+		if (!stepLine) {
+			throw new RecordError(
+				"RECORD_WRITE_FAILED",
+				"Step append returned no durable record line",
+			);
+		}
+		const durablePayload = parseStepPayload(stepLine.payload) ?? payload;
+		const dbResult = projectStepToSqlite(
+			ctx.db,
+			prepared,
+			durablePayload,
+			iteration,
+		);
+		return { finalized, recorded: created, stepLine, dbResult };
+	}
+}
+
 /**
  * Record a step in the database. Pure persistence — no stdout, no CliError.
  * Throws RecordError on validation failures (caller decides how to surface).
@@ -2074,126 +2641,47 @@ export async function recordStepInternal(
 		};
 	}
 
-	const stepLines = storeListLines(recordStore, prepared.runId, "steps");
-	let iteration = prepared.iteration;
-	if (iteration === undefined) {
-		const storeMax = maxStoreIteration(
-			stepLines,
-			prepared.stepName,
-			prepared.phase,
-		);
-		iteration =
-			storeMax !== null
-				? storeMax + 1
-				: nextIteration(db, prepared.runId, prepared.stepName, prepared.phase);
-	}
-
-	let patchId: string | null = null;
-	let diffSummary: StepRecordPayload["diff_summary"] = null;
-	const previousHead = lastHeadCommit(stepLines);
-	if (previousHead && prepared.headCommit && prepared.effectiveWorkdir) {
-		try {
-			patchId = await computePatchId(
-				prepared.effectiveWorkdir,
-				previousHead,
-				prepared.headCommit,
-			);
-		} catch {
-			patchId = null;
-		}
-		try {
-			const summary = await computeDiffSummary(
-				prepared.effectiveWorkdir,
-				previousHead,
-				prepared.headCommit,
-			);
-			diffSummary = summary;
-		} catch {
-			diffSummary = null;
-		}
-	}
-
-	const payload = redactStepPayload(
-		{
-			step_name: prepared.stepName,
-			phase: prepared.phase ?? null,
-			iteration,
-			result_json: JSON.parse(prepared.resultJson) as unknown,
-			head_commit: prepared.headCommit ?? null,
-			patch_id: patchId,
-			diff_summary: diffSummary,
-			duration_ms: prepared.durationMs ?? null,
-			tokens_in: prepared.tokensIn ?? null,
-			tokens_out: prepared.tokensOut ?? null,
-			cost_usd: prepared.costUsd ?? null,
-			model: prepared.model ?? null,
-		},
-		config.records.redact,
-	);
-
-	const origin = originFor(prepared.performer);
-	const envelope = recordedEnvelope(origin);
-	const stepKey = stepIdempotencyKey({
-		runId: prepared.runId,
-		stepName: prepared.stepName,
-		phase: prepared.phase ?? null,
-		iteration,
-	});
-	const ops: AppendOp[] = [
-		{
-			runId: prepared.runId,
-			stream: "steps",
-			idempotencyKey: stepKey,
-			payload,
-			...envelope,
-		},
-	];
-	if (prepared.stepName.startsWith("human:")) {
-		ops.push({
-			runId: prepared.runId,
-			stream: "decisions",
-			idempotencyKey: `decision:human:${stepKey}`,
-			payload: {
-				kind: "human-step",
-				step_name: prepared.stepName,
-				phase: prepared.phase ?? null,
-				iteration,
-				result_json: JSON.parse(prepared.resultJson) as unknown,
-			},
-			...envelope,
-		});
-	}
-
 	try {
-		ensureRunRecord(recordStore, run, originFor);
-		const results = recordStore.atomicAppend(ops);
-		const stepResult = results[0];
-		if (!stepResult?.created) {
-			const existing =
-				stepResult?.line ??
-				storeGetLine(recordStore, prepared.runId, "steps", stepKey);
-			const dbResult = existing
-				? projectFromLine(existing)
-				: projectStepToSqlite(db, prepared, payload, iteration);
-			const after = computeRunSummary(db, prepared.runId);
-			return {
-				step_id: dbResult.step_id,
-				step_name: dbResult.step_name,
-				phase: dbResult.phase,
-				iteration: dbResult.iteration,
-				recorded: false,
-				total_steps: after.total_steps,
-				max_steps: prepared.maxSteps,
-			};
-		}
-		const dbResult = projectStepToSqlite(db, prepared, payload, iteration);
+		const written = await finalizeAndWritePreparedStep(
+			prepared,
+			{ db, config, recordStore, originFor, run },
+			{
+				mode: "generic",
+				extraOps: prepared.stepName.startsWith("human:")
+					? (finalized, envelope) => {
+							const stepKey = stepIdempotencyKey({
+								runId: finalized.runId,
+								stepName: finalized.stepName,
+								phase: finalized.phase ?? null,
+								iteration: finalized.iteration,
+							});
+							return [
+								{
+									runId: finalized.runId,
+									stream: "decisions",
+									idempotencyKey: `decision:human:${stepKey}`,
+									payload: {
+										kind: "human-step",
+										step_name: finalized.stepName,
+										phase: finalized.phase ?? null,
+										iteration: finalized.iteration,
+										result_json: JSON.parse(finalized.resultJson),
+									},
+									...envelope,
+								},
+							];
+						}
+					: undefined,
+			},
+		);
+		const dbResult = written.dbResult;
 		const after = computeRunSummary(db, prepared.runId);
 		return {
 			step_id: dbResult.step_id,
 			step_name: dbResult.step_name,
 			phase: dbResult.phase,
 			iteration: dbResult.iteration,
-			recorded: dbResult.recorded,
+			recorded: written.recorded && dbResult.recorded,
 			total_steps: after.total_steps,
 			max_steps: prepared.maxSteps,
 		};

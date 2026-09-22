@@ -14,3 +14,8 @@ export function createPromptId(): string {
 export function createInvocationId(): string {
 	return randomUUID();
 }
+
+/** Generate an authoritative review-budget record ID (RFC 4122 UUID). */
+export function createReviewBudgetId(): string {
+	return randomUUID();
+}

@@ -1,7 +1,7 @@
 ---
 name: author-process-plan-review
 description: Revise a plan based on review feedback
-version: 2
+version: 4
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -39,6 +39,10 @@ This is a **document-only** task. You are revising the implementation plan, not 
 - Edit the plan document at `{{plan_path}}` to address review feedback.
 - Update phase descriptions, completion gates, checklist items, design decisions, and file tables as needed.
 - Add a revision history entry documenting what changed.
+- Preserve each Delivery Budget work-item `Wn` and debt-claim `DCn` ID across revisions; never renumber or reuse an ID for different work.
+- Put each incorporated review-item ID in the affected or new row's `Addresses` cell. Keep an ID listed there even when the row is rescored, and explain every score change in the row rationale.
+- Keep each negative row's matching `#### DCn` evidence synchronized. Its Debt claim cell must retain the literal parser-accepted form ``DC0 (`intrinsic`)`` (or ``DC0 (`adjacent`)`` / ``DC0 (`unrelated`)``): never backtick the claim ID, and always backtick the coupling. Coupling, architecture delta, target phase, minimal-compliant effort/architecture deltas, and non-empty concrete `Before` / `After` are all part of the claim; changing any of them makes the claim changed for reviewer re-assessment.
+- Keep `## Delivery Budget` and `### Surface Snapshot` in the plan. Do not add or edit prose totals, ceilings, baseline values, or budget status; those values are CLI-owned.
 - Do **not** create, modify, or delete any source code, test files, or configuration files.
 - Do **not** run tests or quality gates.
 

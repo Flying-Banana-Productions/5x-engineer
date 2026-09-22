@@ -343,6 +343,8 @@ export interface ReviewBudgetConfig {
 	singleArchitectureReviewPoints: number;
 }
 
+export type ReviewBudgetThresholds = Omit<ReviewBudgetConfig, "mode">;
+
 export const DEFAULT_REVIEW_BUDGET_CONFIG: Omit<ReviewBudgetConfig, "mode"> = {
 	growthPercent: 25,
 	minimumGrowthPoints: 2,
@@ -426,13 +428,13 @@ export interface DerivedBudgetResult {
 	requiresHuman: boolean;
 	positiveArchitectureLimit: number;
 	baselineDisagreementThreshold: number;
-	thresholds: ReviewBudgetConfig;
+	thresholds: ReviewBudgetThresholds;
 }
 ```
 
-- [ ] Create `src/review-budget/types.ts` with the types above, including shared structural `BaselineAssessment`. Do **not** declare this type in `src/protocol.ts` in this phase (or any later persistence phase).
-- [ ] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
-- [ ] Type-level test `test/unit/review-budget/types.test.ts`: a value satisfying `{ independentEffortEstimate, confidence, reason }` is assignable to `BaselineAssessment` exported from `src/review-budget/types.ts`. This test (and all Phase 1 tests) must not import `src/protocol.ts`.
+- [x] Create `src/review-budget/types.ts` with the types above, including shared structural `BaselineAssessment`. Do **not** declare this type in `src/protocol.ts` in this phase (or any later persistence phase).
+- [x] Export `isEffortPoints` / `isArchitectureDelta` / `isCompleteDebtClaimEvidence` type guards used by the parser and protocol layer. `isCompleteDebtClaimEvidence` is true only when `debtClaimId`, `coupling`, non-empty `targetPhase`, valid minimal deltas, and non-empty `before`/`after` are all present.
+- [x] Type-level test `test/unit/review-budget/types.test.ts`: a value satisfying `{ independentEffortEstimate, confidence, reason }` is assignable to `BaselineAssessment` exported from `src/review-budget/types.ts`. This test (and all Phase 1 tests) must not import `src/protocol.ts`.
 
 ### 1.2 Arithmetic — `src/review-budget/arithmetic.ts`
 
@@ -530,12 +532,12 @@ export function deriveBudget(input: {
 
 `requiresHuman`: true if band is `over_effective` or `over_absolute`, or alerts include `baseline_disputed` or `positive_architecture_exceeded`, or `semanticHumanRequired`. Advisory callers record this and do not route.
 
-- [ ] Implement `arithmetic.ts` with no I/O.
-- [ ] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; **incomplete `debtClaim` (missing before/after or targetPhase) excluded from `N` even if an assessment says eligible**; `D` capped by percent and by `floor(N * ratio)`.
+- [x] Implement `arithmetic.ts` with no I/O.
+- [x] `test/unit/review-budget/arithmetic.test.ts`: `B = 4` (`S = 6`, `A = 8`, `D = 1` → `E = 7`); `B = 0` guard (`B0` capture already forbids empty tables; arithmetic should still be defined — treat `B < 0` as throw); disagreement threshold for `B0 = 4` is `max(2, ceil(1)) = 2`; `I = 6` → `understated`; `I = 1` → `inflated`; `I = 5` with threshold 2 → `aligned`; `P` ignores negatives; `Addresses` dedup + still-listed re-entry; polish excluded from `R`; ineligible claims excluded from `N`; **incomplete `debtClaim` (missing before/after or targetPhase) excluded from `N` even if an assessment says eligible**; `D` capped by percent and by `floor(N * ratio)`.
 
 ---
 
-## Phase 2: Delivery Budget parser
+## Phase 2: Delivery Budget parser - COMPLETE
 
 **Completion gate:** Fixture tests cover happy path (including complete debt-claim evidence), every diagnostic code, and `parsePlan` phase extraction unchanged when the budget section sits before Phase 1 or after the last phase.
 
@@ -639,14 +641,14 @@ export function rawDeliveryBudgetSection(markdown: string): string | null;
 
 `rawDeliveryBudgetSection` returns the exact substring from `## Delivery Budget` through the last snapshot bullet (exclusive of the next `##`), **including** `### Debt Claims` when present. Slice 08 will byte-compare this for `text_only`; this slice only needs it for tests and for storing `original_section` on the baseline if cheap. Store the parsed ledger JSON (**including `debtClaim` evidence on each work item**) as source of truth; optionally also store `original_section` text on capture for audit.
 
-- [ ] Implement parser + helpers.
-- [ ] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5` **and** complete `### Debt Claims` / `#### DC0` evidence); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; negative arch with table `DCn` but **no** Debt Claims subsection; negative arch with empty `Before`; invalid `targetPhase` (`review`); orphan `#### DC9`; duplicate `DC0`; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
-- [ ] Round-trip: `parseDeliveryBudget(canonical).value.workItems[1].debtClaim` equals `{ debtClaimId: "DC0", coupling: "intrinsic", targetPhase: "phase-2", minimalAlternativeEffortDelta: 2, minimalAlternativeArchitectureDelta: 0, before: "five independent proposal construction paths", after: "one invariant-enforcing proposal constructor" }`.
+- [x] Implement parser + helpers.
+- [x] `test/unit/parsers/delivery-budget.test.ts` fixtures: canonical table (W2 effort `5` **and** complete `### Debt Claims` / `#### DC0` evidence); missing section; empty table; bad effort `4` (invalid — not in `{1, 2, 3, 5, 8}`); duplicate `W1`; negative arch without claim; negative arch with table `DCn` but **no** Debt Claims subsection; negative arch with empty `Before`; invalid `targetPhase` (`review`); orphan `#### DC9`; duplicate `DC0`; Addresses split; snapshot missing; `parsePlan` regression fixtures with budget before Phase 1 and after Phase 2 (`test/unit/parsers/plan.test.ts` add two cases).
+- [x] Round-trip: `parseDeliveryBudget(canonical).value.workItems[1].debtClaim` equals `{ debtClaimId: "DC0", coupling: "intrinsic", targetPhase: "phase-2", minimalAlternativeEffortDelta: 2, minimalAlternativeArchitectureDelta: 0, before: "five independent proposal construction paths", after: "one invariant-enforcing proposal constructor" }`.
 - [ ] Re-export parse types from `src/index.ts` in Phase 10 (not required to compile Phase 2).
 
 ---
 
-## Phase 3: `reviewBudget` configuration
+## Phase 3: `reviewBudget` configuration - COMPLETE
 
 **Completion gate:** `FiveXConfigSchema.parse({})` yields `reviewBudget.mode === "advisory"` and the `206` §7 defaults. Layered overlay can set `mode = "off"`. Invalid mode/percent fails Zod parse. Registry lists dotted keys. `KNOWN_ROOT_CONFIG_KEYS` includes `reviewBudget`.
 
@@ -708,10 +710,10 @@ mode = "advisory"
 
 Layering: existing `deepMerge` (`src/config.ts:695`) already merges nested tables. Personal/local overlays may tighten percents. No new merge rules.
 
-- [ ] Schema + defaults + `KNOWN_ROOT_CONFIG_KEYS`.
-- [ ] `test/unit/config.test.ts` / `config-v1.test.ts`: parse `{}`, overlay `mode = "off"`, reject `mode = "strict"`, reject negative percent.
-- [ ] `test/unit/config-registry.test.ts`: `reviewBudget.mode` default `"advisory"`; `allowedValues` includes `enforced`.
-- [ ] Update any snapshot of `5x config show` keys if tests enumerate them.
+- [x] Schema + defaults + `KNOWN_ROOT_CONFIG_KEYS`.
+- [x] `test/unit/config.test.ts` / `config-v1.test.ts`: parse `{}`, overlay `mode = "off"`, reject `mode = "strict"`, reject negative percent.
+- [x] `test/unit/config-registry.test.ts`: `reviewBudget.mode` default `"advisory"`; `allowedValues` includes `enforced`.
+- [x] Update any snapshot of `5x config show` keys if tests enumerate them.
 
 ---
 
@@ -760,15 +762,15 @@ atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult;
 
 Add:
 
-- [ ] All keys new (`[step, budget]`): `{ created: true }`, both `getLine` hits, insertion order preserved, origins round-trip.
-- [ ] Existing step + new budget: `{ created: false }`, `duplicates` includes only the step op, **budget line absent**, step payload is the first-writer payload.
-- [ ] Existing budget + new step: `{ created: false }`, step line absent, budget payload unchanged.
-- [ ] Both keys already exist: `{ created: false }`, neither line rewritten.
-- [ ] Sequential retry of the same pair: first `{ created: true }`; second `{ created: false }`; still exactly one step line and one budget line.
-- [ ] Throw / `onBeforeCommit` during an all-new apply: store unchanged (no step, no budget).
-- [ ] Multi-run ops throw `INVALID_ATOMIC_APPEND` with no mutation.
-- [ ] **Regression:** `atomicAppend` existing-step + new-budget still returns `[false, true]` and still appends the budget line — proving this method did not change general per-op dedup.
-- [ ] The existing-step + new-budget `atomicAppendIfAllNew` case is the deterministic cross-store race/partial-duplicate contract (memory **and** working-tree). Do **not** implement a wrapper that calls `atomicAppend` and then tries to undo a sibling line.
+- [x] All keys new (`[step, budget]`): `{ created: true }`, both `getLine` hits, insertion order preserved, origins round-trip.
+- [x] Existing step + new budget: `{ created: false }`, `duplicates` includes only the step op, **budget line absent**, step payload is the first-writer payload.
+- [x] Existing budget + new step: `{ created: false }`, step line absent, budget payload unchanged.
+- [x] Both keys already exist: `{ created: false }`, neither line rewritten.
+- [x] Sequential retry of the same pair: first `{ created: true }`; second `{ created: false }`; still exactly one step line and one budget line.
+- [x] Throw / `onBeforeCommit` during an all-new apply: store unchanged (no step, no budget).
+- [x] Multi-run ops throw `INVALID_ATOMIC_APPEND` with no mutation.
+- [x] **Regression:** `atomicAppend` existing-step + new-budget still returns `[false, true]` and still appends the budget line — proving this method did not change general per-op dedup.
+- [x] The existing-step + new-budget `atomicAppendIfAllNew` case is the deterministic cross-store race/partial-duplicate contract (memory **and** working-tree). Do **not** implement a wrapper that calls `atomicAppend` and then tries to undo a sibling line.
 
 Do **not** delete or weaken the existing mixed-stream `atomicAppend` tests.
 
@@ -993,17 +995,17 @@ export function reindexReviewBudget(
 
 `reindexReviewBudget` walks budget lines in insertion order and upserts by `record_idempotency_key`. It never invents a baseline or snapshot that has no record line. Snapshot upserts copy `decodeBudgetSnapshotPayload(...).baselineAssessment` onto the facade record and into `baseline_assessment_json` (NULL when the payload omits it). Reindex must not drop a first-snapshot assessment or fill `I` from `derived_json`. Merged 212 already ships `5x records index`; this slice does **not** change that CLI. Optional later wiring may call this helper from it. Command retry must not wait for `records index` — the duplicate / `created: false` projection-repair path is the online repair.
 
-- [ ] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`, nullable `baseline_assessment_json`).
-- [ ] Update version assertions from 7 → 8.
-- [ ] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
-- [ ] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
-- [ ] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`. **This file must not import `createRecordContext`.**
-- [ ] `test/unit/review-budget/slice-10-phase-boundary.test.ts` (**new**): read Phase 4 production files (`src/control-plane/review-budget-store.ts`, `src/review-budget/record-lines.ts`, `src/control-plane/review-budget-index.ts`) and Phase 4 tests (`review-budget-store-contract.test.ts`, `review-budget-index.test.ts`, `record-lines.test.ts`) as text; assert none contain the identifier `createRecordContext` or an import of `record-context`. Phase 6 extends this file to assert `src/commands/review-budget-context.ts` **does** import and call `createRecordContext`. Until Phase 6 exists, the Phase 4 half still passes.
-- [ ] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
-- [ ] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
-- [ ] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
-- [ ] Do not add a SQLite-backed `RecordStore` implementation in this slice. The only `RecordStore` source edits are the additive `atomicAppendIfAllNew` method and shared apply-under-lock extraction needed to implement it.
-- [ ] `atomicAppendIfAllNew` contract tests in `record-store-contract.test.ts` (both backends) per §4.0, including existing-step + new-budget as a no-op **and** the frozen `atomicAppend` `[false, true]` regression.
+- [x] Migration v8 + `test/unit/db/schema-v8.test.ts` (fresh, v7→v8, unique `run_id`, unique `record_idempotency_key`, `b0 > 0` CHECK, FK to `runs`, nullable `baseline_assessment_json`).
+- [x] Update version assertions from 7 → 8.
+- [x] Facade over `MemoryRecordStore` (no SQLite) + facade over `MemoryRecordStore` + SQLite index.
+- [x] `test/unit/review-budget/record-lines.test.ts`: encode/decode round-trips `baselineAssessment` when present and omits it when absent. Imports `BaselineAssessment` from `src/review-budget/types.ts` only — **not** from `src/protocol.ts`.
+- [x] `test/unit/control-plane/review-budget-store-contract.test.ts`: capture once **with a fixture `origin`** (`recordedEnvelope` round-trip on the baseline line); second capture is no-op on `b0` **and** appends no second baseline line; append snapshots ordered; **same-`createdAt` pair returns in insertion order** (`latestSnapshot` is the second append); **round-trip**: captured `originalLedger.workItems[].debtClaim` retains `targetPhase`, minimal deltas, and non-empty `before`/`after`; appended `currentLedger` does the same; **first snapshot round-trips `baselineAssessment`; a later snapshot omits it**. Facade `appendSnapshot` / read-through compile against the Phase 1 domain type (import from `src/review-budget/types.ts`, not `src/protocol.ts`). Live writers still obtain `origin` from `originFor`; this suite may construct a fixture `RecordOrigin`. **This file must not import `createRecordContext`.**
+- [x] `test/unit/review-budget/slice-10-phase-boundary.test.ts` (**new**): read Phase 4 production files (`src/control-plane/review-budget-store.ts`, `src/review-budget/record-lines.ts`, `src/control-plane/review-budget-index.ts`) and Phase 4 tests (`review-budget-store-contract.test.ts`, `review-budget-index.test.ts`, `record-lines.test.ts`) as text; assert none contain the identifier `createRecordContext` or an import of `record-context`. Phase 6 extends this file to assert `src/commands/review-budget-context.ts` **does** import and call `createRecordContext`. Until Phase 6 exists, the Phase 4 half still passes.
+- [x] `test/unit/control-plane/review-budget-index.test.ts`: after two captures/snapshots, delete index rows (or use a fresh DB), `reindexReviewBudget` restores identical baselines/ledgers/assessments **including first-snapshot `baselineAssessment`**; **after the wipe, `deriveBudget` using reconstructed `I` (`baselineAssessment.independentEffortEstimate`) and the restored ledger/findings/assessments yields the same `I` and `baselineDirection` as before the wipe**; derived cache may be recomputed; **no index row appears for a run with zero budget lines**. Reindex tests import `BaselineAssessment` from `src/review-budget/types.ts`, not `src/protocol.ts`.
+- [x] Do not import `bun:sqlite` from the facade file, `record-lines.ts`, or command handlers (handlers land in Phase 6–8).
+- [x] Do not import `src/protocol.ts` from `record-lines.ts`, the facade, the index, or Phase 4 tests. Those units type-check against `src/review-budget/types.ts` only.
+- [x] Do not add a SQLite-backed `RecordStore` implementation in this slice. The only `RecordStore` source edits are the additive `atomicAppendIfAllNew` method and shared apply-under-lock extraction needed to implement it.
+- [x] `atomicAppendIfAllNew` contract tests in `record-store-contract.test.ts` (both backends) per §4.0, including existing-step + new-budget as a no-op **and** the frozen `atomicAppend` `[false, true]` regression.
 
 ---
 
@@ -1119,11 +1121,11 @@ If flag JSON includes CLI-owned keys, `INVALID_JSON` / `INVALID_STRUCTURED_OUTPU
 
 ### 5.4 Tests
 
-- [ ] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
-- [ ] Type-level: `BaselineAssessment` re-exported from `src/protocol.ts` is the same type as `src/review-budget/types.ts` (import/re-export, not a second `interface` declaration). A Phase 1 `BaselineAssessment` value is assignable to `ReviewerVerdict["baselineAssessment"]`.
-- [ ] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
-- [ ] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
-- [ ] Do not add `--credit-realization` or implementation `scopeClass` enums.
+- [x] `test/unit/protocol.test.ts`: present-field validation; v1 verdict still asserts; `creditClaim` present-fields require `targetPhase` + non-empty `before`/`after`; reject `budgetBand` on the object if `assert` is taught to call `rejectCliOwnedBudgetFields` — prefer calling reject in emit/validate only so `assertReviewerVerdict` stays backward compatible for in-memory v1 objects.
+- [x] Type-level: `BaselineAssessment` re-exported from `src/protocol.ts` is the same type as `src/review-budget/types.ts` (import/re-export, not a second `interface` declaration). A Phase 1 `BaselineAssessment` value is assignable to `ReviewerVerdict["baselineAssessment"]`.
+- [x] `test/unit/commands/protocol-emit.test.ts`: item extras round-trip including full `creditClaim`; `--baseline-assessment`; repeated `--credit-assessment`; reject `--item` containing `budgetBand`.
+- [x] `test/unit/commands/protocol-helpers.test.ts`: v1 reviewer payload still `ok`.
+- [x] Do not add `--credit-realization` or implementation `scopeClass` enums.
 
 ---
 
@@ -1223,7 +1225,7 @@ export function createReviewBudgetContext(
 
 Do **not** return `{ db, config, controlPlane, recordStore, store }` without `originFor`. Protocol/invoke handlers call this factory (or accept an injected `ReviewBudgetCommandContext` in tests). They do **not** import `bun:sqlite`, do **not** construct a SQLite-only budget store, and do **not** assemble `RecordOrigin` inline. **Do not** reimplement `createRecordContext` — it already exists.
 
-- [ ] Extend `test/unit/review-budget/slice-10-phase-boundary.test.ts`: `src/commands/review-budget-context.ts` source contains an import of `createRecordContext` and a call to it. Phase 4 facade files still must not.
+- [x] Extend `test/unit/review-budget/slice-10-phase-boundary.test.ts`: `src/commands/review-budget-context.ts` source contains an import of `createRecordContext` and a call to it. Phase 4 facade files still must not.
 
 #### 6.2.1 Shared pre-append admission — consume merged `prepareRecordStepAppend`
 
@@ -1375,9 +1377,9 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
 
 ### 6.5 Tests
 
-- [ ] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged) **when evidence fields are unchanged**; **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins; **`--credit-assessment` for an unknown `DCn` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`**; **changed `before`/`targetPhase` on an existing `DCn` requires a current assessment**; **author `N` uses persisted `debtClaim` architecture, not a reviewer `creditClaim` on a different id**; **reviewer `creditClaim` colliding with author `DC0` fails `CREDIT_CLAIM_ID_COLLISION`**; injected ledger with negative row and only id+coupling (no evidence) fails `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED`.
-- [ ] `test/unit/review-budget/persist-record.test.ts` (facade + `MemoryRecordStore`, and SQLite index projection): unique-append failure (injected `atomicAppendIfAllNew` throw) leaves **zero** snapshot lines and **zero** index snapshot rows; unique success leaves **exactly one** line and matching index row **with first-snapshot `baselineAssessment` on the record, facade, and index**; idempotent retry (`created: false`) leaves still **one** record line; **SQLite `steps` and/or budget-index projection failure after successful `atomicAppendIfAllNew`, then retry with the same complete tuple: `created: false`, still exactly one snapshot line, and both SQLite projections are present (repaired) after the retry**; wiping the index and reindexing still shows one snapshot **and the same `baselineAssessment`**. Admission failures are **not** covered only by this lump; they have focused wrapper tests below.
-- [ ] `test/unit/commands/record-plan-reviewer-step.test.ts` (wrapper + injected `ReviewBudgetCommandContext` with `originFor` spy): **focused tests, one condition each**, asserting `atomicAppendIfAllNew` (and `atomicAppend`) was **not** called and that step stream, budget stream, SQLite `steps`, and v8 snapshot index are unchanged:
+- [x] `test/unit/review-budget/apply.test.ts`: skip off; skip v1_compat; capture+derive (no snapshot written by apply); Addresses vs still-listed `R`; reject aggregates; require `I` on first record; reject `I` on second; missing item deltas on active run; `readiness` unchanged when `requiresHuman` true; `enforced` still does not rewrite readiness; **enforced first-capture calls `warn`** (injected sink); **eligible claim carried forward** on a second apply with no current assessment for that `DCn` (`N`/`D`/`E` unchanged) **when evidence fields are unchanged**; **new claim on a later ledger requires** `--credit-assessment`; overlay re-assessment of an existing claim wins; **`--credit-assessment` for an unknown `DCn` fails `CREDIT_ASSESSMENT_UNKNOWN_CLAIM`**; **changed `before`/`targetPhase` on an existing `DCn` requires a current assessment**; **author `N` uses persisted `debtClaim` architecture, not a reviewer `creditClaim` on a different id**; **reviewer `creditClaim` colliding with author `DC0` fails `CREDIT_CLAIM_ID_COLLISION`**; injected ledger with negative row and only id+coupling (no evidence) fails `BUDGET_DEBT_CLAIM_EVIDENCE_REQUIRED`.
+- [x] `test/unit/review-budget/persist-record.test.ts` (facade + `MemoryRecordStore`, and SQLite index projection): unique-append failure (injected `atomicAppendIfAllNew` throw) leaves **zero** snapshot lines and **zero** index snapshot rows; unique success leaves **exactly one** line and matching index row **with first-snapshot `baselineAssessment` on the record, facade, and index**; idempotent retry (`created: false`) leaves still **one** record line; **SQLite `steps` and/or budget-index projection failure after successful `atomicAppendIfAllNew`, then retry with the same complete tuple: `created: false`, still exactly one snapshot line, and both SQLite projections are present (repaired) after the retry**; wiping the index and reindexing still shows one snapshot **and the same `baselineAssessment`**. Admission failures are **not** covered only by this lump; they have focused wrapper tests below.
+- [x] `test/unit/commands/record-plan-reviewer-step.test.ts` (wrapper + injected `ReviewBudgetCommandContext` with `originFor` spy): **focused tests, one condition each**, asserting `atomicAppendIfAllNew` (and `atomicAppend`) was **not** called and that step stream, budget stream, SQLite `steps`, and v8 snapshot index are unchanged:
   - terminal run (`status !== "active"`) → `RUN_NOT_ACTIVE`
   - missing worktree (`resolveRunExecutionContext` → `WORKTREE_MISSING`) → `WORKTREE_MISSING`
   - invalid result (`params.result` is not JSON) → `INVALID_JSON`
@@ -1388,10 +1390,10 @@ Plumb `optInBudgetBaseline` onto invoke reviewer flags if the commander module a
   - **`records.redact = ["origin.actor"]`:** both ops omit `recorder.actor` while `installation_id` and `performer.kind` remain
   - **omitted iteration:** first write allocates N and persists step+snapshot under N; retry **without** iteration is a new unique pair (N+1) **only when** the first pair succeeded and the caller omitted iteration (v1 identity); retry **with** the assigned N after projection failure does not create N+1 and repairs both projections
   - **omitted-iteration lost race:** inject a pre-existing step at the would-be N; the seam retries with N+1; the pre-existing step gains no snapshot; the new pair is 1:1
-- [ ] `test/unit/commands/finalize-and-write-prepared-step.test.ts` (**new**): generic mode still uses `atomicAppend` (per-op dedup unchanged, including `human:` extra op); paired mode never calls `atomicAppend` for the `[step, snapshot]` batch; specified-iteration duplicate does not retry-allocate; omitted-iteration-at-ceiling never reaches the seam (admission already threw).
-- [ ] `test/unit/review-budget/ensure-baseline.test.ts` (or persist-record): baseline-only `captureBaseline` / `ensurePlanReviewBaseline` stamps `origin` from `originFor({ kind: "system", role: "cli" })`; safety-net path with an agent performer stamps that agent origin; missing origin is not a silent unattributed line
-- [ ] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot **line**.
-- [ ] Do not assert any prompt/choose routing.
+- [x] `test/unit/commands/finalize-and-write-prepared-step.test.ts` (**new**): generic mode still uses `atomicAppend` (per-op dedup unchanged, including `human:` extra op); paired mode never calls `atomicAppend` for the `[step, snapshot]` batch; specified-iteration duplicate does not retry-allocate; omitted-iteration-at-ceiling never reaches the seam (admission already threw).
+- [x] `test/unit/review-budget/ensure-baseline.test.ts` (or persist-record): baseline-only `captureBaseline` / `ensurePlanReviewBaseline` stamps `origin` from `originFor({ kind: "system", role: "cli" })`; safety-net path with an agent performer stamps that agent origin; missing origin is not a silent unattributed line
+- [x] `test/unit/commands/protocol-validate.test.ts`: envelope includes `result.budget` when recorded with a fixture plan; v1 verdict without budget fields still validates without `--record`; **direct `--record` with `mode=enforced` and no prior render emits the reserved-mode warning**; failed record does not leave a snapshot **line**.
+- [x] Do not assert any prompt/choose routing.
 
 ---
 
@@ -1446,9 +1448,9 @@ CLI is the source of truth: skills cannot silently skip a missing section on a n
 
 `--opt-in-budget-baseline` (Phase 6) is the only capture path for `v1_compat` runs. Template render must **not** treat continued reviews as opt-in.
 
-- [ ] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, **missing Debt Claims evidence**, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
-- [ ] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
-- [ ] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
+- [x] Unit tests for `ensurePlanReviewBaseline` (off, already, v1_compat, missing section, **missing Debt Claims evidence**, happy capture, opt_in, **enforced warn on capture**, **no warn on skip/already**).
+- [x] Unit tests on `templateRender` with `startDir` / injected store if the handler can take a store factory; otherwise integration spawn in Phase 10.
+- [x] Warning sink for `enforced` (do not monkey-patch `console.warn`; pass `warn` callback — matches `test/setup.ts` guidance in `5x-cli/AGENTS.md`). Direct `protocol validate --record` coverage is in Phase 6.5 (same helper, same sink).
 
 ---
 
@@ -1507,11 +1509,11 @@ Keep it one or two lines. Do not dump the ledger.
 
 ### 8.3 Tests
 
-- [ ] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture **RecordStore** with baseline + snapshot lines (index may be empty — facade must reconstruct); omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`; **after wiping the index, `review_budget.I` and `baseline_direction` match the first snapshot’s `baselineAssessment` (identical to pre-wipe derived values)**.
+- [x] `test/unit/commands/run-state` (or existing run-v1 handler tests): fixture **RecordStore** with baseline + snapshot lines (index may be empty — facade must reconstruct); omit object when mode off; `v1_compat` shape; text formatter includes `Budget:`; **after wiping the index, `review_budget.I` and `baseline_direction` match the first snapshot’s `baselineAssessment` (identical to pre-wipe derived values)**.
 
 ---
 
-## Phase 9: Templates, skills, and docs
+## Phase 9: Templates, skills, and docs - COMPLETE
 
 **Completion gate:** Generated-plan template contains the budget table and Debt Claims subsection. Author/reviewer prompts explain stable IDs, `Addresses`, complete §4.3 evidence on author `DCn`, “do not emit totals,” and first-review `I`. Plan-review skill documents preflight and “do not route on `budget.requiresHuman`.” No implementation-review template (`reviewer-commit.md`) changes.
 
@@ -1599,8 +1601,8 @@ Update `test/unit/harnesses/opencode-skills.test.ts` / `cursor-skills.test.ts` i
 
 Do not flip `docs/v2/206-review-budget-governance.md` status to Implemented until the slice ships; a one-line “advisory persistence: plan 208” note is optional.
 
-- [ ] Templates, skills, 101 primitives, default artifact, repo plan template.
-- [ ] Harness skill unit tests still pass (update expected substrings).
+- [x] Templates, skills, 101 primitives, default artifact, repo plan template.
+- [x] Harness skill unit tests still pass (update expected substrings).
 
 ---
 
@@ -1646,8 +1648,8 @@ New `review-budget.test.ts` (spawn CLI, `cleanGitEnv()`, `stdin: "ignore"`, `tim
 
 Overlay `5x.toml.local` `[reviewBudget] mode = "off"` disables capture in the temp project.
 
-- [ ] Exports + integration tests + full `bun test`.
-- [ ] Update plan-input metadata `Generated plan` to this file path if the docs owner wants it; not required for the slice to compile.
+- [x] Exports + integration tests + full `bun test`.
+- [x] Update plan-input metadata `Generated plan` to this file path if the docs owner wants it; not required for the slice to compile.
 
 ---
 

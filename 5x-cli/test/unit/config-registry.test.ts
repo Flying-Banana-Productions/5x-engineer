@@ -113,6 +113,16 @@ describe("config-registry", () => {
 		expect(autoSync?.description).toContain("lossless");
 	});
 
+	test("review budget keys surface with defaults and allowed modes", () => {
+		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
+		const mode = byKey.get("reviewBudget.mode");
+		expect(mode?.type).toBe("enum");
+		expect(mode?.default).toBe("advisory");
+		expect(mode?.allowedValues).toEqual(["off", "advisory", "enforced"]);
+		expect(byKey.get("reviewBudget.growthPercent")?.default).toBe(25);
+		expect(byKey.get("reviewBudget.absoluteGrowthPercent")?.default).toBe(50);
+	});
+
 	test("harness.autoSync defaults to false with no harness table in config", () => {
 		// The default posture must survive a `5x.toml` that never mentions the
 		// key — auto-refresh is opt-in, and an absent table is not consent.

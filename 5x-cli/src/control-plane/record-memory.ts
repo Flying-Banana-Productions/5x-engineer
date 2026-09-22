@@ -10,6 +10,7 @@ import type { RecordStore } from "./record-store.js";
 import {
 	type AppendOp,
 	type AppendResult,
+	type AtomicAppendIfAllNewResult,
 	RECORD_LINE_SCHEMA_VERSION,
 	type RecordLine,
 	RecordStoreError,
@@ -17,6 +18,7 @@ import {
 	RUN_RECORD_FORMAT_VERSION,
 	type RunRecordSummary,
 	requireSingleRunAtomicAppend,
+	requireUniqueAtomicAppendKeys,
 } from "./record-types.js";
 
 export interface MemoryRecordStoreOptions {
@@ -251,6 +253,32 @@ class MemoryRecordStore implements RecordStore {
 			this.runs.set(runId, clone);
 		}
 		return results;
+	}
+
+	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
+		if (ops.length === 0) return { created: true, results: [] };
+		requireSingleRunAtomicAppend(ops);
+		requireUniqueAtomicAppendKeys(ops);
+		const runId = ops[0]?.runId as string;
+		const run = this.runs.get(runId);
+		if (!run) {
+			throw new RecordStoreError("RUN_NOT_FOUND", `run ${runId} not found`);
+		}
+		const clone = cloneRun(run);
+		const duplicates: Array<{ index: number; line: RecordLine }> = [];
+		for (const [index, op] of ops.entries()) {
+			const stream = requireStream(op.stream);
+			validateEnvelope(op);
+			const existing = clone.streams[stream].lines.get(op.idempotencyKey);
+			if (existing) duplicates.push({ index, line: cloneLine(existing) });
+		}
+		if (duplicates.length > 0) return { created: false, duplicates };
+
+		const now = this.now();
+		const results = ops.map((op) => applyOp(clone, op, now));
+		this.onBeforeCommit?.();
+		this.runs.set(runId, clone);
+		return { created: true, results };
 	}
 
 	private requireRun(runId: string): RunState {

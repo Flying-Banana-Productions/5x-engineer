@@ -3,8 +3,20 @@ import {
 	type AuthorStatus,
 	assertAuthorStatus,
 	assertReviewerVerdict,
+	type BaselineAssessment as ProtocolBaselineAssessment,
 	type ReviewerVerdict,
 } from "../../src/protocol.js";
+import type { BaselineAssessment } from "../../src/review-budget/types.js";
+
+const baselineAssessment: BaselineAssessment = {
+	independentEffortEstimate: 8,
+	confidence: "high",
+	reason: "Independent estimate",
+};
+const protocolBaselineAssessment: ProtocolBaselineAssessment =
+	baselineAssessment;
+const verdictBaselineAssessment: ReviewerVerdict["baselineAssessment"] =
+	protocolBaselineAssessment;
 
 describe("assertAuthorStatus", () => {
 	test("passes for complete + commit in phase execution", () => {
@@ -56,6 +68,10 @@ describe("assertAuthorStatus", () => {
 });
 
 describe("assertReviewerVerdict", () => {
+	test("re-exports the shared BaselineAssessment type", () => {
+		expect(verdictBaselineAssessment).toEqual(baselineAssessment);
+	});
+
 	test("passes for ready + empty items", () => {
 		const verdict: ReviewerVerdict = {
 			readiness: "ready",
@@ -108,5 +124,141 @@ describe("assertReviewerVerdict", () => {
 		expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(
 			"missing 'action'",
 		);
+	});
+
+	test("validates present plan-review budget fields", () => {
+		const verdict: ReviewerVerdict = {
+			readiness: "ready_with_corrections",
+			items: [
+				{
+					id: "R1",
+					title: "Reduce coupling",
+					action: "auto_fix",
+					reason: "Avoid a boundary",
+					scopeClass: "risk_reduction",
+					effortDelta: 2,
+					architectureDelta: -2,
+					coupling: "intrinsic",
+					estimateConfidence: "medium",
+					creditClaim: {
+						creditClaimId: "RC1",
+						targetPhase: "Phase 2",
+						minimalAlternativeEffortDelta: 1,
+						minimalAlternativeArchitectureDelta: 0,
+						before: "One boundary",
+						after: "Two boundaries",
+					},
+				},
+			],
+			baselineAssessment,
+			creditAssessments: [
+				{
+					creditClaimId: "DC1",
+					eligibility: "eligible",
+					coupling: "intrinsic",
+					reason: "Required by the delivery path",
+				},
+			],
+		};
+
+		expect(() => assertReviewerVerdict(verdict, "REVIEW")).not.toThrow();
+	});
+
+	test("requires coupling for negative architecture delta", () => {
+		const verdict = {
+			readiness: "not_ready",
+			items: [
+				{
+					id: "R1",
+					title: "Claim",
+					action: "auto_fix",
+					reason: "Reason",
+					architectureDelta: -1,
+				},
+			],
+		} as ReviewerVerdict;
+		expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(
+			"requires 'coupling'",
+		);
+	});
+
+	test("requires complete credit claim evidence", () => {
+		const verdict = {
+			readiness: "not_ready",
+			items: [
+				{
+					id: "R1",
+					title: "Claim",
+					action: "auto_fix",
+					reason: "Reason",
+					creditClaim: {
+						creditClaimId: "RC1",
+						targetPhase: "",
+						minimalAlternativeEffortDelta: 4,
+						minimalAlternativeArchitectureDelta: 0,
+						before: "before",
+						after: "after",
+					},
+				},
+			],
+		} as ReviewerVerdict;
+		expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(
+			"targetPhase",
+		);
+	});
+
+	test("validates baseline independent effort as a non-negative integer", () => {
+		const verdict = {
+			readiness: "ready",
+			items: [],
+			baselineAssessment: {
+				independentEffortEstimate: 1.5,
+				confidence: "high",
+				reason: "estimate",
+			},
+		} as ReviewerVerdict;
+		expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(
+			"independentEffortEstimate",
+		);
+	});
+
+	test("rejects null object-shaped budget fields with actionable messages", () => {
+		const cases: Array<[ReviewerVerdict, string]> = [
+			[
+				{
+					readiness: "not_ready",
+					items: [
+						{
+							id: "R1",
+							title: "Claim",
+							action: "auto_fix",
+							reason: "Reason",
+							creditClaim: null,
+						} as unknown as ReviewerVerdict["items"][number],
+					],
+				},
+				"creditClaim must be an object",
+			],
+			[
+				{
+					readiness: "ready",
+					items: [],
+					baselineAssessment: null,
+				} as unknown as ReviewerVerdict,
+				"baselineAssessment must be an object",
+			],
+			[
+				{
+					readiness: "ready",
+					items: [],
+					creditAssessments: [null],
+				} as unknown as ReviewerVerdict,
+				"each creditAssessment must be an object",
+			],
+		];
+
+		for (const [verdict, message] of cases) {
+			expect(() => assertReviewerVerdict(verdict, "REVIEW")).toThrow(message);
+		}
 	});
 });

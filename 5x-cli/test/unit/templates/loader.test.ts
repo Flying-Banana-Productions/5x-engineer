@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE } from "../../../src/templates/default-artifacts.js";
 import {
 	getDefaultTemplateRaw,
 	listTemplates,
@@ -16,7 +17,7 @@ describe("loadTemplate", () => {
 	test("loads a known template with valid metadata", () => {
 		const { metadata, body } = loadTemplate("author-generate-plan");
 		expect(metadata.name).toBe("author-generate-plan");
-		expect(metadata.version).toBe(2);
+		expect(metadata.version).toBe(4);
 		expect(metadata.variables).toContain("prd_path");
 		expect(metadata.variables).toContain("plan_path");
 		expect(metadata.variables).toContain("plan_template_path");
@@ -114,6 +115,31 @@ describe("author-generate-plan template", () => {
 		expect(result.prompt).not.toContain("5x:status");
 		expect(result.prompt).not.toContain("5x:verdict");
 	});
+
+	test("requires a scored plan with stable IDs and complete debt evidence", () => {
+		const result = renderTemplate("author-generate-plan", vars);
+		expect(result.prompt).toContain("## Delivery Budget");
+		expect(result.prompt).toContain("stable `Wn` ID");
+		expect(result.prompt).toContain("minimal-compliant effort delta");
+		expect(result.prompt).toContain("Do not claim architecture reduction");
+		expect(result.prompt).toContain("DC0 (`intrinsic`)");
+	});
+});
+
+describe("default implementation plan artifact", () => {
+	test("contains the complete review-budget scaffold before Phase 1", () => {
+		const budget =
+			DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE.indexOf("## Delivery Budget");
+		const phase = DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE.indexOf("## Phase 1:");
+		expect(budget).toBeGreaterThan(-1);
+		expect(budget).toBeLessThan(phase);
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain("### Debt Claims");
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain("#### DC0");
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain("Addresses");
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain(
+			"Do not write totals, ceilings, or budget status",
+		);
+	});
 });
 
 describe("author-next-phase template", () => {
@@ -184,6 +210,14 @@ describe("author-process-plan-review template", () => {
 		const result = renderTemplate("author-process-plan-review", vars);
 		expect(result.prompt).toContain("document-only");
 		expect(result.prompt).not.toContain("Run all tests");
+	});
+
+	test("preserves budget IDs, Addresses, and complete debt evidence", () => {
+		const result = renderTemplate("author-process-plan-review", vars);
+		expect(result.prompt).toContain("Preserve each Delivery Budget work-item");
+		expect(result.prompt).toContain("`Addresses` cell");
+		expect(result.prompt).toContain("minimal-compliant effort/architecture");
+		expect(result.prompt).toContain("CLI-owned");
 	});
 });
 
@@ -317,6 +351,33 @@ describe("reviewer-plan template", () => {
 		expect(result.prompt).toContain("readiness");
 		expect(result.prompt).toContain("items");
 		expect(result.prompt).toContain("summary");
+	});
+
+	test("requires first-review budget evidence without reviewer totals", () => {
+		const result = renderTemplate("reviewer-plan", vars);
+		expect(result.prompt).toContain("--baseline-assessment");
+		expect(result.prompt).toContain("Assess every author-ledger `DCn`");
+		expect(result.prompt).toContain("stable ID");
+		expect(result.prompt).toContain("Do not author budget totals");
+		expect(result.prompt).toContain("Budget telemetry is advisory only");
+		expect(result.prompt).toContain("review-budget mode is off");
+		expect(result.prompt).toContain("omit all budget-specific verdict fields");
+	});
+});
+
+describe("reviewer-plan-continued template", () => {
+	test("omits the baseline and reassesses only changed debt claims", () => {
+		const result = renderTemplate("reviewer-plan-continued", {
+			plan_path: "docs/development/001-impl-cli.md",
+			review_path: "docs/development/reviews/001-review.md",
+			previous_review_commit: "abc123",
+			current_commit: "def456",
+		});
+		expect(result.prompt).toContain("Do **not** emit `baselineAssessment`");
+		expect(result.prompt).toContain("new or changed");
+		expect(result.prompt).toContain("`Addresses`");
+		expect(result.prompt).toContain("Never emit reviewer-authored totals");
+		expect(result.prompt).toContain("route only by readiness and item action");
 	});
 });
 

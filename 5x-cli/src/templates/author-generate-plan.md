@@ -1,7 +1,7 @@
 ---
 name: author-generate-plan
 description: Generate an implementation plan from requirements
-version: 2
+version: 4
 variables: [prd_path, plan_path, plan_template_path, run_id]
 step_name: "author:generate-plan"
 variable_defaults:
@@ -34,6 +34,9 @@ You are implementing the 5x workflow. Generate an implementation plan from the p
 - Include a Files Touched table and Tests table.
 - Include an Estimated Timeline.
 - Be specific about what changes — avoid vague descriptions.
+- Include the required `## Delivery Budget` table and `### Surface Snapshot` from the plan template. Score implementation work only; tests belong to the work item they validate and are not separate scored rows.
+- Give every work item a stable `Wn` ID that remains attached to that item across revisions. Include an `Addresses` cell (`-` initially) and do not write totals, ceilings, baseline values, or budget status; the CLI derives them.
+- Every negative architecture row must name a stable `DCn` and include a matching `### Debt Claims` / `#### DCn` block. Write the Debt claim table cell in the literal parser-accepted form ``DC0 (`intrinsic`)`` (or ``DC0 (`adjacent`)`` / ``DC0 (`unrelated`)``): do not backtick `DC0`, and do backtick the coupling. Complete evidence is mandatory: coupling in the table plus target implementation phase, minimal-compliant effort delta, minimal-compliant architecture delta, and non-empty concrete `Before` / `After` states. Do not claim architecture reduction without all of this evidence.
 
 ### Quality Criteria
 
@@ -42,6 +45,7 @@ You are implementing the 5x workflow. Generate an implementation plan from the p
 - The plan should be implementable by an agent following it step-by-step.
 - Design decisions should be documented with rationale.
 - Test strategy should cover unit, integration, and edge cases.
+- Delivery-budget rationale must make each effort/architecture score auditable from the planned implementation.
 
 ## Non-Interactive Execution
 

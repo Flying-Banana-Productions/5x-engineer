@@ -134,6 +134,14 @@ export interface AppendResult {
 	line: RecordLine;
 }
 
+/** Result of a coupled append that is committed only when every key is new. */
+export type AtomicAppendIfAllNewResult =
+	| { created: true; results: AppendResult[] }
+	| {
+			created: false;
+			duplicates: Array<{ index: number; line: RecordLine }>;
+	  };
+
 export class RecordStoreError extends Error {
 	readonly code: string;
 	constructor(code: string, message: string) {
@@ -154,6 +162,21 @@ export function requireSingleRunAtomicAppend(ops: AppendOp[]): void {
 			"INVALID_ATOMIC_APPEND",
 			`atomicAppend is a per-run transaction; received ${runIds.length} runIds (${runIds.join(", ")})`,
 		);
+	}
+}
+
+/** Coupled all-new batches cannot repeat an identity within the batch. */
+export function requireUniqueAtomicAppendKeys(ops: AppendOp[]): void {
+	const seen = new Set<string>();
+	for (const op of ops) {
+		const identity = `${op.stream}\0${op.idempotencyKey}`;
+		if (seen.has(identity)) {
+			throw new RecordStoreError(
+				"INVALID_ATOMIC_APPEND",
+				`atomicAppendIfAllNew received repeated key (${op.stream}, ${op.idempotencyKey})`,
+			);
+		}
+		seen.add(identity);
 	}
 }
 

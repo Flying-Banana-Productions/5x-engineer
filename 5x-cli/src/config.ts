@@ -160,6 +160,87 @@ const HarnessConfigSchema = z.object({
 		),
 });
 
+const ReviewBudgetConfigSchema = z.object({
+	mode: z
+		.enum(["off", "advisory", "enforced"])
+		.default("advisory")
+		.describe(
+			"off: v1 iteration-only. advisory: record forecasts, do not change routing. enforced: reserved; treated as advisory until plan-review governance ships.",
+		),
+	growthPercent: z
+		.number()
+		.int()
+		.min(0)
+		.max(100)
+		.default(25)
+		.describe(
+			"Percent growth from governing B used to compute standard ceiling S.",
+		),
+	minimumGrowthPoints: z
+		.number()
+		.int()
+		.min(0)
+		.default(2)
+		.describe(
+			"Minimum point allowance added to B (and to S when computing A).",
+		),
+	debtTradeoffRatio: z
+		.number()
+		.min(0)
+		.default(1)
+		.describe(
+			"Exchange ratio: floor(N * ratio) caps provisional debt credit D.",
+		),
+	maxDebtCreditPercent: z
+		.number()
+		.int()
+		.min(0)
+		.max(100)
+		.default(25)
+		.describe("Percent of B that caps provisional debt credit D."),
+	absoluteGrowthPercent: z
+		.number()
+		.int()
+		.min(0)
+		.max(500)
+		.default(50)
+		.describe("Percent growth from B used to compute absolute ceiling A."),
+	baselineDisagreementPercent: z
+		.number()
+		.int()
+		.min(0)
+		.max(100)
+		.default(25)
+		.describe("Percent of B0 for first-reviewer disagreement threshold."),
+	minimumBaselineDisagreementPoints: z
+		.number()
+		.int()
+		.min(0)
+		.default(2)
+		.describe("Minimum points of |I - B0| that count as a baseline dispute."),
+	maxPositiveArchitecturePercent: z
+		.number()
+		.int()
+		.min(0)
+		.max(100)
+		.default(25)
+		.describe("Percent of B for gross positive architecture human threshold."),
+	minimumPositiveArchitecturePoints: z
+		.number()
+		.int()
+		.min(0)
+		.default(2)
+		.describe("Minimum P that raises positive_architecture_exceeded."),
+	singleArchitectureReviewPoints: z
+		.number()
+		.int()
+		.min(0)
+		.default(5)
+		.describe(
+			"A single architectureDelta at or above this value raises an alert.",
+		),
+});
+
 const OpenCodeConfigSchema = z.object({
 	/** URL for external OpenCode server. Omit for managed (local) mode. */
 	url: z
@@ -223,6 +304,9 @@ const FiveXConfigSchema = z
 		),
 		harness: HarnessConfigSchema.default({}).describe(
 			"Harness asset freshness warnings and automatic re-sync behavior.",
+		),
+		reviewBudget: ReviewBudgetConfigSchema.default({}).describe(
+			"Delivery-budget forecast settings for plan review.",
 		),
 		paths: PathsSchema.default({}).describe(
 			"Plans, reviews, archive, records, and template paths (resolved relative to each config file).",
@@ -557,6 +641,7 @@ const KNOWN_ROOT_CONFIG_KEYS = new Set([
 	"qualityGates",
 	"skipQualityGates",
 	"worktree",
+	"reviewBudget",
 	"paths",
 	"plans",
 	"records",
@@ -625,6 +710,19 @@ function warnUnknownConfigKeys(
 	const allowedDb = new Set(["path"]);
 	const allowedRecords = new Set(["redact", "actor"]);
 	const allowedPlans = new Set(["branch"]);
+	const allowedReviewBudget = new Set([
+		"mode",
+		"growthPercent",
+		"minimumGrowthPoints",
+		"debtTradeoffRatio",
+		"maxDebtCreditPercent",
+		"absoluteGrowthPercent",
+		"baselineDisagreementPercent",
+		"minimumBaselineDisagreementPoints",
+		"maxPositiveArchitecturePercent",
+		"minimumPositiveArchitecturePoints",
+		"singleArchitectureReviewPoints",
+	]);
 
 	// Effective plugin keys: merged layers + CLI, plus providers declared in this file.
 	const providerNames = collectKnownPluginTopLevelKeys(
@@ -696,6 +794,8 @@ function warnUnknownConfigKeys(
 				collect(value, allowedRecords, nextPrefix);
 			} else if (key === "plans") {
 				collect(value, allowedPlans, nextPrefix);
+			} else if (key === "reviewBudget") {
+				collect(value, allowedReviewBudget, nextPrefix);
 			}
 		}
 	}

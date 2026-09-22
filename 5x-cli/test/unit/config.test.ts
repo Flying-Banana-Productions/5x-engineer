@@ -455,6 +455,25 @@ cursor = "claude-3-5-cursor"
 // ---------------------------------------------------------------------------
 
 describe("5x.toml.local overlay (loadConfig)", () => {
+	test("local reviewBudget mode overlays the root table", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[reviewBudget]\nmode = "advisory"\ngrowthPercent = 40\n`,
+			);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[reviewBudget]\nmode = "off"\n`,
+			);
+			const { config } = await loadConfig(tmp);
+			expect(config.reviewBudget.mode).toBe("off");
+			expect(config.reviewBudget.growthPercent).toBe(40);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("merges 5x.toml.local beside primary config file", async () => {
 		const tmp = makeTmpDir();
 		try {

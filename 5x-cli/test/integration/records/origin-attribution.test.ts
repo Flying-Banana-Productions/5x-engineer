@@ -388,7 +388,7 @@ describe("origin attribution", () => {
 
 				writeFileSync(
 					join(dir, "5x.toml"),
-					`[author]\nprovider = "sample"\nmodel = "sample/test-model"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = false\n\n[sample.structured]\nreadiness = "ready"\nitems = []\nsummary = "Looks good"\n`,
+					`[author]\nprovider = "sample"\nmodel = "sample/test-model"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "off"\n\n[sample]\necho = false\n\n[sample.structured]\nreadiness = "ready"\nitems = []\nsummary = "Looks good"\n`,
 				);
 
 				const reviewer = await run5x(

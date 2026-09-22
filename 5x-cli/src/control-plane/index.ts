@@ -15,7 +15,11 @@ export {
 	getCancellationAdapter,
 	registerCancellationAdapter,
 } from "./cancellation-adapter.js";
-export { createInvocationId, createPromptId } from "./ids.js";
+export {
+	createInvocationId,
+	createPromptId,
+	createReviewBudgetId,
+} from "./ids.js";
 export {
 	CANCELLATION_UNSUPPORTED,
 	getInvocationView,
@@ -70,6 +74,7 @@ export type { RecordStore } from "./record-store.js";
 export type {
 	AppendOp,
 	AppendResult,
+	AtomicAppendIfAllNewResult,
 	DiffSummary,
 	RecordLine,
 	RecordOrigin,
@@ -94,6 +99,20 @@ export type {
 	PrepareRecordStepOutcome,
 	RecordCommandContext,
 } from "./record-writer-types.js";
+export type { ReviewBudgetIndex } from "./review-budget-index.js";
+export {
+	createReviewBudgetIndex,
+	reindexReviewBudget,
+} from "./review-budget-index.js";
+export type {
+	AppendSnapshotInput,
+	CaptureBaselineInput,
+	CaptureBaselineResult,
+	ReviewBudgetBaseline,
+	ReviewBudgetSnapshotRecord,
+	ReviewBudgetStore,
+} from "./review-budget-store.js";
+export { createReviewBudgetStore } from "./review-budget-store.js";
 export { createSqlitePromptStore } from "./sqlite-store.js";
 export type { PromptStore } from "./store.js";
 export type { TestRemoteAdapter } from "./test-remote-adapter.js";

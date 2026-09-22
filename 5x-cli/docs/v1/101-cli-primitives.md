@@ -85,6 +85,7 @@ These primitives are not yet implemented. This document is an implementation-rea
 |---|---|---|
 | **Run lifecycle** | `run init`, `run state`, `run record`, `run list`, `run complete`, `run reopen` | Create runs, query state, record steps |
 | **Agent invocation** | `invoke author`, `invoke reviewer`, `invoke status`, `invoke cancel` | Invoke sub-agents via provider; inspect or request cancellation of registry rows |
+| **Structured protocols** | `protocol emit`, `protocol validate` | Produce or validate canonical author/reviewer results; optionally record them |
 | **Quality** | `quality run` | Execute quality gates |
 | **Phase composites** | `phase finish` | Sugar over quality + author protocol validate/record + checklist |
 | **Inspection** | `plan list`, `plan phases`, `diff` | Read plan structure, inspect git changes |
@@ -203,6 +204,28 @@ Query the current state of a run.
       "phases_completed": [],
       "cost_usd": 0.45,
       "tokens_total": 15000
+    },
+    "review_budget": {
+      "status": "active",
+      "mode": "advisory",
+      "capture_kind": "initial",
+      "B0": 8,
+      "B": 8,
+      "I": 9,
+      "W": 10,
+      "R": 2,
+      "projected_effort": 12,
+      "S": 10,
+      "N": 3,
+      "D": 2,
+      "E": 12,
+      "A": 12,
+      "P": 1,
+      "baseline_direction": "aligned",
+      "budget_band": "within_debt_allowance",
+      "budget_alerts": [],
+      "requires_human": false,
+      "enforcement_implemented": false
     }
   }
 }
@@ -212,6 +235,7 @@ Query the current state of a run.
 
 - Returns ALL recorded steps for the run, ordered by creation time.
 - The `summary` field provides a computed snapshot so the orchestrating agent doesn't need to compute it from raw steps.
+- When review-budget mode is not `off`, `review_budget` reports `uninitialized`, `v1_compat`, or `active`. An active baseline includes the CLI-derived forecast shown above. It also includes `stale_plan: true` when the current plan's scored effort differs from the latest recorded snapshot; the field is omitted when the snapshot is current. `requires_human` is advisory telemetry and does not change readiness, command exit codes, or workflow routing. Reserved mode `enforced` still reports `enforcement_implemented: false` and behaves as advisory. In `off` mode the object is omitted.
 - `--plan` adds additive `source` / `source_ref` / `source_commit` / `source_age_seconds` / `diverged_sources` from git progress resolution (same algorithm as `plan phases`). Local SQLite still supplies the active run and step `id`s when present.
 - If `--plan` is used and no local run exists, a `run.json` at the winning git commit is surfaced (`status` from the record, steps decoded from `steps.jsonl`). Those git-only step objects omit `id` (SQLite autoincrement is local-only); other step keys match the SQLite path. `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
@@ -451,6 +475,34 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
 ```
 
 Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author`.
+
+### `5x protocol emit reviewer` and `protocol validate reviewer`
+
+`protocol emit reviewer` creates canonical reviewer JSON. For an active plan-review budget, each `--item` JSON includes a stable `id`, `scopeClass` (`acceptance_required`, `risk_reduction`, or `polish`), non-negative integer `effortDelta`, allowed `architectureDelta`, and `estimateConfidence`; a negative architecture delta also includes `coupling`. Item IDs remain attached to the same finding across continued reviews.
+
+```
+5x protocol emit reviewer --no-ready \
+  --baseline-assessment '{"independentEffortEstimate":8,"confidence":"medium","reason":"Independent estimate"}' \
+  --credit-assessment '{"creditClaimId":"DC0","eligibility":"eligible","coupling":"intrinsic","reason":"Intrinsic simplification"}' \
+  --item '{"id":"P1.1","title":"Missing case","action":"auto_fix","reason":"Required behavior is absent","scopeClass":"acceptance_required","effortDelta":2,"architectureDelta":0,"estimateConfidence":"high"}'
+```
+
+- `--baseline-assessment <json>` supplies the independent initial-scope estimate `I`. It is required on the first recorded active plan review and forbidden on continued reviews. Reviewers estimate independently; plans and reviewer verdicts do not provide a baseline total.
+- `--credit-assessment <json>` is repeatable. On the first review, assess every author-ledger `DCn`. On continued reviews, emit an assessment only for a new or changed claim; the CLI carries unchanged assessments forward. A changed claim includes any change to coupling, work-item architecture delta, target phase, minimal-compliant deltas, before, or after.
+- `creditClaimId` must name a persisted plan-side `DCn` whose complete evidence is already on the ledger, or a reviewer-introduced item `creditClaim` in the same verdict. Assessments do not invent or backfill plan-side evidence. An item `creditClaim` is only for a claim introduced by that finding and includes target phase, minimal-compliant effort/architecture deltas, and non-empty before/after.
+- Reviewer input must not contain CLI-owned aggregates or status such as `budget`, `budgetBand`, `requiresHuman`, `B0`, `W`, `R`, ceilings, `projectedEffort`, or `baselineDirection`; supplying them is `INVALID_STRUCTURED_OUTPUT`.
+
+`protocol validate reviewer` validates raw reviewer JSON. With `--record --phase plan`, an active-budget verdict is derived, decorated with `result.budget`, and recorded with its budget snapshot. Mid-review runs without a baseline remain `v1_compat` unless a human explicitly opts in:
+
+```
+cat verdict.json | 5x protocol validate reviewer \
+  --record --step reviewer:review --phase plan --iteration 2 \
+  --opt-in-budget-baseline
+```
+
+`--opt-in-budget-baseline` is valid only for a recorded plan-review verdict when prior plan-review steps exist and no baseline has been captured. The current plan must first contain a valid Delivery Budget, complete debt evidence, and Surface Snapshot. Skills must obtain and record human confirmation before passing this flag.
+
+Review-budget mode is advisory: validation and recording do not rewrite `readiness`, alter command exit codes, or route on derived `budget.requiresHuman`. Existing `auto_fix` / `human_required` action semantics remain authoritative. The same rules apply when `invoke reviewer ... --record` records a plan review; `invoke` also accepts `--opt-in-budget-baseline` for the explicitly confirmed compatibility transition.
 
 ---
 

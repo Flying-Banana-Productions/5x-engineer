@@ -10,23 +10,40 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
+import type { ReviewerVerdict } from "../protocol.js";
+import {
+	applyPlanReviewBudget,
+	type PendingBudgetSnapshot,
+} from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
+import { RecordContextError } from "./record-context.js";
+import {
+	createReviewBudgetContext,
+	hasPriorPlanReviewerStep,
+	type ReviewBudgetCommandContext,
+	recordPlanReviewerStepWithSnapshot,
+} from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import {
 	outputAmbientError,
 	REQUIRED_REMEDIATION,
 	resolveAmbientRunId,
 } from "./run-identity.js";
-import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import {
+	prepareRecordStepAppend,
+	RecordError,
+	recordStepInternal,
+} from "./run-v1.handler.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,6 +64,9 @@ export interface ProtocolValidateParams {
 	phaseChecklistValidate?: boolean;
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
+	optInBudgetBaseline?: boolean;
+	warn?: (message: string) => void;
+	createReviewBudgetContext?: typeof createReviewBudgetContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +399,9 @@ export async function protocolValidate(
 	params: ProtocolValidateParams,
 ): Promise<void> {
 	const { role } = params;
-	const { result: validated, warnings } = await protocolValidateCore(params);
+	const { result: coreValidated, warnings } =
+		await protocolValidateCore(params);
+	let validated = coreValidated;
 
 	// Surface warnings to stderr (non-breaking; orchestrators read stdout)
 	for (const w of warnings) {
@@ -451,6 +473,115 @@ export async function protocolValidate(
 		recordStepName = params.step;
 		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
+	if (
+		params.optInBudgetBaseline &&
+		(role !== "reviewer" || !params.record || resolvedPhase !== "plan")
+	) {
+		outputError(
+			"BUDGET_BASELINE_OPT_IN_INVALID",
+			"--opt-in-budget-baseline requires a recorded plan-reviewer verdict",
+		);
+	}
+
+	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	const budgetMode =
+		role === "reviewer" && resolvedPhase === "plan" && params.run
+			? (await loadConfig(resolve(params.startDir ?? "."))).config.reviewBudget
+					.mode
+			: "off";
+	if (
+		role === "reviewer" &&
+		resolvedPhase === "plan" &&
+		params.run &&
+		budgetMode !== "off"
+	) {
+		const contextFactory =
+			params.createReviewBudgetContext ?? createReviewBudgetContext;
+		try {
+			budgetContext = await contextFactory({
+				runId: params.run,
+				startDir: params.startDir,
+			});
+		} catch (err) {
+			if (!params.record && err instanceof RecordContextError) {
+				budgetContext = undefined;
+			} else if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			} else {
+				throw err;
+			}
+		}
+		if (budgetContext && budgetContext.config.reviewBudget.mode !== "off") {
+			const baseline = budgetContext.store.getBaseline(params.run);
+			let admissionEligible = true;
+			if (params.record && !baseline && recordStepName) {
+				try {
+					await prepareRecordStepAppend(
+						{
+							run: params.run,
+							stepName: recordStepName,
+							result: JSON.stringify(validated),
+							phase: resolvedPhase,
+							iteration: params.iteration,
+							performer: { kind: "agent", role },
+						},
+						budgetContext,
+					);
+				} catch (err) {
+					if (err instanceof RecordError) admissionEligible = false;
+					else throw err;
+				}
+			}
+			if ((params.record || baseline) && admissionEligible) {
+				let planMarkdown = "";
+				let planReadFailed = false;
+				try {
+					planMarkdown = readFileSync(
+						budgetContext.executionContext.effectivePlanPath,
+						"utf-8",
+					);
+				} catch (err) {
+					planReadFailed = true;
+					if (params.record) {
+						const message = err instanceof Error ? err.message : String(err);
+						outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+					}
+				}
+				if (planReadFailed) {
+					// Dry validation remains v1-compatible when its optional context vanished.
+				} else {
+					const performer = { kind: "agent", role: "reviewer" } as const;
+					const applied = applyPlanReviewBudget({
+						runId: params.run,
+						stepName: recordStepName ?? params.step ?? "reviewer:review",
+						phase: resolvedPhase,
+						iteration: params.iteration,
+						planMarkdown,
+						verdict: validated as ReviewerVerdict,
+						config: budgetContext.config.reviewBudget,
+						store: budgetContext.store,
+						hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
+							budgetContext,
+							params.run,
+						),
+						optInBaseline: params.optInBudgetBaseline ?? false,
+						origin: budgetContext.originFor(performer),
+						warn:
+							params.warn ??
+							((message) => console.error(`Warning: ${message}`)),
+					});
+					if (applied.status === "error") {
+						outputError(applied.code, applied.message);
+					}
+					if (applied.status === "applied") {
+						validated = applied.verdict;
+						pendingSnapshot = applied.pendingSnapshot;
+					}
+				}
+			}
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// Checklist gate: verify phase completion in plan (author-only)
@@ -491,7 +622,7 @@ export async function protocolValidate(
 	// -----------------------------------------------------------------------
 	if (params.record && recordStepName) {
 		try {
-			await recordStepInternal({
+			const recordParams = {
 				// params.run is guaranteed non-null here: prerequisite check above
 				// calls outputError() (which exits) when --run is absent.
 				run: params.run as string,
@@ -499,8 +630,17 @@ export async function protocolValidate(
 				result: JSON.stringify(validated),
 				phase: resolvedPhase,
 				iteration: params.iteration,
-				performer: { kind: "agent", role },
-			});
+				performer: { kind: "agent", role } as const,
+			};
+			if (pendingSnapshot && budgetContext) {
+				await recordPlanReviewerStepWithSnapshot(
+					recordParams,
+					pendingSnapshot,
+					budgetContext,
+				);
+			} else {
+				await recordStepInternal(recordParams, budgetContext);
+			}
 		} catch (err) {
 			// Recording is a side effect — primary envelope already written.
 			// Warn on stderr, set non-zero exit via process.exitCode.

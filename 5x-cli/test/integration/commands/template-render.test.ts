@@ -8,10 +8,17 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runMigrations } from "../../../src/db/schema.js";
+import { planSlugFromPath } from "../../../src/paths.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -194,7 +201,7 @@ function setupProjectWithSessionEnforcement(dir: string): void {
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(
 		join(dir, "5x.toml"),
-		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\ncontinuePhaseSessions = true\n',
+		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\ncontinuePhaseSessions = true\n\n[reviewBudget]\nmode = "off"\n',
 	);
 
 	const planDir = join(dir, "docs", "development");
@@ -1708,5 +1715,149 @@ describe("5x template render", () => {
 			}
 		},
 		{ timeout: 20000 },
+	);
+
+	test(
+		"initial reviewer-plan render captures a baseline record before review",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "enforced"\n',
+				);
+				writeFileSync(
+					planPath,
+					`# Test Plan
+
+## Delivery Budget
+- Estimate confidence: high
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+| --- | --- | --- | --- | --- | --- | --- |
+| W1 | Work | 2 | 0 | - | - | Needed |
+
+### Surface Snapshot
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1
+- [ ] Do thing
+`,
+				);
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add budget"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				const initialized = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(initialized.exitCode).toBe(0);
+				const runId = ((
+					parseJson(initialized.stdout).data as Record<string, unknown>
+				).run_id ?? "") as string;
+				const result = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+				]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stderr).toContain(
+					"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
+				);
+				const budgetPath = join(
+					dir,
+					"docs",
+					"development",
+					"runs",
+					planSlugFromPath(planPath),
+					runId,
+					"budget.jsonl",
+				);
+				const lines = readFileSync(budgetPath, "utf-8").trim().split("\n");
+				expect(lines).toHaveLength(1);
+				const line = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+				expect(line.idempotency_key).toBe(`budget:baseline:${runId}`);
+				expect(line.payload).toMatchObject({
+					kind: "baseline",
+					b0: 2,
+					captureKind: "initial",
+				});
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"initial reviewer-plan preflight fails missing budget but preserves mid-review v1 compatibility",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				const initialized = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+				]);
+				expect(initialized.exitCode).toBe(0);
+				const runId = ((
+					parseJson(initialized.stdout).data as Record<string, unknown>
+				).run_id ?? "") as string;
+				const failed = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+				]);
+				expect(failed.exitCode).toBe(1);
+				expect(parseJson(failed.stdout)).toMatchObject({
+					ok: false,
+					error: {
+						code: "BUDGET_SECTION_MISSING",
+						message: expect.stringContaining("author preflight"),
+					},
+				});
+				insertStep(dir, runId, "reviewer:review", "plan");
+				const compatible = await run5x(dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					runId,
+				]);
+				expect(compatible.exitCode).toBe(0);
+				const budgetPath = join(
+					dir,
+					"docs",
+					"development",
+					"runs",
+					planSlugFromPath(planPath),
+					runId,
+					"budget.jsonl",
+				);
+				expect(existsSync(budgetPath)).toBe(false);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
 	);
 });

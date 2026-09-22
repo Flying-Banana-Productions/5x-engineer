@@ -43,9 +43,13 @@ export type {
 	AnsweredBy,
 	AppendOp,
 	AppendResult,
+	AppendSnapshotInput,
+	AtomicAppendIfAllNewResult,
 	CancellationActor,
 	CancellationAdapter,
 	CancellationOutcome,
+	CaptureBaselineInput,
+	CaptureBaselineResult,
 	CasResult,
 	ClientInvocationState,
 	CreatePromptInput,
@@ -73,6 +77,9 @@ export type {
 	RecordStore,
 	RecordStream,
 	RegisterInvocationInput,
+	ReviewBudgetBaseline,
+	ReviewBudgetSnapshotRecord,
+	ReviewBudgetStore,
 	RunRecordSummary,
 	StepIdempotencyKey,
 	StepRecordPayload,
@@ -84,6 +91,8 @@ export {
 	createMemoryPromptStore,
 	createMemoryRecordStore,
 	createPromptId,
+	createReviewBudgetId,
+	createReviewBudgetStore,
 	createSqliteInvocationStore,
 	createSqlitePromptStore,
 	createTestRemoteAdapter,
@@ -104,6 +113,7 @@ export {
 	RUN_RECORD_FORMAT_VERSION,
 	recordedEnvelope,
 	registerCancellationAdapter,
+	reindexReviewBudget,
 	requestInvocationCancellation,
 	stepIdempotencyKey,
 	toClientInvocationState,
@@ -221,6 +231,15 @@ export {
 	setPrettyPrint,
 } from "./output.js";
 // Parsers
+export type {
+	DeliveryBudgetParseCode,
+	DeliveryBudgetParseResult,
+} from "./parsers/delivery-budget.js";
+export {
+	incorporatedFindingIds,
+	parseDeliveryBudget,
+	rawDeliveryBudgetSection,
+} from "./parsers/delivery-budget.js";
 export type { ChecklistItem, ParsedPlan, Phase } from "./parsers/plan.js";
 export { parsePlan } from "./parsers/plan.js";
 export type { ReviewSummary } from "./parsers/review.js";
@@ -263,6 +282,47 @@ export type {
 	RunResult,
 	SessionOptions,
 } from "./providers/types.js";
+export { deriveBudget } from "./review-budget/arithmetic.js";
+export type {
+	BudgetBaselinePayload,
+	BudgetRecordKind,
+	BudgetSnapshotPayload,
+	BudgetSnapshotStepKey,
+	CaptureKind,
+} from "./review-budget/record-lines.js";
+// Review-budget domain and authoritative record-line contracts. SQLite index
+// construction deliberately remains internal; reindexReviewBudget is the
+// public repair operation and always rebuilds from a RecordStore.
+export type {
+	ArchitectureDelta,
+	BaselineAssessment,
+	BaselineDirection,
+	BudgetAlert,
+	BudgetBand,
+	CouplingClass,
+	CreditAssessmentInput,
+	CreditEligibility,
+	DebtClaimEvidence,
+	DerivedBudgetResult,
+	EffortPoints,
+	EstimateConfidence,
+	FindingDelta,
+	ParsedDeliveryBudget,
+	ParsedWorkItem,
+	PlanScopeClass,
+	ReviewBudgetConfig,
+	ReviewBudgetMode,
+	ReviewBudgetThresholds,
+	SurfaceSnapshot,
+} from "./review-budget/types.js";
+export {
+	ARCHITECTURE_DELTAS,
+	DEFAULT_REVIEW_BUDGET_CONFIG,
+	EFFORT_POINTS,
+	isArchitectureDelta,
+	isCompleteDebtClaimEvidence,
+	isEffortPoints,
+} from "./review-budget/types.js";
 // Templates
 export type {
 	RenderedTemplate,

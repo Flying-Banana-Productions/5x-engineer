@@ -7,6 +7,7 @@ import {
 	FiveXConfigSchema,
 	loadConfig,
 } from "../../src/config.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../src/review-budget/types.js";
 
 function makeTmpDir(): string {
 	const dir = join(
@@ -92,6 +93,42 @@ describe("config v1 extensions", () => {
 		expect(FiveXConfigSchema.safeParse({ maxStepsPerRun: -1 }).success).toBe(
 			false,
 		);
+	});
+
+	test("reviewBudget uses advisory defaults", () => {
+		expect(FiveXConfigSchema.parse({}).reviewBudget).toEqual({
+			mode: "advisory",
+			...DEFAULT_REVIEW_BUDGET_CONFIG,
+		});
+	});
+
+	test("reviewBudget rejects unsupported modes and negative percentages", () => {
+		expect(
+			FiveXConfigSchema.safeParse({ reviewBudget: { mode: "strict" } }).success,
+		).toBe(false);
+		expect(
+			FiveXConfigSchema.safeParse({
+				reviewBudget: { growthPercent: -1 },
+			}).success,
+		).toBe(false);
+	});
+
+	test("reviewBudget is a known root table with validated nested keys", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				`[reviewBudget]\nmode = "off"\ngrowthPercent = 10\n`,
+			);
+			const { config } = await loadConfig(tmp, undefined, (...args) => {
+				warnings.push(args.map(String).join(" "));
+			});
+			expect(config.reviewBudget.mode).toBe("off");
+			expect(warnings.join("\n")).not.toContain("reviewBudget");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 
 	// -----------------------------------------------------------------------

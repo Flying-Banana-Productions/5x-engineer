@@ -17,6 +17,7 @@
  * the run row surfaced once — not a check in this file.
  */
 
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -38,7 +39,11 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
+import {
+	AuthorStatusSchema,
+	type ReviewerVerdict,
+	ReviewerVerdictSchema,
+} from "../protocol.js";
 import { createProvider as defaultCreateProvider } from "../providers/factory.js";
 import {
 	appendLogLine,
@@ -51,6 +56,10 @@ import type {
 	RunOptions,
 	RunResult,
 } from "../providers/types.js";
+import {
+	applyPlanReviewBudget,
+	type PendingBudgetSnapshot,
+} from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -59,9 +68,21 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
+import { RecordContextError } from "./record-context.js";
+import {
+	createReviewBudgetContext,
+	ensurePlanReviewBaselineForContext,
+	hasPriorPlanReviewerStep,
+	type ReviewBudgetCommandContext,
+	recordPlanReviewerStepWithSnapshot,
+} from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { requireAmbientRunId } from "./run-identity.js";
-import { RecordError, recordStepInternal } from "./run-v1.handler.js";
+import {
+	prepareRecordStepAppend,
+	RecordError,
+	recordStepInternal,
+} from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
 	hasStdinVarFlag,
@@ -83,6 +104,8 @@ export interface InvokeAgentDeps {
 	prepareLogPath?: typeof defaultPrepareLogPath;
 	appendSessionStart?: typeof defaultAppendSessionStart;
 	createProvider?: typeof defaultCreateProvider;
+	createReviewBudgetContext?: typeof createReviewBudgetContext;
+	warn?: (message: string) => void;
 }
 
 export interface InvokeParams {
@@ -106,6 +129,7 @@ export interface InvokeParams {
 	phase?: string;
 	iteration?: number;
 	env?: NodeJS.Dict<string>;
+	optInBudgetBaseline?: boolean;
 }
 
 interface InvokeResult {
@@ -413,6 +437,70 @@ export async function invokeAgent(
 		worktreeRoot: resolvedWorktreePath ?? undefined,
 	});
 	const { variables } = resolved;
+	if (
+		params.optInBudgetBaseline &&
+		(role !== "reviewer" ||
+			!isPlanReviewTemplate(resolved.selectedTemplateName))
+	) {
+		outputError(
+			"BUDGET_BASELINE_OPT_IN_INVALID",
+			"--opt-in-budget-baseline is valid only for a plan-reviewer invocation",
+		);
+	}
+	const invocationWorkdir = params.workdir
+		? resolve(params.workdir)
+		: (effectiveWorkdir ?? projectRoot);
+	const roleConfig = config[role] as Record<string, unknown>;
+	const providerName =
+		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
+	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let optInCapturedBeforeInvoke = false;
+
+	// Fail closed before provider/session creation so an unbudgeted initial
+	// plan review spends no tokens. Continued templates remain v1-compatible.
+	if (
+		role === "reviewer" &&
+		(resolved.selectedTemplateName === "reviewer-plan" ||
+			(params.optInBudgetBaseline &&
+				isPlanReviewTemplate(resolved.selectedTemplateName))) &&
+		params.run &&
+		resolvedPlanPath &&
+		config.reviewBudget.mode !== "off"
+	) {
+		try {
+			budgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir });
+		} catch (err) {
+			if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
+		let planMarkdown: string;
+		try {
+			planMarkdown = readFileSync(
+				budgetContext.executionContext.effectivePlanPath,
+				"utf-8",
+			);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+		}
+		const ensured = ensurePlanReviewBaselineForContext({
+			ctx: budgetContext,
+			runId: params.run,
+			planMarkdown,
+			optIn: params.optInBudgetBaseline ?? false,
+			performer: { kind: "agent", role: "reviewer", provider: providerName },
+			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		});
+		if (ensured.status === "error") {
+			outputError(ensured.code, ensured.message);
+		}
+		optInCapturedBeforeInvoke =
+			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";
+	}
 
 	// Append the review diff block (continued plan reviews only). The diff
 	// can't be a template variable (multi-line), so it's added post-render.
@@ -450,10 +538,7 @@ export async function invokeAgent(
 	// 3. Start or resume session
 	// Phase 2: use resolved worktree workdir when available.
 	// Explicit --workdir wins, then mapped worktree, then projectRoot.
-	const workdir = params.workdir
-		? resolve(params.workdir)
-		: (effectiveWorkdir ?? projectRoot);
-	const roleConfig = config[role] as Record<string, unknown>;
+	const workdir = invocationWorkdir;
 	const model =
 		params.model ??
 		(typeof roleConfig?.model === "string" ? roleConfig.model : "default");
@@ -495,9 +580,6 @@ export async function invokeAgent(
 	const appendStart = deps?.appendSessionStart ?? defaultAppendSessionStart;
 
 	const logDir = join(controlPlane.controlPlaneRoot, stateDir, "logs", runId);
-	const providerName =
-		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
-
 	const outputSchema =
 		role === "author" ? AuthorStatusSchema : ReviewerVerdictSchema;
 	const quiet = params.quiet ?? false;
@@ -624,6 +706,108 @@ export async function invokeAgent(
 		await provider.close().catch(() => {});
 	}
 
+	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	const recordPhase = params.phase ?? variables.phase_number;
+	if (
+		role === "reviewer" &&
+		recordPhase === "plan" &&
+		config.reviewBudget.mode !== "off"
+	) {
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId, startDir: workdir });
+		} catch (err) {
+			if (!params.record && err instanceof RecordContextError) {
+				budgetContext = undefined;
+			} else if (err instanceof RecordContextError) {
+				outputError(err.code, err.message, err.detail);
+			} else throw err;
+		}
+	}
+	if (
+		role === "reviewer" &&
+		recordPhase === "plan" &&
+		budgetContext &&
+		config.reviewBudget.mode !== "off"
+	) {
+		const baseline = budgetContext.store.getBaseline(runId);
+		let admissionEligible = true;
+		const budgetStepName =
+			params.recordStep ?? resolved.stepName ?? "reviewer:review";
+		if (params.record && !baseline) {
+			try {
+				await prepareRecordStepAppend(
+					{
+						run: runId,
+						stepName: budgetStepName,
+						result: JSON.stringify(structured),
+						phase: recordPhase,
+						iteration: params.iteration,
+						performer: {
+							kind: "agent",
+							role,
+							provider: providerName,
+						},
+					},
+					budgetContext,
+				);
+			} catch (err) {
+				if (err instanceof RecordError) admissionEligible = false;
+				else throw err;
+			}
+		}
+		if ((params.record || baseline) && admissionEligible) {
+			const stepName = budgetStepName;
+			const performer = {
+				kind: "agent",
+				role: "reviewer",
+				provider: providerName,
+			} as const;
+			let planMarkdown = "";
+			let planReadFailed = false;
+			try {
+				planMarkdown = readFileSync(
+					budgetContext.executionContext.effectivePlanPath,
+					"utf-8",
+				);
+			} catch (err) {
+				planReadFailed = true;
+				if (params.record) {
+					const message = err instanceof Error ? err.message : String(err);
+					outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+				}
+			}
+			if (!planReadFailed) {
+				const applied = applyPlanReviewBudget({
+					runId,
+					stepName,
+					phase: recordPhase,
+					iteration: params.iteration,
+					planMarkdown,
+					verdict: structured as ReviewerVerdict,
+					config: budgetContext.config.reviewBudget,
+					store: budgetContext.store,
+					hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
+						budgetContext,
+						runId,
+					),
+					optInBaseline:
+						(params.optInBudgetBaseline ?? false) && !optInCapturedBeforeInvoke,
+					origin: budgetContext.originFor(performer),
+					warn:
+						deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+				});
+				if (applied.status === "error")
+					outputError(applied.code, applied.message);
+				if (applied.status === "applied") {
+					structured = applied.verdict;
+					pendingSnapshot = applied.pendingSnapshot;
+				}
+			}
+		}
+	}
+
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: resolved.stepName,
@@ -659,7 +843,7 @@ export async function invokeAgent(
 			process.exitCode = 1;
 		} else {
 			try {
-				await recordStepInternal({
+				const recordParams = {
 					run: params.run,
 					stepName,
 					result: JSON.stringify(structured),
@@ -676,8 +860,17 @@ export async function invokeAgent(
 						kind: "agent",
 						role,
 						provider: providerName,
-					},
-				});
+					} as const,
+				};
+				if (pendingSnapshot && budgetContext) {
+					await recordPlanReviewerStepWithSnapshot(
+						recordParams,
+						pendingSnapshot,
+						budgetContext,
+					);
+				} else {
+					await recordStepInternal(recordParams, budgetContext);
+				}
 			} catch (err) {
 				// Recording is a side effect — primary envelope already written.
 				// Warn on stderr with structured code, set non-zero exit via process.exitCode.

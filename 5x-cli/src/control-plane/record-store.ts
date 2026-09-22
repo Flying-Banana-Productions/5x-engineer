@@ -9,6 +9,7 @@
 import type {
 	AppendOp,
 	AppendResult,
+	AtomicAppendIfAllNewResult,
 	RecordLine,
 	RecordStream,
 	RunRecordSummary,
@@ -36,4 +37,6 @@ export interface RecordStore {
 	 * per-run; there is no cross-run coordinator.
 	 */
 	atomicAppend(ops: AppendOp[]): AppendResult[];
+	/** Append the whole coupled batch only when every idempotency key is new. */
+	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult;
 }

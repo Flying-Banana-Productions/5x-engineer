@@ -452,6 +452,217 @@ export function runRecordStoreContract(setup: () => RecordStore): void {
 		).not.toBeNull();
 	});
 
+	test("atomicAppendIfAllNew appends an all-new mixed pair in order", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_pair"));
+		const stepKey = stepIdempotencyKey({
+			runId: "run_pair",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 1,
+		});
+		const budgetKey = "budget:snapshot:run_pair:reviewer:plan:plan:1";
+		const result = store.atomicAppendIfAllNew([
+			{
+				runId: "run_pair",
+				stream: "steps",
+				idempotencyKey: stepKey,
+				payload: stepPayload("reviewer:plan"),
+				...recordedEnvelope(FIXTURE_ORIGIN),
+			},
+			{
+				runId: "run_pair",
+				stream: "budget",
+				idempotencyKey: budgetKey,
+				payload: { remaining: 3 },
+				...recordedEnvelope(FIXTURE_ORIGIN),
+			},
+		]);
+		expect(result.created).toBe(true);
+		if (result.created) {
+			expect(result.results.map((item) => item.created)).toEqual([true, true]);
+			expect(result.results.map((item) => item.line.origin)).toEqual([
+				FIXTURE_ORIGIN,
+				FIXTURE_ORIGIN,
+			]);
+		}
+		expect(store.getLine("run_pair", "steps", stepKey)).not.toBeNull();
+		expect(store.getLine("run_pair", "budget", budgetKey)).not.toBeNull();
+	});
+
+	test("atomicAppendIfAllNew existing step prevents a new budget sibling and preserves first writer", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_pair"));
+		const stepKey = stepIdempotencyKey({
+			runId: "run_pair",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 1,
+		});
+		store.append({
+			runId: "run_pair",
+			stream: "steps",
+			idempotencyKey: stepKey,
+			payload: stepPayload("reviewer:plan", { first: true }),
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		});
+		const budgetKey = "budget:snapshot:new";
+		const result = store.atomicAppendIfAllNew([
+			{
+				runId: "run_pair",
+				stream: "steps",
+				idempotencyKey: stepKey,
+				payload: stepPayload("reviewer:plan", { first: false }),
+				...recordedEnvelope(FIXTURE_ORIGIN),
+			},
+			{
+				runId: "run_pair",
+				stream: "budget",
+				idempotencyKey: budgetKey,
+				payload: {},
+				...recordedEnvelope(FIXTURE_ORIGIN),
+			},
+		]);
+		expect(result.created).toBe(false);
+		if (!result.created)
+			expect(result.duplicates.map((d) => d.index)).toEqual([0]);
+		expect(store.getLine("run_pair", "budget", budgetKey)).toBeNull();
+		expect(store.getLine("run_pair", "steps", stepKey)?.payload).toEqual(
+			stepPayload("reviewer:plan", { first: true }),
+		);
+	});
+
+	test("atomicAppendIfAllNew existing budget prevents a new step; retry leaves one of each", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_pair"));
+		const budgetKey = "budget:snapshot:existing";
+		store.append({
+			runId: "run_pair",
+			stream: "budget",
+			idempotencyKey: budgetKey,
+			payload: { first: true },
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		});
+		const stepKey = stepIdempotencyKey({
+			runId: "run_pair",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 1,
+		});
+		const stepOp = {
+			runId: "run_pair",
+			stream: "steps" as const,
+			idempotencyKey: stepKey,
+			payload: stepPayload("reviewer:plan"),
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		};
+		const budgetOp = {
+			runId: "run_pair",
+			stream: "budget" as const,
+			idempotencyKey: budgetKey,
+			payload: { first: false },
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		};
+		const ops = [stepOp, budgetOp];
+		const result = store.atomicAppendIfAllNew(ops);
+		expect(result.created).toBe(false);
+		expect(store.getLine("run_pair", "steps", stepKey)).toBeNull();
+		expect(store.getLine("run_pair", "budget", budgetKey)?.payload).toEqual({
+			first: true,
+		});
+
+		const newBudgetKey = "budget:snapshot:fresh";
+		const retryOps = [stepOp, { ...budgetOp, idempotencyKey: newBudgetKey }];
+		expect(store.atomicAppendIfAllNew(retryOps).created).toBe(true);
+		const retry = store.atomicAppendIfAllNew(retryOps);
+		expect(retry.created).toBe(false);
+		if (!retry.created) expect(retry.duplicates).toHaveLength(2);
+		expect(store.listLines("run_pair", "steps")).toHaveLength(1);
+		expect(store.listLines("run_pair", "budget")).toHaveLength(2);
+	});
+
+	test("atomicAppendIfAllNew rejects multiple runs before mutation and empty is a no-op", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_a"));
+		store.putRun(v1Summary("run_b"));
+		expect(store.atomicAppendIfAllNew([])).toEqual({
+			created: true,
+			results: [],
+		});
+		expectCode(
+			() =>
+				store.atomicAppendIfAllNew([
+					{
+						runId: "run_a",
+						stream: "budget",
+						idempotencyKey: "a",
+						payload: {},
+						...recordedEnvelope(FIXTURE_ORIGIN),
+					},
+					{
+						runId: "run_b",
+						stream: "budget",
+						idempotencyKey: "b",
+						payload: {},
+						...recordedEnvelope(FIXTURE_ORIGIN),
+					},
+				]),
+			"INVALID_ATOMIC_APPEND",
+		);
+		expect(store.listLines("run_a", "budget")).toEqual([]);
+		expect(store.listLines("run_b", "budget")).toEqual([]);
+	});
+
+	test("atomicAppendIfAllNew rejects an intra-batch repeated stream key before mutation", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_repeated"));
+		const first = {
+			runId: "run_repeated",
+			stream: "budget" as const,
+			idempotencyKey: "budget:repeated",
+			payload: { writer: 1 },
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		};
+		expectCode(
+			() =>
+				store.atomicAppendIfAllNew([
+					first,
+					{ ...first, payload: { writer: 2 } },
+				]),
+			"INVALID_ATOMIC_APPEND",
+		);
+		expect(store.listLines("run_repeated", "budget")).toEqual([]);
+	});
+
+	test("atomicAppendIfAllNew throw during an all-new apply leaves both streams unchanged", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_throw"));
+		expectCode(
+			() =>
+				store.atomicAppendIfAllNew([
+					{
+						runId: "run_throw",
+						stream: "steps",
+						idempotencyKey: "step:run_throw:x::1",
+						payload: stepPayload("x"),
+						...recordedEnvelope(FIXTURE_ORIGIN),
+					},
+					{
+						runId: "run_throw",
+						stream: "budget",
+						idempotencyKey: "budget:throw",
+						payload: {},
+						schemaVersion: RECORD_LINE_SCHEMA_VERSION,
+						provenance: "recorded",
+						origin: null,
+					},
+				]),
+			"INVALID_ORIGIN",
+		);
+		expect(store.listLines("run_throw", "steps")).toEqual([]);
+		expect(store.listLines("run_throw", "budget")).toEqual([]);
+	});
+
 	test("atomicAppend throw on a later op leaves no lines", () => {
 		const store = setup();
 		store.putRun(v1Summary("run_1"));
@@ -820,6 +1031,36 @@ describe("createMemoryRecordStore onBeforeCommit", () => {
 		expect(store.getLine("run_1", "steps", stepKey)).toBeNull();
 		expect(store.listLines("run_1", "budget")).toEqual([]);
 		expect(store.getRun("run_1")?.status).toBe("active");
+	});
+
+	test("atomicAppendIfAllNew aborts an all-new pair before swap", () => {
+		const store = createMemoryRecordStore({
+			now: () => FIXED_NOW,
+			onBeforeCommit: () => {
+				throw new Error("commit aborted");
+			},
+		});
+		store.putRun(v1Summary("run_if_all_new"));
+		expect(() =>
+			store.atomicAppendIfAllNew([
+				{
+					runId: "run_if_all_new",
+					stream: "steps",
+					idempotencyKey: "step:run_if_all_new:x::1",
+					payload: stepPayload("x"),
+					...recordedEnvelope(FIXTURE_ORIGIN),
+				},
+				{
+					runId: "run_if_all_new",
+					stream: "budget",
+					idempotencyKey: "budget:x",
+					payload: {},
+					...recordedEnvelope(FIXTURE_ORIGIN),
+				},
+			]),
+		).toThrow("commit aborted");
+		expect(store.listLines("run_if_all_new", "steps")).toEqual([]);
+		expect(store.listLines("run_if_all_new", "budget")).toEqual([]);
 	});
 });
 

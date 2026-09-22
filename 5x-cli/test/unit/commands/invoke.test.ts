@@ -21,7 +21,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
+import { createRunV1 } from "../../../src/db/operations-v1.js";
+import { createProvider } from "../../../src/providers/factory.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { makeBudgetContext } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,6 +100,218 @@ describe("invoke — template resolution (unit)", () => {
 		expect(() => loadTemplate("nonexistent-template")).toThrow(
 			/Unknown template/,
 		);
+	});
+});
+
+describe("invoke reviewer — plan read state", () => {
+	const budgetPlan = `## Delivery Budget
+- Estimate confidence: high
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+| --- | --- | --- | --- | --- | --- | --- |
+| W1 | Work | 2 | 0 | - | - | Needed |
+### Surface Snapshot
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0`;
+
+	async function setupBudgetInvoke(dir: string) {
+		for (const args of [
+			["init"],
+			["config", "user.email", "test@test.com"],
+			["config", "user.name", "Test"],
+		] as const) {
+			Bun.spawnSync(["git", ...args], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+		}
+		await initScaffold({ startDir: dir });
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, "# Provider-visible plan\n");
+		const db = getDb(dir);
+		createRunV1(db, { id: "run1", planPath });
+		closeDb();
+		_resetForTest();
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[author]
+provider = "sample"
+model = "sample/test"
+
+[reviewer]
+provider = "sample"
+model = "sample/test"
+
+[sample]
+echo = false
+
+[sample.structured]
+readiness = "ready"
+items = []
+creditAssessments = []
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "estimate"
+`,
+		);
+		return planPath;
+	}
+
+	async function invokeWithBudgetContext(
+		dir: string,
+		planPath: string,
+		effectivePlanPath: string,
+		onCreateProvider?: () => never,
+	) {
+		const ctx = makeBudgetContext();
+		ctx.executionContext.effectivePlanPath = effectivePlanPath;
+		try {
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					vars: [`plan_path=${planPath}`],
+					phase: "plan",
+					record: true,
+					quiet: true,
+					workdir: dir,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					...(onCreateProvider
+						? { createProvider: async () => onCreateProvider() }
+						: {}),
+				},
+			);
+		} finally {
+			ctx.db.close();
+		}
+	}
+
+	test("empty readable plan reaches budget parsing", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			const emptyPath = join(dir, "empty.md");
+			writeFileSync(emptyPath, "");
+			let providerCreations = 0;
+			await expect(
+				invokeWithBudgetContext(dir, planPath, emptyPath, () => {
+					providerCreations++;
+					throw new Error("provider must not be created before preflight");
+				}),
+			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+			expect(providerCreations).toBe(0);
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("unreadable plan maps to PLAN_NOT_FOUND", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			await expect(
+				invokeWithBudgetContext(dir, planPath, join(dir, "missing.md")),
+			).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("continued reviewer opt-in captures once before provider and records the step snapshot", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			ctx.db.run(
+				"INSERT INTO steps(run_id, step_name, phase, iteration, result_json) VALUES ('run1', 'reviewer:custom-plan-review', 'plan', 1, '{}')",
+			);
+
+			let providerCreations = 0;
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan-continued",
+					run: "run1",
+					vars: [`plan_path=${planPath}`],
+					phase: "plan",
+					record: true,
+					quiet: true,
+					workdir: dir,
+					optInBudgetBaseline: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					createProvider: async (role, config) => {
+						providerCreations++;
+						expect(ctx.store.getBaseline("run1")?.captureKind).toBe("opt_in");
+						return createProvider(role, config);
+					},
+				},
+			);
+
+			expect(providerCreations).toBe(1);
+			expect(ctx.store.getBaseline("run1")?.captureKind).toBe("opt_in");
+			expect(
+				ctx.recordStore
+					.listLines("run1", "budget")
+					.filter(
+						(line) => (line.payload as { kind?: string }).kind === "baseline",
+					),
+			).toHaveLength(1);
+			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+			expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("opt-in on an author invocation is rejected before provider creation", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			let providerCreations = 0;
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes="],
+						quiet: true,
+						workdir: dir,
+						optInBudgetBaseline: true,
+					},
+					{
+						createProvider: async () => {
+							providerCreations++;
+							throw new Error("provider must not be created");
+						},
+					},
+				),
+			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
+			expect(providerCreations).toBe(0);
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
 	});
 });
 

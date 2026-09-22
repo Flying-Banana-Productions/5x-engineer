@@ -60,6 +60,67 @@ describe("validateStructuredOutput (result-based)", () => {
 		}
 	});
 
+	test("keeps v1 reviewer payload valid", () => {
+		const result = validateStructuredOutput(
+			{
+				readiness: "not_ready",
+				items: [
+					{
+						id: "R1",
+						title: "Fix",
+						action: "auto_fix",
+						reason: "Needed",
+					},
+				],
+			},
+			"reviewer",
+			{ context: "test" },
+		);
+		expect(result.ok).toBe(true);
+	});
+
+	test("rejects reviewer-authored CLI aggregates before normalization", () => {
+		for (const aggregate of [
+			{ budget: {} },
+			{ budgetBand: "within_standard" },
+			{ B0: 5 },
+			{ projectedEffort: 8 },
+			{ requiresHuman: false },
+		]) {
+			const result = validateStructuredOutput(
+				{ readiness: "ready", items: [], ...aggregate },
+				"reviewer",
+				{ context: "test" },
+			);
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.code).toBe("INVALID_STRUCTURED_OUTPUT");
+		}
+	});
+
+	test("rejects nested reviewer-authored CLI aggregate keys", () => {
+		const result = validateStructuredOutput(
+			{
+				readiness: "not_ready",
+				items: [
+					{
+						id: "R1",
+						title: "Claim",
+						action: "auto_fix",
+						reason: "Reason",
+						creditClaim: { W: 3 },
+					},
+				],
+			},
+			"reviewer",
+			{ context: "test" },
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.code).toBe("INVALID_STRUCTURED_OUTPUT");
+			expect(result.message).toContain("'W'");
+		}
+	});
+
 	test("returns failure result (not throw) for author complete without commit", () => {
 		const result = validateStructuredOutput({ result: "complete" }, "author", {
 			context: "test",
