@@ -44,6 +44,8 @@ interface SnapshotRow {
 	findings_json: string;
 	assessments_json: string;
 	baseline_assessment_json: string | null;
+	effective_gate_causes_json: string | null;
+	suppressed_gate_causes_json: string | null;
 	derived_json: string | null;
 	created_at: string;
 }
@@ -74,6 +76,14 @@ function snapshotFromRow(row: SnapshotRow): ReviewBudgetSnapshotRecord {
 		findings: JSON.parse(row.findings_json),
 		assessments: JSON.parse(row.assessments_json),
 		derived: row.derived_json === null ? null : JSON.parse(row.derived_json),
+		effectiveGateCauses:
+			row.effective_gate_causes_json === null
+				? []
+				: JSON.parse(row.effective_gate_causes_json),
+		suppressedGateCauses:
+			row.suppressed_gate_causes_json === null
+				? []
+				: JSON.parse(row.suppressed_gate_causes_json),
 		createdAt: row.created_at,
 	};
 	if (row.baseline_assessment_json !== null) {
@@ -111,11 +121,14 @@ export function createReviewBudgetIndex(db: Database): ReviewBudgetIndex {
 				`INSERT INTO review_budget_snapshots (
 					id, run_id, record_idempotency_key, record_seq, step_name, phase,
 					iteration, current_ledger_json, findings_json, assessments_json,
-					baseline_assessment_json, derived_json, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					baseline_assessment_json, effective_gate_causes_json,
+					suppressed_gate_causes_json, derived_json, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(record_idempotency_key) DO UPDATE SET
 					record_seq=excluded.record_seq,
 					baseline_assessment_json=excluded.baseline_assessment_json,
+					effective_gate_causes_json=excluded.effective_gate_causes_json,
+					suppressed_gate_causes_json=excluded.suppressed_gate_causes_json,
 					derived_json=COALESCE(excluded.derived_json, review_budget_snapshots.derived_json)`,
 			).run(
 				snapshot.id,
@@ -131,6 +144,8 @@ export function createReviewBudgetIndex(db: Database): ReviewBudgetIndex {
 				snapshot.baselineAssessment === undefined
 					? null
 					: JSON.stringify(snapshot.baselineAssessment),
+				JSON.stringify(snapshot.effectiveGateCauses),
+				JSON.stringify(snapshot.suppressedGateCauses),
 				snapshot.derived === null ? null : JSON.stringify(snapshot.derived),
 				snapshot.createdAt,
 			);
@@ -208,6 +223,8 @@ export function reindexReviewBudget(
 						? {}
 						: { baselineAssessment: payload.baselineAssessment }),
 					derived: null,
+					effectiveGateCauses: payload.effectiveGateCauses ?? [],
+					suppressedGateCauses: payload.suppressedGateCauses ?? [],
 					createdAt: payload.createdAt,
 				},
 				line.idempotencyKey,

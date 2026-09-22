@@ -1,3 +1,4 @@
+import type { ReviewGateCause } from "../review-governance/types.js";
 import type {
 	BaselineAssessment,
 	CreditAssessmentInput,
@@ -39,6 +40,8 @@ export interface BudgetSnapshotPayload {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	effectiveGateCauses?: ReviewGateCause[];
+	suppressedGateCauses?: ReviewGateCause[];
 	createdAt: string;
 }
 
@@ -131,6 +134,12 @@ export function encodeBudgetSnapshotPayload(
 	if (payload.baselineAssessment !== undefined) {
 		encoded.baselineAssessment = structuredClone(payload.baselineAssessment);
 	}
+	if (payload.effectiveGateCauses !== undefined)
+		encoded.effectiveGateCauses = structuredClone(payload.effectiveGateCauses);
+	if (payload.suppressedGateCauses !== undefined)
+		encoded.suppressedGateCauses = structuredClone(
+			payload.suppressedGateCauses,
+		);
 	return encoded;
 }
 
@@ -189,6 +198,16 @@ export function decodeBudgetSnapshotPayload(
 			confidence: assessment.confidence,
 			reason: stringField(assessment.reason, "baselineAssessment.reason"),
 		};
+	}
+	for (const field of [
+		"effectiveGateCauses",
+		"suppressedGateCauses",
+	] as const) {
+		if (value[field] !== undefined) {
+			if (!Array.isArray(value[field]))
+				throw new TypeError(`${field} must be an array`);
+			decoded[field] = structuredClone(value[field]) as ReviewGateCause[];
+		}
 	}
 	return decoded;
 }

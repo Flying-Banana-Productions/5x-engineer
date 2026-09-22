@@ -17,6 +17,7 @@ import type {
 	ReviewBudgetThresholds,
 	SurfaceSnapshot,
 } from "../review-budget/types.js";
+import type { ReviewGateCause } from "../review-governance/types.js";
 import { createReviewBudgetId } from "./ids.js";
 import type { RecordStore } from "./record-store.js";
 import { type RecordOrigin, recordedEnvelope } from "./record-types.js";
@@ -46,6 +47,8 @@ export interface ReviewBudgetSnapshotRecord {
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
 	derived: DerivedBudgetResult | null;
+	effectiveGateCauses: ReviewGateCause[];
+	suppressedGateCauses: ReviewGateCause[];
 	createdAt: string;
 }
 
@@ -72,6 +75,8 @@ export interface AppendSnapshotInput {
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
 	derived?: DerivedBudgetResult;
+	effectiveGateCauses?: ReviewGateCause[];
+	suppressedGateCauses?: ReviewGateCause[];
 	/** Optional for the Phase 4 utility; otherwise the baseline line origin is reused. */
 	origin?: RecordOrigin;
 }
@@ -124,6 +129,8 @@ function snapshotRecord(
 			? {}
 			: { baselineAssessment: payload.baselineAssessment }),
 		derived,
+		effectiveGateCauses: payload.effectiveGateCauses ?? [],
+		suppressedGateCauses: payload.suppressedGateCauses ?? [],
 		createdAt: payload.createdAt,
 	};
 }
@@ -240,6 +247,8 @@ export function createReviewBudgetStore(
 					...(input.baselineAssessment === undefined
 						? {}
 						: { baselineAssessment: input.baselineAssessment }),
+					effectiveGateCauses: input.effectiveGateCauses ?? [],
+					suppressedGateCauses: input.suppressedGateCauses ?? [],
 					createdAt,
 				}),
 				createdAt,

@@ -331,7 +331,38 @@ export {
 	validateClosureReview,
 	validateDebtPolicy,
 } from "./review-governance/closure.js";
+export {
+	decodeReviewDecisionPayload,
+	encodeReviewDecisionPayload,
+} from "./review-governance/codec.js";
+export type {
+	AcceptedRisk,
+	ApprovedScope,
+	ArchitectureApproval,
+	DecisionAcceptance,
+	GoverningReviewState,
+	ReviewDecisionPayload,
+} from "./review-governance/decisions.js";
+export {
+	applyDecisionCauseCoverage,
+	classifyDecisionAcceptance,
+	computeDecisionIntentHash,
+	createReviewDecision,
+	deriveGateId,
+	foldGoverningReviewState,
+	governanceCorrectionKey,
+	governanceDecisionKey,
+	REVIEW_DECISION_VERSION,
+} from "./review-governance/decisions.js";
 export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
+export { reindexReviewGovernance } from "./review-governance/sqlite-index.js";
+export type {
+	DerivedReviewGate,
+	ResolveReviewGateInput,
+	ResolveReviewGateResult,
+	ReviewGovernanceStore,
+} from "./review-governance/store.js";
+export { createReviewGovernanceStore } from "./review-governance/store.js";
 export type {
 	BlockingFindingEvidence,
 	ClosureDiagnostic,
