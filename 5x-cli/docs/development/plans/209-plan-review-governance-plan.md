@@ -214,10 +214,10 @@ Phase 8 and W8 are intentionally vacant after the dashboard split; stable IDs ar
 
 **Completion gate:** The implementation base contains completed plan 208, and any merge-conflict drift is reconciled without replacing its concrete budget arithmetic, context factory, snapshot tuple, or paired writer.
 
-- [ ] Verify `git merge-base --is-ancestor b3eb800d26e9edccc8374751939f0cbf452428eb HEAD`; if the merge used an equivalent cherry-pick, compare the files and tests named in this phase against inspected `cd7ee886c558708e59b760233d00a133b3ac8205` before proceeding.
-- [ ] Resolve only merge drift in these known contracts: `ReviewBudgetCommandContext extends RecordCommandContext { store: ReviewBudgetStore }`; `createReviewBudgetContext(...args: Parameters<typeof createRecordContext>): Promise<ReviewBudgetCommandContext>`; `applyPlanReviewBudget(input: ApplyPlanReviewBudgetInput): ApplyPlanReviewBudgetResult`; and `recordPlanReviewerStepWithSnapshot(params, pending, ctx)`.
-- [ ] Preserve `recordPlanReviewerStepWithSnapshot` as the sole paired reviewer-step/budget-snapshot writer and `finalizeAndWritePreparedStep(prepared, ctx, { mode, extraOps })` as the sole post-admission iteration allocator/writer. Do not introduce a parallel prepared-record type or paired writer.
-- [ ] Preserve plan 208's migration v8 tables, snapshot `stepKey { stepName, phase, iteration }`, UUID snapshot `id`, `budget: DerivedBudgetResult` verdict decoration, and public exports. Apply Phase 2's additive migration as v9 unless intervening merged work has consumed that number.
+- [x] Verify `git merge-base --is-ancestor b3eb800d26e9edccc8374751939f0cbf452428eb HEAD`; if the merge used an equivalent cherry-pick, compare the files and tests named in this phase against inspected `cd7ee886c558708e59b760233d00a133b3ac8205` before proceeding.
+- [x] Resolve only merge drift in these known contracts: `ReviewBudgetCommandContext extends RecordCommandContext { store: ReviewBudgetStore }`; `createReviewBudgetContext(...args: Parameters<typeof createRecordContext>): Promise<ReviewBudgetCommandContext>`; `applyPlanReviewBudget(input: ApplyPlanReviewBudgetInput): ApplyPlanReviewBudgetResult`; and `recordPlanReviewerStepWithSnapshot(params, pending, ctx)`.
+- [x] Preserve `recordPlanReviewerStepWithSnapshot` as the sole paired reviewer-step/budget-snapshot writer and `finalizeAndWritePreparedStep(prepared, ctx, { mode, extraOps })` as the sole post-admission iteration allocator/writer. Do not introduce a parallel prepared-record type or paired writer.
+- [x] Preserve plan 208's migration v8 tables, snapshot `stepKey { stepName, phase, iteration }`, UUID snapshot `id`, `budget: DerivedBudgetResult` verdict decoration, and public exports. Apply Phase 2's additive migration as v9 unless intervening merged work has consumed that number.
 
 ---
 
