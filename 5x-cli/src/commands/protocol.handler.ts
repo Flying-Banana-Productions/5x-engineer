@@ -23,7 +23,11 @@ import {
 } from "../review-budget/apply.js";
 import { validateClosureReview } from "../review-governance/closure.js";
 import { canonicalFindingFingerprint } from "../review-governance/fingerprint.js";
-import { buildPlanReviewDiffContext } from "../review-governance/plan-diff.js";
+import {
+	buildPlanReviewDiffContext,
+	PlanDiffError,
+	type PlanDiffFailure,
+} from "../review-governance/plan-diff.js";
 import { createReviewGovernanceStore } from "../review-governance/store.js";
 import type {
 	GovernanceReviewerVerdict,
@@ -603,6 +607,7 @@ export async function protocolValidate(
 			if (shouldApplyGovernance) {
 				const reviewKind = priorSteps.length === 0 ? "initial" : "closure";
 				let diffContext: PlanDiffContext | undefined;
+				let diffContextFailure: PlanDiffFailure | undefined;
 				if (reviewKind === "closure") {
 					const previous = priorSteps.at(-1)?.payload as
 						| Partial<StepRecordPayload>
@@ -615,14 +620,24 @@ export async function protocolValidate(
 								planPath: budgetContext.executionContext.effectivePlanPath,
 								previousReviewCommit: previous.head_commit,
 							});
-						} catch {
-							diffContext = undefined;
+						} catch (error) {
+							diffContextFailure =
+								error instanceof PlanDiffError
+									? { code: error.code, message: error.message }
+									: {
+											code: "PLAN_DIFF_GIT_ERROR",
+											message:
+												error instanceof Error ? error.message : String(error),
+										};
 						}
 					}
 				}
 				const governanceStore = createReviewGovernanceStore(
 					budgetContext.recordStore,
 				);
+				// TODO(plan 209 Phase 6.1): use the mode persisted on the budget
+				// baseline. Phase 3 can only use the active config because plan 208's
+				// authoritative baseline payload does not yet carry mode.
 				const closure = validateClosureReview({
 					reviewKind,
 					mode: budgetContext.config.reviewBudget.mode,
@@ -630,6 +645,7 @@ export async function protocolValidate(
 					priorFindings: persistedFindingsFromSteps(priorSteps),
 					priorDecisions: governanceStore.listDecisions(params.run),
 					...(diffContext ? { diffContext } : {}),
+					...(diffContextFailure ? { diffContextFailure } : {}),
 				});
 				if (!closure.accepted) {
 					const first = closure.diagnostics.find(

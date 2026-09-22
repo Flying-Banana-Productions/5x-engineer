@@ -249,6 +249,37 @@ describe("validateClosureReview", () => {
 		);
 	});
 
+	test("includes the diff builder failure in missing-context diagnostics", () => {
+		const result = validate(
+			{
+				readiness: "not_ready",
+				priorFindings: [{ id: "P1.1", status: "addressed" }],
+				items: [
+					item({
+						id: "P1.2",
+						introducedBy: {
+							commitRange: "abc..def",
+							diffHunk: "@@ -1 +1 @@\n-old\n+new",
+							explanation: "The revision introduced it.",
+						},
+					}),
+				],
+			},
+			{
+				diffContextFailure: {
+					code: "PLAN_DIFF_BINARY_UNSUPPORTED",
+					message: "The plan-only diff is binary.",
+				},
+			},
+		);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "PLAN_DIFF_CONTEXT_MISSING",
+				message: expect.stringContaining("PLAN_DIFF_BINARY_UNSUPPORTED"),
+			}),
+		);
+	});
+
 	test("rejects conflicting introduced and critical evidence", () => {
 		const result = validate({
 			readiness: "not_ready",

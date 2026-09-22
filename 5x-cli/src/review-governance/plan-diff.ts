@@ -25,6 +25,8 @@ export class PlanDiffError extends Error {
 	}
 }
 
+export type PlanDiffFailure = Pick<PlanDiffError, "code" | "message">;
+
 function normalizeTransport(value: string): string {
 	return value
 		.replaceAll("\r\n", "\n")
@@ -83,11 +85,11 @@ async function planPathspecs(
 	from: string,
 	to: string,
 	planPath: string,
-): Promise<{ displayPath: string; pathspecs: string[] }> {
+): Promise<{ root: string; displayPath: string; pathspecs: string[] }> {
 	const root = (await git(workdir, ["rev-parse", "--show-toplevel"])).trim();
 	const absolute = isAbsolute(planPath) ? planPath : resolve(workdir, planPath);
 	const displayPath = relative(root, absolute).replaceAll("\\", "/");
-	const names = await git(workdir, [
+	const names = await git(root, [
 		"diff",
 		"--name-status",
 		"-M",
@@ -99,7 +101,7 @@ async function planPathspecs(
 		if (status?.startsWith("R") && newPath === displayPath && oldPath)
 			pathspecs.add(oldPath);
 	}
-	return { displayPath, pathspecs: [...pathspecs] };
+	return { root, displayPath, pathspecs: [...pathspecs] };
 }
 
 async function planPatch(
@@ -138,20 +140,20 @@ export async function buildPlanReviewDiffContext(input: {
 		input.workdir,
 		input.currentCommit ?? "HEAD",
 	);
-	const { displayPath, pathspecs } = await planPathspecs(
+	const { root, displayPath, pathspecs } = await planPathspecs(
 		input.workdir,
 		previousReviewCommit,
 		currentPlanCommit,
 		input.planPath,
 	);
 	const patch = await planPatch(
-		input.workdir,
+		root,
 		previousReviewCommit,
 		currentPlanCommit,
 		pathspecs,
 	);
 	const revisions = (
-		await git(input.workdir, [
+		await git(root, [
 			"rev-list",
 			"--reverse",
 			`${previousReviewCommit}..${currentPlanCommit}`,
@@ -159,17 +161,30 @@ export async function buildPlanReviewDiffContext(input: {
 	)
 		.split("\n")
 		.filter(Boolean);
-	const equivalentPlanCommits: string[] = [];
-	for (const revision of revisions) {
-		if (
-			(await planPatch(
-				input.workdir,
-				previousReviewCommit,
-				revision,
-				pathspecs,
-			)) === patch
-		)
-			equivalentPlanCommits.push(revision);
+	const lastPlanCommit = (
+		await git(root, [
+			"rev-list",
+			"-1",
+			`${previousReviewCommit}..${currentPlanCommit}`,
+			"--",
+			...pathspecs,
+		])
+	).trim();
+	let equivalentPlanCommits: string[];
+	if (!lastPlanCommit) {
+		equivalentPlanCommits = revisions;
+	} else {
+		const lastPlanIndex = revisions.indexOf(lastPlanCommit);
+		const lastPlanPatch = await planPatch(
+			root,
+			previousReviewCommit,
+			lastPlanCommit,
+			pathspecs,
+		);
+		equivalentPlanCommits =
+			lastPlanIndex >= 0 && lastPlanPatch === patch
+				? revisions.slice(lastPlanIndex)
+				: [currentPlanCommit];
 	}
 	return {
 		previousReviewCommit,
@@ -268,12 +283,14 @@ export function formatPlanReviewDiffContext(
 ): string {
 	const lines = context.patch ? context.patch.split("\n") : [];
 	const shown = lines.slice(0, maxLines);
-	const omittedHeaders = context.hunks
-		.filter((hunk) => {
-			const index = lines.indexOf(hunk.header);
-			return index >= maxLines;
-		})
-		.map((hunk) => hunk.header);
+	let searchFrom = 0;
+	const omittedHeaders = context.hunks.flatMap((hunk) => {
+		const start = lines.indexOf(hunk.header, searchFrom);
+		if (start < 0) return [];
+		searchFrom = start + 1;
+		const end = start + hunk.text.split("\n").length;
+		return start >= maxLines || end > maxLines ? [hunk.header] : [];
+	});
 	const range = `${context.previousReviewCommit}..${context.currentPlanCommit}`;
 	const body = context.patch
 		? `\`\`\`diff\n${shown.join("\n")}\n\`\`\``
@@ -285,6 +302,19 @@ export function formatPlanReviewDiffContext(
 		(truncated
 			? `\n... (truncated, ${lines.length - maxLines} more lines)\n\nOmitted hunk headers:\n${omittedHeaders.map((header) => `- \`${header}\``).join("\n") || "- (none)"}\n`
 			: "") +
-		`\nRetrieve the complete plan-only diff with:\n\n\`git diff ${range} -- ${shellQuote(context.planPath)}\`\n`
+		`\nRetrieve the complete plan-only diff with:\n\n\`git diff ${range} -- ${shellQuote(`:(top)${context.planPath}`)}\`\n`
+	);
+}
+
+export function formatPlanReviewDiffFailure(input: {
+	previousReviewCommit: string;
+	currentCommit: string;
+	error: Pick<PlanDiffError, "code" | "message">;
+}): string {
+	const range = `${input.previousReviewCommit}..${input.currentCommit}`;
+	return (
+		"\n## Plan Diff Since Last Review\n\n" +
+		`Commit range: \`${range}\`\n\n` +
+		`The exact plan-only diff could not be built (\`${input.error.code}\`): ${input.error.message}\n`
 	);
 }

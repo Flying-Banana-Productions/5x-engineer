@@ -481,6 +481,16 @@ export function assertReviewerVerdict(
 			typeof item.requiresReviewerVerification !== "boolean"
 		)
 			fail(`item '${item.id}' has invalid 'requiresReviewerVerification'.`);
+		for (const field of [
+			"failure",
+			"lowestCostCorrection",
+			"lateDiscoveryEvidence",
+			"priorDecisionId",
+			"newEvidence",
+		] as const) {
+			if (item[field] !== undefined && typeof item[field] !== "string")
+				fail(`item '${item.id}' has invalid '${field}'.`);
+		}
 	}
 
 	if (verdict.priorFindings !== undefined) {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	formatPlanReviewDiffContext,
+	formatPlanReviewDiffFailure,
 	validateIntroducedBy,
 } from "../../../src/review-governance/plan-diff.js";
 import type { PlanDiffContext } from "../../../src/review-governance/types.js";
@@ -104,7 +105,39 @@ describe("validateIntroducedBy", () => {
 		);
 		expect(rendered).toContain("@@ -20 +20 @@");
 		expect(rendered).toContain(
-			"git diff abc1111111111111111111111111111111111111..def2222222222222222222222222222222222222 -- 'docs/plan.md'",
+			"git diff abc1111111111111111111111111111111111111..def2222222222222222222222222222222222222 -- ':(top)docs/plan.md'",
 		);
+	});
+
+	test("lists a hunk whose body straddles the truncation boundary", () => {
+		const hunk = {
+			header: "@@ -1,5 +1,5 @@",
+			text: "@@ -1,5 +1,5 @@\n one\n two\n-three\n+THREE\n four",
+			hash: "sha256:straddled",
+		};
+		const rendered = formatPlanReviewDiffContext(
+			{
+				...context,
+				patch: `diff --git a/docs/plan.md b/docs/plan.md\n${hunk.text}\nfooter`,
+				hunks: [hunk],
+			},
+			5,
+		);
+		expect(rendered).toContain("Omitted hunk headers:");
+		expect(rendered).toContain("- `@@ -1,5 +1,5 @@`");
+	});
+
+	test("renders plan-diff failures with their machine code and reason", () => {
+		const rendered = formatPlanReviewDiffFailure({
+			previousReviewCommit: "abc",
+			currentCommit: "def",
+			error: {
+				code: "PLAN_DIFF_BINARY_UNSUPPORTED",
+				message: "The plan diff is binary.",
+			},
+		});
+		expect(rendered).toContain("## Plan Diff Since Last Review");
+		expect(rendered).toContain("PLAN_DIFF_BINARY_UNSUPPORTED");
+		expect(rendered).toContain("The plan diff is binary.");
 	});
 });

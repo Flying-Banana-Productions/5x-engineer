@@ -9,7 +9,10 @@ import {
 	canonicalFindingFingerprint,
 	normalizeFindingEvidenceText,
 } from "./fingerprint.js";
-import { validateIntroducedBy as validateIntroducedByEvidence } from "./plan-diff.js";
+import {
+	type PlanDiffFailure,
+	validateIntroducedBy as validateIntroducedByEvidence,
+} from "./plan-diff.js";
 import type {
 	ClosureDiagnostic,
 	ClosureValidationResult,
@@ -268,6 +271,7 @@ function validateCriticalSafety(
 function validateIntroducedByFields(
 	item: GovernanceVerdictItem,
 	diffContext: PlanDiffContext | undefined,
+	diffContextFailure: PlanDiffFailure | undefined,
 ): ClosureDiagnostic[] {
 	if (
 		item.introducedBy &&
@@ -275,6 +279,14 @@ function validateIntroducedByFields(
 		nonEmpty(item.introducedBy.diffHunk) &&
 		nonEmpty(item.introducedBy.explanation)
 	) {
+		if (!diffContext && diffContextFailure)
+			return [
+				diagnostic(
+					"PLAN_DIFF_CONTEXT_MISSING",
+					`No exact plan-only diff context is available [${diffContextFailure.code}]: ${diffContextFailure.message}`,
+					{ itemId: item.id },
+				),
+			];
 		const validation = validateIntroducedByEvidence(
 			item.introducedBy,
 			diffContext,
@@ -376,6 +388,7 @@ export function validateClosureReview(input: {
 	priorFindings: readonly PersistedFinding[];
 	priorDecisions: readonly ReviewDecision[];
 	diffContext?: PlanDiffContext;
+	diffContextFailure?: PlanDiffFailure;
 }): ClosureValidationResult {
 	const verdict = input.verdict as GovernanceReviewerVerdict;
 	const diagnostics: ClosureDiagnostic[] = [];
@@ -550,7 +563,11 @@ export function validateClosureReview(input: {
 				diagnostics.push(...validateCriticalSafety(item));
 			} else if (item.introducedBy) {
 				diagnostics.push(
-					...validateIntroducedByFields(item, input.diffContext),
+					...validateIntroducedByFields(
+						item,
+						input.diffContext,
+						input.diffContextFailure,
+					),
 				);
 			} else {
 				diagnostics.push(

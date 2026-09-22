@@ -206,6 +206,36 @@ describe("protocolEmitReviewer", () => {
 		});
 	});
 
+	test("rejects non-string closure evidence fields", async () => {
+		for (const field of [
+			"failure",
+			"lowestCostCorrection",
+			"lateDiscoveryEvidence",
+			"priorDecisionId",
+			"newEvidence",
+		]) {
+			try {
+				await protocolEmitReviewer({
+					ready: false,
+					item: [
+						JSON.stringify({
+							id: "P1.2",
+							title: "Invalid closure evidence",
+							action: "auto_fix",
+							reason: "The evidence field has the wrong type.",
+							[field]: 3,
+						}),
+					],
+				});
+				expect.unreachable(`should reject non-string ${field}`);
+			} catch (error) {
+				expect(error).toBeInstanceOf(CliError);
+				expect((error as CliError).code).toBe("INVALID_STRUCTURED_OUTPUT");
+				expect((error as CliError).message).toContain(field);
+			}
+		}
+	});
+
 	test("rejects CLI-owned aggregate fields from stdin and item flags", async () => {
 		for (const params of [
 			{

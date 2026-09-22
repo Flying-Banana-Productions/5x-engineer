@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -42,6 +42,36 @@ function commit(cwd: string, message: string): string {
 }
 
 describe("plan-only review diff evidence", () => {
+	test(
+		"builds a top-level-relative plan diff from a subdirectory workdir",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "5x-plan-subdir-"));
+			dirs.push(dir);
+			git(dir, "init");
+			const workdir = join(dir, "packages", "app");
+			mkdirSync(workdir, { recursive: true });
+			const planPath = join(workdir, "plan.md");
+			writeFileSync(planPath, "old\n");
+			const previous = commit(dir, "initial");
+			writeFileSync(planPath, "new\n");
+			const current = commit(dir, "revise nested plan");
+
+			const context = await buildPlanReviewDiffContext({
+				workdir,
+				planPath,
+				previousReviewCommit: previous,
+				currentCommit: current,
+			});
+			expect(context.patch).toContain("-old");
+			expect(context.patch).toContain("+new");
+			expect(context.hunks).toHaveLength(1);
+			expect(formatPlanReviewDiffContext(context)).toContain(
+				"':(top)packages/app/plan.md'",
+			);
+		},
+		{ timeout: 15000 },
+	);
+
 	test(
 		"accepts a pre-artifact end commit with an equivalent plan patch and exact hunk",
 		async () => {
@@ -117,7 +147,43 @@ describe("plan-only review diff evidence", () => {
 			const rendered = formatPlanReviewDiffContext(context, 12);
 			expect(rendered).toContain("Omitted hunk headers:");
 			expect(rendered).toContain("git diff");
-			expect(rendered).toContain("'new plan.md'");
+			expect(rendered).toContain("':(top)new plan.md'");
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"limits equivalent endpoints to the last plan-touching commit and later artifacts",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "5x-plan-equivalence-"));
+			dirs.push(dir);
+			git(dir, "init");
+			writeFileSync(join(dir, "plan.md"), "base\n");
+			const previous = commit(dir, "initial");
+			writeFileSync(join(dir, "plan.md"), "first revision\n");
+			const firstPlanCommit = commit(dir, "first plan revision");
+			writeFileSync(join(dir, "review-1.md"), "first artifact\n");
+			const firstArtifactCommit = commit(dir, "first artifact");
+			writeFileSync(join(dir, "plan.md"), "final revision\n");
+			const lastPlanCommit = commit(dir, "final plan revision");
+			writeFileSync(join(dir, "review-2.md"), "second artifact\n");
+			const secondArtifactCommit = commit(dir, "second artifact");
+			writeFileSync(join(dir, "review-3.md"), "third artifact\n");
+			const current = commit(dir, "third artifact");
+
+			const context = await buildPlanReviewDiffContext({
+				workdir: dir,
+				planPath: join(dir, "plan.md"),
+				previousReviewCommit: previous,
+				currentCommit: current,
+			});
+			expect(context.equivalentPlanCommits).toEqual([
+				lastPlanCommit,
+				secondArtifactCommit,
+				current,
+			]);
+			expect(context.equivalentPlanCommits).not.toContain(firstPlanCommit);
+			expect(context.equivalentPlanCommits).not.toContain(firstArtifactCommit);
 		},
 		{ timeout: 15000 },
 	);

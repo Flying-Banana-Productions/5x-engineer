@@ -490,7 +490,7 @@ export function validateIntroducedBy(
 ### 3.3 Protocol command integration — `src/commands/protocol.handler.ts:500–657`, `src/commands/protocol.ts:102–201`
 
 - [x] Resolve review kind and prior reviewer step only after ambient run/phase identity is known; standalone structural validation remains available without governance application.
-- [x] For `reviewer --phase plan --record` on active budget runs, load the pinned baseline mode, prior findings/decisions, rebuild diff context, and call `validateClosureReview` before writing the success envelope.
+- [x] For `reviewer --phase plan --record` on active budget runs, load the currently available active mode, prior findings/decisions, rebuild diff context, and call `validateClosureReview` before writing the success envelope. **Phase boundary:** Phase 3 reads mode from active config because the plan-208 baseline payload does not carry it; Phase 6.1 adds and consumes the durable baseline-pinned mode before enforced governance is complete.
 - [x] In enforced mode, surface line/item-specific errors in one envelope and write nothing on failure. In advisory mode, attach diagnostics and continue through unchanged v1 recording/routing.
 - [x] Add tests for first review, separate prior outcomes, `--ready` + addressed-only, remaining-item matching, exact hunk, critical safety, prior-decision re-raise, malformed aggregates, advisory diagnostics, and no-record validation.
 

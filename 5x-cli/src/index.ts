@@ -355,9 +355,11 @@ export {
 	REVIEW_DECISION_VERSION,
 } from "./review-governance/decisions.js";
 export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
+export type { PlanDiffFailure } from "./review-governance/plan-diff.js";
 export {
 	buildPlanReviewDiffContext,
 	formatPlanReviewDiffContext,
+	formatPlanReviewDiffFailure,
 	PlanDiffError,
 	validateIntroducedBy,
 } from "./review-governance/plan-diff.js";

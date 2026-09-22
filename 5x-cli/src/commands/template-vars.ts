@@ -17,6 +17,8 @@ import { outputError } from "../output.js";
 import {
 	buildPlanReviewDiffContext,
 	formatPlanReviewDiffContext,
+	formatPlanReviewDiffFailure,
+	PlanDiffError,
 } from "../review-governance/plan-diff.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
 
@@ -406,8 +408,22 @@ export async function resolveReviewDelta(
 			currentCommit,
 		});
 		return { vars, diffAppend: formatPlanReviewDiffContext(context) };
-	} catch {
-		return { vars, diffAppend: null };
+	} catch (error) {
+		const failure =
+			error instanceof PlanDiffError
+				? error
+				: new PlanDiffError(
+						"PLAN_DIFF_GIT_ERROR",
+						error instanceof Error ? error.message : String(error),
+					);
+		return {
+			vars,
+			diffAppend: formatPlanReviewDiffFailure({
+				previousReviewCommit: previousCommit,
+				currentCommit,
+				error: failure,
+			}),
+		};
 	}
 }
 
