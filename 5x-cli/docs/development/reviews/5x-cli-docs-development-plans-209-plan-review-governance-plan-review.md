@@ -481,3 +481,47 @@ None found. I checked one immaterial terminology point while re-reading §6.1: t
 - **Ready for implementation:** ✅ Yes. No open P0/P1/P2 items remain across the initial review and all seven addenda. Phase 0's merge-ancestry check against plan 208's actual merge state remains the only external dependency, as it has since Addendum 5.
 
 **Readiness:** Ready — no outstanding review items.
+
+---
+
+## Addendum 8 (2026-09-22) — Re-review request against an unchanged plan v1.7
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.7 @ `2c2a7d6` (prior reviewed revision `2c2a7d6`, review commit `eb1c0b4`). The prompt's appended diff and commit range were empty again, so I recomputed the delta with `git diff eb1c0b4 HEAD -- <plan>` and `git diff HEAD -- <plan>`; both are empty. The plan file has not changed since Addendum 7 — its last commit is still `2c2a7d6`, and the only working-tree modification in the repository is the run's `steps.jsonl`. This addendum therefore records a full re-read of the unchanged v1.7 text rather than a delta review.
+**Local verification:** Not run (static review). No plan-208 code claims changed, so Addendum 6's seam verification against `cd7ee88` still stands.
+
+### What I re-checked on the unchanged text
+
+Because there was no diff to anchor on, I re-read the plan end to end and independently recomputed the facts the prior addenda relied on, rather than carrying their conclusions forward unexamined:
+
+- **Delivery-budget ledger:** W1 5 + W2 8 + W3 5 + W4 5 + W5 8 + W6 8 + W7 3 + W9 5 + W10 3 = **50**, matching Addendum 6's independent estimate (`I = 50`) and the persisted run ledger (`B0 = 47` captured at run start, current ledger 50 after the P2.8 rescore). IDs W1–W7, W9, W10 are stable; W8 remains intentionally vacant. No negative architecture rows and no `DCn` claims (every `debtClaim` in the run's `budget.jsonl` is `null`), so there are no credit assessments to emit.
+- **`Addresses` re-check:** The union of every `Addresses` cell is exactly P0.1–P0.4, P1.1–P1.10, P2.1–P2.8. Every one of those findings is closed (initial review and Addenda 1–7). No row cites an open finding, and no cited ID is unknown.
+- **Surface Snapshot:** Files Touched has 45 production rows; two rows list two files each (`src/config.ts` + `5x.default.toml`, and the two `PromptStore` implementations), giving 47 production files as stated. Nine test rows and three doc rows are excluded from the count, as the snapshot intends.
+- **Estimated Timeline:** Phase rows sum to 22.5 working days, matching the stated total after the v1.7 Phase 6 increase.
+- **Internal consistency after seven rounds of edits:** The live spec still uses `snapshotId` everywhere (no stray `forecastId` outside Revision History/Addenda); `enforcement_implemented` is defined once in §6.1 as `pinnedMode === "enforced"` and nowhere contradicted; the choice-to-cause table in §2.2, the routing precedence in §4.1, the post-decision overrides in §4.3, and the Phase 9 scenarios agree on which choices skip successor derivation (`trade_scope`, `request_author_reestimate`, `abort`) and on re-estimate narrowing the next baseline-dispute gate to retain/adjust/abort. The Table of Contents matches the phase headings, including the documented Phase 8 gap.
+
+### Prior findings — classification
+
+| Finding | Status | Where closed |
+|---|---|---|
+| P0.1, P0.2, P0.3, P0.4 | ✅ Addressed | v1.1 (Addendum 1), residuals in v1.2–v1.4 (Addenda 2–3) |
+| P1.1, P1.2, P1.3, P1.5, P1.6, P1.7 | ✅ Addressed | v1.1 (Addendum 1) |
+| P1.4, P1.9 | ✅ Addressed | v1.2 residuals closed in v1.3 (Addendum 2) |
+| P1.8, P2.2, P2.3 | ✅ Addressed | v1.2 (Addendum 2) |
+| P2.1 | ✅ Addressed | v1.1 (Addendum 1) |
+| P2.4, P2.5 | ✅ Addressed | v1.3 (Addendum 2) |
+| P2.6 | ✅ Addressed | v1.4 (Addendum 3) |
+| P1.10 | ✅ Addressed | v1.5 (Addendum 5) |
+| P2.7, P2.8 | ✅ Addressed | v1.7 (Addendum 7) |
+
+Nothing is partially addressed or still open, and the unchanged text gives no reason to reopen any of them.
+
+### Remaining concerns
+
+None. A full re-read of the unchanged v1.7 text surfaced no new issue. The one terminology note from Addendum 7 (`pinnedMode` in §6.1 versus `baseline.mode` elsewhere) remains immaterial for the reason given there and is not raised as a finding.
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ✅ Complete. The plan is unchanged since Addendum 7; all findings from the initial review and Addenda 1–7 remain closed.
+- **Ready for implementation:** ✅ Yes. Phase 0's merge-ancestry check against plan 208's actual merge state remains the only external dependency.
+
+**Readiness:** Ready — no outstanding review items. If this re-review was triggered by a pipeline retry rather than a plan revision, no further plan edits are needed before implementation begins.
