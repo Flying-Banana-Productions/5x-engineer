@@ -126,6 +126,7 @@ async function captureState(
 			...selector,
 			warn,
 			progressResolver: async () => ({
+				state: "present",
 				source: { kind: "worktree", label: "worktree" },
 				markdown: planText,
 				planPath: ctx.planPath,
