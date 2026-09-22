@@ -16,6 +16,7 @@ import {
 import {
 	classifyDecisionAcceptance,
 	createReviewDecision,
+	foldGoverningReviewState,
 	governanceDecisionKey,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
@@ -521,17 +522,12 @@ export async function submitPlanReviewDecision(
 	);
 	if (alreadyResolved) {
 		const winner = decodeReviewDecisionPayload(alreadyResolved.payload);
-		const acceptance = classifyDecisionAcceptance({
-			decision: winner,
-			steps: ctx.recordStore.listLines(input.runId, "steps"),
-			budget: ctx.recordStore.listLines(input.runId, "budget"),
-		});
-		if (!acceptance.accepted)
-			fail(
-				"REVIEW_GATE_STALE",
-				acceptance.diagnostic ?? "review gate decision is stale",
-			);
-		const state = governance.deriveGoverningState(input.runId, baseline.b0);
+		const state = governingStateBeforeWinner(
+			ctx,
+			input.runId,
+			baseline.b0,
+			winner,
+		);
 		const snapshot = ctx.store
 			.listSnapshots(input.runId)
 			.find((candidate) => candidate.id === winner.snapshotId);
@@ -573,11 +569,15 @@ export async function submitPlanReviewDecision(
 				"review gate was resolved by a different decision",
 				{ decision: winner },
 			);
-		return {
+		return acceptedWinnerResult({
+			ctx,
+			promptStore,
+			runId: input.runId,
+			baselineB0: baseline.b0,
 			decision: winner,
 			created: false,
-			route: routeForStoredDecision(ctx, input.runId, winner, baseline.b0),
-		};
+			abortRun: deps.abortRun,
+		});
 	}
 	if (run.status !== "active")
 		fail("RUN_NOT_ACTIVE", `Run ${input.runId} is ${run.status}`);
@@ -615,28 +615,6 @@ export async function submitPlanReviewDecision(
 		),
 		now: deps.now?.() ?? new Date().toISOString(),
 	});
-
-	// Gate-key pre-read intentionally occurs before admission/finalization so a
-	// loser can observe the winner even when no step budget remains.
-	const existing = ctx.recordStore.getLine(
-		input.runId,
-		"decisions",
-		governanceDecisionKey(gate.gateId),
-	);
-	if (existing) {
-		const winner = decodeReviewDecisionPayload(existing.payload);
-		if (winner.decisionIntentHash !== proposed.decisionIntentHash)
-			fail(
-				"REVIEW_GATE_ALREADY_RESOLVED",
-				"review gate was resolved by a different decision",
-				{ decision: winner },
-			);
-		return {
-			decision: winner,
-			created: false,
-			route: routeForStoredDecision(ctx, input.runId, winner, baseline.b0),
-		};
-	}
 
 	let admitted: Awaited<ReturnType<typeof prepareRecordStepAppend>>;
 	try {
@@ -695,62 +673,95 @@ export async function submitPlanReviewDecision(
 				"review gate was resolved by a different decision",
 				{ decision: winner },
 			);
-		return {
+		return acceptedWinnerResult({
+			ctx,
+			promptStore,
+			runId: input.runId,
+			baselineB0: baseline.b0,
 			decision: winner,
 			created: false,
-			route: routeForStoredDecision(ctx, input.runId, winner, baseline.b0),
-		};
+			abortRun: deps.abortRun,
+		});
 	}
-
-	const acceptance = classifyDecisionAcceptance({
+	return acceptedWinnerResult({
+		ctx,
+		promptStore,
+		runId: input.runId,
+		baselineB0: baseline.b0,
 		decision: proposed,
-		steps: ctx.recordStore.listLines(input.runId, "steps"),
-		budget: ctx.recordStore.listLines(input.runId, "budget"),
+		created: true,
+		abortRun: deps.abortRun,
 	});
-	if (!acceptance.accepted)
+}
+
+function governingStateBeforeWinner(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	b0: number,
+	winner: ReviewDecisionPayload,
+) {
+	const decisions = createReviewGovernanceStore(ctx.recordStore).listDecisions(
+		runId,
+	);
+	const winnerIndex = decisions.findIndex(
+		(decision) => decision.decisionId === winner.decisionId,
+	);
+	return foldGoverningReviewState({
+		b0,
+		decisions: winnerIndex < 0 ? [] : decisions.slice(0, winnerIndex),
+		steps: ctx.recordStore.listLines(runId, "steps"),
+		budget: ctx.recordStore.listLines(runId, "budget"),
+	});
+}
+
+async function acceptedWinnerResult(input: {
+	ctx: ReviewBudgetCommandContext;
+	promptStore: PromptStore;
+	runId: string;
+	baselineB0: number;
+	decision: ReviewDecisionPayload;
+	created: boolean;
+	abortRun?: ReviewDecisionDeps["abortRun"];
+}): Promise<{
+	decision: ReviewDecisionPayload;
+	created: boolean;
+	route: ReviewDecisionRoute;
+}> {
+	const { ctx, decision } = input;
+	const runId = input.runId;
+	const authoritativeAcceptance = classifyDecisionAcceptance({
+		decision,
+		steps: ctx.recordStore.listLines(runId, "steps"),
+		budget: ctx.recordStore.listLines(runId, "budget"),
+	});
+	if (!authoritativeAcceptance.accepted)
 		fail(
 			"REVIEW_GATE_STALE",
-			acceptance.diagnostic ?? "review gate decision is stale",
+			authoritativeAcceptance.diagnostic ?? "review gate decision is stale",
 		);
-	const state = governance.deriveGoverningState(input.runId, baseline.b0);
-	const { verdict } = stepPayloadForSnapshot(
-		ctx,
-		input.runId,
-		proposed.snapshotId,
+	const governance = createReviewGovernanceStore(
+		ctx.recordStore,
+		input.promptStore,
 	);
-	const snapshot = ctx.store
-		.listSnapshots(input.runId)
-		.find((item) => item.id === proposed.snapshotId);
-	if (!snapshot)
-		fail("REVIEW_GATE_SNAPSHOT_MISSING", "review gate snapshot is unavailable");
-	const route = routeAfterDecision({
-		latestVerdict: verdict,
-		latestBudgetSnapshot: {
-			...snapshot,
-			derived:
-				(verdict as ReviewerVerdict & { budget?: DerivedBudgetResult })
-					.budget ?? snapshot.derived,
-		},
-		newGoverningState: state,
-		decision: proposed,
-	});
+	const state = governance.deriveGoverningState(runId, input.baselineB0);
+	const route = routeForStoredDecision(ctx, runId, decision, input.baselineB0);
 	resolveGatePromptProjection(
-		promptStore,
-		input.runId,
-		proposed.gateId,
-		proposed.decisionId,
+		input.promptStore,
+		runId,
+		decision.gateId,
+		decision.decisionId,
 	);
 	if (route === "human_gate") {
-		const successor = governance.deriveOpenGate(input.runId);
+		const successor = governance.deriveOpenGate(runId);
 		if (successor) {
 			ensureReviewGatePrompt({
-				promptStore,
+				promptStore: input.promptStore,
 				gate: successor,
 				baselineReestimatePending: Boolean(state.baselineReestimatePending),
 				eligibleFindings: [
 					...eligibleFindingMap(
 						ctx,
-						input.runId,
+						runId,
 						successor.snapshotId,
 						successor.causes,
 					).values(),
@@ -758,13 +769,13 @@ export async function submitPlanReviewDecision(
 			});
 		}
 	}
-	if (route === "aborted")
-		await (deps.abortRun ?? defaultAbort)({
-			runId: input.runId,
-			rationale: proposed.rationale,
+	if (route === "aborted" && getRunV1(ctx.db, runId)?.status === "active")
+		await (input.abortRun ?? defaultAbort)({
+			runId,
+			rationale: decision.rationale,
 			context: ctx,
 		});
-	return { decision: proposed, created: true, route };
+	return { decision, created: input.created, route };
 }
 
 function routeForStoredDecision(

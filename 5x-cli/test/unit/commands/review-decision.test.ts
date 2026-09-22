@@ -12,6 +12,12 @@ import { CliError } from "../../../src/output.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import {
+	foldGoverningReviewState,
+	type ReviewDecisionPayload,
+} from "../../../src/review-governance/decisions.js";
+import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
+import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
+import {
 	makeBudgetContext,
 	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
@@ -96,6 +102,31 @@ function fixture(opts?: { maxSteps?: number }) {
 	return { ctx, promptStore };
 }
 
+function rebuiltAcceptance(ctx: ReturnType<typeof fixture>["ctx"]): string[] {
+	const liveState = createReviewGovernanceStore(
+		ctx.recordStore,
+	).deriveGoverningState("run1", 2);
+	ctx.db.exec(
+		"DELETE FROM review_decision_index; DELETE FROM review_gate_index",
+	);
+	reindexReviewGovernance(ctx.recordStore, ctx.db, "run1");
+	const rows = ctx.db
+		.query(
+			"SELECT acceptance, payload_json FROM review_decision_index WHERE run_id = ? ORDER BY record_seq",
+		)
+		.all("run1") as Array<{ acceptance: string; payload_json: string }>;
+	const rebuiltState = foldGoverningReviewState({
+		b0: 2,
+		decisions: rows.map(
+			(row) => JSON.parse(row.payload_json) as ReviewDecisionPayload,
+		),
+		steps: ctx.recordStore.listLines("run1", "steps"),
+		budget: ctx.recordStore.listLines("run1", "budget"),
+	});
+	expect(rebuiltState).toEqual(liveState);
+	return rows.map((row) => row.acceptance);
+}
+
 describe("review decision action", () => {
 	test("show creates a typed notification and generic answer is rejected", async () => {
 		const { ctx, promptStore } = fixture();
@@ -174,6 +205,93 @@ describe("review decision action", () => {
 		ctx.db.close();
 	});
 
+	test("after-winner loser allocated at N+1 observes the coupled winner", async () => {
+		const { ctx, promptStore } = fixture({ maxSteps: 4 });
+		const shown = await showPlanReviewGate("run1", {
+			context: ctx,
+			promptStore,
+		});
+		if (!shown.open) throw new Error("expected gate");
+		const input = {
+			runId: "run1",
+			gateId: shown.gateId,
+			payload: { choice: "retain_baseline" as const, rationale: "retain" },
+		};
+		const winner = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		const decisionKey = `decision:review-gate:${shown.gateId}`;
+		const originalGetLine = ctx.recordStore.getLine.bind(ctx.recordStore);
+		let hiddenReads = 0;
+		ctx.recordStore.getLine = (runId, stream, key) => {
+			if (
+				runId === "run1" &&
+				stream === "decisions" &&
+				key === decisionKey &&
+				hiddenReads++ < 2
+			)
+				return null;
+			return originalGetLine(runId, stream, key);
+		};
+		const originalAtomic = ctx.recordStore.atomicAppendIfAllNew.bind(
+			ctx.recordStore,
+		);
+		let attemptedIteration: number | undefined;
+		ctx.recordStore.atomicAppendIfAllNew = (ops) => {
+			attemptedIteration = (
+				ops[0]?.payload as { iteration?: number } | undefined
+			)?.iteration;
+			return originalAtomic(ops);
+		};
+		const loser = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		expect(loser.created).toBe(false);
+		expect(loser.decision.decisionId).toBe(winner.decision.decisionId);
+		expect(attemptedIteration).toBe(2);
+		expect(
+			ctx.recordStore
+				.listLines("run1", "steps")
+				.filter(
+					(line) =>
+						(line.payload as { step_name?: string }).step_name ===
+						"human:review-governance",
+				),
+		).toHaveLength(1);
+		ctx.db.close();
+	});
+
+	test("authoritative records survive a lost SQLite index write and rebuild", async () => {
+		const { ctx, promptStore } = fixture();
+		const shown = await showPlanReviewGate("run1", {
+			context: ctx,
+			promptStore,
+		});
+		if (!shown.open) throw new Error("expected gate");
+		const input = {
+			runId: "run1",
+			gateId: shown.gateId,
+			payload: { choice: "retain_baseline" as const, rationale: "retain" },
+		};
+		const winner = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		ctx.db.exec(
+			"DELETE FROM review_decision_index; DELETE FROM review_gate_index",
+		);
+		const retry = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		expect(retry.decision.decisionId).toBe(winner.decision.decisionId);
+		expect(retry.created).toBe(false);
+		expect(rebuiltAcceptance(ctx)).toEqual(["accepted"]);
+		ctx.db.close();
+	});
+
 	test("exported action records an authenticated adapter performer", async () => {
 		const { ctx, promptStore } = fixture();
 		const shown = await showPlanReviewGate("run1", {
@@ -244,6 +362,72 @@ describe("review decision action", () => {
 		ctx.db.close();
 	});
 
+	test("request-author-reestimate retry validates against the pre-winner fold", async () => {
+		const { ctx, promptStore } = fixture();
+		const shown = await showPlanReviewGate("run1", {
+			context: ctx,
+			promptStore,
+		});
+		if (!shown.open) throw new Error("expected gate");
+		const input = {
+			runId: "run1",
+			gateId: shown.gateId,
+			payload: {
+				choice: "request_author_reestimate" as const,
+				rationale: "author should re-estimate",
+			},
+		};
+		const first = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		const retry = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		expect(first.route).toBe("author_revision");
+		expect(retry).toMatchObject({
+			created: false,
+			route: "author_revision",
+			decision: { decisionId: first.decision.decisionId },
+		});
+		ctx.db.close();
+	});
+
+	test("accepted abort winner repairs a failed terminal side effect on retry", async () => {
+		const { ctx, promptStore } = fixture();
+		const shown = await showPlanReviewGate("run1", {
+			context: ctx,
+			promptStore,
+		});
+		if (!shown.open) throw new Error("expected gate");
+		const input = {
+			runId: "run1",
+			gateId: shown.gateId,
+			payload: { choice: "abort" as const, rationale: "stop the run" },
+		};
+		await expect(
+			submitPlanReviewDecision(input, {
+				context: ctx,
+				promptStore,
+				abortRun: async () => {
+					throw new Error("simulated crash after durable append");
+				},
+			}),
+		).rejects.toThrow("simulated crash");
+		expect(ctx.recordStore.getRun("run1")?.status).toBe("active");
+		const retry = await submitPlanReviewDecision(input, {
+			context: ctx,
+			promptStore,
+		});
+		expect(retry).toMatchObject({ created: false, route: "aborted" });
+		expect(ctx.recordStore.getRun("run1")?.status).toBe("aborted");
+		expect(promptStore.getPrompt(shown.promptId)?.answer).toBe(
+			retry.decision.decisionId,
+		);
+		ctx.db.close();
+	});
+
 	test("reviewer-before-human is stale and leaves notification open", async () => {
 		const { ctx, promptStore } = fixture();
 		const shown = await showPlanReviewGate("run1", {
@@ -282,6 +466,7 @@ describe("review decision action", () => {
 			),
 		).rejects.toMatchObject({ code: "REVIEW_GATE_STALE" });
 		expect(promptStore.getPrompt(shown.promptId)?.answer).toBeNull();
+		expect(rebuiltAcceptance(ctx)).toEqual(["stale"]);
 		ctx.db.close();
 	});
 
@@ -371,10 +556,11 @@ describe("review decision action", () => {
 		expect(promptStore.getPrompt(shown.promptId)?.answer).toBe(
 			decision.decision.decisionId,
 		);
+		expect(rebuiltAcceptance(ctx)).toEqual(["accepted"]);
 		ctx.db.close();
 	});
 
-	test("show repairs a record-first prompt-second crash", async () => {
+	test("accepted-winner retry repairs a record-first prompt-second crash", async () => {
 		const { ctx, promptStore } = fixture();
 		const shown = await showPlanReviewGate("run1", {
 			context: ctx,
@@ -386,18 +572,27 @@ describe("review decision action", () => {
 		promptStore.resolveReviewGatePrompt = () => {
 			throw new Error("simulated prompt projection crash");
 		};
-		const recorded = await submitPlanReviewDecision(
-			{
-				runId: "run1",
-				gateId: shown.gateId,
-				payload: { choice: "retain_baseline", rationale: "retain" },
-			},
-			{ context: ctx, promptStore },
-		);
+		const decisionInput = {
+			runId: "run1",
+			gateId: shown.gateId,
+			payload: { choice: "retain_baseline" as const, rationale: "retain" },
+		};
+		const recorded = await submitPlanReviewDecision(decisionInput, {
+			context: ctx,
+			promptStore,
+		});
 		expect(recorded.created).toBe(true);
 		expect(ctx.recordStore.listLines("run1", "decisions")).toHaveLength(1);
 		expect(promptStore.getPrompt(shown.promptId)?.answer).toBeNull();
 		promptStore.resolveReviewGatePrompt = resolve;
+		const retry = await submitPlanReviewDecision(decisionInput, {
+			context: ctx,
+			promptStore,
+		});
+		expect(retry.created).toBe(false);
+		expect(promptStore.getPrompt(shown.promptId)?.answer).toBe(
+			recorded.decision.decisionId,
+		);
 		const repaired = await showPlanReviewGate("run1", {
 			context: ctx,
 			promptStore,

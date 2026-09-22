@@ -170,6 +170,33 @@ describe("review governance store and projection", () => {
 		expect(records.listLines(runId, "decisions")).toHaveLength(1);
 	});
 
+	test("a resolved decision that covers no cause creates an unchanged-cause successor", () => {
+		const records = fixture();
+		const governance = createReviewGovernanceStore(records);
+		const first = governance.deriveOpenGate(runId);
+		if (!first) throw new Error("expected an open gate");
+		const decision = createReviewDecision({
+			gateId: first.gateId,
+			snapshotId: first.snapshotId,
+			choice: "increase_budget",
+			findingRefs: [],
+			rationale: "Increase was insufficient",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			governingBaselineChange: { from: 5, to: 6 },
+		});
+		governance.resolveGate({
+			runId,
+			decision,
+			humanStep: humanStep(decision.decisionId, decision.gateId),
+			origin,
+		});
+		const successor = governance.deriveOpenGate(runId);
+		if (!successor) throw new Error("expected successor gate");
+		expect(successor.gateId).not.toBe(first.gateId);
+		expect(successor.causes).toEqual(first.causes);
+	});
+
 	test("wiped SQLite projection rebuild preserves acceptance and gate resolution", () => {
 		const records = fixture();
 		const governance = createReviewGovernanceStore(records);
