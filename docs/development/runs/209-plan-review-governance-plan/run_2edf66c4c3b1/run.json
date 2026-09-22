@@ -1,0 +1,19 @@
+{
+  "id": "run_2edf66c4c3b1",
+  "plan_path": "/Users/spalmer/dev/5x-engineer/5x-cli/docs/development/plans/209-plan-review-governance-plan.md",
+  "config_json": {
+    "maxStepsPerRun": 250
+  },
+  "created_at": "2026-09-21 22:24:09",
+  "sealed_at": "2026-09-22T10:26:51.391Z",
+  "status": "completed",
+  "final_head_commit": "1e83dd4b3315088e0d4fdd7f36e67b2bb8fd0a89",
+  "cli_version": "1.3.0",
+  "format_version": 1,
+  "creator": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  },
+  "sealer": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  }
+}
