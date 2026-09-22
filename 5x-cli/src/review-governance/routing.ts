@@ -48,7 +48,7 @@ function findingIdentity(
 	item: VerdictItem,
 	findingOutcomes: readonly FindingIdentity[],
 	state: GoverningReviewState,
-): FindingIdentity | null {
+): FindingIdentity {
 	const outcome = findingOutcomes.find(
 		(candidate) => candidate.findingId === item.id,
 	);
@@ -72,7 +72,6 @@ function activeItems(
 ): VerdictItem[] {
 	return items.filter((item) => {
 		const identity = findingIdentity(item, findingOutcomes, state);
-		if (!identity) return true;
 		const accepted = state.acceptedRisks.find((risk) =>
 			sameFinding(risk, identity),
 		);
@@ -146,7 +145,6 @@ function causesFor(input: {
 	}
 	for (const item of input.items) {
 		const finding = findingIdentity(item, input.findingOutcomes, input.state);
-		if (!finding) continue;
 		if (item.lateDiscovery === "critical_safety") {
 			causes.push({ kind: "critical_safety", finding });
 		} else if (
