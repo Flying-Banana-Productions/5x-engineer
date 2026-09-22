@@ -153,3 +153,34 @@ Extend the advisory test with these rows.
 
 - **Phase 4 completion:** ✅ — all P1/P2 items from the initial review are resolved with direct regression coverage; no plan-compliance gaps remain in `routing.ts`.
 - **Ready for next phase:** ✅ — no human decisions outstanding. The one new item (vestigial null type) is cosmetic and does not block Phase 5/6 wiring.
+
+---
+
+## Addendum (2026-09-22) — Cleanup fix review
+
+**Reviewed:** `9a3ffd0f658fcb3ddda8e2425d957151eff8aa4d` (`fix: remove vestigial nullable finding identity`), diffed against `7be90a9e0f35c3f8a287ad398be8bcf0733108da`.
+
+**Local verification:** `bun test test/unit/review-governance/` → 67 pass / 0 fail (172 assertions, unchanged); `bun test test/unit/` → 2796 pass / 0 fail; `bunx tsc --noEmit` clean; `bunx biome check src/review-governance test/unit/review-governance` clean.
+
+### What changed
+
+A three-line diff confined to `src/review-governance/routing.ts`:
+
+- `findingIdentity`'s return type changed from `FindingIdentity | null` to `FindingIdentity` (`routing.ts:47–61`) — no implementation change, since every branch already returned a value.
+- The now-unreachable `if (!identity) return true;` guard in `activeItems` was deleted (`routing.ts:68–75`).
+- The now-unreachable `if (!finding) continue;` guard in `causesFor` was deleted (`routing.ts:146–149`).
+
+No test changes were needed or made; the existing 67-test suite continues to exercise the same behavior with the dead branches removed.
+
+### Prior findings — status
+
+- **NEW.1** (vestigial `FindingIdentity | null` return type with two unreachable guards) — **addressed**. This is exactly the fix I specified: the signature now matches the implementation, and both dead-code guards are gone. No behavior changed — `structuredClone`/`toEqual` assertions on the full test suite pass unmodified, confirming the removal was pure dead-code elimination.
+
+### New issues introduced by this revision
+
+None. The change is minimal, mechanical, and scoped exactly to the flagged issue. Typecheck and lint remain clean, and the full unit suite (2796 tests) is unaffected.
+
+### Updated readiness
+
+- **Phase 4 completion:** ✅ — every item raised across both review rounds (2 P1, 5 P2) is now resolved. `routing.ts` is deterministic, fully covered by regression tests including the exact repro scenarios from the original findings, and free of dead code.
+- **Ready for next phase:** ✅ — Phase 4 is production-ready as delivered. No outstanding items, human or mechanical.
