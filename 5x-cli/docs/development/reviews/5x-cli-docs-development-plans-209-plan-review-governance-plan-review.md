@@ -454,3 +454,30 @@ Both are polish; neither changes a contract, a route, or a phase gate.
 - **Ready for implementation:** ✅ After the two one-line polish corrections above, which touch only §6.1 and the W6 ledger row. All are `auto_fix` with zero remaining effort and zero architecture delta — exactly the bounded final-correction shape this plan itself defines — and no human decision is needed. Phase 0's merge-ancestry check is the only remaining dependency on plan 208's actual merge.
 
 **Readiness:** Ready with corrections — clarify `enforcement_implemented` for advisory-pinned runs (P2.7) and rescore W6 (P2.8).
+
+---
+
+## Addendum 7 (2026-09-22) — Re-review of plan v1.7 (closure of the Addendum 6 residuals)
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.7 @ `2c2a7d6` (prior reviewed revision `40034b6`, review commit `335d78e`). The prompt's appended diff and commit range were empty again, so I recomputed the delta with `git diff 40034b6 2c2a7d6 -- <plan>` and re-read the W6 ledger row, §6.1's `enforcement_implemented` bullet, the Estimated Timeline, and the new Revision History entry.
+**Local verification:** Not run (static review). No plan-208 code claims changed in this revision, so no new seam verification was needed beyond Addendum 6's.
+
+### What's addressed (✅)
+
+- **P2.7 — ✅ Addressed.** §6.1 now types `ReviewBudgetState.enforcement_implemented` as `boolean` and defines it exactly as `pinnedMode === "enforced"`, explicitly `false` for advisory-pinned, `uninitialized`, and `v1_compat` states and `true` only for enforced-pinned active runs. This is precisely the one-line definition I proposed, and it preserves the existing literal-`false` contract for every pre-slice state as required.
+- **P2.8 — ✅ Addressed.** W6 is rescored from effort 5 to 8 with architecture delta held at 0, and the rationale now names the concrete surface (apply/baseline sourcing, three-type `mode` extension plus codec default and v9 round-trip, snapshot UUID relocation, six-field-group snapshot/codec/facade/index extension, the governance composition and gate projection, one shared protocol/invoke writer, reviewer/author context rendering plus the `template.handler` guard, warning/run-state/config/TOML updates, and eight named test files) that justifies it. `Addresses` for W6 now includes P2.7 and P2.8 alongside the pre-existing P0.4, P1.2, P1.6. Phase 6's estimate grows from 3 to 4 days and the timeline total from 21.5 to 22.5, both arithmetically consistent with the rescored row.
+
+**Delivery-budget hygiene:** The ledger sums to 5 + 8 + 5 + 5 + 8 + 8 + 3 + 5 + 3 = **50**, matching my Addendum 6 independent estimate (`I = 50`) exactly. IDs remain stable (W1–W7, W9, W10; W8 intentionally vacant); no negative architecture rows and no `DCn` claims, so there are no credit assessments to emit. Per the continued-review contract, I am not emitting a new baseline assessment.
+
+**`Addresses` re-check:** Every `Addresses` cell across all ten rows cites a finding that is now closed (P0.1–P0.4, P1.1–P1.10, P2.1–P2.8). No row cites an open finding.
+
+### Remaining concerns
+
+None found. I checked one immaterial terminology point while re-reading §6.1: the new bullet says "derive it exactly as `pinnedMode === \"enforced\"`," while every other place in the plan (including the same section's preceding bullet, and `derivePlanReviewGovernance`'s own `mode` parameter) calls this value `baseline.mode` or "the pinned baseline mode," not `pinnedMode`. This is not ambiguous in context — `buildReviewBudgetState`'s existing signature already takes a `mode` parameter, and no other symbol named `pinnedMode` exists — so I am not raising it as a finding; a competent engineer would use whatever local binding already holds the baseline-pinned mode; there is no second reasonable reading.
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ✅ Complete. v1.7 closes both residuals from Addendum 6 without introducing a new gap or regressing any previously closed finding.
+- **Ready for implementation:** ✅ Yes. No open P0/P1/P2 items remain across the initial review and all seven addenda. Phase 0's merge-ancestry check against plan 208's actual merge state remains the only external dependency, as it has since Addendum 5.
+
+**Readiness:** Ready — no outstanding review items.
