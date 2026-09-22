@@ -172,11 +172,11 @@ describe("durable governance decisions", () => {
 		}
 	});
 
-	test("fold applies accepted history in insertion order and keeps stale decisions audit-only", () => {
-		const { store, appendStep } = setup(false);
+	test("fold keeps stale decisions audit-only", () => {
+		const { store, appendStep } = setup(true);
 		const adjusted = decision();
 		appendStep(
-			step("human:review-governance", 2, {
+			step("human:review-governance", 3, {
 				decisionId: adjusted.decisionId,
 				gateId: adjusted.gateId,
 			}),
@@ -194,12 +194,81 @@ describe("durable governance decisions", () => {
 			steps: store.listLines(runId, "steps"),
 			budget: store.listLines(runId, "budget"),
 		});
-		expect(state.governingBaseline).toBe(8);
-		expect(state.baselineDisputeResolution).toEqual({
-			decisionId: adjusted.decisionId,
-			choice: "adjust_baseline",
+		expect(state.governingBaseline).toBe(5);
+		expect(state.baselineDisputeResolution).toBeUndefined();
+		expect(state.auditOnly).toEqual([
+			{
+				decision: adjusted,
+				diagnostic: "a newer plan reviewer step existed at acceptance",
+			},
+		]);
+	});
+
+	test("accepted corrections supersede baseline and risk decisions", () => {
+		const { store, appendStep } = setup(false);
+		const retain = createReviewDecision({
+			gateId: "gate-retain",
+			snapshotId: "snapshot-1",
+			choice: "retain_baseline",
+			findingRefs: [],
+			rationale: "Retain the initial baseline",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
 		});
-		expect(state.auditOnly).toEqual([]);
+		const reestimate = createReviewDecision({
+			gateId: "gate-retain",
+			snapshotId: "snapshot-1",
+			choice: "request_author_reestimate",
+			findingRefs: [],
+			rationale: "Replace the retained-baseline decision",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			supersedesDecisionId: retain.decisionId,
+		});
+		const finding = { findingId: "F-risk", fingerprint: "sha256:risk" };
+		const risk = createReviewDecision({
+			gateId: "gate-risk",
+			snapshotId: "snapshot-1",
+			choice: "defer_accept_risk",
+			findingRefs: [finding],
+			rationale: "Temporarily accept the risk",
+			evidence: ["Operator evidence"],
+			approvedScope: { retained: ["old scope"], removed: [] },
+		});
+		const scopeCorrection = createReviewDecision({
+			gateId: "gate-risk",
+			snapshotId: "snapshot-1",
+			choice: "trade_scope",
+			findingRefs: [],
+			rationale: "Remove scope instead of accepting risk",
+			evidence: [],
+			approvedScope: { retained: ["core"], removed: ["risky feature"] },
+			supersedesDecisionId: risk.decisionId,
+		});
+		const decisions = [retain, reestimate, risk, scopeCorrection];
+		for (const [index, current] of decisions.entries())
+			appendStep(
+				step("human:review-governance", index + 2, {
+					decisionId: current.decisionId,
+					gateId: current.gateId,
+				}),
+			);
+		const state = foldGoverningReviewState({
+			b0: 5,
+			decisions,
+			steps: store.listLines(runId, "steps"),
+			budget: store.listLines(runId, "budget"),
+		});
+		expect(state.baselineDisputeResolution).toBeUndefined();
+		expect(state.baselineReestimatePending).toEqual({
+			decisionId: reestimate.decisionId,
+		});
+		expect(state.acceptedRisks).toEqual([]);
+		expect(state.approvedScope).toEqual(scopeCorrection.approvedScope);
+		expect(state.auditOnly.map(({ decision }) => decision.decisionId)).toEqual([
+			retain.decisionId,
+			risk.decisionId,
+		]);
 	});
 
 	test("memory and working-tree stores fold identical authoritative history", () => {

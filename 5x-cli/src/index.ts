@@ -355,14 +355,20 @@ export {
 	REVIEW_DECISION_VERSION,
 } from "./review-governance/decisions.js";
 export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
-export { reindexReviewGovernance } from "./review-governance/sqlite-index.js";
+export {
+	projectReviewGovernance,
+	reindexReviewGovernance,
+} from "./review-governance/sqlite-index.js";
 export type {
 	DerivedReviewGate,
 	ResolveReviewGateInput,
 	ResolveReviewGateResult,
 	ReviewGovernanceStore,
 } from "./review-governance/store.js";
-export { createReviewGovernanceStore } from "./review-governance/store.js";
+export {
+	createReviewGovernanceStore,
+	ReviewGovernanceStoreError,
+} from "./review-governance/store.js";
 export type {
 	BlockingFindingEvidence,
 	ClosureDiagnostic,

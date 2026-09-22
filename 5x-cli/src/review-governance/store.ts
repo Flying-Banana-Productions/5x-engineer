@@ -46,6 +46,18 @@ export type ResolveReviewGateResult =
 	  }
 	| { created: false; decision: ReviewDecisionPayload; semanticRetry: boolean };
 
+export class ReviewGovernanceStoreError extends Error {
+	readonly code: "REVIEW_GATE_STEP_CONFLICT" | "REVIEW_GATE_DECISION_CONFLICT";
+	constructor(
+		code: "REVIEW_GATE_STEP_CONFLICT" | "REVIEW_GATE_DECISION_CONFLICT",
+		message: string,
+	) {
+		super(message);
+		this.name = "ReviewGovernanceStoreError";
+		this.code = code;
+	}
+}
+
 export interface ReviewGovernanceStore {
 	getDecision(runId: string, decisionId: string): ReviewDecisionPayload | null;
 	listDecisions(runId: string): ReviewDecisionPayload[];
@@ -85,8 +97,7 @@ export function createReviewGovernanceStore(
 				.listLines(runId, "budget")
 				.flatMap((line) => {
 					try {
-						const snapshot = decodeBudgetSnapshotPayload(line.payload);
-						return snapshot.effectiveGateCauses?.length ? [snapshot] : [];
+						return [decodeBudgetSnapshotPayload(line.payload)];
 					} catch {
 						return [];
 					}
@@ -94,6 +105,7 @@ export function createReviewGovernanceStore(
 			const latest = snapshots.at(-1);
 			if (!latest) return null;
 			let causes = latest.effectiveGateCauses ?? [];
+			if (causes.length === 0) return null;
 			let predecessorGateId: string | undefined;
 			while (causes.length > 0) {
 				const gateId = deriveGateId({
@@ -115,7 +127,18 @@ export function createReviewGovernanceStore(
 						causes,
 						resolved: false,
 					};
-				const decision = decodeReviewDecisionPayload(line.payload);
+				let decision: ReviewDecisionPayload;
+				try {
+					decision = decodeReviewDecisionPayload(line.payload);
+				} catch {
+					return {
+						gateId,
+						runId,
+						snapshotId: latest.id,
+						causes,
+						resolved: false,
+					};
+				}
 				const next = applyDecisionCauseCoverage(causes, decision);
 				if (next.length === 0 || next.length === causes.length) return null;
 				causes = next;
@@ -138,6 +161,9 @@ export function createReviewGovernanceStore(
 					"human governance step must be stamped with decisionId and gateId",
 				);
 			const now = input.decision.createdAt;
+			const decisionKey = input.decision.supersedesDecisionId
+				? governanceCorrectionKey(input.decision.decisionId)
+				: governanceDecisionKey(input.decision.gateId);
 			const ops: AppendOp[] = [
 				{
 					runId: input.runId,
@@ -152,9 +178,7 @@ export function createReviewGovernanceStore(
 				{
 					runId: input.runId,
 					stream: "decisions",
-					idempotencyKey: input.decision.supersedesDecisionId
-						? governanceCorrectionKey(input.decision.decisionId)
-						: governanceDecisionKey(input.decision.gateId),
+					idempotencyKey: decisionKey,
 					payload: encodeReviewDecisionPayload(input.decision),
 					createdAt: now,
 					schemaVersion: 1,
@@ -172,9 +196,19 @@ export function createReviewGovernanceStore(
 			const winnerLine = recordStore.getLine(
 				input.runId,
 				"decisions",
-				governanceDecisionKey(input.decision.gateId),
+				decisionKey,
 			);
-			if (!winnerLine) throw new Error("REVIEW_GATE_ALREADY_RESOLVED");
+			if (!winnerLine) {
+				if (appended.duplicates.some((duplicate) => duplicate.index === 0))
+					throw new ReviewGovernanceStoreError(
+						"REVIEW_GATE_STEP_CONFLICT",
+						"human governance step identity already exists for a different decision",
+					);
+				throw new ReviewGovernanceStoreError(
+					"REVIEW_GATE_DECISION_CONFLICT",
+					"governance decision batch conflicted without a readable winner",
+				);
+			}
 			const winner = decodeReviewDecisionPayload(winnerLine.payload);
 			return {
 				created: false,

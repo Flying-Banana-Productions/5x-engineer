@@ -140,6 +140,7 @@ export function reindexReviewGovernance(
 			if (!snapshot.effectiveGateCauses?.length) continue;
 			let causes = snapshot.effectiveGateCauses;
 			let predecessorGateId: string | undefined;
+			let chainDepth = 0;
 			while (causes.length > 0) {
 				const gateId = deriveGateId({
 					runId: id,
@@ -162,9 +163,10 @@ export function reindexReviewGovernance(
 					causes,
 					...(predecessorGateId ? { predecessorGateId } : {}),
 					...(winner ? { resolvedDecisionId: winner.decisionId } : {}),
-					seq: seq + gateCount,
+					seq: seq + chainDepth,
 				});
 				gateCount += 1;
+				chainDepth += 1;
 				if (!winner) break;
 				const next = applyDecisionCauseCoverage(causes, winner);
 				if (next.length === 0 || next.length === causes.length) break;
@@ -174,4 +176,13 @@ export function reindexReviewGovernance(
 		}
 	}
 	return { decisions: decisionCount, gates: gateCount, diagnostics };
+}
+
+/** Live write-through seam used after authoritative record appends. */
+export function projectReviewGovernance(
+	recordStore: RecordStore,
+	db: Database,
+	runId: string,
+): GovernanceReindexResult {
+	return reindexReviewGovernance(recordStore, db, runId);
 }

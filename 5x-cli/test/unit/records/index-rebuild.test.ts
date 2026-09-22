@@ -22,6 +22,7 @@ import {
 	encodeJsonlFile,
 	encodeRunJson,
 } from "../../../src/control-plane/record-layout.js";
+import { createMemoryRecordStore } from "../../../src/control-plane/record-memory.js";
 import {
 	RECORD_LINE_SCHEMA_VERSION,
 	type RecordLine,
@@ -255,6 +256,42 @@ describe("rebuildRecordsIndex", () => {
 				});
 				expect(second.runs_upserted).toBe(0);
 				expect(second.steps_upserted).toBe(0);
+			} finally {
+				closeOwned(db);
+			}
+		});
+	});
+
+	test("never mutates a caller-supplied authoritative record store", async () => {
+		await withTmp(async (dir) => {
+			initRepo(dir);
+			writeRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			commitAll(dir, "records");
+			const db = openOwnedDb(dir);
+			try {
+				const authoritative = createMemoryRecordStore();
+				const sentinel = v1Summary("run_authoritative");
+				authoritative.putRun(sentinel);
+				authoritative.append(stepLine("run_authoritative", "sentinel"));
+				const before = {
+					runs: authoritative.listRuns(),
+					steps: authoritative.listLines("run_authoritative", "steps"),
+				};
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				await rebuildRecordsIndex({
+					db,
+					recordStore: authoritative,
+					workdir: dir,
+					config,
+					resolve: resolvePlanProgress,
+				});
+				expect(authoritative.listRuns()).toEqual(before.runs);
+				expect(authoritative.listLines("run_authoritative", "steps")).toEqual(
+					before.steps,
+				);
+				expect(authoritative.getRun("run_alpha")).toBeNull();
 			} finally {
 				closeOwned(db);
 			}

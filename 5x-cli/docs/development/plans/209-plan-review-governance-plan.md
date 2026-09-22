@@ -394,11 +394,13 @@ export interface ReviewGovernanceStore {
 }
 ```
 
-- [x] Implement as a facade over `RecordStore`, `PromptStore`, and `ReviewBudgetCommandContext`; command logic must not import `bun:sqlite`.
-- [x] At reviewer-record time, fold every decision that predates that round and persist the resulting **effective unresolved causes** on the snapshot. Persist causes suppressed by that pre-existing fold separately with `resolvedBy` for audit; do not put them back into the first gate. Derive the first `gateId` from `(runId, snapshotId, sorted effective causes)`—never from causes recomputed after a later decision.
+- [x] Implement the Phase 2 `RecordStore` facade and `PromptStore`/review-budget context seams without importing `bun:sqlite`. **Boundary:** Phase 5 wires prompt actions; Phase 6 composes the facade with `ReviewBudgetCommandContext`.
+- [x] Add the snapshot fields/codecs and deterministic first-gate derivation needed to persist **effective unresolved causes** and suppressed causes with `resolvedBy`. **Boundary:** Phase 6.1 computes and supplies those cause sets at reviewer-record time after folding decisions that predate the round.
 - [x] A gate is resolved iff `decision:review-gate:<gateId>` exists. Apply the choice/cause rules below, recompute uncovered causes from the same snapshot where applicable, and derive at most one successor from `(runId, snapshotId, sorted remaining causes, predecessorGateId)`. A resolved predecessor never reopens; a newer reviewer snapshot supersedes the chain.
-- [x] Treat typed prompts and `review_gate_index` as projections keyed by deterministic `gateId`; after record-first resolution, close/answer an open prompt best-effort. Repair recreates missing prompts for unresolved gates and closes prompts for resolved gates.
+- [x] Add the deterministic `review_gate_index` projection and nullable versioned prompt-context schema. **Boundary:** Phase 5 (W5/W10) implements typed notification creation, post-record closure, and prompt repair.
 - [x] Codec only the governance decision payload; there is no authoritative gate record/codec. Preserve unknown governance versions as diagnostics.
+
+> **Phase boundary:** Phase 2's `routeForChoice` and successor walk are conservative seams. Phase 4's authoritative filtered-budget rerun replaces the interim route for budget/baseline choices and decides whether a successor remains after recomputation.
 
 #### Choice-to-cause coverage and gate lifecycle
 

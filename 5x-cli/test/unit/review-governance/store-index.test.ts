@@ -11,9 +11,19 @@ import { encodeBudgetSnapshotPayload } from "../../../src/review-budget/record-l
 import {
 	createReviewDecision,
 	deriveGateId,
+	foldGoverningReviewState,
+	governanceCorrectionKey,
+	governanceDecisionKey,
+	type ReviewDecisionPayload,
 } from "../../../src/review-governance/decisions.js";
-import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
-import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
+import {
+	projectReviewGovernance,
+	reindexReviewGovernance,
+} from "../../../src/review-governance/sqlite-index.js";
+import {
+	createReviewGovernanceStore,
+	ReviewGovernanceStoreError,
+} from "../../../src/review-governance/store.js";
 import type { ReviewGateCause } from "../../../src/review-governance/types.js";
 
 const origin: RecordOrigin = {
@@ -89,6 +99,34 @@ function fixture(causes: ReviewGateCause[] = [cause]) {
 }
 
 describe("review governance store and projection", () => {
+	test("a newer cause-free snapshot supersedes an older open gate", () => {
+		const records = fixture();
+		records.append({
+			runId,
+			stream: "budget",
+			idempotencyKey: "snapshot-2",
+			payload: encodeBudgetSnapshotPayload({
+				kind: "snapshot",
+				id: "snapshot2",
+				runId,
+				stepKey: { stepName: "reviewer:plan", phase: "plan", iteration: 2 },
+				currentLedger: {
+					workItems: [],
+					surface: {},
+					estimateConfidence: "medium",
+				} as never,
+				findings: [],
+				assessments: [],
+				effectiveGateCauses: [],
+				createdAt: "2026-01-02",
+			}),
+			...recordedEnvelope(origin),
+		});
+		expect(
+			createReviewGovernanceStore(records).deriveOpenGate(runId),
+		).toBeNull();
+	});
+
 	test("first gate decision wins and semantic retry returns the winner", () => {
 		const records = fixture();
 		const store = createReviewGovernanceStore(records);
@@ -156,7 +194,10 @@ describe("review governance store and projection", () => {
 		try {
 			runMigrations(db);
 			db.exec("INSERT INTO runs(id, plan_path) VALUES ('run1', '/plan.md')");
-			const first = reindexReviewGovernance(records, db, runId);
+			const stateBefore = JSON.stringify(
+				governance.deriveGoverningState(runId, 5),
+			);
+			const first = projectReviewGovernance(records, db, runId);
 			const before = db
 				.query(
 					"SELECT decision_id, acceptance, diagnostic FROM review_decision_index ORDER BY record_seq",
@@ -173,6 +214,20 @@ describe("review governance store and projection", () => {
 				.all();
 			expect(second).toEqual(first);
 			expect(after).toEqual(before);
+			const projectedDecisions = (
+				db
+					.query(
+						"SELECT payload_json FROM review_decision_index ORDER BY record_seq",
+					)
+					.all() as Array<{ payload_json: string }>
+			).map((row) => JSON.parse(row.payload_json) as ReviewDecisionPayload);
+			const rebuiltState = foldGoverningReviewState({
+				b0: 5,
+				decisions: projectedDecisions,
+				steps: records.listLines(runId, "steps"),
+				budget: records.listLines(runId, "budget"),
+			});
+			expect(JSON.stringify(rebuiltState)).toBe(stateBefore);
 			expect(after).toEqual([
 				{
 					decision_id: decision.decisionId,
@@ -180,6 +235,141 @@ describe("review governance store and projection", () => {
 					diagnostic: null,
 				},
 			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("step-key collisions are distinct from gate resolution", () => {
+		const records = fixture();
+		const governance = createReviewGovernanceStore(records);
+		const gate = governance.deriveOpenGate(runId);
+		if (!gate) throw new Error("expected gate");
+		records.append({
+			runId,
+			stream: "steps",
+			idempotencyKey: `step:${runId}:human:review-governance:plan:2`,
+			payload: humanStep("other-decision", "other-gate"),
+			...recordedEnvelope(origin),
+		});
+		const decision = createReviewDecision({
+			gateId: gate.gateId,
+			snapshotId: gate.snapshotId,
+			choice: "retain_baseline",
+			findingRefs: [],
+			rationale: "Retain baseline",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+		});
+		try {
+			governance.resolveGate({
+				runId,
+				decision,
+				humanStep: humanStep(decision.decisionId, decision.gateId),
+				origin,
+			});
+			throw new Error("expected collision");
+		} catch (error) {
+			expect(error).toBeInstanceOf(ReviewGovernanceStoreError);
+			expect((error as ReviewGovernanceStoreError).code).toBe(
+				"REVIEW_GATE_STEP_CONFLICT",
+			);
+		}
+		expect(
+			records.getLine(runId, "decisions", governanceDecisionKey(gate.gateId)),
+		).toBeNull();
+	});
+
+	test("correction retries return the conflicting correction, not the gate winner", () => {
+		const records = fixture();
+		const governance = createReviewGovernanceStore(records);
+		const gate = governance.deriveOpenGate(runId);
+		if (!gate) throw new Error("expected gate");
+		const winner = createReviewDecision({
+			gateId: gate.gateId,
+			snapshotId: gate.snapshotId,
+			choice: "retain_baseline",
+			findingRefs: [],
+			rationale: "Retain baseline",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+		});
+		governance.resolveGate({
+			runId,
+			decision: winner,
+			humanStep: humanStep(winner.decisionId, winner.gateId),
+			origin,
+		});
+		const correction = createReviewDecision({
+			gateId: gate.gateId,
+			snapshotId: gate.snapshotId,
+			choice: "request_author_reestimate",
+			findingRefs: [],
+			rationale: "Request a corrected estimate",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			supersedesDecisionId: winner.decisionId,
+		});
+		governance.resolveGate({
+			runId,
+			decision: correction,
+			humanStep: {
+				...humanStep(correction.decisionId, correction.gateId),
+				iteration: 3,
+			},
+			origin,
+		});
+		const retry = governance.resolveGate({
+			runId,
+			decision: correction,
+			humanStep: {
+				...humanStep(correction.decisionId, correction.gateId),
+				iteration: 4,
+			},
+			origin,
+		});
+		expect(retry.created).toBe(false);
+		if (!retry.created) {
+			expect(retry.decision.decisionId).toBe(correction.decisionId);
+			expect(retry.semanticRetry).toBe(true);
+		}
+		expect(
+			records.getLine(
+				runId,
+				"decisions",
+				governanceCorrectionKey(correction.decisionId),
+			),
+		).not.toBeNull();
+	});
+
+	test("malformed gate decisions remain diagnostic and leave the gate open", () => {
+		const records = fixture();
+		const governance = createReviewGovernanceStore(records);
+		const gate = governance.deriveOpenGate(runId);
+		if (!gate) throw new Error("expected gate");
+		records.append({
+			runId,
+			stream: "decisions",
+			idempotencyKey: governanceDecisionKey(gate.gateId),
+			payload: { kind: "plan-review-governance", version: 999 },
+			...recordedEnvelope(origin),
+		});
+		expect(governance.deriveOpenGate(runId)?.gateId).toBe(gate.gateId);
+		const db = new Database(":memory:");
+		try {
+			runMigrations(db);
+			db.exec("INSERT INTO runs(id, plan_path) VALUES ('run1', '/plan.md')");
+			const rebuilt = reindexReviewGovernance(records, db, runId);
+			expect(rebuilt.diagnostics).toHaveLength(1);
+			expect(
+				(
+					db
+						.query("SELECT resolved_decision_id FROM review_gate_index")
+						.get() as {
+						resolved_decision_id: string | null;
+					}
+				).resolved_decision_id,
+			).toBeNull();
 		} finally {
 			db.close();
 		}
@@ -237,12 +427,73 @@ describe("review governance store and projection", () => {
 			expect(reindexReviewGovernance(records, db, runId).gates).toBe(2);
 			const gates = db
 				.query(
-					"SELECT gate_id, predecessor_gate_id FROM review_gate_index ORDER BY record_seq",
+					"SELECT gate_id, predecessor_gate_id, record_seq FROM review_gate_index ORDER BY record_seq",
 				)
 				.all();
 			expect(gates).toEqual([
-				{ gate_id: first.gateId, predecessor_gate_id: null },
-				{ gate_id: successor.gateId, predecessor_gate_id: first.gateId },
+				{ gate_id: first.gateId, predecessor_gate_id: null, record_seq: 0 },
+				{
+					gate_id: successor.gateId,
+					predecessor_gate_id: first.gateId,
+					record_seq: 1,
+				},
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("gate record sequence is scoped to each run", () => {
+		const records = fixture();
+		const secondRun = "run2";
+		records.putRun({
+			id: secondRun,
+			plan_path: "/plan-2.md",
+			config_json: null,
+			created_at: "2026-01-01",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "test",
+			format_version: 1,
+			creator: origin.recorder,
+		});
+		records.append({
+			runId: secondRun,
+			stream: "budget",
+			idempotencyKey: "snapshot-run2",
+			payload: encodeBudgetSnapshotPayload({
+				kind: "snapshot",
+				id: "snapshot-run2",
+				runId: secondRun,
+				stepKey: { stepName: "reviewer:plan", phase: "plan", iteration: 1 },
+				currentLedger: {
+					workItems: [],
+					surface: {},
+					estimateConfidence: "medium",
+				} as never,
+				findings: [],
+				assessments: [],
+				effectiveGateCauses: [cause],
+				createdAt: "2026-01-01",
+			}),
+			...recordedEnvelope(origin),
+		});
+		const db = new Database(":memory:");
+		try {
+			runMigrations(db);
+			db.exec(
+				"INSERT INTO runs(id, plan_path) VALUES ('run1', '/plan.md'), ('run2', '/plan-2.md')",
+			);
+			reindexReviewGovernance(records, db);
+			const rows = db
+				.query(
+					"SELECT run_id, record_seq FROM review_gate_index ORDER BY run_id",
+				)
+				.all();
+			expect(rows).toEqual([
+				{ run_id: "run1", record_seq: 0 },
+				{ run_id: "run2", record_seq: 0 },
 			]);
 		} finally {
 			db.close();

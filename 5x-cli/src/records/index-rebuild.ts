@@ -539,9 +539,9 @@ export async function rebuildRecordsIndex(opts: {
 				steps_skipped_newer_local += 1;
 			}
 		}
-		const projectionStore = opts.recordStore ?? createMemoryRecordStore();
-		if (!projectionStore.getRun(run.summary.id))
-			projectionStore.putRun(run.summary);
+		// Never mutate a caller-supplied authoritative store during index repair.
+		const projectionStore = createMemoryRecordStore();
+		projectionStore.putRun(run.summary);
 		for (const line of [
 			...run.steps,
 			...(run.budget ?? []),
