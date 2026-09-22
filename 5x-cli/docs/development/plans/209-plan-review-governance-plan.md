@@ -1,6 +1,6 @@
 # Plan-Review Governance — Closure Reviews, Enforced Routing, and Durable Decisions
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** September 21, 2026
 **Status:** Draft — revised after initial staff review; blocked only on review-budget advisory plan 208
 
@@ -132,7 +132,7 @@ The current branch does not yet contain plan 208, but that plan's implementation
 
 **Decision scope is explicit.** Risk deferral and accepted-risk choices must name finding IDs/fingerprints and approved scope. Scope trade records retained/removed scope text and returns to author revision. Budget/baseline choices record old and new governing values plus rationale. Abort uses the existing run-abort handler after the decision append; handler parity tests assert the same terminal record as CLI abort.
 
-**Resolved causes do not re-gate unchanged state.** Keep plan-208 budget alerts visible, but remove a gate cause when an active decision covers it and record `resolvedBy`. Baseline dispute is covered by retain/adjust/re-estimate. Architecture approval records `approvedP` and approved threshold-crossing item/work-item IDs, and applies only while current burden stays within that envelope. Budget bands are never suppressed and always use folded governing `B`.
+**Resolved causes do not re-gate unchanged state.** Persist each review snapshot's effective causes after folding decisions that already existed for that round; retain suppressed causes separately with `resolvedBy` for audit. Keep plan-208 budget alerts visible, but remove a gate cause when an active decision covers it. Baseline retention covers that snapshot's baseline dispute. Architecture approval records `approvedP` and approved threshold-crossing item/work-item IDs, and applies only while current burden stays within that envelope. Baseline/budget changes and finding deferrals are recomputed rather than blindly suppressed. Scope trade and author re-estimate close the current snapshot's gate and require a new review snapshot instead of creating a successor from stale causes.
 
 **Fingerprinting is deterministic but does not replace stable IDs.** Hash canonical JSON containing normalized title, scope class, named requirement/failure, and lowest-cost correction—not volatile priority, estimate, or prose formatting. Persist both `findingId` and `fingerprint`. A later item with the same ID but different fingerprint is changed evidence, not silently the same risk.
 
@@ -188,13 +188,14 @@ SQLite: reviewer/budget/decision/gate projections (rebuildable local index)
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
 | W1 | Define governance types, finding fingerprints, and pure closure validation | 5 | 1 | - | P0.4, P1.7, P2.1 | Adds a shared policy subsystem and canonical identity abstraction; +1 reflects that maintenance surface. Tests are included. |
-| W2 | Add immutable review decisions, derived gates, governing-state fold, codecs, and index rebuild | 8 | 2 | - | P0.2, P1.4, P1.5, P1.6, P2.1 | Adds an authoritative record kind, deterministic fold, successor-gate projection, and migration; +2 reflects persistent change points. Residual identity clarification does not change effort. |
+| W2 | Add immutable review decisions, derived gates, governing-state fold, codecs, and index rebuild | 8 | 2 | - | P0.2, P1.4, P1.5, P1.6, P2.1 | Adds an authoritative record kind, deterministic fold, explicit choice/cause coverage, successor-gate projection, and migration; +2 reflects persistent change points. The row remains 8 because the coverage table clarifies the already-scoped fold/gate lifecycle. |
 | W3 | Extend reviewer protocol and validate exact introducing plan hunks | 5 | 0 | - | P0.4, P1.3, P1.6 | Adds top-level prior outcomes and full-patch validation while reusing plan-208 item fields; tests cover truncation and exact evidence. |
-| W4 | Derive mode-aware routes, suppress resolved causes, and normalize `ready_with_corrections` | 5 | 0 | - | P0.3, P1.1, P1.7 | One pure matrix handles pinned advisory diagnostics, enforced routing, cause approvals, and adjacent-debt policy. |
-| W5 | Implement typed human-gate notification flow and gate-scoped decision CAS | 8 | 2 | - | P0.1, P0.2, P1.4, P1.5, P1.8, P1.9, P2.1, P2.3 | Adds a cross-process concurrency boundary and CLI command group; +2 reflects that burden. Finalize-loser, wait-handle, post-decision route, and stale-side-effect fixes refine the same work without rescoring. |
+| W4 | Derive mode-aware routes, suppress resolved causes, and normalize `ready_with_corrections` | 5 | 0 | - | P0.3, P1.1, P1.4, P1.7, P1.9 | One pure matrix handles pinned advisory diagnostics, enforced routing, cause approvals, deferral-before-budget filtering, and post-decision precedence. The clarified matrix does not add a new implementation surface, so effort stays 5. |
+| W5 | Implement gate-scoped decision CAS, terminal input, and post-decision orchestration | 8 | 2 | - | P0.1, P0.2, P1.4, P1.5, P1.9, P2.1, P2.3, P2.4, P2.5 | Adds the cross-process CAS, finalize-seam extension, choice/cause routing, complete CLI payload contract, and stale-safe decision handler; +2 reflects that persistent concurrency boundary. It remains 8 after notification work moves to W10 because the rubric tops out while the CAS/handler work remains independently maximum-sized. |
 | W6 | Integrate governance with plan-208 recording and author/reviewer prompt context | 5 | 0 | - | P0.4, P1.2, P1.6 | Wraps `recordPlanReviewerStepWithSnapshot`, folds governing `B`, and injects decisions into both author and reviewer prompts. |
-| W7 | Rewrite reviewer/author templates and plan-review skills for closure routing | 3 | 0 | - | P0.4, P1.1, P1.2, P1.3, P1.9 | Adds mode-conditional instructions, prior outcomes, governing-author context, full-diff retrieval, and durable post-decision route branching. |
-| W9 | Complete end-to-end compatibility, audit, follow-up handoff, and documentation coverage | 5 | 0 | - | P0.1, P1.6, P2.2 | Removes dashboard parity scope, validates CLI/process races, documents the intentional ID gap, and records the dashboard follow-up. |
+| W7 | Rewrite reviewer/author templates and plan-review skills for closure routing | 3 | 0 | - | P0.4, P1.1, P1.2, P1.3, P1.9, P2.4 | Adds mode-conditional instructions, prior outcomes, governing-author context, full-diff retrieval, durable post-decision branching, and commands derived from the CLI input schema. The CLI syntax clarification fits the existing skill rewrite, so effort stays 3. |
+| W9 | Complete end-to-end compatibility, audit, follow-up handoff, and documentation coverage | 5 | 0 | - | P0.1, P1.6, P2.2, P2.4 | Removes dashboard parity scope, validates CLI/process races, documents the intentional ID gap and decision-input syntax, and records the dashboard follow-up. The added syntax documentation is part of the existing CLI-doc pass, so effort stays 5. |
+| W10 | Add review-gate notification, decision-key wait, and PromptStore safeguards | 3 | 0 | - | P1.8, P2.5 | Split from saturated W5 in response to Addendum 2. Covers typed notification metadata, rejection in both prompt stores, internal projection repair, and decision-key waiting without adding another authority. |
 
 ### Surface Snapshot
 
@@ -388,17 +389,30 @@ export interface ReviewGovernanceStore {
 ```
 
 - [ ] Implement as a facade over `RecordStore`, `PromptStore`, and `ReviewBudgetCommandContext`; command logic must not import `bun:sqlite`.
-- [ ] Persist the reviewer's pre-decision, unsuppressed gate causes on the snapshot. Derive the first `gateId` from `(runId, snapshotId/forecastId, sorted persisted causes)`—never from causes recomputed after folding a decision.
-- [ ] A gate is resolved iff `decision:review-gate:<gateId>` exists. Fold that decision, recompute uncovered causes from the same snapshot, and, when any remain, derive exactly one successor from `(runId, snapshotId, sorted remaining causes, predecessorGateId)`. Repeat until no causes remain; a newer reviewer snapshot supersedes the chain.
+- [ ] At reviewer-record time, fold every decision that predates that round and persist the resulting **effective unresolved causes** on the snapshot. Persist causes suppressed by that pre-existing fold separately with `resolvedBy` for audit; do not put them back into the first gate. Derive the first `gateId` from `(runId, snapshotId/forecastId, sorted effective causes)`—never from causes recomputed after a later decision.
+- [ ] A gate is resolved iff `decision:review-gate:<gateId>` exists. Apply the choice/cause rules below, recompute uncovered causes from the same snapshot where applicable, and derive at most one successor from `(runId, snapshotId, sorted remaining causes, predecessorGateId)`. A resolved predecessor never reopens; a newer reviewer snapshot supersedes the chain.
 - [ ] Treat typed prompts and `review_gate_index` as projections keyed by deterministic `gateId`; after record-first resolution, close/answer an open prompt best-effort. Repair recreates missing prompts for unresolved gates and closes prompts for resolved gates.
 - [ ] Codec only the governance decision payload; there is no authoritative gate record/codec. Preserve unknown governance versions as diagnostics.
+
+#### Choice-to-cause coverage and gate lifecycle
+
+| Choice | Cause effect | Successor behavior |
+|---|---|---|
+| `increase_budget` | Fold the new governing `B`; filter active deferrals, rerun `deriveBudget`, and use the newly derived band/other causes. It does not blindly mark an old band covered. | Create one successor only if the authoritative rerun still returns `human_gate`. |
+| `adjust_baseline` | Fold the new governing `B`, thereby resolving the snapshot's baseline dispute; recompute budget bands and all remaining causes. | Create one successor only if the authoritative rerun still returns `human_gate`. |
+| `retain_baseline` | Cover this snapshot's baseline-dispute cause with `resolvedBy`; keep `B` unchanged and recompute all other causes. | Create one successor only if the authoritative rerun still returns `human_gate`. |
+| `defer_accept_risk` | Cover only causes tied to the exact approved finding IDs/fingerprints. Remove those findings before both `deriveBudget` and readiness routing. | Create one successor only for causes remaining after the authoritative rerun. |
+| `approve_architecture_burden` | Cover the architecture cause only while `P` and the threshold-crossing item/work-item set remain inside the recorded approval envelope. | Create one successor only for other uncovered causes; growth outside the envelope re-gates on the next applicable derivation. |
+| `trade_scope` | Record retained/removed scope, but do not pretend the old snapshot's budget causes were covered. | Close this snapshot's gate with `author_revision`; skip successor derivation. The next reviewer snapshot recomputes causes for the changed scope. |
+| `request_author_reestimate` | Record the re-estimate request without durable suppression of old causes. | Close this snapshot's gate with `author_revision`; skip successor derivation. The next reviewer snapshot recomputes causes. |
+| `abort` | Record the terminal choice; it covers no individual cause. | Close the gate with `aborted`, skip successor derivation, then run terminal handling as the post-append side effect. |
 
 ### 2.3 Rebuildable index — `src/db/schema.ts` after plan 208's migration; new `src/review-governance/sqlite-index.ts`
 
 - [ ] Add the next available migration after prerequisites for `review_decision_index`, derived `review_gate_index`, and optional versioned prompt context; use stable TEXT keys, `record_seq`, and run/forecast indexes.
 - [ ] Implement write-through upserts and `reindexReviewGovernance(recordStore, db, runId?)` using record insertion order, not second-resolution timestamps.
 - [ ] Extend the prerequisite records-index/backfill dispatch only to project existing decision lines; do not backfill invented governance decisions from generic historical human steps.
-- [ ] Add fresh/upgrade schema tests, equal-timestamp ordering, wiped-index/gate rebuild, malformed-governance diagnostics, no-decision compatibility, a three-kind decision fixture, and a two-cause chain where the first decision leaves one successor and the predecessor never reopens.
+- [ ] Add fresh/upgrade schema tests, equal-timestamp ordering, wiped-index/gate rebuild, malformed-governance diagnostics, no-decision compatibility, a three-kind decision fixture, and a two-cause chain where the first decision leaves one successor and the predecessor never reopens. Assert the next reviewer snapshot persists only effective unresolved causes while retaining earlier suppressed causes as `resolvedBy` audit entries.
 
 ---
 
@@ -476,7 +490,7 @@ export function validateIntroducedBy(
 
 ## Phase 4: Deterministic enforced routing and readiness normalization
 
-**Completion gate:** A table-driven routing matrix covers every budget band, alert, semantic action, review kind, readiness, and mode. Enforced output is deterministic; advisory/off preserve their documented routes.
+**Completion gate:** A table-driven routing matrix covers every budget band, alert, semantic action, choice-to-cause transition, review kind, readiness, and mode. Filtered-budget reruns are authoritative except for explicit scope/re-estimate/abort closures. Enforced output is deterministic; advisory/off preserve their documented routes.
 
 ### 4.1 Pure router — new `src/review-governance/routing.ts`
 
@@ -494,8 +508,8 @@ export function derivePlanReviewGovernance(input: {
 Routing precedence in enforced mode:
 
 1. Existing accepted-risk decision without valid new evidence removes that finding from blocking input; invalid re-raise has already failed validation.
-2. Remove causes covered by active unsuperseded decisions, recording `resolvedBy`: any retain/adjust/re-estimate covers immutable baseline dispute; architecture approval covers only `P <= approvedP` and the recorded threshold-crossing IDs. Growth beyond either re-gates. Never suppress budget-band causes.
-3. Recompute plan-208 budget from the latest snapshot with folded governing `B`; do not append a snapshot.
+2. Remove causes covered by active unsuperseded decisions, recording `resolvedBy`: baseline retention covers that snapshot's dispute; architecture approval covers only `P <= approvedP` and the recorded threshold-crossing IDs. Growth beyond either re-gates. Baseline/budget adjustments are inputs to recomputation, not blanket cause suppression.
+3. Remove findings covered by active deferral from the budget and readiness inputs, then recompute plan-208 budget from the latest snapshot with folded governing `B`; do not append a snapshot.
 4. `lateDiscovery: critical_safety`, any semantic `human_required` (including allowed adjacent debt), uncovered baseline/architecture alert, or over-effective/absolute band → `human_gate`.
 5. `ready` with no required items → `complete`.
 6. Strictly valid `ready_with_corrections` → `final_corrections`.
@@ -530,18 +544,17 @@ export function routeAfterDecision(input: {
 }): ReviewDecisionRoute;
 ```
 
-- [ ] Recompute budget from the latest snapshot plus folded governing `B`, then rerun `derivePlanReviewGovernance`; never trust a route supplied by the decision caller.
-- [ ] If uncovered causes remain, return the deterministic successor `human_gate` before choice-specific routing.
-- [ ] Remove findings covered by active deferral before readiness routing. If no required items remain, return `complete` even when the recorded verdict was `not_ready`.
-- [ ] `increase_budget`, `adjust_baseline`, and `retain_baseline` return `final_corrections` when the strict shortcut qualifies and otherwise `author_revision`. Architecture approval uses the recomputed route after successor checks.
-- [ ] `trade_scope` and `request_author_reestimate` always return `author_revision`; `abort` returns `aborted` after terminal handling.
+- [ ] Build filtered inputs first: remove every finding covered by an active deferral before both `deriveBudget` and readiness routing, fold governing `B`, then rerun `derivePlanReviewGovernance` against the latest snapshot. That pure rerun is authoritative for every fold-changing/covering choice; never trust a route supplied by the caller.
+- [ ] For `increase_budget`, `adjust_baseline`, `retain_baseline`, `defer_accept_risk`, and `approve_architecture_burden`, return the authoritative recomputed route unchanged: `complete` when no required work/cause remains, `final_corrections` when the strict shortcut qualifies, `author_revision` for remaining ordinary corrections, or one deterministic successor `human_gate` for uncovered causes.
+- [ ] Apply choice-specific overrides only to choices that deliberately close the current snapshot rather than using a fold change to cover its causes: `trade_scope` and `request_author_reestimate` return `author_revision`, and `abort` returns `aborted`. These three skip successor derivation; abort terminal handling runs afterward as a side effect, never before route derivation.
 - [ ] `5x review gate show` and `5x review decide` expose this durable derived route for skill branching.
 
 ### 4.4 Routing tests — new `test/unit/review-governance/routing.test.ts`
 
 - [ ] Cover each band, baseline direction, cumulative/single architecture alert, action, valid/invalid final correction, initial/closure, and pinned advisory/enforced mode.
 - [ ] Add post-decision rows: retained/adjusted baseline does not re-gate; approved architecture does not re-gate unchanged burden; larger `P` or a new threshold-crossing ID re-gates; budget bands still gate against folded `B`.
-- [ ] Add post-decision route rows: deferral of the only blockers completes; increase/retain chooses author revision or strict final correction; scope trade/re-estimate revises; abort is terminal.
+- [ ] Add post-decision route rows: deferral filters findings before budget and readiness and completes when it removes the only blockers; increase/adjust/retain return the authoritative complete/final-correction/revision/successor route; scope trade/re-estimate revise without a successor even when the old snapshot was over budget; abort derives `aborted` before terminal handling.
+- [ ] Cover every row in the choice-to-cause table, including unrelated remaining causes, a deferred finding that previously caused `over_effective`, and a pre-existing resolved cause that must not enter a later snapshot's first gate.
 - [ ] Assert reviewer readiness and authored aggregate-like fields cannot override the CLI route.
 - [ ] Assert eligible intrinsic debt expands only the effective limit supplied by plan 208 and never changes displayed gross effort/positive burden.
 
@@ -549,7 +562,7 @@ export function routeAfterDecision(input: {
 
 ## Phase 5: Human gate prompt and decision actions
 
-**Completion gate:** Enforced human routes derive one typed notification/wait gate; two independent CLI processes race through the plan-208 finalize seam and one gate-scoped RecordStore CAS. Simultaneous and after-winner losers observe the winner without iteration retry/corruption errors. Generic prompt answers are rejected, the wait follows the decision key, and stale decisions trigger no side effect.
+**Completion gate:** Enforced human routes derive one typed notification/wait gate; equivalent flag, JSON, and stdin submissions reach one validated handler. Two independent CLI processes race through the plan-208 finalize seam and one gate-scoped RecordStore CAS. Simultaneous and after-winner losers observe the winner without iteration retry/corruption errors. Generic prompt answers are rejected, the wait follows the decision key, and stale decisions trigger no side effect.
 
 ### 5.1 Typed gate coordination — extend merged prompt types/store and migration
 
@@ -583,8 +596,10 @@ export async function submitPlanReviewDecision(
 ```
 
 - [ ] Register `5x review gate show` and `5x review decide`; resolve ambient run using normal command rules. Export the actor/origin-aware handler for a later authenticated adapter.
+- [ ] Define the terminal contract as `5x review decide --gate <id> --choice <choice> --rationale <text>` plus repeatable `--evidence <text>`, `--finding '<FindingIdentity JSON>'`, `--retain <scope>`, `--remove <scope>`, `--approved-item <id>`, and `--approved-work-item <id>`, with integer `--baseline <B>` and `--approved-p <P>` where required. Reject unknown, duplicate-scalar, and choice-inapplicable fields.
+- [ ] Also accept `--gate <id> --input-json '<SubmitPlanReviewDecisionPayload JSON>'` or `--input-json -` from stdin. JSON input is mutually exclusive with `--choice` and all choice-specific flags, uses the same validator, and excludes CLI-owned actor/origin/generated IDs. `review gate show` prints `requiredFieldsByChoice`, JSON field names, and a redacted example command in text and structured output.
 - [ ] Validate choice/payload against the gate, expected forecast, current run status, plan-208 limits, and current decision fold before any write.
-- [ ] Pre-read `decision:review-gate:<gateId>` before finalization; return/compare the winner immediately when present.
+- [ ] Pre-read `decision:review-gate:<gateId>` **before `prepareRecordStepAppend` and finalization**; return/compare the winner immediately when present, including when the run is already at its step limit.
 - [ ] Route a new write through `finalizeAndWritePreparedStep({ mode: "paired-all-new", extraOps })`, supplying the gate decision op and suppressing the generic `human-step` mirror. Extend that shared seam so `created:false` checks existing `extraOps` keys before iteration-collision logic and returns `{ outcome: "coupled-key-exists", key, line }` instead of retrying or throwing.
 - [ ] On the coupled-key outcome, load the winner: matching `decisionIntentHash` returns `created:false`; a different intent returns `REVIEW_GATE_ALREADY_RESOLVED`. Only true step-key races retain plan 208's omitted-iteration retry; unrelated missing-step/existing-snapshot remains corruption.
 - [ ] Preserve plan 208 behavior by having `recordPlanReviewerStepWithSnapshot` map a snapshot-only coupled-key outcome back to `RECORD_PAIR_CORRUPT`; only the governance decision caller treats its gate-key outcome as an idempotent winner.
@@ -595,9 +610,9 @@ export async function submitPlanReviewDecision(
 ### 5.3 Prompt wait and cross-process concurrency tests
 
 - [ ] Add a review-gate wait helper that polls `RecordStore.getLine(..., "decisions", gateKey)` with the existing timeout/lifecycle cancellation model; it does not wait for `PromptRecord.answer`.
-- [ ] Add terminal structured-input validation and an exported action contract; all callers must use `submitPlanReviewDecision`. Generic prompt answer attempts return the structured remediation error.
+- [ ] Add terminal flag/JSON/stdin parsing and structured-input validation plus an exported action contract; all callers must use `submitPlanReviewDecision`. Generic prompt answer attempts return the structured remediation error.
 - [ ] In `store-contract.test.ts`, race two independently constructed facades over one working-tree records root; assert exactly one gate decision and one human step for same and conflicting payloads. A spawned CLI integration test covers the real process boundary.
-- [ ] Test simultaneous loser, after-winner loser allocated at step iteration N+1, repeated-identical/conflicting intent, generic-answer rejection, decision-key wait completion, newer-snapshot stale result with no side effects (including abort), lost-index-write, record-first/prompt-second crash, and prompt repair.
+- [ ] Test simultaneous loser, after-winner loser allocated at step iteration N+1, repeated-identical/conflicting intent, generic-answer rejection, decision-key wait completion, newer-snapshot stale result with no side effects (including abort), lost-index-write, record-first/prompt-second crash, and prompt repair. Cover equivalent flag/inline-JSON/stdin payloads plus mutually exclusive or choice-inapplicable input errors.
 
 ---
 
@@ -691,6 +706,7 @@ export interface PlanReviewPromptContext {
 - [ ] Read `data.result.governance.route` after validation/recording in enforced active runs; never infer gates from reviewer prose or recompute thresholds.
 - [ ] Branch `complete`, `author_revision`, `final_corrections`, and `human_gate`. Final corrections invoke one author pass, verify commit/plan parse, record completion, and skip reviewer re-entry.
 - [ ] For `human_gate`, present the notification plus `5x review decide` choices; never answer it through generic `5x prompt`. Resume from `routeAfterDecision` returned by `review gate show/decide`, not from stale reviewer readiness or prose.
+- [ ] Render commands using the Phase 5 contract: simple decisions use `--gate`, `--choice`, `--rationale`, and the choice-required repeatable flags; complex/adapted payloads use `--gate ... --input-json -`. Derive required fields from `review gate show.requiredFieldsByChoice`, not a duplicated skill-side matrix.
 - [ ] Branch post-decision `complete`, `author_revision`, `final_corrections`, successor `human_gate`, and `aborted` explicitly. In delegated noninteractive contexts return `needs_human` instead of opening an interactive prompt.
 - [ ] Keep `maxReviewIterations` as backstop for unresolved closure cycles and read it from resolved config.
 - [ ] Preserve advisory/off behavior and mid-review v1 compatibility.
@@ -724,7 +740,7 @@ export interface PlanReviewPromptContext {
 ### 9.3 Documentation and exports
 
 - [ ] Update `docs/v2/206-review-budget-governance.md` implementation status/contracts and `docs/v2/202-control-plane.md` budget-specific action mapping.
-- [ ] Update `docs/v1/101-cli-primitives.md` for review gate/decision commands and structured errors.
+- [ ] Update `docs/v1/101-cli-primitives.md` for review gate/decision commands, the individual-flag and `--input-json`/stdin payload forms, `requiredFieldsByChoice`, and structured errors; keep skill examples identical to this canonical syntax.
 - [ ] Update `README.md`, `CHANGELOG.md`, default config comments, public `src/index.ts` exports, and CLI help.
 - [ ] Document that baselines captured before this slice decode as advisory and cannot be promoted to enforced in place; enforcement requires a new run/baseline.
 - [ ] Mark `docs/v2/plan-inputs/07-plan-review-governance.plan-input.md` generated/implemented only after all gates pass; leave slice-08 handoff explicit.
@@ -798,7 +814,7 @@ Phase 0 must reconcile these paths against the merged plan-208 names before impl
 | Contract | `test/unit/review-governance/store-contract.test.ts` | Memory/working-tree ordering plus two-facade gate-scoped CAS and prompt repair. |
 | Unit | `test/unit/db/schema-review-governance.test.ts` | Fresh/upgrade schema, indexes, constraints, and wiped-index rebuild. |
 | Unit | `test/unit/commands/protocol-{emit,validate}.test.ts` | Prior-outcome flag, addressed-only ready, blocker matching, CLI-owned keys, pinned-mode compatibility. |
-| Unit | `test/unit/commands/review-decision.test.ts` | Choice payloads, coupled-key losers, stale no-side-effect gates, prompt rejection/wait, and abort parity. |
+| Unit | `test/unit/commands/review-decision.test.ts` | Choice/cause payloads, flag/JSON/stdin parsing, coupled-key losers, stale no-side-effect gates, prompt rejection/wait, and abort parity. |
 | Unit | `test/unit/commands/finalize-and-write-prepared-step.test.ts` | Decision-key collision bypasses retry/corruption; snapshot-only collision still maps to plan-208 pair corruption. |
 | Integration | `test/integration/commands/protocol-validate.test.ts` | Recorded plan-review evidence and no-write-on-failure behavior. |
 | Integration | `test/integration/commands/plan-review-governance.test.ts` | Multi-round review, two-process CAS, prompts, decisions, restart, audit history, and pinned modes. |
@@ -836,6 +852,16 @@ Phase 0 must reconcile these paths against the merged plan-208 names before impl
 ---
 
 ## Revision History
+
+### v1.3 (September 21, 2026) — Addendum 2 routing and input-contract corrections
+
+Addresses Addendum 2 in [`5x-cli-docs-development-plans-209-plan-review-governance-plan-review.md`](../reviews/5x-cli-docs-development-plans-209-plan-review-governance-plan-review.md):
+
+- **P1.4 residual:** Persisted record-time effective causes rather than unsuppressed causes, retained `resolvedBy` audit entries, and added an explicit choice-to-cause/successor table.
+- **P1.9 residual:** Made the filtered-budget governance rerun authoritative, limited route overrides to scope/re-estimate/abort closures, and reconciled completion, correction, and successor precedence.
+- **P2.4:** Specified equivalent individual-flag, inline-JSON, and stdin contracts for `5x review decide`, plus `requiredFieldsByChoice` discovery.
+- **P2.5:** Split notification/wait/PromptStore work from saturated W5 into new W10 without reusing intentionally vacant W8.
+- Clarified that the gate-key pre-read precedes `prepareRecordStepAppend` and that abort routing is derived before terminal side effects.
 
 ### v1.2 (September 21, 2026) — Closure-review residuals
 
