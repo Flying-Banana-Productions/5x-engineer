@@ -99,6 +99,8 @@ export interface PlanDiffContext {
 	planPath: string;
 	patch: string;
 	hunks: Array<{ header: string; text: string; hash: string }>;
+	/** Commits whose plan-only patch is byte-equivalent to currentPlanCommit. */
+	equivalentPlanCommits?: string[];
 }
 
 export type DebtEligibility =
@@ -170,7 +172,10 @@ export type ClosureDiagnosticCode =
 	| "UNRELATED_DEBT_NONBLOCKING"
 	| "DEBT_EVIDENCE_INCOMPLETE"
 	| "DEBT_TARGET_PHASE_INVALID"
-	| "DEBT_AFTER_NOT_SIMPLER";
+	| "DEBT_AFTER_NOT_SIMPLER"
+	| "PLAN_DIFF_CONTEXT_MISSING"
+	| "INTRODUCED_RANGE_MISMATCH"
+	| "INTRODUCED_HUNK_NOT_FOUND";
 
 export interface ClosureDiagnostic {
 	code: ClosureDiagnosticCode;

@@ -356,6 +356,12 @@ export {
 } from "./review-governance/decisions.js";
 export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
 export {
+	buildPlanReviewDiffContext,
+	formatPlanReviewDiffContext,
+	PlanDiffError,
+	validateIntroducedBy,
+} from "./review-governance/plan-diff.js";
+export {
 	projectReviewGovernance,
 	reindexReviewGovernance,
 } from "./review-governance/sqlite-index.js";

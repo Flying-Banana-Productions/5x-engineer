@@ -9,6 +9,7 @@ import {
 	canonicalFindingFingerprint,
 	normalizeFindingEvidenceText,
 } from "./fingerprint.js";
+import { validateIntroducedBy as validateIntroducedByEvidence } from "./plan-diff.js";
 import type {
 	ClosureDiagnostic,
 	ClosureValidationResult,
@@ -264,8 +265,9 @@ function validateCriticalSafety(
 	return diagnostics;
 }
 
-function validateIntroducedBy(
+function validateIntroducedByFields(
 	item: GovernanceVerdictItem,
+	diffContext: PlanDiffContext | undefined,
 ): ClosureDiagnostic[] {
 	if (
 		item.introducedBy &&
@@ -273,7 +275,14 @@ function validateIntroducedBy(
 		nonEmpty(item.introducedBy.diffHunk) &&
 		nonEmpty(item.introducedBy.explanation)
 	) {
-		return [];
+		const validation = validateIntroducedByEvidence(
+			item.introducedBy,
+			diffContext,
+		);
+		if (validation.valid) return [];
+		return [
+			diagnostic(validation.code, validation.message, { itemId: item.id }),
+		];
 	}
 	return [
 		diagnostic(
@@ -540,7 +549,9 @@ export function validateClosureReview(input: {
 			} else if (item.lateDiscovery === "critical_safety") {
 				diagnostics.push(...validateCriticalSafety(item));
 			} else if (item.introducedBy) {
-				diagnostics.push(...validateIntroducedBy(item));
+				diagnostics.push(
+					...validateIntroducedByFields(item, input.diffContext),
+				);
 			} else {
 				diagnostics.push(
 					diagnostic(

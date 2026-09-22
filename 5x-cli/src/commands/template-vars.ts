@@ -12,8 +12,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import { getLatestStepForPhase } from "../db/operations-v1.js";
-import { getFileDiffSummary, getLatestCommit } from "../git.js";
+import { getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
+import {
+	buildPlanReviewDiffContext,
+	formatPlanReviewDiffContext,
+} from "../review-governance/plan-diff.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
 
 // ---------------------------------------------------------------------------
@@ -394,35 +398,17 @@ export async function resolveReviewDelta(
 		current_commit: currentCommit,
 	};
 
-	if (currentCommit === previousCommit) {
-		return {
-			vars,
-			diffAppend:
-				"\n## Plan Diff Since Last Review\n\n" +
-				"(no changes since the last review — HEAD is unchanged)\n",
-		};
-	}
-
-	let diff = "";
 	try {
-		diff = await getFileDiffSummary(
+		const context = await buildPlanReviewDiffContext({
 			workdir,
-			previousCommit,
-			currentCommit,
 			planPath,
-		);
+			previousReviewCommit: previousCommit,
+			currentCommit,
+		});
+		return { vars, diffAppend: formatPlanReviewDiffContext(context) };
 	} catch {
-		diff = "";
+		return { vars, diffAppend: null };
 	}
-
-	const body = diff
-		? `\`\`\`diff\n${diff}\n\`\`\``
-		: "(plan file unchanged; changes may live in referenced artifacts)";
-
-	return {
-		vars,
-		diffAppend: `\n## Plan Diff Since Last Review\n\n${body}\n`,
-	};
 }
 
 // ---------------------------------------------------------------------------

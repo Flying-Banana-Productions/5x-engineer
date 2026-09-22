@@ -188,19 +188,37 @@ describe("validateClosureReview", () => {
 			expect.objectContaining({ code: "NEW_FINDING_EVIDENCE_REQUIRED" }),
 		);
 
-		const introduced = validate({
-			...base,
-			items: [
-				item({
-					id: "P1.2",
-					introducedBy: {
-						commitRange: "abc..def",
-						diffHunk: "@@ -1 +1 @@\n-old\n+new",
-						explanation: "The new branch drops failed writes.",
-					},
-				}),
-			],
-		});
+		const introduced = validate(
+			{
+				...base,
+				items: [
+					item({
+						id: "P1.2",
+						introducedBy: {
+							commitRange: "abc..def",
+							diffHunk: "@@ -1 +1 @@\n-old\n+new",
+							explanation: "The new branch drops failed writes.",
+						},
+					}),
+				],
+			},
+			{
+				diffContext: {
+					previousReviewCommit: "abc",
+					currentPlanCommit: "def",
+					planPath: "plan.md",
+					patch: "@@ -1 +1 @@\n-old\n+new",
+					hunks: [
+						{
+							header: "@@ -1 +1 @@",
+							text: "@@ -1 +1 @@\n-old\n+new",
+							hash: "sha256:test",
+						},
+					],
+					equivalentPlanCommits: ["def"],
+				},
+			},
+		);
 		expect(introduced.valid).toBe(true);
 	});
 

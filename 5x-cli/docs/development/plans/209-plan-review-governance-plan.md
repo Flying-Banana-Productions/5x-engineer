@@ -451,10 +451,10 @@ export type ReviewerVerdict = {
 };
 ```
 
-- [ ] Preserve v1/off and mid-review compatibility rules from plan 208; do not require plan fields for implementation-phase verdicts.
-- [ ] Reject top-level `reviewRoute`, `normalizedReadiness`, `gateCauses`, budget totals/status, or decision outcomes as CLI-owned keys.
-- [ ] Extend `protocol emit reviewer` with repeatable `--prior-finding '<json>'`; prior outcomes do not imply corrections. `--ready` plus only `addressed` outcomes emits `ready` with empty `items[]`.
-- [ ] Preserve plan-208 item fields; complex blocker evidence remains in repeated `--item` JSON. Follow-ups stay in review Markdown and have no protocol flag/count.
+- [x] Preserve v1/off and mid-review compatibility rules from plan 208; do not require plan fields for implementation-phase verdicts.
+- [x] Reject top-level `reviewRoute`, `normalizedReadiness`, `gateCauses`, budget totals/status, or decision outcomes as CLI-owned keys.
+- [x] Extend `protocol emit reviewer` with repeatable `--prior-finding '<json>'`; prior outcomes do not imply corrections. `--ready` plus only `addressed` outcomes emits `ready` with empty `items[]`.
+- [x] Preserve plan-208 item fields; complex blocker evidence remains in repeated `--item` JSON. Follow-ups stay in review Markdown and have no protocol flag/count.
 
 ### 3.2 Shared diff context — refactor `src/commands/template-vars.ts:329–425`; new `src/review-governance/plan-diff.ts`
 
@@ -480,19 +480,19 @@ export function validateIntroducedBy(
 ): EvidenceValidation;
 ```
 
-- [ ] Make both prompt rendering and validation call the shared builder; it always computes the full patch/hunks. Keep truncation and Markdown formatting outside the validator.
-- [ ] Normalize only diff transport artifacts (line endings and trailing whitespace), then require a complete hunk header and changed lines to match one computed hunk; reject snippets assembled across hunks.
-- [ ] Require `commitRange` start to equal the prior reviewer step head. Accept an end commit only when its plan-only patch is byte-equivalent to the rendered context, allowing a later review-document-only commit.
-- [ ] If Markdown truncates the body (currently `getFileDiffSummary` caps at 200 lines), append the commit range, every omitted hunk header, and an exact `git diff <range> -- <plan>` command so the reviewer can retrieve the rest.
-- [ ] Fail enforced mode with `PLAN_DIFF_CONTEXT_MISSING`, `INTRODUCED_RANGE_MISMATCH`, or `INTRODUCED_HUNK_NOT_FOUND`; include the closest hunk header in hunk-not-found diagnostics. Advisory records these diagnostics without rejection.
-- [ ] Test renamed plan paths, no plan change, binary rejection, a cited hunk after rendered line 200, abbreviated SHA ambiguity, stale ranges, and exact hunk matching.
+- [x] Make both prompt rendering and validation call the shared builder; it always computes the full patch/hunks. Keep truncation and Markdown formatting outside the validator.
+- [x] Normalize only diff transport artifacts (line endings and trailing whitespace), then require a complete hunk header and changed lines to match one computed hunk; reject snippets assembled across hunks.
+- [x] Require `commitRange` start to equal the prior reviewer step head. Accept an end commit only when its plan-only patch is byte-equivalent to the rendered context, allowing a later review-document-only commit.
+- [x] If Markdown truncates the body (currently `getFileDiffSummary` caps at 200 lines), append the commit range, every omitted hunk header, and an exact `git diff <range> -- <plan>` command so the reviewer can retrieve the rest.
+- [x] Fail enforced mode with `PLAN_DIFF_CONTEXT_MISSING`, `INTRODUCED_RANGE_MISMATCH`, or `INTRODUCED_HUNK_NOT_FOUND`; include the closest hunk header in hunk-not-found diagnostics. Advisory records these diagnostics without rejection.
+- [x] Test renamed plan paths, no plan change, binary rejection, a cited hunk after rendered line 200, abbreviated SHA ambiguity, stale ranges, and exact hunk matching.
 
 ### 3.3 Protocol command integration — `src/commands/protocol.handler.ts:500–657`, `src/commands/protocol.ts:102–201`
 
-- [ ] Resolve review kind and prior reviewer step only after ambient run/phase identity is known; standalone structural validation remains available without governance application.
-- [ ] For `reviewer --phase plan --record` on active budget runs, load the pinned baseline mode, prior findings/decisions, rebuild diff context, and call `validateClosureReview` before writing the success envelope.
-- [ ] In enforced mode, surface line/item-specific errors in one envelope and write nothing on failure. In advisory mode, attach diagnostics and continue through unchanged v1 recording/routing.
-- [ ] Add tests for first review, separate prior outcomes, `--ready` + addressed-only, remaining-item matching, exact hunk, critical safety, prior-decision re-raise, malformed aggregates, advisory diagnostics, and no-record validation.
+- [x] Resolve review kind and prior reviewer step only after ambient run/phase identity is known; standalone structural validation remains available without governance application.
+- [x] For `reviewer --phase plan --record` on active budget runs, load the pinned baseline mode, prior findings/decisions, rebuild diff context, and call `validateClosureReview` before writing the success envelope.
+- [x] In enforced mode, surface line/item-specific errors in one envelope and write nothing on failure. In advisory mode, attach diagnostics and continue through unchanged v1 recording/routing.
+- [x] Add tests for first review, separate prior outcomes, `--ready` + addressed-only, remaining-item matching, exact hunk, critical safety, prior-decision re-raise, malformed aggregates, advisory diagnostics, and no-record validation.
 
 ---
 

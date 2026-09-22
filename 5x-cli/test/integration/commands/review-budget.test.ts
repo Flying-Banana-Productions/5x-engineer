@@ -59,6 +59,9 @@ const HUMAN_VERDICT = JSON.stringify({
 			architectureDelta: 5,
 			scopeClass: "acceptance_required",
 			coupling: "intrinsic",
+			estimateConfidence: "high",
+			failure: "The plan leaves the persistence architecture undecided.",
+			lowestCostCorrection: "Select one persistence architecture.",
 		},
 	],
 	baselineAssessment: {

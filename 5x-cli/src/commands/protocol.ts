@@ -183,6 +183,12 @@ export function registerProtocol(parent: Command) {
 			collect,
 			[] as string[],
 		)
+		.option(
+			"--prior-finding <json>",
+			"Prior-finding closure outcome as JSON (repeatable); does not imply a correction item",
+			collect,
+			[] as string[],
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -197,6 +203,7 @@ export function registerProtocol(parent: Command) {
 				summary: opts.summary,
 				baselineAssessment: opts.baselineAssessment,
 				creditAssessment: opts.creditAssessment,
+				priorFinding: opts.priorFinding,
 			});
 		});
 

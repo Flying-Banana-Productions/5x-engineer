@@ -1,5 +1,9 @@
 import type { BaselineAssessment } from "./review-budget/types.js";
 import { ARCHITECTURE_DELTAS, EFFORT_POINTS } from "./review-budget/types.js";
+import type {
+	IntroducedByPlanHunk,
+	PriorFindingOutcome,
+} from "./review-governance/types.js";
 
 export type { BaselineAssessment };
 
@@ -44,6 +48,14 @@ export type VerdictItem = {
 	coupling?: "intrinsic" | "adjacent" | "unrelated";
 	estimateConfidence?: "low" | "medium" | "high";
 	creditClaim?: CreditClaim;
+	failure?: string;
+	lowestCostCorrection?: string;
+	introducedBy?: IntroducedByPlanHunk;
+	lateDiscovery?: "critical_safety";
+	lateDiscoveryEvidence?: string;
+	priorDecisionId?: string;
+	newEvidence?: string;
+	requiresReviewerVerification?: boolean;
 };
 
 export interface CreditAssessment {
@@ -59,6 +71,7 @@ export type ReviewerVerdict = {
 	summary?: string;
 	baselineAssessment?: BaselineAssessment;
 	creditAssessments?: CreditAssessment[];
+	priorFindings?: PriorFindingOutcome[];
 };
 
 export const CLI_OWNED_VERDICT_KEYS = [
@@ -78,6 +91,14 @@ export const CLI_OWNED_VERDICT_KEYS = [
 	"P",
 	"projectedEffort",
 	"baselineDirection",
+	"reviewRoute",
+	"normalizedReadiness",
+	"gateCauses",
+	"budgetTotals",
+	"budgetStatus",
+	"decisionOutcomes",
+	"findingOutcomes",
+	"governance",
 ] as const;
 
 /** Reject fields whose values are derived and owned by the CLI. */
@@ -208,6 +229,22 @@ export const ReviewerVerdictSchema = {
 							"after",
 						],
 					},
+					failure: { type: "string" },
+					lowestCostCorrection: { type: "string" },
+					introducedBy: {
+						type: "object",
+						properties: {
+							commitRange: { type: "string" },
+							diffHunk: { type: "string" },
+							explanation: { type: "string" },
+						},
+						required: ["commitRange", "diffHunk", "explanation"],
+					},
+					lateDiscovery: { type: "string", enum: ["critical_safety"] },
+					lateDiscoveryEvidence: { type: "string" },
+					priorDecisionId: { type: "string" },
+					newEvidence: { type: "string" },
+					requiresReviewerVerification: { type: "boolean" },
 				},
 				required: ["id", "title", "action", "reason"],
 			},
@@ -242,6 +279,20 @@ export const ReviewerVerdictSchema = {
 					reason: { type: "string" },
 				},
 				required: ["creditClaimId", "eligibility", "coupling", "reason"],
+			},
+		},
+		priorFindings: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					id: { type: "string" },
+					status: {
+						type: "string",
+						enum: ["addressed", "partially_addressed", "still_open"],
+					},
+				},
+				required: ["id", "status"],
 			},
 		},
 	},
@@ -409,6 +460,41 @@ export function assertReviewerVerdict(
 				fail(
 					`item '${item.id}' creditClaim has invalid 'minimalAlternativeArchitectureDelta'.`,
 				);
+		}
+		if (item.introducedBy !== undefined) {
+			if (!objectShape(item.introducedBy))
+				fail(`item '${item.id}' introducedBy must be an object.`);
+			if (
+				!nonEmpty(item.introducedBy.commitRange) ||
+				!nonEmpty(item.introducedBy.diffHunk) ||
+				!nonEmpty(item.introducedBy.explanation)
+			)
+				fail(`item '${item.id}' has incomplete 'introducedBy' evidence.`);
+		}
+		if (
+			item.lateDiscovery !== undefined &&
+			item.lateDiscovery !== "critical_safety"
+		)
+			fail(`item '${item.id}' has invalid 'lateDiscovery'.`);
+		if (
+			item.requiresReviewerVerification !== undefined &&
+			typeof item.requiresReviewerVerification !== "boolean"
+		)
+			fail(`item '${item.id}' has invalid 'requiresReviewerVerification'.`);
+	}
+
+	if (verdict.priorFindings !== undefined) {
+		if (!Array.isArray(verdict.priorFindings))
+			fail("'priorFindings' must be an array.");
+		for (const outcome of verdict.priorFindings) {
+			if (!objectShape(outcome) || !nonEmpty(outcome.id))
+				fail("each priorFinding requires a non-empty 'id'.");
+			if (
+				outcome.status !== "addressed" &&
+				outcome.status !== "partially_addressed" &&
+				outcome.status !== "still_open"
+			)
+				fail(`priorFinding '${outcome.id}' has invalid 'status'.`);
 		}
 	}
 

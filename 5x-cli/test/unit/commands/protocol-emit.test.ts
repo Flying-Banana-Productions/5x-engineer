@@ -48,6 +48,17 @@ describe("protocolEmitReviewer", () => {
 		expect(result.items).toEqual([]);
 	});
 
+	test("addressed prior outcomes remain separate from correction items", async () => {
+		await protocolEmitReviewer({
+			ready: true,
+			priorFinding: [JSON.stringify({ id: "P1.1", status: "addressed" })],
+		});
+		const result = parseOutput();
+		expect(result.readiness).toBe("ready");
+		expect(result.items).toEqual([]);
+		expect(result.priorFindings).toEqual([{ id: "P1.1", status: "addressed" }]);
+	});
+
 	test("--ready with items → ready_with_corrections", async () => {
 		await protocolEmitReviewer({
 			ready: true,
@@ -163,6 +174,36 @@ describe("protocolEmitReviewer", () => {
 			independentEffortEstimate: 8,
 		});
 		expect(result.creditAssessments).toHaveLength(2);
+	});
+
+	test("closure evidence fields round-trip in complex item JSON", async () => {
+		const introducedBy = {
+			commitRange: "abc..def",
+			diffHunk: "@@ -1 +1 @@\n-old\n+new",
+			explanation: "This edit introduced the failure.",
+		};
+		await protocolEmitReviewer({
+			ready: false,
+			item: [
+				JSON.stringify({
+					id: "P1.2",
+					title: "New closure blocker",
+					action: "auto_fix",
+					reason: "The edit is unsafe.",
+					failure: "A write can be lost.",
+					lowestCostCorrection: "Restore the write guard.",
+					introducedBy,
+					requiresReviewerVerification: true,
+				}),
+			],
+		});
+		const item = (parseOutput().items as Array<Record<string, unknown>>)[0];
+		expect(item).toMatchObject({
+			failure: "A write can be lost.",
+			lowestCostCorrection: "Restore the write guard.",
+			introducedBy,
+			requiresReviewerVerification: true,
+		});
 	});
 
 	test("rejects CLI-owned aggregate fields from stdin and item flags", async () => {

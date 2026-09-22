@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../config.js";
+import type { StepRecordPayload } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
@@ -20,6 +21,15 @@ import {
 	applyPlanReviewBudget,
 	type PendingBudgetSnapshot,
 } from "../review-budget/apply.js";
+import { validateClosureReview } from "../review-governance/closure.js";
+import { canonicalFindingFingerprint } from "../review-governance/fingerprint.js";
+import { buildPlanReviewDiffContext } from "../review-governance/plan-diff.js";
+import { createReviewGovernanceStore } from "../review-governance/store.js";
+import type {
+	GovernanceReviewerVerdict,
+	PersistedFinding,
+	PlanDiffContext,
+} from "../review-governance/types.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
@@ -67,6 +77,68 @@ export interface ProtocolValidateParams {
 	optInBudgetBaseline?: boolean;
 	warn?: (message: string) => void;
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
+}
+
+function priorPlanReviewerSteps(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	current: { stepName?: string; phase?: string; iteration?: number },
+) {
+	return ctx.recordStore.listLines(runId, "steps").filter((line) => {
+		const payload = line.payload as Partial<StepRecordPayload>;
+		if (
+			payload.phase !== "plan" ||
+			typeof payload.step_name !== "string" ||
+			!payload.step_name.startsWith("reviewer:")
+		)
+			return false;
+		return !(
+			current.iteration !== undefined &&
+			payload.step_name === current.stepName &&
+			payload.phase === current.phase &&
+			payload.iteration === current.iteration
+		);
+	});
+}
+
+function persistedFindingsFromSteps(
+	steps: ReturnType<typeof priorPlanReviewerSteps>,
+): PersistedFinding[] {
+	const findings = new Map<string, PersistedFinding>();
+	for (const line of steps) {
+		const result = (line.payload as Partial<StepRecordPayload>).result_json;
+		if (!result || typeof result !== "object" || Array.isArray(result))
+			continue;
+		const verdict = result as unknown as GovernanceReviewerVerdict;
+		for (const outcome of verdict.priorFindings ?? []) {
+			const prior = findings.get(outcome.id);
+			if (prior) findings.set(outcome.id, { ...prior, status: outcome.status });
+		}
+		for (const item of Array.isArray(verdict.items) ? verdict.items : []) {
+			const prior = findings.get(item.id);
+			const scopeClass = item.scopeClass ?? prior?.scopeClass;
+			const failure = item.failure ?? prior?.failure;
+			const lowestCostCorrection =
+				item.lowestCostCorrection ?? prior?.lowestCostCorrection;
+			if (!scopeClass || !failure || !lowestCostCorrection) continue;
+			const title = item.title || prior?.title || item.id;
+			findings.set(item.id, {
+				findingId: item.id,
+				fingerprint: canonicalFindingFingerprint({
+					title,
+					scopeClass,
+					failure,
+					lowestCostCorrection,
+				}),
+				title,
+				scopeClass,
+				failure,
+				lowestCostCorrection,
+				...(prior?.status ? { status: prior.status } : {}),
+			});
+		}
+	}
+	return [...findings.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +557,14 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	let closureDecoration:
+		| {
+				governance: {
+					reviewKind: "initial" | "closure";
+					diagnostics: ReturnType<typeof validateClosureReview>["diagnostics"];
+				};
+		  }
+		| undefined;
 	const budgetMode =
 		role === "reviewer" && resolvedPhase === "plan" && params.run
 			? (await loadConfig(resolve(params.startDir ?? "."))).config.reviewBudget
@@ -514,6 +594,57 @@ export async function protocolValidate(
 		}
 		if (budgetContext && budgetContext.config.reviewBudget.mode !== "off") {
 			const baseline = budgetContext.store.getBaseline(params.run);
+			const priorSteps = priorPlanReviewerSteps(budgetContext, params.run, {
+				stepName: recordStepName ?? params.step,
+				phase: resolvedPhase,
+				iteration: params.iteration,
+			});
+			const shouldApplyGovernance = params.record || baseline !== null;
+			if (shouldApplyGovernance) {
+				const reviewKind = priorSteps.length === 0 ? "initial" : "closure";
+				let diffContext: PlanDiffContext | undefined;
+				if (reviewKind === "closure") {
+					const previous = priorSteps.at(-1)?.payload as
+						| Partial<StepRecordPayload>
+						| undefined;
+					if (previous?.head_commit) {
+						try {
+							diffContext = await buildPlanReviewDiffContext({
+								workdir:
+									budgetContext.executionContext.effectiveWorkingDirectory,
+								planPath: budgetContext.executionContext.effectivePlanPath,
+								previousReviewCommit: previous.head_commit,
+							});
+						} catch {
+							diffContext = undefined;
+						}
+					}
+				}
+				const governanceStore = createReviewGovernanceStore(
+					budgetContext.recordStore,
+				);
+				const closure = validateClosureReview({
+					reviewKind,
+					mode: budgetContext.config.reviewBudget.mode,
+					verdict: validated as ReviewerVerdict,
+					priorFindings: persistedFindingsFromSteps(priorSteps),
+					priorDecisions: governanceStore.listDecisions(params.run),
+					...(diffContext ? { diffContext } : {}),
+				});
+				if (!closure.accepted) {
+					const first = closure.diagnostics.find(
+						(diagnostic) => diagnostic.severity === "error",
+					);
+					outputError(
+						first?.code ?? "CLOSURE_REVIEW_INVALID",
+						first?.message ?? "Closure review evidence is invalid.",
+						{ diagnostics: closure.diagnostics },
+					);
+				}
+				closureDecoration = {
+					governance: { reviewKind, diagnostics: closure.diagnostics },
+				};
+			}
 			let admissionEligible = true;
 			if (params.record && !baseline && recordStepName) {
 				try {
@@ -575,12 +706,21 @@ export async function protocolValidate(
 						outputError(applied.code, applied.message);
 					}
 					if (applied.status === "applied") {
-						validated = applied.verdict;
+						validated = {
+							...applied.verdict,
+							...(closureDecoration ?? {}),
+						};
 						pendingSnapshot = applied.pendingSnapshot;
 					}
 				}
 			}
 		}
+	}
+	if (closureDecoration && !(validated as Record<string, unknown>).governance) {
+		validated = {
+			...(validated as ReviewerVerdict),
+			...closureDecoration,
+		};
 	}
 
 	// -----------------------------------------------------------------------
