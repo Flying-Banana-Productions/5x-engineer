@@ -1,6 +1,6 @@
 # Plan-Review Governance — Closure Reviews, Enforced Routing, and Durable Decisions
 
-**Version:** 1.6
+**Version:** 1.7
 **Created:** September 21, 2026
 **Status:** Approved — reconciled against completed plan 208; implementation begins after that branch is merged
 
@@ -193,7 +193,7 @@ SQLite: reviewer/budget/decision/gate projections (rebuildable local index)
 | W3 | Extend reviewer protocol and validate exact introducing plan hunks | 5 | 0 | - | P0.4, P1.3, P1.6 | Adds top-level prior outcomes and full-patch validation while reusing plan-208 item fields; tests cover truncation and exact evidence. |
 | W4 | Derive mode-aware routes, suppress resolved causes, and normalize `ready_with_corrections` | 5 | 0 | - | P0.3, P1.1, P1.4, P1.7, P1.9 | One pure matrix handles pinned advisory diagnostics, enforced routing, cause approvals, deferral-before-budget filtering, and post-decision precedence. The clarified matrix does not add a new implementation surface, so effort stays 5. |
 | W5 | Implement gate-scoped decision CAS, terminal input, and post-decision orchestration | 8 | 2 | - | P0.1, P0.2, P1.4, P1.5, P1.9, P1.10, P2.1, P2.3, P2.4, P2.5, P2.6 | Adds the cross-process CAS, finalize-seam extension, steps-order stale classification, choice/cause routing, CLI-resolved finding IDs, complete payload contract, and decision handler; +2 reflects that persistent concurrency boundary. It remains 8 because P1.10 replaces the racy latest-snapshot check with the shared classifier rather than adding a parallel mechanism. |
-| W6 | Integrate governance with plan-208 recording and author/reviewer prompt context | 5 | 0 | - | P0.4, P1.2, P1.6 | Extends concrete baseline/snapshot codecs and `ApplyPlanReviewBudgetInput`, composes before `recordPlanReviewerStepWithSnapshot`, pins mode/thresholds from the baseline, folds governing `B`, and injects decisions into both author and reviewer prompts. Effort remains 5 because these are additive fields and one composition path, not a second writer. |
+| W6 | Integrate governance with plan-208 recording and author/reviewer prompt context | 8 | 0 | - | P0.4, P1.2, P1.6, P2.7, P2.8 | The concrete integration spans apply/baseline sourcing, baseline and snapshot types/codecs, the v9 budget index projection, snapshot UUID and paired-writer composition, reviewer/author context rendering, pinned-mode run state/config copy, gate projection, and the enumerated review-budget, control-plane, command, and integration regressions. Effort rises from 5 to 8 for that breadth; architecture remains 0 because it extends one existing budget/writer path rather than adding another authority. |
 | W7 | Rewrite reviewer/author templates and plan-review skills for closure routing | 3 | 0 | - | P0.4, P1.1, P1.2, P1.3, P1.9, P2.4, P2.6 | Adds mode-conditional instructions, prior outcomes, governing-author context, full-diff retrieval, durable post-decision branching, and commands using CLI-resolved finding IDs. The input clarification fits the existing skill rewrite, so effort stays 3. |
 | W9 | Complete end-to-end compatibility, audit, follow-up handoff, and documentation coverage | 5 | 0 | - | P0.1, P1.6, P1.10, P2.2, P2.4, P2.6 | Removes dashboard parity scope, extends the concrete steps-only `records index` rebuild to budget/decision projections, validates CLI/process and reviewer-order races plus rebuild parity, documents the intentional ID gap and decision-input syntax/identity resolution, and records the dashboard follow-up. The projection dispatch and ordering fixtures fit the existing rebuild/audit pass, so effort stays 5. |
 | W10 | Add review-gate notification, decision-key wait, and PromptStore safeguards | 3 | 0 | - | P1.8, P2.5, P2.6 | Split from saturated W5 in response to Addendum 2. Covers typed notification metadata (including display-safe finding identities), rejection in both prompt stores, internal projection repair, and decision-key waiting without adding another authority. The added identity list uses existing snapshot data, so effort stays 3. |
@@ -649,7 +649,7 @@ export function applyPlanReviewGovernance(input: {
 - [ ] Extend plan 208's `FindingDelta`, `PendingBudgetSnapshot`, `BudgetSnapshotPayload`, `ReviewBudgetSnapshotRecord`, codecs, facade, and v8/v9 index projection with `failure`, `lowestCostCorrection`, fingerprint, `priorFindings`, effective/suppressed route causes, and diagnostics so index deletion can rebuild identity/outcomes. Keep the concrete UUID `id` and `stepKey` tuple and exactly one snapshot per reviewer step; `derived` remains an index cache, not authoritative record payload.
 - [ ] Ensure admission happens before any reviewer snapshot/gate append. A terminal run, missing worktree, invalid diff, invalid verdict, or max-step failure writes nothing.
 - [ ] After a unique enforced reviewer record, derive/project a gate only when route is `human_gate`; retries derive the same ID and repair prompt/index projections. Advisory never opens a gate.
-- [ ] Remove `ENFORCED_REVIEW_BUDGET_WARNING`; update `ReviewBudgetState`/`buildReviewBudgetState` to report the baseline-pinned mode (not current config) and change the existing `enforcement_implemented` compatibility field from literal `false` to `true` for active enforced governance. Update `src/config.ts`, `src/templates/5x.default.toml`, run-state text, and tests from “reserved/advisory telemetry” to implemented pinned-mode behavior.
+- [ ] Remove `ENFORCED_REVIEW_BUDGET_WARNING`; update `ReviewBudgetState.enforcement_implemented` from literal `false` to `boolean` and derive it exactly as `pinnedMode === "enforced"`. It is `false` for advisory-pinned active runs, uninitialized runs, and `v1_compat`, preserving every pre-slice state; only enforced-pinned active runs report `true`. `buildReviewBudgetState` reports the baseline-pinned mode rather than current config. Update `src/config.ts`, `src/templates/5x.default.toml`, run-state text, and tests from “reserved/advisory telemetry” to implemented pinned-mode behavior.
 
 ### 6.2 Wire both reviewer writers — `src/commands/protocol.handler.ts:500–657`, `src/commands/invoke.handler.ts:730–888`
 
@@ -876,14 +876,22 @@ These paths are reconciled to the inspected plan-208 implementation. Phase 0 onl
 | 3 | Closure protocol and plan-diff validation | 3 days |
 | 4 | Enforced routing and readiness normalization | 2 days |
 | 5 | Human gate prompt and decision actions | 3 days |
-| 6 | Recording integration and workflow context | 3 days |
+| 6 | Recording integration and workflow context | 4 days |
 | 7 | Reviewer templates and workflow skills | 2 days |
 | 9 | End-to-end audit, compatibility, and docs | 3 days |
-| **Total** | | **21.5 working days** |
+| **Total** | | **22.5 working days** |
 
 ---
 
 ## Revision History
+
+### v1.7 (September 22, 2026) — Reconciliation review final corrections
+
+Addresses **P2.7** and **P2.8** from Addendum 6 in [`5x-cli-docs-development-plans-209-plan-review-governance-plan-review.md`](../reviews/5x-cli-docs-development-plans-209-plan-review-governance-plan-review.md):
+
+- Defined `ReviewBudgetState.enforcement_implemented` as the boolean expression `pinnedMode === "enforced"`: enforced-pinned active runs report `true`, while advisory-pinned, uninitialized, and `v1_compat` states remain `false`.
+- Rescored stable W6 from effort 5 to 8 while preserving architecture delta 0 and its prior `Addresses`; added P2.7/P2.8 and named the concrete apply/baseline/codec/index/writer/context/run-state and regression-test surface that justifies the change.
+- Increased Phase 6 by one working day and the timeline accordingly. W8 remains intentionally vacant; no stable work-item ID was renumbered or reused.
 
 ### v1.6 (September 22, 2026) — Concrete plan-208 implementation reconciliation
 
