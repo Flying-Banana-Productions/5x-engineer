@@ -336,3 +336,42 @@ Fix:
 - **Ready for implementation:** ⚠️ After the P0.3 wording correction, which touches only §2 (Resolved causes), §2.2 and §4.1 step 2 and should land before Phases 2 and 4. Phases 0, 1, 3, 5–7 are unaffected. Both remaining items are `auto_fix` with one derivable answer, and neither needs a human decision.
 
 **Readiness:** Ready with corrections — make baseline-dispute coverage run-level in the three places above (P0.3). P2.6 is polish and can ride along.
+
+---
+
+## Addendum 4 (2026-09-21) — Re-review of plan v1.4 (closure of the v1.3 residuals)
+
+**Reviewed:** `docs/development/plans/209-plan-review-governance-plan.md` v1.4 @ `9fdbb45` (prior reviewed revision `7b941af`, review commit `8e68877`). The prompt's appended diff and commit range were empty again, so I recomputed the delta with `git diff 7b941af HEAD -- <plan>` and re-read the "Resolved causes" design paragraph, §2.1 fold rules, the §2.2 coverage table, §4.1 step 2, §5.1–5.3 and §7.4.
+**Local verification:** Not run (static review).
+
+### What's addressed (✅)
+
+- **P0.3 (baseline dispute coverage) — ✅ Addressed.**
+  - Active, unsuperseded `retain_baseline` and `adjust_baseline` decisions now resolve the immutable `baseline_disputed` cause at run scope for every later snapshot, folded into `baselineDisputeResolution`. `adjust_baseline` also folds the new `B` into the band recomputation.
+  - `request_author_reestimate` intentionally does not resolve the dispute. It sets `baselineReestimatePending`, the next disputed gate offers only retain, adjust or abort, and a later retain or adjust clears the marker, so re-estimate cannot loop. This is the recommended policy.
+  - The "Resolved causes" paragraph, the §2.2 table, §4.1 step 2 and the §4.4 rows now say the same thing. A cross-round convergence test is added to §9.1.
+- **P2.6 (`--finding` fingerprint) — ✅ Addressed.** `--finding <findingId>` resolves the authoritative fingerprint from the gate snapshot. Unknown, duplicate, stale and non-gate IDs are rejected. Full ID/fingerprint pairs are accepted only inside `--input-json` and validated against the snapshot. `review gate show` lists eligible finding identities, and tests cover the resolution and mismatch cases.
+- **Unprompted improvement:** §2.1 now separates acceptance-time staleness from ordinary later rounds. A decision accepted while its forecast was current stays active across later snapshots until superseded; only a decision appended after its forecast ceased to be current is audit-only. This fixes a latent conflict with the run-level baseline, `B`, scope and accepted-risk semantics.
+
+**Delivery-budget hygiene:** The ledger is W1–W7, W9, W10 with stable IDs and no negative architecture rows, and it sums to 47 against the frozen `B0 = 52`. There are no `DCn` claims, so there are no credit assessments to emit.
+
+**`Addresses` re-check:** W2 (P0.3, P1.4), W4 (P0.3, P1.4, P1.9), W5 (P1.4, P1.9, P2.4–P2.6), W7 (P1.9, P2.4, P2.6), W9 (P2.2, P2.4, P2.6) and W10 (P1.8, P2.5, P2.6) all cite findings that are now closed. Every other `Addresses` cell references a closed finding as well. The new item below is not yet cited by any row.
+
+### Remaining concerns
+
+**P1.10 (new) — "accepted while current" cannot be derived deterministically as written, and the post-append check is racy.** §2.1 and §5.2 make a decision's effect depend on whether its `forecastId` was current when it was accepted. The plan gives no ordering source for that, and the handler's check does not match a rebuildable rule.
+- Reviewer snapshots live in the `budget` stream, decisions in the `decisions` stream, and step lines in the `steps` stream. Insertion order is only defined within a stream, and `created_at` is second-resolution. A fold or `reindexReviewGovernance` run over a wiped index therefore cannot tell "decision accepted, then a newer snapshot arrived" from "decision appended after the newer snapshot", although the Phase 2 gate requires rebuilt state to reproduce the governing baseline and accepted risks.
+- §5.2 re-reads "the latest snapshot" after the append. If a newer reviewer step lands between the append and the re-read, the handler returns `REVIEW_GATE_STALE` and skips side effects, including abort. The decision was accepted while current, so a fold using the decision's true acceptance order applies it. The caller and the record then disagree.
+
+Fix, using data already in the batch:
+- The decision is appended atomically with its `human:review-governance` step, and reviewer steps are in the same `steps` stream. Define stale-at-acceptance as: a plan-reviewer step exists between the gate's reviewer step and the decision's human step in `steps` insertion order.
+- Have the fold and the reindex use that rule.
+- Have §5.2's post-append check use the same rule instead of re-reading the latest snapshot. A reviewer step that lands after the human step no longer makes the decision stale.
+- Add contract tests for both orders (reviewer step before and after the human step), plus a rebuild-equals-live test.
+
+### Updated readiness
+
+- **Plan-review governance plan completion:** ✅ Every finding from the initial review and Addenda 1 to 3 is closed. One new determinism item remains in the stale-decision rules.
+- **Ready for implementation:** ⚠️ After the P1.10 correction, which touches only §2.1 (the staleness fold bullet) and §5.2's post-append check and should land before Phases 2 and 5. Phases 0, 1, 3, 4, 6 and 7 are unaffected. It is `auto_fix` with one derivable answer, and no human decision is needed.
+
+**Readiness:** Ready with corrections — define stale-at-acceptance by `steps`-stream order and align the §5.2 check with it (P1.10).
