@@ -130,3 +130,34 @@ Each returns `{ created: false, route: routeForStoredDecision(...) === "aborted"
 - [ ] Add the missing Phase 5.3 tests (store-contract facade race, rebuild equality, lost-index-write, handler-level N+1 loser)
 - [ ] Pin the `deriveOpenGate` successor-with-unchanged-causes behavior with a test
 - [ ] Remove the redundant second pre-read
+
+---
+
+## Addendum (2026-09-22) — Follow-up fix review
+
+**Reviewed:** `fc086adc2cefa169529e8057d8436019ee31b1c1` (parent: `a2786b0`, the commit that carried this review)
+
+**Local verification:** `bun test` on the five touched/relevant test files (`test/unit/commands/review-decision.test.ts`, `test/integration/commands/review-decision.test.ts`, `test/unit/control-plane/store-contract.test.ts`, `test/unit/commands/finalize-and-write-prepared-step.test.ts`, `test/unit/review-governance/store-index.test.ts`) → 49 pass / 0 fail. `bun run typecheck` clean. `bun run lint` clean. I re-read the full rewritten `submitPlanReviewDecision`/`acceptedWinnerResult`/`governingStateBeforeWinner` control flow against the plan text rather than re-running scratch probes, since the new dedicated unit tests exercise exactly the scenarios my prior probes constructed.
+
+### What's addressed (✅)
+
+- **P1.1 (identical re-estimate retry rejected)** — ✅ **Addressed.** The `alreadyResolved` branch now computes governing state via the new `governingStateBeforeWinner` helper, which folds `listDecisions(...).slice(0, winnerIndex)` — i.e. the state *before* the winner is applied — instead of the current (post-winner) fold. This means `baselineReestimatePending` is no longer wrongly set by the winner itself when validating the winner's own retry. New test `request-author-reestimate retry validates against the pre-winner fold` submits the same `request_author_reestimate` payload twice and asserts the retry returns `created: false` with the same `decisionId` and route. I traced the logic by hand and it matches the fix I recommended (fold excluding the winner, compare intent hashes).
+- **P1.2 (abort side effect never repaired on retry)** — ✅ **Addressed.** All winner-return paths (`alreadyResolved` pre-read, `coupled-key-exists`, and the newly-created path) now funnel through one `acceptedWinnerResult` helper. That helper always calls `resolveGatePromptProjection` and, when `route === "aborted"`, re-checks the *live* run status (`getRunV1(ctx.db, runId)?.status === "active"`) before invoking `abortRun`/`defaultAbort`. A retry after a crashed abort will therefore re-run the abort side effect exactly when the run is still active. New test `accepted abort winner repairs a failed terminal side effect on retry` reproduces the crash-then-retry sequence and asserts the run ends `aborted` and the prompt is resolved. Consolidating prompt-resolution and abort into one helper also closes the secondary gap I flagged (prompt never resolved on idempotent-winner paths).
+- **P2.1 (missing Phase 5.3 tests)** — ✅ **Addressed**, all four sub-items:
+  - (a) store-contract facade race: new `describe("review-governance working-tree facade race", ...)` in `store-contract.test.ts` races two independently constructed `createWorkingTreeRecordStore` facades over one records root, for both identical and conflicting payloads, and asserts exactly one decision/human-step pair plus (for the identical case) that the loser's `resolveGate` result reports `semanticRetry: true`.
+  - (b) wiped-index rebuild equality for stale/accepted cases: the `rebuiltAcceptance` helper (deletes `review_decision_index`/`review_gate_index`, calls `reindexReviewGovernance`, and diffs the rebuilt fold against the live fold) is now asserted in the stale (`reviewer-before-human is stale...`), accepted (`reviewer-after-human remains accepted...`), and prompt-crash-retry (`accepted-winner retry repairs a record-first prompt-second crash`) tests.
+  - (c) lost-index-write case: new test `authoritative records survive a lost SQLite index write and rebuild` deletes the index tables after the winner is durably recorded, retries, and confirms the retry still resolves to the winner and the rebuilt fold matches.
+  - (d) handler-level N+1 loser: new test `after-winner loser allocated at N+1 observes the coupled winner` hides the gate-key pre-read for two reads (forcing the write path), captures the iteration `atomicAppendIfAllNew` actually attempts, and asserts it's `2` (i.e. genuinely allocated at N+1) while still resolving to the winner.
+- **P2.2 (`deriveOpenGate` successor behavior untested)** — ✅ **Addressed.** New test `a resolved decision that covers no cause creates an unchanged-cause successor` in `store-index.test.ts` pins exactly the behavior change: an `increase_budget` decision that doesn't cover the open cause produces a new gate with `causes` equal to the original gate's causes.
+- **P2.3 (redundant second gate-key pre-read)** — ✅ **Addressed.** The block that re-read `decision:review-gate:<gateId>` after `validateAndCreate` and before `prepareRecordStepAppend` has been deleted entirely (visible as a straight removal in the diff). The `coupled-key-exists` outcome from `finalizeAndWritePreparedStep` is the sole remaining race-detection point on the write path, exactly as recommended.
+
+### Remaining concerns
+
+None from the prior review. I looked for regressions introduced by the refactor and found one minor, non-blocking observation, not worth a checklist item:
+
+- **Best-effort double-abort on true concurrency.** Two processes that both lose to `coupled-key-exists` for the same `abort` decision, racing each other (not a sequential retry), could both pass the `status === "active"` guard before either one's `defaultAbort` updates `run_v1`/`recordStore.putRun`, and both invoke `abortRun`. This is self-healing: `defaultAbort`'s `recordStepInternal` call is keyed on the step identity (idempotent), it already tolerates `MAX_STEPS_EXCEEDED`, and `completeRun`/`putRun` are idempotent no-ops on a second call. This is strictly better than the pre-fix behavior (which never retried the abort at all), so I'm not raising it as a new finding — flagging only for awareness if a future custom `abortRun` deps override ever has non-idempotent side effects.
+
+### Updated readiness
+
+- **Phase 5 completion:** ✅ — Both P1 blockers and all P2 polish items from the prior review are fixed and covered by targeted regression tests. Typecheck and lint are clean; the full phase-5 test surface (49 tests) passes.
+- **Ready for next phase:** ✅ — No conditions remain. Phase 6 (recording integration and workflow context) can proceed.
