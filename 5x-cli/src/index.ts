@@ -323,6 +323,38 @@ export {
 	isCompleteDebtClaimEvidence,
 	isEffortPoints,
 } from "./review-budget/types.js";
+// Plan-review governance policy. These exports are pure structural contracts
+// and policy helpers; persistence and command adapters remain internal.
+export {
+	assessDebtEligibility,
+	validateClosureReview,
+	validateDebtPolicy,
+} from "./review-governance/closure.js";
+export { canonicalFindingFingerprint } from "./review-governance/fingerprint.js";
+export type {
+	BlockingFindingEvidence,
+	ClosureDiagnostic,
+	ClosureDiagnosticCode,
+	ClosureValidationResult,
+	CriticalSafetyEvidence,
+	DebtEligibility,
+	DecisionReraiseEvidence,
+	FindingIdentity,
+	GovernanceReviewerVerdict,
+	GovernanceVerdictItem,
+	IntroducedByPlanHunk,
+	IntroducedHunkEvidence,
+	PersistedFinding,
+	PlanDiffContext,
+	PlanReviewGovernanceResult,
+	PlanReviewRoute,
+	PriorDecisionEvidence,
+	PriorFindingOutcome,
+	PriorFindingStatus,
+	ReviewDecision,
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "./review-governance/types.js";
 // Templates
 export type {
 	RenderedTemplate,

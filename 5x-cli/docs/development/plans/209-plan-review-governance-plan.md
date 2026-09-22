@@ -275,9 +275,9 @@ export interface PlanReviewGovernanceResult {
 }
 ```
 
-- [ ] Add discriminated types for critical-safety, introduced-hunk, prior-decision/new-evidence, debt eligibility, route cause (including optional `resolvedBy`), and validation diagnostics. Follow-ups remain review-Markdown prose.
-- [ ] Keep implementation-review enums out of this module.
-- [ ] Export the public structural types from `src/index.ts` only after the module has no handler/SQLite dependency.
+- [x] Add discriminated types for critical-safety, introduced-hunk, prior-decision/new-evidence, debt eligibility, route cause (including optional `resolvedBy`), and validation diagnostics. Follow-ups remain review-Markdown prose.
+- [x] Keep implementation-review enums out of this module.
+- [x] Export the public structural types from `src/index.ts` only after the module has no handler/SQLite dependency.
 
 ### 1.2 Canonical finding fingerprints — new `src/review-governance/fingerprint.ts`
 
@@ -290,9 +290,9 @@ export function canonicalFindingFingerprint(input: {
 }): string; // `sha256:<lowercase hex>`
 ```
 
-- [ ] Normalize Unicode, line endings, whitespace, and case only where semantics are case-insensitive; sort object keys before SHA-256.
-- [ ] Exclude estimates, priority, reviewer prose formatting, and mutable closure status.
-- [ ] Test stable hashes across key order/line endings and changed hashes when failure, scope class, or correction changes.
+- [x] Normalize Unicode, line endings, whitespace, and case only where semantics are case-insensitive; sort object keys before SHA-256.
+- [x] Exclude estimates, priority, reviewer prose formatting, and mutable closure status.
+- [x] Test stable hashes across key order/line endings and changed hashes when failure, scope class, or correction changes.
 
 ### 1.3 Closure validation — new `src/review-governance/closure.ts`
 
@@ -307,14 +307,14 @@ export function validateClosureReview(input: {
 }): ClosureValidationResult;
 ```
 
-- [ ] Initial review: require material failure, `scopeClass`, deltas/confidence, and `lowestCostCorrection` on every routing item; preserve plan-208 initial baseline/debt requirements.
-- [ ] Define the required-outcome set as prior recorded plan-review items whose latest outcome is not `addressed` and that are not covered by an active defer/accept decision. Require exactly one top-level `priorFindings[]` outcome for each; reject unknown/duplicate/omitted IDs in enforced mode.
-- [ ] Require `partially_addressed` and `still_open` IDs to also appear once in `items[]` with remaining `effortDelta`; require `addressed` IDs to be absent from `items[]`. Thus only still-blocking work enters plan-208 `R`, `P`, and author routing.
-- [ ] New ordinary blocking item: require `introducedBy`; critical late issue: require `lateDiscovery: "critical_safety"` and concrete safety evidence; prohibit both fields together.
-- [ ] Re-raised deferred/accepted-risk item: require the matching `priorDecisionId`, matching fingerprint/scope, and non-empty materially new evidence.
-- [ ] Permit `adjacent` debt in `items[]` only with `action: "human_required"` (no credit; routes to scope gate). Reject `unrelated` debt from `items[]`; it is Markdown-only follow-up. Reference this single rule from routing.
-- [ ] In advisory mode, return the same closure violations as diagnostics and continue with unmodified verdict/v1 routing; only enforced mode rejects. Off/v1-compatible runs skip this validator.
-- [ ] Add `test/unit/review-governance/{fingerprint,closure,debt-policy}.test.ts` with ordinary missed issue, critical exception, changed fingerprint, stale decision, and complete/incomplete debt evidence cases.
+- [x] Initial review: require material failure, `scopeClass`, deltas/confidence, and `lowestCostCorrection` on every routing item; preserve plan-208 initial baseline/debt requirements.
+- [x] Define the required-outcome set as prior recorded plan-review items whose latest outcome is not `addressed` and that are not covered by an active defer/accept decision. Require exactly one top-level `priorFindings[]` outcome for each; reject unknown/duplicate/omitted IDs in enforced mode.
+- [x] Require `partially_addressed` and `still_open` IDs to also appear once in `items[]` with remaining `effortDelta`; require `addressed` IDs to be absent from `items[]`. Thus only still-blocking work enters plan-208 `R`, `P`, and author routing.
+- [x] New ordinary blocking item: require `introducedBy`; critical late issue: require `lateDiscovery: "critical_safety"` and concrete safety evidence; prohibit both fields together.
+- [x] Re-raised deferred/accepted-risk item: require the matching `priorDecisionId`, matching fingerprint/scope, and non-empty materially new evidence.
+- [x] Permit `adjacent` debt in `items[]` only with `action: "human_required"` (no credit; routes to scope gate). Reject `unrelated` debt from `items[]`; it is Markdown-only follow-up. Reference this single rule from routing.
+- [x] In advisory mode, return the same closure violations as diagnostics and continue with unmodified verdict/v1 routing; only enforced mode rejects. Off/v1-compatible runs skip this validator.
+- [x] Add `test/unit/review-governance/{fingerprint,closure,debt-policy}.test.ts` with ordinary missed issue, critical exception, changed fingerprint, stale decision, and complete/incomplete debt evidence cases.
 
 ---
 
