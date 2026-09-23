@@ -185,7 +185,9 @@ describe("plan-only review diff evidence", () => {
 			expect(context.equivalentPlanCommits).not.toContain(firstPlanCommit);
 			expect(context.equivalentPlanCommits).not.toContain(firstArtifactCommit);
 		},
-		{ timeout: 15000 },
+		// Five commits plus endpoint enumeration spawn many git processes; the
+		// concurrent full suite can saturate process startup on CI.
+		{ timeout: 30000 },
 	);
 
 	test(
