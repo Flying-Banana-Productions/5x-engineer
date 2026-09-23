@@ -38,7 +38,9 @@ export interface GitCommitResult {
 async function run(
 	args: string[],
 	workdir: string,
+	options?: { exact?: boolean },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	if (options?.exact) return subprocess.execGit(args, workdir, options);
 	return subprocess.execGit(args, workdir);
 }
 
@@ -632,9 +634,11 @@ export async function gitShowFile(
 	workdir: string,
 	commit: string,
 	path: string,
-	opts: { strict?: boolean } = {},
+	opts: { strict?: boolean; exact?: boolean } = {},
 ): Promise<string | null> {
-	const result = await run(["show", `${commit}:${path}`], workdir);
+	const result = opts.exact
+		? await run(["show", `${commit}:${path}`], workdir, { exact: true })
+		: await run(["show", `${commit}:${path}`], workdir);
 	if (result.exitCode !== 0) {
 		if (opts.strict) {
 			// A missing path is a valid lifecycle state; an unreadable object or

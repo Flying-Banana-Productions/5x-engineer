@@ -15,12 +15,17 @@ import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	appendPlanReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
+import {
+	ensureImplementationAdmission,
+	isImplementationAuthorTemplate,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -260,6 +265,53 @@ export async function templateRender(
 		reviewDiffAppend = isPlanReviewTemplate(params.template)
 			? delta.diffAppend
 			: null;
+	}
+
+	if (
+		params.run &&
+		resolvedPlanPath &&
+		isImplementationAuthorTemplate(params.template)
+	) {
+		let markdown: string | null = null;
+		try {
+			markdown = (
+				deps?.readPlan ?? ((path: string) => readFileSync(path, "utf-8"))
+			)(resolvedPlanPath);
+		} catch {
+			markdown = null;
+		}
+		try {
+			renderBudgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: projectRoot }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			if (parsed?.ok && config.reviewBudget.mode !== "off") {
+				outputError(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+				);
+			}
+		}
+		if (renderBudgetContext) {
+			const admission = await ensureImplementationAdmission({
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+				executionRunId: params.run,
+				planPath: renderBudgetContext.executionContext.effectivePlanPath,
+				planMarkdown: markdown,
+				configuredMode: config.reviewBudget.mode,
+				origin: renderBudgetContext.originFor({ kind: "system", role: "cli" }),
+				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+			});
+			if (
+				admission.status === "approval_required" ||
+				admission.status === "error"
+			) {
+				outputError(admission.code, admission.message, admission.detail);
+			}
+		}
 	}
 
 	// -----------------------------------------------------------------------

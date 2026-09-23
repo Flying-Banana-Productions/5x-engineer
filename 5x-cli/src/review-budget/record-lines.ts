@@ -13,7 +13,14 @@ import type {
 	SurfaceSnapshot,
 } from "./types.js";
 
-export type BudgetRecordKind = "baseline" | "snapshot";
+export const IMPLEMENTATION_STATE_VERSION = 1 as const;
+
+export type BudgetRecordKind =
+	| "baseline"
+	| "snapshot"
+	| "implementation-binding"
+	| "implementation-compatibility"
+	| "implementation-text-amendment";
 export type CaptureKind = "initial" | "opt_in";
 
 export interface BudgetBaselinePayload {
@@ -240,4 +247,260 @@ export function decodeBudgetSnapshotPayload(
 		) as ClosureDiagnostic[];
 	}
 	return decoded;
+}
+
+export type ImplementationCompatibilityReason = "no_budget" | "mode_off";
+
+export interface ImplementationPhaseMapping {
+	id: string;
+	heading: string;
+}
+
+export interface ImplementationDebtTarget {
+	claimId: string;
+	sourceLabel: string;
+	phaseId: string;
+}
+
+/**
+ * Immutable copy of an approved plan-review lineage. Plan snapshot readers
+ * must ignore this kind. Binding does not capture a new baseline.
+ */
+export interface ImplementationBindingPayload {
+	kind: "implementation-binding";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	executionRunId: string;
+	sourceRunId: string;
+	sourceSnapshotId: string;
+	sourceBaselineId: string;
+	approvedPlanCommit: string;
+	approvedPlanHash: string;
+	approvedPlanBytes: string;
+	b0: number;
+	governingB: number;
+	mode: Exclude<ReviewBudgetMode, "off">;
+	thresholds: ReviewBudgetThresholds;
+	ledger: ParsedDeliveryBudget;
+	effectiveDecisions: unknown[];
+	phaseMap: ImplementationPhaseMapping[];
+	debtTargets: ImplementationDebtTarget[];
+	ledgerHash: string;
+	decisionsHash: string;
+	createdAt: string;
+}
+
+export interface ImplementationCompatibilityPayload {
+	kind: "implementation-compatibility";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	executionRunId: string;
+	reason: ImplementationCompatibilityReason;
+	observedMode: ReviewBudgetMode;
+	createdAt: string;
+}
+
+/** One guard-verified text amendment. The binding's approved hash stays put. */
+export interface ImplementationTextAmendmentPayload {
+	kind: "implementation-text-amendment";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	bindingId: string;
+	executionRunId: string;
+	guardId: string;
+	sourceObservationId: string;
+	parentLineageId: string | null;
+	beforeCommit: string;
+	afterCommit: string;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	authorizedPlanBytes: string;
+	createdAt: string;
+}
+
+export function implementationBindingKey(runId: string): string {
+	return `budget:implementation-binding:${runId}`;
+}
+
+export function implementationCompatibilityKey(runId: string): string {
+	return `budget:implementation-compatibility:${runId}`;
+}
+
+export function implementationTextAmendmentKey(
+	bindingId: string,
+	amendmentId: string,
+): string {
+	return `budget:implementation-text-amendment:${bindingId}:${amendmentId}`;
+}
+
+function positiveInteger(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+		throw new TypeError(`${field} must be a positive integer`);
+	}
+	return value;
+}
+
+function versionField(value: unknown): typeof IMPLEMENTATION_STATE_VERSION {
+	if (value !== IMPLEMENTATION_STATE_VERSION) {
+		throw new TypeError(
+			`unsupported implementation-state version ${String(value)}`,
+		);
+	}
+	return IMPLEMENTATION_STATE_VERSION;
+}
+
+export function encodeImplementationBindingPayload(
+	payload: ImplementationBindingPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationBindingPayload(
+	raw: unknown,
+): ImplementationBindingPayload {
+	const value = object(raw, "implementation binding payload");
+	if (value.kind !== "implementation-binding") {
+		throw new TypeError("invalid implementation binding kind");
+	}
+	versionField(value.version);
+	if (value.mode !== "advisory" && value.mode !== "enforced") {
+		throw new TypeError(
+			"implementation binding mode must be advisory or enforced",
+		);
+	}
+	if (!Array.isArray(value.effectiveDecisions)) {
+		throw new TypeError("effectiveDecisions must be an array");
+	}
+	if (!Array.isArray(value.phaseMap) || !Array.isArray(value.debtTargets)) {
+		throw new TypeError("phaseMap and debtTargets must be arrays");
+	}
+	const phaseMap = value.phaseMap.map((entry, index) => {
+		const phase = object(entry, `phaseMap[${index}]`);
+		return {
+			id: stringField(phase.id, `phaseMap[${index}].id`),
+			heading: stringField(phase.heading, `phaseMap[${index}].heading`, true),
+		};
+	});
+	const debtTargets = value.debtTargets.map((entry, index) => {
+		const target = object(entry, `debtTargets[${index}]`);
+		return {
+			claimId: stringField(target.claimId, `debtTargets[${index}].claimId`),
+			sourceLabel: stringField(
+				target.sourceLabel,
+				`debtTargets[${index}].sourceLabel`,
+			),
+			phaseId: stringField(target.phaseId, `debtTargets[${index}].phaseId`),
+		};
+	});
+	return {
+		kind: "implementation-binding",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		executionRunId: stringField(value.executionRunId, "executionRunId"),
+		sourceRunId: stringField(value.sourceRunId, "sourceRunId"),
+		sourceSnapshotId: stringField(value.sourceSnapshotId, "sourceSnapshotId"),
+		sourceBaselineId: stringField(value.sourceBaselineId, "sourceBaselineId"),
+		approvedPlanCommit: stringField(
+			value.approvedPlanCommit,
+			"approvedPlanCommit",
+		),
+		approvedPlanHash: stringField(value.approvedPlanHash, "approvedPlanHash"),
+		approvedPlanBytes: stringField(
+			value.approvedPlanBytes,
+			"approvedPlanBytes",
+			true,
+		),
+		b0: positiveInteger(value.b0, "b0"),
+		governingB: positiveInteger(value.governingB, "governingB"),
+		mode: value.mode,
+		thresholds: structuredClone(
+			object(value.thresholds, "thresholds"),
+		) as unknown as ReviewBudgetThresholds,
+		ledger: structuredClone(
+			object(value.ledger, "ledger"),
+		) as unknown as ParsedDeliveryBudget,
+		effectiveDecisions: structuredClone(value.effectiveDecisions),
+		phaseMap,
+		debtTargets,
+		ledgerHash: stringField(value.ledgerHash, "ledgerHash"),
+		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+export function encodeImplementationCompatibilityPayload(
+	payload: ImplementationCompatibilityPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationCompatibilityPayload(
+	raw: unknown,
+): ImplementationCompatibilityPayload {
+	const value = object(raw, "implementation compatibility payload");
+	if (value.kind !== "implementation-compatibility") {
+		throw new TypeError("invalid implementation compatibility kind");
+	}
+	versionField(value.version);
+	if (value.reason !== "no_budget" && value.reason !== "mode_off") {
+		throw new TypeError("invalid implementation compatibility reason");
+	}
+	if (
+		value.observedMode !== "off" &&
+		value.observedMode !== "advisory" &&
+		value.observedMode !== "enforced"
+	) {
+		throw new TypeError("invalid implementation compatibility mode");
+	}
+	return {
+		kind: "implementation-compatibility",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		executionRunId: stringField(value.executionRunId, "executionRunId"),
+		reason: value.reason,
+		observedMode: value.observedMode,
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+export function encodeImplementationTextAmendmentPayload(
+	payload: ImplementationTextAmendmentPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationTextAmendmentPayload(
+	raw: unknown,
+): ImplementationTextAmendmentPayload {
+	const value = object(raw, "implementation text amendment payload");
+	if (value.kind !== "implementation-text-amendment") {
+		throw new TypeError("invalid implementation text amendment kind");
+	}
+	versionField(value.version);
+	return {
+		kind: "implementation-text-amendment",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		executionRunId: stringField(value.executionRunId, "executionRunId"),
+		guardId: stringField(value.guardId, "guardId"),
+		sourceObservationId: stringField(
+			value.sourceObservationId,
+			"sourceObservationId",
+		),
+		parentLineageId:
+			value.parentLineageId === null
+				? null
+				: stringField(value.parentLineageId, "parentLineageId"),
+		beforeCommit: stringField(value.beforeCommit, "beforeCommit"),
+		afterCommit: stringField(value.afterCommit, "afterCommit"),
+		beforeBlobHash: stringField(value.beforeBlobHash, "beforeBlobHash"),
+		afterBlobHash: stringField(value.afterBlobHash, "afterBlobHash"),
+		authorizedPlanBytes: stringField(
+			value.authorizedPlanBytes,
+			"authorizedPlanBytes",
+			true,
+		),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
 }

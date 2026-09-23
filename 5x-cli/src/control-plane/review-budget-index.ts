@@ -2,6 +2,9 @@ import type { Database } from "bun:sqlite";
 import {
 	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
+	decodeImplementationCompatibilityPayload,
+	decodeImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import type { RecordStore } from "./record-store.js";
 import type {
@@ -207,7 +210,29 @@ export function reindexReviewBudget(
 		) {
 			continue;
 		}
-		if ((line.payload as { kind?: unknown }).kind === "baseline") {
+		const kind = (line.payload as { kind?: unknown }).kind;
+		// Implementation lineage is authoritative on the budget stream. It is not
+		// a plan snapshot and is not projected until the v11 index migration.
+		if (
+			kind === "implementation-binding" ||
+			kind === "implementation-compatibility" ||
+			kind === "implementation-text-amendment"
+		) {
+			try {
+				if (kind === "implementation-binding") {
+					decodeImplementationBindingPayload(line.payload);
+				} else if (kind === "implementation-compatibility") {
+					decodeImplementationCompatibilityPayload(line.payload);
+				} else {
+					decodeImplementationTextAmendmentPayload(line.payload);
+				}
+			} catch {
+				// Unreadable future or corrupt payloads stay unprojected and
+				// cannot be mistaken for a plan baseline or snapshot.
+			}
+			continue;
+		}
+		if (kind === "baseline") {
 			const payload = decodeBudgetBaselinePayload(line.payload);
 			index.upsertBaseline(
 				{
@@ -225,7 +250,7 @@ export function reindexReviewBudget(
 				},
 				line.idempotencyKey,
 			);
-		} else if ((line.payload as { kind?: unknown }).kind === "snapshot") {
+		} else if (kind === "snapshot") {
 			const payload = decodeBudgetSnapshotPayload(line.payload);
 			index.upsertSnapshot(
 				{

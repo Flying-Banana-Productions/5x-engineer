@@ -3,6 +3,7 @@ import { outputError, outputSuccess } from "../output.js";
 import { resolveDbContext } from "./context.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
+	bindApprovedImplementation,
 	type SubmitPlanReviewDecisionPayload,
 	showPlanReviewGate,
 	submitPlanReviewDecision,
@@ -186,6 +187,26 @@ export function registerReview(parent: Command) {
 			outputSuccess(
 				await submitPlanReviewDecision(
 					{ runId, gateId: opts.gate, payload, findingIds },
+					{ context },
+				),
+			);
+		});
+
+	const implementation = review
+		.command("implementation")
+		.description("Bind execution to an approved plan review");
+	implementation
+		.command("bind")
+		.description(
+			"Bind an execution run to one approved plan-review source without capturing a new baseline",
+		)
+		.requiredOption("--run <id>", "Execution run id")
+		.requiredOption("--source-run <id>", "Approved plan-review run id")
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await bindApprovedImplementation(
+					{ executionRunId: runId, sourceRunId: opts.sourceRun },
 					{ context },
 				),
 			);

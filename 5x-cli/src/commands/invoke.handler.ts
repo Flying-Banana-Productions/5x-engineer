@@ -33,6 +33,7 @@ import {
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	extractPipeContext,
 	isStdinPiped,
@@ -64,6 +65,10 @@ import {
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
+import {
+	ensureImplementationAdmission,
+	isImplementationAuthorTemplate,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -474,6 +479,50 @@ export async function invokeAgent(
 			"BUDGET_BASELINE_OPT_IN_INVALID",
 			"--opt-in-budget-baseline is valid only for a plan-reviewer invocation",
 		);
+	}
+	if (
+		params.run &&
+		resolvedPlanPath &&
+		isImplementationAuthorTemplate(resolved.selectedTemplateName)
+	) {
+		let markdown: string | null = null;
+		try {
+			markdown = readFileSync(resolvedPlanPath, "utf-8");
+		} catch {
+			markdown = null;
+		}
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: projectRoot }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			if (parsed?.ok && config.reviewBudget.mode !== "off") {
+				outputError(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+				);
+			}
+		}
+		if (budgetContext) {
+			const admission = await ensureImplementationAdmission({
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+				executionRunId: params.run,
+				planPath: budgetContext.executionContext.effectivePlanPath,
+				planMarkdown: markdown,
+				configuredMode: config.reviewBudget.mode,
+				origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+			});
+			if (
+				admission.status === "approval_required" ||
+				admission.status === "error"
+			) {
+				outputError(admission.code, admission.message, admission.detail);
+			}
+		}
 	}
 	const roleConfig = config[role] as Record<string, unknown>;
 	const providerName =

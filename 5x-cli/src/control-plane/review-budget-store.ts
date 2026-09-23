@@ -4,8 +4,20 @@ import {
 	type CaptureKind,
 	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
+	decodeImplementationCompatibilityPayload,
+	decodeImplementationTextAmendmentPayload,
 	encodeBudgetBaselinePayload,
 	encodeBudgetSnapshotPayload,
+	encodeImplementationBindingPayload,
+	encodeImplementationCompatibilityPayload,
+	encodeImplementationTextAmendmentPayload,
+	type ImplementationBindingPayload,
+	type ImplementationCompatibilityPayload,
+	type ImplementationTextAmendmentPayload,
+	implementationBindingKey,
+	implementationCompatibilityKey,
+	implementationTextAmendmentKey,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
 import type {
@@ -104,6 +116,30 @@ export interface ReviewBudgetStore {
 		idempotencyKey: string,
 		derived?: DerivedBudgetResult,
 	): ReviewBudgetSnapshotRecord | null;
+	/**
+	 * Copied execution binding. Null when absent. Throws when the line exists
+	 * but is not a readable versioned binding. Never a plan snapshot.
+	 */
+	getImplementationBinding(runId: string): ImplementationBindingPayload | null;
+	getImplementationCompatibility(
+		runId: string,
+	): ImplementationCompatibilityPayload | null;
+	listImplementationTextAmendments(
+		runId: string,
+		bindingId: string,
+	): ImplementationTextAmendmentPayload[];
+	saveImplementationBinding(
+		payload: ImplementationBindingPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationBindingPayload };
+	saveImplementationCompatibility(
+		payload: ImplementationCompatibilityPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCompatibilityPayload };
+	saveImplementationTextAmendment(
+		payload: ImplementationTextAmendmentPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationTextAmendmentPayload };
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -349,6 +385,92 @@ export function createReviewBudgetStore(
 			const record = snapshotRecord(line.payload, derived ?? null);
 			projectSnapshotToIndex(runId, idempotencyKey, record);
 			return record;
+		},
+
+		getImplementationBinding(runId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationBindingKey(runId),
+			);
+			return line ? decodeImplementationBindingPayload(line.payload) : null;
+		},
+
+		getImplementationCompatibility(runId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationCompatibilityKey(runId),
+			);
+			return line
+				? decodeImplementationCompatibilityPayload(line.payload)
+				: null;
+		},
+
+		listImplementationTextAmendments(runId, bindingId) {
+			const amendments: ImplementationTextAmendmentPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-text-amendment"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationTextAmendmentPayload(line.payload);
+				if (decoded.bindingId === bindingId) amendments.push(decoded);
+			}
+			return amendments;
+		},
+
+		saveImplementationBinding(payload, origin) {
+			const key = implementationBindingKey(payload.executionRunId);
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: key,
+				payload: encodeImplementationBindingPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationBindingPayload(result.line.payload),
+			};
+		},
+
+		saveImplementationCompatibility(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationCompatibilityKey(payload.executionRunId),
+				payload: encodeImplementationCompatibilityPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCompatibilityPayload(result.line.payload),
+			};
+		},
+
+		saveImplementationTextAmendment(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationTextAmendmentKey(
+					payload.bindingId,
+					payload.id,
+				),
+				payload: encodeImplementationTextAmendmentPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationTextAmendmentPayload(result.line.payload),
+			};
 		},
 	};
 }

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
 import type {
 	RecordPerformer,
 	StepRecordPayload,
@@ -21,6 +22,7 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
+import { ensureImplementationAdmission } from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
@@ -807,4 +809,61 @@ function routeForStoredDecision(
 		newGoverningState: state,
 		decision,
 	});
+}
+
+/** Explicit `5x review implementation bind`. Uses the same admission validator. */
+export async function bindApprovedImplementation(
+	input: { executionRunId: string; sourceRunId: string },
+	deps: { context: ReviewBudgetCommandContext },
+): Promise<{
+	created: boolean;
+	bindingId: string;
+	executionRunId: string;
+	sourceRunId: string;
+	approvedPlanCommit: string;
+	approvedPlanHash: string;
+	mode: "advisory" | "enforced";
+	b0: number;
+	governingB: number;
+}> {
+	const ctx = deps.context;
+	const planPath = ctx.executionContext.effectivePlanPath;
+	let planMarkdown: string;
+	try {
+		planMarkdown = readFileSync(planPath, "utf8");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new CliError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+	}
+	const result = await ensureImplementationAdmission({
+		store: ctx.store,
+		recordStore: ctx.recordStore,
+		executionRunId: input.executionRunId,
+		planPath,
+		planMarkdown,
+		configuredMode: ctx.config.reviewBudget.mode,
+		origin: ctx.originFor({ kind: "human", role: "operator" }),
+		explicitSourceRunId: input.sourceRunId,
+		workdir: ctx.executionContext.effectiveWorkingDirectory,
+	});
+	if (result.status === "bound") {
+		return {
+			created: result.created,
+			bindingId: result.binding.id,
+			executionRunId: result.binding.executionRunId,
+			sourceRunId: result.binding.sourceRunId,
+			approvedPlanCommit: result.binding.approvedPlanCommit,
+			approvedPlanHash: result.binding.approvedPlanHash,
+			mode: result.binding.mode,
+			b0: result.binding.b0,
+			governingB: result.binding.governingB,
+		};
+	}
+	if (result.status === "approval_required" || result.status === "error") {
+		throw new CliError(result.code, result.message, result.detail);
+	}
+	throw new CliError(
+		"IMPLEMENTATION_PLAN_UNAPPROVED",
+		"Implementation bind did not establish an approved execution binding",
+	);
 }

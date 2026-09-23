@@ -148,6 +148,10 @@ import {
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import {
+	ensureImplementationAdmission,
+	isImplementationAuthorAdmission,
+} from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
@@ -2887,12 +2891,71 @@ export async function finalizeAndWritePreparedStep(
  * context resolution — critical for `5x commit` where re-discovery from cwd
  * could target the wrong control-plane.
  */
+async function enforceFirstImplementationAdmission(input: {
+	params: RunRecordParams & { run: string; stepName: string };
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore: RecordStore;
+	originFor: (performer: RecordPerformer) => RecordOrigin;
+}): Promise<void> {
+	if (
+		!isImplementationAuthorAdmission(input.params.stepName, input.params.phase)
+	) {
+		return;
+	}
+	const run = getRunV1(input.db, input.params.run);
+	if (!run) return;
+	let planMarkdown: string | null = null;
+	if (existsSync(run.plan_path)) {
+		try {
+			planMarkdown = readFileSync(run.plan_path, "utf8");
+		} catch {
+			planMarkdown = null;
+		}
+	}
+	let workdir: string | undefined;
+	if (input.controlPlane) {
+		const ctxResult = resolveRunExecutionContext(input.db, input.params.run, {
+			controlPlaneRoot: input.controlPlane.controlPlaneRoot,
+		});
+		if (ctxResult.ok) {
+			workdir = ctxResult.context.effectiveWorkingDirectory;
+		}
+	}
+	const store = createReviewBudgetStore(input.recordStore);
+	const admission = await ensureImplementationAdmission({
+		store,
+		recordStore: input.recordStore,
+		executionRunId: input.params.run,
+		planPath: run.plan_path,
+		planMarkdown,
+		configuredMode: input.config.reviewBudget?.mode ?? "advisory",
+		origin: input.originFor({ kind: "system", role: "cli" }),
+		...(workdir ? { workdir } : {}),
+	});
+	if (
+		admission.status === "approval_required" ||
+		admission.status === "error"
+	) {
+		throw new RecordError(admission.code, admission.message, admission.detail);
+	}
+}
+
 export async function recordStepInternal(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 	dbContext?: RecordStepContext,
 ): Promise<RecordStepResult & { max_steps: number }> {
 	const writer = await resolveRecordWriter(params, dbContext);
 	const { db, config, controlPlane, recordStore, originFor } = writer;
+	await enforceFirstImplementationAdmission({
+		params,
+		db,
+		config,
+		controlPlane,
+		recordStore,
+		originFor,
+	});
 
 	const preparedOutcome = await prepareRecordStepAppend(params, {
 		db,

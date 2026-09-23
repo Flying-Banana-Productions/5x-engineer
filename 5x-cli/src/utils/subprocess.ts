@@ -49,7 +49,11 @@ export const subprocess = {
 	 * Strips GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so git discovers
 	 * the repo from `cwd`, not from inherited env vars.
 	 */
-	async execGit(args: string[], workdir: string): Promise<ExecResult> {
+	async execGit(
+		args: string[],
+		workdir: string,
+		options?: { exact?: boolean },
+	): Promise<ExecResult> {
 		const proc = Bun.spawn(["git", ...args], {
 			cwd: workdir,
 			env: cleanEnv(),
@@ -62,7 +66,11 @@ export const subprocess = {
 			new Response(proc.stderr).text(),
 			proc.exited,
 		]);
-		return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+		return {
+			stdout: options?.exact ? stdout : stdout.trim(),
+			stderr: stderr.trim(),
+			exitCode,
+		};
 	},
 
 	/**
