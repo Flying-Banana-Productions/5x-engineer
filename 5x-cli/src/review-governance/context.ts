@@ -78,6 +78,14 @@ function list(values: readonly string[]): string {
 export function formatReviewerGovernanceContext(
 	context: PlanReviewPromptContext,
 ): string {
+	const findings = context.priorFindings.length
+		? context.priorFindings
+				.map(
+					(finding) =>
+						`- ${finding.findingId} (${finding.fingerprint})${finding.status ? ` [${finding.status}]` : ""}: ${finding.title}; scope: ${finding.scopeClass}; failure: ${finding.failure}; lowest-cost correction: ${finding.lowestCostCorrection}`,
+				)
+				.join("\n")
+		: "- (none)";
 	const risks = context.deferredOrAcceptedRisks.length
 		? context.deferredOrAcceptedRisks
 				.map(
@@ -86,7 +94,19 @@ export function formatReviewerGovernanceContext(
 				)
 				.join("\n")
 		: "- (none)";
-	return `## Plan-review governance context\n\n- Review kind: ${context.reviewKind}\n- Pinned mode: ${context.mode}\n- Governing baseline (B): ${context.governingBaseline}\n- Retained scope: ${list(context.approvedScope.retained)}\n- Removed scope: ${list(context.approvedScope.removed)}\n- Author re-estimate requested: ${context.requestAuthorReestimate ? "yes" : "no"}\n\n### Deferred or accepted-risk findings\n\n${risks}`;
+	return `## Plan-review governance context\n\n- Review kind: ${context.reviewKind}\n- Pinned mode: ${context.mode}\n- Governing baseline (B): ${context.governingBaseline}\n- Retained scope: ${list(context.approvedScope.retained)}\n- Removed scope: ${list(context.approvedScope.removed)}\n- Author re-estimate requested: ${context.requestAuthorReestimate ? "yes" : "no"}\n\n### Prior findings\n\n${findings}\n\n### Deferred or accepted-risk findings\n\n${risks}`;
+}
+
+/** Keep render and invoke prompt projection byte-for-byte aligned. */
+export function appendPlanReviewPromptContext(input: {
+	prompt: string;
+	diffAppend?: string | null;
+	governanceAppend?: string | null;
+}): string {
+	let prompt = input.prompt;
+	if (input.diffAppend) prompt += `\n${input.diffAppend}`;
+	if (input.governanceAppend) prompt += `\n\n${input.governanceAppend}`;
+	return prompt;
 }
 
 export function formatAuthorGoverningDecisions(

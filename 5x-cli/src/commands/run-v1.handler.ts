@@ -1765,7 +1765,9 @@ export async function loadGitRecordForPlan(opts: {
 }): Promise<{
 	summary: ReturnType<typeof parseRunJson>;
 	steps: ReturnType<typeof formatGitRecordStep>[];
+	stepLines: RecordLine[];
 	budgetLines: RecordLine[];
+	decisionLines: RecordLine[];
 	budgetDecodeError?: string;
 } | null> {
 	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
@@ -1780,6 +1782,7 @@ export async function loadGitRecordForPlan(opts: {
 		summary: ReturnType<typeof parseRunJson>;
 		stepsText: string | null;
 		budgetText: string | null;
+		decisionsText: string | null;
 	};
 	const loaded: Loaded[] = [];
 
@@ -1797,7 +1800,13 @@ export async function loadGitRecordForPlan(opts: {
 				opts.commit,
 				budgetRel,
 			);
-			loaded.push({ summary, stepsText, budgetText });
+			const decisionsRel = rel.replace(/run\.json$/, "decisions.jsonl");
+			const decisionsText = await gitShowFile(
+				opts.workdir,
+				opts.commit,
+				decisionsRel,
+			);
+			loaded.push({ summary, stepsText, budgetText, decisionsText });
 		} catch {}
 	}
 
@@ -1823,7 +1832,11 @@ export async function loadGitRecordForPlan(opts: {
 						const budgetText = existsSync(budgetPath)
 							? readFileSync(budgetPath, "utf-8")
 							: null;
-						loaded.push({ summary, stepsText, budgetText });
+						const decisionsPath = join(root, ent.name, "decisions.jsonl");
+						const decisionsText = existsSync(decisionsPath)
+							? readFileSync(decisionsPath, "utf-8")
+							: null;
+						loaded.push({ summary, stepsText, budgetText, decisionsText });
 					} catch {}
 				}
 			} catch {}
@@ -1840,13 +1853,16 @@ export async function loadGitRecordForPlan(opts: {
 	const win = loaded[0];
 	if (!win) return null;
 	let steps: ReturnType<typeof formatGitRecordStep>[] = [];
+	let stepLines: RecordLine[] = [];
 	if (win.stepsText) {
 		try {
-			steps = decodeJsonlFile(win.stepsText, win.summary.id)
-				.filter((line) => line.stream === "steps")
-				.map(formatGitRecordStep);
+			stepLines = decodeJsonlFile(win.stepsText, win.summary.id).filter(
+				(line) => line.stream === "steps",
+			);
+			steps = stepLines.map(formatGitRecordStep);
 		} catch {
 			steps = [];
+			stepLines = [];
 		}
 	}
 	let budgetLines: RecordLine[] = [];
@@ -1862,10 +1878,22 @@ export async function loadGitRecordForPlan(opts: {
 				error instanceof Error ? error.message : String(error);
 		}
 	}
+	let decisionLines: RecordLine[] = [];
+	if (win.decisionsText) {
+		try {
+			decisionLines = decodeJsonlFile(win.decisionsText, win.summary.id).filter(
+				(line) => line.stream === "decisions",
+			);
+		} catch {
+			decisionLines = [];
+		}
+	}
 	return {
 		summary: win.summary,
 		steps,
+		stepLines,
 		budgetLines,
+		decisionLines,
 		...(budgetDecodeError ? { budgetDecodeError } : {}),
 	};
 }
@@ -1979,9 +2007,14 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				} else {
 					const records = createMemoryRecordStore();
 					records.putRun(gitRecord.summary);
-					if (gitRecord.budgetLines.length > 0) {
+					const archivedLines = [
+						...gitRecord.stepLines,
+						...gitRecord.decisionLines,
+						...gitRecord.budgetLines,
+					];
+					if (archivedLines.length > 0) {
 						records.atomicAppend(
-							gitRecord.budgetLines.map((line) => ({
+							archivedLines.map((line) => ({
 								...line,
 							})),
 						);
@@ -1990,12 +2023,23 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						(step) =>
 							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
 					);
+					const archivedBudgetStore = createReviewBudgetStore(records);
+					const archivedBaseline = archivedBudgetStore.getBaseline(
+						gitRecord.summary.id,
+					);
+					const governingBaseline = archivedBaseline
+						? createReviewGovernanceStore(records).deriveGoverningState(
+								gitRecord.summary.id,
+								archivedBaseline.b0,
+							).governingBaseline
+						: undefined;
 					reviewBudget = tryBuildReviewBudgetState(
 						{
 							runId: gitRecord.summary.id,
 							mode: config.reviewBudget.mode,
-							store: createReviewBudgetStore(records),
+							store: archivedBudgetStore,
 							hasPriorPlanReviewerStep: priorReviewer,
+							...(governingBaseline !== undefined ? { governingBaseline } : {}),
 							semanticHumanRequiredFor: (snapshot) => {
 								return semanticHumanRequiredFromSteps(snapshot, allSteps);
 							},

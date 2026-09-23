@@ -16,6 +16,7 @@ import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import {
+	appendPlanReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
@@ -305,6 +306,7 @@ export async function templateRender(
 		}
 	}
 	let prompt = resolved.prompt;
+	let governanceAppend: string | null = null;
 	if (params.run && isPlanReviewTemplate(resolved.selectedTemplateName)) {
 		try {
 			renderBudgetContext ??= await (
@@ -317,7 +319,11 @@ export async function templateRender(
 				recordStore: renderBudgetContext.recordStore,
 			});
 			if (governanceContext) {
-				prompt += `\n\n${resolved.selectedTemplateName.replace(/-continued$/, "") === "author-process-plan-review" ? formatAuthorGoverningDecisions(governanceContext) : formatReviewerGovernanceContext(governanceContext)}`;
+				governanceAppend =
+					resolved.selectedTemplateName.replace(/-continued$/, "") ===
+					"author-process-plan-review"
+						? formatAuthorGoverningDecisions(governanceContext)
+						: formatReviewerGovernanceContext(governanceContext);
 			}
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
@@ -328,9 +334,11 @@ export async function templateRender(
 	// Post-render: append the review diff block (continued plan reviews only),
 	// then the ## Context block when --run resolves a worktree.
 	// -----------------------------------------------------------------------
-	if (reviewDiffAppend) {
-		prompt += `\n${reviewDiffAppend}`;
-	}
+	prompt = appendPlanReviewPromptContext({
+		prompt,
+		diffAppend: reviewDiffAppend,
+		governanceAppend,
+	});
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;
 	}

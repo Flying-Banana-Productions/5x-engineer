@@ -22,6 +22,8 @@ import { runMigrations } from "../../../src/db/schema.js";
 import { setOutputFormat } from "../../../src/output.js";
 import { planSlugFromPath } from "../../../src/paths.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
+import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 
 const origin: RecordOrigin = {
 	recorder: { installation_id: "33333333-3333-4333-8333-333333333333" },
@@ -276,6 +278,68 @@ describe("run state review-budget wiring", () => {
 				status: "active",
 				requires_human: true,
 			});
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("archived run state folds decisions into governing B", async () => {
+		const ctx = setup();
+		try {
+			appendHumanReview(ctx);
+			const snapshot = createReviewBudgetStore(ctx.records).latestSnapshot(
+				"run1",
+			);
+			if (!snapshot) throw new Error("missing snapshot fixture");
+			const decision = createReviewDecision({
+				gateId: "gate-baseline",
+				snapshotId: snapshot.id,
+				choice: "adjust_baseline",
+				findingRefs: [],
+				rationale: "The independent estimate establishes the larger baseline.",
+				evidence: [],
+				approvedScope: { retained: [], removed: [] },
+				governingBaselineChange: { from: 5, to: 8 },
+				decisionId: "44444444-4444-4444-8444-444444444444",
+				createdAt: "2026-09-17 00:00:02",
+			});
+			createReviewGovernanceStore(ctx.records).resolveGate({
+				runId: "run1",
+				decision,
+				humanStep: {
+					step_name: "human:review-governance",
+					phase: "plan",
+					iteration: 1,
+					result_json: {
+						decisionId: decision.decisionId,
+						gateId: decision.gateId,
+					},
+					head_commit: null,
+					patch_id: null,
+					diff_summary: null,
+					duration_ms: null,
+					tokens_in: null,
+					tokens_out: null,
+					cost_usd: null,
+					model: null,
+				},
+				origin: {
+					...origin,
+					performer: { kind: "human", role: "operator" },
+				},
+			});
+			const liveEnvelope = (await captureState(ctx)) as {
+				data?: { review_budget?: Record<string, unknown> };
+			};
+			expect(liveEnvelope.data?.review_budget?.B).toBe(8);
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const envelope = (await captureState(ctx, {
+				plan: ctx.planPath,
+			})) as { data?: { review_budget?: Record<string, unknown> } };
+			expect(envelope.data?.review_budget?.B).toBe(8);
+			expect(envelope.data?.review_budget).toEqual(
+				liveEnvelope.data?.review_budget,
+			);
 		} finally {
 			ctx.db.close();
 		}

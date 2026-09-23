@@ -28,7 +28,6 @@ import {
 import {
 	createSqliteInvocationStore,
 	type InvocationStore,
-	type StepRecordPayload,
 	withInvocationLifecycle,
 } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
@@ -57,23 +56,13 @@ import type {
 	RunOptions,
 	RunResult,
 } from "../providers/types.js";
+import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
 import {
-	applyPlanReviewBudget,
-	type PendingBudgetSnapshot,
-} from "../review-budget/apply.js";
-import { applyPlanReviewGovernance } from "../review-governance/apply.js";
-import {
+	appendPlanReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
-import {
-	buildPlanReviewDiffContext,
-	PlanDiffError,
-	type PlanDiffFailure,
-} from "../review-governance/plan-diff.js";
-import { createReviewGovernanceStore } from "../review-governance/store.js";
-import type { PlanDiffContext } from "../review-governance/types.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -84,9 +73,9 @@ import {
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
+	composePlanReviewerRecord,
 	createReviewBudgetContext,
 	ensurePlanReviewBaselineForContext,
-	hasPriorPlanReviewerStep,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
 } from "./review-budget-context.js";
@@ -555,12 +544,11 @@ export async function invokeAgent(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
-	const renderedPromptBase = reviewDiffAppend
-		? `${resolved.prompt}\n${reviewDiffAppend}`
-		: resolved.prompt;
-	const renderedPrompt = governanceAppend
-		? `${renderedPromptBase}\n\n${governanceAppend}`
-		: renderedPromptBase;
+	const renderedPrompt = appendPlanReviewPromptContext({
+		prompt: resolved.prompt,
+		diffAppend: reviewDiffAppend,
+		governanceAppend,
+	});
 
 	// Surface warnings (stderr for human visibility)
 	if (resolved.warnings.length > 0) {
@@ -826,105 +814,26 @@ export async function invokeAgent(
 					}
 				}
 				if (!planReadFailed) {
-					const governanceStore = createReviewGovernanceStore(
-						budgetContext.recordStore,
-					);
-					const governingState = baseline
-						? governanceStore.deriveGoverningState(runId, baseline.b0)
-						: undefined;
-					const applied = applyPlanReviewBudget({
+					const applied = await composePlanReviewerRecord({
+						ctx: budgetContext,
 						runId,
 						stepName,
 						phase: recordPhase,
 						iteration: params.iteration,
 						planMarkdown,
 						verdict: structured as ReviewerVerdict,
-						config: budgetContext.config.reviewBudget,
-						store: budgetContext.store,
-						hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
-							budgetContext,
-							runId,
-						),
 						optInBaseline:
 							(params.optInBudgetBaseline ?? false) &&
 							!optInCapturedBeforeInvoke,
 						origin: budgetContext.originFor(performer),
 						warn:
 							deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
-						...(governingState
-							? { governingBaseline: governingState.governingBaseline }
-							: {}),
 					});
 					if (applied.status === "error")
-						outputError(applied.code, applied.message);
+						outputError(applied.code, applied.message, applied.detail);
 					if (applied.status === "applied") {
-						const activeBaseline = budgetContext.store.getBaseline(runId);
-						if (!activeBaseline)
-							outputError(
-								"BUDGET_BASELINE_MISSING",
-								"Review budget baseline is missing",
-							);
-						const snapshots = budgetContext.store.listSnapshots(runId);
-						const priorSnapshot = snapshots
-							.filter((snapshot) => snapshot.id !== applied.pendingSnapshot.id)
-							.at(-1);
-						let diffContext: PlanDiffContext | undefined;
-						let diffContextFailure: PlanDiffFailure | undefined;
-						if (priorSnapshot?.stepName) {
-							const priorStep = budgetContext.recordStore
-								.listLines(runId, "steps")
-								.find((line) => {
-									const payload = line.payload as Partial<StepRecordPayload>;
-									return (
-										payload.step_name === priorSnapshot.stepName &&
-										(payload.phase ?? null) === priorSnapshot.phase &&
-										payload.iteration === priorSnapshot.iteration
-									);
-								});
-							const head = (
-								priorStep?.payload as Partial<StepRecordPayload> | undefined
-							)?.head_commit;
-							if (head) {
-								try {
-									diffContext = await buildPlanReviewDiffContext({
-										workdir:
-											budgetContext.executionContext.effectiveWorkingDirectory,
-										planPath: budgetContext.executionContext.effectivePlanPath,
-										previousReviewCommit: head,
-									});
-								} catch (error) {
-									diffContextFailure =
-										error instanceof PlanDiffError
-											? { code: error.code, message: error.message }
-											: {
-													code: "PLAN_DIFF_GIT_ERROR",
-													message:
-														error instanceof Error
-															? error.message
-															: String(error),
-												};
-								}
-							}
-						}
-						const composed = applyPlanReviewGovernance({
-							verdict: structured as ReviewerVerdict,
-							budgetResult: applied,
-							snapshots,
-							decisions: governanceStore.listDecisions(runId),
-							governingState: governanceStore.deriveGoverningState(
-								runId,
-								activeBaseline.b0,
-							),
-							mode: activeBaseline.mode,
-							...(diffContext ? { diffContext } : {}),
-							...(diffContextFailure ? { diffContextFailure } : {}),
-						});
-						if (composed.status === "error")
-							outputError(composed.code, composed.message, {
-								diagnostics: composed.diagnostics,
-							});
-						structured = composed.verdict;
-						pendingSnapshot = composed.pendingSnapshot;
+						structured = applied.verdict;
+						pendingSnapshot = applied.pendingSnapshot;
 					}
 				}
 			}

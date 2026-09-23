@@ -4,6 +4,7 @@ import type {
 	ApplyPlanReviewBudgetResult,
 	PendingBudgetSnapshot,
 } from "../review-budget/apply.js";
+import type { DerivedBudgetResult } from "../review-budget/types.js";
 import { validateClosureReview } from "./closure.js";
 import type {
 	GoverningReviewState,
@@ -25,7 +26,10 @@ type AppliedBudget = Extract<
 export type AppliedPlanReviewGovernance =
 	| {
 			status: "applied";
-			verdict: ReviewerVerdict & { governance: PlanReviewGovernanceResult };
+			verdict: ReviewerVerdict & {
+				budget: DerivedBudgetResult;
+				governance: PlanReviewGovernanceResult;
+			};
 			pendingSnapshot: PendingBudgetSnapshot;
 	  }
 	| { status: "error"; code: string; message: string; diagnostics: unknown[] };
@@ -55,7 +59,6 @@ export function persistedFindingsFromSnapshots(
 				scopeClass: finding.scopeClass,
 				failure: finding.failure,
 				lowestCostCorrection: finding.lowestCostCorrection,
-				...(prior?.status ? { status: prior.status } : {}),
 			});
 		}
 	}

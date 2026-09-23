@@ -10,24 +10,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { StepRecordPayload } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { ReviewerVerdict } from "../protocol.js";
-import {
-	applyPlanReviewBudget,
-	type PendingBudgetSnapshot,
-} from "../review-budget/apply.js";
-import { applyPlanReviewGovernance } from "../review-governance/apply.js";
-import {
-	buildPlanReviewDiffContext,
-	PlanDiffError,
-	type PlanDiffFailure,
-} from "../review-governance/plan-diff.js";
-import { createReviewGovernanceStore } from "../review-governance/store.js";
-import type { PlanDiffContext } from "../review-governance/types.js";
+import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
@@ -36,8 +24,8 @@ import {
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
+	composePlanReviewerRecord,
 	createReviewBudgetContext,
-	hasPriorPlanReviewerStep,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
 } from "./review-budget-context.js";
@@ -75,28 +63,6 @@ export interface ProtocolValidateParams {
 	optInBudgetBaseline?: boolean;
 	warn?: (message: string) => void;
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
-}
-
-function priorPlanReviewerSteps(
-	ctx: ReviewBudgetCommandContext,
-	runId: string,
-	current: { stepName?: string; phase?: string; iteration?: number },
-) {
-	return ctx.recordStore.listLines(runId, "steps").filter((line) => {
-		const payload = line.payload as Partial<StepRecordPayload>;
-		if (
-			payload.phase !== "plan" ||
-			typeof payload.step_name !== "string" ||
-			!payload.step_name.startsWith("reviewer:")
-		)
-			return false;
-		return !(
-			current.iteration !== undefined &&
-			payload.step_name === current.stepName &&
-			payload.phase === current.phase &&
-			payload.iteration === current.iteration
-		);
-	});
 }
 
 // ---------------------------------------------------------------------------
@@ -515,8 +481,6 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
-	let reviewDiffContext: PlanDiffContext | undefined;
-	let reviewDiffFailure: PlanDiffFailure | undefined;
 	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
 		const contextFactory =
 			params.createReviewBudgetContext ?? createReviewBudgetContext;
@@ -547,41 +511,6 @@ export async function protocolValidate(
 			if (pinnedMode === "off") {
 				budgetContext = undefined;
 			} else {
-				const priorSteps = priorPlanReviewerSteps(budgetContext, params.run, {
-					stepName: recordStepName ?? params.step,
-					phase: resolvedPhase,
-					iteration: params.iteration,
-				});
-				const shouldApplyGovernance = params.record || baseline !== null;
-				if (shouldApplyGovernance) {
-					const reviewKind = priorSteps.length === 0 ? "initial" : "closure";
-					if (reviewKind === "closure") {
-						const previous = priorSteps.at(-1)?.payload as
-							| Partial<StepRecordPayload>
-							| undefined;
-						if (previous?.head_commit) {
-							try {
-								reviewDiffContext = await buildPlanReviewDiffContext({
-									workdir:
-										budgetContext.executionContext.effectiveWorkingDirectory,
-									planPath: budgetContext.executionContext.effectivePlanPath,
-									previousReviewCommit: previous.head_commit,
-								});
-							} catch (error) {
-								reviewDiffFailure =
-									error instanceof PlanDiffError
-										? { code: error.code, message: error.message }
-										: {
-												code: "PLAN_DIFF_GIT_ERROR",
-												message:
-													error instanceof Error
-														? error.message
-														: String(error),
-											};
-							}
-						}
-					}
-				}
 				let admissionEligible = true;
 				if (params.record && !baseline && recordStepName) {
 					try {
@@ -620,70 +549,26 @@ export async function protocolValidate(
 						// Dry validation remains v1-compatible when its optional context vanished.
 					} else {
 						const performer = { kind: "agent", role: "reviewer" } as const;
-						const governanceStore = createReviewGovernanceStore(
-							budgetContext.recordStore,
-						);
-						const governingState = baseline
-							? governanceStore.deriveGoverningState(params.run, baseline.b0)
-							: undefined;
-						const applied = applyPlanReviewBudget({
+						const applied = await composePlanReviewerRecord({
+							ctx: budgetContext,
 							runId: params.run,
 							stepName: recordStepName ?? params.step ?? "reviewer:review",
 							phase: resolvedPhase,
 							iteration: params.iteration,
 							planMarkdown,
 							verdict: validated as ReviewerVerdict,
-							config: budgetContext.config.reviewBudget,
-							store: budgetContext.store,
-							hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
-								budgetContext,
-								params.run,
-							),
 							optInBaseline: params.optInBudgetBaseline ?? false,
 							origin: budgetContext.originFor(performer),
 							warn:
 								params.warn ??
 								((message) => console.error(`Warning: ${message}`)),
-							...(governingState
-								? { governingBaseline: governingState.governingBaseline }
-								: {}),
 						});
 						if (applied.status === "error") {
-							outputError(applied.code, applied.message);
+							outputError(applied.code, applied.message, applied.detail);
 						}
 						if (applied.status === "applied") {
-							const activeBaseline = budgetContext.store.getBaseline(
-								params.run,
-							);
-							if (!activeBaseline)
-								outputError(
-									"BUDGET_BASELINE_MISSING",
-									"Review budget baseline is missing",
-								);
-							const decisions = governanceStore.listDecisions(params.run);
-							const composed = applyPlanReviewGovernance({
-								verdict: validated as ReviewerVerdict,
-								budgetResult: applied,
-								snapshots: budgetContext.store.listSnapshots(params.run),
-								decisions,
-								governingState: governanceStore.deriveGoverningState(
-									params.run,
-									activeBaseline.b0,
-								),
-								mode: activeBaseline.mode,
-								...(reviewDiffContext
-									? { diffContext: reviewDiffContext }
-									: {}),
-								...(reviewDiffFailure
-									? { diffContextFailure: reviewDiffFailure }
-									: {}),
-							});
-							if (composed.status === "error")
-								outputError(composed.code, composed.message, {
-									diagnostics: composed.diagnostics,
-								});
-							validated = composed.verdict;
-							pendingSnapshot = composed.pendingSnapshot;
+							validated = applied.verdict;
+							pendingSnapshot = applied.pendingSnapshot;
 						}
 					}
 				}

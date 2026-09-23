@@ -24,6 +24,7 @@ export const TEST_ORIGIN: RecordOrigin = {
 
 export function makeBudgetContext(opts?: {
 	maxSteps?: number;
+	mode?: "off" | "advisory" | "enforced";
 	status?: "active" | "completed" | "aborted";
 	originFor?: (performer: RecordPerformer) => RecordOrigin;
 }): ReviewBudgetCommandContext & { db: Database } {
@@ -48,6 +49,7 @@ export function makeBudgetContext(opts?: {
 	});
 	const config = FiveXConfigSchema.parse({
 		maxStepsPerRun: opts?.maxSteps ?? 250,
+		...(opts?.mode ? { reviewBudget: { mode: opts.mode } } : {}),
 	});
 	const originFor =
 		opts?.originFor ??
