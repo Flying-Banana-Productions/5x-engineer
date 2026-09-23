@@ -119,3 +119,34 @@ The Surface Snapshot counts (4 / 18 / 3) match the Files Touched table. `src/pro
 
 **P2**
 - [ ] P2.1 Name the Phase 1 smoke fixture entry and its compile command
+
+---
+
+## Addendum (September 23, 2026) — Closure review of v1.1
+
+**Reviewed:** plan version 1.1, commit `0fbfca7de80e687a68c1ae95a78e356154a3fdde` (prior review at `95817c31f4b5c665346e0171edf2ea155222d30d`)
+
+### What's addressed (✅)
+
+- **P1.1 — Workspace header for resumed OpenCode sessions.** The revision adds a new Design Decision ("Record session-reported workspace, not requested resume cwd") and rewrites the Phase 2 gate and W2.1 bullet: an optional read-only `AgentSession.workingDirectory` is exposed by all three bundled providers — `OpenCodeSession` reports the resolved `session.directory` it already tracks (`src/providers/opencode.ts:181` `private workdir`, populated from `startSession`'s `opts.workingDirectory` or `resumeSession`'s `sessionData.directory`), and `ClaudeCodeSession`/`CursorAgentSession` report the `private cwd` they already store (`packages/provider-{claude-code,cursor-agent}/src/session.ts`). `workspace` now prefers this reported value, falls back to the requested workdir only for fresh sessions, and is omitted for a resumed session that reports none. A dedicated fixture set covers the OpenCode-resume-with-differing-directory case. This is exactly the fix the prior finding required and is mechanically sound against the current code (all three sessions already hold the needed field privately; the change only needs to surface it).
+- **P1.2 — TUI signal handling vs. `cli-lifecycle.ts`.** A new Design Decision ("Reuse the process-wide signal owner") and rewritten W6.1/6.2/7.1 bullets now: merge `getCliAbortSignal()` with the watcher-local detach controller instead of installing competing handlers; derive exit status 130/143 from `getCliAbortCause()`; explicitly bypass the handler's existing stream-only `SIGINT` listener for TUI while leaving it untouched for non-TUI modes; and keep the W1 synchronous `process.on("exit")` restore (added for P1.2/P2.1 jointly) active until restoration completes, independent of a stalled frame write. W7 adds explicit double-signal and grace-timeout PTY cases asserting 130/143 and synchronous restoration. This closes both original failure modes (bypassed `finally` on double-signal/grace-timeout, and SIGTERM never reaching the TUI) without modifying `cli-lifecycle.ts` itself, which the plan now explicitly protects ("do not alter `cli-lifecycle.ts` signal ownership").
+- **P1.3 — Bounded drain reordering legacy replay.** W3.1's bullet now splits behavior by mode: raw/human draining stays in strict sorted-file order to each source's watermark across turns (matching today's `poll()` semantics, just chunked), with fairness rotation confined to live draining after catch-up or to TUI's own `replayMetadata` opt-in. The Phase 3 completion gate and a new W3.2 bullet add a concrete regression: two sorted files each exceeding 256 records/the byte budget, asserting unchanged source order and no repeated role headers under `watchHumanReadable`. This preserves current output-order behavior for the unmodified code paths while keeping the bounded-turn fix that motivated the original change.
+- **P1.4 — Paused snapshot survives resize.** The "Keep live state separate from navigation" Design Decision, the `WatchViewport.pausedSnapshot` field, and new W4/W5/W6 bullets replace "rendered rows" with "width-independent row models (stable IDs, sanitized text, inspector detail)" that `renderWatch` lays out at whatever size is current, whether live or paused. W6.1 adds a concrete controller test: pause on inspector detail, ingest/evict live data, resize to 40×6 and back, assert the same selected ID/inspector text/paused state. This is the exact width-independent-snapshot fix requested.
+- **P2.1 — Phase 1 gate has no testable entry point.** W1.2 adds `test/fixtures/watch-terminal-smoke.ts` (a direct, CLI-flag-free import of the adapter) with the exact commands: `bun test/fixtures/watch-terminal-smoke.ts` for source evidence, then `bun build --compile test/fixtures/watch-terminal-smoke.ts --outfile .5x/watch-terminal-smoke` (a path already covered by `.gitignore`) for compiled evidence. The Phase 1 gate and the Tests table now reference this fixture explicitly instead of the unreachable `bun run build` path.
+
+All five required findings are concretely and specifically resolved, each with a design-decision-level statement, a completion-gate rewrite, an implementation bullet, and a matching test bullet — not just a checklist acknowledgment. Verification against the current codebase (`opencode.ts`, both provider `session.ts` files, `cli-lifecycle.ts`, `bin.ts`) confirms each fix is mechanically compatible with what already exists (e.g., the private `cwd`/`workdir` fields the sessions need to expose are already present).
+
+The revision also folded in every item from the prior **Nonblocking follow-ups** section as a bonus (global help in `src/program.ts`, decoder-side caps for external-plugin metadata in `decodeWatchEntry`, a legacy-repeated-`tool_start` reducer fixture, permission for in-place reducer mutation/ring buffers plus a W7 throughput assertion, and a capability-gated `Bun.Terminal` PTY note). These were not required for closure and are not re-scored here, but they remove what would otherwise have been recurring low-priority notes.
+
+### New issues found in this revision
+
+None. The diff is additive and corrective — new Design Decisions, gate language, checklist bullets, file/test references, and one Surface Snapshot count update (18 → 22 production files, reconciled against the four newly touched existing files: `src/providers/opencode.ts`, both provider `session.ts` files, and `src/program.ts`). No hunk in the diff changes behavior in a way that introduces a fresh correctness, ordering, or lifecycle problem; the sorted-historical-drain fix does not reintroduce the memory/CPU-unbounded-turn problem the original W3 rotation was meant to solve, since per-turn byte/record budgets still apply within a source.
+
+### Remaining concerns
+
+None blocking. The delivery-budget observation from the initial review (W2 and W6 look roughly 2 points light apiece against my independent estimate) still applies qualitatively — the corrections added session-accessor plumbing to W2 and signal-lifecycle integration plus a resize/pause controller test to W6, both under "scores unchanged" — but the author ledger's effort/architecture deltas for W1–W7 are otherwise unchanged, no re-estimate was requested, and no new debt claims were introduced, so there is nothing further to assess here.
+
+### Updated readiness
+
+- **Plan completion:** ✅ — all five required prior findings are addressed with concrete, verifiable mechanisms.
+- **Ready for implementation:** ✅
