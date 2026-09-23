@@ -999,6 +999,7 @@ export interface ReviewGovernanceState {
 		finding_id: string;
 		fingerprint: string;
 	}>;
+	decision_count: number;
 	latest_decisions: Array<{
 		decision_id: string;
 		gate_id: string;
@@ -1116,6 +1117,7 @@ export function buildReviewGovernanceState(input: {
 			finding_id: risk.findingId,
 			fingerprint: risk.fingerprint,
 		})),
+		decision_count: listed.decisions.length,
 		latest_decisions: [...listed.decisions].slice(-10).map((decision) => ({
 			decision_id: decision.decisionId,
 			gate_id: decision.gateId,
@@ -1125,6 +1127,20 @@ export function buildReviewGovernanceState(input: {
 		})),
 		diagnostics,
 	};
+}
+
+export function tryBuildReviewGovernanceState(
+	input: Parameters<typeof buildReviewGovernanceState>[0],
+	warn: (message: string) => void,
+): ReviewGovernanceState | undefined {
+	try {
+		return buildReviewGovernanceState(input);
+	} catch (error) {
+		warn(
+			`Unable to read review governance records for run ${input.runId}; omitting review_governance: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
 }
 
 /**
@@ -1422,7 +1438,7 @@ export function formatStateText(data: {
 			? ` gate=${governance.active_gate.gate_id}`
 			: "";
 		console.log(
-			`Governance: route=${route}  B=${governance.governing_baseline}  decisions=${governance.latest_decisions.length}${gate}`,
+			`Governance: route=${route}  B=${governance.governing_baseline}  decisions=${governance.decision_count}${gate}`,
 		);
 		if (governance.diagnostics.length > 0)
 			console.log(
@@ -2189,23 +2205,28 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
 					);
 					const archivedBudgetStore = createReviewBudgetStore(records);
-					const archivedBaseline = archivedBudgetStore.getBaseline(
-						gitRecord.summary.id,
-					);
-					if (archivedBaseline) {
-						reviewGovernance = buildReviewGovernanceState({
-							runId: gitRecord.summary.id,
-							b0: archivedBaseline.b0,
-							recordStore: records,
-							reviewBudgetStore: archivedBudgetStore,
-						});
+					let archivedBaseline: ReturnType<
+						typeof archivedBudgetStore.getBaseline
+					> = null;
+					try {
+						archivedBaseline = archivedBudgetStore.getBaseline(
+							gitRecord.summary.id,
+						);
+					} catch {
+						// The budget wrapper below emits the canonical baseline-decode warning.
 					}
-					const governingBaseline = archivedBaseline
-						? createReviewGovernanceStore(records).deriveGoverningState(
-								gitRecord.summary.id,
-								archivedBaseline.b0,
-							).governingBaseline
-						: undefined;
+					if (archivedBaseline) {
+						reviewGovernance = tryBuildReviewGovernanceState(
+							{
+								runId: gitRecord.summary.id,
+								b0: archivedBaseline.b0,
+								recordStore: records,
+								reviewBudgetStore: archivedBudgetStore,
+							},
+							warn,
+						);
+					}
+					const governingBaseline = reviewGovernance?.governing_baseline;
 					reviewBudget = tryBuildReviewBudgetState(
 						{
 							runId: gitRecord.summary.id,
@@ -2335,21 +2356,23 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
 		let governingBaseline: number | undefined;
 		if (hasRecordRun) {
+			let baseline: ReturnType<typeof reviewStore.getBaseline> = null;
 			try {
-				const baseline = reviewStore.getBaseline(run.id);
-				if (baseline) {
-					governingBaseline = createReviewGovernanceStore(
-						recordContext.recordStore,
-					).deriveGoverningState(run.id, baseline.b0).governingBaseline;
-					reviewGovernance = buildReviewGovernanceState({
+				baseline = reviewStore.getBaseline(run.id);
+			} catch {
+				// The budget wrapper below emits the canonical baseline-decode warning.
+			}
+			if (baseline) {
+				reviewGovernance = tryBuildReviewGovernanceState(
+					{
 						runId: run.id,
 						b0: baseline.b0,
 						recordStore: recordContext.recordStore,
 						reviewBudgetStore: reviewStore,
-					});
-				}
-			} catch {
-				// tryBuildReviewBudgetState emits the canonical corruption warning below.
+					},
+					warn,
+				);
+				governingBaseline = reviewGovernance?.governing_baseline;
 			}
 		}
 		const isPlanReviewer = (stepName: unknown, phase: unknown) =>

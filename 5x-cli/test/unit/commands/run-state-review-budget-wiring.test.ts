@@ -438,4 +438,48 @@ describe("run state review-budget wiring", () => {
 			ctx.db.close();
 		}
 	});
+
+	test("live and archived run state warn and omit governance for a malformed snapshot payload", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			ctx.records.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: "budget:snapshot:run1:malformed:plan:1",
+				payload: {
+					kind: "snapshot",
+					id: "malformed-snapshot",
+					runId: "run1",
+				},
+				...recordedEnvelope(origin),
+			});
+
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as { data?: { review_governance?: unknown } };
+			expect(live.data?.review_governance).toBeUndefined();
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Unable to read review governance records for run run1; omitting review_governance",
+				),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as { data?: { review_governance?: unknown } };
+			expect(archived.data?.review_governance).toBeUndefined();
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Unable to read review governance records for run run1; omitting review_governance",
+				),
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
 });

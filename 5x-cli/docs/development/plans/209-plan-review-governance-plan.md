@@ -749,6 +749,21 @@ export interface PlanReviewPromptContext {
 - [x] Advisory-pinned runs record diagnostics/hypothetical governance without rejecting or rerouting; enforced-pinned runs fail closed and route; config mode changes affect only later baseline captures; off/v1-compat do not demand new fields.
 - [x] A fixture with `human-step`, `answered-prompt`, and governance decision lines folds/indexes only governance decisions without diagnostics for known unrelated kinds.
 
+**Covered by (audit map, in checklist order):**
+
+1. Initial-to-closure convergence: `test/integration/commands/plan-review-governance.test.ts`.
+2. Exact/fabricated introducing hunks and no-write failure: `test/integration/commands/protocol-validate.test.ts` and `test/unit/review-governance/plan-diff.test.ts`.
+3. Critical late safety routing: `test/unit/review-governance/{closure,routing}.test.ts`.
+4. Deferral and evidence-gated re-raise: `test/unit/review-governance/{closure,context,routing}.test.ts`.
+5. Budget bands, baseline/architecture/semantic routes, final corrections, and debt coupling: `test/unit/review-governance/{routing,debt-policy}.test.ts`.
+6. Cross-round retain/adjust/re-estimate convergence: `test/unit/review-governance/routing.test.ts` and `test/unit/commands/review-decision.test.ts`.
+7. Choice matrix, CAS races, ordering, rebuild, repair, restart, and audit history: `test/unit/commands/review-decision.test.ts`, `test/unit/review-governance/{store-contract,store-index}.test.ts`, and `test/integration/commands/review-decision.test.ts`.
+8. Decision losers, successor gates, generic-answer rejection, and decision-key waits: `test/unit/commands/{review-decision,finalize-and-write-prepared-step}.test.ts` and `test/unit/review-governance/store-index.test.ts`.
+9. Gate display and finding identity validation: `test/unit/commands/review-decision.test.ts` and `test/integration/commands/review-decision.test.ts`.
+10. Reviewer-before/reviewer-after acceptance and rebuild parity: `test/unit/commands/review-decision.test.ts` and `test/unit/review-governance/{decisions,store-index}.test.ts`.
+11. Pinned advisory/enforced/off/v1 compatibility: `test/integration/commands/{plan-review-governance,review-budget,protocol-validate}.test.ts` and `test/unit/review-governance/routing.test.ts`.
+12. Mixed decision-kind filtering: `test/unit/review-governance/{decisions,store-index}.test.ts`.
+
 ### 9.2 Run state and CLI presentation — plan-208 run-state formatter; new review command formatter
 
 - [x] Extend `5x run state` with active gate summary, normalized route, latest decisions, governing scope/baseline, and stable IDs while retaining plan-208 gross forecast fields.
