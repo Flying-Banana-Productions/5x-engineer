@@ -234,3 +234,65 @@ export type GovernanceReviewerVerdict = ReviewerVerdict & {
 	items: GovernanceVerdictItem[];
 	priorFindings?: PriorFindingOutcome[];
 };
+
+export type ReviewDomain = "plan" | "implementation";
+
+export type ImplementationDiagnosticCode =
+	| "PHASE_CONFLICT"
+	| "UNKNOWN_PHASE"
+	| "IMPLEMENTATION_CONTEXT_MISSING"
+	| "IMPLEMENTATION_CONTRACT_IN_PLAN_PHASE"
+	| "PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE"
+	| "WORK_ITEM_UNKNOWN"
+	| "CREDIT_CLAIM_UNKNOWN"
+	| "PLAN_IMPACT_AMBIGUOUS"
+	| "PLAN_IMPACT_OVERLAP"
+	| "PLAN_IMPACT_PROTECTED"
+	| "PLAN_IMPACT_NOT_AUTHORIZED"
+	| "PRE_EXISTING_NOT_ACTIONABLE"
+	| "SCOPE_EXPANSION_NOT_AUTO"
+	| "SOURCE_OF_CORRECTION_PRECEDENCE"
+	| "BOUNDARY_IMPACT_UNKNOWN"
+	| "CRITICAL_PRE_EXISTING_REQUIRES_HUMAN";
+
+export interface ImplementationDiagnostic {
+	code: ImplementationDiagnosticCode;
+	severity: "error" | "info";
+	message: string;
+	itemId?: string;
+}
+
+export type ImplementationNextAction =
+	| "plan_amendment"
+	| "author_revision"
+	| "human_gate"
+	| "complete";
+
+export interface ResolvedPlanImpactSpan {
+	itemId: string;
+	heading: string;
+	staleText: string;
+	/** UTF-8 byte offset into the approved text anchor. */
+	start: number;
+	/** Exclusive UTF-8 byte offset. */
+	end: number;
+}
+
+export interface ImplementationFindingIdentity extends FindingIdentity {
+	phase: string;
+	planWorkItemIds: readonly string[];
+}
+
+export interface ImplementationGovernanceResult {
+	domain: "implementation";
+	phase: string;
+	reviewRound: number;
+	route: PlanReviewRoute;
+	nextAction: ImplementationNextAction;
+	hypotheticalEnforcedRoute?: PlanReviewRoute;
+	shortcutCandidate: boolean;
+	exemptionAuthorized: boolean;
+	actionableItems: VerdictItem[];
+	nonblockingMarkdown: string;
+	diagnostics: ImplementationDiagnostic[];
+}

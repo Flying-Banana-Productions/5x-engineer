@@ -6,6 +6,7 @@ import type {
 } from "../control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
+	isPlanScopeClass,
 	type ReviewerVerdict,
 	rejectCliOwnedBudgetFields,
 } from "../protocol.js";
@@ -266,7 +267,9 @@ export function applyPlanReviewBudget(
 			title: item.title,
 			effortDelta: item.effortDelta as number,
 			architectureDelta: item.architectureDelta as number,
-			scopeClass: item.scopeClass,
+			scopeClass: isPlanScopeClass(item.scopeClass)
+				? item.scopeClass
+				: undefined,
 			coupling: item.coupling,
 			...(item.failure ? { failure: item.failure } : {}),
 			...(item.lowestCostCorrection

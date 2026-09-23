@@ -1716,3 +1716,74 @@ describe("isNumericPhaseRef", () => {
 		expect(isNumericPhaseRef("pre-release-1.0")).toBe(false);
 	});
 });
+
+describe("protocol validate reviewer — implementation contract", () => {
+	const implementationItem = {
+		id: "I1",
+		title: "Wrong status",
+		action: "auto_fix",
+		reason: "The write failure is ignored.",
+		priority: "P1",
+		scopeClass: "implementation_defect",
+		effortDelta: 4,
+		architectureDelta: -4,
+		planWorkItemIds: ["W9"],
+	};
+
+	test("rejects implementation scope during a plan-phase review", async () => {
+		const dir = makeTmpDir();
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					phase: "plan",
+					startDir: dir,
+				}),
+			).rejects.toMatchObject({
+				code: "IMPLEMENTATION_CONTRACT_IN_PLAN_PHASE",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("rejects work-item ids that are not on the bound ledger", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.getImplementationBinding = () =>
+			({
+				id: "binding-1",
+				mode: "enforced",
+				phaseMap: [{ id: "2", heading: "Phase 2" }],
+				ledger: { workItems: [{ id: "W1", debtClaim: null }] },
+				approvedPlanBytes: "# Plan\n",
+				approvedPlanHash: "sha256:unused",
+			}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
+		ctx.store.getImplementationCompatibility = () => null;
+		ctx.store.listImplementationTextAmendments = () => [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "WORK_ITEM_UNKNOWN" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+});

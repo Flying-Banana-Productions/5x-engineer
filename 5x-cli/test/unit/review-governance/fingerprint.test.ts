@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { canonicalFindingFingerprint } from "../../../src/review-governance/fingerprint.js";
+import {
+	canonicalFindingFingerprint,
+	fingerprintVerdictItem,
+} from "../../../src/review-governance/fingerprint.js";
 
 describe("canonicalFindingFingerprint", () => {
 	const finding = {
@@ -44,5 +47,64 @@ describe("canonicalFindingFingerprint", () => {
 				lowestCostCorrection: "Use an idempotency key.",
 			}),
 		).not.toBe(original);
+	});
+
+	test("keeps plan hashes stable and qualifies implementation identities by phase and work items", () => {
+		const plan = canonicalFindingFingerprint(finding);
+		expect(
+			canonicalFindingFingerprint({
+				...finding,
+				phase: "2",
+				planWorkItemIds: ["W2", "W1"],
+			}),
+		).toBe(plan);
+		const implementation = {
+			...finding,
+			scopeClass: "implementation_defect" as const,
+			planWorkItemIds: ["W2", "W1"],
+			phase: "2",
+		};
+		const first = canonicalFindingFingerprint(implementation);
+		expect(
+			canonicalFindingFingerprint({
+				...implementation,
+				planWorkItemIds: ["W1", "W2"],
+			}),
+		).toBe(first);
+		expect(
+			canonicalFindingFingerprint({ ...implementation, phase: "3" }),
+		).not.toBe(first);
+		expect(
+			canonicalFindingFingerprint({
+				...implementation,
+				planWorkItemIds: ["W9"],
+			}),
+		).not.toBe(first);
+		expect(first).not.toBe(plan);
+		expect(
+			fingerprintVerdictItem(
+				{
+					id: "I1",
+					title: finding.title,
+					action: "auto_fix",
+					reason: finding.failure,
+					scopeClass: "implementation_defect",
+					failure: finding.failure,
+					lowestCostCorrection: finding.lowestCostCorrection,
+					planWorkItemIds: ["W1"],
+				},
+				undefined,
+				{ phase: "2" },
+			),
+		).toBe(
+			canonicalFindingFingerprint({
+				title: finding.title,
+				scopeClass: "implementation_defect",
+				failure: finding.failure,
+				lowestCostCorrection: finding.lowestCostCorrection,
+				phase: "2",
+				planWorkItemIds: ["W1"],
+			}),
+		);
 	});
 });

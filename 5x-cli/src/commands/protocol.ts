@@ -194,6 +194,12 @@ export function registerProtocol(parent: Command) {
 			collect,
 			[] as string[],
 		)
+		.option(
+			"--credit-realization <json>",
+			"Implementation credit realization as JSON (repeatable). Evidence must be nonempty; aggregates are CLI-derived.",
+			collect,
+			[] as string[],
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -208,6 +214,7 @@ export function registerProtocol(parent: Command) {
 				summary: opts.summary,
 				baselineAssessment: opts.baselineAssessment,
 				creditAssessment: opts.creditAssessment,
+				creditRealization: opts.creditRealization,
 				priorFinding: opts.priorFinding,
 			});
 		});

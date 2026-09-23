@@ -55,7 +55,9 @@ const PRIORITY_MAP: Record<string, VerdictItem["priority"]> = {
  * - Per-item: `severity` → `priority` (with value mapping)
  * - Per-item: auto-generates `id` if missing ("R1", "R2", ...)
  * - Per-item: defaults `action` to `"human_required"` if missing
- * - Passes through already-conforming input unchanged
+ * - Passes through already-conforming input unchanged, including
+ *   implementation fields (`planImpact`, `planWorkItemIds`,
+ *   `boundaryChanges`, `creditRealizations`, `nonblocking`)
  */
 export function normalizeReviewerVerdict(input: unknown): object {
 	const record = asRecord(input);

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { VerdictItem } from "../protocol.js";
+import {
+	type ImplementationScopeClass,
+	isImplementationScopeClass,
+	type VerdictItem,
+} from "../protocol.js";
 import type { PlanScopeClass } from "../review-budget/types.js";
 import type { PersistedFinding } from "./types.js";
 
@@ -24,16 +28,27 @@ function canonicalJson(values: Record<string, string>): string {
 
 export function canonicalFindingFingerprint(input: {
 	title: string;
-	scopeClass: PlanScopeClass;
+	scopeClass: PlanScopeClass | ImplementationScopeClass;
 	failure: string;
 	lowestCostCorrection: string;
+	/** Included only for implementation identities so plan hashes stay stable. */
+	phase?: string;
+	planWorkItemIds?: readonly string[];
 }): string {
-	const canonical = canonicalJson({
+	const values: Record<string, string> = {
 		failure: normalizeText(input.failure),
 		lowestCostCorrection: normalizeText(input.lowestCostCorrection),
 		scopeClass: normalizeText(input.scopeClass, true),
 		title: normalizeText(input.title, true),
-	});
+	};
+	if (isImplementationScopeClass(input.scopeClass)) {
+		values.phase = normalizeText(input.phase ?? "");
+		values.planWorkItemIds = (input.planWorkItemIds ?? [])
+			.map((id) => normalizeText(id))
+			.sort()
+			.join(",");
+	}
+	const canonical = canonicalJson(values);
 	const hash = createHash("sha256").update(canonical).digest("hex");
 	return `sha256:${hash}`;
 }
@@ -46,6 +61,7 @@ export function normalizeFindingEvidenceText(value: string): string {
 export function fingerprintVerdictItem(
 	item: VerdictItem,
 	fallback?: PersistedFinding,
+	linkage?: { phase?: string },
 ): string {
 	const scopeClass =
 		item.scopeClass ?? fallback?.scopeClass ?? "acceptance_required";
@@ -57,5 +73,7 @@ export function fingerprintVerdictItem(
 		scopeClass,
 		failure,
 		lowestCostCorrection,
+		phase: linkage?.phase,
+		planWorkItemIds: item.planWorkItemIds,
 	});
 }

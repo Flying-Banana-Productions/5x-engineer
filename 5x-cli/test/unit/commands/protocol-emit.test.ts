@@ -176,6 +176,72 @@ describe("protocolEmitReviewer", () => {
 		expect(result.creditAssessments).toHaveLength(2);
 	});
 
+	test("implementation planImpact and credit realizations round-trip", async () => {
+		const planImpact = {
+			kind: "text_only",
+			locations: [{ heading: "Phase 2: Protocol", staleText: "old wording" }],
+		};
+		await protocolEmitReviewer({
+			ready: false,
+			item: [
+				JSON.stringify({
+					id: "I1",
+					title: "Stale wording",
+					action: "auto_fix",
+					reason: "The approved sentence is stale.",
+					priority: "P2",
+					scopeClass: "plan_defect",
+					effortDelta: 1,
+					architectureDelta: 0,
+					planImpact,
+					failure: "Reviewers follow the stale sentence.",
+					lowestCostCorrection: "Replace the sentence.",
+				}),
+			],
+			creditRealization: [
+				JSON.stringify({
+					creditClaimId: "DC0",
+					realization: "partial",
+					realizedArchitectureDelta: -1,
+					evidence: "Only one of the two copies was removed.",
+				}),
+			],
+		});
+		const result = parseOutput();
+		expect(
+			(result.items as Array<Record<string, unknown>>)[0]?.planImpact,
+		).toEqual(planImpact);
+		expect(result.creditRealizations).toEqual([
+			{
+				creditClaimId: "DC0",
+				realization: "partial",
+				realizedArchitectureDelta: -1,
+				evidence: "Only one of the two copies was removed.",
+			},
+		]);
+	});
+
+	test("rejects a nested aggregate key inside a credit realization", async () => {
+		try {
+			await protocolEmitReviewer({
+				ready: true,
+				creditRealization: [
+					JSON.stringify({
+						creditClaimId: "DC0",
+						realization: "not_realized",
+						realizedArchitectureDelta: 0,
+						evidence: "absent",
+						budget: { W: 1 },
+					}),
+				],
+			});
+			expect.unreachable("should reject nested aggregate keys");
+		} catch (err) {
+			expect(err).toBeInstanceOf(CliError);
+			expect((err as CliError).code).toBe("INVALID_STRUCTURED_OUTPUT");
+		}
+	});
+
 	test("closure evidence fields round-trip in complex item JSON", async () => {
 		const introducedBy = {
 			commitRange: "abc..def",

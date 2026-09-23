@@ -27,6 +27,88 @@ export type PlanReviewScopeClass =
 	| "risk_reduction"
 	| "polish";
 
+export const IMPLEMENTATION_SCOPE_CLASSES = [
+	"implementation_defect",
+	"plan_defect",
+	"scope_expansion",
+	"pre_existing",
+] as const;
+
+export type ImplementationScopeClass =
+	(typeof IMPLEMENTATION_SCOPE_CLASSES)[number];
+
+export type ReviewScopeClass = PlanReviewScopeClass | ImplementationScopeClass;
+
+export const BOUNDARY_CHANGE_LABELS = [
+	"api",
+	"schema",
+	"dependency",
+	"subsystem",
+	"architecture",
+	"plan-structure",
+] as const;
+
+export type BoundaryChangeLabel = (typeof BOUNDARY_CHANGE_LABELS)[number];
+
+export const PLAN_IMPACT_KINDS = ["text_only", "design", "budget"] as const;
+
+export type PlanImpactKind = (typeof PLAN_IMPACT_KINDS)[number];
+
+export interface PlanImpactLocation {
+	heading: string;
+	staleText: string;
+}
+
+/** Concrete text/design/budget impact. Not a string enum. */
+export interface PlanImpact {
+	kind: PlanImpactKind;
+	locations: PlanImpactLocation[];
+}
+
+export const CREDIT_REALIZATION_KINDS = [
+	"realized",
+	"partial",
+	"not_realized",
+] as const;
+
+export type CreditRealizationKind = (typeof CREDIT_REALIZATION_KINDS)[number];
+
+export interface CreditRealization {
+	creditClaimId: string;
+	realization: CreditRealizationKind;
+	realizedArchitectureDelta: number;
+	evidence: string;
+}
+
+export interface NonblockingObservation {
+	id: string;
+	title: string;
+	reason: string;
+	scopeClass?: "pre_existing";
+}
+
+const PLAN_SCOPE_CLASSES = new Set<string>([
+	"acceptance_required",
+	"risk_reduction",
+	"polish",
+]);
+
+const IMPLEMENTATION_SCOPE_CLASS_SET = new Set<string>(
+	IMPLEMENTATION_SCOPE_CLASSES,
+);
+
+export function isPlanScopeClass(
+	value: unknown,
+): value is PlanReviewScopeClass {
+	return typeof value === "string" && PLAN_SCOPE_CLASSES.has(value);
+}
+
+export function isImplementationScopeClass(
+	value: unknown,
+): value is ImplementationScopeClass {
+	return typeof value === "string" && IMPLEMENTATION_SCOPE_CLASS_SET.has(value);
+}
+
 export interface CreditClaim {
 	creditClaimId: string;
 	targetPhase: string;
@@ -42,12 +124,18 @@ export type VerdictItem = {
 	action: "auto_fix" | "human_required";
 	reason: string;
 	priority?: "P0" | "P1" | "P2";
-	scopeClass?: PlanReviewScopeClass;
+	scopeClass?: ReviewScopeClass;
 	effortDelta?: number;
 	architectureDelta?: number;
 	coupling?: "intrinsic" | "adjacent" | "unrelated";
 	estimateConfidence?: "low" | "medium" | "high";
 	creditClaim?: CreditClaim;
+	/** Approved ledger IDs. Required and unique for implementation_defect. */
+	planWorkItemIds?: string[];
+	planImpact?: PlanImpact;
+	/** Explicit boundary inventory. Absent is unknown, not an empty array. */
+	boundaryChanges?: BoundaryChangeLabel[];
+	mechanicalExplanation?: string;
 	failure?: string;
 	lowestCostCorrection?: string;
 	introducedBy?: IntroducedByPlanHunk;
@@ -71,6 +159,9 @@ export type ReviewerVerdict = {
 	summary?: string;
 	baselineAssessment?: BaselineAssessment;
 	creditAssessments?: CreditAssessment[];
+	creditRealizations?: CreditRealization[];
+	/** Ordinary pre-existing observations. Not actionable review items. */
+	nonblocking?: NonblockingObservation[];
 	priorFindings?: PriorFindingOutcome[];
 };
 
@@ -189,13 +280,54 @@ export const ReviewerVerdictSchema = {
 					},
 					scopeClass: {
 						type: "string",
-						enum: ["acceptance_required", "risk_reduction", "polish"],
+						enum: [
+							"acceptance_required",
+							"risk_reduction",
+							"polish",
+							...IMPLEMENTATION_SCOPE_CLASSES,
+						],
+						description:
+							"Plan and implementation classes are a union. A contextual validator selects one domain from the admitted phase.",
 					},
 					effortDelta: { type: "integer", minimum: 0 },
 					architectureDelta: {
 						type: "integer",
-						enum: [...ARCHITECTURE_DELTAS],
+						description:
+							"Plan reviews are limited to the allowed magnitude set. Implementation telemetry may be any integer.",
 					},
+					planWorkItemIds: {
+						type: "array",
+						items: { type: "string" },
+						description:
+							"Approved work-item IDs. Required, nonempty, and unique for implementation_defect.",
+					},
+					planImpact: {
+						type: "object",
+						description:
+							"Required object for plan_defect. text_only locations must be nonempty; design and budget may be empty and route to a human.",
+						properties: {
+							kind: { type: "string", enum: [...PLAN_IMPACT_KINDS] },
+							locations: {
+								type: "array",
+								items: {
+									type: "object",
+									properties: {
+										heading: { type: "string" },
+										staleText: { type: "string" },
+									},
+									required: ["heading", "staleText"],
+								},
+							},
+						},
+						required: ["kind", "locations"],
+					},
+					boundaryChanges: {
+						type: "array",
+						items: { type: "string", enum: [...BOUNDARY_CHANGE_LABELS] },
+						description:
+							"Explicit boundary labels. Omit the field when impact is unknown; do not guess an empty array.",
+					},
+					mechanicalExplanation: { type: "string" },
 					coupling: {
 						type: "string",
 						enum: ["intrinsic", "adjacent", "unrelated"],
@@ -279,6 +411,44 @@ export const ReviewerVerdictSchema = {
 					reason: { type: "string" },
 				},
 				required: ["creditClaimId", "eligibility", "coupling", "reason"],
+			},
+		},
+		creditRealizations: {
+			type: "array",
+			description:
+				"Implementation per-claim realization observations. Prohibited on plan reviews. Aggregates remain CLI-owned.",
+			items: {
+				type: "object",
+				properties: {
+					creditClaimId: { type: "string" },
+					realization: {
+						type: "string",
+						enum: [...CREDIT_REALIZATION_KINDS],
+					},
+					realizedArchitectureDelta: { type: "integer" },
+					evidence: { type: "string" },
+				},
+				required: [
+					"creditClaimId",
+					"realization",
+					"realizedArchitectureDelta",
+					"evidence",
+				],
+			},
+		},
+		nonblocking: {
+			type: "array",
+			description:
+				"Ordinary pre-existing observations retained in Markdown and excluded from actionable items.",
+			items: {
+				type: "object",
+				properties: {
+					id: { type: "string" },
+					title: { type: "string" },
+					reason: { type: "string" },
+					scopeClass: { type: "string", enum: ["pre_existing"] },
+				},
+				required: ["id", "title", "reason"],
 			},
 		},
 		priorFindings: {
@@ -373,6 +543,162 @@ export function assertAuthorStatus(
 	}
 }
 
+function unknownKey(
+	value: Record<string, unknown>,
+	allowed: readonly string[],
+): string | undefined {
+	return Object.keys(value).find((key) => !allowed.includes(key));
+}
+
+function assertPlanImpact(
+	itemId: string,
+	value: unknown,
+	fail: (message: string) => never,
+	nonEmpty: (value: unknown) => value is string,
+	objectShape: (value: unknown) => value is Record<string, unknown>,
+): void {
+	if (typeof value === "string") {
+		fail(
+			`item '${itemId}' planImpact must be an object { kind, locations }, not a string.`,
+		);
+	}
+	if (!objectShape(value))
+		fail(`item '${itemId}' planImpact must be an object.`);
+	const extra = unknownKey(value, ["kind", "locations"]);
+	if (extra) fail(`item '${itemId}' planImpact has unknown field '${extra}'.`);
+	if (
+		value.kind !== "text_only" &&
+		value.kind !== "design" &&
+		value.kind !== "budget"
+	) {
+		fail(`item '${itemId}' planImpact has invalid 'kind'.`);
+	}
+	if (!Array.isArray(value.locations)) {
+		fail(`item '${itemId}' planImpact.locations must be an array.`);
+	}
+	if (value.kind === "text_only" && value.locations.length === 0) {
+		fail(`item '${itemId}' text_only planImpact requires nonempty locations.`);
+	}
+	const seen = new Set<string>();
+	for (const location of value.locations) {
+		if (!objectShape(location)) {
+			fail(`item '${itemId}' planImpact location must be an object.`);
+		}
+		const locationExtra = unknownKey(location, ["heading", "staleText"]);
+		if (locationExtra) {
+			fail(
+				`item '${itemId}' planImpact location has unknown field '${locationExtra}'.`,
+			);
+		}
+		if (!nonEmpty(location.heading) || !nonEmpty(location.staleText)) {
+			fail(
+				`item '${itemId}' planImpact location requires nonempty heading and staleText.`,
+			);
+		}
+		const key = `${location.heading}\0${location.staleText}`;
+		if (seen.has(key)) {
+			fail(`item '${itemId}' planImpact has a duplicate location.`);
+		}
+		seen.add(key);
+	}
+}
+
+function assertWorkItemIds(
+	itemId: string,
+	value: unknown,
+	required: boolean,
+	fail: (message: string) => never,
+): void {
+	if (value === undefined) {
+		if (required) {
+			fail(`item '${itemId}' requires nonempty unique planWorkItemIds.`);
+		}
+		return;
+	}
+	if (!Array.isArray(value) || value.length === 0) {
+		fail(`item '${itemId}' planWorkItemIds must be a nonempty array.`);
+	}
+	const seen = new Set<string>();
+	for (const id of value) {
+		if (typeof id !== "string" || id.trim().length === 0) {
+			fail(`item '${itemId}' planWorkItemIds must be nonempty strings.`);
+		}
+		if (seen.has(id)) {
+			fail(`item '${itemId}' planWorkItemIds contains duplicate '${id}'.`);
+		}
+		seen.add(id);
+	}
+}
+
+function assertCreditRealization(
+	value: unknown,
+	index: number,
+	fail: (message: string) => never,
+	nonEmpty: (value: unknown) => value is string,
+	objectShape: (value: unknown) => value is Record<string, unknown>,
+	seen: Set<string>,
+): void {
+	if (!objectShape(value)) {
+		fail(`creditRealization at index ${index} must be an object.`);
+	}
+	const extra = unknownKey(value, [
+		"creditClaimId",
+		"realization",
+		"realizedArchitectureDelta",
+		"evidence",
+	]);
+	if (extra) {
+		fail(`creditRealization at index ${index} has unknown field '${extra}'.`);
+	}
+	if (!nonEmpty(value.creditClaimId)) {
+		fail(
+			`creditRealization at index ${index} requires a non-empty 'creditClaimId'.`,
+		);
+	}
+	if (seen.has(value.creditClaimId)) {
+		fail(`creditRealization '${value.creditClaimId}' is duplicated.`);
+	}
+	seen.add(value.creditClaimId);
+	if (
+		value.realization !== "realized" &&
+		value.realization !== "partial" &&
+		value.realization !== "not_realized"
+	) {
+		fail(
+			`creditRealization '${value.creditClaimId}' has invalid 'realization'.`,
+		);
+	}
+	if (!Number.isInteger(value.realizedArchitectureDelta)) {
+		fail(
+			`creditRealization '${value.creditClaimId}' realizedArchitectureDelta must be an integer.`,
+		);
+	}
+	const delta = value.realizedArchitectureDelta as number;
+	if (delta > 0) {
+		fail(
+			`creditRealization '${value.creditClaimId}' rejects a positive realizedArchitectureDelta.`,
+		);
+	}
+	if (value.realization === "not_realized" && delta !== 0) {
+		fail(
+			`creditRealization '${value.creditClaimId}' not_realized requires realizedArchitectureDelta 0.`,
+		);
+	}
+	if (
+		(value.realization === "realized" || value.realization === "partial") &&
+		delta >= 0
+	) {
+		fail(
+			`creditRealization '${value.creditClaimId}' ${value.realization} requires a negative realizedArchitectureDelta.`,
+		);
+	}
+	if (!nonEmpty(value.evidence)) {
+		fail(
+			`creditRealization '${value.creditClaimId}' requires nonempty evidence.`,
+		);
+	}
+}
+
 export interface ReviewerVerdictAssertionResult {
 	warnings: string[];
 }
@@ -403,6 +729,9 @@ export function assertReviewerVerdict(
 
 	if (!Array.isArray(verdict.items)) fail("'items' must be an array.");
 
+	let sawPlanItem = false;
+	let sawImplementationItem = false;
+
 	if (verdict.readiness !== "ready" && verdict.items.length === 0) {
 		warnings.push(
 			`[${context}] ReviewerVerdict warning: readiness is '${verdict.readiness}' but 'items' is empty. ` +
@@ -417,37 +746,113 @@ export function assertReviewerVerdict(
 					"Each item must have action: 'auto_fix' | 'human_required'. Escalating.",
 			);
 		}
-		if (
-			item.scopeClass !== undefined &&
-			item.scopeClass !== "acceptance_required" &&
-			item.scopeClass !== "risk_reduction" &&
-			item.scopeClass !== "polish"
-		) {
+		const implementation = isImplementationScopeClass(item.scopeClass);
+		const planScoped =
+			item.scopeClass === undefined || isPlanScopeClass(item.scopeClass);
+		if (item.scopeClass !== undefined && !implementation && !planScoped) {
 			fail(`item '${item.id}' has invalid 'scopeClass'.`);
 		}
-		if (
-			item.effortDelta !== undefined &&
-			(!Number.isInteger(item.effortDelta) || item.effortDelta < 0)
-		) {
-			fail(`item '${item.id}' has invalid 'effortDelta'.`);
+		if (implementation) sawImplementationItem = true;
+		else sawPlanItem = true;
+		if (implementation && item.creditClaim !== undefined) {
+			fail(
+				`item '${item.id}' cannot include creditClaim on an implementation review.`,
+			);
 		}
 		if (
-			item.architectureDelta !== undefined &&
-			!ARCHITECTURE_DELTAS.includes(item.architectureDelta as never)
-		) {
-			fail(`item '${item.id}' has invalid 'architectureDelta'.`);
-		}
-		if (item.coupling !== undefined && !coupling(item.coupling)) {
-			fail(`item '${item.id}' has invalid 'coupling'.`);
-		}
-		if (
-			item.architectureDelta !== undefined &&
-			item.architectureDelta < 0 &&
-			!item.coupling
+			!implementation &&
+			(item.planImpact !== undefined ||
+				item.planWorkItemIds !== undefined ||
+				item.boundaryChanges !== undefined ||
+				item.mechanicalExplanation !== undefined)
 		) {
 			fail(
-				`item '${item.id}' requires 'coupling' when 'architectureDelta' is negative.`,
+				`item '${item.id}' uses implementation fields without an implementation scopeClass.`,
 			);
+		}
+		if (implementation) {
+			if (
+				item.priority !== "P0" &&
+				item.priority !== "P1" &&
+				item.priority !== "P2"
+			) {
+				fail(`item '${item.id}' requires priority P0, P1, or P2.`);
+			}
+			if (!Number.isInteger(item.effortDelta) || (item.effortDelta ?? -1) < 0) {
+				fail(`item '${item.id}' requires a nonnegative integer effortDelta.`);
+			}
+			if (!Number.isInteger(item.architectureDelta)) {
+				fail(`item '${item.id}' requires an integer architectureDelta.`);
+			}
+			assertWorkItemIds(
+				item.id,
+				item.planWorkItemIds,
+				item.scopeClass === "implementation_defect",
+				fail,
+			);
+			if (item.scopeClass === "plan_defect") {
+				if (item.planImpact === undefined) {
+					fail(`item '${item.id}' plan_defect requires planImpact.`);
+				}
+				assertPlanImpact(item.id, item.planImpact, fail, nonEmpty, objectShape);
+			} else if (item.planImpact !== undefined) {
+				fail(
+					`item '${item.id}' prohibits planImpact unless scopeClass is plan_defect.`,
+				);
+			}
+			if (item.boundaryChanges !== undefined) {
+				if (!Array.isArray(item.boundaryChanges)) {
+					fail(`item '${item.id}' boundaryChanges must be an array.`);
+				}
+				for (const label of item.boundaryChanges) {
+					if (!BOUNDARY_CHANGE_LABELS.includes(label as BoundaryChangeLabel)) {
+						fail(`item '${item.id}' has invalid boundaryChanges label.`);
+					}
+				}
+			}
+			if (
+				item.mechanicalExplanation !== undefined &&
+				!nonEmpty(item.mechanicalExplanation)
+			) {
+				fail(`item '${item.id}' has invalid 'mechanicalExplanation'.`);
+			}
+			if (item.coupling !== undefined && !coupling(item.coupling)) {
+				fail(`item '${item.id}' has invalid 'coupling'.`);
+			}
+			if (
+				item.scopeClass === "pre_existing" &&
+				item.lateDiscovery === "critical_safety" &&
+				!nonEmpty(item.lateDiscoveryEvidence)
+			) {
+				fail(
+					`item '${item.id}' critical pre-existing findings require lateDiscoveryEvidence.`,
+				);
+			}
+		} else {
+			if (
+				item.effortDelta !== undefined &&
+				(!Number.isInteger(item.effortDelta) || item.effortDelta < 0)
+			) {
+				fail(`item '${item.id}' has invalid 'effortDelta'.`);
+			}
+			if (
+				item.architectureDelta !== undefined &&
+				!ARCHITECTURE_DELTAS.includes(item.architectureDelta as never)
+			) {
+				fail(`item '${item.id}' has invalid 'architectureDelta'.`);
+			}
+			if (item.coupling !== undefined && !coupling(item.coupling)) {
+				fail(`item '${item.id}' has invalid 'coupling'.`);
+			}
+			if (
+				item.architectureDelta !== undefined &&
+				item.architectureDelta < 0 &&
+				!item.coupling
+			) {
+				fail(
+					`item '${item.id}' requires 'coupling' when 'architectureDelta' is negative.`,
+				);
+			}
 		}
 		if (
 			item.estimateConfidence !== undefined &&
@@ -520,6 +925,80 @@ export function assertReviewerVerdict(
 		] as const) {
 			if (item[field] !== undefined && typeof item[field] !== "string")
 				fail(`item '${item.id}' has invalid '${field}'.`);
+		}
+	}
+
+	if (sawPlanItem && sawImplementationItem) {
+		fail(
+			"mixed plan and implementation review contracts are not allowed in one verdict.",
+		);
+	}
+	const implementationVerdict =
+		sawImplementationItem ||
+		verdict.creditRealizations !== undefined ||
+		verdict.nonblocking !== undefined;
+	if (
+		sawPlanItem &&
+		(verdict.creditRealizations !== undefined ||
+			verdict.nonblocking !== undefined)
+	) {
+		fail(
+			"plan reviews prohibit creditRealizations and nonblocking observations.",
+		);
+	}
+	if (
+		implementationVerdict &&
+		(verdict.baselineAssessment !== undefined ||
+			verdict.creditAssessments !== undefined)
+	) {
+		fail(
+			"implementation reviews prohibit baselineAssessment and creditAssessments.",
+		);
+	}
+	if (verdict.creditRealizations !== undefined) {
+		if (!Array.isArray(verdict.creditRealizations)) {
+			fail("'creditRealizations' must be an array.");
+		}
+		const seenClaims = new Set<string>();
+		verdict.creditRealizations.forEach((realization, index) => {
+			assertCreditRealization(
+				realization,
+				index,
+				fail,
+				nonEmpty,
+				objectShape,
+				seenClaims,
+			);
+		});
+	}
+	if (verdict.nonblocking !== undefined) {
+		if (!Array.isArray(verdict.nonblocking)) {
+			fail("'nonblocking' must be an array.");
+		}
+		for (const observation of verdict.nonblocking) {
+			if (!objectShape(observation)) {
+				fail("each nonblocking observation must be an object.");
+			}
+			const extra = unknownKey(
+				observation as unknown as Record<string, unknown>,
+				["id", "title", "reason", "scopeClass"],
+			);
+			if (extra) fail(`nonblocking observation has unknown field '${extra}'.`);
+			if (
+				!nonEmpty(observation.id) ||
+				!nonEmpty(observation.title) ||
+				!nonEmpty(observation.reason)
+			) {
+				fail(
+					"each nonblocking observation requires nonempty id, title, and reason.",
+				);
+			}
+			if (
+				observation.scopeClass !== undefined &&
+				observation.scopeClass !== "pre_existing"
+			) {
+				fail("nonblocking observations must use scopeClass pre_existing.");
+			}
 		}
 	}
 
