@@ -88,6 +88,37 @@ None blocking. See the non-blocking follow-ups.
 ## Readiness checklist
 
 **P1 recommended**
-- [ ] P1.1: Decide Phase 6 / W6 placement (split out, or add an explicit deferral mechanism and budget treatment).
-- [ ] P1.2: Name a shared per-snapshot budget-input helper; the effective-state helper takes an explicit base budget; add a null-`derived` parity test.
-- [ ] P1.3: Specify extracted acceptance/fold variants that allow a single-pass incremental fold; add `decisions.ts` to Files Touched.
+- [x] P1.1: Decide Phase 6 / W6 placement (split out, or add an explicit deferral mechanism and budget treatment).
+- [x] P1.2: Name a shared per-snapshot budget-input helper; the effective-state helper takes an explicit base budget; add a null-`derived` parity test.
+- [x] P1.3: Specify extracted acceptance/fold variants that allow a single-pass incremental fold; add `decisions.ts` to Files Touched.
+
+---
+
+## Addendum (2026-09-23) — Closure review of v1.1
+
+**Reviewed:** `536e912e0838fa3c79280eeebe574f649245c7f7` (plan v1.1), against prior review commit `d04d85cb302b3ed3565b736e17ae7bc55ee340e0`.
+
+### What's addressed (✅)
+
+- **P1.1 — Phase 6/W6 vs. unimplemented 210.** The revision resolves this through a documented human scope decision (`3fe3acb7-ec66-47e0-8e28-4420242c2ccb`): completed and integrated 210 is now a mandatory **pre-start gate**, before Phase 1 begins, not a mid-run condition reached after Phase 5. The Executive Summary, Scope, Key Design Decisions, Prerequisites, every phase's completion gate, Timeline, and Provenance were all updated consistently to "210, then 214; all six phases required for one release." This eliminates the original failure mode (a phase-sequential run stalling mid-execution at Phase 6) by moving the blocking check to before any implementation starts, which is a different but equally valid resolution than my suggested "split Phase 6 into a follow-up plan." W6's effort/architecture score is unchanged (3/1) with a rationale explaining the estimate still stands because pre-start verification, not Phase 6 itself, absorbs the discovery risk. This is a legitimate scope decision, consistently threaded through the document. **Addressed.**
+- **P1.2 — No canonical per-snapshot budget reconstruction.** The revision adds a new design decision ("One canonical recorded-budget reconstruction, explicit base budget") naming `deriveRecordedReviewBudget` and its lower-level input assembler `buildRecordedReviewBudgetInput` in `review-budget/apply.ts`, extracted from the existing assembly I verified at `apply.ts:335–375`. It explicitly states inspection "ignores cached `snapshot.derived` as authority" and passes a reconstructed `baseBudget` explicitly into the extracted `deriveEffectivePlanReviewState` helper in routing, while `routeAfterDecision` remains an unchanged compatibility wrapper (including its existing null-derived `TypeError`) that inspection never calls. The new "Shared canonical helper contracts (W2)" section gives concrete signatures, and Phase 2's checklist adds a bullet requiring tests with `derived: null` that assert parity with recorded decoration, including `I`, `B`, thresholds, and `semanticHumanRequired`-driven `requiresHuman`. Files Touched now lists `apply.ts`, `decisions.ts`, and the run-state reconstruction range (`run-v1.handler.ts:1205–1236`, which I confirmed is the actual `deriveBudget` reconstruction block) under W2, and a new test row covers reconstruction parity. I independently verified `buildRecordedReviewBudgetInput`'s explicit `semanticHumanRequired: boolean` parameter correctly lets the existing run-state callback (which has no `ReviewerVerdict`, only a boolean-producing callback) reuse the same assembler without fabricating verdict items — this closes a gap I would otherwise have raised. **Addressed.**
+- **P1.3 — Linear-fold gate vs. rescanning acceptance/fold helpers.** The revision adds a new design decision ("Canonical indexed acceptance and incremental fold") naming `buildDecisionAcceptanceIndex`, `classifyDecisionAcceptanceIndexed`, and an incremental `createGoverningReviewFold` accumulator, all inside `review-governance/decisions.ts` — the canonical module, not an inspection-local copy. The existing `classifyDecisionAcceptance` and `foldGoverningReviewState` (which I confirmed at `decisions.ts:244–331` and `333–409` compute the superseded-set and per-decision acceptance by rescanning the full steps/budget streams) become parity-tested wrappers over the indexed versions. The plan correctly identifies and specifies the two tricky invariants in the current `foldGoverningReviewState` that an incremental version must preserve: (a) an accepted superseder's suppression of its target holds even if that superseder is itself later superseded, and (b) a superseding reference to a not-yet-included target must be retained rather than dropped. Phase 2's checklist and test bullets require measuring "one budget decode/step-position scan and one acceptance classification per decision, no per-event prefix replay," separately from materialization cost, plus a decision-stream-order-vs-human-step-order test. Files Touched adds `decisions.ts` under W2 with a corresponding test row. **Addressed.**
+
+### Verification notes
+
+I independently re-read the current dependency source at `38f348e` (`.5x/worktrees/209-plan-review-governance-plan-68d554`) to check the revision's new citations rather than taking them at face value:
+- `collectCandidateTips` exists at `src/records/resolve.ts:253`, matching the plan's new `records/resolve.ts:253–358` citation for ref discovery (local `5x/*`, remote-tracking `*/5x/*`, `plansBranch`, `HEAD`).
+- `run-v1.handler.ts:1205–1236` is indeed the `deriveBudget` reconstruction block inside `buildReviewBudgetState`, confirming the plan's new W2 file citation.
+- `review.ts`'s `contextFor` does require a control-plane DB (`resolveDbContext` + `NO_CONTROL_PLANE`), confirming the new Phase 1 bullet's premise that it must not be reused for archived-only inspection.
+- `foldGoverningReviewState`'s current supersession handling (`superseded` computed once over the full decision list before folding in list order) matches the plan's description and the incremental design's stated invariants are consistent with preserving that behavior per-prefix.
+
+No revision-introduced blocker was found. The diff is entirely consistent, self-referential (every touched section — summary, scope, key decisions, prerequisites, phases, timeline, provenance, files touched, tests — was updated in lockstep), and grounded in verified line numbers and function names rather than aspirational reuse claims.
+
+### Nonblocking follow-ups carried over (not required for closure)
+
+The revision also incidentally resolved three of my four prior nonblocking notes: the `loadGitRecordForPlan` line-reference drift is corrected to `1963–2103`; the no-control-plane archived lookup gap now has an explicit Phase 1 bullet (`RUN_NOT_FOUND` / `RUN_CONTEXT_REQUIRED`); and ref-selection specifics are now spelled out via `collectCandidateTips`. A new design decision ("Original, captured and governing baselines are distinct provenance") also addresses the `b0`/`b` seeding note. None of this was required for closure since these were nonblocking in the initial review, but it is worth recording that the revision's scope exceeded the strict minimum needed to close P1.1–P1.3.
+
+### Updated readiness
+
+- **Plan v1.1 completion:** ✅ — all three required prior findings (P1.1, P1.2, P1.3) are addressed with concrete, code-verified mechanisms; no new blocking issue was introduced by this revision.
+- **Ready for next phase:** ✅ — ready for implementation as revised.
