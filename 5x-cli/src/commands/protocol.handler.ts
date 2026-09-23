@@ -20,6 +20,7 @@ import {
 	readInvocationLogSummary,
 } from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import type { ImplementationBindingPayload } from "../review-budget/record-lines.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
 	canonicalPhaseId,
@@ -34,6 +35,12 @@ import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import {
+	composeImplementationReviewerRecord,
+	implementationGovernanceDecoration,
+	type PendingImplementationObservation,
+	recordImplementationReviewerStepWithObservation,
+} from "./implementation-review-context.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
@@ -547,6 +554,9 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	let pendingImplementation: PendingImplementationObservation | undefined;
+	let implementationRecordContext: ReviewBudgetCommandContext | undefined;
+	let implementationBinding: ImplementationBindingPayload | null = null;
 	const warn =
 		params.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	if (role === "reviewer") {
@@ -597,6 +607,8 @@ export async function protocolValidate(
 							params.run,
 						);
 					if (binding) {
+						implementationBinding = binding;
+						implementationRecordContext = implementationContext;
 						mode = binding.mode;
 						phaseIds = binding.phaseMap.map((entry) => entry.id);
 						workItemIds = binding.ledger.workItems.map((item) => item.id);
@@ -656,39 +668,74 @@ export async function protocolValidate(
 					`Review context ${params.reviewContext} was not prepared for this run. Render the reviewer template instead of manufacturing endpoints.`,
 				);
 			}
-			const reviewed = validateImplementationReview({
-				verdict,
-				phase,
-				envelopePhase,
-				envelopeDomain,
-				mode,
-				compatibility,
-				phaseIds,
-				workItemIds,
-				creditClaimIds,
-				approvedPlanBytes,
-				approvedPlanHash,
-				amendments,
-				hasRun: Boolean(params.run),
-				priorReviewCount,
-				sessionId: invocation?.sessionId,
-				...(codeContext !== undefined
-					? {
+			const composed =
+				implementationBinding && codeContext && params.reviewContext
+					? await composeImplementationReviewerRecord({
+							ctx: implementationRecordContext as ReviewBudgetCommandContext,
+							runId: params.run as string,
+							stepName: recordStepName ?? params.step ?? "reviewer:review",
+							phase: phase ?? "",
+							iteration: params.iteration,
+							verdict,
+							contextId: params.reviewContext,
 							codeContext,
-							priorCodeFindings: codeClosure?.priorCodeFindings,
-							priorCodeDecisions: codeClosure?.priorCodeDecisions,
-						}
-					: {}),
-			});
-			if (!reviewed.valid) {
-				outputError(
-					reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
-					reviewed.fatalMessage ??
-						"Implementation review contract was rejected.",
-				);
+							envelopePhase,
+							envelopeDomain,
+							sessionId: invocation?.sessionId,
+						})
+					: null;
+			if (composed?.status === "error") {
+				outputError(composed.code, composed.message, composed.detail);
 			}
-			for (const item of reviewed.diagnostics) {
-				warn(`${item.code}: ${item.message}`);
+			if (composed?.status === "applied") {
+				pendingImplementation = composed.pending;
+				for (const item of composed.diagnostics) {
+					warn(`${item.code}: ${item.message}`);
+				}
+			} else if (
+				params.record &&
+				implementationBinding?.mode === "enforced" &&
+				codeContext === undefined
+			) {
+				outputError(
+					"IMPLEMENTATION_REVIEW_CONTEXT_REQUIRED",
+					"Enforced implementation recording requires the prepared review context. Render the reviewer template instead of manufacturing endpoints.",
+				);
+			} else {
+				const reviewed = validateImplementationReview({
+					verdict,
+					phase,
+					envelopePhase,
+					envelopeDomain,
+					mode,
+					compatibility,
+					phaseIds,
+					workItemIds,
+					creditClaimIds,
+					approvedPlanBytes,
+					approvedPlanHash,
+					amendments,
+					hasRun: Boolean(params.run),
+					priorReviewCount,
+					sessionId: invocation?.sessionId,
+					...(codeContext !== undefined
+						? {
+								codeContext,
+								priorCodeFindings: codeClosure?.priorCodeFindings,
+								priorCodeDecisions: codeClosure?.priorCodeDecisions,
+							}
+						: {}),
+				});
+				if (!reviewed.valid) {
+					outputError(
+						reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+						reviewed.fatalMessage ??
+							"Implementation review contract was rejected.",
+					);
+				}
+				for (const item of reviewed.diagnostics) {
+					warn(`${item.code}: ${item.message}`);
+				}
 			}
 		}
 	}
@@ -808,6 +855,60 @@ export async function protocolValidate(
 		}
 	}
 
+	// Implementation completion is authorized only by the durable observation.
+	// Record that pair before the success envelope so a failed write cannot
+	// publish a route that was never stored.
+	let implementationRecorded = false;
+	if (
+		pendingImplementation &&
+		implementationRecordContext &&
+		params.record &&
+		recordStepName
+	) {
+		try {
+			const written = await recordImplementationReviewerStepWithObservation(
+				{
+					run: params.run as string,
+					stepName: recordStepName,
+					result: JSON.stringify(validated),
+					phase: resolvedPhase,
+					iteration: params.iteration,
+					...(invocation
+						? {
+								sessionId: invocation.sessionId,
+								model: invocation.model,
+								durationMs: invocation.durationMs,
+								tokensIn: invocation.tokens.in,
+								tokensOut: invocation.tokens.out,
+								costUsd: invocation.costUsd,
+								logPath: resolve(params.invocationLog as string),
+							}
+						: {}),
+					performer,
+				},
+				pendingImplementation,
+				implementationRecordContext,
+			);
+			if (written.observation) {
+				validated = {
+					...(validated as Record<string, unknown>),
+					governance: implementationGovernanceDecoration(written.observation),
+				};
+			}
+			implementationRecorded = true;
+		} catch (err) {
+			if (err instanceof RecordError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
+	} else if (pendingImplementation) {
+		validated = {
+			...(validated as Record<string, unknown>),
+			governance: implementationGovernanceDecoration(pendingImplementation),
+		};
+	}
+
 	// -----------------------------------------------------------------------
 	// Output validated result
 	// -----------------------------------------------------------------------
@@ -824,7 +925,7 @@ export async function protocolValidate(
 	// side effect — errors go to stderr (never outputError, which would
 	// write a second envelope to stdout).
 	// -----------------------------------------------------------------------
-	if (params.record && recordStepName) {
+	if (params.record && recordStepName && !implementationRecorded) {
 		try {
 			const recordParams = {
 				// params.run is guaranteed non-null here: prerequisite check above

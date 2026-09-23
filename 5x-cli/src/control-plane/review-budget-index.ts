@@ -4,6 +4,8 @@ import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
+	decodeImplementationReviewContextPayload,
+	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import type { RecordStore } from "./record-store.js";
@@ -216,15 +218,21 @@ export function reindexReviewBudget(
 		if (
 			kind === "implementation-binding" ||
 			kind === "implementation-compatibility" ||
-			kind === "implementation-text-amendment"
+			kind === "implementation-text-amendment" ||
+			kind === "implementation-review-context" ||
+			kind === "implementation-review"
 		) {
 			try {
 				if (kind === "implementation-binding") {
 					decodeImplementationBindingPayload(line.payload);
 				} else if (kind === "implementation-compatibility") {
 					decodeImplementationCompatibilityPayload(line.payload);
-				} else {
+				} else if (kind === "implementation-text-amendment") {
 					decodeImplementationTextAmendmentPayload(line.payload);
+				} else if (kind === "implementation-review-context") {
+					decodeImplementationReviewContextPayload(line.payload);
+				} else {
+					decodeImplementationReviewObservationPayload(line.payload);
 				}
 			} catch {
 				// Unreadable future or corrupt payloads stay unprojected and

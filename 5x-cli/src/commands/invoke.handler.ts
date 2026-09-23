@@ -91,6 +91,12 @@ import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import {
+	composeImplementationReviewerRecord,
+	implementationGovernanceDecoration,
+	type PendingImplementationObservation,
+	recordImplementationReviewerStepWithObservation,
+} from "./implementation-review-context.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
@@ -429,6 +435,7 @@ export async function invokeAgent(
 		? resolve(params.workdir)
 		: (effectiveWorkdir ?? projectRoot);
 	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let pendingImplementation: PendingImplementationObservation | undefined;
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	let reviewDiffAppend: string | null = null;
@@ -980,41 +987,62 @@ export async function invokeAgent(
 						if (verified.status === "error") {
 							outputError(verified.code, verified.message);
 						}
-						const closure = readImplementationCodeClosure(
-							budgetContext.recordStore,
+						const composed = await composeImplementationReviewerRecord({
+							ctx: budgetContext,
 							runId,
+							stepName: budgetStepName,
 							phase,
-						);
-						const reviewed = validateImplementationReview({
+							iteration: params.iteration,
 							verdict: structured as ReviewerVerdict,
-							phase,
-							mode: binding.mode,
-							phaseIds: binding.phaseMap.map((entry) => entry.id),
-							workItemIds: binding.ledger.workItems.map((item) => item.id),
-							creditClaimIds: binding.ledger.workItems.flatMap((item) =>
-								item.debtClaim ? [item.debtClaim.debtClaimId] : [],
-							),
-							approvedPlanBytes: binding.approvedPlanBytes,
-							approvedPlanHash: binding.approvedPlanHash,
-							amendments: budgetContext.store.listImplementationTextAmendments(
-								runId,
-								binding.id,
-							),
-							hasRun: true,
-							priorReviewCount: closure.priorReviewCount,
+							contextId: implementationReviewContextId,
 							codeContext: verified.diff,
-							priorCodeFindings: closure.priorCodeFindings,
-							priorCodeDecisions: closure.priorCodeDecisions,
 						});
-						if (!reviewed.valid) {
-							outputError(
-								reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
-								reviewed.fatalMessage ??
-									"Implementation review contract was rejected.",
-							);
+						if (composed.status === "error") {
+							outputError(composed.code, composed.message, composed.detail);
 						}
-						for (const item of reviewed.diagnostics) {
-							warn(`${item.code}: ${item.message}`);
+						if (composed.status === "applied") {
+							pendingImplementation = composed.pending;
+							for (const item of composed.diagnostics) {
+								warn(`${item.code}: ${item.message}`);
+							}
+						} else {
+							const closure = readImplementationCodeClosure(
+								budgetContext.recordStore,
+								runId,
+								phase,
+							);
+							const reviewed = validateImplementationReview({
+								verdict: structured as ReviewerVerdict,
+								phase,
+								mode: binding.mode,
+								phaseIds: binding.phaseMap.map((entry) => entry.id),
+								workItemIds: binding.ledger.workItems.map((item) => item.id),
+								creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+									item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+								),
+								approvedPlanBytes: binding.approvedPlanBytes,
+								approvedPlanHash: binding.approvedPlanHash,
+								amendments:
+									budgetContext.store.listImplementationTextAmendments(
+										runId,
+										binding.id,
+									),
+								hasRun: true,
+								priorReviewCount: closure.priorReviewCount,
+								codeContext: verified.diff,
+								priorCodeFindings: closure.priorCodeFindings,
+								priorCodeDecisions: closure.priorCodeDecisions,
+							});
+							if (!reviewed.valid) {
+								outputError(
+									reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+									reviewed.fatalMessage ??
+										"Implementation review contract was rejected.",
+								);
+							}
+							for (const item of reviewed.diagnostics) {
+								warn(`${item.code}: ${item.message}`);
+							}
 						}
 					}
 				}
@@ -1154,6 +1182,55 @@ export async function invokeAgent(
 		}
 	}
 
+	let implementationRecorded = false;
+	if (pendingImplementation && budgetContext) {
+		const stepName = params.recordStep ?? resolved.stepName ?? budgetStepName;
+		if (params.record) {
+			try {
+				const written = await recordImplementationReviewerStepWithObservation(
+					{
+						run: params.run,
+						stepName,
+						result: JSON.stringify(structured),
+						phase: params.phase ?? variables.phase_number,
+						iteration: params.iteration,
+						sessionId: runResult.sessionId,
+						model,
+						durationMs: runResult.durationMs,
+						tokensIn: runResult.tokens.in,
+						tokensOut: runResult.tokens.out,
+						costUsd: runResult.costUsd ?? undefined,
+						logPath: logPath ?? undefined,
+						performer: {
+							kind: "agent",
+							role,
+							provider: providerName,
+						},
+					},
+					pendingImplementation,
+					budgetContext,
+				);
+				if (written.observation) {
+					structured = {
+						...(structured as Record<string, unknown>),
+						governance: implementationGovernanceDecoration(written.observation),
+					};
+				}
+				implementationRecorded = true;
+			} catch (err) {
+				if (err instanceof RecordError) {
+					outputError(err.code, err.message, err.detail);
+				}
+				throw err;
+			}
+		} else {
+			structured = {
+				...(structured as Record<string, unknown>),
+				governance: implementationGovernanceDecoration(pendingImplementation),
+			};
+		}
+	}
+
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: resolved.stepName,
@@ -1183,7 +1260,7 @@ export async function invokeAgent(
 	// IMPORTANT: outputSuccess() has already written the primary envelope above.
 	// All errors from here must go to stderr — never outputError() (which would
 	// write a second JSON envelope to stdout, corrupting the stream).
-	if (params.record) {
+	if (params.record && !implementationRecorded) {
 		const stepName = params.recordStep ?? resolved.stepName;
 		if (!stepName) {
 			console.error(

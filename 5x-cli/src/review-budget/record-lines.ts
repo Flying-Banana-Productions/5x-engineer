@@ -1,10 +1,16 @@
+import type { BoundaryChangeLabel, ReviewerVerdict } from "../protocol.js";
 import type {
 	ClosureDiagnostic,
+	ImplementationDiagnostic,
+	ImplementationNextAction,
+	PlanReviewRoute,
 	PriorFindingOutcome,
 	ReviewGateCause,
 } from "../review-governance/types.js";
 import type {
 	BaselineAssessment,
+	BudgetAlert,
+	BudgetBand,
 	CreditAssessmentInput,
 	FindingDelta,
 	ParsedDeliveryBudget,
@@ -20,7 +26,9 @@ export type BudgetRecordKind =
 	| "snapshot"
 	| "implementation-binding"
 	| "implementation-compatibility"
-	| "implementation-text-amendment";
+	| "implementation-text-amendment"
+	| "implementation-review-context"
+	| "implementation-review";
 export type CaptureKind = "initial" | "opt_in";
 
 export interface BudgetBaselinePayload {
@@ -590,6 +598,525 @@ export function decodeImplementationReviewContextPayload(
 		hunks,
 		binaryPaths: value.binaryPaths.map((entry, index) =>
 			stringField(entry, `binaryPaths[${index}]`),
+		),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+export interface ImplementationReviewStepKey {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+}
+
+/** Reviewer-stated claim result. Stored as an observation, not a budget finding. */
+export interface ImplementationClaimObservation {
+	creditClaimId: string;
+	realization: "realized" | "partial" | "not_realized";
+	realizedArchitectureDelta: number;
+	evidence: string;
+}
+
+/**
+ * Material causes kept beside the review route. An inherited budget gate does
+ * not replace author revision for an ordinary defect.
+ */
+export type ImplementationObservationGateCause =
+	| {
+			kind: "semantic_human";
+			findingId: string;
+			fingerprint: string;
+	  }
+	| {
+			kind: "critical_safety";
+			findingId: string;
+			fingerprint: string;
+	  }
+	| {
+			kind: "plan_amendment";
+			findingId: string;
+			fingerprint: string;
+	  }
+	| {
+			kind: "inherited_budget";
+			band: BudgetBand;
+			alerts: BudgetAlert[];
+	  };
+
+export interface ImplementationBoundaryInventoryEntry {
+	itemId: string;
+	/** Labels the reviewer supplied. Empty when that array was empty. */
+	changes: BoundaryChangeLabel[];
+	/** True when the reviewer omitted boundaryChanges. Never inferred. */
+	unknown: boolean;
+}
+
+export interface ImplementationReviewClassCounts {
+	implementation_defect: number;
+	plan_defect: number;
+	scope_expansion: number;
+	pre_existing: number;
+}
+
+/** Activity and path growth. None of these fields are budget inputs. */
+export interface ImplementationReviewTelemetry {
+	reviewCycles: number;
+	fixCycles: number;
+	reviewOriginatedCommits: number;
+	qualityReruns: number;
+	classCounts: ImplementationReviewClassCounts;
+	planAmendments: number;
+	addedPaths: string[];
+	boundaryInventory: ImplementationBoundaryInventoryEntry[];
+	effortVariance: number;
+	architectureVariance: number;
+}
+
+/** Inherited W/R/B/D copied at review time. Variance must not change them. */
+export interface ImplementationBudgetInvariant {
+	W: number;
+	R: number;
+	B: number;
+	D: number;
+}
+
+/**
+ * One implementation review, paired with its reviewer step. Plan snapshot
+ * readers ignore this kind. It is not a `FindingDelta[]`.
+ */
+export interface ImplementationReviewObservationPayload {
+	kind: "implementation-review";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	runId: string;
+	stepKey: ImplementationReviewStepKey;
+	bindingId: string;
+	contextId: string;
+	domain: "implementation";
+	phase: string;
+	originalVerdict: ReviewerVerdict;
+	outcomes: PriorFindingOutcome[];
+	route: PlanReviewRoute;
+	nextAction: ImplementationNextAction;
+	diagnostics: ImplementationDiagnostic[];
+	claimObservations: ImplementationClaimObservation[];
+	gateCauses: ImplementationObservationGateCause[];
+	telemetry: ImplementationReviewTelemetry;
+	budgetInvariant: ImplementationBudgetInvariant;
+	/**
+	 * True only on the durable line when the route is complete and no separate
+	 * gate cause remains. A pre-write copy is not authorization.
+	 */
+	completionAuthorized: boolean;
+	createdAt: string;
+}
+
+export function implementationReviewObservationKey(
+	runId: string,
+	stepKey: ImplementationReviewStepKey,
+): string {
+	return `budget:implementation-review:${runId}:${stepKey.stepName}:${stepKey.phase ?? ""}:${stepKey.iteration ?? ""}`;
+}
+
+const REVIEW_ROUTES = new Set<PlanReviewRoute>([
+	"complete",
+	"author_revision",
+	"final_corrections",
+	"human_gate",
+]);
+
+const NEXT_ACTIONS = new Set<ImplementationNextAction>([
+	"plan_amendment",
+	"author_revision",
+	"human_gate",
+	"complete",
+]);
+
+const BUDGET_BANDS = new Set<BudgetBand>([
+	"within_standard",
+	"within_debt_allowance",
+	"over_effective",
+	"over_absolute",
+]);
+
+const BUDGET_ALERTS = new Set<BudgetAlert>([
+	"baseline_disputed",
+	"positive_architecture_exceeded",
+	"credit_unrealized",
+]);
+
+const BOUNDARY_LABELS = new Set<BoundaryChangeLabel>([
+	"api",
+	"schema",
+	"dependency",
+	"subsystem",
+	"architecture",
+	"plan-structure",
+]);
+
+const OBSERVATION_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"stepKey",
+	"bindingId",
+	"contextId",
+	"domain",
+	"phase",
+	"originalVerdict",
+	"outcomes",
+	"route",
+	"nextAction",
+	"diagnostics",
+	"claimObservations",
+	"gateCauses",
+	"telemetry",
+	"budgetInvariant",
+	"completionAuthorized",
+	"createdAt",
+]);
+
+function rejectUnknownKeys(
+	value: Record<string, unknown>,
+	allowed: ReadonlySet<string>,
+	label: string,
+): void {
+	for (const key of Object.keys(value)) {
+		if (!allowed.has(key)) {
+			throw new TypeError(`${label} has unknown field '${key}'`);
+		}
+	}
+}
+
+function integerField(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value)) {
+		throw new TypeError(`${field} must be an integer`);
+	}
+	return value;
+}
+
+function nonNegativeInteger(value: unknown, field: string): number {
+	const parsed = integerField(value, field);
+	if (parsed < 0) throw new TypeError(`${field} must be a nonnegative integer`);
+	return parsed;
+}
+
+function booleanField(value: unknown, field: string): boolean {
+	if (typeof value !== "boolean") {
+		throw new TypeError(`${field} must be a boolean`);
+	}
+	return value;
+}
+
+function decodeObservationStepKey(raw: unknown): ImplementationReviewStepKey {
+	const value = object(raw, "stepKey");
+	rejectUnknownKeys(
+		value,
+		new Set(["stepName", "phase", "iteration"]),
+		"stepKey",
+	);
+	const iteration = value.iteration;
+	if (iteration !== null && !Number.isInteger(iteration)) {
+		throw new TypeError("stepKey.iteration must be an integer or null");
+	}
+	const phase = value.phase;
+	if (phase !== null && typeof phase !== "string") {
+		throw new TypeError("stepKey.phase must be a string or null");
+	}
+	return {
+		stepName: stringField(value.stepName, "stepKey.stepName"),
+		phase,
+		iteration: iteration as number | null,
+	};
+}
+
+function decodeOriginalVerdict(raw: unknown): ReviewerVerdict {
+	const value = object(raw, "originalVerdict");
+	if (typeof value.readiness !== "string" || !Array.isArray(value.items)) {
+		throw new TypeError("originalVerdict must include readiness and items");
+	}
+	return structuredClone(value) as unknown as ReviewerVerdict;
+}
+
+function decodeOutcomes(raw: unknown): PriorFindingOutcome[] {
+	if (!Array.isArray(raw)) throw new TypeError("outcomes must be an array");
+	return raw.map((entry, index) => {
+		const outcome = object(entry, `outcomes[${index}]`);
+		const status = outcome.status;
+		if (
+			status !== "addressed" &&
+			status !== "partially_addressed" &&
+			status !== "still_open"
+		) {
+			throw new TypeError(`outcomes[${index}].status is invalid`);
+		}
+		return {
+			id: stringField(outcome.id, `outcomes[${index}].id`),
+			status,
+		};
+	});
+}
+
+function decodeObservationDiagnostics(
+	raw: unknown,
+): ImplementationDiagnostic[] {
+	if (!Array.isArray(raw)) throw new TypeError("diagnostics must be an array");
+	return raw.map((entry, index) => {
+		const diagnostic = object(entry, `diagnostics[${index}]`);
+		const severity = diagnostic.severity;
+		if (severity !== "error" && severity !== "info") {
+			throw new TypeError(`diagnostics[${index}].severity is invalid`);
+		}
+		const itemId =
+			diagnostic.itemId === undefined
+				? undefined
+				: stringField(diagnostic.itemId, `diagnostics[${index}].itemId`);
+		return {
+			code: stringField(
+				diagnostic.code,
+				`diagnostics[${index}].code`,
+			) as ImplementationDiagnostic["code"],
+			severity,
+			message: stringField(diagnostic.message, `diagnostics[${index}].message`),
+			...(itemId === undefined ? {} : { itemId }),
+		};
+	});
+}
+
+function decodeClaimObservations(
+	raw: unknown,
+): ImplementationClaimObservation[] {
+	if (!Array.isArray(raw)) {
+		throw new TypeError("claimObservations must be an array");
+	}
+	return raw.map((entry, index) => {
+		const claim = object(entry, `claimObservations[${index}]`);
+		const realization = claim.realization;
+		if (
+			realization !== "realized" &&
+			realization !== "partial" &&
+			realization !== "not_realized"
+		) {
+			throw new TypeError(`claimObservations[${index}].realization is invalid`);
+		}
+		return {
+			creditClaimId: stringField(
+				claim.creditClaimId,
+				`claimObservations[${index}].creditClaimId`,
+			),
+			realization,
+			realizedArchitectureDelta: integerField(
+				claim.realizedArchitectureDelta,
+				`claimObservations[${index}].realizedArchitectureDelta`,
+			),
+			evidence: stringField(
+				claim.evidence,
+				`claimObservations[${index}].evidence`,
+			),
+		};
+	});
+}
+
+function decodeObservationGateCause(
+	raw: unknown,
+	index: number,
+): ImplementationObservationGateCause {
+	const cause = object(raw, `gateCauses[${index}]`);
+	if (
+		cause.kind === "semantic_human" ||
+		cause.kind === "critical_safety" ||
+		cause.kind === "plan_amendment"
+	) {
+		return {
+			kind: cause.kind,
+			findingId: stringField(cause.findingId, `gateCauses[${index}].findingId`),
+			fingerprint: stringField(
+				cause.fingerprint,
+				`gateCauses[${index}].fingerprint`,
+			),
+		};
+	}
+	if (cause.kind === "inherited_budget") {
+		if (!BUDGET_BANDS.has(cause.band as BudgetBand)) {
+			throw new TypeError(`gateCauses[${index}].band is invalid`);
+		}
+		if (!Array.isArray(cause.alerts)) {
+			throw new TypeError(`gateCauses[${index}].alerts must be an array`);
+		}
+		return {
+			kind: "inherited_budget",
+			band: cause.band as BudgetBand,
+			alerts: cause.alerts.map((alert, alertIndex) => {
+				if (!BUDGET_ALERTS.has(alert as BudgetAlert)) {
+					throw new TypeError(
+						`gateCauses[${index}].alerts[${alertIndex}] is invalid`,
+					);
+				}
+				return alert as BudgetAlert;
+			}),
+		};
+	}
+	throw new TypeError(`gateCauses[${index}].kind is invalid`);
+}
+
+function decodeClassCounts(raw: unknown): ImplementationReviewClassCounts {
+	const value = object(raw, "telemetry.classCounts");
+	return {
+		implementation_defect: nonNegativeInteger(
+			value.implementation_defect,
+			"telemetry.classCounts.implementation_defect",
+		),
+		plan_defect: nonNegativeInteger(
+			value.plan_defect,
+			"telemetry.classCounts.plan_defect",
+		),
+		scope_expansion: nonNegativeInteger(
+			value.scope_expansion,
+			"telemetry.classCounts.scope_expansion",
+		),
+		pre_existing: nonNegativeInteger(
+			value.pre_existing,
+			"telemetry.classCounts.pre_existing",
+		),
+	};
+}
+
+function decodeObservationTelemetry(
+	raw: unknown,
+): ImplementationReviewTelemetry {
+	const value = object(raw, "telemetry");
+	if (!Array.isArray(value.addedPaths)) {
+		throw new TypeError("telemetry.addedPaths must be an array");
+	}
+	if (!Array.isArray(value.boundaryInventory)) {
+		throw new TypeError("telemetry.boundaryInventory must be an array");
+	}
+	return {
+		reviewCycles: nonNegativeInteger(
+			value.reviewCycles,
+			"telemetry.reviewCycles",
+		),
+		fixCycles: nonNegativeInteger(value.fixCycles, "telemetry.fixCycles"),
+		reviewOriginatedCommits: nonNegativeInteger(
+			value.reviewOriginatedCommits,
+			"telemetry.reviewOriginatedCommits",
+		),
+		qualityReruns: nonNegativeInteger(
+			value.qualityReruns,
+			"telemetry.qualityReruns",
+		),
+		classCounts: decodeClassCounts(value.classCounts),
+		planAmendments: nonNegativeInteger(
+			value.planAmendments,
+			"telemetry.planAmendments",
+		),
+		addedPaths: value.addedPaths.map((entry, index) =>
+			stringField(entry, `telemetry.addedPaths[${index}]`, true),
+		),
+		boundaryInventory: value.boundaryInventory.map((entry, index) => {
+			const item = object(entry, `telemetry.boundaryInventory[${index}]`);
+			if (!Array.isArray(item.changes)) {
+				throw new TypeError(
+					`telemetry.boundaryInventory[${index}].changes must be an array`,
+				);
+			}
+			return {
+				itemId: stringField(
+					item.itemId,
+					`telemetry.boundaryInventory[${index}].itemId`,
+				),
+				changes: item.changes.map((change, changeIndex) => {
+					if (!BOUNDARY_LABELS.has(change as BoundaryChangeLabel)) {
+						throw new TypeError(
+							`telemetry.boundaryInventory[${index}].changes[${changeIndex}] is invalid`,
+						);
+					}
+					return change as BoundaryChangeLabel;
+				}),
+				unknown: booleanField(
+					item.unknown,
+					`telemetry.boundaryInventory[${index}].unknown`,
+				),
+			};
+		}),
+		effortVariance: nonNegativeInteger(
+			value.effortVariance,
+			"telemetry.effortVariance",
+		),
+		architectureVariance: integerField(
+			value.architectureVariance,
+			"telemetry.architectureVariance",
+		),
+	};
+}
+
+function decodeBudgetInvariant(raw: unknown): ImplementationBudgetInvariant {
+	const value = object(raw, "budgetInvariant");
+	rejectUnknownKeys(value, new Set(["W", "R", "B", "D"]), "budgetInvariant");
+	return {
+		W: nonNegativeInteger(value.W, "budgetInvariant.W"),
+		R: nonNegativeInteger(value.R, "budgetInvariant.R"),
+		B: nonNegativeInteger(value.B, "budgetInvariant.B"),
+		D: nonNegativeInteger(value.D, "budgetInvariant.D"),
+	};
+}
+
+export function encodeImplementationReviewObservationPayload(
+	payload: ImplementationReviewObservationPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationReviewObservationPayload(
+	raw: unknown,
+): ImplementationReviewObservationPayload {
+	const value = object(raw, "implementation review observation");
+	rejectUnknownKeys(
+		value,
+		OBSERVATION_KEYS,
+		"implementation review observation",
+	);
+	if (value.kind !== "implementation-review") {
+		throw new TypeError("invalid implementation review observation kind");
+	}
+	versionField(value.version);
+	if (value.domain !== "implementation") {
+		throw new TypeError("implementation review domain must be implementation");
+	}
+	if (!REVIEW_ROUTES.has(value.route as PlanReviewRoute)) {
+		throw new TypeError("implementation review route is invalid");
+	}
+	if (!NEXT_ACTIONS.has(value.nextAction as ImplementationNextAction)) {
+		throw new TypeError("implementation review nextAction is invalid");
+	}
+	if (!Array.isArray(value.gateCauses)) {
+		throw new TypeError("gateCauses must be an array");
+	}
+	return {
+		kind: "implementation-review",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		stepKey: decodeObservationStepKey(value.stepKey),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		contextId: stringField(value.contextId, "contextId"),
+		domain: "implementation",
+		phase: stringField(value.phase, "phase"),
+		originalVerdict: decodeOriginalVerdict(value.originalVerdict),
+		outcomes: decodeOutcomes(value.outcomes),
+		route: value.route as PlanReviewRoute,
+		nextAction: value.nextAction as ImplementationNextAction,
+		diagnostics: decodeObservationDiagnostics(value.diagnostics),
+		claimObservations: decodeClaimObservations(value.claimObservations),
+		gateCauses: value.gateCauses.map((entry, index) =>
+			decodeObservationGateCause(entry, index),
+		),
+		telemetry: decodeObservationTelemetry(value.telemetry),
+		budgetInvariant: decodeBudgetInvariant(value.budgetInvariant),
+		completionAuthorized: booleanField(
+			value.completionAuthorized,
+			"completionAuthorized",
 		),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};

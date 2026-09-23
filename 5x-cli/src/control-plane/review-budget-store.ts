@@ -7,6 +7,7 @@ import {
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
 	decodeImplementationReviewContextPayload,
+	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
 	encodeBudgetBaselinePayload,
 	encodeBudgetSnapshotPayload,
@@ -17,10 +18,13 @@ import {
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
 	type ImplementationReviewContextPayload,
+	type ImplementationReviewObservationPayload,
+	type ImplementationReviewStepKey,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
 	implementationCompatibilityKey,
 	implementationReviewContextKey,
+	implementationReviewObservationKey,
 	implementationTextAmendmentKey,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
@@ -156,6 +160,22 @@ export interface ReviewBudgetStore {
 		payload: ImplementationReviewContextPayload,
 		origin: RecordOrigin,
 	): { created: boolean; payload: ImplementationReviewContextPayload };
+	/**
+	 * Implementation observations in record order. Plan snapshots are excluded.
+	 * A missing index still returns the authoritative lines.
+	 */
+	listImplementationReviews(
+		runId: string,
+	): ImplementationReviewObservationPayload[];
+	getImplementationReview(
+		runId: string,
+		stepKey: ImplementationReviewStepKey,
+	): ImplementationReviewObservationPayload | null;
+	/** Re-read one observation after a durable write. Does not append. */
+	projectImplementationReview(
+		runId: string,
+		idempotencyKey: string,
+	): ImplementationReviewObservationPayload | null;
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -532,6 +552,40 @@ export function createReviewBudgetStore(
 				created: result.created,
 				payload: decodeImplementationReviewContextPayload(result.line.payload),
 			};
+		},
+
+		listImplementationReviews(runId) {
+			const observations: ImplementationReviewObservationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !== "implementation-review"
+				) {
+					continue;
+				}
+				observations.push(
+					decodeImplementationReviewObservationPayload(line.payload),
+				);
+			}
+			return observations;
+		},
+
+		getImplementationReview(runId, stepKey) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationReviewObservationKey(runId, stepKey),
+			);
+			return line
+				? decodeImplementationReviewObservationPayload(line.payload)
+				: null;
+		},
+
+		projectImplementationReview(runId, idempotencyKey) {
+			const line = recordStore.getLine(runId, "budget", idempotencyKey);
+			if (!line) return null;
+			return decodeImplementationReviewObservationPayload(line.payload);
 		},
 	};
 }

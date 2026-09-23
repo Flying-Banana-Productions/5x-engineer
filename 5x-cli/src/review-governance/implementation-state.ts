@@ -35,6 +35,7 @@ import {
 	type ImplementationDebtTarget,
 	type ImplementationPhaseMapping,
 	type ImplementationReviewContextPayload,
+	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import type {
@@ -1858,4 +1859,15 @@ export async function verifyImplementationReviewContext(input: {
 	} catch (error) {
 		return gitFailure(error);
 	}
+}
+
+/**
+ * Authoritative implementation observations. Plan snapshot readers never see
+ * these lines, and a rebuilt store reads the same record order.
+ */
+export function listRecordedImplementationReviews(
+	store: Pick<ReviewBudgetStore, "listImplementationReviews">,
+	runId: string,
+): ImplementationReviewObservationPayload[] {
+	return store.listImplementationReviews(runId);
 }

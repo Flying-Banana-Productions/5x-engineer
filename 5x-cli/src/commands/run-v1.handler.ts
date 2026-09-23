@@ -2881,6 +2881,78 @@ export async function finalizeAndWritePreparedStep(
 	}
 }
 
+export interface ImplementationActivityStep {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+	headCommit: string | null;
+}
+
+function activityPhaseKey(phase: string | null): string | null {
+	if (!phase) return null;
+	const trimmed = phase.trim();
+	if (/^\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+	const prefixed = trimmed.match(/^phase-(\d+(?:\.\d+)?)$/i);
+	return prefixed?.[1] ?? trimmed;
+}
+
+/**
+ * Review, fix, and quality counts for one implementation phase. Identities are
+ * the durable step tuples already on the record stream. The pending reviewer
+ * is counted once when that tuple is not already present.
+ */
+export function deriveImplementationActivityTelemetry(input: {
+	steps: readonly ImplementationActivityStep[];
+	phase: string;
+	pendingReviewer?: { stepName: string; iteration: number | null };
+}): {
+	reviewCycles: number;
+	fixCycles: number;
+	reviewOriginatedCommits: number;
+	qualityReruns: number;
+} {
+	const phase = activityPhaseKey(input.phase);
+	const samePhase = (step: ImplementationActivityStep) =>
+		activityPhaseKey(step.phase) === phase;
+	const reviewerKeys = new Set<string>();
+	const authorCommits = new Set<string>();
+	const reviewCommits = new Set<string>();
+	let seenReview = false;
+	let fixCycles = 0;
+	let qualityChecks = 0;
+	for (const step of input.steps) {
+		if (!samePhase(step)) continue;
+		if (step.stepName.startsWith("reviewer:")) {
+			seenReview = true;
+			reviewerKeys.add(
+				`${step.stepName}:${activityPhaseKey(step.phase) ?? ""}:${step.iteration ?? ""}`,
+			);
+			if (step.headCommit && !authorCommits.has(step.headCommit)) {
+				reviewCommits.add(step.headCommit);
+			}
+		} else if (step.stepName.startsWith("author:")) {
+			if (step.headCommit) {
+				authorCommits.add(step.headCommit);
+				reviewCommits.delete(step.headCommit);
+			}
+			if (seenReview) fixCycles += 1;
+		} else if (step.stepName.startsWith("quality:")) {
+			qualityChecks += 1;
+		}
+	}
+	const pending = input.pendingReviewer;
+	if (pending) {
+		const key = `${pending.stepName}:${phase ?? ""}:${pending.iteration ?? ""}`;
+		if (!reviewerKeys.has(key)) reviewerKeys.add(key);
+	}
+	return {
+		reviewCycles: reviewerKeys.size,
+		fixCycles,
+		reviewOriginatedCommits: reviewCommits.size,
+		qualityReruns: Math.max(0, qualityChecks - 1),
+	};
+}
+
 /**
  * Record a step in the database. Pure persistence — no stdout, no CliError.
  * Throws RecordError on validation failures (caller decides how to surface).
