@@ -120,3 +120,24 @@ Tests should then cover the real "mark reviewed" and "Phase 0 note" sequence.
 
 - **Phase 1 completion:** ✅ — the binding model works for both single-checkout and worktree-mapped runs, the drift anchor is a deliberate, recorded human decision rather than an inferred one, and all previously identified mechanical gaps have tests.
 - **Ready for next phase:** ✅ — no blockers remain. The one new item (untested decision-race branch) is a P2 test-coverage gap on adjacent code, not a Phase 1 defect.
+
+---
+
+## Addendum (2026-09-23) — Same-intent decision-race test added
+
+**Reviewed:** `8b5067c21708b9046e4276d7875fc13e1e671498` (one commit: `8b5067c`, explicitly addressing R6 above)
+
+**Local verification:** `bun test` in `5x-cli/`: 3635 pass, 0 fail (up from 3634 — 1 new test). `bun run typecheck`: clean. `bun run lint`: clean. I read the new test and `deriveOpenGate` (`src/review-governance/store.ts`) together to confirm the race window it simulates is the real one the code comment describes.
+
+### What's addressed (✅)
+
+- **R6 (P2 — untested same-intent decision-race branch) — addressed.** `review-decision.handler.ts` gains an `onOpenGateMiss` test-only hook on `ReviewDecisionDeps`, called exactly at the point in `submitPlanReviewDecision` where the open-gate check has already missed and the re-read has not yet happened — the window the prior addendum flagged. Production call sites never set it, so `if (deps.onOpenGateMiss) await deps.onOpenGateMiss();` is a no-op outside tests; this is purely an additive seam, not a behavior change. The new unit test (`same-intent loser observes the winner committed between the open-gate check and the re-read`) drives a real two-caller race deterministically: it hides the `budget` stream from `deriveOpenGate` to force the open-gate miss, then inside `onOpenGateMiss` restores it and runs a second `submitPlanReviewDecision` call as the "winner," which commits before the original ("loser") call re-reads. It asserts the loser observes the winner's exact decision (`created: false`, matching `decisionId`/`decisionIntentHash`/`route`), that only one `atomicAppendIfAllNew` call happened, that the decisions/steps streams end up with exactly one entry each, and that the prompt is answered with the winner's decision id — i.e. no double-write, no divergent outcome, no orphaned prompt. This is a faithful exercise of the exact branch added in `745e38a`, not just a unit test of the closure in isolation.
+
+### Remaining concerns
+
+- None from the tracked list. No new issues surfaced in this revision — the change is a single, tightly-scoped test addition with a no-op production hook.
+
+### Updated readiness
+
+- **Phase 1 completion:** ✅ — unchanged from the prior addendum; this revision only closes the last open test-coverage gap.
+- **Ready for next phase:** ✅ — no blockers, no P1s, and no open P2 items remain from this review's tracked list.
