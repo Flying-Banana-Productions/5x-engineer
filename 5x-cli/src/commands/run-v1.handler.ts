@@ -1024,6 +1024,7 @@ export function buildReviewGovernanceState(input: {
 	let normalizedRoute: ReviewDecisionRoute | undefined;
 	let normalizedReadiness: ReviewGovernanceState["normalized_readiness"];
 	let latestVerdict: ReviewerVerdict | undefined;
+	const readDiagnostics: string[] = [];
 	if (latestSnapshot?.stepName && latestSnapshot.iteration !== null) {
 		const key = stepIdempotencyKey({
 			runId: input.runId,
@@ -1066,18 +1067,28 @@ export function buildReviewGovernanceState(input: {
 		latestVerdict &&
 		latestDecision.snapshotId === latestSnapshot.id
 	) {
-		normalizedRoute = routeAfterDecision({
-			latestVerdict,
-			latestBudgetSnapshot: latestSnapshot,
-			newGoverningState: governing,
-			decision: latestDecision,
-		});
+		if (latestSnapshot.derived) {
+			normalizedRoute = routeAfterDecision({
+				latestVerdict,
+				latestBudgetSnapshot: latestSnapshot,
+				newGoverningState: governing,
+				decision: latestDecision,
+			});
+		} else {
+			// Snapshots written before derived budget projection was persisted are
+			// valid record history. Their governing fold remains readable, but there
+			// is not enough authoritative input to replay a post-decision route.
+			readDiagnostics.push(
+				`${latestDecision.decisionId}: post-decision route unavailable because the legacy snapshot has no derived budget`,
+			);
+		}
 	}
 	const diagnostics = [
 		...listed.diagnostics,
 		...governing.auditOnly.map(
 			(entry) => `${entry.decision.decisionId}: ${entry.diagnostic}`,
 		),
+		...readDiagnostics,
 	];
 	return {
 		...(normalizedRoute ? { normalized_route: normalizedRoute } : {}),

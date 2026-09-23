@@ -354,16 +354,33 @@ describe("run state review-budget wiring", () => {
 				},
 			});
 			const liveEnvelope = (await captureState(ctx)) as {
-				data?: { review_budget?: Record<string, unknown> };
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: Record<string, unknown>;
+				};
 			};
 			expect(liveEnvelope.data?.review_budget?.B).toBe(8);
+			expect(liveEnvelope.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
+			expect(liveEnvelope.data?.review_governance?.diagnostics).toContainEqual(
+				expect.stringContaining("legacy snapshot has no derived budget"),
+			);
 			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
 			const envelope = (await captureState(ctx, {
 				plan: ctx.planPath,
-			})) as { data?: { review_budget?: Record<string, unknown> } };
+			})) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: Record<string, unknown>;
+				};
+			};
 			expect(envelope.data?.review_budget?.B).toBe(8);
 			expect(envelope.data?.review_budget).toEqual(
 				liveEnvelope.data?.review_budget,
+			);
+			expect(envelope.data?.review_governance).toEqual(
+				liveEnvelope.data?.review_governance,
 			);
 		} finally {
 			ctx.db.close();
