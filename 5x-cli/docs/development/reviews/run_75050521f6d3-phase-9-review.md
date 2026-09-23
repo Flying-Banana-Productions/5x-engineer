@@ -112,3 +112,41 @@ Downstream, `tryBuildReviewBudgetState` computes `B: input.governingBaseline ?? 
 ### Updated readiness
 
 **Readiness:** Ready with corrections — the four items from the initial review are resolved, but this revision introduces one new P1 (governing-baseline coupling regression, P1.2) that should be fixed before this is production-ready. No `human_required` items; the fix is mechanical (decouple or locally isolate the baseline fold from the rest of the governance read model, matching the pattern already used elsewhere in this file for `try {} catch {}` isolation).
+
+---
+
+## Addendum 2 — Re-review at `3a403f68d4c69e56b1e619191e390fdfebb94c44`
+
+**Diff reviewed:** `042a4e3..3a403f6` (`fix: preserve governing baseline through snapshot errors`) — touches `run-v1.handler.ts` and the run-state wiring test file.
+**Local verification:** `bun run typecheck` (`bunx --bun tsc --noEmit`) passes. `bun test` → 3594 pass / 0 fail (230 files, +1 test vs. the prior round).
+
+### Prior findings
+
+- **P1.2 (governing baseline silently reverts to stale `baseline.b` on any governance-read failure)** — **Addressed.** The fix does exactly what I recommended: `governingBaseline` is no longer read off `reviewGovernance?.governing_baseline`. A new `tryDeriveGoverningReviewState(recordStore, runId, b0, warn)` calls `deriveGoverningState` in its own isolated `try {} catch {}`, independent of snapshot/gate/route derivation, and warns (`Unable to fold review governance records for run <id>; using the captured baseline: <message>`) only if the *fold itself* fails. `governingBaseline` is now set from this independent result (`governingState?.governingBaseline`) in both the live and archived branches, and `buildReviewGovernanceState` gained an optional `governingState` parameter so the already-computed fold is reused rather than re-derived (`input.governingState ?? governanceStore.deriveGoverningState(...)`) — this also keeps my earlier "redundant fold" fix (R4/P2 from the first addendum) intact; there is still only one fold per `run state` call. A new test, "malformed later snapshot preserves adjusted governing B in live and archived state," reproduces exactly the scenario from my P1.2 write-up: an `adjust_baseline` decision changes governing `B` to 8, then a malformed trailing snapshot is appended. Both the live and archived envelopes assert `review_budget.B === 8` (the adjusted value, not the stale `baseline.b`) while `review_governance` is correctly omitted with the expected warning. I traced the code path by hand and the fix holds: `buildReviewGovernanceState` still calls `reviewBudgetStore.latestSnapshot()` unconditionally and still throws on the same malformed payload, but that throw no longer touches `governingBaseline` because it is computed and captured before `buildReviewGovernanceState` is even invoked.
+
+### New issue introduced by this revision
+
+#### P2 — `buildReviewBudgetState` now silently discards the entire snapshot history (not just the malformed line) on any single decode failure, with no `review_budget`-specific diagnostic
+
+**Where:** `run-v1.handler.ts`, `buildReviewBudgetState`:
+```ts
+let snapshots: ReturnType<ReviewBudgetStore["listSnapshots"]> = [];
+try {
+	snapshots = input.store.listSnapshots(input.runId);
+} catch {
+	// Run-state governance reports the malformed history. Preserve baseline-only
+	// budget telemetry here so a valid governing B never reverts to baseline.b.
+}
+```
+
+**What changed:** Before this fix, an unhandled `listSnapshots` throw propagated out of `buildReviewBudgetState` and was caught by the existing outer wrapper `tryBuildReviewBudgetState`, which omits `review_budget` entirely and emits `Unable to read review budget records for run <id>; omitting review_budget: <message>`. Now the throw is swallowed one level in, and `review_budget` is always emitted using `snapshots = []`.
+
+**Why it's worth flagging:** `ReviewBudgetStore.listSnapshots` decodes every budget-stream line with no per-line try/catch (unlike `deriveOpenGate`'s defensive skip-and-continue), so one malformed snapshot — even the very last one — discards every prior, perfectly valid snapshot too. With `snapshots = []`, `buildReviewBudgetState` falls into its `if (!latest)` branch and recomputes `derived` from the *current on-disk plan markdown* (or the original baseline ledger) with `findings: []` and `assessments: []`, discarding every finding/assessment/architecture-delta a real reviewer recorded across the run. `review_budget.status`/alerts/bands are then computed as if no review had ever happened, with no field-level indication that real (and possibly overage-triggering) history was dropped. The `B` value is correctly preserved via the independently-derived `governingBaseline` (per the P1.2 fix above), but `W`/`R`/`E`/`status`/alerts are not — they silently reset to a from-scratch computation.
+
+The comment's assumption — "Run-state governance reports the malformed history" — does hold whenever a baseline exists (both call sites only reach this code path `if (baseline)`, and `buildReviewGovernanceState`'s own unconditional `latestSnapshot()` call will hit the same decode failure and produce the `omitting review_governance` diagnostic). So a caller who reads `diagnostics`/warnings will see *something* wrong. But a caller who reads only `review_budget` (a real, non-hypothetical consumer: this is precisely the field CI/enforcement tooling is meant to gate on) sees a clean, plausible-looking budget object with no marker that its `W`/`R`/`E`/status are computed from zero real findings rather than the run's actual review history. This is a smaller version of the same "silently wrong, not silently absent" failure mode P1.2 called out, now shifted from `B` (fixed) to the rest of the ledger (`W`/`R`/`E`/status/alerts).
+
+**Recommendation:** Decode snapshots defensively and per-line inside `ReviewBudgetStore.listSnapshots` (skip a malformed line and keep the rest, mirroring `deriveOpenGate`'s pattern) so a single corrupted trailing record doesn't erase valid prior history; keep the last *decodable* snapshot as `latest` rather than falling back to a zero-snapshot state. Independently, `buildReviewBudgetState`'s catch block could emit its own diagnostic (via a return field or by having the caller compare `snapshots.length` against a raw line count) rather than relying solely on the co-located `review_governance` diagnostic to carry the signal. Add a test asserting that when a *trailing* snapshot is malformed but earlier snapshots are valid, `review_budget` still reflects the last valid snapshot's `W`/`R`/`E`/status rather than resetting to zero findings.
+
+### Updated readiness
+
+**Readiness:** Ready with corrections. P1.2 — the blocking issue from the previous round — is fully and correctly resolved, confirmed by a targeted regression test, with typecheck and the full suite (3594/0) passing. The one new item (silent snapshot-history loss beyond `B`) is P2: it requires the same kind of data corruption as P1.2 to trigger, `B` itself (the field the plan explicitly calls a hard limit) is now correctly preserved, and a parallel diagnostic already fires in the common case. It does not block sign-off for this phase but should be tracked as a follow-up hardening item. No `human_required` items; the fix (defensive per-line snapshot decoding, matching the existing `deriveOpenGate` pattern in the same module) is derivable from the codebase.
