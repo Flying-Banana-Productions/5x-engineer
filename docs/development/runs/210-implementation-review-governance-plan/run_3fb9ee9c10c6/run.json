@@ -1,0 +1,16 @@
+{
+  "id": "run_3fb9ee9c10c6",
+  "plan_path": "/Users/spalmer/dev/5x-engineer/5x-cli/docs/development/plans/210-implementation-review-governance-plan.md",
+  "config_json": {
+    "maxStepsPerRun": 250
+  },
+  "created_at": "2026-09-23 10:25:36",
+  "sealed_at": null,
+  "status": "active",
+  "final_head_commit": null,
+  "cli_version": "1.3.0",
+  "format_version": 1,
+  "creator": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  }
+}
