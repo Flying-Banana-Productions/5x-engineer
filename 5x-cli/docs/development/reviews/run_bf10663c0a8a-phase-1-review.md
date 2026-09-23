@@ -94,3 +94,29 @@ Tests should then cover the real "mark reviewed" and "Phase 0 note" sequence.
 - [ ] Anchor checkbox normalization to task-list markers
 - [ ] Tests for render/invoke admission gating
 - [ ] Rebuild step in the separate-run integration test, or corrected checklist wording
+
+---
+
+## Addendum (2026-09-23) — Worktree identity, drift-anchor decision, and mechanical fixes
+
+**Reviewed:** `745e38a8efa3dd231337c5a164758f50d393e278` (two commits: `0c54274` addresses this review; `745e38a` fixes a fallback gap and two concurrency races found while finishing the fix)
+
+**Local verification:** `bun test` in `5x-cli/`: 3634 pass, 0 fail (up from 3624 — 10 new tests). `bun run typecheck`: clean. `bun run lint`: clean. I re-derived the P0.1 repro (canonical vs. worktree plan path) against the fixed code and confirmed `planRepoPath` now resolves the worktree case; I also read the recorded human-gate decision (`docs/development/runs/210-implementation-review-governance-plan/run_bf10663c0a8a/decisions.jsonl`) that authorized the R2 policy choice below.
+
+### What's addressed (✅)
+
+- **R1 (P0 — worktree identity/byte reads) — addressed.** Every admission path now passes the run's canonical `plan_path` for identity (`invoke.handler.ts`, `template.handler.ts`, `review-decision.handler.ts`, `run-v1.handler.ts`), not the worktree-resolved `effectivePlanPath`. Current bytes are read from the worktree copy when the mapping actually contains one; approved bytes are read via a new `planRepoPath(planPath, controlPlaneRoot)` helper that relativizes against the control-plane root and rejects paths that escape it, replacing the old `git show <c>:/abs/path` fallback that silently returned `null`. `showPlanAtCommit` takes an explicit `repoRoot` option. New integration test `binds a worktree-mapped plan from canonical identity and worktree bytes` exercises record, `template render`, `invoke`, and explicit `review implementation bind` against a real `5x worktree create` mapping, including a drift case where only the worktree copy changes. `enforceFirstImplementationAdmission` also now surfaces `resolveRunExecutionContext` failures (e.g. `WORKTREE_MISSING`) instead of silently proceeding without a workdir.
+- **R2 (P1 — drift on workflow-owned post-approval edits) — addressed via recorded human decision.** The human gate on this run (`step:run_bf10663c0a8a:human:gate:1:1`) chose option (a)+(c) from my prior review: anchor approved plan bytes to the source run's sealed `final_head_commit`/`run:complete` commit (which includes the "mark reviewed" Status edit), and move Phase 0 verification prose out of the plan into a run record (`docs/development/runs/.../run_bf10663c0a8a/phase-0-verification.md`). `assessApprovedSource` now calls `resolveFinalizedPlanCommit`, which requires `summary.status === "completed"`, a `final_head_commit`, and a matching recorded `run:complete` step commit before treating any commit as approved — an arbitrary later HEAD is explicitly rejected ("Later HEAD is not approval"). The plan's own `**Status:** Reviewed` line and the Phase 0 note are no longer drift for this run; a genuinely new edit after the sealed commit still is. Covered by both a unit test (`anchors approved bytes to the finalized plan commit, not a later HEAD`, including the mismatched-`final_head_commit` refusal case) and an integration test (`keeps the status update inside the finalized plan commit and drifts later notes`).
+- **R3 (P2 — checkbox regex too broad) — addressed.** `normalizeCheckboxState` now matches only list-item checkboxes (`/^(\s*[-*+]\s+)\[[ xX]\]/gm`), so `arr[x]` in prose/code is no longer ignored as a checkbox toggle. New unit test covers both the intended no-drift case and the `arr[x]`→`arr[ ]` should-still-drift case.
+- **R4 (P2 — untested render/invoke gating) — addressed.** New unit tests cover the SQLite-only budgeted case (`RecordContextError` → `IMPLEMENTATION_APPROVAL_REQUIRED`, provider never constructed) for both `invokeAgent` and `templateRender`, plus mode-off passing through without approval for `templateRender`.
+- **R5 (P2 — rebuild not exercised) — addressed.** The source-removal test now runs `5x records index` after deleting the source run directory and before the retry, actually exercising the rebuild path the checklist claimed.
+
+### Remaining concerns
+
+- **New, untested race-handling branch in `submitPlanReviewDecision`** (`review-decision.handler.ts`): `745e38a` adds a second `readDecision()` call after `deriveOpenGate` returns no match, so a same-intent decision loser observes the winner that committed between the two reads instead of failing with `REVIEW_GATE_NOT_OPEN`. The lock-race half of the same commit has a dedicated unit test (`lock prepare fsync ENOENT retries after the temp is unlinked`), but this decision-race branch does not. The logic mirrors the pre-existing `alreadyResolved` path via the new `acceptStoredWinner` closure, so risk is low, but it's new behavior on a shared decision-acceptance seam and deserves a concurrent-writer regression test (two `submitPlanReviewDecision` calls racing against the same gate, one committing between the other's open-gate check and re-read). This is outside Phase 1's stated scope (it touches plan-review decision submission, not implementation binding) but shipped in this revision, so I'm flagging it rather than treating it as pre-existing.
+- Nothing from the original P0/P1/P2 list is still open.
+
+### Updated readiness
+
+- **Phase 1 completion:** ✅ — the binding model works for both single-checkout and worktree-mapped runs, the drift anchor is a deliberate, recorded human decision rather than an inferred one, and all previously identified mechanical gaps have tests.
+- **Ready for next phase:** ✅ — no blockers remain. The one new item (untested decision-race branch) is a P2 test-coverage gap on adjacent code, not a Phase 1 defect.
